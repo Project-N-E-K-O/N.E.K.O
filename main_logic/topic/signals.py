@@ -7,13 +7,16 @@ few chat turns.
 """
 from __future__ import annotations
 
+import json
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from main_logic.topic.common import clean_text
+from utils.file_utils import atomic_write_json
 from utils.tokenize import truncate_to_tokens
 
 
@@ -22,6 +25,7 @@ _MAX_SIGNAL_TEXT_CHARS = 500
 # evidence as its only conversation input, so the per-turn budget lives here.
 _MAX_SIGNAL_TOKENS_PER_TURN = 300
 _MAX_GLOBAL_TURNS = 80
+_SIGNAL_RETENTION_SECONDS = 12 * 60 * 60
 _FILLER_TEXTS = {
     "你好",
     "啊",
@@ -135,18 +139,29 @@ class TopicTurnSignal:
 
 
 class TopicSignalStore:
-    """In-memory slow evidence store, scoped per character."""
+    """Slow evidence store, scoped per character.
+
+    The in-memory view may be backed by a small local-state JSON file so
+    short restart loops merge into the same candidate window. Persistence is
+    optional for tests and embedded callers.
+    """
 
     def __init__(
         self,
         *,
         min_user_turns_for_topic: int = 4,
         max_turns: int = _MAX_GLOBAL_TURNS,
+        retention_seconds: float = _SIGNAL_RETENTION_SECONDS,
+        persistence_path: str | Path | None = None,
     ) -> None:
         self._min_user_turns_for_topic = max(1, int(min_user_turns_for_topic))
+        self._max_turns = max(1, int(max_turns))
+        self._retention_seconds = max(0.0, float(retention_seconds))
+        self._persistence_path = Path(persistence_path) if persistence_path else None
         self._turns: dict[str, deque[TopicTurnSignal]] = defaultdict(
-            lambda: deque(maxlen=max(1, int(max_turns)))
+            lambda: deque(maxlen=self._max_turns)
         )
+        self._load()
 
     def note_turn(
         self,
@@ -161,23 +176,40 @@ class TopicSignalStore:
             return
         name = str(lanlan_name or "default")
         safe_actor = "ai" if actor == "ai" else "user"
+        timestamp = float(now if now is not None else time.time())
         self._turns[name].append(
             TopicTurnSignal(
                 actor=safe_actor,
                 text=cleaned,
-                timestamp=float(now if now is not None else time.time()),
+                timestamp=timestamp,
             )
         )
+        self._prune(name, now=timestamp)
+        self._persist()
 
     def clear(self, lanlan_name: str) -> None:
         self._turns.pop(str(lanlan_name or "default"), None)
+        self._persist()
+
+    def names(self) -> list[str]:
+        return list(self._turns)
+
+    def last_turn_at(self, lanlan_name: str) -> float | None:
+        name = str(lanlan_name or "default")
+        self._prune(name)
+        turns = self._turns.get(name)
+        if not turns:
+            return None
+        return float(turns[-1].timestamp)
 
     def readiness_percent(self, lanlan_name: str) -> int:
         # Coarse "have we heard enough to bother analysing" estimate, for logs.
+        self._prune(lanlan_name)
         count = len(self._meaningful_user_turns(lanlan_name))
         return min(100, int(count * 100 / self._min_user_turns_for_topic))
 
     def is_ready(self, lanlan_name: str) -> bool:
+        self._prune(lanlan_name)
         return (
             len(self._meaningful_user_turns(lanlan_name))
             >= self._min_user_turns_for_topic
@@ -191,6 +223,7 @@ class TopicSignalStore:
         The caller fences this block with the conversation-history watermark.
         """
         name = str(lanlan_name or "default")
+        self._prune(name)
         labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
         turns = list(self._turns.get(name, ()))
         if not turns:
@@ -208,6 +241,7 @@ class TopicSignalStore:
 
     def _user_turns(self, lanlan_name: str) -> list[TopicTurnSignal]:
         name = str(lanlan_name or "default")
+        self._prune(name)
         return [turn for turn in self._turns.get(name, ()) if turn.actor == "user"]
 
     def _meaningful_user_turns(self, lanlan_name: str) -> list[TopicTurnSignal]:
@@ -215,6 +249,83 @@ class TopicSignalStore:
             turn for turn in self._user_turns(lanlan_name)
             if _is_meaningful_turn(turn.text)
         ]
+
+    def _prune(self, lanlan_name: str, *, now: float | None = None) -> None:
+        name = str(lanlan_name or "default")
+        turns = self._turns.get(name)
+        if not turns:
+            return
+        if self._retention_seconds <= 0:
+            self._turns.pop(name, None)
+            return
+        current_time = float(now if now is not None else time.time())
+        retained = [
+            turn for turn in turns
+            if current_time - float(turn.timestamp) <= self._retention_seconds
+        ][-self._max_turns:]
+        if retained:
+            self._turns[name] = deque(retained, maxlen=self._max_turns)
+        else:
+            self._turns.pop(name, None)
+
+    def _load(self) -> None:
+        path = self._persistence_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        characters = payload.get("characters") if isinstance(payload, dict) else None
+        if not isinstance(characters, dict):
+            return
+        for name, entries in characters.items():
+            if not isinstance(entries, list):
+                continue
+            safe_name = str(name or "default")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                actor = "ai" if entry.get("actor") == "ai" else "user"
+                text = _clean_text(entry.get("text"))
+                if not text:
+                    continue
+                try:
+                    timestamp = float(entry.get("timestamp"))
+                except (TypeError, ValueError):
+                    continue
+                self._turns[safe_name].append(
+                    TopicTurnSignal(actor=actor, text=text, timestamp=timestamp)
+                )
+            self._prune(safe_name)
+
+    def _persist(self) -> None:
+        path = self._persistence_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            now = time.time()
+            for name in list(self._turns):
+                self._prune(name, now=now)
+            payload = {
+                "version": 1,
+                "characters": {
+                    name: [
+                        {
+                            "actor": turn.actor,
+                            "text": turn.text,
+                            "timestamp": turn.timestamp,
+                        }
+                        for turn in turns
+                    ]
+                    for name, turns in self._turns.items()
+                    if turns
+                },
+            }
+            atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+        except Exception:
+            return
 
 
 def _select_turns_for_prompt(

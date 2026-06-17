@@ -1083,6 +1083,10 @@ class UserActivityTracker:
                 if rule_snap.state == 'private':
                     continue
 
+                from utils.language_utils import get_global_language
+                lang = get_global_language() or 'en'
+                await self._process_topic_candidates_if_ready(lang=lang, now=ts)
+
                 # Anti-thrash: respect the minimum refresh interval.
                 if (
                     self._activity_guess_at
@@ -1105,9 +1109,6 @@ class UserActivityTracker:
                 )
                 if sig == self._activity_guess_state_sig and self._conv_seq == last_conv_seq:
                     continue
-
-                from utils.language_utils import get_global_language
-                lang = get_global_language() or 'en'
 
                 # In-flight guard — capture conv_seq + buffer snapshots
                 # before the LLM call. Same pattern as
@@ -1146,6 +1147,19 @@ class UserActivityTracker:
             except Exception as e:
                 # Stay alive — one bad tick shouldn't kill the loop.
                 logger.debug('[%s] activity_guess loop tick failed: %s', self.lanlan_name, e)
+
+    async def _process_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
+        """Let the topic pool piggyback on the activity heartbeat.
+
+        Candidate analysis has its own readiness/quiet-window checks inside
+        the pool. This hook merely supplies the existing 20s cadence so topic
+        collection does not maintain a parallel debounce loop.
+        """
+        try:
+            from main_logic.topic.pipeline import get_topic_hook_pool
+            await get_topic_hook_pool().process_ready_topics(lang=lang, now=now)
+        except Exception as exc:
+            logger.debug("[%s] topic candidate heartbeat failed: %s", self.lanlan_name, exc)
 
     def _refresh_prefs(self) -> None:
         """Pick up live edits to ``user_preferences.json::activity``.

@@ -33,7 +33,7 @@ TopicTrigger = Callable[
 ]
 
 _MAX_TEXT_CHARS = 1000
-_PROCESS_DEBOUNCE_SECONDS = 45.0
+_CANDIDATE_AFTER_QUIET_SECONDS = 60.0
 _TRIGGER_AFTER_QUIET_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
@@ -184,6 +184,17 @@ def _privacy_mode_active() -> bool:
         return True
 
 
+def _default_signal_store_path():
+    try:
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        if not config_manager.ensure_local_state_directory():
+            return None
+        return config_manager.local_state_dir / "topic_signals.json"
+    except Exception:
+        return None
+
+
 class TopicHookPool:
     """In-memory per-character topic pool prepared by background work."""
 
@@ -195,23 +206,29 @@ class TopicHookPool:
         auto_schedule: bool = True,
         enable_online_enrichment: bool = True,
         enable_deep_search: bool = True,
-        debounce_seconds: float = _PROCESS_DEBOUNCE_SECONDS,
+        debounce_seconds: float | None = None,
+        candidate_quiet_seconds: float = _CANDIDATE_AFTER_QUIET_SECONDS,
         trigger_delay_seconds: float = _TRIGGER_AFTER_QUIET_SECONDS,
         min_trigger_gap_seconds: float = _MIN_TOPIC_TRIGGER_GAP_SECONDS,
         min_user_turns_for_topic: int = 4,
         daily_topic_limit: int = _MAX_DAILY_TOPIC_TRIGGERS,
+        signal_store_path: Any = False,
     ) -> None:
         self._analyzer = analyzer or _default_analyzer
         self._topic_trigger = topic_trigger
         self._auto_schedule = auto_schedule
         self._enable_online_enrichment = enable_online_enrichment
         self._enable_deep_search = enable_deep_search
-        self._debounce_seconds = max(0.0, float(debounce_seconds))
+        self._candidate_quiet_seconds = max(
+            0.0,
+            float(candidate_quiet_seconds if debounce_seconds is None else debounce_seconds),
+        )
         self._trigger_delay_seconds = max(0.0, float(trigger_delay_seconds))
         self._min_trigger_gap_seconds = max(0.0, float(min_trigger_gap_seconds))
         self._daily_topic_limit = max(0, int(daily_topic_limit))
         self._signal_store = TopicSignalStore(
             min_user_turns_for_topic=min_user_turns_for_topic,
+            persistence_path=signal_store_path or None,
         )
         self._langs: dict[str, str] = {}
         self._materials: dict[str, list[dict[str, Any]]] = {}
@@ -222,9 +239,15 @@ class TopicHookPool:
         self._seq: dict[str, int] = defaultdict(int)
 
     def _purge_character_state(self, name: str) -> None:
-        """Drop all accumulated topic state for a character (privacy wipe)."""
+        """Drop all topic state for a character."""
         self._signal_store.clear(name)
         self._materials.pop(name, None)
+        self._dirty.discard(name)
+        self._cancel_trigger(name)
+
+    def _purge_accumulated_signals(self, name: str) -> None:
+        """Drop pre-candidate evidence without touching pending delivery material."""
+        self._signal_store.clear(name)
         self._dirty.discard(name)
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
@@ -236,7 +259,6 @@ class TopicHookPool:
         self._signal_store.note_turn(name, actor="user", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
-        self._cancel_trigger(name)
         self._schedule(name)
 
     def note_ai_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
@@ -248,7 +270,6 @@ class TopicHookPool:
         self._signal_store.note_turn(name, actor="ai", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
-        self._cancel_trigger(name)
         self._schedule(name)
 
     def get_ready_materials(self, lanlan_name: str, *, max_items: int = 2) -> list[dict[str, Any]]:
@@ -273,7 +294,7 @@ class TopicHookPool:
     ) -> None:
         name = str(lanlan_name or "default")
         if _privacy_mode_active():
-            self._purge_character_state(name)
+            self._purge_accumulated_signals(name)
             return
         seen_seq = self._seq.get(name, 0)
         if self._daily_quota_reached(name):
@@ -311,17 +332,13 @@ class TopicHookPool:
             key=lambda item: int(item.get("relevance", 0)),
             reverse=True,
         )[:2]
-        if cleaned and (self._enable_online_enrichment if enrich_online is None else enrich_online):
-            cleaned = await enrich_topic_materials_online(cleaned, lang=topic_lang, max_materials=1)
-        if self._seq.get(name, 0) != seen_seq:
-            return
         if _privacy_mode_active():
-            # Privacy may have toggled on during the analyzer / enrichment
+            # Privacy may have toggled on during the analyzer
             # awaits above; the start-of-call wipe already passed. Re-check
-            # before storing, else material collected across a privacy interval
-            # would survive and could deliver if privacy toggles off again
-            # before the quiet-window trigger.
-            self._purge_character_state(name)
+            # before storing, else candidate material collected across a
+            # privacy interval could survive. Pending delivery material from a
+            # previous non-private snapshot is intentionally left alone.
+            self._purge_accumulated_signals(name)
             logger.info("[%s] topic material discarded: privacy turned on during analysis", name)
             return
         cleaned = self._filter_available_materials(name, cleaned)
@@ -336,43 +353,45 @@ class TopicHookPool:
                     idx,
                     _material_log_preview(material),
                 )
-            self._schedule_trigger(name, cleaned[0], topic_lang, expected_seq=self._seq.get(name, 0))
+            self._schedule_trigger(name, cleaned[0], topic_lang)
         else:
             logger.info("[%s] topic material ready: none", name)
         self._dirty.discard(name)
 
     def _schedule(self, name: str) -> None:
-        if not self._auto_schedule:
-            return
-        task = self._tasks.get(name)
-        if task is not None and not task.done():
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._tasks[name] = loop.create_task(self._run_later(name), name=f"topic_pool_{name}")
+        # Candidate analysis is driven by the activity heartbeat via
+        # process_ready_topics(). Keep this method as a compatibility no-op so
+        # note_turn stays tiny and no topic-private sleep loop is created.
+        return
 
     async def _run_later(self, name: str) -> None:
-        try:
-            if self._debounce_seconds:
-                await asyncio.sleep(self._debounce_seconds)
-            if name in self._dirty:
-                await self.process_now(name)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("[%s] topic background processing failed: %s", name, exc)
-        finally:
-            task = self._tasks.get(name)
+        # Deprecated: the private debounce loop was replaced by the activity
+        # heartbeat. Kept for compatibility with older tests/imports.
+        if name in self._dirty:
+            await self.process_now(name)
+
+    async def process_ready_topics(
+        self,
+        *,
+        lang: str | None = None,
+        now: float | None = None,
+    ) -> None:
+        if _privacy_mode_active():
+            for name in set(self._signal_store.names()) | set(self._dirty):
+                self._purge_accumulated_signals(name)
+            return
+        current_time = float(now if now is not None else time.time())
+        for name in list(self._dirty):
+            last_turn_at = self._signal_store.last_turn_at(name)
+            if last_turn_at is None:
+                self._dirty.discard(name)
+                continue
+            if current_time - last_turn_at < self._candidate_quiet_seconds:
+                continue
             try:
-                current_task = asyncio.current_task()
-            except RuntimeError:
-                current_task = None
-            if task is current_task:
-                self._tasks.pop(name, None)
-            if name in self._dirty:
-                self._schedule(name)
+                await self.process_now(name, lang=lang)
+            except Exception as exc:
+                logger.warning("[%s] topic background processing failed: %s", name, exc)
 
     def _cancel_trigger(self, name: str) -> None:
         task = self._trigger_tasks.pop(name, None)
@@ -388,8 +407,6 @@ class TopicHookPool:
         name: str,
         material: Mapping[str, Any],
         lang: str,
-        *,
-        expected_seq: int,
     ) -> None:
         if self._topic_trigger is None:
             return
@@ -403,7 +420,6 @@ class TopicHookPool:
                 name,
                 deepcopy(dict(material)),
                 lang,
-                expected_seq=expected_seq,
             ),
             name=f"topic_trigger_{name}",
         )
@@ -413,10 +429,8 @@ class TopicHookPool:
         name: str,
         material: Mapping[str, Any],
         lang: str,
-        *,
-        expected_seq: int,
     ) -> None:
-        if self._seq.get(name, 0) != expected_seq or material.get("status") != "pending":
+        if material.get("status") != "pending":
             return
         try:
             loop = asyncio.get_running_loop()
@@ -427,7 +441,6 @@ class TopicHookPool:
                 name,
                 deepcopy(dict(material)),
                 lang,
-                expected_seq=expected_seq,
             ),
             name=f"topic_trigger_{name}",
         )
@@ -437,23 +450,12 @@ class TopicHookPool:
         name: str,
         material: dict[str, Any],
         lang: str,
-        *,
-        expected_seq: int,
     ) -> None:
         current_material: dict[str, Any] | None = None
         try:
-            wait_seconds = max(
-                self._trigger_delay_seconds,
-                self._seconds_until_next_topic_trigger(name),
-            )
+            wait_seconds = self._seconds_until_next_delivery_window(name)
             if wait_seconds:
                 await asyncio.sleep(wait_seconds)
-            if _privacy_mode_active():
-                self._purge_character_state(name)
-                logger.info("[%s] topic material trigger cancelled: privacy mode active", name)
-                return
-            if self._seq.get(name, 0) != expected_seq:
-                return
             current = self._materials.get(name) or []
             if not current:
                 return
@@ -474,9 +476,8 @@ class TopicHookPool:
             # a reschedule reuses it instead of re-searching. The actual open is
             # re-gated by the delivery bridge AFTER this prepare completes.
             await self._deepen_material(name, current_material, lang)
-            if _privacy_mode_active():
-                self._purge_character_state(name)
-                logger.info("[%s] topic material trigger cancelled: privacy mode turned on during prepare", name)
+            if self._seconds_until_next_delivery_window(name) > 0:
+                self._reschedule_trigger_retry(name, current_material, lang)
                 return
             triggered = await self._topic_trigger(
                 lanlan_name=name,
@@ -489,7 +490,6 @@ class TopicHookPool:
                     name,
                     current_material,
                     lang,
-                    expected_seq=expected_seq,
                 )
                 return
             current_material["status"] = "used"
@@ -509,7 +509,6 @@ class TopicHookPool:
                     name,
                     current_material,
                     lang,
-                    expected_seq=expected_seq,
                 )
         finally:
             task = self._trigger_tasks.get(name)
@@ -607,6 +606,22 @@ class TopicHookPool:
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
 
+    def _seconds_until_quiet_window(self, name: str, *, now: float | None = None) -> float:
+        if self._trigger_delay_seconds <= 0:
+            return 0.0
+        last_turn_at = self._signal_store.last_turn_at(name)
+        if last_turn_at is None:
+            return 0.0
+        current_time = float(now if now is not None else time.time())
+        elapsed = max(0.0, current_time - float(last_turn_at))
+        return max(0.0, self._trigger_delay_seconds - elapsed)
+
+    def _seconds_until_next_delivery_window(self, name: str, *, now: float | None = None) -> float:
+        return max(
+            self._seconds_until_quiet_window(name, now=now),
+            self._seconds_until_next_topic_trigger(name, now=now),
+        )
+
     def _topic_was_used_today(self, name: str, material: Mapping[str, Any]) -> bool:
         hook_id = str(material.get("hook_id") or "").strip()
         interest = _clean_text(material.get("interest"), limit=90)
@@ -669,7 +684,10 @@ def _default_topic_trigger():
     return trigger_topic_hook_once
 
 
-_GLOBAL_TOPIC_POOL = TopicHookPool(topic_trigger=_default_topic_trigger())
+_GLOBAL_TOPIC_POOL = TopicHookPool(
+    topic_trigger=_default_topic_trigger(),
+    signal_store_path=_default_signal_store_path(),
+)
 
 
 def get_topic_hook_pool() -> TopicHookPool:

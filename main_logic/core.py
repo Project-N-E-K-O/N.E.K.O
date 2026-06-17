@@ -6953,7 +6953,15 @@ class LLMSessionManager:
         except Exception:
             return True
         propensity = getattr(snap, 'propensity', None)
-        return propensity not in ('closed', 'restricted_screen_only')
+        if propensity in ('closed', 'restricted_screen_only'):
+            return False
+        if getattr(snap, 'unfinished_thread', None) is not None:
+            logger.info(
+                "[%s] topic hook delivery skipped: unfinished thread is still open",
+                self.lanlan_name,
+            )
+            return False
+        return True
 
     def current_topic_language(self) -> Optional[str]:
         """Live full-locale topic language, for re-resolving at delivery time.

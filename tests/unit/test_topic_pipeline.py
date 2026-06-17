@@ -4,6 +4,7 @@ from datetime import datetime
 import pytest
 
 from main_logic.topic.pipeline import TopicHookPool, _clean_material
+from main_logic.topic.signals import TopicSignalStore
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +39,41 @@ def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
     assert material is not None
     assert material["media_intent"] == ["news"]
     assert isinstance(material["created_at"], float)
+
+
+def test_topic_signal_store_persists_recent_turns_across_instances(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    now = datetime.now().timestamp()
+    store = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=path,
+    )
+
+    store.note_turn("妮可", actor="user", text="我最近一直在纠结换工作", now=now)
+
+    reloaded = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=path,
+    )
+    assert reloaded.is_ready("妮可")
+    assert "换工作" in reloaded.format_global_signals("妮可", lang="zh-CN")
+
+
+def test_topic_signal_store_drops_entries_older_than_retention(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    now = datetime.now().timestamp()
+    store = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        retention_seconds=12 * 60 * 60,
+        persistence_path=path,
+    )
+
+    store.note_turn("妮可", actor="user", text="前一天的旧话题", now=now - 13 * 60 * 60)
+    store.note_turn("妮可", actor="user", text="今天的新话题", now=now)
+
+    signals = store.format_global_signals("妮可", lang="zh-CN")
+    assert "前一天的旧话题" not in signals
+    assert "今天的新话题" in signals
 
 
 @pytest.mark.asyncio
@@ -185,8 +221,9 @@ async def test_topic_pool_uses_ai_context_without_blocking_collection():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_passes_chat_language_to_online_enrichment(monkeypatch):
+async def test_topic_pool_passes_chat_language_to_delivery_prepare(monkeypatch):
     langs = []
+    delivered = asyncio.Event()
 
     async def fake_analyzer(*, lang, **kwargs):
         return [
@@ -200,6 +237,16 @@ async def test_topic_pool_passes_chat_language_to_online_enrichment(monkeypatch)
         langs.append(lang)
         return list(materials)
 
+    async def fake_derive(**kwargs):
+        return "代步车 小改件"
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.set()
+        return True
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
+    )
     monkeypatch.setattr(
         "main_logic.topic.pipeline.enrich_topic_materials_online",
         fake_enrich,
@@ -208,11 +255,14 @@ async def test_topic_pool_passes_chat_language_to_online_enrichment(monkeypatch)
     pool = TopicHookPool(
         analyzer=fake_analyzer,
         auto_schedule=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.05,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "你候选几个汽车品牌，我最近在想便宜代步车和预算怎么平衡", lang="zh-CN")
 
     await pool.process_now("妮可")
+    await asyncio.wait_for(delivered.wait(), timeout=1.0)
 
     assert langs == ["zh-CN"]
 
@@ -251,10 +301,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_enrichment(monkeypatch):
-    entered_enrich = asyncio.Event()
-    release_enrich = asyncio.Event()
-
+async def test_topic_pool_candidate_phase_does_not_enrich_online(monkeypatch):
     async def fake_analyzer(*, lang, **kwargs):
         return [
             {
@@ -265,9 +312,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_e
         ]
 
     async def fake_enrich(materials, *, lang=None, max_materials=2, **kwargs):
-        entered_enrich.set()
-        await release_enrich.wait()
-        return list(materials)
+        raise AssertionError("candidate phase must not enrich online")
 
     monkeypatch.setattr(
         "main_logic.topic.pipeline.enrich_topic_materials_online",
@@ -281,13 +326,97 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_e
     )
     pool.note_user_message("妮可", "第一句认真说一下我最近一直在纠结要不要换工作")
 
-    task = asyncio.create_task(pool.process_now("妮可"))
+    await pool.process_now("妮可")
+
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "旧话题"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_keeps_prepared_material_when_new_turn_arrives_during_prepare(monkeypatch):
+    entered_enrich = asyncio.Event()
+    release_enrich = asyncio.Event()
+    delivered = []
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "旧话题",
+                "keywords": ["旧话题"],
+                "relevance": 90,
+            }
+        ]
+
+    async def fake_derive(**kwargs):
+        return "旧话题 深搜"
+
+    async def fake_enrich(materials, *, lang=None, max_materials=2, **kwargs):
+        entered_enrich.set()
+        await release_enrich.wait()
+        out = []
+        for material in materials:
+            item = dict(material)
+            item["material_hint"] = {"summary": "prepared"}
+            item["online_query"] = "旧话题 深搜"
+            item["online_angle"] = "prepared angle"
+            out.append(item)
+        return out
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["material_hint"]["summary"])
+        return True
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
+    )
+    monkeypatch.setattr(
+        "main_logic.topic.pipeline.enrich_topic_materials_online",
+        fake_enrich,
+    )
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "第一句认真说一下我最近一直在纠结要不要换工作")
+
+    await pool.process_now("妮可")
     await entered_enrich.wait()
     pool.note_user_message("妮可", "第二句又补充说我主要怕选错以后回不了头")
     release_enrich.set()
-    assert await task is None
+    await asyncio.sleep(0.01)
+    assert delivered == []
 
-    assert pool.get_ready_materials("妮可") == []
+    await asyncio.sleep(0.06)
+    assert delivered == ["prepared"]
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
+    calls = []
+
+    async def fake_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return [{"interest": "稳定话题", "relevance": 90}]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        candidate_quiet_seconds=60,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    last_turn_at = pool._signal_store.last_turn_at("妮可")
+    assert last_turn_at is not None
+
+    await pool.process_ready_topics(now=last_turn_at + 59, lang="zh-CN")
+    assert calls == []
+
+    await pool.process_ready_topics(now=last_turn_at + 60, lang="zh-CN")
+    assert calls == ["zh-CN"]
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "稳定话题"
 
 
 @pytest.mark.asyncio
@@ -315,9 +444,9 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
 
     pool = TopicHookPool(
         analyzer=flaky_analyzer,
-        auto_schedule=True,
+        auto_schedule=False,
         enable_online_enrichment=False,
-        debounce_seconds=0.001,
+        candidate_quiet_seconds=0,
         min_user_turns_for_topic=1,
     )
 
@@ -326,17 +455,10 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     pool.note_user_message("妮可", "现在的工作也不是不能做，但我总觉得继续拖会更难")
     pool.note_user_message("妮可", "所以我想聊聊转职的现实风险和机会")
 
+    await pool.process_ready_topics(lang="zh-CN")
+    await pool.process_ready_topics(lang="zh-CN")
     await asyncio.wait_for(retried.wait(), timeout=1.0)
-
-    async def wait_for_materials():
-        for _ in range(50):
-            materials = pool.get_ready_materials("妮可")
-            if materials:
-                return materials
-            await asyncio.sleep(0.01)
-        return []
-
-    materials = await wait_for_materials()
+    materials = pool.get_ready_materials("妮可")
 
     assert calls == 2
     assert materials[0]["interest"] == "稳定转职话题"
@@ -367,26 +489,19 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
 
     pool = TopicHookPool(
         analyzer=flaky_analyzer,
-        auto_schedule=True,
+        auto_schedule=False,
         enable_online_enrichment=False,
-        debounce_seconds=0.001,
+        candidate_quiet_seconds=0,
         min_user_turns_for_topic=1,
     )
 
     pool.note_user_message("妮可", "我最近一直想换个城市生活，但又怕重新开始太难")
     pool.note_user_message("妮可", "换城市这件事反复想了很久，主要是想改变现在的节奏")
 
+    await pool.process_ready_topics(lang="zh-CN")
+    await pool.process_ready_topics(lang="zh-CN")
     await asyncio.wait_for(retried.wait(), timeout=1.0)
-
-    async def wait_for_materials():
-        for _ in range(50):
-            materials = pool.get_ready_materials("妮可")
-            if materials:
-                return materials
-            await asyncio.sleep(0.01)
-        return []
-
-    materials = await wait_for_materials()
+    materials = pool.get_ready_materials("妮可")
 
     assert calls == 2
     assert materials[0]["interest"] == "稳定换城市话题"
@@ -430,7 +545,7 @@ async def test_topic_pool_triggers_ready_hook_after_quiet_window():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypatch):
+async def test_topic_pool_delivers_existing_pending_material_when_privacy_turns_on(monkeypatch):
     delivered = []
     privacy_enabled = False
 
@@ -465,9 +580,10 @@ async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypat
     assert pool.get_ready_materials("妮可")
 
     privacy_enabled = True
+    await pool.process_ready_topics(lang="zh-CN")
     await asyncio.sleep(0.03)
 
-    assert delivered == []
+    assert delivered == [("妮可", "买车像进入新生活阶段", "zh-CN")]
     assert pool.get_ready_materials("妮可") == []
 
 
@@ -751,7 +867,10 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
     for idx in range(3):
         pool.note_user_message("妮可", f"第{idx}轮认真聊一个新方向，信息量足够做深话题", lang="zh-CN")
         await pool.process_now("妮可")
-        await asyncio.sleep(0.03)
+        for _ in range(20):
+            if len(delivered) >= min(idx + 1, 2):
+                break
+            await asyncio.sleep(0.01)
 
     assert delivered == ["凯迪拉克预算压力", "周末海边旅行计划"]
     assert pool.get_ready_materials("妮可") == []
@@ -913,7 +1032,7 @@ async def test_enrich_pool_discards_material_when_privacy_toggles_on_mid_analysi
 
 
 @pytest.mark.asyncio
-async def test_trigger_discards_material_when_privacy_toggles_on_during_deepen(monkeypatch):
+async def test_trigger_keeps_prepared_material_when_privacy_toggles_on_during_deepen(monkeypatch):
     from main_logic.topic import pipeline as topic_pipeline
 
     privacy = {"on": False}
@@ -952,9 +1071,8 @@ async def test_trigger_discards_material_when_privacy_toggles_on_during_deepen(m
     await pool.process_now("妮可")
     await asyncio.sleep(0.03)
 
-    assert delivered == []
+    assert delivered == ["深搜期间隐私切换的话题"]
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials.get("妮可") in (None, [])
 
 
 @pytest.mark.asyncio

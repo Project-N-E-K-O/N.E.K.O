@@ -1133,6 +1133,17 @@ def test_topic_hook_delivery_allowed_in_text_session():
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
+def test_topic_hook_delivery_blocked_when_unfinished_thread_open():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr._activity_tracker = MagicMock()
+    mgr._activity_tracker.get_snapshot_sync.return_value = MagicMock(
+        propensity="open",
+        unfinished_thread=object(),
+    )
+
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
 def test_topic_hook_delivery_does_not_recheck_privacy_preference(monkeypatch):
     """Delivery only gates voice/activity; privacy wipes accumulation upstream."""
     def _raise_privacy_error():
