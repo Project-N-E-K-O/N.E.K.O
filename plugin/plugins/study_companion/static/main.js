@@ -89,6 +89,7 @@ let firstRunDismissed = false;
 let advancedSettingsOpen = false;
 let modeChangeInFlight = false;
 let refreshPending = false;
+let lastReplyValue = '';
 
 function t(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -113,8 +114,22 @@ function setStatus(text) {
 // a code path that skips escapeHTML().
 function setReply(text) {
   const value = text || '';
+  lastReplyValue = value;
   if (window.renderMathInText && typeof window.renderMathInText === 'function') {
     replyText.innerHTML = window.renderMathInText(value);
+    if (!window.katex || typeof window.katex.renderToString !== 'function') {
+      window.setTimeout(() => {
+        if (
+          lastReplyValue === value
+          && window.katex
+          && typeof window.katex.renderToString === 'function'
+          && window.renderMathInText
+          && typeof window.renderMathInText === 'function'
+        ) {
+          replyText.innerHTML = window.renderMathInText(value);
+        }
+      }, 100);
+    }
   } else {
     replyText.textContent = value;
   }
@@ -412,13 +427,6 @@ function setStudyState(data = {}) {
     if (classification.reason) {
       screenType.title = classification.reason;
     }
-  }
-  const currentQuestion = data.current_question || {};
-  if (questionStatus) {
-    questionStatus.textContent = compactText(currentQuestion.question);
-  }
-  if (questionText) {
-    questionText.textContent = currentQuestion.question || '';
   }
   const evaluation = data.last_answer_evaluation || {};
   if (evaluationStatus) {
@@ -810,17 +818,10 @@ async function callPlugin(entryId, args = {}) {
   throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
 }
 
-async function refreshStatus(options = {}) {
-  const updateReply = options.updateReply !== false;
+async function refreshStatus(_options = {}) {
   setStatus(t('ui.status.refreshing', 'Refreshing...'));
   const data = await callPlugin('study_status');
   setStatusLine(data);
-  if (updateReply && data.last_reply) {
-    setReply(data.last_reply);
-  }
-  if (data.last_ocr_text && !studyInput.value.trim()) {
-    studyInput.value = data.last_ocr_text;
-  }
 }
 
 async function runOcr() {

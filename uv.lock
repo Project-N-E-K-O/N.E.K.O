@@ -1419,6 +1419,7 @@ dependencies = [
     { name = "orjson" },
     { name = "ormsgpack" },
     { name = "pillow" },
+    { name = "playwright" },
     { name = "portalocker" },
     { name = "psutil" },
     { name = "pyautogui" },
@@ -1455,7 +1456,6 @@ dependencies = [
 dev = [
     { name = "hypothesis" },
     { name = "nest-asyncio" },
-    { name = "playwright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -1492,6 +1492,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.11.8" },
     { name = "ormsgpack", specifier = ">=1.4.0" },
     { name = "pillow" },
+    { name = "playwright", specifier = ">=1.58.0" },
     { name = "portalocker", specifier = ">=2.10.1" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyautogui" },
@@ -1528,7 +1529,6 @@ requires-dist = [
 dev = [
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
-    { name = "playwright", specifier = ">=1.58.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },

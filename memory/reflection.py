@@ -2020,6 +2020,20 @@ class ReflectionEngine:
         )
 
     @staticmethod
+    def _followup_render_key(value) -> str:
+        """Return the text key used when deciding whether a followup can render.
+
+        Keep this local instead of importing main_logic.topic.common.clean_text:
+        memory is a lower layer and should not depend on prompt-rendering code.
+        """
+        text = " ".join(str(value or "").strip().split())
+        if not text:
+            return ""
+        if len(text) > 120:
+            return text[:120].rstrip() + "..."
+        return text
+
+    @staticmethod
     def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
         """Filter pending reflections for proactive chat candidacy.
 
@@ -2047,6 +2061,7 @@ class ReflectionEngine:
             return []
         now = datetime.now()
         eligible = []
+        seen_text_keys: set[str] = set()
         for r in pending:
             next_eligible = r.get('next_eligible_at')
             if next_eligible:
@@ -2057,6 +2072,12 @@ class ReflectionEngine:
                     pass
             if evidence_score(r, now) < 0:
                 continue
+            text_key = ReflectionEngine._followup_render_key(r.get('text'))
+            if not text_key:
+                continue
+            if text_key in seen_text_keys:
+                continue
+            seen_text_keys.add(text_key)
             eligible.append(r)
         from config import (
             REFLECTION_SURFACE_TOP_K,

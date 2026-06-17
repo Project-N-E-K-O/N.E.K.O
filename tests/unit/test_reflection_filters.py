@@ -133,6 +133,29 @@ async def test_followup_still_excludes_negative(tmp_path):
     assert result == []
 
 
+@pytest.mark.asyncio
+async def test_followup_filters_blank_and_duplicate_text_before_top_k(tmp_path):
+    """Blank/duplicate reflections should not consume the followup top-K slots."""
+    _, _, _, re, _ = _install(str(tmp_path))
+    await re.asave_reflections("小天", [
+        _seed("ref_alpha", "pending", text="用户最近在纠结直播里的角色风格"),
+        _seed("ref_blank", "pending", text="   "),
+        _seed("ref_dup", "pending", text=" 用户最近在纠结直播里的角色风格 "),
+        _seed("ref_beta", "pending", text="用户还没决定暑假去哪座城市"),
+        _seed("ref_gamma", "pending", text="用户想继续聊桌面宠物的互动边界"),
+    ])
+
+    with patch("config.REFLECTION_FOLLOWUP_WEIGHTED", False), \
+         patch("config.REFLECTION_SURFACE_TOP_K", 3):
+        result = await re.aget_followup_topics("小天")
+
+    assert [r["id"] for r in result] == [
+        "ref_alpha",
+        "ref_beta",
+        "ref_gamma",
+    ]
+
+
 # ── Change 3: arecord_mentions for confirmed reflection ─────────────
 
 
