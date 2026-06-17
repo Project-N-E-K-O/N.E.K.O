@@ -1,18 +1,32 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-Telemetry Server — SQLite 存储
+Telemetry Server — SQLite storage
 
-设计：
-- events 表：append-only 原始事件日志（审计追踪，不可篡改）
-- daily_aggregates 表：预聚合统计（UPSERT 累加）
-- devices 表：设备活跃度追踪
-- WAL 模式：写不阻塞读
+Design:
+- events table: append-only raw event log (audit trail, tamper-evident)
+- daily_aggregates table: pre-aggregated stats (UPSERT accumulation)
+- devices table: device activity tracking
+- WAL mode: writes do not block reads
 
-容量评估（20k DAU）：
-- 3 进程/设备 × 6 req/h × 8h ≈ 144 req/设备/天
-- 20k × 144 ≈ 2.88M events/天（峰值 ~50 req/s）
-- SQLite WAL 单线程写入 ~500 req/s，单实例足够
-- events 表按 180 天清理，聚合表永久保留
+Capacity estimate (20k DAU):
+- 3 processes/device × 6 req/h × 8h ≈ 144 req/device/day
+- 20k × 144 ≈ 2.88M events/day (peak ~50 req/s)
+- SQLite WAL single-threaded writes ~500 req/s; a single instance is enough
+- events table pruned at 180 days; aggregate tables kept forever
 """
 from __future__ import annotations
 
@@ -31,16 +45,16 @@ _logger = logging.getLogger("telemetry.storage")
 
 
 def _bucket_quantile(buckets: list, bounds: list, q: float) -> dict:
-    """近似分位数：找累计样本数首次 >= q*total 的桶，返回该桶上界。
+    """Approximate quantile: find the first bucket whose cumulative sample count >= q*total; return that bucket's upper bound.
 
     Args:
-        buckets: 桶 count 列表，最后一个是溢出桶（>最右 bound）
-        bounds: 桶上界列表，len(bounds) == len(buckets) - 1
-        q: 分位数（0~1）
+        buckets: list of bucket counts; the last one is the overflow bucket (> rightmost bound)
+        bounds: list of bucket upper bounds, len(bounds) == len(buckets) - 1
+        q: quantile (0~1)
 
     Returns:
-        {"upper_bound": 数值或 None, "bucket_index": int}
-        upper_bound None 表示落在溢出桶（无上界）。
+        {"upper_bound": number or None, "bucket_index": int}
+        upper_bound None means it falls in the overflow bucket (no upper bound).
     """
     total = sum(buckets) if buckets else 0
     if total <= 0:
@@ -56,11 +70,12 @@ def _bucket_quantile(buckets: list, bounds: list, q: float) -> dict:
 
 
 def _as_int_count(x) -> int | None:
-    """把整数计数语义的值归一化成 int；非整数 / NaN / Inf / bool 返回 None。
+    """Normalize an integer-count-semantics value to int; non-integer / NaN / Inf / bool return None.
 
-    histogram 的 count 和 bucket 必须是整数计数。接受 int 或整数值 float
-    （如 ``4.0``，跨序列化器容差），拒 ``4.5`` / NaN / Inf / True/False。
-    归一化后再做 sum==count 校验和写库，避免 ``int()`` 截断造成不一致。
+    A histogram's count and buckets must be integer counts. Accepts int or
+    integer-valued float (e.g. ``4.0``, tolerance across serializers); rejects
+    ``4.5`` / NaN / Inf / True/False. Normalize first, then run the sum==count check
+    and DB write, avoiding inconsistencies from ``int()`` truncation.
     """
     if isinstance(x, bool):
         return None
@@ -73,18 +88,23 @@ def _as_int_count(x) -> int | None:
 
 
 def normalize_steam_id(raw) -> str:
-    """把任意来源的 steam_user_id 归一化为 canonical 十进制 Steam64，非法返回 ''。
+    """Normalize a steam_user_id from any source to the canonical decimal Steam64; invalid input returns ''.
 
-    单一事实源：ingest（server.py）和 canonical 边构建（扫 events.payload）共用
-    这一份，避免两条写路径规则漂移把同一身份拆成两个节点。
+    Single source of truth: ingest (server.py) and canonical edge building (scanning
+    events.payload) share this one implementation, so the two write paths cannot
+    drift apart and split one identity into two nodes.
 
-    raw 不标注 str：边构建扫的是原始 events.payload JSON，伪造 / 异常行的
-    steam_user_id 可能是 number / null / 其它类型，直接 .isdigit() 会抛异常。
-    先做类型守卫再走字符串规则。ingest 侧传进来的是 Pydantic str，守卫对它无害。
+    raw is intentionally untyped (not str): edge building scans raw events.payload
+    JSON, where a forged / anomalous row's steam_user_id may be number / null /
+    another type; calling .isdigit() directly would throw. Type-guard first, then
+    apply the string rules. Ingest passes a Pydantic str, for which the guard is
+    harmless.
 
-    规则（与历史 ingest 一致）：纯数字 + 长度 <= 20（u64 十进制 20 位，cheap
-    pre-check 挡超长串 DoS）+ 0 < int < 2^64（排除 '0'/'00' 哨兵和超界值）+
-    str(int()) 去前导零（否则 '00076561...' 会和 '76561...' 被当成两个账号）。
+    Rules (consistent with historical ingest): pure digits + length <= 20 (u64 has
+    20 decimal digits; cheap pre-check against oversized-string DoS) +
+    0 < int < 2^64 (excludes the '0'/'00' sentinels and out-of-range values) +
+    str(int()) to drop leading zeros (otherwise '00076561...' and '76561...' would
+    count as two different accounts).
     """
     if not isinstance(raw, str):
         return ""
@@ -111,11 +131,13 @@ _DEVICE_HW_ALLOWED = (
 
 
 def normalize_device_hw(raw) -> str:
-    """校验 device_hw 复合串（与客户端 _get_device_hw 同口径），非法回退 ''。
+    """Validate the device_hw composite string (same semantics as the client's _get_device_hw); invalid input falls back to ''.
 
-    server 边界防伪造污染：只放行恰好 4 段、每段命中对应 enum 的串，其余一律 ''
-    （含 None / 非 str / 段数不符 / 任一段越界）。与 steam_user_id 同样在 ingest
-    边界做白名单，守 device_hw 的低基数 + 零 PII 契约。
+    Server-boundary anti-forgery: only pass strings with exactly 4 segments, each
+    hitting its corresponding enum; everything else becomes '' (including None /
+    non-str / wrong segment count / any out-of-range segment). Like steam_user_id,
+    whitelisting at the ingest boundary protects device_hw's low-cardinality +
+    zero-PII contract.
     """
     if not isinstance(raw, str) or not raw:
         return ""
@@ -128,7 +150,7 @@ def normalize_device_hw(raw) -> str:
 
 
 class TelemetryStorage:
-    """线程安全的 SQLite 遥测存储。"""
+    """Thread-safe SQLite telemetry storage."""
 
     def __init__(self, db_path: str | Path = "telemetry.db"):
         self._db_path = str(db_path)
@@ -354,7 +376,7 @@ class TelemetryStorage:
     # ----- 写入 -----
 
     def is_duplicate_batch(self, batch_id: str | None) -> bool:
-        """检查 batch_id 是否已处理过。无 batch_id 时不做去重。"""
+        """Check whether batch_id was already processed. No dedup when batch_id is absent."""
         if not batch_id:
             return False
         conn = self._get_conn()
@@ -460,10 +482,11 @@ class TelemetryStorage:
 
     def store_instruments(self, device_id: str, instruments: dict | None,
                           fallback_stat_date: str | None = None) -> None:
-        """累加 instrument snapshot 的独立入口（自己开 transaction）。
+        """Standalone entry point for accumulating instrument snapshots (opens its own transaction).
 
-        通常由 store_event 在自己的事务里调 _apply_instruments；此入口给
-        独立测试 / 离线导入 / 跨表回填等场景用。
+        Normally store_event calls _apply_instruments inside its own transaction;
+        this entry point serves standalone tests / offline imports / cross-table
+        backfills.
         """
         if not instruments:
             return
@@ -472,18 +495,19 @@ class TelemetryStorage:
 
     def _apply_instruments(self, conn, device_id: str, instruments: dict | None,
                            fallback_stat_date: str | None = None) -> None:
-        """累加 instrument snapshot（counter + histogram）。须在已开 transaction 的 conn 上调用。
+        """Accumulate an instrument snapshot (counter + histogram). Must be called on a conn with an open transaction.
 
         Args:
-            conn: 调用方持有的事务连接
-            device_id: 上报设备
-            instruments: 客户端 utils/instrument.Instrument.snapshot() 的产物，
-                结构: {window_start, window_end, bounds, counters, histograms}
-            fallback_stat_date: 若 instruments 不带时间窗口或解析失败，用此值
-                作 stat_date（一般传 'today'）。
+            conn: transaction connection held by the caller
+            device_id: reporting device
+            instruments: output of the client's utils/instrument.Instrument.snapshot(),
+                shape: {window_start, window_end, bounds, counters, histograms}
+            fallback_stat_date: used as stat_date when instruments carries no time
+                window or parsing fails (usually pass 'today').
 
-        失败处理：单条 metric 解析失败不影响其它，整段失败抛 sqlite3 异常
-        由调用方 transaction 回滚。
+        Failure handling: a single metric failing to parse does not affect the
+        others; a whole-section failure raises sqlite3 errors for the caller's
+        transaction to roll back.
         """
         if not instruments or not isinstance(instruments, dict):
             return
@@ -766,7 +790,7 @@ class TelemetryStorage:
         return [dict(r) for r in rows]
 
     def get_user_metrics(self, days: int = 30) -> dict:
-        """DAU / WAU / MAU / 新增 / 留存率。"""
+        """DAU / WAU / MAU / new devices / retention rate."""
         conn = self._get_conn()
         today = date.today()
 
@@ -865,9 +889,9 @@ class TelemetryStorage:
     # ----- Instrument 查询 -----
 
     def get_top_counters(self, days: int = 7, limit: int = 50) -> list[dict]:
-        """跨设备汇总最近 N 天的 counter 总量，按总量降序。
+        """Aggregate counter totals across devices for the last N days, descending by total.
 
-        返回 [{"metric_key": ..., "total": ..., "devices": ...}]。
+        Returns [{"metric_key": ..., "total": ..., "devices": ...}].
         """
         conn = self._get_conn()
         cutoff = (date.today() - timedelta(days=days)).isoformat()
@@ -885,11 +909,12 @@ class TelemetryStorage:
                 for r in rows]
 
     def get_histogram_summary(self, days: int = 7, limit: int = 50) -> list[dict]:
-        """跨设备汇总最近 N 天的 histogram。
+        """Aggregate histograms across devices for the last N days.
 
-        返回 [{"metric_key", "count", "sum", "avg", "p50_bucket", "p95_bucket", "bounds"}]。
-        p50/p95 桶用累积桶 + 桶数除以总样本数定位，精度受桶粒度限制 —— 用于
-        监控趋势够用，要精确分位数请查原始 events 表。
+        Returns [{"metric_key", "count", "sum", "avg", "p50_bucket", "p95_bucket", "bounds"}].
+        p50/p95 buckets are located via cumulative buckets / total samples; precision
+        is limited by bucket granularity — fine for monitoring trends; for exact
+        quantiles query the raw events table.
         """
         conn = self._get_conn()
         cutoff = (date.today() - timedelta(days=days)).isoformat()
@@ -952,7 +977,7 @@ class TelemetryStorage:
     # ----- 导出 -----
 
     def export_daily_csv(self, days: int = 90) -> str:
-        """导出按日汇总的 CSV。"""
+        """Export the per-day aggregated CSV."""
         conn = self._get_conn()
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         rows = conn.execute("""
@@ -979,7 +1004,7 @@ class TelemetryStorage:
         return output.getvalue()
 
     def export_model_csv(self, days: int = 90) -> str:
-        """导出按模型汇总的 CSV。"""
+        """Export the per-model aggregated CSV."""
         conn = self._get_conn()
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         rows = conn.execute("""
@@ -1004,11 +1029,13 @@ class TelemetryStorage:
     # ----- canonical identity 身份聚合 -----
 
     def add_steam_id_to_denylist(self, steam_user_id: str) -> str:
-        """删号：被删 Steam64 进 denylist（防复活硬约束）+ 脱敏源数据 + 删边。
+        """Account deletion: the deleted Steam64 goes into the denylist (hard anti-resurrection constraint) + redact source data + delete edges.
 
-        events.payload 里的历史值按 events 180 天 retention 自然过期，不在此处
-        改写（保留 HMAC 原文完整性）；denylist 保证它即便被回填扫到也不产边。
-        返回归一化后的 ID（非法输入返回 ''，不做任何操作）。
+        Historical values inside events.payload expire naturally via the events
+        180-day retention and are not rewritten here (preserving HMAC plaintext
+        integrity); the denylist guarantees no edges are produced even if a backfill
+        scan sees them. Returns the normalized ID ('' for invalid input, in which
+        case nothing is done).
         """
         sid = normalize_steam_id(steam_user_id)
         if not sid:
@@ -1022,12 +1049,15 @@ class TelemetryStorage:
         return sid
 
     def build_edges_from_events(self, batch_limit: int = 5000) -> int:
-        """扫 events 增量产边（device⟷steam + device⟷device 别名）。
+        """Incrementally build edges from events (device⟷steam + device⟷device aliases).
 
-        首跑 = 全量回填（游标从 0 起），之后按 events.id 游标增量。边时间戳用
-        事件观测时间 events.received_at，绝不用墙上时间（否则回填把历史边全盖成
-        回填时刻，留存指标失真）。steam_user_id 复用 normalize_steam_id + denylist
-        过滤，所有产边路径一致。返回本次处理的事件数。
+        First run = full backfill (cursor starts at 0); afterwards incremental by the
+        events.id cursor. Edge timestamps use the event observation time
+        events.received_at, never wall-clock time (otherwise a backfill would stamp
+        all historical edges with the backfill moment, distorting retention
+        metrics). steam_user_id reuses normalize_steam_id + denylist filtering, so
+        all edge-producing paths are consistent. Returns the number of events
+        processed this run.
         """
         conn = self._get_conn()
         row = conn.execute("SELECT last_event_id FROM edge_build_cursor WHERE id = 1").fetchone()
@@ -1088,9 +1118,10 @@ class TelemetryStorage:
         return processed
 
     def build_all_pending_edges(self, batch_limit: int = 5000) -> int:
-        """循环 drain 到游标追平再返回，避免单次只吃一页、游标永远落后于 ingest。
+        """Drain in a loop until the cursor catches up, so a single call never eats just one page while the cursor trails ingest forever.
 
-        每页满（processed == batch_limit）说明还有，继续；不满即追平。返回总处理数。
+        A full page (processed == batch_limit) means there is more, keep going; a
+        partial page means caught up. Returns the total processed.
         """
         total = 0
         while True:
@@ -1101,12 +1132,14 @@ class TelemetryStorage:
         return total
 
     def recompute_canonical(self) -> int:
-        """对 device⟷steam + device⟷device 边跑 union-find，落表 canonical_map。
+        """Run union-find over device⟷steam + device⟷device edges and persist canonical_map.
 
-        canonical_id 代表元规则（确定性，重算不抖）：节点加命名空间前缀
-        （steam=``s:``、device=``d:``）；代表元 = 分量内最小 steam 节点，无 steam
-        退化为最小 device 节点。合并 churn 写 canonical_alias 并 path-compress
-        保持一跳。返回 canonical 数。
+        canonical_id representative rule (deterministic, stable across recomputes):
+        nodes get a namespace prefix (steam=``s:``, device=``d:``); the
+        representative = the smallest steam node in the component, degrading to the
+        smallest device node when there is no steam node. Merge churn is written to
+        canonical_alias and path-compressed to stay one hop. Returns the canonical
+        count.
         """
         conn = self._get_conn()
         parent: dict[str, str] = {}
@@ -1198,17 +1231,18 @@ class TelemetryStorage:
         return len(new_canon_ids)
 
     def resolve_canonical(self, canonical_id: str) -> str:
-        """顺 alias 链解析旧 canonical_id 到当前（一跳即到，path compression 保证）。"""
+        """Resolve an old canonical_id to the current one along the alias chain (one hop, guaranteed by path compression)."""
         row = self._get_conn().execute(
             "SELECT new_canonical_id FROM canonical_alias WHERE old_canonical_id = ?", (canonical_id,)
         ).fetchone()
         return row["new_canonical_id"] if row else canonical_id
 
     def get_canonical_metrics(self, days: int = 30) -> dict:
-        """canonical 口径 DAU/WAU/MAU/留存（按真人去重，与 device 口径并存）。
+        """Canonical-basis DAU/WAU/MAU/retention (deduped per real person, coexisting with the device basis).
 
-        device → canonical 经 canonical_map 映射；未落表的 device 回退 'd:'||device_id
-        （等价于自成 canonical），保证 recompute 没跑过时也不崩、只是不去重。
+        device → canonical is mapped via canonical_map; devices not yet in the table
+        fall back to 'd:'||device_id (equivalent to being their own canonical),
+        so this never crashes when recompute hasn't run — it just doesn't dedup.
         """
         conn = self._get_conn()
         today = date.today()
@@ -1293,13 +1327,14 @@ class TelemetryStorage:
             return result.rowcount
 
     def prune_old_instruments(self, max_days: int = 180) -> int:
-        """清理超期的 instrument_counters / instrument_histograms 行。
+        """Prune expired instrument_counters / instrument_histograms rows.
 
-        这两张表按 (device_id, stat_date, metric_key) 累加，不清理会随时间
-        无限增长。对齐 events 表的 180 天 retention。stat_date 是
-        ``YYYY-MM-DD`` 字符串（客户端本地日历天），可直接字典序比较。
+        These two tables accumulate by (device_id, stat_date, metric_key) and would
+        grow forever without pruning. Aligned with the events table's 180-day
+        retention. stat_date is a ``YYYY-MM-DD`` string (client local calendar day),
+        directly comparable lexicographically.
 
-        返回两张表删除的总行数。
+        Returns the total number of rows deleted across the two tables.
         """
         cutoff = (date.today() - timedelta(days=max_days)).isoformat()
         with self._transaction() as conn:

@@ -1,21 +1,35 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Proactive Chat Router
 
-主动搭话（proactive chat）模式与频率的统一 API。
+Unified API for proactive-chat mode and frequency.
 
-URL convention: 路由声明不带末尾斜杠（与 ``main_routers/config_router.py``
-保持一致；由 ``scripts/check_api_trailing_slash.py`` 守门）。
+URL convention: routes are declared without a trailing slash (consistent with
+``main_routers/config_router.py``; enforced by ``scripts/check_api_trailing_slash.py``).
 
-提供四个端点：
+Four endpoints:
 
-* ``GET  /api/proactive/mode``      — 读取当前模式（off / normal / focus / frequent / custom）
-* ``POST /api/proactive/mode``      — 套用一组预设
-* ``GET  /api/proactive/settings``  — 读取主动搭话相关字段当前值
-* ``POST /api/proactive/settings``  — 更新部分主动搭话字段（白名单内）
+* ``GET  /api/proactive/mode``      — read the current mode (off / normal / focus / frequent / custom)
+* ``POST /api/proactive/mode``      — apply a preset
+* ``GET  /api/proactive/settings``  — read the current values of proactive-chat fields
+* ``POST /api/proactive/settings``  — partially update proactive-chat fields (whitelisted)
 
-所有写入复用 ``utils.preferences.save_global_conversation_settings``，
-保证白名单/类型校验/原子写入逻辑只在一处维护。
+All writes go through ``utils.preferences.save_global_conversation_settings``
+so the whitelist / type validation / atomic-write logic is maintained in one place.
 """
 
 from __future__ import annotations
@@ -142,31 +156,34 @@ for _mode_name, _preset in PROACTIVE_PRESETS.items():
 
 
 def _filter_proactive_subset(settings: dict[str, Any]) -> dict[str, Any]:
-    """从完整 conversation-settings 中挑出搭话相关字段。"""
+    """Pick the proactive-chat-related fields out of the full conversation settings."""
     return {k: v for k, v in settings.items() if k in _PROACTIVE_FIELDS}
 
 
 def _value_matches(actual: Any, expected: Any) -> bool:
-    """type-aware equality：避免 Python 的 ``True == 1`` / ``False == 0`` 陷阱。
+    """type-aware equality: avoids Python's ``True == 1`` / ``False == 0`` trap.
 
-    ``save_global_conversation_settings`` 的 bool 字段校验是
-    ``isinstance(v, bool)``，会拒绝整数 ``0/1``；但若仅用 ``==`` 比较，
-    磁盘上的 ``True`` 与传入的 ``1`` 仍会被判等，回报"已生效"——这是
-    Codex 指出的同类问题。要求 ``type()`` 完全一致即可彻底切断。
+    The bool-field validation in ``save_global_conversation_settings`` is
+    ``isinstance(v, bool)`` and rejects integer ``0/1``; but with plain ``==``,
+    ``True`` on disk would still compare equal to an incoming ``1`` and be
+    reported as "applied" — the same class of issue Codex pointed out.
+    Requiring an exact ``type()`` match cuts this off entirely.
     """
     return type(actual) is type(expected) and actual == expected
 
 
 async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """保存后回读，返回 ``(applied, rejected)``。
+    """Read back after saving; returns ``(applied, rejected)``.
 
-    判定规则是**按值 + 按类型严格比较**：
-    - 按值比较：``save_global_conversation_settings`` 做第二轮过滤时，被
-      丢弃的字段会保留原磁盘旧值；若仅判断 key 是否存在，"旧值已在磁盘
-      上 + 新值被拒"会被误标为已生效。
-    - 按类型比较：Python 中 ``True == 1`` / ``False == 0``；传 int ``1``
-      给 bool 字段时 saver 会拒，但磁盘 ``True`` 与传入 ``1`` 仍会
-      ``==`` 判等。``_value_matches`` 强制 ``type()`` 一致来切断这层陷阱。
+    The check is a **strict by-value + by-type comparison**:
+    - By value: when ``save_global_conversation_settings`` runs its second-pass
+      filter, dropped fields keep their old on-disk values; if we only checked
+      key existence, "old value already on disk + new value rejected" would be
+      mislabeled as applied.
+    - By type: in Python ``True == 1`` / ``False == 0``; passing int ``1`` for a
+      bool field gets rejected by the saver, yet the on-disk ``True`` still
+      compares ``==`` to the incoming ``1``. ``_value_matches`` enforces an exact
+      ``type()`` match to cut off this trap.
     """
     latest = await aload_global_conversation_settings()
     applied: dict[str, Any] = {}
@@ -180,9 +197,9 @@ async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any
 
 
 def _infer_mode(settings: dict[str, Any]) -> str:
-    """根据当前持久化的字段反推所属预设；不匹配任何预设则返回 ``custom``。
+    """Infer which preset the currently persisted fields correspond to; returns ``custom`` if none match.
 
-    比较时仅考察 preset 显式列出的字段，缺失字段视为不匹配。
+    Only fields explicitly listed by a preset are compared; missing fields count as a mismatch.
     """
     for mode_name, preset in PROACTIVE_PRESETS.items():
         if all(settings.get(k) == v for k, v in preset.items()):
@@ -192,7 +209,7 @@ def _infer_mode(settings: dict[str, Any]) -> str:
 
 @router.get("/mode")
 async def get_proactive_mode():
-    """读取当前模式 + 当前主动搭话相关字段。"""
+    """Read the current mode + the current proactive-chat fields."""
     try:
         settings = await aload_global_conversation_settings()
         subset = _filter_proactive_subset(settings)
@@ -209,9 +226,9 @@ async def get_proactive_mode():
 
 @router.post("/mode")
 async def set_proactive_mode(request: Request):
-    """套用预设模式。
+    """Apply a preset mode.
 
-    请求体：``{"mode": "off" | "normal" | "focus" | "frequent"}``
+    Request body: ``{"mode": "off" | "normal" | "focus" | "frequent"}``
     """
     try:
         data = await request.json()
@@ -244,7 +261,7 @@ async def set_proactive_mode(request: Request):
 
 @router.get("/settings")
 async def get_proactive_settings():
-    """读取当前主动搭话相关字段（白名单内）。"""
+    """Read the current proactive-chat fields (whitelisted)."""
     try:
         settings = await aload_global_conversation_settings()
         return {"success": True, "settings": _filter_proactive_subset(settings)}
@@ -255,10 +272,11 @@ async def get_proactive_settings():
 
 @router.post("/settings")
 async def update_proactive_settings(request: Request):
-    """部分更新主动搭话字段。请求体仅接受 ``_PROACTIVE_WRITABLE_FIELDS``
-    内字段；用户专有字段（``proactiveVisionEnabled`` 隐私模式）会被
-    显式拒绝并通过 ``rejected_user_owned`` 报告，其他未识别字段静默忽略。
-    底层 ``save_global_conversation_settings`` 还会再做一次类型 + 范围校验。"""
+    """Partially update proactive-chat fields. The request body only accepts fields
+    in ``_PROACTIVE_WRITABLE_FIELDS``; user-owned fields (``proactiveVisionEnabled``
+    privacy mode) are explicitly rejected and reported via ``rejected_user_owned``,
+    while other unrecognized fields are silently ignored. The underlying
+    ``save_global_conversation_settings`` performs another round of type + range validation."""
     try:
         data = await request.json()
         if not isinstance(data, dict):

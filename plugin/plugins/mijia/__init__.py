@@ -15,6 +15,8 @@ from plugin.sdk.plugin import (
     ui, tr, Ok, Err, SdkError, get_plugin_logger
 )
 
+from config import USER_PLUGIN_BASE
+
 
 # ── 同步 helper（已禁用自动跳转，仅作备用）──────────────────────────────
 def _open_url_in_browser(url: str) -> None:
@@ -422,7 +424,7 @@ class MijiaPlugin(NekoPluginBase):
     )
     async def open_ui(self, **_):
         """在浏览器中打开米家配置页面"""
-        url = "http://localhost:48916/plugin/mijia/ui/"
+        url = f"{USER_PLUGIN_BASE}/plugin/mijia/ui/"
         try:
             await asyncio.to_thread(_open_url_in_browser, url)
             self.logger.info(f"已在浏览器中打开: {url}")

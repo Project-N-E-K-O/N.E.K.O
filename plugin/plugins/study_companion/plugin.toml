@@ -200,6 +200,27 @@ entry = "surfaces/session_summary.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
+[[plugin.ui.guide]]
+id = "notebook-panel"
+title = "Study Notebook"
+entry = "surfaces/notebook_panel.tsx"
+context = "study"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "note-editor"
+title = "Note Editor"
+entry = "surfaces/note_editor.tsx"
+context = "study"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "note-search"
+title = "Study Search"
+entry = "surfaces/note_search.tsx"
+context = "study"
+permissions = ["state:read", "action:call"]
+
 [[plugin.ui.docs]]
 id = "onboarding"
 title = "Study Companion Onboarding"

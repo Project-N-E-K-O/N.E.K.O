@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 WebSocket Router
 
@@ -39,6 +53,9 @@ _lock = asyncio.Lock()
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
 _ws_bg_tasks: set = set()
+_SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
+_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
+_ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
 
 
 def _fire_task(coro):
@@ -104,10 +121,10 @@ _TELEM_EVENT_VAL_MAX = 128
 
 
 def _sanitize_dims(d, value_max: int) -> dict:
-    """把前端传入的 dims dict 过滤成 instrument 能吃的安全形式。
+    """Filter the dims dict from the frontend into a form safe for instrument.
 
-    丢弃：非 dict / 非字符串 key / 非 (str/int/float/bool) value / 超量 key。
-    截断：超长 string value。
+    Drops: non-dict input / non-string keys / values not (str/int/float/bool) / excess keys.
+    Truncates: over-long string values.
     """
     out: dict = {}
     if not isinstance(d, dict):
@@ -128,12 +145,14 @@ def _sanitize_dims(d, value_max: int) -> dict:
 
 
 def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
-    """把前端 WS telemetry message 转交 utils.instrument。
+    """Forward frontend WS telemetry messages to utils.instrument.
 
-    ``lanlan_name`` 参数保留只为日志 / 上下文，**不**作为 dim 写入埋点 ——
-    那是用户自定义的 character 名，进 dim 会把 raw 用户字符串泄到 telemetry
-    DB 且让 metric_key 基数爆炸。需要 character 维度时业务侧应自己定义一个
-    bounded enum（如 is_default / character_class）显式传 dim。
+    The ``lanlan_name`` parameter is kept only for logging / context and is **not**
+    written as a telemetry dim — it is a user-defined character name; putting it
+    in a dim would leak raw user strings into the telemetry DB and explode
+    metric_key cardinality. If a character dimension is needed, the business side
+    should define a bounded enum (e.g. is_default / character_class) and pass it
+    explicitly as a dim.
     """
     try:
         kind = message.get("kind")
@@ -291,9 +310,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
                 input_type = message.get("input_type", "audio")
-                if input_type in ['audio', 'screen', 'camera', 'text']:
+                if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):
-                        if input_type == "text":
+                        if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
                             _fire_task(session_manager[lanlan_name].send_session_started("text"))
                             continue
@@ -306,7 +325,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
-                    mode = 'text' if input_type == 'text' else 'audio'
+                    mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                     # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
                     # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
                     # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
@@ -320,8 +339,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                input_type = message.get("input_type")
                 if is_game_route_active(lanlan_name):
-                    input_type = message.get("input_type")
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
                     else:
@@ -345,7 +364,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = av_pos
                 else:
                     session_manager[lanlan_name]._avatar_position = None
-                if message.get("input_type") == "audio":
+                if input_type in _ORDERED_STREAM_INPUT_TYPES:
                     await session_manager[lanlan_name].stream_data(message)
                 else:
                     _fire_task(session_manager[lanlan_name].stream_data(message))

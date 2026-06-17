@@ -75,6 +75,7 @@ from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
 from .memory_habit_bridge import MemoryHabitBridge
 from .state import build_initial_state
 from .store import StudyStore
+from .store_notebook import NotebookStore
 from .study_habit_store import StudyHabitStore
 from .study_ocr_pipeline import StudyOcrPipeline
 from .supervision import SupervisionController
@@ -177,6 +178,7 @@ from .entry_neko_commands import (
     _NekoCommandsMixin,
     _QUEUE_COMMANDS,
 )
+from .entry_notebook import _NotebookEntriesMixin
 
 
 @neko_plugin
@@ -205,6 +207,7 @@ class StudyCompanionPlugin(
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
     _OcrEntriesMixin,
+    _NotebookEntriesMixin,
     _NekoCommandsMixin,
     NekoPluginBase,
 ):
@@ -223,6 +226,7 @@ class StudyCompanionPlugin(
             self.logger,
             Path(__file__).resolve().parent / "static" / "knowledge_graph_seed.json",
         )
+        self._notebook_store = NotebookStore(self._store)
         self._ocr_pipeline: StudyOcrPipeline | None = None
         self._agent: TutorLLMAgent | None = None
         self._mode_manager = ModeManager()
@@ -331,6 +335,7 @@ class StudyCompanionPlugin(
                 )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
+            self._assert_notebook_agent_methods(self._agent)
             await self._refresh_dependency_status()
             self.register_static_ui("static")
             self.set_list_actions(
@@ -802,6 +807,20 @@ class StudyCompanionPlugin(
             for key, value in summary.items()
             if key != "app_distribution"
         }
+
+    @staticmethod
+    def _assert_notebook_agent_methods(agent: TutorLLMAgent | None) -> None:
+        if agent is None:
+            raise RuntimeError("study tutor agent is not initialized")
+        missing = [
+            name
+            for name in ("expand_note", "summarize_to_note")
+            if not callable(getattr(agent, name, None))
+        ]
+        if missing:
+            raise RuntimeError(
+                f"study tutor agent missing notebook methods: {', '.join(missing)}"
+            )
 
     async def _refresh_dependency_status(self) -> dict[str, Any]:
         status = await asyncio.to_thread(build_dependency_status, self._cfg)

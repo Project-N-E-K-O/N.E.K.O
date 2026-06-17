@@ -1205,6 +1205,18 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   color: #fff !important;
 }
 
+/* GPT-SoVITS 教程文档按钮 */
+[data-theme="dark"] .gsv-tutorial-link {
+  background: #2d2d2d !important;
+  color: #3a9fd8 !important;
+  border-color: #3a9fd8 !important;
+}
+
+[data-theme="dark"] .gsv-tutorial-link:hover {
+  background: #3a9fd8 !important;
+  color: #fff !important;
+}
+
 /* GPT-SoVITS 声音卡片网格 */
 [data-theme="dark"] .gsv-voices-grid {
   background: #1e1e1e;

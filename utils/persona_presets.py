@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -292,21 +306,21 @@ _PERSONA_L10N = {
 
 
 def _resolve_lang_key(lang: str | None) -> str:
-    """归一化到 _PERSONA_L10N / _L10N 共同支持的 key（zh/zh-TW/en/ja/ko/ru）。
+    """Normalize to the keys jointly supported by _PERSONA_L10N / _L10N (zh/zh-TW/en/ja/ko/ru).
 
-    复用 prompts_chara._normalize_lang，避免规则漂移。
+    Reuses prompts_chara._normalize_lang to avoid rule drift.
     """
     from config.prompts.prompts_chara import _normalize_lang
     return _normalize_lang(lang or "")
 
 
 def _build_persona_prompt(preset_id: str, lang: str | None = None) -> str:
-    """按指定语言构建某 preset 的完整 system prompt。
+    """Build a preset's complete system prompt in the given language.
 
-    与 prompts_chara._build_lanlan_prompt 同构：
-    - 共享本地化片段（relationship / no_repetition / char_setting）从 _L10N 取
-    - 共享英文位段（Format/WARNING/IMPORTANT/Visual Info 调味语）从 _PERSONA_SHARED_EN 取
-    - 其余本地化位段从 _PERSONA_L10N[preset_id][lang] 取
+    Isomorphic to prompts_chara._build_lanlan_prompt:
+    - shared localized fragments (relationship / no_repetition / char_setting) come from _L10N
+    - shared English sections (Format/WARNING/IMPORTANT/Visual Info seasoning) come from _PERSONA_SHARED_EN
+    - the remaining localized sections come from _PERSONA_L10N[preset_id][lang]
     """
     from config.prompts.prompts_chara import _L10N
 
@@ -331,14 +345,14 @@ def _build_persona_prompt(preset_id: str, lang: str | None = None) -> str:
 
 
 def get_persona_prompt_guidance(preset_id: str, lang: str | None = None) -> str:
-    """获取指定 preset 的完整 system prompt（按语言解析）。
+    """Get the complete system prompt of the given preset (resolved by language).
 
     Args:
-        preset_id: 三个内置人格之一的 id。
-        lang: 显式指定语言；为 None 时按当前全局语言（与 get_lanlan_prompt 对齐）。
+        preset_id: id of one of the three built-in personas.
+        lang: explicit language; when None, uses the current global language (aligned with get_lanlan_prompt).
 
     Returns:
-        完整 prompt 文本；当 preset_id 不识别时返回空字符串。
+        The complete prompt text; an empty string when preset_id is unrecognized.
     """
     if lang is None:
         from utils.language_utils import get_global_language_full
@@ -350,19 +364,19 @@ def get_persona_prompt_guidance(preset_id: str, lang: str | None = None) -> str:
 
 
 def _decorate_preset_with_guidance(preset: dict, lang: str | None) -> dict:
-    """在返回的 preset 副本上动态注入 prompt_guidance（按当前语言解析）。"""
+    """Dynamically inject prompt_guidance (resolved per current language) into the returned preset copy."""
     decorated = deepcopy(preset)
     decorated["prompt_guidance"] = get_persona_prompt_guidance(preset["preset_id"], lang)
     return decorated
 
 
 def list_persona_presets(lang: str | None = None) -> list[dict]:
-    """返回所有内置 preset 的副本，并按指定语言烘焙 prompt_guidance。"""
+    """Return copies of all built-in presets, with prompt_guidance baked in the given language."""
     return [_decorate_preset_with_guidance(preset, lang) for preset in _PRESETS]
 
 
 def get_persona_preset(preset_id: str, lang: str | None = None) -> dict | None:
-    """按 id 取 preset 副本，prompt_guidance 按指定语言烘焙。"""
+    """Get a preset copy by id, with prompt_guidance baked in the given language."""
     normalized_preset_id = str(preset_id or "").strip()
     for preset in _PRESETS:
         if preset["preset_id"] == normalized_preset_id:
@@ -377,10 +391,11 @@ def build_persona_override_payload(
     selected_at: str = "",
     lang: str | None = None,
 ) -> dict | None:
-    """构建写入 character `_reserved.persona_override` 的负载。
+    """Build the payload written into the character `_reserved.persona_override`.
 
-    `prompt_guidance` 仍按字符串落盘以兼容旧消费链；运行时拼 system prompt
-    会通过 preset_id 重新按当前语言解析（见 config_manager._append_persona_guidance_to_prompt）。
+    `prompt_guidance` still lands as a string for compatibility with old consumers; at
+    runtime the system prompt is re-resolved per current language via preset_id (see
+    config_manager._append_persona_guidance_to_prompt).
     """
     preset = get_persona_preset(preset_id, lang=lang)
     if preset is None:

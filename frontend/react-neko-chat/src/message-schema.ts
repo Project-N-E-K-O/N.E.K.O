@@ -132,6 +132,10 @@ const avatarToolDescriptorSchema = z.object({
   cursorImagePathAlt2: z.string().optional(),
   cursorHotspotX: z.number().finite().optional(),
   cursorHotspotY: z.number().finite().optional(),
+  cursorNaturalWidth: z.number().finite().positive().optional(),
+  cursorNaturalHeight: z.number().finite().positive().optional(),
+  cursorDisplayWidth: z.number().finite().positive().optional(),
+  cursorDisplayHeight: z.number().finite().positive().optional(),
   menuIconScale: z.number().finite().positive().optional(),
 }).strict();
 

@@ -1,12 +1,26 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Game Router
 
-通用游戏 LLM 交互端点。采用 A+B "双簧"模式：
-  A（幕后决策）：OmniOfflineClient 纯文本 LLM，接收游戏事件，生成台词 + 结构化控制指令
-  B（台前输出）：将 A 的结果送到当前会话模式的输出通道（语音/TTS/文字气泡）
+Generic game LLM interaction endpoints. Uses an A+B "double act" pattern:
+  A (behind-the-scenes decision): OmniOfflineClient text-only LLM that receives game events and generates lines + structured control instructions
+  B (front-of-stage output): sends A's result to the current session mode's output channel (voice/TTS/text bubble)
 
-当前实现：足球（soccer）。通用路由 /{game_type}/chat 支持未来扩展其他游戏。
+Currently implemented: soccer. The generic route /{game_type}/chat supports extending to other games later.
 """
 
 import asyncio
@@ -97,7 +111,7 @@ _game_sessions: Dict[str, dict] = {}
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
-_BASKETBALL_SCORING_MODES = {"shooter", "duel", "timed", "horse"}
+_BASKETBALL_SCORING_MODES = {"shooter", "duel"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 
 _SOCCER_QUICK_LINE_KEYS = {
@@ -162,19 +176,20 @@ async def _push_game_window_state_change(
     game_type: str,
     session_id: str = "",
 ) -> None:
-    """Broadcast 'game window opened/closed' WS event so chat.html / pet 多窗口
-    能联动收缩 / 还原（用户级 UX 联动，不参与任何 game-route 状态判定，单纯
-    驱动前端布局）。
+    """Broadcast the 'game window opened/closed' WS event so the chat.html / pet
+    multi-windows can collapse / restore in sync (user-level UX linkage; not
+    involved in any game-route state decisions, purely drives frontend layout).
 
-    单一事实源：``game_route_start`` 激活后推 ``opened``，
-    ``_finalize_game_route_state_inner`` 把 state 翻 inactive 之后推 ``closed``。
-    所有 finalize 路径（/route/end / heartbeat sweep / supersede）都走 inner，
-    覆盖率与 ``is_game_route_active`` 同步——前端不会出现"游戏已结束但 UI 仍
-    锁着收缩态"的孤岛。
+    Single source of truth: ``game_route_start`` pushes ``opened`` after
+    activation, and ``_finalize_game_route_state_inner`` pushes ``closed`` after
+    flipping the state to inactive. All finalize paths (/route/end / heartbeat
+    sweep / supersede) go through the inner helper, keeping coverage in sync
+    with ``is_game_route_active`` — the frontend never ends up in an orphaned
+    "game already over but the UI is still locked collapsed" state.
 
-    多窗口转发依赖现有 ``WS_PROXY_CHANNELS.RAW_MESSAGE`` IPC（pet 主窗收 WS →
-    forwarder 转给 chat.html），与 mini_game_invite_resolved 走同一条总线，
-    无需新 IPC channel。
+    Multi-window forwarding relies on the existing ``WS_PROXY_CHANNELS.RAW_MESSAGE``
+    IPC (the pet main window receives WS → the forwarder relays it to chat.html),
+    the same bus as mini_game_invite_resolved; no new IPC channel needed.
     """
     if not mgr or not lanlan_name:
         return
@@ -402,7 +417,7 @@ def _build_game_prompt(
     language: str | None = None,
     mode: str = "spectator",
 ) -> str:
-    """构建游戏 system prompt。"""
+    """Build the game system prompt."""
     if game_type == "soccer":
         prompt = get_soccer_system_prompt(language).format(name=lanlan_name, personality=lanlan_prompt)
         context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context, language)
@@ -424,7 +439,7 @@ def _build_game_prompt(
 
 
 def _strip_json_fence(text: str) -> str:
-    """提取 LLM 返回中的 JSON 正文，兼容 ```json 代码块。"""
+    """Extract the JSON body from an LLM reply, tolerating ```json code fences."""
     raw = text.strip()
     code_block = re.search(r"```(?:json)?\s*(.+?)\s*```", raw, flags=re.S)
     if code_block:
@@ -1093,8 +1108,6 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "spectator": "自由练习",
         "shooter": "投篮挑战（操控模式）",
         "duel": "投篮对战",
-        "timed": "限时挑战",
-        "horse": "HORSE",
     }.get(normalized_mode, "投篮挑战")
     return {
         "launchIntent": "unknown",
@@ -1111,7 +1124,7 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "duel 默认 lv2；spectator/shooter/timed/HORSE 忽略初始 difficulty，由局内事件自然调整。",
+        "difficultyPolicy": "duel 默认 lv2；spectator/shooter 忽略初始 difficulty，由局内事件自然调整。",
         "moodPolicy": "沿用普通投篮陪玩表现；不引入强情绪惯性。",
         "expressionPolicy": "默认期待/轻吐槽；根据命中、失误、连中和对战比分自然变化。",
         "softeningSignals": [],
@@ -1260,8 +1273,6 @@ def _format_basketball_pregame_context_for_prompt(
         "spectator": "投篮挑战",
         "shooter": "投篮挑战（操控模式）",
         "duel": "投篮对战",
-        "timed": "限时挑战",
-        "horse": "HORSE",
     }.get(_normalize_basketball_mode(mode), "投篮挑战")
     return (
         f"{labels['header']}\n"
@@ -1388,7 +1399,7 @@ def _build_game_context_prompt_payload(state: dict | None) -> dict | None:
 
 
 def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> Dict[str, list[str]]:
-    """校验并裁剪快路径台词，失败 key 会回退到前端内建文案。"""
+    """Validate and trim quick-path lines; failed keys fall back to built-in copy."""
     if not isinstance(value, dict):
         return {}
 
@@ -1423,13 +1434,15 @@ def _get_basketball_quick_lines_fallback(language: str | None = None) -> Dict[st
 
 
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
-    """从 request body 抽出前端 i18n 真值，并顺手回写到 ``mgr.user_language``。
+    """Extract the frontend i18n ground truth from the request body, writing it back to ``mgr.user_language`` along the way.
 
-    动机：``mgr.user_language`` 在 ``start_session`` 路径会被全局缓存覆盖（见
-    ``main_logic/core.py``），全局缓存又是 Steam SDK 启动期 race 失败的产物。前端
-    i18n 已经异步从 ``/api/config/steam_language`` 拿到对的值，只要把它在请求体
-    里捎带过来，就能即时纠正 session 状态。返回归一化后的短码（``zh`` / ``en`` ...）；
-    取不到时返回 ``None``，让上层走旧的兜底链。
+    Motivation: ``mgr.user_language`` gets overwritten by the global cache on the
+    ``start_session`` path (see ``main_logic/core.py``), and the global cache is the
+    product of a Steam SDK startup race failure. The frontend i18n has already
+    fetched the correct value asynchronously from ``/api/config/steam_language``;
+    piggybacking it on the request body lets us correct the session state
+    immediately. Returns the normalized short code (``zh`` / ``en`` ...); returns
+    ``None`` when unavailable, letting the caller follow the old fallback chain.
     """
     if not isinstance(data, dict):
         return None
@@ -1470,17 +1483,22 @@ def _resolve_game_prompt_language(
 ) -> str:
     """Resolve the user's current language for game-route LLM prompts.
 
-    优先级（与 ``main_routers/system_router._resolve_proactive_locale`` 同形）：
-      1. ``data`` (request body) 里的 ``i18n_language`` / ``language`` / ``lang``
-         —— 前端显式传，最高优先；同时把值回写到 ``mgr.user_language``，让本次
-         请求里所有不接 data 的下游 ``_resolve_game_prompt_language`` 也命中。
-      2. ``mgr.user_language`` —— websocket greeting_check 同步的 session 真值。
-      3. ``get_global_language()`` —— 进程级缓存，最后兜底。
+    Priority (same shape as ``main_routers/system_router._resolve_proactive_locale``):
+      1. ``i18n_language`` / ``language`` / ``lang`` in ``data`` (request body)
+         — explicitly sent by the frontend, highest priority; the value is also
+         written back to ``mgr.user_language`` so every downstream
+         ``_resolve_game_prompt_language`` in this request without access to
+         ``data`` hits it too.
+      2. ``mgr.user_language`` — the session ground truth synced by the websocket
+         greeting_check.
+      3. ``get_global_language()`` — process-level cache, final fallback.
 
-    第 1 层是 PR #1150 之外的洞：Steam=zh / 系统=en 的环境下，``mgr.user_language``
-    在 ``start_session`` 时会被全局缓存（错的 'en'）覆盖，soccer 短路在前端 ws
-    greeting_check 还没把对的值推上来之前发起，就只能拿到错的 'en'。把请求体里
-    携带的 i18n 真值作为最优先来源，配合自愈写回，把这条 race 关掉。
+    Layer 1 covers a hole beyond PR #1150: in a Steam=zh / system=en environment,
+    ``mgr.user_language`` gets overwritten by the (wrong, 'en') global cache at
+    ``start_session``, and the soccer short-circuit fires before the frontend ws
+    greeting_check pushes the right value up, so it could only see the wrong 'en'.
+    Making the request body's i18n truth the top-priority source, combined with
+    the self-healing write-back, closes this race.
     """
     request_lang = _absorb_request_language(data, lanlan_name)
     if request_lang:
@@ -1506,7 +1524,7 @@ def _resolve_game_prompt_language(
 
 
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
-    """从 shared_state 获取指定角色信息；未指定时使用当前角色。"""
+    """Get the specified character's info from shared_state; uses the current character when unspecified."""
     try:
         config_manager = get_config_manager()
     except RuntimeError:
@@ -1558,7 +1576,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
 
 
 def _get_current_character_info() -> Dict[str, Any]:
-    """从 shared_state 获取当前角色信息。"""
+    """Get the current character's info from shared_state."""
     return _get_character_info()
 
 
@@ -1742,9 +1760,6 @@ async def _build_basketball_pregame_context(
     mode: str = "spectator",
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_basketball_mode(mode)
-    if normalized_mode in {"timed", "horse"}:
-        return _default_basketball_pregame_context(mode=normalized_mode), "lightweight", ""
-
     char_info = _get_character_info(lanlan_name)
     recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
     _log_game_debug_material(
@@ -4048,7 +4063,7 @@ async def _get_or_create_session(
     *,
     postgame_snapshot: Optional[dict] = None,
 ) -> dict:
-    """获取或创建游戏 session.
+    """Get or create a game session.
 
     B6: serialize the cache-miss → ctor → connect → cache-insert sequence
     under a per-key ``asyncio.Lock`` so two concurrent ``_run_game_chat``
@@ -4290,7 +4305,7 @@ async def _refresh_game_session_instructions(
 
 
 def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[str, Any]:
-    """从回复中解析结构化控制指令（心情/难度 JSON 行）。"""
+    """Parse structured control instructions from the reply."""
     import json as _json
 
     text = reply.strip()
@@ -4360,7 +4375,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
 
 
 def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:
-    """基于比分生成软提示：提醒 LLM 注意局势，但不直接替它做控制决定。"""
+    """Generate a soft hint from the score: reminds the LLM of the game state without making the control decision for it."""
     if not isinstance(event, dict):
         return {}
 
@@ -4568,12 +4583,31 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     """Build a soft balance hint from the Basketball duel score."""
     if not isinstance(event, dict):
         return {}
-    duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
+    current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
+    state_duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
+    event_duel = _sanitize_basketball_duel_state(event.get("duel")) or {}
+    duel = {**state_duel, **event_duel}
     player_score = _safe_int(duel.get("player_score"), 0)
     neko_score = _safe_int(duel.get("neko_score"), 0)
     max_rounds = _safe_int(duel.get("max_rounds"), 0)
     round_num = _safe_int(duel.get("round"), 0)
     remaining_rounds = max(0, max_rounds - round_num) if max_rounds else 999
+    max_misses = _safe_int(duel.get("max_misses"), 0)
+    player_misses = _safe_int(duel.get("player_misses"), 0)
+    neko_misses = _safe_int(duel.get("neko_misses"), 0)
+    player_misses_left = max(0, max_misses - player_misses) if max_misses else 999
+    neko_misses_left = max(0, max_misses - neko_misses) if max_misses else 999
+    miss_context = (
+        {
+            "playerMisses": player_misses,
+            "nekoMisses": neko_misses,
+            "maxMisses": max_misses,
+            "playerMissesLeft": player_misses_left,
+            "nekoMissesLeft": neko_misses_left,
+        }
+        if max_misses
+        else {}
+    )
 
     diff = neko_score - player_score
     active_shooter = str(duel.get("active_shooter") or "").strip().lower()
@@ -4581,32 +4615,55 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     pending_shot_points = 2 if active_shooter == trailing_shooter else 0
     remaining_points = remaining_rounds * 2 + pending_shot_points if max_rounds else 999
     abs_diff = abs(diff)
+    if max_misses and player_misses_left <= 0:
+        return {
+            "state": "player_eliminated",
+            "diff": diff,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
+            **miss_context,
+            "intensity": "low",
+            "message": "玩家已经三次投丢，按淘汰规则收尾。",
+        }
+    if max_misses and neko_misses_left <= 0:
+        return {
+            "state": "neko_eliminated",
+            "diff": diff,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
+            **miss_context,
+            "intensity": "low",
+            "message": "Neko 已经三次投丢，按淘汰规则收尾。",
+        }
     if abs_diff <= 1:
         return {
             "state": "close",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "比分接近，自由发挥。",
         }
 
     neko_leading = diff > 0
-    if neko_leading and diff > remaining_points:
+    if not max_misses and neko_leading and diff > remaining_points:
         return {
             "state": "neko_leading_decided",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "已经锁定胜局，可以嘴硬庆祝或温和收尾。",
         }
-    if not neko_leading and abs_diff > remaining_points:
+    if not max_misses and not neko_leading and abs_diff > remaining_points:
         return {
             "state": "player_leading_decided",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "确定输定了，可以不服气、认输或要求再来一局。",
         }
@@ -4616,6 +4673,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "high" if abs_diff >= 5 else "medium",
             "message": "你领先中。可以考虑放水搞笑，也可以继续认真；台词里表达原因。",
         }
@@ -4624,6 +4682,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
         "diff": diff,
         "remainingRounds": remaining_rounds,
         "remainingPoints": remaining_points,
+        **miss_context,
         "intensity": "high" if abs_diff >= 5 else "medium",
         "message": "玩家领先中。可以认真起来、不服气、要求重赛。",
     }
@@ -4762,7 +4821,7 @@ def _check_basketball_chat_rate(lanlan_name: str, session_id: str) -> bool:
 
 def _normalize_basketball_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
-    return mode if mode in {"spectator", "shooter", "duel", "timed", "horse"} else "spectator"
+    return mode if mode in {"spectator", "shooter", "duel"} else "spectator"
 
 
 def _is_basketball_scoring_mode(value: Any) -> bool:
@@ -5355,6 +5414,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         ("playerScore", "player_score"),
         ("neko_score", "neko_score"),
         ("nekoScore", "neko_score"),
+        ("player_misses", "player_misses"),
+        ("playerMisses", "player_misses"),
+        ("neko_misses", "neko_misses"),
+        ("nekoMisses", "neko_misses"),
+        ("max_misses", "max_misses"),
+        ("maxMisses", "max_misses"),
         ("round", "round"),
         ("max_rounds", "max_rounds"),
         ("maxRounds", "max_rounds"),
@@ -5362,9 +5427,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         if src_key not in value:
             continue
         try:
-            number = int(float(value.get(src_key)))
+            number_float = float(value.get(src_key))
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(number_float):
+            continue
+        number = int(number_float)
         clean[dst_key] = max(0, min(number, 999))
     active = _normalize_short_text(
         value.get("active_shooter", value.get("activeShooter")),
@@ -5375,78 +5443,10 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
     return clean or None
 
 
-def _sanitize_basketball_horse_state(value: Any) -> dict | None:
-    if not isinstance(value, dict):
-        return None
-    clean: dict[str, Any] = {}
-    word = _normalize_short_text(value.get("word"), max_chars=16)
-    if word:
-        clean["word"] = word
-    for src_key, dst_key in (
-        ("letters_player", "letters_player"),
-        ("lettersPlayer", "letters_player"),
-        ("letters_neko", "letters_neko"),
-        ("lettersNeko", "letters_neko"),
-    ):
-        if src_key not in value:
-            continue
-        try:
-            number = int(float(value.get(src_key)))
-        except (TypeError, ValueError):
-            continue
-        clean[dst_key] = max(0, min(number, 999))
-    phase = _normalize_short_text(value.get("phase"), max_chars=40)
-    if phase:
-        clean["phase"] = phase
-    turn_owner = _normalize_short_text(
-        value.get("turn_owner", value.get("turnOwner")),
-        max_chars=20,
-    ).lower()
-    if turn_owner in {"player", "neko"}:
-        clean["turn_owner"] = turn_owner
-    challenge = value.get("challenge")
-    if isinstance(challenge, dict):
-        clean_challenge: dict[str, Any] = {}
-        owner = _normalize_short_text(challenge.get("owner"), max_chars=20).lower()
-        if owner in {"player", "neko"}:
-            clean_challenge["owner"] = owner
-        for key in ("distance", "angle"):
-            if key not in challenge:
-                continue
-            try:
-                number = float(challenge.get(key))
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(number):
-                continue
-            limit = 5000.0 if key == "distance" else 1000.0
-            clean_challenge[key] = max(-limit, min(number, limit))
-        sweet = challenge.get("sweet")
-        if isinstance(sweet, list) and len(sweet) >= 2:
-            sweet_values: list[float] = []
-            for raw in sweet[:2]:
-                try:
-                    number = float(raw)
-                except (TypeError, ValueError):
-                    sweet_values = []
-                    break
-                if not math.isfinite(number):
-                    sweet_values = []
-                    break
-                sweet_values.append(max(0.0, min(number, 1000.0)))
-            if len(sweet_values) == 2:
-                clean_challenge["sweet"] = sweet_values
-        if clean_challenge:
-            clean["challenge"] = clean_challenge
-    elif "challenge" in value and value.get("challenge") is None:
-        clean["challenge"] = None
-    return clean or None
-
-
 def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
     if not isinstance(value, list):
         return []
-    allowed_text = {"shooter", "shot_type", "horse_phase"}
+    allowed_text = {"shooter", "shot_type"}
     allowed_numbers = {
         "distance", "distance_m", "score", "angle", "power", "round",
         "streak_before", "streak_after", "best_streak_after", "made_count_after",
@@ -5493,6 +5493,7 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
     }
     allowed_results = {"scored", "missed", ""}
+    allowed_duel_outcomes = {"player_win", "neko_win"}
     allowed_shot_types = {"swish", "bank", "rim_in", "rim_out", "air_ball", ""}
     kind = str(event.get("kind") or "").strip()
     if kind not in allowed_kinds:
@@ -5507,11 +5508,14 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 clean[key] = event.get(key) is True
 
     result = str(event.get("result") or "").strip()
+    duel_outcome = str(event.get("duel_outcome") or "").strip()
     shot_type = str(event.get("shot_type") or "").strip()
     if result not in allowed_results:
         clean.pop("result", None)
     else:
         clean["result"] = result
+    if duel_outcome in allowed_duel_outcomes:
+        clean["duel_outcome"] = duel_outcome
     if shot_type not in allowed_shot_types:
         clean.pop("shot_type", None)
     else:
@@ -5552,9 +5556,6 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     duel_state = _sanitize_basketball_duel_state(event.get("duel"))
     if duel_state:
         clean["duel"] = duel_state
-    horse_state = _sanitize_basketball_horse_state(event.get("horse"))
-    if horse_state:
-        clean["horse"] = horse_state
     current_state = event.get("currentState")
     if isinstance(current_state, dict):
         state_clean = {}
@@ -5611,9 +5612,6 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
-        horse_state = _sanitize_basketball_horse_state(current_state.get("horse"))
-        if horse_state:
-            state_clean["horse"] = horse_state
         attempts_results = _sanitize_basketball_attempts_results(
             current_state.get("attempts_results"),
         )
@@ -5682,7 +5680,7 @@ async def _close_and_remove_session(
     session_id: str,
     lanlan_name: str = "",
 ) -> bool:
-    """关闭并移除指定游戏 session.
+    """Close and remove the specified game session.
 
     B1: serialize against in-flight ``_run_game_chat`` work for the same
     entry by acquiring ``entry['lock']`` before popping + closing. Without
@@ -6051,15 +6049,15 @@ async def _run_game_chat(
 
 @router.post("/{game_type}/chat")
 async def game_chat(game_type: str, request: Request):
-    """通用游戏 LLM 对话端点。
+    """Generic game LLM chat endpoint.
 
-    请求体：
-        session_id: str  — 比赛/游戏局 ID
-        event: dict      — 游戏事件（格式由前端定义，后端透传给 LLM）
+    Request body:
+        session_id: str  — match/round ID
+        event: dict      — game event (format defined by the frontend, passed through to the LLM)
 
-    响应：
-        line: str        — 猫娘台词
-        control: dict    — 可选的游戏控制指令（mood, difficulty）
+    Response:
+        line: str        — catgirl line
+        control: dict    — optional game control instructions (mood, difficulty)
     """
     try:
         data = await request.json()
@@ -7612,7 +7610,7 @@ async def game_character(game_type: str, request: Request = None):
 # ── 后台清理 ───────────────────────────────────────────────────────
 
 async def cleanup_expired_sessions():
-    """清理超时的游戏 session。可由 startup 事件注册为后台任务。"""
+    """Clean up expired game sessions. Can be registered as a background task by the startup event."""
     next_session_cleanup_at = 0.0
     while True:
         await asyncio.sleep(_GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS)

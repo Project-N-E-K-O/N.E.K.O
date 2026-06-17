@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Config Router
 
@@ -97,7 +111,7 @@ def _resolve_master_display_name(master_basic_config: dict, fallback_name: str =
 
 @router.get("/character_reserved_fields")
 async def get_character_reserved_fields():
-    """返回角色档案保留字段配置（供前端与路由统一使用）。"""
+    """Return the character profile reserved-field config (shared by the frontend and routers)."""
     return {
         "success": True,
         "system_reserved_fields": list(CHARACTER_SYSTEM_RESERVED_FIELDS),
@@ -111,8 +125,8 @@ _MMD_EXTENSIONS = {'.pmx', '.pmd'}
 
 
 def _get_live3d_sub_type(catgirl_config: dict) -> str:
-    """判断 Live3D 模式下应使用 VRM 还是 MMD 渲染器。
-    优先使用持久化的子类型；缺失或失效时再按模型路径回退判断。"""
+    """Decide whether Live3D mode should use the VRM or the MMD renderer.
+    Prefers the persisted sub-type; falls back to model-path-based detection when it is missing or invalid."""
     stored_sub_type = str(
         get_reserved(
             catgirl_config,
@@ -136,7 +150,7 @@ def _get_live3d_sub_type(catgirl_config: dict) -> str:
 
 
 def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
-    """解析 VRM 模型路径，验证文件存在性，返回可用 URL 或空字符串。"""
+    """Resolve the VRM model path, verify the file exists, and return a usable URL or an empty string."""
     if vrm_path.startswith('http://') or vrm_path.startswith('https://'):
         logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {vrm_path}")
         return vrm_path
@@ -177,7 +191,7 @@ def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
 
 
 def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
-    """解析 MMD 模型路径，验证文件存在性，返回可用 URL 或空字符串。"""
+    """Resolve the MMD model path, verify the file exists, and return a usable URL or an empty string."""
     if mmd_path.startswith('http://') or mmd_path.startswith('https://'):
         logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型HTTP路径: {mmd_path}")
         return mmd_path
@@ -224,6 +238,9 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
         return ""
     if image_path.startswith('http://') or image_path.startswith('https://'):
         return image_path
+    if image_path.startswith('//'):
+        logger.warning(f"Invalid PNGTuber protocol-relative image path for {target_name}: {image_path}")
+        return ""
     lookup_path = urllib.parse.urlsplit(image_path).path
     if image_path.startswith('/'):
         if lookup_path.startswith(PNGTUBER_USER_PATH + '/'):
@@ -256,7 +273,7 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
 
 @router.get("/page_config")
 async def get_page_config(response: Response, lanlan_name: str = ""):
-    """获取页面配置(lanlan_name 和 model_path),支持Live2D、VRM和MMD(Live3D)模型"""
+    """Get page config (lanlan_name and model_path); supports Live2D, VRM and MMD (Live3D) models."""
     try:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
@@ -381,14 +398,14 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
 
 @router.get("/preferences")
 async def get_preferences():
-    """获取用户偏好设置"""
+    """Get user preferences."""
     preferences = await aload_user_preferences()
     return preferences
 
 
 @router.post("/preferences")
 async def save_preferences(request: Request):
-    """保存用户偏好设置"""
+    """Save user preferences."""
     try:
         data = await request.json()
         if not data:
@@ -444,7 +461,7 @@ async def save_preferences(request: Request):
 
 @router.post("/preferences/set-preferred")
 async def set_preferred_model(request: Request):
-    """设置首选模型"""
+    """Set the preferred model."""
     try:
         data = await request.json()
         if not data or 'model_path' not in data:
@@ -461,11 +478,12 @@ async def set_preferred_model(request: Request):
 
 @router.get("/conversation-settings")
 async def get_conversation_settings():
-    """获取全局对话设置（从 user_preferences.json 同步备份中读取）
+    """Get global conversation settings (read from the user_preferences.json synced backup).
 
-    顺手回带遥测 A/B test 分支，让前端在 first-launch 时按分支选择默认行为，
-    与 token tracker 上报的 branch 一致——同一台设备永远落到同一组，避免
-    控制组/实验组在客户端跟 server 端出现不一致。
+    Also returns the telemetry A/B test branch, so the frontend can pick default
+    behavior by branch at first launch, consistent with the branch reported by the
+    token tracker — the same device always lands in the same group, preventing
+    control/experiment mismatches between client and server.
     """
     try:
         # 先解析 telemetry branch、再 load settings：get_telemetry_branch 可能在 slow
@@ -492,7 +510,7 @@ async def get_conversation_settings():
 
 @router.post("/conversation-settings")
 async def save_conversation_settings(request: Request):
-    """保存全局对话设置（同步到 user_preferences.json 备份）"""
+    """Save global conversation settings (synced to the user_preferences.json backup)."""
     try:
         data = await request.json()
         if not isinstance(data, dict):
@@ -636,10 +654,10 @@ async def get_steam_language():
 @router.get("/user_language")
 async def get_user_language_api():
     """
-    获取用户语言设置（供前端字幕模块使用）
+    Get the user language setting (used by the frontend subtitle module).
     
-    优先级：Steam设置 > 系统设置
-    返回归一化的语言代码（'zh', 'en', 'ja'）
+    Priority: Steam settings > system settings
+    Returns a normalized language code ('zh', 'en', 'ja').
     """
     from utils.language_utils import get_global_language
     
@@ -664,7 +682,7 @@ async def get_user_language_api():
 
 @router.get("/core_api")
 async def get_core_config_api():
-    """获取核心配置（API Key）"""
+    """Get the core config (API keys)."""
     try:
         # 尝试从core_config.json读取
         try:
@@ -698,7 +716,7 @@ async def get_core_config_api():
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:
-            """仅当 provider 与用户选择的 coreApi/assistApi 一致时才回退到 coreApiKey"""
+            """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
             return fallback_key if provider in _fallback_providers else ''
 
         return {
@@ -755,7 +773,7 @@ async def get_core_config_api():
 
 @router.post("/core_api")
 async def update_core_config(request: Request):
-    """更新核心配置（API Key）"""
+    """Update the core config (API keys)."""
     try:
         data = await request.json()
         if not data:
@@ -913,6 +931,15 @@ async def update_core_config(request: Request):
                 field = f'{mt}Model{suffix}'
                 if field in data:
                     core_cfg[field] = data[field]
+        # gptsovitsEnabled 退役后的惰性迁移（save choke point，对偶 #1842 voice_id 思路）：
+        # GSV 启用已收口到 ttsModelProvider=='gptsovits' 单一真相，旧 gptsovitsEnabled 仅作
+        # pre-#1830 存量兜底。前端加载会把启用中的 GSV 下拉钉到 'gptsovits'，故任何提交了
+        # 非 'gptsovits' 的 ttsModelProvider 都是用户显式切走 → 顺手把残留旧 flag 落 False，
+        # 否则 get_core_config 的 follow_* 回落分支会把旧 true 兜回来（切到 follow_assist 也
+        # 关不掉 GSV）。未提交 ttsModelProvider 的局部更新不碰旧 flag，保住从不重存的存量。
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
+            core_cfg['gptsovitsEnabled'] = False
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
@@ -1026,7 +1053,7 @@ async def update_core_config(request: Request):
 
 @router.get("/api_providers")
 async def get_api_providers_config():
-    """获取API服务商配置（供前端使用）"""
+    """Get the API provider config (for frontend use)."""
     try:
         from utils.api_config_loader import (
             get_config,
@@ -1039,6 +1066,18 @@ async def get_api_providers_config():
         core_providers = get_core_api_providers_for_frontend()
         assist_providers = get_assist_api_providers_for_frontend()
 
+        # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
+        # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
+        # 用哪种连通性探测」再硬编码一遍（见 api_key_settings.js）。
+        try:
+            from utils import tts_provider_registry
+            # 触发 worker 侧注册副作用（adapter 在 tts_client 定义 worker 后 register）
+            import main_logic.tts_client  # noqa: F401
+            tts_providers = tts_provider_registry.ui_metadata()
+        except Exception as e:
+            logger.warning(f"加载 TTS provider 元数据失败: {e}")
+            tts_providers = []
+
         return {
             "success": True,
             "core_api_providers": core_providers,
@@ -1046,6 +1085,7 @@ async def get_api_providers_config():
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "core_api_providers_full": full_config.get("core_api_providers", {}),
+            "tts_providers": tts_providers,
         }
     except Exception as e:
         logger.error(f"获取API服务商配置失败: {e}")
@@ -1059,28 +1099,22 @@ async def get_api_providers_config():
 
 @router.post("/gptsovits/list_voices")
 async def list_gptsovits_voices(request: Request):
-    """代理请求到 GPT-SoVITS v3 API 获取可用语音配置列表"""
+    """Proxy a request to the GPT-SoVITS v3 API to fetch the available voice config list."""
     import aiohttp
-    from urllib.parse import urlparse
-    import ipaddress
+    from utils.gptsovits_config import is_valid_http_url
     try:
         data = await request.json()
-        api_url = data.get("api_url", "").rstrip("/")
+        # 边界规范化：转字符串(兼容 None)+trim+去尾斜杠，校验与下游请求复用同一个值，
+        # 避免 {"api_url": null} 崩 / 带空白的 URL 绕过校验后拼出畸形端点。
+        api_url = str(data.get("api_url") or "").strip().rstrip("/")
 
         if not api_url:
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_REQUIRED", "code": "TTS_GPT_SOVITS_URL_REQUIRED"}, status_code=400)
 
-        # SSRF 防护: 限制 api_url 只能是 localhost
-        parsed = urlparse(api_url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # URL 校验：本地或远程均可（按维护者 SSRF posture 决定，对齐 vLLM-Omni）；
+        # 仅挡非 http(s) / 空 host，不再限制 loopback。
+        if not is_valid_http_url(api_url):
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_INVALID", "code": "TTS_GPT_SOVITS_URL_INVALID"}, status_code=400)
-        host = parsed.hostname
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY", "code": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
-        except ValueError:
-            if host not in ("localhost",):
-                return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY", "code": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
 
         endpoint = f"{api_url}/api/v3/voices"
         async with aiohttp.ClientSession() as session:
@@ -1108,33 +1142,25 @@ async def list_gptsovits_voices(request: Request):
 
 @router.post("/gptsovits/test_connectivity")
 async def test_gptsovits_connectivity(request: Request):
-    """测试 GPT-SoVITS 完整链路：WebSocket 连接 → init → ready → 发送短文本 → 收到响应。
+    """Test the full GPT-SoVITS pipeline: WebSocket connect → init → ready → send short text → receive response.
 
-    不播放音频，只验证服务可达且语音合成引擎正常工作。
+    Does not play audio; only verifies the service is reachable and the speech synthesis engine works.
     """
     import websockets as _ws
     import json as _json
-    from urllib.parse import urlparse
-    import ipaddress
+    from utils.gptsovits_config import is_valid_http_url
 
     try:
         data = await request.json()
-        api_url = (data.get("api_url", "") or "http://127.0.0.1:9881").rstrip("/")
+        # 边界规范化（同 list_voices）：转字符串(兼容 None)+trim+去尾斜杠后再校验与拼接。
+        api_url = str(data.get("api_url") or "http://127.0.0.1:9881").strip().rstrip("/")
         voice_id = (data.get("voice_id", "") or "init").strip()
         # i18n test text
         test_text = data.get("test_text", "") or "连通性测试"
 
-        # SSRF protection: localhost only
-        parsed = urlparse(api_url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # URL 校验：本地或远程均可（SSRF posture 同 vLLM-Omni）；仅挡非 http(s) / 空 host。
+        if not is_valid_http_url(api_url):
             return {"success": False, "error": "URL 格式无效", "error_code": "missing_params"}
-        host = parsed.hostname
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
-        except ValueError:
-            if host not in ("localhost",):
-                return {"success": False, "error": "GPT-SoVITS 仅支持本地服务", "error_code": "connection_refused"}
 
         # Convert HTTP URL to WebSocket URL
         if api_url.startswith("http://"):
@@ -1292,10 +1318,10 @@ def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
 
 @router.post("/set_proxy_mode")
 async def set_proxy_mode(request: Request):
-    """运行时热切换代理模式。
+    """Hot-switch the proxy mode at runtime.
 
-    body: { "direct": true }   → 直连（禁用代理）
-    body: { "direct": false }  → 恢复系统代理
+    body: { "direct": true }   → direct connection (disable proxy)
+    body: { "direct": false }  → restore the system proxy
     """
     try:
         data = await request.json()
@@ -1633,7 +1659,7 @@ async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
 
 
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
-    """读取 provider 的主 URL 和候选 URL，去空去重后保持顺序。"""
+    """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
     list_field = f"{primary_field}s"
     configured_candidates = profile.get(list_field)
@@ -1717,7 +1743,7 @@ async def _test_connectivity_candidates(
 
 
 def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: str) -> str:
-    """从保存配置中取出 provider 对应的 API Key。"""
+    """Extract the provider's API key from the config being saved."""
     provider_key = str(provider_key or "").strip()
     if provider_key == "free":
         return "free-access"
@@ -1745,7 +1771,7 @@ def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: s
 
 
 def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[str, dict[str, Any]]:
-    """收集保存时需要自动检测的内置 provider。"""
+    """Collect the built-in providers that need auto-detection on save."""
     targets: dict[str, dict[str, Any]] = {}
     core_providers = api_config.get("core_api_providers", {}) or {}
     assist_providers = api_config.get("assist_api_providers", {}) or {}
@@ -1823,7 +1849,7 @@ async def _auto_resolve_provider_urls_for_save(
     core_cfg: dict,
     checked_resolved_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """保存 API 配置时自动检测候选 URL，并写入通过检测的地域 URL。"""
+    """When saving the API config, auto-detect candidate URLs and persist the regional URL that passes."""
     from utils.api_config_loader import get_config as _get_api_config
 
     api_config = _get_api_config()
@@ -1922,19 +1948,19 @@ async def _auto_resolve_provider_urls_for_save(
 
 @router.post("/test_connectivity")
 async def test_connectivity(req: ConnectivityTestRequest) -> dict:
-    """测试 API 连通性。
+    """Test API connectivity.
 
-    两种模式：
-    1. 内置供应商：提供 provider_key + provider_scope + api_key，
-       后端从 api_providers.json 读取 url/model/provider_type。
-    2. 自定义 API：提供 url + api_key + model (+ provider_type)，
-       前端传完整参数，后端直接使用。
+    Two modes:
+    1. Built-in provider: pass provider_key + provider_scope + api_key;
+       the backend reads url/model/provider_type from api_providers.json.
+    2. Custom API: pass url + api_key + model (+ provider_type);
+       the frontend sends the full parameters and the backend uses them directly.
 
-    根据 provider_type 选择测试策略：
-    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_completion_tokens 由 CONNECTIVITY_TEST_MAX_TOKENS 控制）
-    - websocket：WebSocket 握手，成功后立即关闭
+    The test strategy is chosen by provider_type:
+    - openai_compatible (default): send a minimal chat completion request via ChatOpenAI (max_completion_tokens governed by CONNECTIVITY_TEST_MAX_TOKENS)
+    - websocket: WebSocket handshake, closed immediately on success
 
-    所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
+    All requests have a 10-second timeout. The endpoint is async, so it naturally supports concurrent requests without blocking.
     """
     api_key_stripped = (req.api_key or "").strip()
 
@@ -2034,8 +2060,8 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
 
 
 def _identify_provider_label(url: str, is_free: bool) -> str:
-    """根据 URL 识别是哪个供应商，返回人类可读的标签。
-    已知供应商显示名称，自定义的显示完整 URL。
+    """Identify which provider a URL belongs to and return a human-readable label.
+    Known providers show their name; custom ones show the full URL.
     """
     _KNOWN_PROVIDERS = {
         "lanlan.tech": "免费版",

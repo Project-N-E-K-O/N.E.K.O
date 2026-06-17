@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Proactive chat prompt templates.
 
@@ -1295,19 +1309,21 @@ def _normalize_prompt_language(lang: str) -> str:
 
 
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
-    """把 master_name 归一化成可直接塞进 {master} 占位符的字符串。
+    """Normalize master_name into a string that can go straight into the {master} placeholder.
 
-    空名 / None / 全空白 时返回 PROACTIVE_ACTION_NOTE_PLACEHOLDERS 里
-    对应 locale 的中性兜底（"对方" / "them" / "相手" / "상대" /
-    "собеседника"），避免任何模板里再出现"主人"等物化称呼。
+    For empty / None / all-whitespace names, returns the locale's neutral fallback
+    from PROACTIVE_ACTION_NOTE_PLACEHOLDERS ("对方" / "them" / "相手" / "상대" /
+    "собеседника"), so no template ever surfaces objectifying titles like "主人".
 
-    lang_key 必须已经过 _normalize_prompt_language 归一化；caller 传未归一化
-    的区域标签（zh-CN / ja-JP）只能拿到英文兜底，丢失本地化。
+    lang_key must already be normalized by _normalize_prompt_language; a caller
+    passing an unnormalized regional tag (zh-CN / ja-JP) only gets the English
+    fallback and loses localization.
 
-    PROACTIVE_ACTION_NOTE_PLACEHOLDERS 的引用故意放在函数体内：模块顶层执行
-    顺序里，本 helper 比 PROACTIVE_ACTION_NOTE_PLACEHOLDERS 字典定义早出现，
-    放函数体里靠延迟查找规避前向引用。
-    """
+    The PROACTIVE_ACTION_NOTE_PLACEHOLDERS reference deliberately lives inside the
+    function body: in module top-level execution order this helper appears before
+    the PROACTIVE_ACTION_NOTE_PLACEHOLDERS dict definition, so the lazy in-body
+    lookup dodges the forward reference.
+    """  # noqa: DOCSTRING_CJK
     name = " ".join(str(master_name or "").split())
     if name:
         return name
@@ -1317,16 +1333,19 @@ def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
 
 
 def _escape_format_braces(value: str) -> str:
-    """把字符串里的 ``{`` / ``}`` 双倍转义，让它在后续 str.format() 里被当字面量。
+    """Double-escape ``{`` / ``}`` in a string so a later str.format() treats them as literals.
 
-    用于"先在 helper 里 .format(master=...) 展开本地 {master} 占位符、再把
-    结果拼回外层模板交给外层 .format() 处理"的双层 format 路径。如果 master_name
-    本身含 `{` `}`（用户起的怪名字 "A{B}"），第一次 .format 会原样塞入字面量
-    `A{B}`，但第二次 .format 会把它当成新的 `{B}` 占位符并 KeyError。
+    Used by the two-layer format path: "expand the local {master} placeholder via
+    .format(master=...) inside the helper first, then splice the result back into the
+    outer template handed to the outer .format()". If master_name itself contains
+    `{` `}` (a quirky user-chosen name like "A{B}"), the first .format inserts the
+    literal `A{B}` as-is, but the second .format would parse it as a new `{B}`
+    placeholder and raise KeyError.
 
-    本 helper 在第一次 .format 前对 master 值做 ``{`` → ``{{`` / ``}`` → ``}}``
-    转义，第一次 .format 后字符串里就是 ``A{{B}}``；第二次 .format 把 ``{{`` /
-    ``}}`` 还原为 ``{`` / ``}``，最终输出 ``A{B}`` 字面量，且不会被误解析。
+    This helper escapes the master value (``{`` → ``{{`` / ``}`` → ``}}``) before the
+    first .format; after the first .format the string contains ``A{{B}}``; the second
+    .format folds ``{{`` / ``}}`` back into ``{`` / ``}``, finally emitting the
+    literal ``A{B}`` without misparsing.
     """
     return value.replace("{", "{{").replace("}", "}}")
 
@@ -2110,7 +2129,7 @@ Resposta:
 
 def get_proactive_music_keyword_prompt(lang: str = "zh") -> str:
     """
-    获取音乐关键词生成的 prompt
+    Get the prompt for music keyword generation
     """
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(
@@ -2613,18 +2632,19 @@ def build_unified_phase1_prompt(
     master_name: str = "",
 ) -> str:
     """
-    动态拼接 Phase 1 合并 prompt。
-    只注入有内容的 section，被权重剔除的 section 不会出现在 prompt 中。
+    Dynamically assemble the merged Phase 1 prompt.
+    Only sections with content are injected; sections culled by weighting never appear
+    in the prompt.
 
     Args:
-        lang: 语言代码
-        merged_content: web 汇总内容，None 或空字符串表示 web 被剔除
-        memory_context: 对话历史
-        recent_chats_section: 近期搭话记录
-        music_ctx: 音乐上下文 {'lanlan_name': ..., 'master_name': ...}，None 表示禁用
-        meme_enabled: 是否启用 meme 关键词生成
-        lanlan_name: 角色名（用于 music prompt）
-        master_name: 主人名（用于 music prompt）
+        lang: language code
+        merged_content: aggregated web content; None or empty string means web was culled
+        memory_context: conversation history
+        recent_chats_section: recent proactive-chat records
+        music_ctx: music context {'lanlan_name': ..., 'master_name': ...}; None = disabled
+        meme_enabled: whether meme keyword generation is enabled
+        lanlan_name: character name (for the music prompt)
+        master_name: master name (for the music prompt)
     """
     lang_key = _normalize_prompt_language(lang)
 
@@ -2676,7 +2696,8 @@ def build_unified_phase1_prompt(
 
 def get_proactive_screen_prompt(channel: str, lang: str = "zh") -> str:
     """
-    获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。
+    Get the Phase 1 screening prompt. Note: vision is handled before Phase 1 and must
+    not be passed in here; only the 'web' channel is supported.
     """
     lang_key = _normalize_prompt_language(lang)
     prompt_set = PROACTIVE_SCREEN_PROMPTS.get(
@@ -2697,11 +2718,13 @@ def get_proactive_generate_prompt(
     master_name: str | None = None,
 ) -> str:
     """
-    获取 Phase 2 生成阶段 prompt。
-    has_music / has_meme 控制是否注入音乐/表情包行为指令，避免无来源时产生幻觉。
-    master_name 用于把表情包指令里的 {master} 占位符提前展开成用户实际设定的名字
-    （或本地化中性兜底，例如"对方"/"them"），避免出现"主人"等物化称呼。
-    """
+    Get the Phase 2 generation prompt.
+    has_music / has_meme control whether music/meme behavior instructions are
+    injected, avoiding hallucinations when no source exists.
+    master_name pre-expands the {master} placeholder inside the meme instructions
+    into the user's actual configured name (or the localized neutral fallback such
+    as "对方"/"them"), avoiding objectifying titles like "主人".
+    """  # noqa: DOCSTRING_CJK
     lang_key = _normalize_prompt_language(lang)
     prompt = PROACTIVE_GENERATE_PROMPTS.get(
         lang_key, PROACTIVE_GENERATE_PROMPTS.get("en", PROACTIVE_GENERATE_PROMPTS["zh"])
@@ -2751,15 +2774,16 @@ def get_proactive_format_sections(
     lang: str = "zh",
 ) -> tuple:
     """
-    根据可用素材动态拼接 source_instruction 和 output_format_section。
-    不再枚举 16 种组合 × 5 种语言，而是按可用通道实时组装。
+    Dynamically assemble source_instruction and output_format_section from the available material.
+    Instead of enumerating 16 combinations × 5 languages, assemble on the fly from
+    the available channels.
 
-    Tag 语义（Phase 2 AI 输出第一行）：
-        [CHAT]  = 纯文字聊天，不附带任何媒体/链接（无副作用）
-        [WEB]   = 分享外部链接（触发卡片展示）
-        [MUSIC] = 推荐音乐（触发播放）
-        [MEME]  = 配合表情包（触发发图）
-        [PASS]  = 放弃搭话
+    Tag semantics (first line of the Phase 2 AI output):
+        [CHAT]  = plain text chat, no media/links attached (no side effects)
+        [WEB]   = share an external link (triggers card display)
+        [MUSIC] = recommend music (triggers playback)
+        [MEME]  = attach a meme image (triggers sending an image)
+        [PASS]  = skip this proactive chat
     """
     lang = _normalize_prompt_language(lang)
 
@@ -3221,7 +3245,7 @@ MEME_TOPIC_NO_KEYWORD = {
 
 
 def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> str:
-    """组装表情包话题行；keyword 非空时带上它（描述梗内容），否则退回通用措辞。"""
+    """Assemble the meme topic line; includes the keyword when non-empty (describing the meme content), otherwise falls back to generic wording."""
     # 先归一化空白：纯空白关键词（"   "）应视为无关键词，否则会误走带关键词模板。
     normalized_keyword = " ".join((keyword or "").split())
     if normalized_keyword:
@@ -3767,7 +3791,7 @@ PROACTIVE_MUSIC_STRICT_CONSTRAINT = {
 
 def get_proactive_music_unknown_track_name(lang: str = "zh") -> str:
     """
-    获取本地化的“未知曲目”名称
+    Get the localized "unknown track" name
     """
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_MUSIC_UNKNOWN_TRACK.get(
@@ -3780,13 +3804,16 @@ def get_proactive_music_playing_hint(
     track_name: str, master_name: str | None = None, lang: str = "zh"
 ) -> str:
     """
-    获取“正在放歌”的提示语。zh 模板含 {master} 占位符，由本函数展开成用户名或本地化
-    中性兜底（避免"主人"）；其它语言模板暂无 {master}，多余 kwarg 会被 .format 忽略。
+    Get the "now playing" hint. The zh template contains a {master} placeholder,
+    expanded by this function into the user's name or the localized neutral fallback
+    (avoiding "主人"); other languages' templates have no {master} yet, and the extra
+    kwarg is ignored by .format.
 
-    本函数返回值会被 system_router 拼到 generate_prompt 末尾、再走整体 .format()，
-    所以 track_name 和 master_name 都需要先 escape `{` / `}`，否则用户起的怪
-    歌名/怪用户名会让外层 .format() KeyError（Codex review #1043 r3164599885）。
-    """
+    The return value gets appended by system_router to the end of generate_prompt and
+    then run through the overall .format(), so both track_name and master_name must
+    have `{` / `}` escaped first — otherwise a quirky user-chosen track/user name
+    would make the outer .format() raise KeyError (Codex review #1043 r3164599885).
+    """  # noqa: DOCSTRING_CJK
     lang_key = _normalize_prompt_language(lang)
     template = PROACTIVE_MUSIC_PLAYING_HINT.get(
         lang_key,
@@ -3803,7 +3830,8 @@ def get_proactive_music_failsafe_hint(
     master_name: str | None = None, lang: str = "zh"
 ) -> str:
     """
-    获取“模糊匹配/无资源”的兜底提示语。模板含 {master} 占位符，本函数负责展开。
+    Get the fallback hint for "fuzzy match / no resource". The template contains a
+    {master} placeholder, expanded by this function.
     """
     lang_key = _normalize_prompt_language(lang)
     template = PROACTIVE_MUSIC_FAILSAFE_HINTS.get(
@@ -3814,7 +3842,7 @@ def get_proactive_music_failsafe_hint(
 
 
 def get_screen_section_header(master_name: str | None = None, lang: str = "zh") -> str:
-    """获取 vision 通道的屏幕区块标题（含 {master} 占位符的本地化展开）。"""
+    """Get the screen section header for the vision channel (with localized expansion of the {master} placeholder)."""
     lang_key = _normalize_prompt_language(lang)
     template = SCREEN_SECTION_HEADER.get(
         lang_key, SCREEN_SECTION_HEADER.get("en", SCREEN_SECTION_HEADER["zh"])
@@ -3823,7 +3851,7 @@ def get_screen_section_header(master_name: str | None = None, lang: str = "zh") 
 
 
 def get_screen_section_footer(master_name: str | None = None, lang: str = "zh") -> str:
-    """获取 vision 通道的屏幕区块结尾（含 {master} 占位符的本地化展开）。"""
+    """Get the screen section footer for the vision channel (with localized expansion of the {master} placeholder)."""
     lang_key = _normalize_prompt_language(lang)
     template = SCREEN_SECTION_FOOTER.get(
         lang_key, SCREEN_SECTION_FOOTER.get("en", SCREEN_SECTION_FOOTER["zh"])
@@ -3832,7 +3860,7 @@ def get_screen_section_footer(master_name: str | None = None, lang: str = "zh") 
 
 
 def get_screen_img_hint(master_name: str | None = None, lang: str = "zh") -> str:
-    """获取截图说明 hint（含 {master} 占位符的本地化展开），并附加 avatar 注解忽略提示。"""
+    """Get the screenshot caption hint (with localized expansion of the {master} placeholder), plus the avatar-annotation ignore notice."""
     lang_key = _normalize_prompt_language(lang)
     template = SCREEN_IMG_HINT.get(
         lang_key, SCREEN_IMG_HINT.get("en", SCREEN_IMG_HINT["zh"])
@@ -3843,7 +3871,7 @@ def get_screen_img_hint(master_name: str | None = None, lang: str = "zh") -> str
 
 def get_proactive_music_strict_constraint(lang: str = "zh") -> str:
     """
-    获取”正在放歌”时的严格行为约束
+    Get the strict behavior constraint while a song is playing
     """
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_MUSIC_STRICT_CONSTRAINT.get(
@@ -3936,7 +3964,7 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
 
 
 def _classify_hour(hour: int) -> str:
-    """将当前小时 (0-23) 分类为时段标签。"""
+    """Classify the current hour (0-23) into a time-of-day label."""
     if hour < 6:
         return "late_night"
     if hour < 9:
@@ -3953,7 +3981,7 @@ def _classify_hour(hour: int) -> str:
 
 
 def get_time_of_day_hint(lang: str = "zh") -> str:
-    """根据当前系统时间返回对应的时段提示文本。"""
+    """Return the time-of-day hint text for the current system time."""
     from datetime import datetime
 
     hour = datetime.now().hour
@@ -4217,11 +4245,11 @@ NEW_CHARACTER_GREETING_PROMPT = {
 
 
 def get_greeting_prompt(gap_seconds: float, lang: str = "zh") -> str | None:
-    """根据对话间隔时长选择对应的主动搭话引导词。
+    """Pick the proactive greeting lead-in based on how long the conversation has been idle.
 
     Returns:
-        格式化前的引导词模板（含 {elapsed}/{name}/{master} 占位符），
-        间隔不足 15 分钟时返回 None。
+        The unformatted lead-in template (with {elapsed}/{name}/{master} placeholders),
+        or None when the gap is under 15 minutes.
     """
     if gap_seconds < 900:  # < 15分钟
         return None
@@ -4569,11 +4597,11 @@ _CAT_GREETING_LONG_THRESHOLDS = {
 
 
 def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = "zh") -> str | None:
-    """按行为(清醒/打盹/熟睡) × 猫咪停留时长选择"变回时"的专属问候引导词。
+    """Pick the "transform back" greeting lead-in by behavior (awake/dozing/asleep) × cat-stay duration.
 
-    与 get_greeting_prompt 对偶。duration < 3min 时返回 None（静默）。
-    返回含 {reason_hint}/{elapsed}/{time_hint}/{master}/{name} 占位符的模板，
-    由 core 层 format。
+    Dual of get_greeting_prompt. Returns None (silent) when duration < 3min.
+    Returns a template containing {reason_hint}/{elapsed}/{time_hint}/{master}/{name}
+    placeholders, formatted by the core layer.
     """
     if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS:  # < 3min 静默
         return None
@@ -4586,9 +4614,10 @@ def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = 
 
 
 def get_cat_greeting_reason_hint(was_auto: bool, lang: str = "zh") -> str:
-    """变回时问候的入口原因片段（自动 idle 变猫 / 手动请离开），注入 {reason_hint}。
+    """Entry-reason snippet for the transform-back greeting (auto idle cat-morph /
+    manual dismissal), injected as {reason_hint}.
 
-    仅含 {master} 占位符，由 core 层先 format。
+    Contains only the {master} placeholder, formatted first by the core layer.
     """
     table = CAT_GREETING_REASON_AUTO if was_auto else CAT_GREETING_REASON_MANUAL
     lang_key = _normalize_prompt_language(lang)
@@ -4734,33 +4763,39 @@ def build_proactive_action_note(
     language: str,
     master_name: str,
 ) -> str:
-    """根据本轮 proactive 实际投递的内容构造一条简短行动注解。
+    """Build a short action note from what this proactive round actually delivered.
 
-    返回值会被追加到 AIMessage 内容尾部（_conversation_history），让 LLM 下一轮
-    能记得"自己刚才放了什么 / 分享了什么 / 来源是哪"。返回空串表示无元数据可记。
+    The return value is appended to the tail of the AIMessage content
+    (_conversation_history) so the LLM can remember next round "what I just played /
+    shared / where it came from". An empty string means there is no metadata to record.
 
-    挑模板的策略：先按 primary_channel 走 music / meme / web 三类对应的素材；
-    primary_channel 无明确素材类型（chat / unknown / 空）时，**回退到探测
-    source_links 实际素材**——这是为了 cover ``should_try_music_fallback``
-    路径：LLM Phase 2 输出 ``[CHAT]``（→ primary_channel='chat'）但本轮其实
-    已经把 music tracks 追加进 source_links 并设了 is_music_used=True，用户
-    那边实际听到了歌；不探测就会丢掉这条 "已放过" 元数据。优先级 music >
-    meme > web，与前端通常的素材展示重要性一致。
+    Template selection strategy: first follow primary_channel into the corresponding
+    music / meme / web material class; when primary_channel has no clear material
+    type (chat / unknown / empty), **fall back to probing the actual material in
+    source_links** — this covers the ``should_try_music_fallback`` path: LLM Phase 2
+    outputs ``[CHAT]`` (→ primary_channel='chat') but this round actually appended
+    music tracks into source_links and set is_music_used=True, so the user really
+    heard a song; without probing, that "already played" metadata would be lost.
+    Priority is music > meme > web, matching the frontend's usual material display
+    importance.
 
-    web 子通道集合 ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
-    与 ``main_routers/system_router.py:build_proactive_response`` 里
-    ``web_link.get('mode', 'web')`` 产出的 mode 集合保持同步——遗漏任何一个
-    会让对应通道走到末尾的 chat fallback、被 music-first 优先级误识别成
-    "放歌"，覆盖与本通道一致的 ``PROACTIVE_SOURCE_LABELS`` keys。
+    The web sub-channel set ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
+    is kept in sync with the mode set produced by ``web_link.get('mode', 'web')`` in
+    ``main_routers/system_router.py:build_proactive_response`` — missing any one of
+    them sends that channel to the trailing chat fallback, where the music-first
+    priority would misidentify it as "played a song"; it also mirrors this channel's
+    ``PROACTIVE_SOURCE_LABELS`` keys.
 
-    vision 通道始终返回空：屏幕本身是用户那侧已有的画面，不是 AI 分享出去
-    的素材，无需事件日志。
+    The vision channel always returns empty: the screen is imagery the user already
+    has on their side, not material the AI shared out, so no event log is needed.
 
-    模板里对人的称呼一律用 {master} 占位符，由调用方传入 master_name 展开成
-    用户实际设定的名字——避免出现"主人"这类物化称呼。title/artist/source
-    任一缺失时按本地化占位符兜底；source_links 里没有任何匹配素材就返回
-    空串，避免凭空编"未知 / 未知 / 未知"骚扰 LLM 上下文。
-    """
+    Templates refer to the person only via the {master} placeholder, expanded by the
+    caller-supplied master_name into the user's actual configured name — avoiding
+    objectifying titles like "主人". When any of title/artist/source is missing, fall
+    back to the localized placeholder; if source_links contains no matching material
+    at all, return an empty string instead of fabricating "unknown / unknown /
+    unknown" to pester the LLM context.
+    """  # noqa: DOCSTRING_CJK
     if not source_links:
         return ""
     channel = (primary_channel or "").strip().lower()

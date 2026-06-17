@@ -1,33 +1,49 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-内部 127.0.0.1 服务专用的共享 httpx.AsyncClient 单例。
+Shared httpx.AsyncClient singleton dedicated to internal 127.0.0.1 services.
 
-为什么需要：
-  每次 `async with httpx.AsyncClient(...)` 构造时 httpx 会 eagerly 初始化
-  SSLContext（读 certifi / Windows 系统 trust store），即便只请求
-  http://127.0.0.1，这个初始化也照跑。冷启动 + 事件循环压力下实测可达
-  1.1 秒/次，直接把 `/new_dialog` 的 2 秒 timeout 挤爆，表现为"memory
-  server 响应超时"（server 侧其实 ~25ms 就返回了）。
+Why it is needed:
+  Every `async with httpx.AsyncClient(...)` construction makes httpx eagerly
+  initialize an SSLContext (reading certifi / the Windows system trust store);
+  even for plain http://127.0.0.1 requests this initialization still runs.
+  Measured at up to 1.1 s/call on cold start under event-loop pressure, blowing
+  the 2-second timeout of `/new_dialog` and showing up as "memory server
+  response timeout" (the server actually responded in ~25ms).
 
-覆盖范围：
-  所有 http://127.0.0.1 的内部服务 —— memory_server / agent_server
-  (tool_server) / user_plugin_server 等。`httpx.AsyncClient` 本身跨 host
-  复用安全，连接池按 (scheme, host, port) 分桶各自 keep-alive，不会互相
-  干扰并发。
+Coverage:
+  All internal http://127.0.0.1 services — memory_server / agent_server
+  (tool_server) / user_plugin_server etc. `httpx.AsyncClient` itself is safe to
+  reuse across hosts; the pool buckets keep-alive connections by
+  (scheme, host, port) and concurrent use doesn't interfere.
 
-解决方案：
-  进程级别复用一个 AsyncClient，显式关闭 SSL 验证（127.0.0.1 纯 http
-  不需要），连接池自动复用 TCP 连接。后续每次请求只付实际网络开销。
+Solution:
+  Reuse one AsyncClient per process, with SSL verification explicitly disabled
+  (plain http to 127.0.0.1 doesn't need it); the pool reuses TCP connections
+  automatically. Subsequent requests only pay the actual network cost.
 
-用法：
+Usage:
     from utils.internal_http_client import get_internal_http_client
     client = get_internal_http_client()
     resp = await client.get(f"http://127.0.0.1:{PORT}/new_dialog/{name}")
 
-进程关闭时需调用 `aclose_internal_http_client()` 释放连接池。
+Call `aclose_internal_http_client()` at process shutdown to release the pool.
 
-⚠️ 不得用于外部 HTTPS：`verify=False` 会让中间人随意伪造证书而不报错。
-   外部 HTTPS 请用 `utils/external_http_client.py`。
+⚠️ Never use this for external HTTPS: `verify=False` lets a man-in-the-middle
+   forge certificates without errors. For external HTTPS use `utils/external_http_client.py`.
 """
 from __future__ import annotations
 
@@ -51,11 +67,11 @@ _DEFAULT_TIMEOUT = 5.0
 
 
 def get_internal_http_client() -> httpx.AsyncClient:
-    """返回当前事件循环专用的共享 AsyncClient。首次调用时懒初始化。
+    """Return the shared AsyncClient dedicated to the current event loop. Lazily initialized on first call.
 
-    `httpx.AsyncClient` 的 transport 在首次请求时会和事件循环绑定。主服务与
-    同步连接器线程各自持有独立 loop，因此这里按 loop 隔离，避免跨线程/跨
-    loop 复用同一个连接池。
+    `httpx.AsyncClient`'s transport binds to the event loop on first request. The main
+    service and sync connector threads each hold their own loop, so clients are
+    isolated per loop here, avoiding reuse of one pool across threads/loops.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -80,7 +96,7 @@ def get_internal_http_client() -> httpx.AsyncClient:
 
 
 def _create_internal_http_client() -> httpx.AsyncClient:
-    """创建 127.0.0.1 内部服务专用客户端。"""
+    """Create a client dedicated to internal 127.0.0.1 services."""
     # verify=False 彻底跳过 SSLContext 初始化 —— 我们只用来访问
     # 127.0.0.1 的内部服务，纯 http，不经过 TLS。
     # trust_env=False 不读 HTTP_PROXY/NO_PROXY 等环境变量。
@@ -104,7 +120,7 @@ async def _close_client(client: httpx.AsyncClient, *, context: str) -> None:
 
 
 async def aclose_internal_http_client_current_loop() -> None:
-    """关闭当前事件循环绑定的内部客户端。"""
+    """Close the internal client bound to the current event loop."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -117,7 +133,7 @@ async def aclose_internal_http_client_current_loop() -> None:
 
 
 async def aclose_internal_http_client() -> None:
-    """在 FastAPI shutdown 钩子中调用，释放连接池。"""
+    """Call from the FastAPI shutdown hook to release the connection pool."""
     global _fallback_client
     with _clients_lock:
         clients = list(_clients_by_loop.items())

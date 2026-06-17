@@ -1,4 +1,18 @@
 # -- coding: utf-8 --
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 import asyncio
 import uuid
@@ -46,9 +60,9 @@ _GEMINI_IMPORT_ERROR = None
 
 
 def _ensure_gemini_sdk() -> bool:
-    """首次调用时 import google-genai，缓存结果；失败时落一份 SSL 诊断。
+    """Import google-genai on first call and cache the result; emit an SSL diagnostic on failure.
 
-    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次（Python 模块缓存幂等）。
+    Returns whether the SDK is available. Under a concurrent race the worst case is one duplicate import (Python's module cache makes it idempotent).
     """
     global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
     # 显式强制不可用优先级最高 → 即便对象已塞进全局也降级。
@@ -118,7 +132,7 @@ class TurnDetectionMode(Enum):
 _config_manager = get_config_manager()
 
 def _emit_gemini_import_diagnostic(import_error) -> None:
-    """genai SDK 首次 import 失败时落一份 SSL 诊断（带 24h 节流去重）。"""
+    """Emit an SSL diagnostic when the first genai SDK import fails (deduplicated with a 24h throttle)."""
     diagnostics_dir = Path(_config_manager.app_docs_dir) / "logs" / "diagnostics"
     sentinel_path = diagnostics_dir / "gemini_sdk_import_failed.last.json"
     throttle_window_seconds = 24 * 60 * 60
@@ -557,8 +571,8 @@ class OmniRealtimeClient:
         return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
 
     def _tools_for_qwen(self) -> List[Dict[str, Any]]:
-        """Qwen-Omni-Realtime schema — nested under ``function``，与
-        StepFun 同形（参考 Aliyun client-events 文档示例）。"""
+        """Qwen-Omni-Realtime schema — nested under ``function``, same shape
+        as StepFun (see the example in the Aliyun client-events docs)."""
         return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
 
     def _tools_for_gemini_live(self) -> List[Any]:
@@ -670,7 +684,7 @@ class OmniRealtimeClient:
             )
 
     async def _check_silence_timeout(self):
-        """定期检查是否超过静默超时时间，如果是则触发超时回调"""
+        """Periodically check whether the silence timeout has been exceeded; if so, trigger the timeout callback"""
         # 如果未启用静默超时（Qwen 或 Step），直接返回
         if not self._enable_silence_timeout:
             logger.debug(f"静默超时检测已禁用（API类型: {self._api_type}）")
@@ -716,24 +730,25 @@ class OmniRealtimeClient:
             logger.error(f"静默检测任务出错: {e}")
     
     def _on_silence_reset(self):
-        """当音频处理器检测到4秒静音并重置缓存时调用。标记待发送clear事件。"""
+        """Called when the audio processor detects 4 seconds of silence and resets its cache. Marks a pending clear event."""
         self._silence_reset_pending = True
     
     def _should_clear_audio_buffer_on_silence(
         self, current_time: float, use_rnnoise_path: bool
     ) -> bool:
-        """是否应在静音时清空 input_audio_buffer。
+        """Whether the input_audio_buffer should be cleared on silence.
         
-        有 RNNoise 且当前走 RNNoise 路径：以 RNNoise 为准（内部 4 秒静音回调置 _silence_reset_pending）。
-        无 RNNoise（或未走 RNNoise 路径）：以 VAD + 连续本地静音为准。
+        With RNNoise and currently on the RNNoise path: RNNoise is authoritative (its internal 4s-silence callback sets _silence_reset_pending).
+        Without RNNoise (or not on the RNNoise path): VAD + sustained local silence is authoritative.
         
-        连续静音判定标准：
-        - 时长：最近 _local_quiet_seconds 秒（默认 2 秒）内无“大音量”；
-        - 大音量：原始 PCM 的 RMS > _client_vad_threshold（默认 500，int16 范围）。
-        即：每帧用原始输入算 RMS，超过阈值则更新 _last_local_loud_time；只有
-        (current_time - _last_local_loud_time) >= _local_quiet_seconds 才认为连续静音。
+        Criteria for sustained silence:
+        - duration: no "loud" frame within the last _local_quiet_seconds seconds (default 2);
+        - loud: raw PCM RMS > _client_vad_threshold (default 500, int16 range).
+        I.e.: compute RMS on the raw input each frame and update _last_local_loud_time when
+        above threshold; sustained silence only holds when
+        (current_time - _last_local_loud_time) >= _local_quiet_seconds.
         
-        返回 True 时，调用方统一置 _silence_reset_pending=False。
+        When this returns True, the caller always sets _silence_reset_pending=False.
         """
         if use_rnnoise_path:
             return self._silence_reset_pending
@@ -761,7 +776,7 @@ class OmniRealtimeClient:
         return True
     
     async def clear_audio_buffer(self):
-        """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
+        """Send an input_audio_buffer.clear event to clear the server-side buffer."""
         if self._is_gemini:
             logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
             return
@@ -1643,17 +1658,19 @@ class OmniRealtimeClient:
     async def prime_context(self, text: str, skipped: bool = False) -> None:
         """Inject context during hot-swap.
 
-        行为取决于 skipped 参数和提供商：
+        Behaviour depends on the skipped parameter and the provider:
 
-        - ``skipped=True`` (或 Qwen)：通过 ``session.update`` 追加到
-          系统指令，不触发模型响应。
-        - ``skipped=False`` (GPT/GLM/Step)：通过 ``create_response``
-          注入一条一次性 user 消息并触发模型响应（用于任务结果主动
-          汇报）。注意：此路径不写入 session instructions，文本是
-          瞬态的，不要改为持久化到 instructions。
-        - Gemini：无论 skipped 值，均通过 ``send_client_content``
-          注入（SDK 限制，无 session.update 机制）。skipped=True 时
-          通过 ``_skip_until_next_response`` 静默丢弃响应。
+        - ``skipped=True`` (or Qwen): appended to the system instructions
+          via ``session.update``, without triggering a model response.
+        - ``skipped=False`` (GPT/GLM/Step): injects a one-shot user message
+          via ``create_response`` and triggers a model response (used for
+          proactively reporting task results). Note: this path does not
+          write to session instructions; the text is transient — do not
+          change it to persist into instructions.
+        - Gemini: injected via ``send_client_content`` regardless of
+          skipped (SDK limitation, no session.update mechanism). When
+          skipped=True the response is silently discarded via
+          ``_skip_until_next_response``.
 
         Args:
             text: Context to inject (incremental cache + summary/ready).
@@ -1686,12 +1703,14 @@ class OmniRealtimeClient:
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Inject a persistent user message and trigger an LLM response.
 
-        与 ``prime_context`` (追加到系统指令) 不同，此方法会创建一条
-        user 角色的会话消息并触发模型响应。适用于需要模型立即回复的
-        mid-conversation 场景。
+        Unlike ``prime_context`` (which appends to the system instructions),
+        this method creates a user-role conversation message and triggers a
+        model response. Suited to mid-conversation scenarios where an
+        immediate model reply is needed.
 
-        注意：需要会话中已有 user 消息或所用 API 支持
-        ``conversation.item.create``，否则可能触发 1007 错误。
+        Note: requires that the session already contains a user message, or
+        that the API in use supports ``conversation.item.create``; otherwise
+        a 1007 error may be triggered.
 
         Behaviour varies by provider:
           - **OpenAI / GLM / Step**: ``conversation.item.create(role=user)``
@@ -2369,13 +2388,16 @@ class OmniRealtimeClient:
         send tool result via ``conversation.item.create`` of type
         ``function_call_output``, then ``response.create``.
 
-        ⚠️ Provider 差异：
-        - OpenAI gpt / StepFun / Qwen / Free：``call_id`` 必传，
-          server 用它把结果绑回对应的 function_call。
-        - GLM：文档示例显示 function_call_output **只有 output 字段**，
-          且服务端的 ``function_call_arguments.done`` 也不带 call_id。
-          我们在 done 事件处合成的 ``glm_<rid>_<idx>`` 仅用于 registry
-          内部追踪，绝对不能回传给 server，否则容易被拒。
+        ⚠️ Provider differences:
+        - OpenAI gpt / StepFun / Qwen / Free: ``call_id`` is required;
+          the server uses it to bind the result back to the corresponding
+          function_call.
+        - GLM: the documented example shows function_call_output with
+          **only an output field**, and the server's
+          ``function_call_arguments.done`` carries no call_id either. The
+          ``glm_<rid>_<idx>`` we synthesize at the done event is solely for
+          internal registry tracking and must never be sent back to the
+          server, or the request is likely to be rejected.
         """
         item: Dict[str, Any] = {
             "type": "function_call_output",
@@ -2415,8 +2437,8 @@ class OmniRealtimeClient:
     
     async def _check_repetition(self, response: str) -> bool:
         """
-        检查回复是否与近期回复高度重复。
-        如果连续3轮都高度重复，返回 True 并触发回调。
+        Check whether the reply is highly repetitive of recent replies.
+        Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
         """
         
         # 与最近的回复比较相似度

@@ -51,6 +51,11 @@ class _ExportSupportMixin:
                         "items": {"type": "string"},
                         "default": [],
                     },
+                    "note_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": [],
+                    },
                 },
             },
             timeout=75.0,
@@ -73,6 +78,7 @@ class _ExportSupportMixin:
         time_range: str | None = "recent",
         recent_limit: int | None = 30,
         topic_ids: list[str] | None = None,
+        note_ids: list[str] | None = None,
         **_,
     ):
         try:
@@ -82,6 +88,7 @@ class _ExportSupportMixin:
                 )
             normalize_format(fmt)
             normalized_topic_ids = topic_ids if isinstance(topic_ids, list) else []
+            normalized_note_ids = note_ids if isinstance(note_ids, list) else []
             exporter = DocExporter(self._store, config=self._cfg.doc_export)
             exported = await asyncio.to_thread(
                 exporter.export,
@@ -92,6 +99,7 @@ class _ExportSupportMixin:
                 time_range=time_range,
                 recent_limit=recent_limit,
                 topic_ids=normalized_topic_ids,
+                note_ids=normalized_note_ids,
             )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="_study_export_notes_entry")

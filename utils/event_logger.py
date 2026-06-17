@@ -1,28 +1,46 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-稀疏事件日志（sparse-event JSONL writer）
+Sparse-event JSONL writer
 
-用途：记录 session_start / crash / onboarding_step / app_exit 等数量稀少但
-单条信息量高的事件。与 token_tracker 的 daily aggregates（counter / histogram
-类）互补 —— 后者是数字汇总，本模块是带 context 的离散事件。
+Purpose: record events like session_start / crash / onboarding_step / app_exit that are
+few in number but information-dense per record. Complements token_tracker's daily
+aggregates (counter / histogram style) — the latter are numeric rollups, this module is
+discrete events with context.
 
-存储设计：
-- events-YYYYMMDD.jsonl，每行一个 JSON event，按天分片
-- append-only：写入永不修改已有行，只追加
-- Retention：删除 > 7 天的分片
-- 单文件硬上限 500 KB（超了拒收新事件，防单天爆量打挂磁盘）
-- 目录总硬上限 20 MB（超了强删最老分片，防 disk full）
+Storage design:
+- events-YYYYMMDD.jsonl, one JSON event per line, sharded by day
+- append-only: writes never modify existing lines, only append
+- Retention: shards older than 7 days are deleted
+- hard per-file cap of 500 KB (new events rejected beyond it, preventing a single-day
+  burst from trashing the disk)
+- hard directory total cap of 20 MB (oldest shards force-deleted beyond it, preventing disk full)
 
-开销保证：
-- emit() 进 in-memory deque，纳秒级，不阻塞主路径
-- flush() 由 TokenTracker 60s 定时调用一次，单次写盘 < 50 KB
-- cleanup() 顺便在 flush 时跑，成本是 listdir + 几个 stat
+Overhead guarantees:
+- emit() goes into an in-memory deque, nanosecond-scale, never blocks the main path
+- flush() is invoked once by TokenTracker's 60s periodic save, each disk write < 50 KB
+- cleanup() runs alongside flush; cost is a listdir + a few stats
 
-线程安全：进程内用 _lock 串行；多进程不严格同步，依赖每行 jsonl < 4KB 时
-单 write 系统调用的原子性（POSIX O_APPEND / Windows append mode 都保证）。
+Thread safety: serialized in-process via _lock; multi-process is not strictly
+synchronized, relying on the atomicity of a single write syscall while each jsonl line
+is < 4KB (guaranteed by both POSIX O_APPEND and Windows append mode).
 
-不持久化哪些字段：消息内容、用户名、master_name、prompt 文本。本模块的事件
-应该是"什么发生了"+"哪个 surface"+ 几个 enum 标签，不要塞业务数据。
+Fields never persisted: message content, username, master_name, prompt text. Events in
+this module should be "what happened" + "which surface" + a few enum tags; do not stuff
+business data in.
 """
 from __future__ import annotations
 
@@ -70,12 +88,12 @@ _CLEANUP_MIN_INTERVAL = 5 * 60  # 5 min
 
 
 class EventLogger:
-    """进程内单例的稀疏事件 JSONL writer。
+    """Process-wide singleton sparse-event JSONL writer.
 
-    典型用法：
+    Typical usage:
         EventLogger.get_instance().emit("session_start", surface="pet_widget")
 
-    flush() 由 TokenTracker 的 periodic_save_loop 顺手调用，调用方不用关心。
+    flush() is invoked by TokenTracker's periodic_save_loop; callers need not care.
     """
 
     _instance: Optional["EventLogger"] = None
@@ -111,14 +129,15 @@ class EventLogger:
     # ---- 公开 API ----
 
     def emit(self, name: str, **fields) -> None:
-        """记录一个稀疏事件。线程安全，非阻塞。
+        """Record a sparse event. Thread-safe, non-blocking.
 
         Args:
-            name: 事件名（snake_case，建议 < 32 chars）
-            **fields: 业务字段。不要塞消息内容 / PII / master_name。
+            name: event name (snake_case, ideally < 32 chars)
+            **fields: business fields. Never include message content / PII / master_name.
 
-        实现：append 到内存 deque，flush() 时一次性写盘。emit() 本身不做
-        I/O，所以即使每秒调用几百次也不会有可感知开销。
+        Implementation: appends to an in-memory deque; flush() writes to disk in one
+        go. emit() itself does no I/O, so even hundreds of calls per second add no
+        perceptible overhead.
         """
         if not name:
             return
@@ -133,13 +152,13 @@ class EventLogger:
             self._buffer.append(rec)
 
     def flush(self) -> int:
-        """落盘 buffer + 顺便清理过期分片。线程安全。
+        """Flush the buffer to disk + clean up expired shards along the way. Thread-safe.
 
         Returns:
-            实际写入磁盘的事件数。0 表示 buffer 为空或写盘失败。
+            Number of events actually written to disk. 0 means empty buffer or failed write.
 
-        调用时机：由 TokenTracker._periodic_save_loop 每 60s 调用一次。
-        atexit 时也会被 token_tracker 的 _atexit_save 间接触发（如果接上的话）。
+        When called: by TokenTracker._periodic_save_loop every 60s.
+        Also triggered indirectly at atexit by token_tracker's _atexit_save (when wired up).
         """
         # 锁内只做：取 buffer + 决定是否要 cleanup。所有 I/O 放到锁外，
         # emit() 不会被磁盘 I/O 阻塞。
@@ -194,11 +213,11 @@ class EventLogger:
 
     @staticmethod
     def _day_of(ts: float) -> str:
-        """时间戳→ YYYYMMDD（本地时区，与 token_usage.json 的 date.today 对齐）。"""
+        """Timestamp → YYYYMMDD (local timezone, aligned with token_usage.json's date.today)."""
         return datetime.fromtimestamp(ts).strftime("%Y%m%d")
 
     def _append_day(self, day: str, recs: list) -> int:
-        """把 recs 追加到 day 对应分片。返回实际写入条数。"""
+        """Append recs to the shard for day. Returns the number of records actually written."""
         path = self._file_for(day)
 
         # 单文件 cap：超了 seal 当天，剩余事件丢弃
@@ -250,7 +269,7 @@ class EventLogger:
             raise
 
     def _push_back(self, recs: list) -> None:
-        """写盘失败时把事件丢回 buffer。尊重 maxlen，老数据自动出队。"""
+        """Put events back into the buffer when a disk write fails. Respects maxlen; old data dequeues automatically."""
         with self._lock:
             # 老的在前，新的在后：deque.extendleft 是逆序的，所以用普通 extend
             # 但要先把当前 buffer 内容（更新）挪到后面
@@ -262,7 +281,7 @@ class EventLogger:
                 self._buffer.append(r)
 
     def _log_fail(self, msg: str) -> None:
-        """连续失败时只在 transition 上记日志，防日志被刷爆。"""
+        """On consecutive failures only log on transitions, preventing log spam."""
         self._fail_count += 1
         if self._fail_count == 1:
             logger.warning(msg)
@@ -272,10 +291,10 @@ class EventLogger:
     # ---- 内部：清理 ----
 
     def _cleanup(self) -> None:
-        """删 > 7 天的分片；目录总大小超 20MB 时强删最老。
+        """Delete shards older than 7 days; force-delete the oldest when the directory total exceeds 20MB.
 
-        触发频率：5min 节流（_CLEANUP_MIN_INTERVAL）。即使每 60s flush 也只
-        会真正 listdir 一次/5min，成本可忽略。
+        Trigger frequency: throttled to 5min (_CLEANUP_MIN_INTERVAL). Even flushing
+        every 60s only really listdirs once per 5min; negligible cost.
         """
         try:
             if not self._dir.exists():
@@ -340,10 +359,10 @@ class EventLogger:
 
 
 def emit(name: str, **fields) -> None:
-    """记录一个稀疏事件。等价于 EventLogger.get_instance().emit(name, **fields)。"""
+    """Record a sparse event. Equivalent to EventLogger.get_instance().emit(name, **fields)."""
     EventLogger.get_instance().emit(name, **fields)
 
 
 def flush() -> int:
-    """落盘 buffer。由 TokenTracker periodic save 调用，业务代码一般不用。"""
+    """Flush the buffer to disk. Called by TokenTracker periodic save; business code usually doesn't need it."""
     return EventLogger.get_instance().flush()

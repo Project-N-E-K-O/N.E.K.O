@@ -27,3 +27,9 @@ def test_resolve_pngtuber_relative_image_checks_path_without_cache_buster(tmp_pa
         _resolve_pngtuber_image_path("avatar/talk.webp?t=2", config_manager, "Neko")
         == f"{PNGTUBER_USER_PATH}/avatar/talk.webp"
     )
+
+
+def test_resolve_pngtuber_rejects_protocol_relative_url(tmp_path):
+    config_manager = SimpleNamespace(pngtuber_dir=tmp_path / "pngtuber")
+
+    assert _resolve_pngtuber_image_path("//evil.example/avatar.png", config_manager, "Neko") == ""

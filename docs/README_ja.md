@@ -11,7 +11,7 @@
 > N.E.K.O.は、理解を求め、繋がりを築き、私たちと共に成長するデジタル生命です。
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 ![QQグループ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
@@ -50,7 +50,7 @@
 
 # 猫娘計画（Project N.E.K.O.）
 
-`猫娘計画`は、オープンソースを原動力としたAI伴侶プラットフォームです。コアドライバーはMITライセンスの下で**常にオープンソース**——あなたの貢献は、SteamやApp Storeの正式版に実装される可能性があります。
+`猫娘計画`は、オープンソースを原動力としたAI伴侶プラットフォームです。コアドライバーはApache License 2.0の下で**常にオープンソース**——あなたの貢献は、SteamやApp Storeの正式版に実装される可能性があります。
 
 ---
 

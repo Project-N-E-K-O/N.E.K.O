@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import hashlib
@@ -4069,21 +4083,29 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
         except Exception:
             return True
 
+    lock_file = None
     try:
         import fcntl
 
         lock_path = config_manager.local_state_dir / "cloud_apply.lock"
-        lock_file = open(lock_path, "w")
+        lock_file = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_file.write(str(os.getpid()))
+            lock_file.flush()
         except (OSError, IOError):
             lock_file.close()
             return False
-        lock_file.write(str(os.getpid()))
-        lock_file.flush()
         _cloud_apply_lock_file = lock_file
         return True
     except Exception:
+        if lock_file is not None and lock_file is not _cloud_apply_lock_file:
+            try:
+                lock_file.close()
+            except Exception:
+                # Best-effort cleanup only; the acquisition fallback below keeps
+                # the existing fail-open behavior when cleanup itself fails.
+                pass
         return True
 
 

@@ -1,11 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Provider 统一注册表。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-集中管理所有 LLM 供应商的：
-  - extra_body 配置（禁用 thinking 等）
-  - Context Cache 行为（header、token 字段、阈值）
+"""Unified provider registry.
 
-其他模块通过本文件获取 provider 特化参数，而非各自硬编码。
+Centralizes, for every LLM provider:
+  - extra_body config (disabling thinking, etc.)
+  - Context Cache behavior (header, token field, thresholds)
+
+Other modules obtain provider-specific parameters from this file instead of
+hard-coding their own.
 """
 
 from __future__ import annotations
@@ -89,11 +104,11 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
 
 
 def get_extra_body(model: str) -> dict | None:
-    """根据模型名称返回对应的 extra_body 配置。
+    """Return the extra_body config for the given model name.
 
     Returns:
-        对应的 extra_body dict；模型不需要特殊配置时返回空 dict；
-        model 为空时返回 None。
+        The matching extra_body dict; an empty dict when the model needs no
+        special config; None when model is empty.
     """
     if not model:
         return None
@@ -113,7 +128,7 @@ def get_agent_extra_body(model: str) -> dict | None:
 
 @dataclass(frozen=True)
 class CacheProviderConfig:
-    """单个供应商的 Context Cache 行为描述。"""
+    """Context Cache behavior description for a single provider."""
 
     provider_id: str
     name: str
@@ -269,7 +284,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
 
 
 def resolve_cache_provider(base_url: str | None) -> CacheProviderConfig | None:
-    """通过 base_url substring 匹配识别 provider。"""
+    """Identify the provider by base_url substring matching."""
     if not base_url:
         return None
     for provider in CACHE_PROVIDERS.values():
@@ -279,7 +294,7 @@ def resolve_cache_provider(base_url: str | None) -> CacheProviderConfig | None:
 
 
 def get_cache_kwargs(base_url: str | None) -> dict[str, Any]:
-    """返回构造 ChatOpenAI 时需要的 cache 相关参数。
+    """Return the cache-related kwargs needed when constructing ChatOpenAI.
 
     Returns:
         {"default_headers": dict, "enable_cache_control": bool}

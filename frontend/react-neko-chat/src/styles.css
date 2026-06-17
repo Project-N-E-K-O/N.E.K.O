@@ -86,11 +86,9 @@ svg {
 
 .avatar-cursor-overlay-stage {
   opacity: 0;
-  transform: scale(calc(var(--avatar-cursor-overlay-scale) * 0.84));
+  transform: scale(var(--avatar-cursor-overlay-scale));
   will-change: transform, opacity;
-  transition:
-    opacity 180ms cubic-bezier(0.22, 0.78, 0.2, 1),
-    transform 180ms cubic-bezier(0.2, 0.82, 0.22, 1);
+  transition: opacity 120ms cubic-bezier(0.22, 0.78, 0.2, 1);
 }
 
 .avatar-cursor-overlay.is-visible .avatar-cursor-overlay-stage {
@@ -112,8 +110,8 @@ svg {
 }
 
 .avatar-cursor-overlay-image-fist {
-  width: 100px;
-  height: 102px;
+  width: 78px;
+  height: 80px;
 }
 
 .fist-floating-drop {
@@ -3706,8 +3704,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     inset 0 -10px 18px rgba(177, 220, 247, 0.18);
   --compact-tool-wheel-transform-duration: 0.22s;
   --compact-tool-wheel-transform-easing: cubic-bezier(0.2, 0.9, 0.22, 1.12);
+  --compact-tool-wheel-drag-angle: 0deg;
+  --compact-tool-wheel-drag-counter-angle: 0deg;
   --compact-tool-wheel-charge-first-angle: 0deg;
   --compact-tool-wheel-charge-second-angle: 0deg;
+  --compact-tool-wheel-charge-third-angle: 0deg;
+  --compact-tool-wheel-selection-angle: 45deg;
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
@@ -3758,8 +3760,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   border-radius: 999px;
   background:
     conic-gradient(
-      rgba(79, 184, 255, 0.9) 0deg,
-      rgba(79, 184, 255, 0.9) var(--compact-tool-wheel-charge-first-angle),
+      rgba(34, 134, 224, 0.96) 0deg,
+      rgba(34, 134, 224, 0.96) var(--compact-tool-wheel-charge-first-angle),
       rgba(36, 151, 217, 0.12) var(--compact-tool-wheel-charge-first-angle),
       rgba(36, 151, 217, 0.14) 360deg
     );
@@ -3772,19 +3774,33 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   z-index: 2;
 }
 
+.compact-input-tool-wheel-charge::before,
 .compact-input-tool-wheel-charge::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
+  pointer-events: none;
+}
+
+.compact-input-tool-wheel-charge::before {
   background:
     conic-gradient(
-      rgba(0, 92, 196, 0.96) 0deg,
-      rgba(0, 92, 196, 0.96) var(--compact-tool-wheel-charge-second-angle),
+      rgba(245, 150, 45, 0.98) 0deg,
+      rgba(245, 150, 45, 0.98) var(--compact-tool-wheel-charge-second-angle),
       transparent var(--compact-tool-wheel-charge-second-angle),
       transparent 360deg
     );
-  pointer-events: none;
+}
+
+.compact-input-tool-wheel-charge::after {
+  background:
+    conic-gradient(
+      rgba(236, 64, 58, 0.98) 0deg,
+      rgba(236, 64, 58, 0.98) var(--compact-tool-wheel-charge-third-angle),
+      transparent var(--compact-tool-wheel-charge-third-angle),
+      transparent 360deg
+    );
 }
 
 .compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge {
@@ -3792,8 +3808,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     conic-gradient(
       rgba(36, 151, 217, 0.12) 0deg,
       rgba(36, 151, 217, 0.14) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
-      rgba(79, 184, 255, 0.9) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
-      rgba(79, 184, 255, 0.9) 360deg
+      rgba(34, 134, 224, 0.96) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
+      rgba(34, 134, 224, 0.96) 360deg
+    );
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge::before {
+  background:
+    conic-gradient(
+      transparent 0deg,
+      transparent calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
+      rgba(245, 150, 45, 0.98) calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
+      rgba(245, 150, 45, 0.98) 360deg
     );
 }
 
@@ -3801,10 +3827,35 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     conic-gradient(
       transparent 0deg,
-      transparent calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
-      rgba(0, 92, 196, 0.96) calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
-      rgba(0, 92, 196, 0.96) 360deg
+      transparent calc(360deg - var(--compact-tool-wheel-charge-third-angle)),
+      rgba(236, 64, 58, 0.98) calc(360deg - var(--compact-tool-wheel-charge-third-angle)),
+      rgba(236, 64, 58, 0.98) 360deg
     );
+}
+
+.compact-input-tool-wheel-selection-pointer {
+  position: absolute;
+  left: var(--compact-tool-wheel-center-x);
+  top: var(--compact-tool-wheel-center-y);
+  width: 14px;
+  height: 12px;
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 48%),
+    #42c5ff;
+  clip-path: polygon(100% 50%, 0 0, 0 100%);
+  filter:
+    drop-shadow(0 1px 0 rgba(255, 255, 255, 0.78))
+    drop-shadow(0 2px 5px rgba(26, 120, 184, 0.28));
+  opacity: 0;
+  pointer-events: none;
+  transform:
+    translate(-1px, -50%)
+    rotate(var(--compact-tool-wheel-selection-angle))
+    translateX(48px);
+  transform-origin: 1px 50%;
+  transition: opacity 0.16s ease;
+  z-index: 4;
 }
 
 .compact-input-tool-fan .compact-input-tool-item {
@@ -3920,14 +3971,70 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   pointer-events: auto;
 }
 
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-wheel-selection-pointer {
+  opacity: 1;
+}
+
 .compact-input-tool-fan[data-compact-tool-wheel-charge-active="true"] .compact-input-tool-wheel-charge {
   opacity: 1;
   transform: scale(1);
 }
 
+.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"] {
+  animation: compactToolWheelChargeRattleWeak 148ms steps(2, end) infinite;
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"] {
+  animation: compactToolWheelChargeRattleStrong 96ms steps(2, end) infinite;
+}
+
+@keyframes compactToolWheelChargeRattleWeak {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+
+  25% {
+    transform: translate(-1.2px, 0.7px) rotate(-0.46deg);
+  }
+
+  50% {
+    transform: translate(1px, -0.8px) rotate(0.42deg);
+  }
+
+  75% {
+    transform: translate(-0.7px, -0.5px) rotate(-0.32deg);
+  }
+}
+
+@keyframes compactToolWheelChargeRattleStrong {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+
+  25% {
+    transform: translate(-2.2px, 1.2px) rotate(-0.86deg);
+  }
+
+  50% {
+    transform: translate(1.9px, -1.5px) rotate(0.78deg);
+  }
+
+  75% {
+    transform: translate(-1.3px, -0.9px) rotate(-0.58deg);
+  }
+}
+
 .compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"] {
   --compact-tool-wheel-transform-duration: 0.07s;
   --compact-tool-wheel-transform-easing: cubic-bezier(0.18, 0.72, 0.24, 1);
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-drag-active="true"] .compact-input-tool-item {
+  transition:
+    opacity 0.18s ease,
+    background 0.15s ease;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]:active {
@@ -3961,8 +4068,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(107.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-107.35deg) scale(0.86);
-  pointer-events: auto;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(107.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-107.35deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+  pointer-events: none;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
@@ -3981,26 +4088,26 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(75.82deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-75.82deg) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(75.82deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-75.82deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-45deg) scale(1.04);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(45deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-45deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(14.18deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-14.18deg) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(14.18deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-14.18deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-17.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(17.35deg) scale(0.86);
-  pointer-events: auto;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-17.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(17.35deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+  pointer-events: none;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
@@ -4821,6 +4928,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
+    --compact-tool-wheel-selection-angle: -140deg;
+  }
+
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
@@ -4831,24 +4942,29 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     transition: none;
   }
 
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    pointer-events: none;
+  }
+
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-200deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(200deg) scale(0.86);
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-170deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(170deg) scale(0.98);
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-170deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(170deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-140deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(140deg) scale(1.04);
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-110deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(110deg) scale(0.98);
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-110deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(110deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-80deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(80deg) scale(0.86);
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-80deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(80deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
@@ -5684,6 +5800,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"],
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"] {
+    animation: none !important;
+  }
+
   .compact-input-tool-fan .compact-input-tool-tooltip {
     transition: none !important;
   }

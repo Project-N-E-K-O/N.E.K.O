@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import asyncio
 import json
 import os
@@ -30,10 +44,10 @@ PREFERENCES_FILE = _get_active_preferences_path()
 
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
-    加载用户偏好设置
+    Load user preferences
 
     Returns:
-        List[Dict[str, Any]]: 用户偏好列表，每个元素对应一个模型的偏好设置，如果文件不存在或读取失败则返回空列表
+        List[Dict[str, Any]]: list of per-model preference entries; empty list when the file is missing or unreadable
     """
     try:
         global PREFERENCES_FILE
@@ -57,9 +71,9 @@ def load_user_preferences() -> List[Dict[str, Any]]:
 
 
 async def aload_user_preferences() -> List[Dict[str, Any]]:
-    """异步版 load_user_preferences：供 async endpoint 调用，避免同步 open()+json.load() 阻塞事件循环。
+    """Async version of load_user_preferences: for async endpoints, avoiding sync open()+json.load() blocking the event loop.
 
-    共享 load_user_preferences 的 dict→list 兼容处理。
+    Shares load_user_preferences' dict→list compatibility handling.
     """
     def _sync_load():
         return load_user_preferences()
@@ -68,13 +82,13 @@ async def aload_user_preferences() -> List[Dict[str, Any]]:
 
 def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
     """
-    保存用户偏好设置
+    Save user preferences
     
     Args:
-        preferences (List[Dict[str, Any]]): 要保存的偏好设置列表
+        preferences (List[Dict[str, Any]]): preference list to save
         
     Returns:
-        bool: 保存成功返回True，失败返回False
+        bool: True on success, False on failure
     """
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
@@ -94,19 +108,19 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
 
 def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
     """
-    更新指定模型的偏好设置
+    Update preferences of the given model
 
     Args:
-        model_path (str): 模型路径
-        position (Dict[str, float]): 位置信息 {'x': float, 'y': float, 'z': float}
-        scale (Dict[str, float]): 缩放信息 {'x': float, 'y': float, 'z': float}
-        parameters (Optional[Dict[str, float]]): 模型参数 {'paramId': value}
-        display (Optional[Dict[str, float]]): 显示器信息 {'screenX': float, 'screenY': float}，用于多屏幕位置恢复
-        rotation (Optional[Dict[str, float]]): 旋转信息 {'x': float, 'y': float, 'z': float}，用于VRM模型朝向
-        viewport (Optional[Dict[str, float]]): 视口信息 {'width': float, 'height': float}，用于跨分辨率位置和缩放归一化
+        model_path (str): model path
+        position (Dict[str, float]): position info {'x': float, 'y': float, 'z': float}
+        scale (Dict[str, float]): scale info {'x': float, 'y': float, 'z': float}
+        parameters (Optional[Dict[str, float]]): model parameters {'paramId': value}
+        display (Optional[Dict[str, float]]): display info {'screenX': float, 'screenY': float}, for multi-monitor position restore
+        rotation (Optional[Dict[str, float]]): rotation info {'x': float, 'y': float, 'z': float}, for VRM model orientation
+        viewport (Optional[Dict[str, float]]): viewport info {'width': float, 'height': float}, for cross-resolution position and scale normalization
         
     Returns:
-        bool: 更新成功返回True，失败返回False
+        bool: True on success, False on failure
     """
     try:
         # 拒绝保留键作为模型路径，防止破坏全局对话设置条目
@@ -198,13 +212,13 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
 
 def get_model_preferences(model_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    获取指定模型的偏好设置，如果不指定则返回首选模型（列表第一个）的偏好
+    Get preferences of the given model; without an argument, returns the preferred model's (first in the list)
     
     Args:
-        model_path (str, optional): 模型路径，如果不指定则返回首选模型
+        model_path (str, optional): model path; defaults to the preferred model
         
     Returns:
-        Optional[Dict[str, Any]]: 包含model_path, position, scale的字典，如果没有则返回None
+        Optional[Dict[str, Any]]: dict containing model_path, position, scale; None when absent
     """
     preferences = load_user_preferences()
     
@@ -226,10 +240,10 @@ def get_model_preferences(model_path: Optional[str] = None) -> Optional[Dict[str
 
 def get_preferred_model_path() -> Optional[str]:
     """
-    获取首选模型的路径
+    Get the preferred model's path
     
     Returns:
-        Optional[str]: 首选模型的路径，如果没有则返回None
+        Optional[str]: path of the preferred model, or None when absent
     """
     preferences = load_user_preferences()
     for pref in preferences:
@@ -239,13 +253,13 @@ def get_preferred_model_path() -> Optional[str]:
 
 def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     """
-    验证模型偏好设置是否包含必要字段
+    Validate that model preferences contain the required fields
     
     Args:
-        preferences (Dict[str, Any]): 要验证的模型偏好设置
+        preferences (Dict[str, Any]): model preferences to validate
         
     Returns:
-        bool: 验证通过返回True，失败返回False
+        bool: True when valid, False otherwise
     """
     required_fields = ['model_path', 'position', 'scale']
     
@@ -269,13 +283,13 @@ def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
 
 def move_model_to_top(model_path: str) -> bool:
     """
-    将指定模型移动到列表顶部（设为首选）
+    Move the given model to the top of the list (make it preferred)
     
     Args:
-        model_path (str): 模型路径
+        model_path (str): model path
         
     Returns:
-        bool: 操作成功返回True，失败返回False
+        bool: True on success, False on failure
     """
     try:
         preferences = load_user_preferences()
@@ -320,11 +334,11 @@ _ALLOWED_CONVERSATION_SETTINGS = {
 
 def load_global_conversation_settings() -> Dict[str, Any]:
     """
-    加载全局对话设置（从 user_preferences.json 的全局条目中读取）
-    直接读取文件，不经过 load_user_preferences()（后者会过滤掉哨兵）
+    Load global conversation settings (from the global entry of user_preferences.json)
+    Reads the file directly, not via load_user_preferences() (which filters out the sentinel)
 
     Returns:
-        Dict[str, Any]: 对话设置字典，如果不存在则返回空字典
+        Dict[str, Any]: conversation settings dict; empty dict when absent
     """
     try:
         global PREFERENCES_FILE
@@ -343,7 +357,7 @@ def load_global_conversation_settings() -> Dict[str, Any]:
 
 
 async def aload_global_conversation_settings() -> Dict[str, Any]:
-    """异步版 load_global_conversation_settings：供 async 路径调用，offload sync IO。"""
+    """Async version of load_global_conversation_settings: for async paths, offloading sync IO."""
     return await asyncio.to_thread(load_global_conversation_settings)
 
 
@@ -373,32 +387,33 @@ async def aload_ui_language_override() -> Optional[str]:
 
 
 def is_privacy_mode_enabled() -> bool:
-    """前端"隐私模式"开关是否开启。
+    """Whether the frontend "privacy mode" switch is on.
 
-    内部存储字段为 ``proactiveVisionEnabled``（True=允许自主视觉），
-    隐私模式是它的反面。未同步时默认 False（与前端首次启动行为一致：
-    隐私模式默认关，自主视觉默认开）。
+    The internally stored field is ``proactiveVisionEnabled`` (True=allow autonomous
+    vision); privacy mode is its inverse. Defaults to False when not yet synced
+    (matching the frontend's first-launch behavior: privacy mode off, autonomous
+    vision on by default).
     """
     settings = load_global_conversation_settings()
     return not settings.get('proactiveVisionEnabled', True)
 
 
 async def ais_privacy_mode_enabled() -> bool:
-    """异步版 ``is_privacy_mode_enabled``。"""
+    """Async version of ``is_privacy_mode_enabled``."""
     settings = await aload_global_conversation_settings()
     return not settings.get('proactiveVisionEnabled', True)
 
 
 def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
     """
-    保存全局对话设置（写入 user_preferences.json 的全局条目）
-    使用白名单过滤，只保存允许的字段，model_path 固定为哨兵值
+    Save global conversation settings (written into the global entry of user_preferences.json)
+    Uses whitelist filtering, saving only allowed fields; model_path is pinned to the sentinel value
 
     Args:
-        settings (Dict[str, Any]): 要保存的对话设置字典
+        settings (Dict[str, Any]): conversation settings dict to save
 
     Returns:
-        bool: 保存成功返回True，失败返回False
+        bool: True on success, False on failure
     """
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
