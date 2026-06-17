@@ -311,7 +311,12 @@ class TopicHookPool:
             self._materials.pop(name, None)
             self._dirty.discard(name)
             return
-        topic_lang = lang or self._langs.get(name, "zh")
+        stored_lang = self._langs.get(name)
+        topic_lang = (
+            stored_lang
+            if stored_lang and stored_lang != "zh"
+            else (lang or stored_lang or "zh")
+        )
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         raw_materials = await self._analyzer(
             lang=topic_lang,

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime
 
 import pytest
@@ -265,6 +266,57 @@ async def test_topic_pool_passes_chat_language_to_delivery_prepare(monkeypatch):
     await asyncio.wait_for(delivered.wait(), timeout=1.0)
 
     assert langs == ["zh-CN"]
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_heartbeat_language_does_not_override_character_language(monkeypatch):
+    analyzer_langs = []
+    enrich_langs = []
+    delivered = asyncio.Event()
+
+    async def fake_analyzer(*, lang, **kwargs):
+        analyzer_langs.append(lang)
+        return [
+            {
+                "interest": "看平民代步车的小改件",
+                "hook": "聊入门小改怎么少花冤枉钱",
+            }
+        ]
+
+    async def fake_enrich(materials, *, lang=None, max_materials=2, **kwargs):
+        enrich_langs.append(lang)
+        return list(materials)
+
+    async def fake_derive(**kwargs):
+        return "代步车 小改件"
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.set()
+        return True
+
+    monkeypatch.setattr(
+        "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
+    )
+    monkeypatch.setattr(
+        "main_logic.topic.pipeline.enrich_topic_materials_online",
+        fake_enrich,
+    )
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        topic_trigger=fake_trigger,
+        candidate_quiet_seconds=0,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近在看便宜代步车和小改件怎么平衡", lang="zh-CN")
+
+    await pool.process_ready_topics(lang="en", now=time.time() + 60)
+    await asyncio.wait_for(delivered.wait(), timeout=1.0)
+
+    assert analyzer_langs == ["zh-CN"]
+    assert enrich_langs == ["zh-CN"]
 
 
 @pytest.mark.asyncio
