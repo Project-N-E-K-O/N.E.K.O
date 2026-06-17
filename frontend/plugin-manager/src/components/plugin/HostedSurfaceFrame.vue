@@ -96,6 +96,7 @@ type HostedBridgeError = {
 }
 
 const frameStyle = computed(() => ({
+  height: props.height,
   minHeight: props.height,
 }))
 
@@ -493,10 +494,12 @@ async function handleHostedRequest(data: any) {
     if (method === 'call') {
       const actionId = String(data.payload?.actionId || '')
       const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
+      const timeoutMs = Number(data.timeoutMs)
       const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
         kind: props.surface.kind,
         id: props.surface.id,
         locale: String(locale.value),
+        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
       })
       respond({ ok: true, result })
       return
@@ -556,12 +559,14 @@ watch(
 
 .hosted-surface-frame__iframe {
   width: 100%;
+  height: 100%;
   min-height: inherit;
   border: none;
   display: block;
 }
 
 .hosted-surface-frame__placeholder {
+  height: 100%;
   min-height: inherit;
   display: flex;
   flex-direction: column;

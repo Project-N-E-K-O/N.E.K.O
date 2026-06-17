@@ -19,9 +19,11 @@ from plugin.core.ui_manifest import (
 )
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import coerce_timeout
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
 
 logger = get_logger("server.application.plugins.ui_query")
+HOSTED_UI_ACTION_TIMEOUT_MAX_SECONDS = 3600.0
 _ALLOWED_PLUGIN_LIST_ACTION_KINDS = {"builtin", "ui", "route", "url"}
 _ALLOWED_PLUGIN_LIST_ACTION_OPEN_IN = {"new_tab", "same_tab"}
 _ALLOWED_PLUGIN_LIST_ACTION_CONFIRM_MODES = {"dialog", "hold"}
@@ -1539,6 +1541,7 @@ class PluginUiQueryService:
         kind: str = "panel",
         surface_id: str = "main",
         locale: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
@@ -1644,7 +1647,14 @@ class PluginUiQueryService:
                 )
 
             try:
-                result = await host.trigger(resolved_action_id, dict(args or {}))
+                trigger_timeout = None
+                if timeout_seconds is not None:
+                    trigger_timeout = coerce_timeout(
+                        timeout_seconds,
+                        default=10.0,
+                        max_seconds=HOSTED_UI_ACTION_TIMEOUT_MAX_SECONDS,
+                    )
+                result = await host.trigger(resolved_action_id, dict(args or {}), timeout=trigger_timeout)
             except PluginExecutionError as exc:
                 message = exc.error if isinstance(exc.error, str) and exc.error else str(exc)
                 logger.warning(

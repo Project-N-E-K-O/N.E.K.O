@@ -157,9 +157,55 @@ function isSafeUrl(value) {
   if (text.startsWith('#') || text.startsWith('/') || text.startsWith('./') || text.startsWith('../')) return true;
   try {
     const url = new URL(text, window.location.href);
-    return ['http:', 'https:', 'mailto:'].includes(url.protocol);
+    if (['http:', 'https:', 'mailto:', 'blob:'].includes(url.protocol)) return true;
+    if (url.protocol === 'data:') {
+      return /^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(text);
+    }
+    return false;
   } catch (_) {
     return false;
+  }
+}
+function classNames(...items) {
+  return items
+    .flatMap((item) => Array.isArray(item) ? item : [item])
+    .filter(Boolean)
+    .join(' ');
+}
+function optionValue(option) {
+  return typeof option === 'string' ? option : option.value;
+}
+function optionLabel(option) {
+  return typeof option === 'string' ? option : (option.label || option.title || option.value);
+}
+function normalizeOptions(options) {
+  return Array.isArray(options) ? options : [];
+}
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+function isImageDataUrl(value) {
+  return /^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(String(value || ''));
+}
+function hostedAbsoluteUrl(href) {
+  const text = String(href || '').trim();
+  if (!text) return '';
+  try {
+    return new URL(text).toString();
+  } catch (_) {}
+  const payload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
+  const host = payload.host && typeof payload.host === 'object' ? payload.host : {};
+  const origin = typeof host.origin === 'string' ? host.origin : '';
+  if (!origin) return text;
+  try {
+    return new URL(text, origin).toString();
+  } catch (_) {
+    return text;
   }
 }
 function safeInsert(parentDom, node, anchor) {
@@ -648,14 +694,14 @@ function ErrorBoundary(props) {
 }
 
 function Page(props) {
-  return h('div', { className: 'neko-page' },
+  return h('div', { className: 'neko-page ' + (props.className || '') },
     props.title ? h('header', null, h('h1', { className: 'neko-page-title' }, props.title), props.subtitle ? h('p', { className: 'neko-page-subtitle' }, props.subtitle) : null) : null,
     props.children
   );
 }
 
 function Card(props) {
-  return h('section', { className: 'neko-card' },
+  return h('section', { className: 'neko-card ' + (props.className || '') },
     props.title ? h('div', { className: 'neko-card-header' }, h('h2', { className: 'neko-card-title' }, props.title)) : null,
     h('div', { className: 'neko-card-body' }, props.children)
   );
@@ -770,7 +816,11 @@ function List(props) {
 }
 function Progress(props) {
   const value = Math.max(0, Math.min(100, Number(props.value || 0)));
-  return h('div', { className: 'neko-progress ' + (props.className || '') }, h('div', { className: 'neko-progress-label' }, h('span', null, props.label || ''), h('span', null, String(value) + '%')), h('div', { className: 'neko-progress-track' }, h('div', { className: 'neko-progress-bar', style: { '--progress': value + '%' } })));
+  const indeterminate = props.value === undefined || props.indeterminate;
+  return h('div', { className: classNames('neko-progress', indeterminate && 'is-indeterminate', props.className) },
+    h('div', { className: 'neko-progress-label' }, h('span', null, props.label || ''), indeterminate ? null : h('span', null, String(value) + '%')),
+    h('div', { className: 'neko-progress-track' }, h('div', { className: 'neko-progress-bar', style: { '--progress': value + '%' } }))
+  );
 }
 function JsonView(props) { return CodeBlock({ children: JSON.stringify(props.data ?? props.value ?? {}, null, 2) }); }
 function Field(props) {
@@ -782,23 +832,252 @@ function Field(props) {
     error ? h('p', { className: 'neko-field-error', role: 'alert' }, error) : null
   );
 }
-function Input(props) { return h('input', { className: 'neko-input ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Input(props) {
+  return h('input', {
+    className: 'neko-input ' + (props.className || ''),
+    type: props.type || 'text',
+    value: props.value || '',
+    placeholder: props.placeholder || '',
+    min: props.min,
+    max: props.max,
+    step: props.step,
+    'aria-invalid': props.invalid || props.error ? 'true' : undefined,
+    'data-invalid': props.invalid || props.error ? 'true' : undefined,
+    onCompositionStart: (event) => { event.target.__nekoComposing = true; },
+    onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); },
+    onInput: (event) => props.onChange && props.onChange(event.target.value),
+  });
+}
+function PasswordInput(props) { return Input({ ...props, type: 'password' }); }
+function NumberInput(props) {
+  return Input({
+    ...props,
+    type: 'number',
+    value: props.value ?? '',
+    onChange: (value) => {
+      const parsed = value === '' ? '' : Number(value);
+      if (props.onChange) props.onChange(Number.isFinite(parsed) ? parsed : value);
+    },
+  });
+}
+function Slider(props) {
+  const min = Number(props.min ?? 0);
+  const max = Number(props.max ?? 100);
+  const step = Number(props.step ?? 1);
+  const value = Number(props.value ?? min);
+  return h('div', { className: classNames('neko-slider', props.className) },
+    h('input', {
+      className: 'neko-slider-input',
+      type: 'range',
+      min,
+      max,
+      step,
+      value,
+      disabled: props.disabled,
+      onInput: (event) => props.onChange && props.onChange(Number(event.target.value)),
+      onChange: (event) => props.onChange && props.onChange(Number(event.target.value)),
+    }),
+    props.showValue === false ? null : h('output', { className: 'neko-slider-value' }, String(value))
+  );
+}
 function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
 function Select(props) {
-  const options = props.options || [];
+  const options = normalizeOptions(props.options);
   return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
     options.map((option) => {
-      const value = typeof option === 'string' ? option : option.value;
-      const label = typeof option === 'string' ? option : option.label || option.value;
+      const value = optionValue(option);
+      const label = optionLabel(option);
       return h('option', { value }, label);
+    })
+  );
+}
+function RadioGroup(props) {
+  const name = props.name || ('radio-' + Math.random().toString(36).slice(2));
+  return h('div', { className: classNames('neko-choice-group', props.className), role: 'radiogroup' },
+    normalizeOptions(props.options).map((option) => {
+      const value = optionValue(option);
+      return h('label', { className: 'neko-choice' },
+        h('input', {
+          className: 'neko-choice-input',
+          type: 'radio',
+          name,
+          value,
+          checked: String(props.value) === String(value),
+          disabled: props.disabled || (option && typeof option === 'object' && option.disabled),
+          onChange: () => props.onChange && props.onChange(value),
+        }),
+        h('span', { className: 'neko-choice-label' }, optionLabel(option))
+      );
+    })
+  );
+}
+function SegmentedControl(props) {
+  return h('div', { className: classNames('neko-segmented', props.className), role: 'tablist' },
+    normalizeOptions(props.options).map((option) => {
+      const value = optionValue(option);
+      const active = String(props.value) === String(value);
+      return h('button', {
+        className: classNames('neko-segmented-button', active && 'is-active'),
+        type: 'button',
+        role: 'tab',
+        'aria-selected': active ? 'true' : 'false',
+        disabled: props.disabled || (option && typeof option === 'object' && option.disabled),
+        onClick: () => props.onChange && props.onChange(value),
+      }, optionLabel(option));
     })
   );
 }
 function Switch(props) {
   return h('label', { className: 'neko-switch ' + (props.className || '') },
-    h('input', { className: 'neko-checkbox', type: 'checkbox', checked: !!props.checked, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(!!event.target.checked) }),
+    h('input', { className: 'neko-checkbox', type: 'checkbox', value: props.value || props.label || '', checked: !!props.checked, disabled: props.disabled, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(!!event.target.checked) }),
     props.label || props.children
   );
+}
+function Checkbox(props) {
+  return Switch({
+    ...props,
+    checked: props.checked ?? props.value,
+    value: props.value,
+    onChange: (value) => props.onChange && props.onChange(value),
+  });
+}
+function CheckboxGroup(props) {
+  const selected = Array.isArray(props.value) ? props.value : [];
+  const toggle = (value, checked) => {
+    const next = checked
+      ? [...selected.filter((item) => String(item) !== String(value)), value]
+      : selected.filter((item) => String(item) !== String(value));
+    if (props.onChange) props.onChange(next);
+  };
+  return h('div', { className: classNames('neko-checkbox-group', props.className) },
+    normalizeOptions(props.options).map((option) => {
+      const value = optionValue(option);
+      const checked = selected.some((item) => String(item) === String(value));
+      return Checkbox({
+        label: optionLabel(option),
+        value,
+        checked,
+        disabled: props.disabled || (option && typeof option === 'object' && option.disabled),
+        onChange: (nextChecked) => toggle(value, nextChecked),
+      });
+    })
+  );
+}
+function Accordion(props) {
+  const [open, setOpen] = useLocalState(`accordion:${props.id || props.title || props.label || 'default'}`, props.open !== false);
+  return h('section', { className: classNames('neko-accordion', props.className), 'data-open': open ? 'true' : 'false' },
+    h('button', { className: 'neko-accordion-trigger', type: 'button', 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open) },
+      h('span', null, props.title || props.label || ''),
+      h('span', { className: 'neko-accordion-icon', 'aria-hidden': 'true' }, open ? '−' : '+')
+    ),
+    open ? h('div', { className: 'neko-accordion-body' }, props.children) : null
+  );
+}
+function Markdown(props) {
+  return h('div', { className: classNames('neko-markdown', props.className) }, props.children || props.source || props.text || '');
+}
+function ImageUpload(props) {
+  const [dragging, setDragging] = useState(false);
+  const [error, setError] = useState('');
+  const accept = props.accept || 'image/png,image/jpeg,image/webp';
+  const handleFiles = async (files) => {
+    const file = files && files[0];
+    if (!file) return;
+    try {
+      setError('');
+      const maxBytes = Number(props.maxBytes || 20 * 1024 * 1024);
+      if (file.size > maxBytes) throw new Error(`File is too large (${Math.ceil(file.size / 1024 / 1024)} MB)`);
+      const dataUrl = await readFileAsDataUrl(file);
+      if (typeof props.onChange === 'function') props.onChange(dataUrl, { name: file.name, size: file.size, type: file.type });
+    } catch (caught) {
+      setError(formatErrorMessage(caught));
+      if (typeof props.onError === 'function') props.onError(caught);
+    }
+  };
+  const preview = props.value && isImageDataUrl(props.value) ? props.value : '';
+  return h('label', {
+    className: classNames('neko-image-upload', dragging && 'is-dragging', props.className),
+    onDragOver: (event) => { event.preventDefault(); setDragging(true); },
+    onDragLeave: () => setDragging(false),
+    onDrop: (event) => {
+      event.preventDefault();
+      setDragging(false);
+      handleFiles(event.dataTransfer && event.dataTransfer.files);
+    },
+  },
+    h('input', {
+      className: 'neko-file-input',
+      type: 'file',
+      accept,
+      onChange: (event) => handleFiles(event.target.files),
+    }),
+    preview
+      ? h('img', { className: 'neko-image-upload-preview', src: preview, alt: props.alt || props.label || 'Uploaded image' })
+      : h('span', { className: 'neko-image-upload-placeholder' }, props.placeholder || props.label || 'Upload image'),
+    error ? h('span', { className: 'neko-field-error', role: 'alert' }, error) : null
+  );
+}
+function ImagePreview(props) {
+  const src = props.src || props.value || '';
+  if (!src) return EmptyState({ className: props.className || '', title: props.emptyText || props.placeholder || 'No image' });
+  return h('figure', { className: classNames('neko-image-preview', props.className) },
+    h('img', { src, alt: props.alt || props.label || 'Preview' }),
+    props.label || props.caption ? h('figcaption', null, props.caption || props.label) : null
+  );
+}
+function Gallery(props) {
+  const items = Array.isArray(props.items) ? props.items : [];
+  if (items.length === 0) return EmptyState({ className: props.className || '', title: props.emptyText || 'No items' });
+  return h('div', { className: classNames('neko-gallery', props.className), style: { '--gallery-cols': props.columns || props.cols || 4 } },
+    items.map((item, index) => {
+      const src = item && typeof item === 'object' ? (item.src || item.url || item.imageUrl || item.preview_data_url || item.data_url) : '';
+      const label = item && typeof item === 'object' ? (item.label || item.name || item.title) : '';
+      return h('button', {
+        className: 'neko-gallery-item',
+        type: 'button',
+        onClick: () => props.onSelect && props.onSelect(item, index),
+      },
+        src ? h('img', { src, alt: label || `Image ${index + 1}` }) : h('span', { className: 'neko-gallery-missing' }, label || String(index + 1)),
+        label ? h('span', { className: 'neko-gallery-label' }, label) : null
+      );
+    })
+  );
+}
+function FileDownload(props) {
+  const href = props.href || props.url || props.dataUrl || '';
+  const label = props.label || props.children || props.filename || 'Download';
+  const copyText = props.path || href;
+  const openHref = () => {
+    const url = hostedAbsoluteUrl(href);
+    if (!url) return;
+    try {
+      parent.postMessage({ type: 'neko-hosted-surface-open-external', payload: { url } }, '*');
+    } catch (error) {
+      reportHostedRuntimeError('FileDownload.open', error);
+    }
+  };
+  const copy = async () => {
+    if (!copyText || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(String(copyText));
+      showToast(props.copiedLabel || 'Copied', { tone: 'success' });
+    } catch (error) {
+      reportHostedRuntimeError('FileDownload.copy', error);
+    }
+  };
+  if (href && props.openExternal !== false && !String(href).startsWith('data:')) {
+    return Button({ className: classNames('neko-download', props.className), tone: props.tone || 'primary', onClick: openHref, children: [label] });
+  }
+  if (href && isSafeUrl(href)) {
+    return h('a', {
+      className: classNames('neko-button neko-download', props.className),
+      'data-tone': props.tone || 'primary',
+      href,
+      download: props.filename || true,
+      target: props.target,
+    }, label);
+  }
+  return Button({ className: classNames('neko-download', props.className), tone: props.tone || 'primary', disabled: !copyText, onClick: copy, children: [label] });
 }
 function Form(props) { return h('form', { className: 'neko-form ' + (props.className || ''), onSubmit: (event) => { event.preventDefault(); if (props.onSubmit) props.onSubmit(event); } }, ...(props.children || [])); }
 
@@ -1026,7 +1305,7 @@ function requestHost(method, payload, options) {
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload }, '*');
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, '*');
     window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
@@ -1112,8 +1391,9 @@ function AsyncBlock(props) {
 Object.assign(NekoUiKit, {
   appendChild, render, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
-  Alert, InlineError, ErrorBoundary, EmptyState, Modal, ConfirmDialog, List, Progress, JsonView, Field, Input, Select, Textarea,
-  Switch, Form, ActionForm, AsyncBlock, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
+  Alert, InlineError, ErrorBoundary, EmptyState, Modal, ConfirmDialog, List, Progress, JsonView, Field, Input, PasswordInput,
+  NumberInput, Slider, Select, RadioGroup, SegmentedControl, Textarea, Switch, Checkbox, CheckboxGroup, Accordion, Markdown,
+  ImageUpload, ImagePreview, Gallery, FileDownload, Form, ActionForm, AsyncBlock, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
   t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useLocalState,
   useDebounce, useDebouncedState, useForm, useAsync, showToast, useToast, useConfirm, ActionButton, RefreshButton,
 });

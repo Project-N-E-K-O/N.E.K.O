@@ -5,9 +5,10 @@ import asyncio
 from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, tr, ui
 from plugin.sdk.shared.core.router import PluginRouter
 
-from ..core.constants import DEFAULT_PARTS
+from ..core.constants import AVAILABLE_PARTS, DEFAULT_PARTS
 
 _METHODS = {"anime_face", "grounded_sam", "color"}
+_PARTS = set(AVAILABLE_PARTS)
 
 
 class ProcessRouter(PluginRouter):
@@ -34,6 +35,7 @@ class ProcessRouter(PluginRouter):
             "type": "object",
             "properties": {
                 "input_path": {"type": "string", "description": "Local image path"},
+                "input_data_url": {"type": "string", "description": "Optional browser-uploaded image data URL"},
                 "session_id": {"type": "string", "description": "Optional output session id"},
                 "method": {
                     "type": "string",
@@ -56,6 +58,7 @@ class ProcessRouter(PluginRouter):
     async def split_image(
         self,
         input_path: str = "",
+        input_data_url: str = "",
         session_id: str = "",
         method: str = "anime_face",
         parts: list[str] | None = None,
@@ -63,14 +66,15 @@ class ProcessRouter(PluginRouter):
         gpt_api_key: str = "",
         **_,
     ):
-        if not str(input_path or "").strip():
-            return Err(SdkError("input_path is required"))
+        if not str(input_path or "").strip() and not str(input_data_url or "").strip():
+            return Err(SdkError("input_path or input_data_url is required"))
         if method not in _METHODS:
             return Err(SdkError(f"method must be one of: {', '.join(sorted(_METHODS))}"))
         try:
             result = await asyncio.to_thread(
                 self.main_plugin.layers.split_image,
-                input_path=input_path,
+                input_path=input_path or None,
+                input_data_url=input_data_url,
                 session_id=session_id.strip() or None,
                 method=method,  # type: ignore[arg-type]
                 parts=_clean_parts(parts),
@@ -80,7 +84,100 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_split_image failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(result.to_dict())
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
+
+    @ui.action(
+        label=tr("actions.resegmentSession.label", default="Resegment"),
+        tone="primary",
+        group="process",
+        order=20,
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="live2d_resegment_session",
+        name=tr("entries.resegmentSession.name", default="Resegment Live2D layer session"),
+        description=tr("entries.resegmentSession.description", default="Rebuild foreground from an exported session and rerun segmentation with new options."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "method": {
+                    "type": "string",
+                    "enum": ["anime_face", "grounded_sam", "color"],
+                    "default": "anime_face",
+                },
+                "parts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "feather_radius": {"type": "integer", "default": 2},
+                "gpt_api_key": {"type": "string"},
+            },
+            "required": ["session_id"],
+        },
+        timeout=900,
+        llm_result_fields=["message", "manifest_path", "preview_path", "zip_path", "warnings"],
+    )
+    async def resegment_session(
+        self,
+        session_id: str = "",
+        method: str = "anime_face",
+        parts: list[str] | None = None,
+        feather_radius: int = 2,
+        gpt_api_key: str = "",
+        **_,
+    ):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        if method not in _METHODS:
+            return Err(SdkError(f"method must be one of: {', '.join(sorted(_METHODS))}"))
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.resegment_session,
+                clean_id,
+                method=method,  # type: ignore[arg-type]
+                parts=_clean_parts(parts),
+                feather_radius=int(feather_radius),
+                gpt_api_key=str(gpt_api_key or ""),
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_resegment_session failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
+
+    @ui.action(
+        label=tr("actions.exportSession.label", default="Export ZIP"),
+        tone="primary",
+        group="process",
+        order=30,
+        refresh_context=False,
+    )
+    @plugin_entry(
+        id="live2d_export_session",
+        name=tr("entries.exportSession.name", default="Export Live2D layer session"),
+        description=tr("entries.exportSession.description", default="Return ZIP artifact metadata for a Live2D Auto Layer session."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+            },
+            "required": ["session_id"],
+        },
+        llm_result_fields=["session_id", "zip_path"],
+    )
+    async def export_session(self, session_id: str = "", **_):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        result = self.main_plugin.layers.get_session(clean_id)
+        if result is None:
+            return Err(SdkError(f"session not found: {clean_id}"))
+        return Ok({
+            "session_id": clean_id,
+            "zip_path": result.zip_path,
+            "filename": "live2d_layers.zip",
+        })
 
     @ui.action(
         label=tr("actions.listSessions.label", default="List sessions"),
@@ -129,7 +226,7 @@ class ProcessRouter(PluginRouter):
             return Err(SdkError(str(exc)))
         if result is None:
             return Err(SdkError(f"session not found: {clean_id}"))
-        return Ok(result.to_dict())
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
 
     @ui.action(
         label=tr("actions.deleteSession.label", default="Delete session"),
@@ -165,5 +262,9 @@ class ProcessRouter(PluginRouter):
 def _clean_parts(parts: list[str] | None) -> list[str]:
     if not isinstance(parts, list) or not parts:
         return list(DEFAULT_PARTS)
-    cleaned = [str(part).strip() for part in parts if str(part).strip()]
+    cleaned = [
+        str(part).strip()
+        for part in parts
+        if str(part).strip() in _PARTS
+    ]
     return cleaned or list(DEFAULT_PARTS)

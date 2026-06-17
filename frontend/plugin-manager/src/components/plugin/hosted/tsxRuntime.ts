@@ -66,6 +66,7 @@ function compileHostedTsx(source: string, dependencies: HostedTsxDependency[] = 
 function buildPayload(options: BuildHostedTsxDocumentOptions) {
   return {
     plugin: options.context?.plugin || { id: options.pluginId },
+    host: { origin: window.location.origin },
     surface: options.surface,
     state: (options.context?.state && typeof options.context.state === 'object') ? options.context.state : {},
     stateSchema: options.context?.state_schema || null,
@@ -108,6 +109,7 @@ ${escapeScriptContent(uiKit.runtime)}
       const next = context && typeof context === 'object' ? context : {};
       return {
         plugin: next.plugin || __NEKO_PAYLOAD.plugin,
+        host: next.host || __NEKO_PAYLOAD.host,
         surface: next.surface || __NEKO_PAYLOAD.surface,
         state: next.state && typeof next.state === 'object' ? next.state : {},
         stateSchema: next.state_schema || next.stateSchema || null,
@@ -122,6 +124,7 @@ ${escapeScriptContent(uiKit.runtime)}
     function __hostedProps() {
       return {
         plugin: __NEKO_PAYLOAD.plugin,
+        host: __NEKO_PAYLOAD.host,
         surface: __NEKO_PAYLOAD.surface,
         state: __NEKO_PAYLOAD.state,
         stateSchema: __NEKO_PAYLOAD.stateSchema,

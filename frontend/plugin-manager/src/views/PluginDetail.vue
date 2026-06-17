@@ -6,7 +6,7 @@
       <span>{{ $t('common.loading') }}</span>
     </div>
 
-    <el-card v-else-if="plugin" data-yui-guide-id="plugin-detail-card">
+    <el-card v-else-if="plugin" class="plugin-detail-card" data-yui-guide-id="plugin-detail-card">
       <template #header>
         <div class="card-header" data-yui-guide-id="plugin-detail-header">
           <div class="header-left" data-yui-guide-id="plugin-detail-title">
@@ -19,7 +19,7 @@
         </div>
       </template>
 
-      <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
+      <el-tabs v-model="activeTab" class="plugin-detail-tabs" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
             <el-alert
@@ -37,17 +37,17 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="panelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
+            <el-tabs v-if="panelSurfaces.length > 1" v-model="activePanelSurfaceId" class="surface-tabs" type="border-card">
               <el-tab-pane
                 v-for="surface in panelSurfaces"
                 :key="surface.id"
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="surfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" :height="surfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
@@ -68,22 +68,24 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" type="border-card">
+            <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" class="surface-tabs" type="border-card">
               <el-tab-pane
                 v-for="surface in guideSurfaces"
                 :key="surface.id"
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="surfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" :height="surfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
         <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
-          <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
+          <div class="surface-section" data-yui-guide-id="plugin-detail-static-ui">
+            <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" :height="surfaceFrameHeight" @open-surface="openHostedSurfaceFromStaticUi" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
@@ -200,6 +202,7 @@ const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
+const surfaceFrameHeight = '100%'
 const studySurfaceRelayMessageTypes = new Set([
   'neko-study-review-completed',
   'neko-study-refresh-summary',
@@ -458,6 +461,47 @@ watch(locale, () => {
 <style scoped>
 .plugin-detail {
   padding: 0;
+  height: calc(100vh - 132px);
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-detail-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-detail-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-detail-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-detail-tabs :deep(.el-tabs__content),
+.plugin-detail-tabs :deep(.el-tab-pane) {
+  flex: 1;
+  min-height: 0;
+}
+
+.plugin-detail-tabs :deep(.el-tabs__content) {
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-detail-tabs :deep(.el-tab-pane) {
+  display: flex;
+  flex-direction: column;
 }
 
 .loading-container {
@@ -502,6 +546,39 @@ watch(locale, () => {
 
 .surface-section {
   padding: 16px 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.surface-section > :deep(.hosted-surface-frame),
+.surface-section > :deep(.plugin-ui-frame) {
+  flex: 1;
+  min-height: 0;
+}
+
+.surface-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.surface-tabs :deep(.el-tabs__content),
+.surface-tabs :deep(.el-tab-pane) {
+  flex: 1;
+  min-height: 0;
+}
+
+.surface-tabs :deep(.el-tabs__content) {
+  display: flex;
+  flex-direction: column;
+}
+
+.surface-tabs :deep(.el-tab-pane) {
+  display: flex;
+  flex-direction: column;
 }
 
 .surface-warning {
