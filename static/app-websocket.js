@@ -594,6 +594,13 @@
         return !!(finalDay && finalDay.completed === true);
     }
 
+    function hasCompletedNewUserIcebreakerDay(day) {
+        var store = readNewUserIcebreakerStore();
+        var days = store && typeof store.days === 'object' ? store.days : null;
+        var entry = days && days[String(day)];
+        return !!(entry && entry.completed === true);
+    }
+
     function isRecentNewUserIcebreakerEntry(entry) {
         if (!entry || typeof entry !== 'object') return false;
         var timestamps = [
@@ -630,10 +637,13 @@
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        if (isNewUserIcebreakerPeriodActive()) return true;
         var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
         if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
-            && !hasCompletedNewUserIcebreaker()) {
+            && hasCompletedNewUserIcebreakerDay(1)) {
+            return false;
+        }
+        if (isNewUserIcebreakerPeriodActive()) return true;
+        if (normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped') {
             return true;
         }
         return false;
