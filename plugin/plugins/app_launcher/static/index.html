@@ -1360,6 +1360,9 @@
             .filter(s => s);
 
         try {
+            let finalMessage = '✨ 添加成功';
+            let finalType = 'success';
+
             if (editingAppId) {
                 const normalizedPath = stripPathQuotes(path).toLowerCase();
                 const originalPath = stripPathQuotes(editingAppSnapshot?.path || '').toLowerCase();
@@ -1373,17 +1376,24 @@
                     name, path, aliases, description: desc
                 });
                 if ((pathChanged || autostartChanged) && canApplyAutostart) {
-                    await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
+                    try {
+                        await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
+                    } catch (err) {
+                        finalMessage = `⚠️ 更新成功，但开机自启设置失败: ${err.message}`;
+                        finalType = 'warning';
+                    }
                 }
-                showMessage('✨ 更新成功', 'success');
+                if (finalType === 'success') {
+                    finalMessage = '✨ 更新成功';
+                }
             } else {
                 await callPlugin('add_app', {
                     name, path, aliases, description: desc, autostart
                 });
-                showMessage('✨ 添加成功', 'success');
             }
             closeModal();
             await loadApps();
+            showMessage(finalMessage, finalType);
         } catch (err) {
             showMessage(`❌ ${err.message}`, 'error');
         }
