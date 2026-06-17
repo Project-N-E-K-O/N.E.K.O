@@ -333,6 +333,22 @@ def test_agent_router_command_syncs_core_flags_locally():
     assert _contains_call(fn, "update_agent_flags")
 
 
+def test_agent_router_openclaw_optimistic_sync_clears_stale_ready():
+    source = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "post_agent_command":
+            func = node
+            break
+    assert func is not None
+    func_src = ast.get_source_segment(source, func) or ""
+
+    assert 'if key == "openclaw_enabled":' in func_src
+    assert 'flag_update["openclaw_ready"] = False' in func_src
+    assert '"openclaw_ready": False' in func_src
+
+
 def test_agent_router_has_internal_analyze_request_endpoint():
     paths = _route_paths_from_decorators("main_routers/agent_router.py", "router")
     assert "/internal/analyze_request" in paths
@@ -1737,6 +1753,35 @@ def test_agent_server_user_turn_fingerprint_includes_attachments():
 
     assert text_only != with_attachment
     assert image_only is not None
+
+
+def test_openclaw_magic_analyze_fingerprint_uses_turn_marker():
+    from app.agent_server import _build_analyze_event_fingerprint
+
+    messages = [{"role": "user", "content": "/stop"}]
+    first = _build_analyze_event_fingerprint({
+        "trigger": "text_openclaw_magic_command",
+        "event_id": "event-a",
+        "messages": messages,
+    })
+    second = _build_analyze_event_fingerprint({
+        "trigger": "text_openclaw_magic_command",
+        "event_id": "event-b",
+        "messages": messages,
+    })
+    ordinary_first = _build_analyze_event_fingerprint({
+        "trigger": "turn_end",
+        "event_id": "event-a",
+        "messages": messages,
+    })
+    ordinary_second = _build_analyze_event_fingerprint({
+        "trigger": "turn_end",
+        "event_id": "event-b",
+        "messages": messages,
+    })
+
+    assert first != second
+    assert ordinary_first == ordinary_second
 
 
 def test_user_message_signature_ignores_metadata_and_role():

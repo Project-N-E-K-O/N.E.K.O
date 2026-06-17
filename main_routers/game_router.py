@@ -111,7 +111,7 @@ _game_sessions: Dict[str, dict] = {}
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
-_BASKETBALL_SCORING_MODES = {"shooter", "duel", "timed", "horse"}
+_BASKETBALL_SCORING_MODES = {"shooter", "duel"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 
 _SOCCER_QUICK_LINE_KEYS = {
@@ -1108,8 +1108,6 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "spectator": "自由练习",
         "shooter": "投篮挑战（操控模式）",
         "duel": "投篮对战",
-        "timed": "限时挑战",
-        "horse": "HORSE",
     }.get(normalized_mode, "投篮挑战")
     return {
         "launchIntent": "unknown",
@@ -1126,7 +1124,7 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "duel 默认 lv2；spectator/shooter/timed/HORSE 忽略初始 difficulty，由局内事件自然调整。",
+        "difficultyPolicy": "duel 默认 lv2；spectator/shooter 忽略初始 difficulty，由局内事件自然调整。",
         "moodPolicy": "沿用普通投篮陪玩表现；不引入强情绪惯性。",
         "expressionPolicy": "默认期待/轻吐槽；根据命中、失误、连中和对战比分自然变化。",
         "softeningSignals": [],
@@ -1275,8 +1273,6 @@ def _format_basketball_pregame_context_for_prompt(
         "spectator": "投篮挑战",
         "shooter": "投篮挑战（操控模式）",
         "duel": "投篮对战",
-        "timed": "限时挑战",
-        "horse": "HORSE",
     }.get(_normalize_basketball_mode(mode), "投篮挑战")
     return (
         f"{labels['header']}\n"
@@ -1764,9 +1760,6 @@ async def _build_basketball_pregame_context(
     mode: str = "spectator",
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_basketball_mode(mode)
-    if normalized_mode in {"timed", "horse"}:
-        return _default_basketball_pregame_context(mode=normalized_mode), "lightweight", ""
-
     char_info = _get_character_info(lanlan_name)
     recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
     _log_game_debug_material(
@@ -4590,12 +4583,31 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     """Build a soft balance hint from the Basketball duel score."""
     if not isinstance(event, dict):
         return {}
-    duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
+    current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
+    state_duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
+    event_duel = _sanitize_basketball_duel_state(event.get("duel")) or {}
+    duel = {**state_duel, **event_duel}
     player_score = _safe_int(duel.get("player_score"), 0)
     neko_score = _safe_int(duel.get("neko_score"), 0)
     max_rounds = _safe_int(duel.get("max_rounds"), 0)
     round_num = _safe_int(duel.get("round"), 0)
     remaining_rounds = max(0, max_rounds - round_num) if max_rounds else 999
+    max_misses = _safe_int(duel.get("max_misses"), 0)
+    player_misses = _safe_int(duel.get("player_misses"), 0)
+    neko_misses = _safe_int(duel.get("neko_misses"), 0)
+    player_misses_left = max(0, max_misses - player_misses) if max_misses else 999
+    neko_misses_left = max(0, max_misses - neko_misses) if max_misses else 999
+    miss_context = (
+        {
+            "playerMisses": player_misses,
+            "nekoMisses": neko_misses,
+            "maxMisses": max_misses,
+            "playerMissesLeft": player_misses_left,
+            "nekoMissesLeft": neko_misses_left,
+        }
+        if max_misses
+        else {}
+    )
 
     diff = neko_score - player_score
     active_shooter = str(duel.get("active_shooter") or "").strip().lower()
@@ -4603,32 +4615,55 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     pending_shot_points = 2 if active_shooter == trailing_shooter else 0
     remaining_points = remaining_rounds * 2 + pending_shot_points if max_rounds else 999
     abs_diff = abs(diff)
+    if max_misses and player_misses_left <= 0:
+        return {
+            "state": "player_eliminated",
+            "diff": diff,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
+            **miss_context,
+            "intensity": "low",
+            "message": "玩家已经三次投丢，按淘汰规则收尾。",
+        }
+    if max_misses and neko_misses_left <= 0:
+        return {
+            "state": "neko_eliminated",
+            "diff": diff,
+            "remainingRounds": remaining_rounds,
+            "remainingPoints": remaining_points,
+            **miss_context,
+            "intensity": "low",
+            "message": "Neko 已经三次投丢，按淘汰规则收尾。",
+        }
     if abs_diff <= 1:
         return {
             "state": "close",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "比分接近，自由发挥。",
         }
 
     neko_leading = diff > 0
-    if neko_leading and diff > remaining_points:
+    if not max_misses and neko_leading and diff > remaining_points:
         return {
             "state": "neko_leading_decided",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "已经锁定胜局，可以嘴硬庆祝或温和收尾。",
         }
-    if not neko_leading and abs_diff > remaining_points:
+    if not max_misses and not neko_leading and abs_diff > remaining_points:
         return {
             "state": "player_leading_decided",
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "low",
             "message": "确定输定了，可以不服气、认输或要求再来一局。",
         }
@@ -4638,6 +4673,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
             "diff": diff,
             "remainingRounds": remaining_rounds,
             "remainingPoints": remaining_points,
+            **miss_context,
             "intensity": "high" if abs_diff >= 5 else "medium",
             "message": "你领先中。可以考虑放水搞笑，也可以继续认真；台词里表达原因。",
         }
@@ -4646,6 +4682,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
         "diff": diff,
         "remainingRounds": remaining_rounds,
         "remainingPoints": remaining_points,
+        **miss_context,
         "intensity": "high" if abs_diff >= 5 else "medium",
         "message": "玩家领先中。可以认真起来、不服气、要求重赛。",
     }
@@ -4784,7 +4821,7 @@ def _check_basketball_chat_rate(lanlan_name: str, session_id: str) -> bool:
 
 def _normalize_basketball_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
-    return mode if mode in {"spectator", "shooter", "duel", "timed", "horse"} else "spectator"
+    return mode if mode in {"spectator", "shooter", "duel"} else "spectator"
 
 
 def _is_basketball_scoring_mode(value: Any) -> bool:
@@ -5377,6 +5414,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         ("playerScore", "player_score"),
         ("neko_score", "neko_score"),
         ("nekoScore", "neko_score"),
+        ("player_misses", "player_misses"),
+        ("playerMisses", "player_misses"),
+        ("neko_misses", "neko_misses"),
+        ("nekoMisses", "neko_misses"),
+        ("max_misses", "max_misses"),
+        ("maxMisses", "max_misses"),
         ("round", "round"),
         ("max_rounds", "max_rounds"),
         ("maxRounds", "max_rounds"),
@@ -5384,9 +5427,12 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
         if src_key not in value:
             continue
         try:
-            number = int(float(value.get(src_key)))
+            number_float = float(value.get(src_key))
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(number_float):
+            continue
+        number = int(number_float)
         clean[dst_key] = max(0, min(number, 999))
     active = _normalize_short_text(
         value.get("active_shooter", value.get("activeShooter")),
@@ -5397,78 +5443,10 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
     return clean or None
 
 
-def _sanitize_basketball_horse_state(value: Any) -> dict | None:
-    if not isinstance(value, dict):
-        return None
-    clean: dict[str, Any] = {}
-    word = _normalize_short_text(value.get("word"), max_chars=16)
-    if word:
-        clean["word"] = word
-    for src_key, dst_key in (
-        ("letters_player", "letters_player"),
-        ("lettersPlayer", "letters_player"),
-        ("letters_neko", "letters_neko"),
-        ("lettersNeko", "letters_neko"),
-    ):
-        if src_key not in value:
-            continue
-        try:
-            number = int(float(value.get(src_key)))
-        except (TypeError, ValueError):
-            continue
-        clean[dst_key] = max(0, min(number, 999))
-    phase = _normalize_short_text(value.get("phase"), max_chars=40)
-    if phase:
-        clean["phase"] = phase
-    turn_owner = _normalize_short_text(
-        value.get("turn_owner", value.get("turnOwner")),
-        max_chars=20,
-    ).lower()
-    if turn_owner in {"player", "neko"}:
-        clean["turn_owner"] = turn_owner
-    challenge = value.get("challenge")
-    if isinstance(challenge, dict):
-        clean_challenge: dict[str, Any] = {}
-        owner = _normalize_short_text(challenge.get("owner"), max_chars=20).lower()
-        if owner in {"player", "neko"}:
-            clean_challenge["owner"] = owner
-        for key in ("distance", "angle"):
-            if key not in challenge:
-                continue
-            try:
-                number = float(challenge.get(key))
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(number):
-                continue
-            limit = 5000.0 if key == "distance" else 1000.0
-            clean_challenge[key] = max(-limit, min(number, limit))
-        sweet = challenge.get("sweet")
-        if isinstance(sweet, list) and len(sweet) >= 2:
-            sweet_values: list[float] = []
-            for raw in sweet[:2]:
-                try:
-                    number = float(raw)
-                except (TypeError, ValueError):
-                    sweet_values = []
-                    break
-                if not math.isfinite(number):
-                    sweet_values = []
-                    break
-                sweet_values.append(max(0.0, min(number, 1000.0)))
-            if len(sweet_values) == 2:
-                clean_challenge["sweet"] = sweet_values
-        if clean_challenge:
-            clean["challenge"] = clean_challenge
-    elif "challenge" in value and value.get("challenge") is None:
-        clean["challenge"] = None
-    return clean or None
-
-
 def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
     if not isinstance(value, list):
         return []
-    allowed_text = {"shooter", "shot_type", "horse_phase"}
+    allowed_text = {"shooter", "shot_type"}
     allowed_numbers = {
         "distance", "distance_m", "score", "angle", "power", "round",
         "streak_before", "streak_after", "best_streak_after", "made_count_after",
@@ -5515,6 +5493,7 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
     }
     allowed_results = {"scored", "missed", ""}
+    allowed_duel_outcomes = {"player_win", "neko_win"}
     allowed_shot_types = {"swish", "bank", "rim_in", "rim_out", "air_ball", ""}
     kind = str(event.get("kind") or "").strip()
     if kind not in allowed_kinds:
@@ -5529,11 +5508,14 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 clean[key] = event.get(key) is True
 
     result = str(event.get("result") or "").strip()
+    duel_outcome = str(event.get("duel_outcome") or "").strip()
     shot_type = str(event.get("shot_type") or "").strip()
     if result not in allowed_results:
         clean.pop("result", None)
     else:
         clean["result"] = result
+    if duel_outcome in allowed_duel_outcomes:
+        clean["duel_outcome"] = duel_outcome
     if shot_type not in allowed_shot_types:
         clean.pop("shot_type", None)
     else:
@@ -5574,9 +5556,6 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     duel_state = _sanitize_basketball_duel_state(event.get("duel"))
     if duel_state:
         clean["duel"] = duel_state
-    horse_state = _sanitize_basketball_horse_state(event.get("horse"))
-    if horse_state:
-        clean["horse"] = horse_state
     current_state = event.get("currentState")
     if isinstance(current_state, dict):
         state_clean = {}
@@ -5633,9 +5612,6 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
-        horse_state = _sanitize_basketball_horse_state(current_state.get("horse"))
-        if horse_state:
-            state_clean["horse"] = horse_state
         attempts_results = _sanitize_basketball_attempts_results(
             current_state.get("attempts_results"),
         )

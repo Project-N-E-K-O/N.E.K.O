@@ -1717,15 +1717,20 @@ class OmniOfflineClient:
         guard mirrors the proactive Phase-2 rule: a vision model + thinking
         reliably times out (see ``main_routers/system_router.py`` Phase-2
         note). ``uses_vision`` must be True both when this turn carries images
-        AND when the session has already switched to the vision model
-        permanently (image data persists in history, so ``self.model`` stays
-        the vision model on later text-only turns).
+        AND when the session has already sent images this session (image data
+        persists in history, so a later text-only turn still runs on the
+        vision model).
         """
         return {"extra_body": None} if (thinking_on and not uses_vision) else {}
 
     async def stream_text(
-        self, text: str, *, system_prefix: str | None = None,
+        self,
+        text: str,
+        *,
+        system_prefix: str | None = None,
         thinking_on: bool = False,
+        input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        history_replacement_text: str | None = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -1755,6 +1760,14 @@ class OmniOfflineClient:
         content means accepting that the callback text is persisted into
         ``_conversation_history`` along with the user message (consistent with the
         voice side's user-role injection semantics).
+
+        ``input_transcript_callback`` lets a caller bind the transcript recording
+        callback to this request. This is used when the frontend sends a long prompt
+        but wants memory/history to record a concise user-facing summary.
+
+        ``history_replacement_text`` keeps the full prompt available for the current
+        LLM turn, then replaces the just-appended user history entry before the next
+        turn reuses ``_conversation_history``.
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1810,12 +1823,21 @@ class OmniOfflineClient:
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        history_replacement_index = len(self._conversation_history) - 1
+        history_replacement_text = (
+            str(history_replacement_text).strip()
+            if history_replacement_text is not None
+            else ""
+        )
+        if history_replacement_text and _prefix_clean:
+            history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
         if has_images:
             self._evict_old_images()
 
         # Callback for user input
-        if self.on_input_transcript:
-            await self.on_input_transcript(text.strip())
+        transcript_callback = input_transcript_callback or self.on_input_transcript
+        if transcript_callback:
+            await transcript_callback(text.strip())
 
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
@@ -2768,6 +2790,15 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
+
+            if (
+                history_replacement_text
+                and 0 <= history_replacement_index < len(self._conversation_history)
+                and self._conversation_history[history_replacement_index] is user_message
+            ):
+                self._conversation_history[history_replacement_index] = HumanMessage(
+                    content=history_replacement_text
+                )
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:

@@ -20,8 +20,12 @@ import json
 import base64
 
 from functools import partial
-from urllib.parse import urlparse, urlunparse
-from utils.mimo_tts_voices import MIMO_TTS_BASE_URL, MIMO_TTS_MODEL, normalize_mimo_tts_voice
+from utils.mimo_tts_voices import (
+    MIMO_TTS_MODEL,
+    MIMO_TTS_VOICECLONE_MODEL,
+    mimo_chat_completions_url,
+    normalize_mimo_tts_voice,
+)
 
 from .._infra import _resample_audio, _enqueue_error, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
@@ -30,31 +34,10 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-def _get_mimo_chat_completions_url(base_url: str | None = None) -> str:
-    """Normalize a MiMo API base URL to the chat-completions endpoint."""
-    raw_url = (base_url or MIMO_TTS_BASE_URL).strip().rstrip("/")
-    if raw_url.startswith("ws://"):
-        raw_url = "http://" + raw_url[5:]
-    elif raw_url.startswith("wss://"):
-        raw_url = "https://" + raw_url[6:]
-    elif not raw_url.startswith(("http://", "https://")):
-        raw_url = "https://" + raw_url
-
-    parsed = urlparse(raw_url)
-    if not parsed.netloc:
-        raise ValueError(f"无效的 MiMo base_url: {base_url!r}")
-
-    path = parsed.path.rstrip("/")
-    if path.endswith("/chat/completions"):
-        endpoint_path = path
-    else:
-        if not path or path == "/":
-            endpoint_path = "/v1/chat/completions"
-        elif path.endswith("/v1"):
-            endpoint_path = f"{path}/chat/completions"
-        else:
-            endpoint_path = f"{path}/v1/chat/completions"
-    return urlunparse((parsed.scheme, parsed.netloc, endpoint_path, "", "", ""))
+# Backwards-compatible alias — the URL-derivation rule now lives in the utils
+# layer (utils.mimo_tts_voices.mimo_chat_completions_url) so the clone-enrollment
+# client can share it without importing main_logic.
+_get_mimo_chat_completions_url = mimo_chat_completions_url
 
 def _extract_mimo_tts_audio_bytes(payload: dict) -> bytes | None:
     """Extract base64 PCM16 audio from MiMo's chat-completions response."""
@@ -92,18 +75,33 @@ def _extract_mimo_tts_audio_bytes(payload: dict) -> bytes | None:
             return audio_bytes[:usable_len]
     return None
 
-def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
-    """Xiaomi MiMo-V2.5-TTS worker — chat-completions JSON returns PCM16."""
+def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None,
+                    clone_voice=None):
+    """Xiaomi MiMo-V2.5-TTS worker — chat-completions JSON returns PCM16.
+
+    ``clone_voice`` is the cloned-voice variant: when set it is a
+    ``data:audio/...;base64,...`` reference-audio URI (MiMo has no server-side
+    cloned voice id — the sample is inlined per request, see
+    ``utils.mimo_tts_voices.mimo_voice_clone_data_uri``). It is passed as
+    ``audio.voice`` against the ``mimo-v2.5-tts-voiceclone`` model; the catalog
+    ``voice_id`` is ignored in that mode.
+    """
     import httpx
 
-    requested_voice_id = (voice_id or "").strip()
-    voice_id, voice_recognized = normalize_mimo_tts_voice(voice_id)
-    if requested_voice_id and not voice_recognized:
-        logger.warning(
-            "MiMo TTS voice '%s' is not in the supported catalog; falling back to '%s'",
-            requested_voice_id,
-            voice_id,
-        )
+    is_clone = bool(clone_voice)
+    tts_model = MIMO_TTS_VOICECLONE_MODEL if is_clone else MIMO_TTS_MODEL
+    if is_clone:
+        voice_param = clone_voice
+    else:
+        requested_voice_id = (voice_id or "").strip()
+        voice_id, voice_recognized = normalize_mimo_tts_voice(voice_id)
+        if requested_voice_id and not voice_recognized:
+            logger.warning(
+                "MiMo TTS voice '%s' is not in the supported catalog; falling back to '%s'",
+                requested_voice_id,
+                voice_id,
+            )
+        voice_param = voice_id
 
     async def setup(response_queue):
         if not audio_api_key:
@@ -126,13 +124,13 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
 
         async def synthesize(text: str, speech_id: str) -> None:
             payload = {
-                "model": MIMO_TTS_MODEL,
+                "model": tts_model,
                 "messages": [
                     {"role": "assistant", "content": text},
                 ],
                 "audio": {
                     "format": "pcm16",
-                    "voice": voice_id,
+                    "voice": voice_param,
                 },
                 "stream": True,
             }
@@ -157,7 +155,7 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
                         )
                         return
 
-                    _record_tts_telemetry(MIMO_TTS_MODEL, len(text))
+                    _record_tts_telemetry(tts_model, len(text))
                     content_type = resp.headers.get("content-type", "").lower()
                     if "text/event-stream" not in content_type:
                         try:
@@ -202,21 +200,73 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="MiMo TTS")
 
-# ── MiMo（hosted SaaS，assistApi=mimo / TTS_PROVIDER=mimo 选中）────────────────
+# ── MiMo（hosted SaaS）────────────────────────────────────────────────────────
+# 两种选中机制（设计文档 §3.1）合并在一个 provider 条目里：
+#   1. 配置选中（preset）——assistApi=mimo / TTS_PROVIDER=mimo 时把 MiMo 当默认 TTS，
+#      走预制音色目录。
+#   2. 音色元数据选中（clone）——用户挑了某个 MiMo 克隆音色（voice_meta.provider=='mimo'），
+#      对偶 cosyvoice/minimax/elevenlabs 的克隆路由。MiMo 克隆没有远端 voice_id：参考音频
+#      存在本地，dispatch 时读出来内联进 voiceclone 请求。
+
+def _mimo_voice_meta_is_clone(vm) -> bool:
+    return bool(vm and vm.get('provider') == 'mimo')
 
 def _mimo_is_selected(ctx) -> bool:
     cc = ctx.core_config
     tts_provider = str(cc.get('TTS_PROVIDER') or cc.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(cc.get('assistApi') or '').strip().lower()
-    return tts_provider == 'mimo' or assist_api_type == 'mimo'
+    if tts_provider == 'mimo' or assist_api_type == 'mimo':
+        return True
+    # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
+    # provider 时不会触发 voice_meta 加载）。
+    return _mimo_voice_meta_is_clone(ctx.voice_meta)
 
 def _mimo_resolve(ctx):
     cc = ctx.core_config
-    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
-    mimo_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
     mimo_api_key = (ctx.cm.get_tts_api_key('mimo') or '').strip()
     if not mimo_api_key:
         logger.warning(
             "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
         return dummy_tts_worker, None, None
-    return partial(mimo_tts_worker, base_url=mimo_base_url), mimo_api_key, 'mimo'
+
+    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+    # 配置端点：assistApi=mimo 时（Token Plan 的唯一场景）get_core_config 已把 OPENROUTER_URL
+    # 解析成对应端点（普通 / token-plan-*），且 get_tts_api_key('mimo') 返回配套 key——必须用
+    # 它，保证 key 与端点同源；否则用默认 xiaomimimo。
+    config_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+
+    # 克隆音色优先：用户挑了某个具体的 MiMo 克隆音色（voice_meta.provider=='mimo'），即使
+    # 同时把 MiMo 配成了默认 TTS 也应当尊重这个更具体的选择，走 voiceclone 内联参考音频。
+    vm = ctx.voice_meta
+    if _mimo_voice_meta_is_clone(vm):
+        clone_voice = _build_mimo_clone_data_uri(vm)
+        if not clone_voice:
+            logger.warning(
+                "MiMo 克隆音色 %s 缺少参考音频样本，改用 dummy TTS worker", ctx.voice_id)
+            return dummy_tts_worker, None, None
+        # base_url：assistApi=mimo 用配置端点（token-plan 同源）；否则用 voice_meta 里存的
+        # mimo_base_url（对偶 minimax_base_url），缺省回落默认。
+        clone_base_url = config_base_url or (vm or {}).get('mimo_base_url') or None
+        return (
+            partial(mimo_tts_worker, base_url=clone_base_url, clone_voice=clone_voice),
+            mimo_api_key,
+            'mimo',
+        )
+
+    # 配置选中：MiMo 作为默认 TTS，走预制音色目录。
+    return partial(mimo_tts_worker, base_url=config_base_url), mimo_api_key, 'mimo'
+
+def _build_mimo_clone_data_uri(voice_meta) -> str | None:
+    """Build the ``data:`` reference-audio URI for a MiMo clone from its
+    voice_meta (the clone identity lives entirely in voice_storage.json — the
+    sample base64 is stored inline, dual to MiniMax's remote voice_id), or None
+    when absent.
+
+    The stored value is already base64, so this only frames it as a data URI —
+    no decode/re-encode. Bound into the (same-process) worker thread.
+    """
+    b64 = str((voice_meta or {}).get('clone_sample_b64') or '').strip()
+    if not b64:
+        return None
+    mime = str((voice_meta or {}).get('clone_sample_mime') or '').strip() or 'audio/wav'
+    return f"data:{mime};base64,{b64}"

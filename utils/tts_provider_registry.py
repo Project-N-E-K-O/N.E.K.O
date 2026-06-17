@@ -131,6 +131,87 @@ ProbeKind = Literal["ws_handshake", "local_http", "none"]
 
 
 @dataclass(frozen=True)
+class PresetCatalog:
+    """A static, declarative built-in (preset) voice catalog for a provider.
+
+    Dual to :class:`utils.native_voice_registry.NativeVoiceProvider`'s catalog
+    half, but lives on the unified :class:`TTSProvider` so a SaaS provider that
+    ships its own voice set (e.g. MiMo) can advertise its presets without being
+    mis-registered as a core-native provider (see design doc §3/§4: ``mimo`` is
+    ``hosted``, not ``native``). The shape returned by :meth:`catalog_for_ui`
+    intentionally mirrors ``NativeVoiceProvider.voice_catalog_for_ui`` so the
+    ``/voices`` endpoint and the source-first picker consume one structure
+    regardless of whether the catalog came from native or hosted.
+
+    ``catalog`` maps a canonical voice name to a supplementary label (a gender by
+    default, or the display name itself when ``catalog_value_is_display_name``);
+    ``aliases`` maps casefolded user-friendly input back to canonical names. The
+    catalog is static data — dynamic ``/voices``-style fetching (e.g. GPT-SoVITS)
+    is a future variant declared on the same field, not a special-case here.
+    """
+
+    catalog: Mapping[str, str]
+    aliases: Mapping[str, str] = field(default_factory=dict)
+    default_voice: str = ""
+    catalog_prefix: str = ""
+    catalog_value_is_display_name: bool = False
+    _voice_lookup: dict[str, str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_voice_lookup",
+            {name.casefold(): name for name in self.catalog},
+        )
+
+    def normalize(self, voice_id: str | None) -> tuple[str, bool]:
+        """Return (canonical voice name, recognized). Empty input is unrecognized."""
+        normalized = (voice_id or "").strip()
+        if not normalized:
+            return self.default_voice, False
+        exact = self._voice_lookup.get(normalized.casefold())
+        if exact:
+            return exact, True
+        alias = self.aliases.get(normalized.casefold())
+        if alias:
+            return alias, True
+        return self.default_voice, False
+
+    def is_voice(self, voice_id: str | None) -> bool:
+        return self.normalize(voice_id)[1]
+
+    def catalog_for_ui(self, provider_key: str) -> dict[str, dict[str, str | bool]]:
+        """Voice list structure for the character UI, keyed by canonical voice name.
+
+        ``provider_key`` is the owning :class:`TTSProvider` key, stamped into each
+        entry's ``provider`` field so the source-first picker groups it under
+        that provider's preset source.
+        """
+        def format_prefix(group: str, display_name: str) -> str:
+            if self.catalog_value_is_display_name:
+                return display_name
+            return f"{self.catalog_prefix} {display_name} ({group})"
+
+        def split_value(voice_name: str, value: str) -> tuple[str, str]:
+            if self.catalog_value_is_display_name:
+                return "", value or voice_name
+            return value, voice_name
+
+        catalog_for_ui: dict[str, dict[str, str | bool]] = {}
+        for voice_name, catalog_value in self.catalog.items():
+            gender, display_name = split_value(voice_name, catalog_value)
+            catalog_for_ui[voice_name] = {
+                "prefix": format_prefix(gender, display_name),
+                "provider": provider_key,
+                "provider_label": self.catalog_prefix,
+                "gender": gender,
+                "display_name": display_name,
+                "builtin": True,
+            }
+        return catalog_for_ui
+
+
+@dataclass(frozen=True)
 class TTSProvider:
     """One dispatchable TTS provider, declared in a single place.
 
@@ -153,6 +234,14 @@ class TTSProvider:
     capabilities: frozenset[VoiceSource]
     is_selected: SelectPredicate
     resolve: DispatchResolver
+
+    # Static built-in (preset) voice catalog, when this provider ships one (e.g.
+    # MiMo). None for providers whose presets are user-entered ids against a
+    # configured endpoint (vLLM-Omni) or that have no preset source at all. This
+    # is the single source of truth for the provider's preset voices — the UI
+    # ``/voices`` endpoint and ``validate_voice_id`` query it instead of restating
+    # the catalog elsewhere (see design doc §3 ``preset_catalog``).
+    preset_catalog: "PresetCatalog | None" = None
 
     # ── Declarative UI / probe metadata (single source of truth for frontend) ──
     # Whether this provider appears only in the TTS model dropdown and never
@@ -201,16 +290,14 @@ def all_providers() -> list[TTSProvider]:
     return sorted(_REGISTRY.values(), key=lambda p: p.priority)
 
 
-def resolve_selected(
-    ctx: "DispatchContext",
-) -> "tuple[Callable[..., Any], str | None, str] | None":
-    """Return the dispatch tuple for the first provider selected for ``ctx``, in
-    priority order, or ``None`` when none apply.
+def selected_provider(ctx: "DispatchContext") -> "TTSProvider | None":
+    """Return the first provider selected for ``ctx`` in priority order, or None.
 
-    ``get_tts_worker`` builds ``ctx`` and calls this near the top (after the
-    DISABLE_TTS check) so a user's provider choice — whether an explicit dropdown
-    pick or an implied clone-voice provider — wins over native / core default
-    routing in the original hand-written precedence (priority order).
+    The single place the registry decides "which provider wins for this context".
+    ``resolve_selected`` (dispatch) and the UI / validation preset helpers all go
+    through here so they agree on precedence — e.g. an explicit GPT-SoVITS pick
+    (priority 10) wins over MiMo's preset catalog (priority 60), so the catalog is
+    hidden in exactly the cases dispatch wouldn't route to it.
     """
     for provider in all_providers():
         try:
@@ -224,8 +311,81 @@ def resolve_selected(
             )
             selected = False
         if selected:
-            return provider.resolve(ctx)
+            return provider
     return None
+
+
+def resolve_selected(
+    ctx: "DispatchContext",
+) -> "tuple[Callable[..., Any], str | None, str] | None":
+    """Return the dispatch tuple for the first provider selected for ``ctx``, in
+    priority order, or ``None`` when none apply.
+
+    ``get_tts_worker`` builds ``ctx`` and calls this near the top (after the
+    DISABLE_TTS check) so a user's provider choice — whether an explicit dropdown
+    pick or an implied clone-voice provider — wins over native / core default
+    routing in the original hand-written precedence (priority order).
+    """
+    provider = selected_provider(ctx)
+    return provider.resolve(ctx) if provider is not None else None
+
+
+# ── Preset-catalog queries (single source of truth for built-in voices) ──────
+# Primitives are keyed by provider; the ``selected_*`` variants gate on which
+# provider actually wins for the current config (via ``selected_provider``), so
+# a provider's preset voices only surface / validate when that provider is the
+# one dispatch would route to. The registry must be populated first — callers
+# that run outside the dispatch path ensure ``import main_logic.tts_client``
+# (the heavy worker module that registers the hosted providers), mirroring
+# ``config_router``'s ``ui_metadata`` call site.
+
+
+def preset_catalog_for_ui(provider_key: str | None) -> "dict[str, dict[str, str | bool]] | None":
+    """The UI voice catalog for ``provider_key``'s preset_catalog, or None."""
+    provider = get(provider_key)
+    if provider is None or provider.preset_catalog is None:
+        return None
+    return provider.preset_catalog.catalog_for_ui(provider.key)
+
+
+def is_preset_voice(provider_key: str | None, voice_id: str | None) -> bool:
+    """Whether ``voice_id`` is a built-in voice of ``provider_key``'s catalog."""
+    provider = get(provider_key)
+    if provider is None or provider.preset_catalog is None:
+        return False
+    return provider.preset_catalog.is_voice(voice_id)
+
+
+def selected_provider_key(
+    core_config: Mapping[str, Any],
+    cm: "ConfigManager",
+) -> str | None:
+    """Key of the provider currently selected for ``core_config`` / ``cm``, or None.
+
+    UI precedence helper: the ``/voices`` endpoint reads this to mirror dispatch —
+    if the winner ships a static catalog (``preset_catalog_for_ui(key)`` non-None)
+    show it; if a registry provider wins but ships no catalog (vLLM-Omni /
+    GPT-SoVITS — user-entered or self-hosted voices), core-native voices must be
+    suppressed too, since selecting one would be misrouted to that winner. None
+    means no registry provider won → fall back to core-native voices."""
+    provider = selected_provider(DispatchContext(core_config=core_config, cm=cm))
+    return provider.key if provider is not None else None
+
+
+def is_selected_preset_voice(
+    core_config: Mapping[str, Any],
+    cm: "ConfigManager",
+    voice_id: str | None,
+) -> bool:
+    """Whether ``voice_id`` is a built-in voice of the currently selected provider
+    (used by ``validate_voice_id`` so a hosted provider's presets are saveable
+    only while that provider is selected — dual to ``is_saveable_native_voice``)."""
+    provider = selected_provider(
+        DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
+    )
+    if provider is None:
+        return False
+    return is_preset_voice(provider.key, voice_id)
 
 
 def ui_metadata() -> list[dict[str, Any]]:

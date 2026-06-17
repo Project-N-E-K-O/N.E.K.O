@@ -173,7 +173,7 @@ def initialize_steamworks(*, quiet: bool = False):
         app_id = None
         app_id_file = os.path.join(_get_app_root(), 'steam_appid.txt')
         if os.path.exists(app_id_file):
-            with open(app_id_file, 'r') as f:
+            with open(app_id_file, 'r', encoding='utf-8') as f:
                 app_id = f.read().strip()
             _trace(f"从steam_appid.txt读取到应用ID: {app_id}")
         
@@ -647,12 +647,30 @@ async def _handle_agent_event(event: dict):
 
         # Agent status updates may be broadcast (lanlan_name omitted).
         if event_type == "agent_status_update":
+            snapshot = event.get("snapshot", {})
             payload = {
                 "type": "agent_status_update",
-                "snapshot": event.get("snapshot", {}),
+                "snapshot": snapshot,
                 "lanlan_name": lanlan or "",
             }
             mgr_for_status = _get_session_manager(lanlan)
+            if isinstance(snapshot, dict):
+                flags = snapshot.get("flags")
+                if isinstance(flags, dict):
+                    flags_for_sync = dict(flags)
+                    if isinstance(snapshot.get("analyzer_enabled"), bool):
+                        flags_for_sync["agent_enabled"] = bool(snapshot.get("analyzer_enabled"))
+                    if lanlan and mgr_for_status is not None:
+                        try:
+                            mgr_for_status.update_agent_flags(flags_for_sync)
+                        except Exception as e:
+                            logger.debug("[EventBus] agent_status_update flag sync failed: %s", e)
+                    elif not lanlan:
+                        for _, mgr in _iter_session_managers():
+                            try:
+                                mgr.update_agent_flags(flags_for_sync)
+                            except Exception as e:
+                                logger.debug("[EventBus] agent_status_update broadcast flag sync failed: %s", e)
             if lanlan and mgr_for_status is not None:
                 mgr = mgr_for_status
                 ws = getattr(mgr, "websocket", None) if mgr else None
@@ -661,8 +679,16 @@ async def _handle_agent_event(event: dict):
                         await ws.send_json(payload)
                     except Exception as e:
                         logger.debug("[EventBus] agent_status_update send failed: %s", e)
-            else:
+            elif not lanlan:
+                # Only a target-less update (lanlan_name omitted) fans out to all
+                # sessions; a targeted update whose session manager is missing must
+                # NOT broadcast, or one character's status leaks into other sessions.
                 await _broadcast_to_all_connected(payload)
+            else:
+                logger.info(
+                    "[EventBus] agent_status_update dropped: no session_manager for lanlan=%s",
+                    lanlan,
+                )
             return
 
         # 免费版 Agent 每日配额耗尽：全局提示（与角色无关），广播成 status toast
@@ -1225,13 +1251,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 old_mgr = rs.session_manager
                 # 更新prompt
                 old_mgr.lanlan_prompt = lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy
-                old_mgr.voice_id = get_reserved(
+                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy。
+                # 经 read_legacy_voice_id 容忍 voice 的扁平串 / 结构对象两形态（惰性迁移）。
+                from utils.voice_config import read_legacy_voice_id
+                old_mgr.voice_id = read_legacy_voice_id(get_reserved(
                     lanlan_basic_config[k],
                     'voice_id',
                     default='',
                     legacy_keys=('voice_id',),
-                )
+                ))
                 logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
             except Exception as e:
                 logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
@@ -1670,6 +1698,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.avatar_drop_router import router as avatar_drop_router # noqa
 from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
@@ -1819,6 +1848,7 @@ app.include_router(storage_location_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)
+app.include_router(avatar_drop_router)
 app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)

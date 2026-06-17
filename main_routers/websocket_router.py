@@ -53,6 +53,9 @@ _lock = asyncio.Lock()
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
 _ws_bg_tasks: set = set()
+_SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
+_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
+_ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
 
 
 def _fire_task(coro):
@@ -307,9 +310,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
                 input_type = message.get("input_type", "audio")
-                if input_type in ['audio', 'screen', 'camera', 'text']:
+                if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):
-                        if input_type == "text":
+                        if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
                             _fire_task(session_manager[lanlan_name].send_session_started("text"))
                             continue
@@ -322,7 +325,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
-                    mode = 'text' if input_type == 'text' else 'audio'
+                    mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                     # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
                     # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
                     # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
@@ -336,8 +339,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                input_type = message.get("input_type")
                 if is_game_route_active(lanlan_name):
-                    input_type = message.get("input_type")
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
                     else:
@@ -361,7 +364,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = av_pos
                 else:
                     session_manager[lanlan_name]._avatar_position = None
-                if message.get("input_type") == "audio":
+                if input_type in _ORDERED_STREAM_INPUT_TYPES:
                     await session_manager[lanlan_name].stream_data(message)
                 else:
                     _fire_task(session_manager[lanlan_name].stream_data(message))

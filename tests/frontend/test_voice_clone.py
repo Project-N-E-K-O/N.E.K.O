@@ -12,6 +12,7 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "minimax": {"config_field": "assistApiKeyMinimax", "restricted": False},
         "minimax_intl": {"config_field": "assistApiKeyMinimaxIntl", "restricted": True},
         "elevenlabs": {"config_field": "assistApiKeyElevenlabs", "restricted": True},
+        "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
     },
 }
 
@@ -127,7 +128,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
             const visibleValues = Array.from(select.options)
                 .filter(option => !option.hidden && option.style.display !== 'none')
                 .map(option => option.value);
-            return visibleValues.join(',') === 'cosyvoice,minimax';
+            return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
         }"""
     )
 
@@ -135,7 +136,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
     values = mock_page.locator("#voiceProvider-menu .api-provider-dropdown-option").evaluate_all(
         "(nodes) => nodes.map(node => node.dataset.value)"
     )
-    assert values == ["cosyvoice", "minimax"]
+    assert values == ["cosyvoice", "minimax", "mimo"]
 
 
 @pytest.mark.frontend
@@ -156,6 +157,6 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_request_
             const visibleValues = Array.from(select.options)
                 .filter(option => !option.hidden && option.style.display !== 'none')
                 .map(option => option.value);
-            return visibleValues.join(',') === 'cosyvoice,minimax';
+            return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
         }"""
     )

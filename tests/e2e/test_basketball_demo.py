@@ -1,7 +1,10 @@
 import re
+import time
 
 import pytest
 from playwright.sync_api import Page, expect
+
+from main_routers import system_router
 
 
 def _install_basketball_test_hooks(page: Page) -> None:
@@ -30,7 +33,17 @@ def _install_basketball_test_hooks(page: Page) -> None:
 
 def _goto_basketball(page: Page, running_server: str, mode: str) -> None:
     _install_basketball_test_hooks(page)
-    page.goto(f"{running_server}/basketball_demo?mode={mode}&debug=1")
+    lanlan_name = "e2e-yui"
+    session_id = f"e2e-basketball-{mode}"
+    state = system_router._mini_game_invite_get_state(lanlan_name)
+    state["delivered_at"] = time.time() - 1
+    state["responded_at"] = time.time()
+    state["pending_session_id"] = session_id
+    state["last_game_type"] = "basketball"
+    page.goto(
+        f"{running_server}/basketball_demo"
+        f"?mode={mode}&lanlan_name={lanlan_name}&session_id={session_id}&debug=1"
+    )
     expect(page.locator("#game")).to_be_attached(timeout=15000)
     page.wait_for_function("window.BasketballDemo && window.BasketballDemo.getState")
 

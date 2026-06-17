@@ -50,6 +50,7 @@ from utils.api_config_loader import (
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
+from utils.voice_config import read_legacy_voice_id
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_lanlan_app_route,
@@ -269,12 +270,12 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if not _is_default_yui_character(current_name, current_character):
         return False
 
-    current_voice_id = str(get_reserved(
+    current_voice_id = read_legacy_voice_id(get_reserved(
         current_character,
         "voice_id",
         default="",
         legacy_keys=("voice_id",),
-    ) or "").strip()
+    ))
     if current_voice_id:
         return False
 
@@ -614,6 +615,16 @@ def validate_reserved_schema(reserved: dict) -> list[str]:
     if reserved is None:
         return errors
     _walk(reserved, RESERVED_FIELD_SCHEMA, "_reserved")
+    # voice_id 是 str | 结构对象的联合类型，schema 的 tuple 分支只做 isinstance，挡不住
+    # {"foo": 1} 这种坏 dict。结构对象形态额外校验 source/provider/ref 都为 str，避免
+    # 放宽 schema 后契约松掉（CodeRabbit）。
+    vid = reserved.get("voice_id")
+    if isinstance(vid, dict):
+        for field in ("source", "provider", "ref"):
+            if not isinstance(vid.get(field), str):
+                errors.append(
+                    f"_reserved.voice_id.{field} 需要 str，实际 {type(vid.get(field)).__name__}"
+                )
     return errors
 
 
@@ -629,7 +640,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         changed = True
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
-    if voice_id is not None:
+    # 把 voice_id 收口进 _reserved。结构对象（惰性迁移形态，可能来自顶层 legacy 字段）
+    # 必须原样 set_reserved 搬进来：既不能被 str(dict) 损坏，也不能跳过——否则随后的旧
+    # 顶层字段清理会 pop 掉它，导致绑定在加载时悄悄丢失（Codex/CodeRabbit P2）。
+    # 普通 legacy 值仍规整成字符串。
+    if isinstance(voice_id, dict):
+        changed |= set_reserved(catgirl_data, "voice_id", voice_id)
+    elif voice_id is not None:
         changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
 
     system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
@@ -878,7 +895,8 @@ def flatten_reserved(catgirl_data: dict) -> dict:
         return catgirl_data
     result = dict(catgirl_data)
 
-    voice_id = get_reserved(result, "voice_id", default="")
+    # 展平给 legacy 前端/调用方：始终吐 legacy 字符串形态（容忍结构对象）。
+    voice_id = read_legacy_voice_id(get_reserved(result, "voice_id", default=""))
     if voice_id:
         result["voice_id"] = voice_id
     system_prompt = get_reserved(result, "system_prompt", default=None)
@@ -2854,11 +2872,31 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_mimo_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for the current MiMo API key.
+
+        Dual to :meth:`_get_elevenlabs_storage_keys`: MiMo cloned voices live in
+        a ``__MIMO__{suffix}`` bucket keyed by the MiMo API key, so they merge
+        into the current-API voice list regardless of which core/TTS provider is
+        otherwise active (a MiMo clone is selected by ``voice_meta.provider`` at
+        dispatch, not by config — see ``workers/mimo.py``)."""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('mimo')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'__MIMO__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__MIMO__'):
+            return 'mimo'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -2971,6 +3009,25 @@ class ConfigManager:
                         vdata['provider'] = 'elevenlabs'
                     result[vid] = vdata
 
+        # 合并 MiMo 克隆音色，并确保 provider 字段（dual to ElevenLabs/MiniMax；MiMo 克隆走
+        # 独立 __MIMO__ 桶 + voice_meta 选中，与当前 core/TTS provider 无关）
+        for mimo_key in self._get_mimo_storage_keys():
+            mimo_voices = voice_storage.get(mimo_key, {})
+            for vid, vdata in mimo_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'mimo'
+                    result[vid] = vdata
+
+        if for_listing:
+            # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
+            # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
+            result = {
+                vid: ({k: v for k, v in vdata.items() if k != 'clone_sample_b64'}
+                      if isinstance(vdata, dict) and 'clone_sample_b64' in vdata else vdata)
+                for vid, vdata in result.items()
+            }
+
         return result
 
     def save_voice_for_current_api(self, voice_id, voice_data):
@@ -3082,8 +3139,11 @@ class ConfigManager:
                 storage_key.startswith('__MINIMAX__')
                 or storage_key.startswith('__MINIMAX_INTL__')
                 or storage_key.startswith('__ELEVENLABS__')
+                or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
             ) and voice_id in voice_storage.get(storage_key, {}):
+                # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
+                # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
@@ -3117,6 +3177,32 @@ class ConfigManager:
             self.save_voice_storage(voice_storage)
             return True
         return False
+
+    def _is_selected_hosted_preset_voice(self, voice_id):
+        """Whether voice_id is a built-in (preset) voice of the currently selected
+        TTS provider in tts_provider_registry (e.g. MiMo, a hosted SaaS).
+
+        Dual to :func:`is_saveable_native_voice` but for the unified provider
+        registry: a hosted/local provider's presets are only saveable while that
+        provider is the one dispatch would route to, so this gates on the same
+        selection the dispatcher uses.
+
+        The hosted providers are registered as a side effect of importing
+        ``main_logic.tts_client``. config_manager (utils layer) must NOT import it
+        — that's a CI-enforced layer inversion (utils → main_logic). We rely on the
+        running app having imported tts_client at startup (the TTS pipeline does),
+        so the registry is populated by the time any voice is validated; if it
+        isn't (or the lookup errors), this degrades to "not a preset voice" rather
+        than breaking validation.
+        """
+        try:
+            from utils import tts_provider_registry
+            return tts_provider_registry.is_selected_preset_voice(
+                self.get_core_config() or {}, self, voice_id
+            )
+        except Exception:
+            logger.warning("hosted preset voice 校验异常，按非预制处理", exc_info=True)
+            return False
 
     def validate_voice_id(self, voice_id):
         """Validate whether voice_id is valid under the current AUDIO_API_KEY.
@@ -3152,6 +3238,11 @@ class ConfigManager:
         if is_saveable_native_voice(self, voice_id):
             return True
 
+        # hosted/local provider 的内置预制音色（如选中 MiMo 时的预制声线），由
+        # tts_provider_registry 收口，仅在该 provider 被选中时算合法
+        if self._is_selected_hosted_preset_voice(voice_id):
+            return True
+
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
@@ -3181,12 +3272,78 @@ class ConfigManager:
         if is_saveable_native_voice(self, voice_id):
             return True
 
+        if self._is_selected_hosted_preset_voice(voice_id):
+            return True
+
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if voice_id in free_voices.values():
             return True
 
         return False
+
+    def normalize_voice_id_to_config(self, voice_id):
+        """Resolve a flat / prefixed ``voice_id`` into a structured ``VoiceConfig``.
+
+        A bare id (no ``gsv:`` / ``eleven:`` prefix) needs runtime context to decide
+        its ``source`` / ``provider``; this reuses the same resolution chain as
+        :meth:`validate_voice_id` (vLLM selected / a clone in the current API's
+        voice_storage / a saveable native voice / a free preset) and feeds that
+        context to the pure :func:`utils.voice_config.normalize_voice_id`, so the
+        migration stays faithful and unambiguous.
+
+        An unresolvable bare id is carried through unchanged in ``ref`` (never
+        dropped); callers treat it as "leave the value as-is".
+        """
+        from utils.voice_config import normalize_voice_id
+        from utils.native_voice_registry import (
+            get_active_realtime_native_provider,
+            is_saveable_native_voice,
+        )
+        from utils.api_config_loader import get_free_voices
+
+        _voices_cache = {}
+
+        def _clone_lookup(ref):
+            if 'voices' not in _voices_cache:
+                _voices_cache['voices'] = self.get_voices_for_current_api()
+            vdata = _voices_cache['voices'].get(ref)
+            if isinstance(vdata, dict):
+                return str(vdata.get('provider') or '')
+            return None
+
+        return normalize_voice_id(
+            voice_id,
+            vllm_selected=self._is_vllm_omni_tts_selected(self.get_core_config()),
+            clone_provider_lookup=_clone_lookup,
+            is_native=lambda ref: is_saveable_native_voice(self, ref),
+            native_provider=get_active_realtime_native_provider(self) or '',
+            free_voice_ids=set(get_free_voices().values()),
+        )
+
+    def voice_id_to_storage_value(self, voice_id):
+        """Convert a user-set legacy ``voice_id`` string into its at-rest storage form.
+
+        Write side of the voice-source-unification "union-find style lazy migration":
+        every time the user sets/changes a voice, that one entry is migrated to the
+        structured object ``{source, provider, ref}`` (migrate-on-touch, never a
+        full-table sweep). Empty value is stored as an empty string (= no voice set).
+        The read side (:func:`utils.voice_config.read_legacy_voice_id`) tolerates both
+        forms, so untouched legacy flat strings keep working.
+        """
+        s = str(voice_id or '').strip()
+        if not s:
+            return ''
+        from utils.voice_config import to_legacy_voice_id
+        vc = self.normalize_voice_id_to_config(s)
+        # Round-trip guard: only migrate to the structured object when it reads back to
+        # the exact submitted library key. Otherwise (e.g. a provider-tagged but
+        # un-prefixed clone key, where to_legacy_voice_id would re-add a prefix and
+        # change the key) keep the legacy string verbatim — never let migration rewrite
+        # the key a binding points at, or _get_voice_meta would miss and TTS misroute.
+        if to_legacy_voice_id(vc) != s:
+            return s
+        return vc.to_dict()
 
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
@@ -3210,7 +3367,9 @@ class ConfigManager:
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
-            voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
+            # 容忍扁平串 / 结构对象两形态，统一按 legacy 字符串做 remap / validate；
+            # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
+            voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
                 continue
             # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
@@ -3860,8 +4019,26 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
-        # GPT-SoVITS 配置映射
-        config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
+        # GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉这单一真相（见
+        # docs/design/tts-voice-source-unification.md §3/§4）。choke-point 在此派生，
+        # 13 个下游读点（core.py 路由 / 本文件 URL 解析与 TTS_VOICE_ID override /
+        # get_model_api_config 的 is_custom 自愈 / 各 router）以及 worker 的
+        # _gptsovits_is_selected 全部沿用 GPTSOVITS_ENABLED 不变。
+        # 派生语义：ttsModelProvider 一旦「显式选了某个 TTS provider」即唯一真相——选中
+        # gptsovits 才启用、选别家（vllm_omni/mimo/custom…）就关，旧 gptsovitsEnabled 不参与。
+        # 仅当未显式选择时（provider 缺失/空串，或 follow_assist/follow_core 这两个「跟随
+        # assist/core」哨兵——它们是各 model provider 下拉的默认值，等同未选）才回落旧开关，
+        # 兜住 pre-#1830 存量（用 checkbox 开 GSV、下拉仍停在默认 follow_* 的用户）。
+        # ⚠️ 不能把 follow_* 当显式 provider，否则存量 GSV 用户（gptsovitsEnabled=true +
+        # ttsModelProvider='follow_assist'）会被误判为关 → 升级后 GSV 失效（Codex PR#1850 P1）。
+        # 刻意不用 `旧flag OR 下拉` 的纯 OR：前端已退役 gptsovitsEnabled 写路径，旧 flag 在
+        # 增量合并下会粘住；显式切走由「下拉为准」关掉，follow_* 切走由 config_router 的
+        # save choke point 惰性落 False 清掉（见该处注释）。
+        _tts_model_provider = str(core_cfg.get('ttsModelProvider', '') or '').strip()
+        if _tts_model_provider in ('', 'follow_assist', 'follow_core'):
+            config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
+        else:
+            config['GPTSOVITS_ENABLED'] = (_tts_model_provider == 'gptsovits')
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
