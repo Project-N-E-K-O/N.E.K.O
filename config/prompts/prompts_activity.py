@@ -40,6 +40,10 @@ Flat ``{lang_code: str}`` maps (resolved via ``_loc(MAP, lang)``):
   conversation snippets into 1-2 summarized deep-topic hooks. Consumed by
   ``main_logic/activity/llm_enrichment.py:call_topic_candidates``.
 
+* ``TOPIC_MEMORY_CUE_INTROS`` / ``TOPIC_MEMORY_CUE_LABELS`` — quiet
+  memory-context labels for old reflection follow-up topics. Consumed by
+  ``main_logic/topic/hooks.py:build_topic_hook_prompt``.
+
 * ``OS_DEGRADED_MARKER`` — short bracketed text appended to the
   state-section header when the backend can't read the user's OS
   signals. Consumed by
@@ -61,6 +65,36 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 """
 
 from __future__ import annotations
+
+
+# ── Old reflection follow-up memory cues ────────────────────────────
+
+# These strings intentionally stay quieter than the major "======" prompt
+# sections. The cue should be available near long-term conversation history
+# without competing with recent-chat dedup or activity-state decision blocks.
+TOPIC_MEMORY_CUE_INTROS: dict[str, str] = {
+    "zh": "回忆线索：以下旧话题距今较久，可顺手接、但没必要主动提出。",
+    "zh-CN": "回忆线索：以下旧话题距今较久，可顺手接、但没必要主动提出。",
+    "zh-TW": "回憶線索：以下舊話題距今較久，可順手接、但沒必要主動提出。",
+    "en": "Memory cues: older topics from prior conversations; okay to pick up naturally, but no need to raise proactively.",
+    "ja": "記憶の手がかり：以前の古い話題です。自然に拾ってもよいですが、無理に持ち出す必要はありません。",
+    "ko": "기억 단서: 이전 대화의 오래된 화제입니다. 자연스럽게 이어도 되지만, 먼저 꺼낼 필요는 없습니다.",
+    "es": "Pistas de memoria: temas antiguos de conversaciones previas; puedes retomarlos con naturalidad, pero no hace falta sacarlos activamente.",
+    "pt": "Pistas de memória: temas antigos de conversas anteriores; pode retomá-los naturalmente, mas não precisa puxá-los ativamente.",
+    "ru": "Подсказки памяти: старые темы из прошлых разговоров; можно естественно вернуться к ним, но не нужно поднимать их специально.",
+}
+
+TOPIC_MEMORY_CUE_LABELS: dict[str, str] = {
+    "zh": "较久前的回忆线索",
+    "zh-CN": "较久前的回忆线索",
+    "zh-TW": "較久前的回憶線索",
+    "en": "Older memory cue",
+    "ja": "古い記憶の手がかり",
+    "ko": "오래된 기억 단서",
+    "es": "Pista de memoria antigua",
+    "pt": "Pista de memória antiga",
+    "ru": "Давняя подсказка памяти",
+}
 
 
 # ── Activity guess + soft scores (emotion-tier) ─────────────────────

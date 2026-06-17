@@ -196,10 +196,9 @@ class AntiSlackPending:
 class UnfinishedThread:
     """An open conversation thread the AI may follow up on.
 
-    Set when the AI's last reply contained a question marker (``?`` /
-    ``？`` or a sentence-final CN particle like ``吗`` / ``呢`` / ``么``)
-    and the user hasn't responded yet. Cleared on user message arrival
-    or when the 5-minute window expires.
+    Set when the AI's last reply contained a question marker or a common
+    Chinese sentence-final question particle, and the user hasn't responded
+    yet. Cleared on user message arrival or when the 5-minute window expires.
 
     Surfaces in ``ActivitySnapshot.unfinished_thread`` so the proactive
     chat prompt can grant a special "thread continuation" allowance —
@@ -593,27 +592,27 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
     Phase 2 generate prompt's ``{state_section}`` placeholder. Falls
     back to English if ``lang`` isn't in the supported set.
 
-    Layout (zh example, compact):
+    Layout (compact example):
 
-        ======以下为活动状态======
-        focused_work（专注工作中）→ 只就屏幕内容轻聊一句
-        专注 VS Code 已 200s; CPU 30s 75%
-        18:00 傍晚 | 用户 30s前 | AI 2min前
-        未收尾话题：「…你今天准备几点出发?」(60s前)
-        评估: focused_work 0.7 · chatting 0.2 · idle 0.1
-        叙述: 主人在 VS Code 里调试，刚发了求助
-        开放话题:
-        - AI 答应等会帮看测试还没看
-        - 主人提到 phase 1 跳过逻辑没说完
-        ======以上为活动状态======
+        ======Activity state======
+        focused_work (focused work) -> brief screen-only comment
+        Focused in VS Code for 200s; CPU 30s 75%
+        18:00 evening | user 30s ago | AI 2min ago
+        Unfinished thread: "...what time are you leaving?" (60s ago)
+        Scores: focused_work 0.7 · chatting 0.2 · idle 0.1
+        Narrative: user is debugging in VS Code after asking for help
+        Open threads:
+        - AI promised to inspect tests later
+        - User mentioned phase 1 skip logic still needs discussion
+        ======End activity state======
 
     Conditional rendering — empty / default fields are omitted entirely:
       * "user/AI msg" line: only includes sides that have a value;
         when both are None, line dropped.
       * Activity scores: only entries with score >= 0.05, top 3.
       * Active-window line dropped — its info already appears in the
-        rule-reason line ("专注 VS Code 已 200s" carries the canonical
-        name), so re-stating wastes tokens.
+        rule-reason line ("focused in VS Code for 200s" carries the
+        canonical name), so re-stating wastes tokens.
     """
     if snap is None:
         return ''
