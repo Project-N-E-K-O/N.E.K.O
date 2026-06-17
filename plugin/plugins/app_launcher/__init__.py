@@ -202,6 +202,8 @@ def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> 
         (是否成功, 错误信息)
     """
     if not _is_windows():
+        if not enabled:
+            return True, "已关闭开机自启（非 Windows 系统无需清理）"
         return False, "开机自启仅支持 Windows 系统"
     
     try:
