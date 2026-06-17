@@ -1070,16 +1070,23 @@ class AppLauncherPlugin(NekoPluginBase):
         """导出软件配置"""
         apps = self._load_apps()
         categories = self._load_categories()
+        autostart_status = _get_all_autostart_status_windows()
+        export_apps = []
+        for app in apps:
+            exported_app = dict(app)
+            app_id = exported_app.get("id")
+            exported_app["autostart"] = autostart_status.get(app_id, False)
+            export_apps.append(exported_app)
         
         export_data = {
-            "apps": apps,
+            "apps": export_apps,
             "categories": categories,
             "exported_at": _now(),
             "version": "1.0",
         }
         
         return Ok({
-            "apps": apps,
+            "apps": export_apps,
             "count": len(apps),
             "export_data": export_data,
             "message": f"已导出 {len(apps)} 个软件配置",

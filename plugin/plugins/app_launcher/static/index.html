@@ -1444,7 +1444,6 @@
             if (editingAppId) {
                 const normalizedPath = stripPathQuotes(path).toLowerCase();
                 const originalPath = stripPathQuotes(editingAppSnapshot?.path || '').toLowerCase();
-                const pathChanged = normalizedPath !== originalPath;
                 const autostartChanged = autostart !== Boolean(editingAppSnapshot?.autostart);
                 const canApplyAutostart = normalizedPath.endsWith('.exe') ||
                     (editingAppSnapshot?.autostart && !autostart);
@@ -1453,7 +1452,7 @@
                     app_id: editingAppId,
                     name, path, aliases, description: desc
                 });
-                if ((pathChanged || autostartChanged) && canApplyAutostart) {
+                if (autostartChanged && canApplyAutostart) {
                     try {
                         await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
                     } catch (err) {
