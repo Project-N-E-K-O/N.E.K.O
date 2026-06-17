@@ -84,6 +84,22 @@ describe('message-schema', () => {
     expect(props.compactChatState).toBe('input');
   });
 
+  it('accepts compact history open requests', () => {
+    const props = parseChatWindowProps({
+      compactHistoryOpenRequest: {
+        id: 'compact-history-open-guide',
+        open: true,
+        reason: 'avatar-floating-guide-history',
+      },
+    });
+
+    expect(props.compactHistoryOpenRequest).toEqual({
+      id: 'compact-history-open-guide',
+      open: true,
+      reason: 'avatar-floating-guide-history',
+    });
+  });
+
   it('accepts the revived "full" surface mode', () => {
     // `full` is the frozen legacy surface revived alongside compact/minimized.
     // The schema accepts all three; the host dispatcher routes `full` to the

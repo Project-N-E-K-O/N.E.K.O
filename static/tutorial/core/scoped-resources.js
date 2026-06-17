@@ -38,7 +38,13 @@
             if (destroyed || !win || typeof win.setTimeout !== 'function') {
                 return 0;
             }
-            const timerId = win.setTimeout(callback, delayMs);
+            const timerId = win.setTimeout(function scopedTimeoutCallback() {
+                const index = timers.indexOf(timerId);
+                if (index !== -1) {
+                    timers.splice(index, 1);
+                }
+                return callback.apply(this, arguments);
+            }, delayMs);
             timers.push(timerId);
             return timerId;
         }
@@ -78,7 +84,13 @@
             if (destroyed || !win || typeof win.requestAnimationFrame !== 'function') {
                 return 0;
             }
-            const frameId = win.requestAnimationFrame(callback);
+            const frameId = win.requestAnimationFrame(function scopedAnimationFrameCallback() {
+                const index = animationFrames.indexOf(frameId);
+                if (index !== -1) {
+                    animationFrames.splice(index, 1);
+                }
+                return callback.apply(this, arguments);
+            });
             animationFrames.push(frameId);
             return frameId;
         }

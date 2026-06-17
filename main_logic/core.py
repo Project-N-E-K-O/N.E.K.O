@@ -63,7 +63,7 @@ from main_logic.tool_calling import (
     ToolRegistry,
     ToolResult,
 )
-from utils.llm_client import AIMessage
+from utils.llm_client import AIMessage, HumanMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import (
@@ -1056,6 +1056,23 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def append_icebreaker_context(self, role: str, text: str) -> bool:
+        """Append guide icebreaker context to the active project session history."""
+        content = str(text or "").strip()
+        if not content:
+            return False
+        if not self.session or not hasattr(self.session, "_conversation_history"):
+            return False
+
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role in {"assistant", "ai", "model"}:
+            message = AIMessage(content=content)
+        else:
+            message = HumanMessage(content=content)
+
+        self.session._conversation_history.append(message)
+        return True
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""

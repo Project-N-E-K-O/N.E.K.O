@@ -38,11 +38,11 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
-    path
-    for pattern in ("**/*.js", "**/*.json")
-    for path in (_PROJECT_ROOT / "static/tutorial").glob(pattern)
-))
+_TUTORIAL_RUNTIME_ASSET_PATHS = tuple(
+    sorted((_PROJECT_ROOT / "static/tutorial").glob("**/*.js"))
+) + tuple(
+    sorted((_PROJECT_ROOT / "static/tutorial").glob("**/*.json"))
+)
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/index.css",
