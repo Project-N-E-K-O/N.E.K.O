@@ -194,6 +194,13 @@
             transform: translateY(-2px);
         }
 
+        .btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
         .btn-icon {
             padding: 9px 12px;
             font-size: 0.95rem;
@@ -1026,6 +1033,12 @@
     let editingAppId = null;
     let editingAppSnapshot = null;
     let translations = {};
+    const SUPPORTED_LOCALES = ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es'];
+    const LOCALE_ALIASES = {
+        zh: 'zh-CN',
+        'zh-Hans': 'zh-CN',
+        'zh-Hant': 'zh-TW',
+    };
 
     function formatTemplate(template, params = {}) {
         return String(template).replace(/\{(\w+)\}/g, (_, key) => {
@@ -1041,7 +1054,8 @@
         const raw = String(locale || '').trim();
         const candidates = [];
         const add = value => {
-            if (value && !candidates.includes(value)) candidates.push(value);
+            const normalized = normalizeLocale(value);
+            if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
         };
         add(raw);
         add(raw.replace('_', '-'));
@@ -1050,6 +1064,22 @@
         add('zh-CN');
         add('en');
         return candidates;
+    }
+
+    function normalizeLocale(locale) {
+        const value = String(locale || '').trim().replace('_', '-');
+        if (!value || /[^A-Za-z-]/.test(value)) return '';
+        if (SUPPORTED_LOCALES.includes(value)) return value;
+        if (LOCALE_ALIASES[value]) return LOCALE_ALIASES[value];
+
+        const lower = value.toLowerCase();
+        const exact = SUPPORTED_LOCALES.find(candidate => candidate.toLowerCase() === lower);
+        if (exact) return exact;
+        if (lower === 'zh-cn' || lower.startsWith('zh-hans')) return 'zh-CN';
+        if (lower === 'zh-tw' || lower === 'zh-hk' || lower.startsWith('zh-hant')) return 'zh-TW';
+
+        const language = lower.split('-')[0];
+        return SUPPORTED_LOCALES.includes(language) ? language : '';
     }
 
     async function loadI18n() {
@@ -1423,6 +1453,9 @@
     }
 
     async function saveApp() {
+        const saveButton = document.getElementById('saveAppBtn');
+        if (saveButton.disabled) return;
+
         const name = document.getElementById('appName').value.trim();
         const path = document.getElementById('appPath').value.trim();
         const aliasesStr = document.getElementById('appAliases').value.trim();
@@ -1437,6 +1470,7 @@
             .map(s => s.trim())
             .filter(s => s);
 
+        saveButton.disabled = true;
         try {
             let finalMessage = t('ui.success.add', '✨ 添加成功');
             let finalType = 'success';
@@ -1479,6 +1513,8 @@
             showMessage(finalMessage, finalType);
         } catch (err) {
             showMessage(t('ui.error.save', '❌ {error}', { error: err.message }), 'error');
+        } finally {
+            saveButton.disabled = false;
         }
     }
 
