@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import threading
 import time
 from datetime import datetime
@@ -86,6 +87,32 @@ def test_topic_signal_store_batches_persistence_off_chat_path(monkeypatch, tmp_p
 
     assert len(calls) == 1
     assert len(calls[0][1]["characters"]["妮可"]) == 2
+
+
+def test_topic_signal_store_keeps_dirty_when_flush_write_fails(monkeypatch, tmp_path):
+    from main_logic.topic import signals as topic_signals
+
+    attempts = 0
+
+    def flaky_atomic_write_json(path, payload, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(topic_signals, "atomic_write_json", flaky_atomic_write_json)
+    store = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=tmp_path / "topic_signals.json",
+        persistence_flush_delay_seconds=60,
+    )
+
+    store.note_turn("妮可", actor="user", text="隐私前的候选证据")
+    store.flush()
+
+    assert attempts == 1
+    assert store._persist_dirty is True
+    assert store._persist_timer is not None
+    store._persist_timer.cancel()
 
 
 def test_topic_signal_store_privacy_flush_wins_over_inflight_write(tmp_path):
@@ -426,6 +453,36 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_discards_analysis_when_privacy_purges_midflight():
+    release = asyncio.Event()
+
+    async def fake_analyzer(*, lang, **kwargs):
+        await release.wait()
+        return [
+            {
+                "interest": "隐私清理前的旧快照",
+                "hook": "这不该在隐私清理后恢复",
+                "relevance": 90,
+            }
+        ]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "隐私前聊到的候选证据")
+
+    task = asyncio.create_task(pool.process_now("妮可"))
+    await asyncio.sleep(0)
+    pool._purge_accumulated_signals("妮可")
+    release.set()
+    assert await task is None
+
+    assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_candidate_phase_does_not_enrich_online(monkeypatch):
     async def fake_analyzer(*, lang, **kwargs):
         return [
@@ -589,7 +646,7 @@ async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_process_ready_rearms_restored_signals(tmp_path):
+async def test_topic_pool_process_ready_rearms_restored_signals_until_delivery(tmp_path):
     calls = []
     path = tmp_path / "topic_signals.json"
     base = time.time() - 120
@@ -630,7 +687,41 @@ async def test_topic_pool_process_ready_rearms_restored_signals(tmp_path):
 
     await restarted.process_ready_topics(now=base + 161, lang="zh-CN")
 
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert "换城市" in calls[1]
+    assert restarted.get_ready_materials("妮可")[0]["interest"] == "恢复后的换城市话题"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    delivered = asyncio.Event()
+
+    async def fake_analyzer(*, lang, global_signals):
+        return [{"interest": "投递后应清理的话题", "relevance": 90}]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.set()
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+        signal_store_path=path,
+    )
+    pool.note_user_message("妮可", "这段候选证据投递完成后不该继续留在磁盘", lang="zh-CN")
+    await pool.process_now("妮可")
+    await asyncio.wait_for(delivered.wait(), timeout=1.0)
+
+    reloaded = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=path,
+    )
+    assert not reloaded.is_ready("妮可")
 
 
 @pytest.mark.asyncio
@@ -776,6 +867,15 @@ async def test_activity_tracker_topic_candidate_kickoff_does_not_block_heartbeat
     release.set()
     await asyncio.wait_for(tracker._topic_candidate_task, timeout=1.0)
     assert calls == [{"lanlan_name": "妮可", "lang": "zh-CN", "now": 123.0}]
+
+
+def test_activity_tracker_topic_candidate_heartbeat_uses_full_global_locale():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+
+    assert "from utils.language_utils import get_global_language_full" in source
+    assert "lang = get_global_language_full() or 'en'" in source
 
 
 @pytest.mark.asyncio

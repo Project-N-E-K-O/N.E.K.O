@@ -1087,8 +1087,8 @@ class UserActivityTracker:
                 if rule_snap.state == 'private':
                     continue
 
-                from utils.language_utils import get_global_language
-                lang = get_global_language() or 'en'
+                from utils.language_utils import get_global_language_full
+                lang = get_global_language_full() or 'en'
                 self._process_topic_candidates_if_ready(lang=lang, now=ts)
 
                 # Anti-thrash: respect the minimum refresh interval.

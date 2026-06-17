@@ -333,9 +333,17 @@ class TopicSignalStore:
                 timer.cancel()
             if not self._persist_dirty:
                 return
-            self._persist_dirty = False
             payload = self._persistence_payload_locked()
-            self._write_payload(payload)
+            write_result = self._write_payload(payload)
+            if write_result is not False:
+                self._persist_dirty = False
+                return
+            self._persist_dirty = True
+            if self._persistence_path is not None and self._persist_timer is None:
+                timer = threading.Timer(self._persistence_flush_delay_seconds, self.flush)
+                timer.daemon = True
+                self._persist_timer = timer
+                timer.start()
 
     def _request_persist(self) -> None:
         path = self._persistence_path
@@ -370,15 +378,16 @@ class TopicSignalStore:
             },
         }
 
-    def _write_payload(self, payload: Mapping[str, Any]) -> None:
+    def _write_payload(self, payload: Mapping[str, Any]) -> bool:
         path = self._persistence_path
         if path is None:
-            return
+            return True
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+            return True
         except Exception:
-            return
+            return False
 
 
 def _select_turns_for_prompt(

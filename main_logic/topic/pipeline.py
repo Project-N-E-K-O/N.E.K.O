@@ -258,9 +258,11 @@ class TopicHookPool:
         # arrives. Do not iterate all signal-store names every tick.
         self._dirty: set[str] = set(self._signal_store.names())
         self._seq: dict[str, int] = defaultdict(int)
+        self._purge_generation: dict[str, int] = defaultdict(int)
 
     def _purge_character_state(self, name: str) -> None:
         """Drop all topic state for a character."""
+        self._purge_generation[name] += 1
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
@@ -269,24 +271,30 @@ class TopicHookPool:
     def _purge_accumulated_signals(self, name: str) -> None:
         """Drop privacy-tainted candidate evidence without touching pending delivery material.
 
-        Kept separate from _consume_accumulated_signals even though both clear
-        the same store today: privacy purge and post-analysis consumption are
-        different policy points and may diverge later.
+        Kept separate from _consume_accumulated_signals: privacy purge is the
+        destructive policy point, while normal analysis consumption keeps
+        durable evidence until the pending hook is done.
         """
+        self._purge_generation[name] += 1
         self._signal_store.clear(name)
         self._signal_store.flush()
         self._dirty.discard(name)
 
     def _consume_accumulated_signals(self, name: str) -> None:
-        """Consume analyzed evidence while preserving delivery timing state.
+        """Consume analyzed evidence for this process, but keep it durable.
 
-        Kept separate from _purge_accumulated_signals so future consumption can
-        retain non-private bookkeeping, such as aggregate stats, without
-        weakening privacy cleanup.
+        A prepared hook is still only in memory until delivery. Keeping the
+        non-private signal window on disk lets a short restart re-arm analysis
+        instead of losing the opportunity between candidate generation and
+        delivery. Privacy purge remains the destructive path.
         """
-        self._signal_store.clear(name)
         self._signal_store.flush()
         self._dirty.discard(name)
+
+    def _discard_delivered_signals(self, name: str) -> None:
+        """Drop durable evidence once the pending hook is done."""
+        self._signal_store.clear(name)
+        self._signal_store.flush()
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
         cleaned = _clean_text(text)
@@ -353,6 +361,7 @@ class TopicHookPool:
             self._purge_accumulated_signals(name)
             return
         seen_seq = self._seq.get(name, 0)
+        seen_purge_generation = self._purge_generation.get(name, 0)
         if self._daily_quota_reached(name):
             logger.info("[%s] topic collection paused: daily topic quota reached", name)
             self._materials.pop(name, None)
@@ -380,7 +389,10 @@ class TopicHookPool:
         if raw_materials is None:
             logger.info("[%s] topic analyzer returned no result; keeping dirty for retry", name)
             return
-        if self._seq.get(name, 0) != seen_seq:
+        if (
+            self._seq.get(name, 0) != seen_seq
+            or self._purge_generation.get(name, 0) != seen_purge_generation
+        ):
             return
         cleaned = [
             material
@@ -569,6 +581,7 @@ class TopicHookPool:
             if self._daily_quota_reached(name) or self._topic_was_used_today(name, current_material):
                 current_material["status"] = "skipped"
                 self._materials[name] = []
+                self._discard_delivered_signals(name)
                 logger.info("[%s] topic material trigger skipped: already used or daily quota reached", name)
                 return
             # "Search first, then chat": prepare a deeper, big-model-derived
@@ -599,6 +612,7 @@ class TopicHookPool:
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
             self._mark_topic_used(name, current_material)
+            self._discard_delivered_signals(name)
             logger.info(
                 "[%s] topic material triggered once: %s",
                 name,
