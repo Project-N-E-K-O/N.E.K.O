@@ -1156,10 +1156,12 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         source_name = lang_names.get(source_lang, source_lang)
         target_name = lang_names.get(target_lang, target_lang)
 
+        from config import TRANSLATION_OUTPUT_MAX_TOKENS
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
             timeout=10.0,
+            max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
@@ -1177,7 +1179,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 与 memory/ 其它调用点的 try/finally 收尾对偶（缓存版客户端在
         # TranslationService._llm_client 里复用，不走这条路径）。
         try:
-            response = await llm.ainvoke(messages)
+            response = await llm.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET  # source text chunked by TRANSLATION_CHUNK_MAX_CHARS upstream before translation.
             translated_text = response.content.strip()
         finally:
             await llm.aclose()
@@ -1388,7 +1390,7 @@ class TranslationService:
 ======以上为规则======"""
 
             set_call_type("translation")
-            response = await llm.ainvoke([
+            response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # source text chunked by TRANSLATION_CHUNK_MAX_CHARS upstream before translation.
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=text)
             ])

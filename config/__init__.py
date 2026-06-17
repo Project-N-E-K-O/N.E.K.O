@@ -1317,6 +1317,31 @@ MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
   recent review_history 等所有后台跑的 LLM 调用。
 - 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
 
+LLM_OUTPUT_GUARD_MAX_TOKENS = 8000
+"""变长输出 LLM 调用的 max_completion_tokens **runaway guard**（不是紧 budget）。
+- 用途：那些输出长度天然变动、没有紧的 task-specific budget 的调用——memory
+  的结构化 JSON（reflection / recall / persona / facts / refine / dedup recheck）、
+  fact dedup、card-assist、window-title 关键词等。
+- 取值：刻意取大（8000，> 现有最大的 COMPUTER_USE_MAX_TOKENS=6000）。正常输出
+  （含 thinking 模型的 reasoning token）都远低于此，不会被截；只在模型失控
+  （死循环 / 复读）时兜底，挡住成本 / 延迟 / 上下文爆炸。
+- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 token budget；本常量是
+  "无紧 budget 但仍需有上限"这类调用的统一来源（见 docs/design/llm-prompt-budget.md §0）。
+- 不适用：有明确紧 budget 的调用（emotion / translation / vision / plugin 粗筛等）
+  仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。"""
+
+DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
+"""主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
+- 用途：OmniOfflineClient 的 streaming chat client（stream_text /
+  prompt_ephemeral 共用同一个 self.llm）。SDK 的 timeout 是整次请求上限，
+  对流式即"出完整条回复"的时间。
+- 取值：刻意取大（180s）——正常 TTS 短回复 / summary 3000-token 长回复
+  都远低于此，不会被截；只在上游真正卡死（既不出 token 也不断流）时兜底
+  释放连接。比 MEMORY_LLM_HARD_TIMEOUT_SECONDS 大，因为主对话是用户面前
+  路径，宁可多等也不能误截正常回复。
+- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
+  主对话流式路径的统一来源。"""
+
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
 # REFLECTION_REFINE 两条 cron 上。fact 不可变（只能作 merge/modify
@@ -2088,6 +2113,8 @@ __all__ = [
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'LLM_OUTPUT_GUARD_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',

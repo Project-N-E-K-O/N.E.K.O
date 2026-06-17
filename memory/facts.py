@@ -424,7 +424,7 @@ class FactStore:
                     **_llm_kwargs,
                 )
                 try:
-                    resp = await llm.ainvoke(prompt)
+                    resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
                 finally:
                     await llm.aclose()
                 raw = resp.content.strip()
@@ -1389,14 +1389,16 @@ class FactStore:
             from utils.llm_client import create_chat_llm
             set_call_type("memory_recheck_fact")
             api_config = self._config_manager.get_model_api_config('summary')
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # recheck prompt assembled from token-capped memory components.
             finally:
                 await llm.aclose()
             raw = resp.content.strip()

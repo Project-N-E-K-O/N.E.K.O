@@ -35,9 +35,12 @@ class TaskDeduper:
     def __init__(self):
         config_manager = get_config_manager()
         api_config = config_manager.get_model_api_config('summary')
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         self.llm = create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'], temperature=0, max_retries=0,
+            timeout=30,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; tiny JSON normally, but a thinking model's reasoning is covered too
         )
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
@@ -65,7 +68,7 @@ class TaskDeduper:
         for attempt in range(max_retries):
             try:
                 set_call_type("dedup")
-                resp = await self.llm.ainvoke([
+                resp = await self.llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # prompt is task descriptions already capped by TASK_*_MAX_TOKENS upstream.
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},
                 ])

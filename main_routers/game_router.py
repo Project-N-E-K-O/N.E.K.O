@@ -1660,7 +1660,7 @@ async def _run_pregame_context_ai(
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # prompt built from bounded game state (board/payload), not user free-text.
                 SystemMessage(content=prompt_template),
                 HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
             ])
@@ -2246,7 +2246,7 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # prompt built from bounded game state (board/payload), not user free-text.
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
@@ -3010,7 +3010,7 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # prompt built from bounded game state (board/payload), not user free-text.
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
@@ -7436,7 +7436,7 @@ async def game_quick_lines(game_type: str, request: Request):
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # prompt built from bounded game state (board/payload), not user free-text.
                 SystemMessage(content=prompt),
                 HumanMessage(content=user_prompt),
             ])

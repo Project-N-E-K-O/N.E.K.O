@@ -2826,6 +2826,7 @@ async def _deliver_break_reminder_via_llm(
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
+                timeout=timeout_seconds,  # mirror the asyncio.timeout() wrapping this stream
             ) as llm:
                 async for chunk in llm.astream(messages):
                     if mgr.state.is_proactive_preempted(proactive_sid):
@@ -3385,6 +3386,7 @@ async def emotion_analysis(request: Request):
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
+            timeout=30,
         )
         async with llm:
             result = await llm.ainvoke(messages)

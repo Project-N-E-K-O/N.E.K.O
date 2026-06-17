@@ -1696,15 +1696,16 @@ class PersonaManager:
                 # aapply_signal。
                 # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
                 # extra_body=None: 显式开 thinking。
-                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
+                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
                 llm = create_chat_llm(
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
                     timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
+                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                     extra_body=None,
                 )
                 try:
-                    resp = await llm.ainvoke(prompt)
+                    resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
                 finally:
                     await llm.aclose()
                 raw = resp.content

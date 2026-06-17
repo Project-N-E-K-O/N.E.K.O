@@ -23,7 +23,7 @@ from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamCh
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
-from config import OMNI_RECENT_RESPONSES_MAX
+from config import OMNI_RECENT_RESPONSES_MAX, DIALOG_LLM_STREAM_TIMEOUT_SECONDS
 from main_logic.tool_calling import (
     OnToolCallCallback,
     ToolCall,
@@ -628,6 +628,7 @@ class OmniOfflineClient:
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
+            timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
         )
 
         # ── Tool calling state ────────────────────────────────────────
@@ -947,7 +948,7 @@ class OmniOfflineClient:
             # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
             # 400（reasoning_content must be passed back）。普通端点恒为空。
             streamed_reasoning_buffer = ""
-            async for chunk in self.llm.astream(messages, **overrides):
+            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
                 if getattr(chunk, "content", None):
                     if tool_leak_filter is not None:
                         chunk.content = self._filter_tool_leak_content(
@@ -1050,7 +1051,7 @@ class OmniOfflineClient:
         }
         final_finish_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
-        async for chunk in self.llm.astream(messages, **final_overrides):
+        async for chunk in self.llm.astream(messages, **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
             if chunk.finish_reason:
                 final_finish_reason = chunk.finish_reason
             if chunk.usage_metadata:
@@ -1505,6 +1506,7 @@ class OmniOfflineClient:
                 streaming=True, max_retries=0,
                 # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
+                timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -1660,6 +1662,7 @@ class OmniOfflineClient:
             llm = create_chat_llm(
                 emotion_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
+                timeout=30,
             )
         except Exception as e:
             logger.warning("summary: 构造 emotion LLM 失败: %s", e)
