@@ -11,6 +11,7 @@
   "entry.add_app.param.path": "Полный путь, например: C:\\Program Files (x86)\\Steam\\Steam.exe или путь к ярлыку",
   "entry.add_app.param.aliases": "Список псевдонимов для распознавания, например: [\"steam\", \"игровая платформа\"]",
   "entry.add_app.param.description": "Описание (необязательно)",
+  "entry.add_app.param.autostart": "Включить автозапуск (необязательно, по умолчанию false, только для .exe)",
 
   "entry.remove_app.name": "Удалить приложение",
   "entry.remove_app.description": "Удалить зарегистрированную программу по app_id.",
@@ -43,6 +44,12 @@
 
   "entry.get_all_autostart_status.name": "Получить состояние автозапуска всех приложений",
   "entry.get_all_autostart_status.description": "Получить список состояний автозапуска для всех зарегистрированных программ. Неко может узнать, какие приложения настроены на автозапуск.",
+  "entry.get_recent_apps.name": "Получить недавние приложения",
+  "entry.get_recent_apps.description": "Получить список недавно запущенных приложений для быстрого доступа к часто используемым программам.",
+  "entry.get_categories.name": "Получить категории",
+  "entry.get_categories.description": "Получить все доступные категории приложений для организации и управления программами.",
+  "entry.export_apps.name": "Экспорт настроек приложений",
+  "entry.export_apps.description": "Экспортировать настройки всех зарегистрированных приложений для резервного копирования или переноса.",
 
   "error.name_empty": "Имя программы не может быть пустым",
   "error.path_invalid": "Недопустимый путь или не абсолютный путь: {path}",

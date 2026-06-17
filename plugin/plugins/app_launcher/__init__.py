@@ -528,7 +528,7 @@ class AppLauncherPlugin(NekoPluginBase):
                 },
                 "autostart": {
                     "type": "boolean",
-                    "description": "是否设置开机自启（可选，默认 false，仅支持 .exe 文件）",
+                    "description": tr("entry.add_app.param.autostart", default="是否设置开机自启（可选，默认 false，仅支持 .exe 文件）"),
                 },
             },
             "required": ["name", "path"],
@@ -831,7 +831,7 @@ class AppLauncherPlugin(NekoPluginBase):
                 app["path"] = new_path
                 app["resolved_path"] = new_resolved
                 app["type"] = _get_file_type(new_resolved)
-                path_changed = new_path != old_path
+                path_changed = new_resolved.lower() != _resolve_path(old_path).lower()
             if aliases is not None:
                 try:
                     app["aliases"] = _normalize_aliases(aliases)
@@ -1019,8 +1019,8 @@ class AppLauncherPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_recent_apps",
-        name="获取最近使用记录",
-        description="获取最近启动过的软件列表，方便快速访问常用软件。",
+        name=tr("entry.get_recent_apps.name", default="获取最近使用记录"),
+        description=tr("entry.get_recent_apps.description", default="获取最近启动过的软件列表，方便快速访问常用软件。"),
         llm_result_fields=["recent_apps", "count"],
     )
     async def get_recent_apps(self, **_):
@@ -1048,8 +1048,8 @@ class AppLauncherPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_categories",
-        name="获取分类列表",
-        description="获取所有可用的软件分类，用于组织和管理软件。",
+        name=tr("entry.get_categories.name", default="获取分类列表"),
+        description=tr("entry.get_categories.description", default="获取所有可用的软件分类，用于组织和管理软件。"),
         llm_result_fields=["categories", "count"],
     )
     async def get_categories(self, **_):
@@ -1062,8 +1062,8 @@ class AppLauncherPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="export_apps",
-        name="导出软件配置",
-        description="导出所有已注册软件的配置信息，方便备份或迁移。",
+        name=tr("entry.export_apps.name", default="导出软件配置"),
+        description=tr("entry.export_apps.description", default="导出所有已注册软件的配置信息，方便备份或迁移。"),
         llm_result_fields=["apps", "count", "export_data"],
     )
     async def export_apps(self, **_):

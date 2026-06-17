@@ -11,6 +11,7 @@
   "entry.add_app.param.path": "软件的完整路径，例如：C:\\Program Files (x86)\\Steam\\Steam.exe 或快捷方式路径",
   "entry.add_app.param.aliases": "别名列表，方便猫娘识别，例如：[\"steam\", \"游戏平台\"]",
   "entry.add_app.param.description": "软件描述（可选）",
+  "entry.add_app.param.autostart": "是否设置开机自启（可选，默认 false，仅支持 .exe 文件）",
   
   "entry.remove_app.name": "删除软件",
   "entry.remove_app.description": "根据 app_id 删除已注册的软件。",
@@ -43,6 +44,12 @@
   
   "entry.get_all_autostart_status.name": "获取所有软件开机自启状态",
   "entry.get_all_autostart_status.description": "获取所有已注册软件的开机自启状态列表。猫娘可以通过此功能了解哪些软件设置了开机自启。",
+  "entry.get_recent_apps.name": "获取最近使用记录",
+  "entry.get_recent_apps.description": "获取最近启动过的软件列表，方便快速访问常用软件。",
+  "entry.get_categories.name": "获取分类列表",
+  "entry.get_categories.description": "获取所有可用的软件分类，用于组织和管理软件。",
+  "entry.export_apps.name": "导出软件配置",
+  "entry.export_apps.description": "导出所有已注册软件的配置信息，方便备份或迁移。",
   
   "error.name_empty": "软件名称不能为空",
   "error.path_invalid": "路径无效或不是绝对路径: {path}",

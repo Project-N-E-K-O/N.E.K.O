@@ -11,6 +11,7 @@
   "entry.add_app.param.path": "전체 경로, 예: C:\\Program Files (x86)\\Steam\\Steam.exe 또는 바로가기 경로",
   "entry.add_app.param.aliases": "인식을 돕는 별칭 목록, 예: [\"steam\", \"게임 플랫폼\"]",
   "entry.add_app.param.description": "설명(선택 사항)",
+  "entry.add_app.param.autostart": "시작 프로그램 등록 여부(선택 사항, 기본값 false, .exe만 지원)",
 
   "entry.remove_app.name": "앱 삭제",
   "entry.remove_app.description": "app_id로 등록된 소프트웨어를 삭제합니다.",
@@ -43,6 +44,12 @@
 
   "entry.get_all_autostart_status.name": "모든 앱 시작 프로그램 상태 가져오기",
   "entry.get_all_autostart_status.description": "등록된 모든 소프트웨어의 시작 프로그램 상태 목록을 가져옵니다. 네코가 어떤 앱이 자동 실행되도록 설정되어 있는지 알 수 있습니다.",
+  "entry.get_recent_apps.name": "최근 사용 기록 가져오기",
+  "entry.get_recent_apps.description": "최근 실행한 소프트웨어 목록을 가져와 자주 쓰는 앱에 빠르게 접근합니다.",
+  "entry.get_categories.name": "카테고리 목록 가져오기",
+  "entry.get_categories.description": "소프트웨어를 정리하고 관리하는 데 사용할 수 있는 모든 카테고리를 가져옵니다.",
+  "entry.export_apps.name": "앱 설정 내보내기",
+  "entry.export_apps.description": "백업 또는 이전을 위해 등록된 모든 앱 설정 정보를 내보냅니다.",
 
   "error.name_empty": "소프트웨어 이름은 비워둘 수 없습니다",
   "error.path_invalid": "잘못된 경로이거나 절대 경로가 아닙니다: {path}",

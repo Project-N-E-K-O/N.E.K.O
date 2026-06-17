@@ -11,6 +11,7 @@
   "entry.add_app.param.path": "軟體的完整路徑，例如：C:\\Program Files (x86)\\Steam\\Steam.exe 或捷徑路徑",
   "entry.add_app.param.aliases": "別名清單，方便辨識，例如：[\"steam\", \"遊戲平台\"]",
   "entry.add_app.param.description": "軟體描述（可選）",
+  "entry.add_app.param.autostart": "是否設定開機自動啟動（可選，預設 false，僅支援 .exe 檔案）",
 
   "entry.remove_app.name": "刪除軟體",
   "entry.remove_app.description": "根據 app_id 刪除已註冊的軟體。",
@@ -43,6 +44,12 @@
 
   "entry.get_all_autostart_status.name": "取得所有軟體開機自動啟動狀態",
   "entry.get_all_autostart_status.description": "取得所有已註冊軟體的開機自動啟動狀態清單。貓娘可以透過此功能了解哪些軟體設定了開機自動啟動。",
+  "entry.get_recent_apps.name": "取得最近使用記錄",
+  "entry.get_recent_apps.description": "取得最近啟動過的軟體清單，方便快速存取常用軟體。",
+  "entry.get_categories.name": "取得分類清單",
+  "entry.get_categories.description": "取得所有可用的軟體分類，用於組織和管理軟體。",
+  "entry.export_apps.name": "匯出軟體設定",
+  "entry.export_apps.description": "匯出所有已註冊軟體的設定資訊，方便備份或遷移。",
 
   "error.name_empty": "軟體名稱不能為空",
   "error.path_invalid": "路徑無效或不是絕對路徑: {path}",

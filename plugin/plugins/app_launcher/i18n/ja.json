@@ -11,6 +11,7 @@
   "entry.add_app.param.path": "完全なパス、例：C:\\Program Files (x86)\\Steam\\Steam.exe またはショートカットパス",
   "entry.add_app.param.aliases": "エイリアスリスト、例：[\"steam\", \"ゲームプラットフォーム\"]",
   "entry.add_app.param.description": "説明（オプション）",
+  "entry.add_app.param.autostart": "自動起動を設定するかどうか（任意、既定は false、.exe のみ対応）",
   
   "entry.remove_app.name": "アプリ削除",
   "entry.remove_app.description": "app_idで登録済みソフトウェアを削除します。",
@@ -43,6 +44,12 @@
   
   "entry.get_all_autostart_status.name": "全アプリ自動起動状態取得",
   "entry.get_all_autostart_status.description": "すべての登録済みソフトウェアの自動起動状態リストを取得します。猫娘がどのアプリが自動起動されているかを把握できます。",
+  "entry.get_recent_apps.name": "最近使用したアプリを取得",
+  "entry.get_recent_apps.description": "最近起動したソフトウェア一覧を取得し、よく使うアプリへ素早くアクセスできます。",
+  "entry.get_categories.name": "カテゴリ一覧を取得",
+  "entry.get_categories.description": "ソフトウェアの整理と管理に使えるすべてのカテゴリを取得します。",
+  "entry.export_apps.name": "アプリ設定をエクスポート",
+  "entry.export_apps.description": "バックアップや移行のため、登録済みアプリの設定情報をすべてエクスポートします。",
   
   "error.name_empty": "ソフトウェア名は空にできません",
   "error.path_invalid": "無効なパスまたは絶対パスではありません: {path}",

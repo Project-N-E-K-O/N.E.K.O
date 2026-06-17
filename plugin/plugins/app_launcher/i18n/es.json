@@ -11,6 +11,7 @@
   "entry.add_app.param.path": "Ruta completa, por ejemplo: C:\\Program Files (x86)\\Steam\\Steam.exe o ruta de acceso directo",
   "entry.add_app.param.aliases": "Lista de alias para reconocimiento, por ejemplo: [\"steam\", \"plataforma de juegos\"]",
   "entry.add_app.param.description": "Descripción (opcional)",
+  "entry.add_app.param.autostart": "Si se debe activar el inicio automático (opcional, predeterminado false, solo .exe)",
 
   "entry.remove_app.name": "Eliminar App",
   "entry.remove_app.description": "Elimina software registrado por app_id.",
@@ -43,6 +44,12 @@
 
   "entry.get_all_autostart_status.name": "Obtener Estado de Inicio Automático de Todas",
   "entry.get_all_autostart_status.description": "Obtiene la lista de estados de inicio automático de todo el software registrado. Neko puede ver qué apps tienen el inicio automático activado.",
+  "entry.get_recent_apps.name": "Obtener Apps Recientes",
+  "entry.get_recent_apps.description": "Obtiene la lista de software iniciado recientemente para acceder rápido a apps usadas con frecuencia.",
+  "entry.get_categories.name": "Obtener Categorías",
+  "entry.get_categories.description": "Obtiene todas las categorías disponibles para organizar y administrar software.",
+  "entry.export_apps.name": "Exportar Configuración de Apps",
+  "entry.export_apps.description": "Exporta la configuración de todas las apps registradas para copia de seguridad o migración.",
 
   "error.name_empty": "El nombre del software no puede estar vacío",
   "error.path_invalid": "Ruta inválida o no absoluta: {path}",
