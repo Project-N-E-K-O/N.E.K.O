@@ -618,7 +618,7 @@
         display.style.height = resolved.height + 'px';
         display.style.minHeight = MIN_PANEL_HEIGHT + 'px';
         display.style.maxHeight = 'none';
-        display.style.fontSize = '17px';
+        display.style.fontSize = '18px';
         display.style.setProperty('--subtitle-panel-width', resolved.width + 'px');
         display.style.setProperty('--subtitle-panel-height', resolved.height + 'px');
         display.style.setProperty('--subtitle-content-max-height', Math.max(24, resolved.height - 24) + 'px');
@@ -720,7 +720,7 @@
         var text = String(options.text || '');
         var mode = options.mode || 'window';
         var bounds = getPanelBounds(options.panelBounds);
-        var baseFont = options.baseFont || 17;
+        var baseFont = options.baseFont || 18;
         var minFont = options.minFont || 12;
         var fontFamily = options.fontFamily || 'Segoe UI, Arial, sans-serif';
         var maxWidth = options.maxWidth || bounds.width;

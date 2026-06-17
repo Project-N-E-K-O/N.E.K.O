@@ -3414,6 +3414,94 @@ def test_subtitle_window_native_resize_keeps_panel_size_until_main_frame_arrives
 
 
 @pytest.mark.frontend
+def test_subtitle_window_uses_web_font_size_without_desktop_shrink(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <button type="button" id="subtitle-close-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__subtitleWindowSizes = [];
+            window.nekoSubtitle = {
+                setSize: (width, height, options) => window.__subtitleWindowSizes.push({
+                    width,
+                    height,
+                    panelBounds: options && options.panelBounds,
+                }),
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 612, height: 80 }),
+                getCursorPoint: () => Promise.resolve({ x: 20, y: 20, screenX: 30, screenY: 40 }),
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 600,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            const display = document.getElementById('subtitle-display');
+            display.style.transition = 'none';
+            window.nekoSubtitleShared.applySubtitlePanelBounds(display, {
+                width: 600,
+                height: 68,
+            }, { host: 'window' });
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: {
+                    translated: true,
+                    transcript: 'This is a longer translated subtitle that should keep the same readable size after desktop layout.',
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const text = document.getElementById('subtitle-text');
+            const textStyle = getComputedStyle(text);
+            return {
+                displayFontSize: getComputedStyle(display).fontSize,
+                inlineDisplayFontSize: display.style.fontSize,
+                textFontSize: textStyle.fontSize,
+                inlineTextFontSize: text.style.fontSize,
+                lastSize: window.__subtitleWindowSizes[window.__subtitleWindowSizes.length - 1],
+            };
+        }
+        """
+    )
+
+    assert result["displayFontSize"] == "18px"
+    assert result["inlineDisplayFontSize"] == "18px"
+    assert result["textFontSize"] == "18px"
+    assert result["inlineTextFontSize"] == ""
+    assert result["lastSize"] == {"width": 612, "height": 80, "panelBounds": {"width": 600, "height": 68}}
+
+
+@pytest.mark.frontend
 def test_subtitle_window_resize_handles_do_not_start_window_drag(
     mock_page: Page,
 ):

@@ -89,16 +89,7 @@
             return;
         }
 
-        var layout = SubtitleShared.measureSubtitleLayout({
-            mode: 'window',
-            text: currentTranscript,
-            panelBounds: bounds,
-            maxWidth: bounds.width,
-            minHeight: bounds.height,
-            maxHeight: bounds.height,
-            baseFont: 17
-        });
-        refs.text.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+        refs.text.style.fontSize = '';
         setWindowSizeOnce();
     }
 
