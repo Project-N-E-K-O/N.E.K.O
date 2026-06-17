@@ -3269,7 +3269,10 @@ def _archive_unorganized_dialogues(archive: dict, *, limit: int = _POSTGAME_REAL
 
 
 def _append_token_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_tokens: int) -> None:
-    from utils.tokenize import count_tokens
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    if max_tokens <= 0:
+        return
 
     kept: list[str] = []
     total_tokens = 0
@@ -3279,7 +3282,13 @@ def _append_token_limited_lines(lines: list[str], header: str, raw_lines: list[s
             continue
         line_tokens = count_tokens(line)
         next_total = total_tokens + line_tokens
-        if kept and next_total > max_tokens:
+        if next_total > max_tokens:
+            # Even the first (newest) line must respect the budget — a single
+            # pasted/long dialogue entry would otherwise bypass the cap.
+            if not kept:
+                clipped = truncate_to_tokens(line, max_tokens)
+                if clipped:
+                    kept.insert(0, clipped)
             break
         kept.insert(0, line)
         total_tokens = next_total

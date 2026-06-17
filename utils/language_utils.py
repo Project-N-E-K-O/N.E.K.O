@@ -789,7 +789,12 @@ def _split_text_into_token_chunks(text: str, max_tokens: int) -> List[str]:
     while start < len(text):
         chunk_end = _find_token_chunk_end(text, start, max_tokens)
         if chunk_end <= start:
-            break
+            # A single code point already exceeds max_tokens. Emit it as its own
+            # (over-budget but indivisible) chunk and advance, rather than
+            # silently dropping the rest of the text.
+            chunks.append(text[start:start + 1])
+            start += 1
+            continue
 
         current_chunk = text[start:chunk_end]
         # 尝试在句号、换行符等位置分割，避免把一句话砍在中间。

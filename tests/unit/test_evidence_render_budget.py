@@ -41,9 +41,15 @@ def test_token_helpers_treat_special_token_strings_as_literal_text():
 
     _reset_fallback_warned_for_tests()
     text = "user note contains <|endoftext|> literally"
+    special = "<|endoftext|>"
 
     assert count_tokens(text) > 0
-    assert truncate_to_tokens(text, 8)
+    assert count_tokens(special) > 0
+    # The special-token string must be treated as literal text (not a tokenizer
+    # sentinel that raises/strips): it round-trips, and a high budget leaves the
+    # full text untouched.
+    assert truncate_to_tokens(special, count_tokens(special)) == special
+    assert truncate_to_tokens(text, 10_000) == text
 
 
 @pytest.mark.asyncio
