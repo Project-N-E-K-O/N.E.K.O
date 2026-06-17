@@ -102,6 +102,12 @@ def _make_mgr(session=None) -> LLMSessionManager:
     # Mirror the production __init__ playback-gate flag (the double is built
     # via __new__, so __init__ never ran). Default False = gate open.
     mgr._voice_playback_active = False
+    # Mirror the voice-session predicate inputs (_is_voice_session_active_or_starting):
+    # default = a non-active text session, i.e. voice gate open.
+    mgr.is_active = False
+    mgr.input_mode = 'text'
+    mgr._starting_session_count = 0
+    mgr._starting_input_mode = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
     mgr.goodbye_silent = False
@@ -1080,6 +1086,218 @@ async def test_deliver_proactive_batch_leaves_ack_to_delivery_path():
     await LLMSessionManager._deliver_proactive_batch(mgr, [cb])
 
     assert not future.done()
+
+
+def test_topic_hook_delivery_blocked_in_active_voice_session():
+    """Topic hooks are text-mode openers; an active voice session must never
+    receive one. topic_hook_delivery_allowed returns False while a voice session
+    is active, closing both the submit gate and the release gate."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    mgr.is_active = True
+    mgr.input_mode = 'audio'
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
+def test_topic_hook_delivery_blocked_during_audio_startup_window():
+    """Codex P2: during a text→audio switch, start_session sets the audio
+    starting flags while the old OmniOfflineClient is still in self.session. The
+    gate must defer on the starting state, not on isinstance(session, Realtime)
+    — otherwise a hook slips through the startup window into the dying text
+    session."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr._starting_session_count = 1
+    mgr._starting_input_mode = 'audio'
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
+def test_topic_hook_delivery_blocked_during_audio_to_text_teardown():
+    """Codex P2: during an audio→text switch, start_session flips the input-mode
+    flags to text while the old OmniRealtimeClient lingers in self.session, and
+    trigger_agent_callbacks would still take its isinstance-gated voice branch.
+    The gate must stay blocked on the live realtime session even though
+    _is_voice_session_active_or_starting() has already gone False."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    mgr.input_mode = 'text'
+    mgr._starting_input_mode = 'text'
+    mgr.is_active = True
+    # _is_voice_session_active_or_starting() is False here, but the live session
+    # is still realtime → the union predicate must still block.
+    assert LLMSessionManager._is_voice_session_active_or_starting(mgr) is False
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
+def test_topic_hook_delivery_allowed_in_text_session():
+    """Non-regression: a text session still allows topic-hook delivery
+    (fail-open when no activity snapshot is available)."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
+
+
+async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
+    """Release gate: in a voice session the topic_hook is dropped (ack=False, left
+    for TopicHookPool to retry), while non-topic_hook cues pass through. The voice
+    gate reuses topic_hook_delivery_allowed."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    mgr.is_active = True
+    mgr.input_mode = 'audio'
+    hook_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "status": "completed", "summary": "deep topic",
+        "channel": "topic_hook", DELIVERY_ACK_FUTURE_KEY: hook_future,
+    }
+    other_cb = {"status": "completed", "summary": "task done", "channel": "agent_task"}
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    await LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
+
+    # topic hook held at the gate: ack resolved False so TopicHookPool retries.
+    assert hook_future.done() and hook_future.result() is False
+    # 非 topic_hook cue 照常进入投递路径。
+    mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+
+
+async def test_drop_pending_topic_hooks_for_voice_sweeps_both_queues():
+    """The voice-start sweep removes topic hooks from pending_agent_callbacks AND
+    the paired pending_extra_replies (hot-swap prime channel), resolves ack False
+    for the pool to retry, and leaves non-topic cues + their extras intact."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+    other_cb = {"_callback_delivery_id": "a1", "channel": "agent_task", "status": "completed", "summary": "task"}
+    topic_extra = {"_callback_delivery_id": "th1", "origin": "event", "summary": "deep topic", "source_kind": "topic"}
+    other_extra = {"_callback_delivery_id": "a1", "origin": "task_result", "summary": "task", "source_kind": "agent"}
+    mgr.pending_agent_callbacks = [topic_cb, other_cb]
+    mgr.pending_extra_replies = [topic_extra, other_extra]
+
+    LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
+
+    assert mgr.pending_agent_callbacks == [other_cb]
+    assert mgr.pending_extra_replies == [other_extra]
+    assert fut.done() and fut.result() is False
+
+
+async def test_drop_pending_topic_hooks_for_voice_sweeps_extras_only():
+    """Codex P2: a topic hook can be consumed from pending_agent_callbacks by a
+    text turn (drain_agent_callbacks_for_llm) while its paired extra is left in
+    pending_extra_replies. Such an extras-only hook (source_kind=='topic', no
+    callback left) must still be swept so the hot-swap prime_context path can't
+    re-introduce the topic in voice."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    topic_extra = {"_callback_delivery_id": "th1", "origin": "event", "summary": "deep topic", "source_kind": "topic"}
+    other_extra = {"_callback_delivery_id": "a1", "origin": "task_result", "summary": "task", "source_kind": "agent"}
+    mgr.pending_agent_callbacks = []  # callback already drained + delivered in text
+    mgr.pending_extra_replies = [topic_extra, other_extra]
+
+    LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
+
+    assert mgr.pending_extra_replies == [other_extra]
+
+
+async def test_reset_proactive_gate_sweeps_already_pending_topic_hook_on_voice_start():
+    """Codex P2 follow-up: a topic hook released into pending_agent_callbacks but
+    left deferred is no longer in manager.drain_pending(), so a leftover-only
+    filter misses it. The voice-start reset sweeps the pending queue itself."""
+    mgr = _make_mgr(session=_make_voice_sess())
+    # start_session sets these BEFORE calling _reset_proactive_gate.
+    mgr._starting_session_count = 1
+    mgr._starting_input_mode = 'audio'
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+    mgr.pending_agent_callbacks = [topic_cb]  # already released + deferred, NOT in manager
+    mgr.proactive_manager.drain_pending = MagicMock(return_value=[])
+    mgr.proactive_manager.reset_gate = MagicMock()
+
+    LLMSessionManager._reset_proactive_gate(mgr)
+
+    assert mgr.pending_agent_callbacks == []
+    assert fut.done() and fut.result() is False
+
+
+def test_reset_proactive_gate_keeps_topic_hook_on_text_start():
+    """Non-regression: a text-mode reset (no voice start) leaves a queued topic
+    hook in pending_agent_callbacks untouched — only voice starts drop it."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))  # text, not voice-starting
+    topic_cb = {"_callback_delivery_id": "th1", "channel": "topic_hook", "status": "completed", "summary": "deep topic"}
+    mgr.pending_agent_callbacks = [topic_cb]
+    mgr.proactive_manager.drain_pending = MagicMock(return_value=[])
+    mgr.proactive_manager.reset_gate = MagicMock()
+
+    LLMSessionManager._reset_proactive_gate(mgr)
+
+    assert mgr.pending_agent_callbacks == [topic_cb]
+
+
+async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_took_over():
+    """Codex P2: an in-flight topic-hook snapshot (already removed from
+    pending_agent_callbacks) is unreachable by the voice-start sweep. The text
+    delivery path re-gates at the actual prompt: if voice has taken over while
+    this trigger parked on the SM claim / write lock, the topic hook is dropped
+    (ack False for the pool to retry) and prompt_ephemeral is never called."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    # audio start began while this trigger was parked — session still offline.
+    mgr._starting_session_count = 1
+    mgr._starting_input_mode = 'audio'
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+    snapshot = [topic_cb]
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, snapshot)
+
+    assert delivered is False
+    assert fut.done() and fut.result() is False
+    assert sess.called_with == []  # prompt_ephemeral never fired
+    # Empty batch must free the inflight slot or the next cue stalls to timeout.
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
+async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_over_during_awaits():
+    """Codex/CodeRabbit P2: the re-gate must also run AFTER the CLAIM/PHASE2
+    awaits, immediately before prompt_ephemeral — a takeover landing during those
+    awaits would otherwise slip through. Simulate voice going blocked only at the
+    second (prompt-adjacent) check."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    mgr._voice_delivery_blocked = MagicMock(side_effect=[False, True])
+    fut = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
+    }
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
+
+    assert delivered is False
+    assert fut.done() and fut.result() is False
+    assert sess.called_with == []  # dropped at the prompt-adjacent re-gate
+    assert mgr._voice_delivery_blocked.call_count == 2
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
+async def test_deliver_agent_callbacks_text_keeps_topic_hook_in_plain_text_session():
+    """Non-regression: with no voice active/starting, the text path delivers the
+    topic hook normally (prompt_ephemeral fires, returns True)."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    topic_cb = {
+        "_callback_delivery_id": "th1", "channel": "topic_hook",
+        "status": "completed", "summary": "deep topic",
+    }
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
+
+    assert delivered is True
+    assert len(sess.called_with) == 1
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():

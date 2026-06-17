@@ -700,8 +700,8 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"]' in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"]' in styles
-    assert "rotate(107.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-107.35deg)" in styles
-    assert "rotate(-17.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(17.35deg)" in styles
+    assert "rotate(calc(107.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-107.35deg + var(--compact-tool-wheel-drag-counter-angle)))" in styles
+    assert "rotate(calc(-17.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(17.35deg + var(--compact-tool-wheel-drag-counter-angle)))" in styles
     assert "rotate(-48.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(48.51deg)" in styles
     assert "rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg)" in styles
     assert "translateX(83.82px)" not in wheel_block
@@ -805,9 +805,13 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "if (!clippedRect) return null;" in composite_block
     assert "visualRect: clippedRect" in composite_block
     assert "hitRect: clippedRect" in composite_block
-    assert "nativeRect: kind === 'history' ? null : clippedRect" in composite_block
+    assert "nativeRect: clippedRect" in composite_block
     assert "id: 'history:scrollbar'" in composite_block
-    assert "nativeRect: null" in composite_block
+    parent_native_block = composite_block.split("id: kind + ':native'", 1)[1].split("interactive: false", 1)[0]
+    assert "hitRect: null" in parent_native_block
+    assert "nativeRect: parentRect" in parent_native_block
+    scrollbar_block = composite_block.split("id: 'history:scrollbar'", 1)[1].split("hitRegionKind: 'scrollbar'", 1)[0]
+    assert "nativeRect: scrollbarRect" in scrollbar_block
 
 
 def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
@@ -815,8 +819,11 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
 
     assert "function isCompactSurfaceBaseAnchorKind(kind)" in script
     assert "return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';" in script
+    assert "function isCompactSurfaceBaseHitKind(kind)" in script
+    assert "return kind === 'inputControl';" in script
     assert "function getCompactSurfaceGeometryRole(kind)" in script
     assert "if (kind === 'dragHandle') return 'baseHit';" not in script
+    assert "if (isCompactSurfaceBaseHitKind(kind)) return 'baseHit';" in script
     assert "return 'extraIsland';" in script
     assert "item.geometryRole = getCompactSurfaceGeometryRole(item.kind);" in script
 
@@ -829,13 +836,64 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "return item && item.geometryRole === 'baseAnchor';" in snapshot_block
     assert "var extraIslandItems = surfaceItems.filter(function (item) {" in snapshot_block
     assert "return item && item.geometryRole === 'extraIsland';" in snapshot_block
+    assert "var baseSurfaceNativeItems = surfaceItems.filter(function (item) {" in snapshot_block
+    assert "item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit'" in snapshot_block
+    assert "function getCompactGeometryItemBoundsRects(item)" in script
+    assert "if (item.visualRect) rects.push(item.visualRect);" in script
+    assert "if (item.nativeRect) rects.push(item.nativeRect);" in script
+    assert "var surfaceRects = surfaceItems.reduce(function (rects, item) {" in snapshot_block
+    assert "var baseSurfaceRects = baseSurfaceItems.reduce(function (rects, item) {" in snapshot_block
+    assert "return rects.concat(getCompactGeometryItemBoundsRects(item));" in snapshot_block
     assert "baseSurfaceItems: baseSurfaceItems" in snapshot_block
     assert "baseSurfaceRect: unionCompactRects(baseSurfaceRects)" in snapshot_block
-    assert "baseSurfaceNativeRects:" in snapshot_block
+    assert "baseSurfaceNativeRects: baseSurfaceNativeItems.map(function (item) { return item.nativeRect; }).filter(Boolean)" in snapshot_block
     assert "baseSurfaceHitRects:" in snapshot_block
     assert "extraIslandItems: extraIslandItems" in snapshot_block
     assert "extraIslandNativeRects:" in snapshot_block
     assert "extraIslandHitRects:" in snapshot_block
+
+
+def test_compact_input_geometry_preserves_drag_surface_native_region():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    input_collector = script.split("function collectCompactInputSurfaceGeometryItems(element)", 1)[1].split(
+        "function collectCompactCompositeGeometryItems(element, kind)",
+        1,
+    )[0]
+    surface_collector = script.split("function collectCompactSurfaceGeometryItems()", 1)[1].split(
+        "function getCompactInteractionGeometrySnapshot()",
+        1,
+    )[0]
+
+    assert "id: element.id || 'input:surface'" in input_collector
+    assert "kind: 'input'" in input_collector
+    assert "var inputSurfaceIsDragSurface = element.getAttribute('data-compact-drag-surface') === 'true';" in input_collector
+    assert "hitRect: inputSurfaceIsDragSurface ? parentRect : null" in input_collector
+    assert "nativeRect: inputSurfaceIsDragSurface ? parentRect : null" in input_collector
+    assert "interactive: inputSurfaceIsDragSurface" in input_collector
+    assert "var hitRegionElements = [];" in input_collector
+    assert 'element.getAttribute(\'data-compact-hit-region\') === \'true\'' in input_collector
+    assert "hitRegionElements.push(element);" in input_collector
+    assert 'element.querySelectorAll(\'[data-compact-hit-region="true"]\')' in input_collector
+    assert "kind: 'inputControl'" in input_collector
+    assert "hitRect: clippedRect" in input_collector
+    assert "nativeRect: clippedRect" in input_collector
+    assert "hitRegionKind: child.getAttribute('data-compact-hit-region-kind') || null" in input_collector
+    assert "if (compactGeometryItem === 'input')" in surface_collector
+    assert "return items.concat(collectCompactInputSurfaceGeometryItems(element));" in surface_collector
+    assert "id: 'surface:shell'" in surface_collector
+    shell_block = surface_collector.split("id: 'surface:shell'", 1)[1].split("interactive: false", 1)[0]
+    assert "hitRect: null" in shell_block
+    assert "nativeRect: null" in shell_block
+
+    assert "data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}" in app_source
+    assert 'data-compact-hit-region-id="input:text"' in app_source
+    assert 'data-compact-hit-region-kind="input-text"' in app_source
+    assert 'data-compact-hit-region-id="input:minimize"' in app_source
+    assert 'data-compact-hit-region-kind="input-minimize"' in app_source
+    assert 'data-compact-hit-region-id="input:tool-toggle"' in app_source
+    assert 'data-compact-hit-region-kind="input-tool-toggle"' in app_source
 
 
 def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
@@ -1137,7 +1195,7 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     # under-choice 态把 bar 一并纳入 pointer-events:none / 淡化规则。
     assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar," in styles
     # 纯点击不落库：finish 仅在 moved 时 persist。
-    assert "if (resizeState.moved) {" in app_source
+    assert "if (phase !== 'cancel' && resizeState.heightChanged && resizeState.lastHeight !== resizeState.initialHeight) {" in app_source
 
     # 高度上限写预留覆盖变量 + 独立 localStorage key；变更后触发宿主几何重算（Electron 窗口联动）。
     assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source
@@ -1245,6 +1303,15 @@ def test_compact_history_reduced_motion_closing_hides_immediately():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
     reduced_motion_block = styles.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"]' in reduced_motion_block
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"]' in reduced_motion_block
+    rattle_block = css_block(
+        reduced_motion_block,
+        '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"],',
+        ".compact-input-tool-fan .compact-input-tool-tooltip",
+    )
+    assert "animation: none !important;" in rattle_block
+
     closing_block = css_block(
         reduced_motion_block,
         '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] {',
@@ -1404,7 +1471,9 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     )[0]
     assert "if (hitStyle && hitStyle.pointerEvents === 'none') return null;" in scrollbar_block
     assert "style.pointerEvents === 'none'" not in scrollbar_block
-    assert "data-compact-hit-region" not in scroll_jsx_block
+    assert "data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}" in scroll_jsx_block
+    assert "data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:scroll' : undefined}" in scroll_jsx_block
+    assert "data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'scroll' : undefined}" in scroll_jsx_block
     assert 'className="compact-export-history-scrollbar-hit"' in panel_source
     assert 'data-compact-scrollbar-hit="true"' in panel_source
     assert "hasPointerCapture?.(event.pointerId)" in panel_source

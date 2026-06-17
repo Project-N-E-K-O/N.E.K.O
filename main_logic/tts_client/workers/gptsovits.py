@@ -405,9 +405,12 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
 def _gptsovits_is_selected(ctx) -> bool:
     core_config, cm = ctx.core_config, ctx.cm
-    # config_manager 写 snapshot 时已 _as_bool 规整 GPTSOVITS_ENABLED，这里再包一层
-    # 防御性对齐隔壁 ENABLE_CUSTOM_API / core.py，避免直接传入未规整 dict 时字符串
-    # "false"/"0" 被当真值误抢 GPT-SoVITS。
+    # 选中信号收口到 GPTSOVITS_ENABLED 单一真相：config_manager 的 snapshot 已把
+    # ttsModelProvider=='gptsovits' 下拉（与 pre-#1830 存量旧开关）派生进
+    # GPTSOVITS_ENABLED，这里不再自己 raw load core_config.json 读 ttsModelProvider。
+    # snapshot 写 GPTSOVITS_ENABLED 时已 _as_bool 规整，这里再包一层防御性对齐隔壁
+    # ENABLE_CUSTOM_API / core.py，避免直接传入未规整 dict 时字符串 "false"/"0"
+    # 被当真值误抢 GPT-SoVITS。
     if not _as_bool(core_config.get('GPTSOVITS_ENABLED'), False):
         return False
     try:

@@ -2029,6 +2029,9 @@
                     }
 
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
+                    if (statusCode === 'CHARACTER_LEFT') {
+                        window.dispatchEvent(new CustomEvent('neko:character-left', { detail: response }));
+                    }
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         S._suppressCharacterLeft = false;
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
@@ -2748,6 +2751,7 @@
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
+                    window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -2946,9 +2950,10 @@
 
                 // -------- activity_context_prompt --------
                 // 后端活动 tracker 检测到用户「进入」游戏/娱乐（context='play'）或
-                // 「进入」专注工作（context='work'）时推这条。前端（仅 A/B 实验组
-                // vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动
-                // 搭话里的屏幕分享来源。分组判定 + 去重都在 app-context-prompt.js。
+                // 「进入」专注工作（context='work'）时推这条。前端（对所有用户、每会话
+                // 每类一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。去重都在
+                // app-context-prompt.js（原 A/B 实验组 vision_chat_default_off 的机制已
+                // 合并进 main）。
                 } else if (response.type === 'activity_context_prompt') {
                     if (window.appContextPrompt
                             && typeof window.appContextPrompt.handle === 'function') {
