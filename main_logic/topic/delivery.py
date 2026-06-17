@@ -220,8 +220,12 @@ def topic_hook_delivery_available(lanlan_name: str) -> bool:
                     lanlan_name,
                 )
                 return False
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "[%s] topic hook goodbye-silent preflight failed open: %s",
+                lanlan_name,
+                exc,
+            )
     if not _topic_activity_gate_open(mgr, lanlan_name):
         return False
     if callable(getattr(mgr, "submit_proactive_callback", None)):
