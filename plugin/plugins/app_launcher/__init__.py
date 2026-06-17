@@ -690,6 +690,7 @@ class AppLauncherPlugin(NekoPluginBase):
         autostart_status = _get_all_autostart_status_windows()
         
         available = []
+        missing = []
         for app in apps:
             app_id = app.get("id")
             path = app.get("path", "")
@@ -702,25 +703,27 @@ class AppLauncherPlugin(NekoPluginBase):
                 "exists": exists,
                 "autostart": autostart_status.get(app_id, False),
             }
-            available.append(info)
+            if exists:
+                available.append(info)
+            else:
+                missing.append(info)
 
-        existing = [a for a in available if a["exists"]]
-        missing = [a for a in available if not a["exists"]]
         autostart_enabled = [a for a in available if a["autostart"]]
 
         return Ok({
             "available_apps": available,
-            "existing": existing,
+            "existing": available,
             "missing": missing,
             "autostart_enabled": autostart_enabled,
             "count": len(available),
-            "existing_count": len(existing),
+            "registered_count": len(apps),
+            "existing_count": len(available),
             "autostart_count": len(autostart_enabled),
             "message": (
-                f"当前注册了 {len(available)} 个软件，"
-                f"其中 {len(existing)} 个可用，{len(missing)} 个文件缺失。"
+                f"当前注册了 {len(apps)} 个软件，"
+                f"其中 {len(available)} 个可用，{len(missing)} 个文件缺失。"
                 f"开机自启: {len(autostart_enabled)} 个。"
-                f"可用软件: {', '.join([a['name'] for a in existing]) or '无'}"
+                f"可用软件: {', '.join([a['name'] for a in available]) or '无'}"
             ),
         })
 

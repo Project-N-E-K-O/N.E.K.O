@@ -1060,7 +1060,7 @@
                 if (!resultItem) return {};
                 const pluginResponse = resultItem.json || {};
                 if (pluginResponse.success === false || pluginResponse.error) {
-                    throw new Error(pluginResponse.error?.message || pluginResponse.message || '插件调用失败');
+                    throw new Error(getPluginErrorMessage(pluginResponse));
                 }
                 return pluginResponse.data || {};
             } else if (status === 'failed' || status === 'canceled' || status === 'timeout') {
@@ -1069,6 +1069,14 @@
             }
         }
         throw new Error('插件调用超时');
+    }
+
+    function getPluginErrorMessage(pluginResponse) {
+        const error = pluginResponse.error;
+        if (typeof error === 'string') return error;
+        if (error?.message) return error.message;
+        if (pluginResponse.message) return pluginResponse.message;
+        return '插件调用失败';
     }
 
     function showMessage(text, type = 'warning') {
@@ -1353,12 +1361,18 @@
 
         try {
             if (editingAppId) {
+                const normalizedPath = stripPathQuotes(path).toLowerCase();
+                const originalPath = stripPathQuotes(editingAppSnapshot?.path || '').toLowerCase();
+                const pathChanged = normalizedPath !== originalPath;
+                const autostartChanged = autostart !== Boolean(editingAppSnapshot?.autostart);
+                const canApplyAutostart = normalizedPath.endsWith('.exe') ||
+                    (editingAppSnapshot?.autostart && !autostart);
+
                 await callPlugin('update_app', {
                     app_id: editingAppId,
                     name, path, aliases, description: desc
                 });
-                if (stripPathQuotes(path).toLowerCase().endsWith('.exe') ||
-                    (editingAppSnapshot?.autostart && !autostart)) {
+                if ((pathChanged || autostartChanged) && canApplyAutostart) {
                     await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
                 }
                 showMessage('✨ 更新成功', 'success');
