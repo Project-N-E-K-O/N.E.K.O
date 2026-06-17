@@ -313,7 +313,7 @@ async def test_study_plugin_startup_auto_opens_static_ui(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == ["http://127.0.0.1:49888/ui/plugins/study_companion?tab=ui"]
+        assert opened == ["http://127.0.0.1:49888/plugin/study_companion/ui/"]
     finally:
         await plugin.shutdown()
 
@@ -339,7 +339,7 @@ async def test_study_plugin_startup_auto_open_falls_back_for_invalid_port(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == ["http://127.0.0.1:48916/ui/plugins/study_companion?tab=ui"]
+        assert opened == ["http://127.0.0.1:48916/plugin/study_companion/ui/"]
     finally:
         await plugin.shutdown()
 
@@ -2458,7 +2458,7 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "fetch(`/runs/" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
     assert (
-        "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})"
+        "async function refresh(signal?: AbortSignal, _options: { updateReply?: boolean } = {})"
         in source
     )
     assert "await refresh(controller.signal, { updateReply: false });" in source
@@ -2544,13 +2544,16 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
     assert "if (!answer.trim() && !answerImage)" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
-    assert "const textAutoFilledFromOcrRef = useRef(false);" in source
     assert "const textImageRef = useRef('');" in source
-    assert "textAutoFilledFromOcrRef.current = true;" in source
     assert "textImageRef.current = value;" in source
-    assert "if (textImageRef.current || prev.trim() || !data.last_ocr_text)" in source
+    assert "textAutoFilledFromOcrRef" not in source
+    assert "data.last_ocr_text" in source
+    assert "return data.last_ocr_text;" not in source
+    assert "data.current_question" not in source
+    assert "setQuestion(data.current_question?.question || '')" not in source
+    assert "status.current_question?.question" not in source
     assert "setPastePending: setPastePendingState," in source
-    assert "onImageAccepted: clearAutoFilledTextOnImagePaste," in source
+    assert "onImageAccepted: clearAutoFilledTextOnImagePaste," not in source
     assert "setTextImageValue('');" in source
     assert "setAnswerImage('');" in source
     assert 'data-busy={interactionBusy ? "true" : "false"}' in source
