@@ -54,6 +54,7 @@ from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
+    get_game_archive_fallback_highlight_labels,
     get_game_archive_highlight_source_labels,
     get_game_archive_memory_highlighter_system_prompt,
     get_game_archive_memory_highlighter_user_prompt,
@@ -1421,6 +1422,16 @@ _GAME_INTERNAL_ADVICE_RE = re.compile(
     re.IGNORECASE,
 )
 _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS = frozenset({
+    "basketballGameMemoryEnabled",
+    "basketball_game_memory_enabled",
+    "basketballGameMemoryPlayerInteractionEnabled",
+    "basketball_game_memory_player_interaction_enabled",
+    "basketballGameMemoryEventReplyEnabled",
+    "basketball_game_memory_event_reply_enabled",
+    "basketballGameMemoryArchiveEnabled",
+    "basketball_game_memory_archive_enabled",
+    "basketballGameMemoryPostgameContextEnabled",
+    "basketball_game_memory_postgame_context_enabled",
     "soccerGameMemoryEnabled",
     "soccer_game_memory_enabled",
     "soccerGameMemoryPlayerInteractionEnabled",
@@ -1562,7 +1573,10 @@ def _build_game_recent_history_messages(state: dict | None, language: str | None
     labels = get_game_recent_history_message_labels(language)
     messages = []
     last_role = "system"
-    for item in _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT):
+    dialogues = _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT)
+    if dialogues and isinstance(dialogues[-1], dict) and dialogues[-1].get("type") == "user":
+        dialogues = dialogues[:-1]
+    for item in dialogues:
         if not isinstance(item, dict):
             continue
         user_text = _game_dialog_history_user_text(item, labels)
@@ -2357,7 +2371,7 @@ def _apply_game_context_failure_fallback(
 
 def _set_game_context_recent_ids(state: dict, dialogues: list[dict] | None = None) -> None:
     source = dialogues if dialogues is not None else _game_context_pending_dialogues(state)
-    if dialogues is None and len(source) > _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+    if dialogues is None and len(source) >= _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
         if _apply_game_context_failure_fallback(state, source, reason="overflow"):
             return
         source = _game_context_pending_dialogues(state)
@@ -2556,7 +2570,20 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
 
 
 def _apply_game_context_organizer_failure(state: dict, snapshot: list[dict], error: Exception) -> None:
+    organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    if organize_dialogues:
+        target_last_id = str(organize_dialogues[-1].get("id") or "")
+        dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+        current_last_id = str(organizer.get("last_organized_id") or "")
+        current_idx = _dialog_id_index(dialog, current_last_id)
+        target_idx = _dialog_id_index(dialog, target_last_id)
+        if current_idx > target_idx >= 0:
+            organizer["running"] = False
+            organizer["error"] = organizer.get("error") or "stale_organizer_failure_ignored"
+            state["game_context_organizer"] = organizer
+            _set_game_context_recent_ids(state)
+            return
     organizer["running"] = False
     organizer["failure_count"] = int(organizer.get("failure_count") or 0) + 1
     organizer["error"] = type(error).__name__
@@ -3171,15 +3198,19 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
 
 def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
     language = _archive_prompt_language(archive)
+    labels = get_game_archive_fallback_highlight_labels(language)
     records: list[str] = []
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     if last_user and last_assistant:
-        records.append(f"玩家最后说「{last_user}」，你回应「{last_assistant}」。")
+        records.append(labels["user_and_assistant"].format(
+            last_user=last_user,
+            last_assistant=last_assistant,
+        ))
     elif last_user:
-        records.append(f"玩家最后在这局游戏里说「{last_user}」。")
+        records.append(labels["user_only"].format(last_user=last_user))
     elif last_assistant:
-        records.append(f"你最后在这局游戏里说「{last_assistant}」。")
+        records.append(labels["assistant_only"].format(last_assistant=last_assistant))
 
     event_records: list[str] = []
     key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
@@ -4224,7 +4255,7 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
     pre_game_context = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else None
     return {
         "pre_game_context": pre_game_context,
-        "game_context": _build_game_context_prompt_payload(state),
+        "game_context": _build_game_context_prompt_payload(state, include_recent=False),
         "mode": _normalize_basketball_mode(state.get("mode")),
     }
 

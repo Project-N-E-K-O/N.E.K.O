@@ -2002,6 +2002,30 @@ def test_memory_highlight_source_keeps_role_markers_aligned_in_english(monkeypat
 
 
 @pytest.mark.unit
+def test_archive_memory_fallback_highlights_use_requested_locale(monkeypatch):
+    monkeypatch.setattr(game_router, "_archive_prompt_language", lambda _archive: "en")
+
+    highlights = game_router._fallback_game_archive_memory_highlights({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "last_full_dialogues": [
+            {"type": "user", "text": "That was close"},
+            {"type": "assistant", "line": "Almost."},
+        ],
+        "key_events": [],
+    })
+
+    assert highlights["important_records"] == [
+        'The player last said "That was close", and you replied "Almost.".'
+    ]
+    assert "玩家最后" not in highlights["important_records"][0]
+
+
+@pytest.mark.unit
 def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
     captured = {}
 
@@ -2181,6 +2205,54 @@ def test_build_game_llm_visible_event_filters_soccer_internal_fields():
         assert "ballGhost" not in state
     assert event["currentState"]["aiFreezeSec"] == 0.2
     assert event["pendingItems"][0]["snapshot"]["ballGhost"] is False
+
+
+@pytest.mark.unit
+def test_build_game_llm_visible_event_filters_basketball_memory_flags():
+    event = {
+        "kind": "shot-made",
+        "basketballGameMemoryEnabled": True,
+        "basketball_game_memory_enabled": True,
+        "basketballGameMemoryPlayerInteractionEnabled": True,
+        "basketball_game_memory_player_interaction_enabled": True,
+        "basketballGameMemoryEventReplyEnabled": True,
+        "basketball_game_memory_event_reply_enabled": True,
+        "basketballGameMemoryArchiveEnabled": True,
+        "basketball_game_memory_archive_enabled": True,
+        "basketballGameMemoryPostgameContextEnabled": True,
+        "basketball_game_memory_postgame_context_enabled": True,
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+
+    visible = game_router._build_game_llm_visible_event("basketball", event)
+
+    assert visible == {
+        "kind": "shot-made",
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+    assert event["basketballGameMemoryEnabled"] is True
+
+
+@pytest.mark.unit
+def test_postgame_context_snapshot_excludes_recent_dialogues(monkeypatch):
+    state = {
+        "preGameContext": {"story": "opening"},
+        "game_context_summary": "summary",
+        "game_context_signals": {},
+        "game_context_organizer": {},
+        "game_dialog_log": [],
+    }
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "goal-scored",
+        "text": "scored",
+        "result_line": "Nice.",
+    })
+
+    snapshot = game_router._build_postgame_context_snapshot(state)
+
+    assert snapshot["game_context"]["summary"] == "summary"
+    assert snapshot["game_context"]["recent_dialogues"] == []
 
 
 @pytest.mark.unit

@@ -175,7 +175,7 @@ async def test_context_organizer_failure_fallback_keeps_last_8_at_64(monkeypatch
 
     assert calls == 1
     assert state["game_context_organizer"]["degraded"] is False
-    assert state["game_context_organizer"]["error"] == "fallback_organizer_failure_after_64_pending_items"
+    assert state["game_context_organizer"]["error"] == "fallback_overflow_after_64_pending_items"
     assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
     assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 65)]
 
@@ -210,16 +210,16 @@ async def test_context_organizer_overflow_fallback_ignores_stale_success(monkeyp
     for index in range(16, 66):
         _append_user_line(state, index)
 
-    assert state["game_context_organizer"]["last_organized_id"] == "glog_0057"
-    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(58, 66)]
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 66)]
 
     release.set()
     await task
 
     assert state["game_context_summary"] == ""
-    assert state["game_context_organizer"]["last_organized_id"] == "glog_0057"
+    assert state["game_context_organizer"]["last_organized_id"] == "glog_0056"
     assert state["game_context_organizer"]["error"] == "stale_organizer_result_ignored"
-    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(58, 66)]
+    assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(57, 66)]
 
 
 @pytest.mark.unit
@@ -368,6 +368,40 @@ def test_game_session_history_reset_uses_recent_history_locale_labels(monkeypatc
     joined = "\n".join(str(getattr(message, "content", "")) for message in session._conversation_history)
     assert "Player: nice shot" in joined
     assert "玩家：nice shot" not in joined
+
+
+@pytest.mark.unit
+def test_game_session_history_reset_skips_pending_current_user_input(monkeypatch):
+    from utils.llm_client import HumanMessage, SystemMessage
+
+    class DummySession:
+        pass
+
+    state = _new_state(monkeypatch)
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "text": "previous turn",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "line": "previous reply",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "text": "current pending input",
+    })
+    session = DummySession()
+    session._instructions = "system"
+    session._conversation_history = [SystemMessage(content="system")]
+    entry = {"session": session, "instructions": "system", "user_language": "en"}
+
+    game_router._reset_game_session_text_history_for_turn(entry, state)
+
+    joined = "\n".join(str(getattr(message, "content", "")) for message in session._conversation_history)
+    assert "Player: previous turn" in joined
+    assert "previous reply" in joined
+    assert "current pending input" not in joined
+    assert sum(isinstance(message, HumanMessage) for message in session._conversation_history) == 1
 
 
 @pytest.mark.unit

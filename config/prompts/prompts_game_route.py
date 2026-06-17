@@ -592,6 +592,45 @@ GAME_ARCHIVE_MEMORY_SUMMARY_LABELS = {
 }
 
 
+GAME_ARCHIVE_FALLBACK_HIGHLIGHT_LABELS = {
+    "zh": {
+        "user_and_assistant": "玩家最后说「{last_user}」，你回应「{last_assistant}」。",
+        "user_only": "玩家最后在这局游戏里说「{last_user}」。",
+        "assistant_only": "你最后在这局游戏里说「{last_assistant}」。",
+    },
+    "en": {
+        "user_and_assistant": "The player last said \"{last_user}\", and you replied \"{last_assistant}\".",
+        "user_only": "The player last said \"{last_user}\" in this game.",
+        "assistant_only": "You last said \"{last_assistant}\" in this game.",
+    },
+    "ja": {
+        "user_and_assistant": "プレイヤーは最後に「{last_user}」と言い、あなたは「{last_assistant}」と返しました。",
+        "user_only": "プレイヤーはこのゲームで最後に「{last_user}」と言いました。",
+        "assistant_only": "あなたはこのゲームで最後に「{last_assistant}」と言いました。",
+    },
+    "ko": {
+        "user_and_assistant": "플레이어가 마지막으로 \"{last_user}\"라고 했고, 당신은 \"{last_assistant}\"라고 답했습니다.",
+        "user_only": "플레이어가 이 게임에서 마지막으로 \"{last_user}\"라고 말했습니다.",
+        "assistant_only": "당신은 이 게임에서 마지막으로 \"{last_assistant}\"라고 말했습니다.",
+    },
+    "ru": {
+        "user_and_assistant": "Игрок в конце сказал: «{last_user}», а ты ответила: «{last_assistant}».",
+        "user_only": "Последняя реплика игрока в этой игре: «{last_user}».",
+        "assistant_only": "Твоя последняя реплика в этой игре: «{last_assistant}».",
+    },
+    "es": {
+        "user_and_assistant": "El jugador dijo por último \"{last_user}\" y tú respondiste \"{last_assistant}\".",
+        "user_only": "El jugador dijo por último \"{last_user}\" en esta partida.",
+        "assistant_only": "Tú dijiste por último \"{last_assistant}\" en esta partida.",
+    },
+    "pt": {
+        "user_and_assistant": "O jogador disse por último \"{last_user}\" e você respondeu \"{last_assistant}\".",
+        "user_only": "O jogador disse por último \"{last_user}\" neste jogo.",
+        "assistant_only": "Você disse por último \"{last_assistant}\" neste jogo.",
+    },
+}
+
+
 GAME_POSTGAME_CONTEXT_LABELS = {
     "zh": {
         "header": "[Game Module Postgame Context]",
@@ -1038,7 +1077,7 @@ GAME_RECENT_HISTORY_MESSAGE_LABELS = {
         "player_line": "Jogador: {text}",
         "game_event_text": "Evento de jogo {kind}: texto original do evento \"{text}\"",
         "game_event": "Evento de jogo {kind}",
-        "previous_character_output": "Saida anterior da personagem: {text}",
+        "previous_character_output": "Saída anterior da personagem: {text}",
     },
 }
 
@@ -1203,6 +1242,10 @@ def get_game_archive_memory_text_labels(lang: str | None = None) -> dict[str, st
 
 def get_game_archive_memory_summary_labels(lang: str | None = None) -> dict[str, str]:
     return _labels(GAME_ARCHIVE_MEMORY_SUMMARY_LABELS, lang)
+
+
+def get_game_archive_fallback_highlight_labels(lang: str | None = None) -> dict[str, str]:
+    return _labels(GAME_ARCHIVE_FALLBACK_HIGHLIGHT_LABELS, lang)
 
 
 def get_game_postgame_context_labels(lang: str | None = None) -> dict[str, str]:

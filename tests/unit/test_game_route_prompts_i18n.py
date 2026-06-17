@@ -2,6 +2,7 @@ import pytest
 
 from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
+    get_game_archive_fallback_highlight_labels,
     get_game_archive_highlight_source_labels,
     get_game_archive_memory_highlighter_system_prompt,
     get_game_archive_memory_highlighter_user_prompt,
@@ -34,6 +35,7 @@ def test_game_route_prompt_getters_return_locale_content(locale):
 
     label_getters = (
         get_game_archive_highlight_source_labels,
+        get_game_archive_fallback_highlight_labels,
         get_game_archive_memory_summary_labels,
         get_game_archive_memory_text_labels,
         get_game_context_formatter_labels,
