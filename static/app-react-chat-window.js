@@ -3935,6 +3935,34 @@
         renderWindow();
     }
 
+    function createHomeTutorialRequestId(kind, reason) {
+        return 'home-tutorial-' + String(kind || 'request') + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '-' + String(reason || '');
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        var nextOpen = open === true;
+        setViewProps({
+            compactChatState: nextOpen ? 'input' : getCurrentCompactChatState(),
+            compactToolFanOpenRequest: {
+                id: createHomeTutorialRequestId('compact-tool-fan', reason),
+                open: nextOpen,
+                reason: String(reason || 'home-tutorial')
+            }
+        });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        var nextOpen = open === true;
+        setViewProps({
+            compactChatState: nextOpen ? 'default' : getCurrentCompactChatState(),
+            compactHistoryOpenRequest: {
+                id: createHomeTutorialRequestId('compact-history', reason),
+                open: nextOpen,
+                reason: String(reason || 'home-tutorial')
+            }
+        });
+    }
+
     function deactivateToolCursor() {
         state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         renderWindow();
@@ -6413,6 +6441,8 @@
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
+        setCompactToolFanOpen: setCompactToolFanOpen,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

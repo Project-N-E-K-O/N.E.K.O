@@ -2164,6 +2164,31 @@
             scheduleYuiGuideChatMessageFlush(0);
         }
     }
+
+    function applyYuiGuideCompactToolFanOpen(open, reason) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setCompactToolFanOpen !== 'function') {
+            return;
+        }
+        try {
+            host.setCompactToolFanOpen(open === true, reason || 'external-yui-guide');
+        } catch (error) {
+            console.warn('[YuiGuide] Failed to set compact tool fan state:', error);
+        }
+    }
+
+    function applyYuiGuideCompactHistoryOpen(open, reason) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.setCompactHistoryOpen !== 'function') {
+            return;
+        }
+        try {
+            host.setCompactHistoryOpen(open === true, reason || 'external-yui-guide');
+        } catch (error) {
+            console.warn('[YuiGuide] Failed to set compact history state:', error);
+        }
+    }
+
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -2381,6 +2406,16 @@
                             }
                             applyYuiGuideChatCursor(cursorKind, cursorOptions);
                         }, 720);
+                        break;
+                    }
+                    case 'yui_guide_set_compact_tool_fan_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_history_open': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_chat_ready': {
