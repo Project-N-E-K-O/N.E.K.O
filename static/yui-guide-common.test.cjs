@@ -751,13 +751,33 @@ test('Day1 guide keeps locale-specific audio filenames', () => {
         path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'),
         'utf8'
     );
+    const audioRoot = path.join(repoRoot, 'static', 'assets/tutorial/guide-audio');
+    const newDay1AudioFiles = [
+        '把鼠标移到这里，长按.mp3',
+        '戳一下聊天框上面的【.mp3',
+        '在跟我通语音电话的时.mp3',
+        '快让我也看看你眼前的.mp3'
+    ];
 
     assert.match(day1Source, /zhAudioFileNames/);
     assert.match(day1Source, /intro_basic:\s*'这里有一个神奇的按钮\.mp3'/);
     assert.match(day1Source, /intro_basic:\s*'这里有一个神奇的小按\.mp3'/);
     assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法按钮出现！只\.mp3'/);
     assert.match(day1Source, /takeover_capture_cursor:\s*'超级魔法开关出现！只\.mp3'/);
+    assert.match(day1Source, /day1_capsule_drag_hint:\s*'把鼠标移到这里，长按\.mp3'/);
+    assert.match(day1Source, /day1_history_handle:\s*'戳一下聊天框上面的【\.mp3'/);
+    assert.match(day1Source, /day1_screen_entry:\s*'在跟我通语音电话的时\.mp3'/);
+    assert.match(day1Source, /day1_screen_entry_invite:\s*'快让我也看看你眼前的\.mp3'/);
     assert.match(day1Source, /audioFileOverridesByKey:\s*audioFilesByKey/);
+
+    for (const locale of ['zh', 'ja', 'en', 'ko', 'ru']) {
+        for (const audioFile of newDay1AudioFiles) {
+            assert.ok(
+                fs.existsSync(path.join(audioRoot, locale, audioFile)),
+                locale + ' should ship ' + audioFile
+            );
+        }
+    }
 });
 
 test('resistance controller support module is loaded before the director', () => {
