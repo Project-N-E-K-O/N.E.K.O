@@ -821,7 +821,16 @@ class AppLauncherPlugin(NekoPluginBase):
                 else:
                     success, msg = _set_autostart_windows(app_id, app.get("name", ""), app.get("path", ""), True)
                     if not success:
-                        autostart_msg = f"，但开机自启更新失败: {msg}"
+                        disable_success, disable_msg = _set_autostart_windows(
+                            app_id, app.get("name", ""), old_path, False
+                        )
+                        if disable_success:
+                            app["autostart"] = False
+                            apps[target_idx] = app
+                            self._save_apps_unlocked(apps)
+                            autostart_msg = f"，开机自启更新失败并已关闭: {msg}"
+                        else:
+                            autostart_msg = f"，但开机自启更新失败: {msg}；旧自启项关闭失败: {disable_msg}"
                         self.logger.warning("Failed to refresh autostart for app {}: {}", app_id, msg)
 
         self.logger.info("App updated: id={} name={}", app_id, app.get("name"))
