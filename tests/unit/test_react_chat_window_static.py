@@ -417,6 +417,12 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
     assert "state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()" in handler_block
     assert "normalized === 'input'" in set_state_block
     assert "state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()" in set_state_block
+    input_lock_block = script.split("function setHomeTutorialInputLocked(locked, reason)", 1)[1].split(
+        "function setAvatarToolMenuOpen(open, reason)",
+        1,
+    )[0]
+    assert "compactInputLocked: next" in input_lock_block
+    assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
     assert "disabled={compactTextEntryLocked}" in capsule_block
     assert "if (compactTextEntryLocked) return;" in capsule_block
 
@@ -1078,6 +1084,8 @@ def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
     )[0]
 
     assert "source === 'new_user_icebreaker'" in choice_block
+    before_icebreaker_block = choice_block.split("if (source === 'new_user_icebreaker')", 1)[0]
+    assert "isHomeTutorialInteractionLocked()" not in before_icebreaker_block
     assert "prompt.source !== 'new_user_icebreaker'" in choice_block
     assert "state.choicePrompt = null;" in choice_block
     assert "choice: option.choice" in choice_block
@@ -1096,6 +1104,8 @@ def test_new_user_icebreaker_prompt_is_exposed_by_react_host():
     assert "source: 'new_user_icebreaker'" in prompt_block
     assert "gameType: String(payload.gameType || 'new_user_icebreaker')" in prompt_block
     assert "invalidatePendingGalgameRequest();" in prompt_block
+    assert "function setChoicePrompt(payload)" in react_host
+    assert "setChoicePrompt: setChoicePrompt" in react_host
     assert "setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt" in react_host
 
 
@@ -1109,8 +1119,12 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     assert "const option = detail && detail.option" in choice_block
     assert "const choice = String((detail && detail.choice) || option.choice || '')" in choice_block
     assert "const label = String((detail && detail.label) || option.label || '')" in choice_block
-    assert "postContext('user', label || choice, activeSession.id);" in choice_block
+    assert "const contextSynced = await postContext('user', label || choice, session.id);" in choice_block
+    assert "completed: contextSynced" in choice_block
+    assert "contextSyncPending: !contextSynced" in choice_block
+    assert "activeSession = null;" in choice_block
     assert "fetch('/api/game/new_user_icebreaker/context'" in script
+    assert "return !!(body && body.ok === true);" in script
 
 
 def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():

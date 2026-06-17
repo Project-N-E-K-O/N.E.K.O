@@ -185,6 +185,56 @@ async def test_new_user_icebreaker_context_endpoint_requires_public_append_metho
     assert mgr.session._conversation_history == []
 
 
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_sync_append_error(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text):
+            raise RuntimeError("session history unavailable")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "user",
+            "text": "icebreaker choice",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
+    assert result["game_type"] == "new_user_icebreaker"
+    assert result["session_id"] == "icebreaker-day1-test"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(monkeypatch):
+    class FakeManager:
+        async def append_icebreaker_context_async(self, role, text):
+            raise RuntimeError("session history unavailable")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
+    assert result["game_type"] == "new_user_icebreaker"
+    assert result["session_id"] == "icebreaker-day1-test"
+
+
 @pytest.mark.unit
 def test_llm_session_manager_appends_icebreaker_context_to_session_history():
     class FakeSession:
