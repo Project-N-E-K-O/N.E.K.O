@@ -328,6 +328,9 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
 
     assert "if (session.choiceInFlight) return;" in handle_choice_block
     assert "session.choiceInFlight = true;" in handle_choice_block
+    assert "clearChoicePrompt();" in handle_choice_block
+    assert handle_choice_block.index("session.choiceInFlight = true;") < handle_choice_block.index("clearChoicePrompt();")
+    assert handle_choice_block.index("clearChoicePrompt();") < handle_choice_block.index("appendChatMessage('user', label")
     assert "if (!message)" in handle_choice_block
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block

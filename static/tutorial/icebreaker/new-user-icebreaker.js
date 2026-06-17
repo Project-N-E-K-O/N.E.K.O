@@ -611,6 +611,7 @@
         });
         if (!option) return;
         session.choiceInFlight = true;
+        clearChoicePrompt();
         var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
         appendChatMessage('user', label, {
             day: session.day,
