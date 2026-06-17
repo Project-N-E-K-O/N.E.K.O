@@ -2666,7 +2666,7 @@
 
     function getYuiGuideChatSpotlightElement(createIfMissing) {
         var spotlight = document.getElementById('yui-guide-chat-spotlight');
-        if (spotlight || createIfMissing !== true || !document.body) {
+        if (spotlight || createIfMissing !== true || isYuiGuidePcOverlayAvailable() || !document.body) {
             return spotlight;
         }
 
@@ -2691,6 +2691,7 @@
         return window.yuiGuidePcOverlay
             || window.YuiGuidePcOverlay
             || window.nekoYuiGuidePcOverlay
+            || window.nekoTutorialOverlay
             || null;
     }
 
@@ -2702,6 +2703,7 @@
                 typeof host.postPatch === 'function'
                 || typeof host.sendPatch === 'function'
                 || typeof host.applyPatch === 'function'
+                || typeof host.update === 'function'
             )
         );
     }
@@ -2722,6 +2724,10 @@
             }
             if (typeof host.applyPatch === 'function') {
                 host.applyPatch(patch);
+                return true;
+            }
+            if (typeof host.update === 'function') {
+                host.update(patch);
                 return true;
             }
         } catch (error) {
@@ -2771,10 +2777,8 @@
     }
 
     function updateYuiGuideChatSpotlight(kind) {
-        var spotlight = getYuiGuideChatSpotlightElement(true);
-        if (!spotlight) {
-            return;
-        }
+        var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();
+        var spotlight = getYuiGuideChatSpotlightElement(!pcOverlayAvailable);
 
         var target = getYuiGuideChatSpotlightTarget(kind);
         var rect = target && typeof target.getBoundingClientRect === 'function'
@@ -2782,8 +2786,11 @@
             : null;
 
         if (!rect || rect.width <= 0 || rect.height <= 0) {
-            if (isYuiGuidePcOverlayAvailable()) {
+            if (pcOverlayAvailable) {
                 sendYuiGuidePcOverlayPatch({ spotlights: [] });
+            }
+            if (!spotlight) {
+                return;
             }
             spotlight.hidden = true;
             spotlight.style.opacity = '0';
@@ -2803,8 +2810,11 @@
                 radius: radius
             }
         }];
-        if (isYuiGuidePcOverlayAvailable()) {
+        if (pcOverlayAvailable) {
             sendYuiGuidePcOverlayPatch({ spotlights: pcRects });
+        }
+        if (!spotlight) {
+            return;
         }
         spotlight.hidden = false;
         spotlight.classList.remove('is-window', 'is-input');
@@ -2823,7 +2833,7 @@
         clearYuiGuideChatSpotlightTracking();
 
         if (!yuiGuideChatSpotlightKind) {
-            var spotlight = getYuiGuideChatSpotlightElement();
+            var spotlight = getYuiGuideChatSpotlightElement(false);
             if (spotlight) {
                 spotlight.hidden = true;
                 spotlight.style.opacity = '0';

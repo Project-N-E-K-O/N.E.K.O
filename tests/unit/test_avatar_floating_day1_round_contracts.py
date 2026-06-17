@@ -390,6 +390,23 @@ def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
     assert "if (isYuiGuidePcCursorOnlyMode())" in cursor_block
 
 
+def test_pc_external_chat_spotlight_uses_overlay_without_dom_fallback():
+    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    spotlight_block = source.split("function getYuiGuideChatSpotlightElement(createIfMissing)", 1)[1].split(
+        "function getYuiGuidePcOverlayHost",
+        1,
+    )[0]
+    update_block = source.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
+        1,
+    )[0]
+
+    assert "isYuiGuidePcOverlayAvailable()" in spotlight_block
+    assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
+    assert "getYuiGuideChatSpotlightElement(!pcOverlayAvailable)" in update_block
+    assert "sendYuiGuidePcOverlayPatch({ spotlights: pcRects });" in update_block
+
+
 def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_home_bridge():
     source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
     bridge_block = source.split("function createPcOverlayBridge(doc)", 1)[1].split(
@@ -414,10 +431,9 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bri
         1,
     )[0]
 
-    assert "function withoutTransientYuiGuideCursorEffect(cursor)" in source
-    assert "yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);" in bridge_block
-    assert "payload.cursor = patch.cursor || null;" in bridge_block
-    assert "payload.cursor = yuiGuidePcOverlayCursor;" in bridge_block
+    assert "window.nekoTutorialOverlay" in source
+    assert "typeof host.update === 'function'" in source
+    assert "host.update(patch);" in bridge_block
 
 
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():
