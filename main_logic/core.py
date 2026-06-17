@@ -6892,12 +6892,13 @@ class LLMSessionManager:
 
         Deep topic hooks are brand-new text openers — the most intrusive,
         "better none than forced" kind of proactive content. They must honour the same
-        activity gate as ``/api/proactive_chat``: never surface while the
-        user's propensity is ``closed`` (privacy blacklist) or
-        ``restricted_screen_only`` (gaming / focused_work). Unlike the
-        proactive reminiscence path there is NO open-thread exception — a
-        fresh deep topic is not a follow-up to something already on the
-        table, so it shouldn't borrow that escape hatch.
+        privacy and activity gates as ``/api/proactive_chat``: never surface
+        while privacy mode is active, or while the user's propensity is
+        ``closed`` (privacy blacklist) or ``restricted_screen_only`` (gaming /
+        focused_work). Unlike the proactive reminiscence path there is NO
+        open-thread exception — a fresh deep topic is not a follow-up to
+        something already on the table, so it shouldn't borrow that escape
+        hatch.
 
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
@@ -6917,13 +6918,20 @@ class LLMSessionManager:
         already-pending / extras-only paths are closed separately in
         ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
 
-        Fail-open (return True) when no snapshot is available, mirroring the
-        proactive path's "snapshot None ⇒ open propensity" default. Privacy
-        mode is deliberately NOT re-checked here: it gates *accumulation* (the
-        pool is wiped the moment privacy turns on, see enrich_topic_pool), not
-        delivery of a hook that was already built from a pre-privacy snapshot.
+        Privacy mode is re-checked at delivery and fail-closed on read errors:
+        deep topic is optional, so a stale pre-privacy hook is less important
+        than avoiding a surprise opener after the user flips privacy on.
+        Activity snapshot lookup remains fail-open when no snapshot is
+        available, mirroring the proactive path's "snapshot None ⇒ open
+        propensity" default.
         """
         if self._voice_delivery_blocked():
+            return False
+        try:
+            from utils.preferences import is_privacy_mode_enabled
+            if is_privacy_mode_enabled():
+                return False
+        except Exception:
             return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
