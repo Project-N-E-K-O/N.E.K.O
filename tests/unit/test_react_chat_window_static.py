@@ -1013,8 +1013,37 @@ def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
     assert "source === 'new_user_icebreaker'" in choice_block
     assert "prompt.source !== 'new_user_icebreaker'" in choice_block
     assert "state.choicePrompt = null;" in choice_block
+    assert "choice: option.choice" in choice_block
+    assert "label: option.label || ''" in choice_block
     assert "window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected'" in choice_block
     assert "dispatchHostEvent('icebreaker-choice-selected', detail);" in choice_block
+
+
+def test_new_user_icebreaker_prompt_is_exposed_by_react_host():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    prompt_block = react_host.split("function setNewUserIcebreakerPrompt(payload)", 1)[1].split(
+        "function dismissChoicePromptIfMatches",
+        1,
+    )[0]
+
+    assert "source: 'new_user_icebreaker'" in prompt_block
+    assert "gameType: String(payload.gameType || 'new_user_icebreaker')" in prompt_block
+    assert "invalidatePendingGalgameRequest();" in prompt_block
+    assert "setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt" in react_host
+
+
+def test_new_user_icebreaker_choice_listener_posts_context():
+    script = (Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js").read_text(encoding="utf-8")
+    choice_block = script.split("function completeFromChoice(detail)", 1)[1].split(
+        "function handleTutorialEnded",
+        1,
+    )[0]
+
+    assert "const option = detail && detail.option" in choice_block
+    assert "const choice = String((detail && detail.choice) || option.choice || '')" in choice_block
+    assert "const label = String((detail && detail.label) || option.label || '')" in choice_block
+    assert "postContext('user', label || choice, activeSession.id);" in choice_block
+    assert "fetch('/api/game/new_user_icebreaker/context'" in script
 
 
 def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():

@@ -3445,6 +3445,8 @@
             var detail = {
                 sessionId: prompt.sessionId || '',
                 gameType: prompt.gameType || '',
+                choice: option.choice,
+                label: option.label || '',
                 option: option
             };
             state.choicePrompt = null;
@@ -3707,6 +3709,32 @@
         //   2) 防止 fetch 在 invite 解决前才返回，写回 state.galgameOptions
         //      让 invite dismiss 后老结果突然冒出来（A/B/C 选项是基于 invite
         //      文本生成的，与后续对话无关）
+        invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function setNewUserIcebreakerPrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
+            return;
+        }
+        state.choicePrompt = {
+            source: 'new_user_icebreaker',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || 'new_user_icebreaker'),
+            options: cleanedOptions
+        };
         invalidatePendingGalgameRequest();
         renderWindow();
     }
@@ -6598,6 +6626,7 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
         // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window
