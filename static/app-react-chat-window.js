@@ -4140,27 +4140,6 @@
         renderWindow();
     }
 
-    function setAvatarToolMenuOpen(open, reason) {
-        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactToolFanOpen(open, reason) {
-        return setTutorialChatRequest('compactToolFanOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactHistoryOpen(open, reason) {
-        return setTutorialChatRequest('compactHistoryOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
     function rotateCompactToolWheel(direction, stepCount, options) {
         var normalizedDirection = direction === -1 ? -1 : 1;
         var normalizedStepCount = Number.isFinite(stepCount)

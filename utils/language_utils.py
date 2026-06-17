@@ -744,43 +744,76 @@ def get_tts_language_code() -> str:
     return TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
 
 
-def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
+def _find_token_chunk_end(text: str, start: int, max_tokens: int) -> int:
+    """Return the largest character end offset whose slice fits max_tokens."""
+    from utils.tokenize import count_tokens
+
+    low = start + 1
+    high = len(text)
+    best = start
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = text[start:mid]
+        if count_tokens(candidate) <= max_tokens:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    return best
+
+
+def _split_text_into_token_chunks(text: str, max_tokens: int) -> List[str]:
     """
-    Split text into chunks, trying to split at periods, newlines, etc.
+    Split text into token-bounded chunks, trying to split at periods, newlines, etc.
     
     Args:
         text: text to split
-        max_chunk_size: maximum characters per chunk
+        max_tokens: maximum tokens per chunk
         
     Returns:
         List of text chunks
     """
-    if len(text) <= max_chunk_size:
+    from utils.tokenize import count_tokens
+
+    if not text:
+        return [text]
+    if max_tokens <= 0:
+        return [text]
+
+    if count_tokens(text) <= max_tokens:
         return [text]
     
-    chunks = []
-    current_chunk = ""
-    for char in text:
-        current_chunk += char
-        if len(current_chunk) >= max_chunk_size:
-            # 尝试在句号、换行符等位置分割
-            last_period = max(
-                current_chunk.rfind('。'),
-                current_chunk.rfind('.'),
-                current_chunk.rfind('！'),
-                current_chunk.rfind('!'),
-                current_chunk.rfind('？'),
-                current_chunk.rfind('?'),
-                current_chunk.rfind('\n')
-            )
-            if last_period > max_chunk_size * 0.7:  # 如果找到合适的分割点
-                chunks.append(current_chunk[:last_period + 1])
-                current_chunk = current_chunk[last_period + 1:]
-            else:
-                chunks.append(current_chunk)
-                current_chunk = ""
-    if current_chunk:
-        chunks.append(current_chunk)
+    chunks: List[str] = []
+    start = 0
+    while start < len(text):
+        chunk_end = _find_token_chunk_end(text, start, max_tokens)
+        if chunk_end <= start:
+            # A single code point already exceeds max_tokens. Emit it as its own
+            # (over-budget but indivisible) chunk and advance, rather than
+            # silently dropping the rest of the text.
+            chunks.append(text[start:start + 1])
+            start += 1
+            continue
+
+        current_chunk = text[start:chunk_end]
+        # 尝试在句号、换行符等位置分割，避免把一句话砍在中间。
+        last_period = max(
+            current_chunk.rfind('。'),
+            current_chunk.rfind('.'),
+            current_chunk.rfind('！'),
+            current_chunk.rfind('!'),
+            current_chunk.rfind('？'),
+            current_chunk.rfind('?'),
+            current_chunk.rfind('\n')
+        )
+        if last_period > len(current_chunk) * 0.7:
+            split_at = last_period + 1
+            chunks.append(text[start:start + split_at])
+            start += split_at
+        else:
+            chunks.append(current_chunk)
+            start = chunk_end
     
     return chunks
 
@@ -872,9 +905,9 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
                 return None
         
         # 如果文本太长，分段翻译
-        from config import TRANSLATION_CHUNK_MAX_CHARS_SHORT
-        max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_SHORT
-        chunks = _split_text_into_chunks(text, max_chunk_size)
+        from config import TRANSLATION_CHUNK_MAX_TOKENS_SHORT
+        max_chunk_tokens = TRANSLATION_CHUNK_MAX_TOKENS_SHORT
+        chunks = _split_text_into_token_chunks(text, max_chunk_tokens)
         
         if len(chunks) > 1:
             # 在线程池中翻译每个分段
@@ -1068,9 +1101,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             # 使用 asyncio.wait_for 实现超时机制
             async def _translate_internal():
                 # 如果文本太长，分段翻译
-                from config import TRANSLATION_CHUNK_MAX_CHARS_LONG
-                max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_LONG
-                chunks = _split_text_into_chunks(text, max_chunk_size)
+                from config import TRANSLATION_CHUNK_MAX_TOKENS_LONG
+                max_chunk_tokens = TRANSLATION_CHUNK_MAX_TOKENS_LONG
+                chunks = _split_text_into_token_chunks(text, max_chunk_tokens)
                 
                 if len(chunks) > 1:
                     # 翻译每个分段（第一个分段使用auto检测，后续使用已检测的源语言）
@@ -1156,10 +1189,15 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         source_name = lang_names.get(source_lang, source_lang)
         target_name = lang_names.get(target_lang, target_lang)
 
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
             timeout=10.0,
+            # Generous guard, not a tight cap: this translate_text LLM path can
+            # receive long user text, so a small cap would truncate the
+            # translation mid-stream and return it as a "success".
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
@@ -1177,7 +1215,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 与 memory/ 其它调用点的 try/finally 收尾对偶（缓存版客户端在
         # TranslationService._llm_client 里复用，不走这条路径）。
         try:
-            response = await llm.ainvoke(messages)
+            response = await llm.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET  # user-submitted translation text; intentionally uncapped here (best-effort LLM path), output bounded by the generous guard above.
             translated_text = response.content.strip()
         finally:
             await llm.aclose()
@@ -1388,7 +1426,7 @@ class TranslationService:
 ======以上为规则======"""
 
             set_call_type("translation")
-            response = await llm.ainvoke([
+            response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # user-submitted translation text; intentionally uncapped here (best-effort LLM path).
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=text)
             ])
@@ -1469,5 +1507,3 @@ def get_translation_service(config_manager) -> TranslationService:
     elif _translation_service_instance.config_manager is not config_manager:
         logger.warning("get_translation_service: 传入了不同的 config_manager，但会使用第一次创建时的实例")
     return _translation_service_instance
-
-

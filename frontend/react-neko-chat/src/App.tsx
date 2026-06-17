@@ -1541,6 +1541,7 @@ function CompactChatApp({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
+  const compactCapsuleEntryLocked = compactTextEntryLocked || guideChatButtonsLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -6586,11 +6587,10 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
-                          disabled={compactTextEntryLocked}
+                          disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;
-                            if (compactTextEntryLocked) return;
-                            if (isGuideChatButtonLockActive()) return;
+                            if (compactCapsuleEntryLocked) return;
                             requestCompactChatState('input');
                           }}
                         >

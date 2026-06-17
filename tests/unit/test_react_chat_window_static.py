@@ -251,6 +251,8 @@ def test_chat_templates_version_react_chat_bundle_from_react_assets():
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
+    assert 'app-interpage.js?v={{ static_asset_version }}' in chat_template
+    assert 'app-interpage.js?v={{ static_asset_version }}' in index_template
 
 
 def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
@@ -438,14 +440,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
     )[0]
     assert "compactInputLocked: next" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
-    assert (
-        "disabled={compactTextEntryLocked}" in capsule_block
-        or "disabled={compactCapsuleEntryLocked}" in capsule_block
-    )
-    assert (
-        "if (compactTextEntryLocked) return;" in capsule_block
-        or "if (compactCapsuleEntryLocked) return;" in capsule_block
-    )
+    assert "disabled={compactCapsuleEntryLocked}" in capsule_block
+    assert "if (compactCapsuleEntryLocked) return;" in capsule_block
 
 
 def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
@@ -1059,6 +1055,8 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
+    assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
+    assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
     assert "!shouldBypassYuiGuideMessageDedup(message.action, message)" in script
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
 

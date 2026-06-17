@@ -420,6 +420,7 @@ class DirectTaskExecutor:
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 max_retries=0,
+                timeout=120.0,  # hang-guard for agent task LLM calls (large context + tool loops)
             )
             self._cached_llms[instance_key] = llm
             logger.debug(
