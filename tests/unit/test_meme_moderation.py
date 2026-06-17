@@ -66,11 +66,13 @@ class FakeResponse:
         json_data=None,
         headers=None,
         content=b"image-bytes",
+        url="https://img.soutula.com/example.jpg",
     ):
         self.status_code = status_code
         self._json_data = json_data if json_data is not None else {}
         self.headers = headers or {}
         self.content = content
+        self.url = url
 
     def raise_for_status(self):
         if self.status_code < 400:
@@ -89,6 +91,20 @@ class FakeResponse:
 
     def json(self):
         return self._json_data
+
+    async def aiter_bytes(self):
+        yield self.content
+
+
+class FakeStream:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 class FakeClient:
@@ -124,6 +140,19 @@ class FakeClient:
         if self.get_error:
             raise self.get_error
         return self.get_response
+
+    def stream(self, method, url, *, headers=None, timeout=None):
+        self.get_calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers or {},
+                "timeout": timeout,
+            }
+        )
+        if self.get_error:
+            raise self.get_error
+        return FakeStream(self.get_response)
 
 
 def moderation_json(flagged, *, model="omni-moderation-latest", scores=None, categories=None):
@@ -238,6 +267,36 @@ def test_config_file_key_auto_enables_and_overrides_env(monkeypatch):
     assert client.post_calls[0]["url"] == "https://moderation-config.test/v1/moderations"
     assert client.post_calls[0]["headers"]["Authorization"] == "Bearer file-key"
     assert client.post_calls[0]["json"]["model"] == "config-moderation-model"
+
+
+def test_env_endpoint_and_model_override_api_providers_fallback(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setenv("NEKO_MEME_MODERATION_API_KEY", "env-key")
+    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://env-provider.test/v9")
+    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "env-model")
+    monkeypatch.setattr(
+        acl,
+        "get_config",
+        lambda: {
+            "meme_moderation_config": {
+                "api_key": "",
+                "base_url": "https://fallback-config.test/v1",
+                "model": "fallback-model",
+            }
+        },
+    )
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+        )
+    )
+
+    assert result.allowed is True
+    assert client.post_calls[0]["url"] == "https://env-provider.test/v9/moderations"
+    assert client.post_calls[0]["json"]["model"] == "env-model"
 
 
 def test_wrapped_config_file_key_is_supported(monkeypatch):
@@ -359,6 +418,72 @@ def test_flagged_low_scores_are_allowed_to_reduce_false_positives(monkeypatch):
 
     assert result.allowed is True
     assert result.reason == "pass"
+
+
+def test_flagged_openai_scores_block_when_no_local_threshold_keys(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                True,
+                scores={
+                    "sexual": 0.99,
+                    "sexual/minors": 0.0,
+                    "violence": 0.0,
+                },
+                categories={
+                    "sexual": True,
+                    "sexual/minors": False,
+                    "violence": False,
+                },
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "flagged"
+
+
+def test_openai_scores_block_even_when_provider_does_not_flag(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                False,
+                scores={
+                    "sexual": 0.99,
+                    "sexual/minors": 0.0,
+                    "violence": 0.0,
+                },
+                categories={
+                    "sexual": False,
+                    "sexual/minors": False,
+                    "violence": False,
+                },
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "score_threshold"
 
 
 def test_high_scores_block_even_when_provider_does_not_flag(monkeypatch):
@@ -562,6 +687,81 @@ def test_image_fetch_failure_blocks_and_skips_post(monkeypatch):
     assert moderation_client.post_calls == []
 
 
+def test_data_url_fetch_rejects_non_meme_hosts_before_request(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = FakeClient()
+    moderation_client = FakeClient()
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://127.0.0.1/metadata.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "image_fetch_failed"
+    assert image_client.get_calls == []
+    assert moderation_client.post_calls == []
+
+
+def test_data_url_fetch_rejects_redirect_target_outside_meme_hosts(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = FakeClient(
+        get_response=FakeResponse(
+            headers={"Content-Type": "image/jpeg"},
+            url="http://127.0.0.1/private.jpg",
+        )
+    )
+    moderation_client = FakeClient()
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "image_fetch_failed"
+    assert len(image_client.get_calls) == 1
+    assert moderation_client.post_calls == []
+
+
+def test_data_url_fetch_rejects_oversized_content_length(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = FakeClient(
+        get_response=FakeResponse(
+            headers={
+                "Content-Type": "image/jpeg",
+                "Content-Length": str(11 * 1024 * 1024),
+            },
+            content=b"x",
+        )
+    )
+    moderation_client = FakeClient()
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "image_fetch_failed"
+    assert moderation_client.post_calls == []
+
+
 def test_ssl_fallback_is_disabled_by_default(monkeypatch):
     write_config({"base_url": "https://api.gpt.ge/v1"})
     ssl_error = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
@@ -612,8 +812,10 @@ def test_ssl_fallback_can_be_enabled(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def get(self, url, *, headers=None):
-            return FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")
+        def stream(self, method, url, *, headers=None, timeout=None):
+            return FakeStream(
+                FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")
+            )
 
     monkeypatch.setattr(mm.httpx, "AsyncClient", RelaxedClient)
 

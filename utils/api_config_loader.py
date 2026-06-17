@@ -531,7 +531,8 @@ def get_meme_moderation_config() -> Dict[str, Any]:
                 f"读取 {standalone_path.name} 失败，回退到 api_providers.json: {e}"
             )
     if raw is None:
-        raw = get_config().get('meme_moderation_config') or {}
+        fallback_raw = get_config().get('meme_moderation_config')
+        raw = fallback_raw if isinstance(fallback_raw, dict) else {}
     return {
         'api_key': str(raw.get('api_key', '') or '').strip(),
         'base_url': str(raw.get('base_url', '') or raw.get('url', '') or '').strip(),

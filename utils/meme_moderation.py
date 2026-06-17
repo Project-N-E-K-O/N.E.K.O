@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import os
 import time
 from dataclasses import dataclass, replace
@@ -35,6 +36,7 @@ import httpx
 from utils.api_config_loader import get_meme_moderation_config
 from utils.external_http_client import get_external_http_client
 from utils.logger_config import get_module_logger
+from utils.meme_fetcher import MEME_ALLOWED_HOSTS
 
 logger = get_module_logger(__name__)
 
@@ -47,6 +49,11 @@ _DEFAULT_BLOCK_SCORE_THRESHOLDS = {
     "porn": 0.70,
     "hentai": 0.70,
     "sexy": 0.85,
+}
+_SCORE_CATEGORY_ALIASES = {
+    "porn": ("porn", "sexual"),
+    "hentai": ("hentai", "sexual/minors"),
+    "sexy": ("sexy",),
 }
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _IMAGE_CONTENT_TYPES = {
@@ -256,12 +263,27 @@ def _blocked_score_categories(category_scores: Any) -> list[str]:
         return []
     blocked = []
     for category, default_threshold in _DEFAULT_BLOCK_SCORE_THRESHOLDS.items():
-        score = _score_as_float(category_scores.get(category))
-        if score is None:
+        scores = [
+            _score_as_float(category_scores.get(alias))
+            for alias in _SCORE_CATEGORY_ALIASES.get(category, (category,))
+        ]
+        valid_scores = [score for score in scores if score is not None]
+        if not valid_scores:
             continue
+        score = max(valid_scores)
         if score >= _score_threshold_for(category, default_threshold):
             blocked.append(category)
     return blocked
+
+
+def _has_threshold_score_categories(category_scores: Any) -> bool:
+    if not isinstance(category_scores, dict):
+        return False
+    return any(
+        alias in category_scores
+        for aliases in _SCORE_CATEGORY_ALIASES.values()
+        for alias in aliases
+    )
 
 
 def _rate_limit_backoff_seconds(response: httpx.Response | None) -> float:
@@ -323,20 +345,75 @@ def _ssl_fallback_enabled() -> bool:
     return _read_bool_env("MEME_MODERATION_ALLOW_SSL_FALLBACK", False)
 
 
+def _is_blocked_host(hostname: str) -> bool:
+    if hostname in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def _is_allowed_meme_image_fetch_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    hostname = (parsed.hostname or "").strip(".").lower()
+    if not hostname or _is_blocked_host(hostname):
+        return False
+    return any(
+        hostname == allowed or hostname.endswith("." + allowed)
+        for allowed in MEME_ALLOWED_HOSTS
+    )
+
+
+async def _read_limited_response_body(response: httpx.Response) -> bytes:
+    raw_length = (response.headers.get("Content-Length") or "").strip()
+    if raw_length:
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            content_length = 0
+        if content_length > _MAX_IMAGE_BYTES:
+            raise ValueError("image too large for moderation")
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        if not chunk:
+            continue
+        body.extend(chunk)
+        if len(body) > _MAX_IMAGE_BYTES:
+            raise ValueError("image too large for moderation")
+    return bytes(body)
+
+
 async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tuple[bytes, str]:
+    if not _is_allowed_meme_image_fetch_url(url):
+        raise ValueError("meme image URL is not in the allowed host list")
     headers = _image_fetch_headers(url)
 
     async def _fetch(*, verify: bool) -> httpx.Response:
         if verify:
             client = get_external_http_client()
-            return await client.get(url, headers=headers, timeout=timeout_seconds)
+            return await _stream_image_response(client, url, headers, timeout_seconds)
         async with httpx.AsyncClient(
             timeout=timeout_seconds,
             follow_redirects=True,
             trust_env=True,
             verify=False,
         ) as relaxed_client:
-            return await relaxed_client.get(url, headers=headers)
+            return await _stream_image_response(relaxed_client, url, headers, timeout_seconds)
 
     try:
         response = await _fetch(verify=True)
@@ -354,14 +431,25 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
         )
         response = await _fetch(verify=False)
 
-    response.raise_for_status()
-    content_type = _normalize_image_content_type(response.headers.get("Content-Type", ""))
-    if content_type not in _IMAGE_CONTENT_TYPES:
-        raise ValueError(f"unsupported image content type: {content_type}")
-    body = response.content
-    if len(body) > _MAX_IMAGE_BYTES:
-        raise ValueError("image too large for moderation")
-    return body, content_type
+    return response
+
+
+async def _stream_image_response(
+    client: Any,
+    url: str,
+    headers: dict[str, str],
+    timeout_seconds: float,
+) -> tuple[bytes, str]:
+    async with client.stream("GET", url, headers=headers, timeout=timeout_seconds) as response:
+        final_url = str(getattr(response, "url", url) or url)
+        if not _is_allowed_meme_image_fetch_url(final_url):
+            raise ValueError("meme image redirect target is not in the allowed host list")
+        response.raise_for_status()
+        content_type = _normalize_image_content_type(response.headers.get("Content-Type", ""))
+        if content_type not in _IMAGE_CONTENT_TYPES:
+            raise ValueError(f"unsupported image content type: {content_type}")
+        body = await _read_limited_response_body(response)
+        return body, content_type
 
 
 async def _build_moderation_image_url(url: str, base_url: str, timeout_seconds: float) -> str:
@@ -388,8 +476,9 @@ async def moderate_meme_image_url(
     moderation_config = await asyncio.to_thread(get_meme_moderation_config)
     provider = _read_env("MEME_MODERATION_PROVIDER", "uniapi").lower()
     model = (
-        _read_config_text(moderation_config, "model")
-        or _read_env("MEME_MODERATION_MODEL", _DEFAULT_MODEL)
+        _read_env("MEME_MODERATION_MODEL")
+        or _read_config_text(moderation_config, "model")
+        or _DEFAULT_MODEL
     )
     url = (url or "").strip()
     full_hash = _url_hash(url) if url else ""
@@ -468,8 +557,9 @@ async def moderate_meme_image_url(
         )
 
     base_url = (
-        _read_config_text(moderation_config, "base_url")
-        or _read_env("UNIAPI_BASE_URL", _DEFAULT_UNIAPI_BASE_URL)
+        _read_env("UNIAPI_BASE_URL")
+        or _read_config_text(moderation_config, "base_url")
+        or _DEFAULT_UNIAPI_BASE_URL
     ).rstrip("/")
     endpoint = f"{base_url}/moderations"
     try:
@@ -611,8 +701,8 @@ async def moderate_meme_image_url(
         )
 
     blocked_categories = _blocked_score_categories(category_scores)
-    has_scores = isinstance(category_scores, dict) and bool(category_scores)
-    blocked = bool(blocked_categories) or (flagged and not has_scores)
+    has_threshold_scores = _has_threshold_score_categories(category_scores)
+    blocked = bool(blocked_categories) or (flagged and not has_threshold_scores)
     reason = "pass"
     if blocked:
         reason = "flagged" if flagged else "score_threshold"
