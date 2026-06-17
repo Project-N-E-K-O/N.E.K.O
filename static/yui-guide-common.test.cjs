@@ -1465,7 +1465,7 @@ test('templates and frontend harness load OperationRegistry before Director', ()
         'utf8'
     );
     const dependencyBlock = harnessSource.split('_YUI_DIRECTOR_DEPENDENCIES = (')[1].split(')', 1)[0];
-    assert.match(dependencyBlock, /"tutorial-resistance-controllers\.js",\s*"tutorial-operation-registry\.js",/);
+    assert.match(dependencyBlock, /"tutorial\/visual\/resistance-controllers\.js",\s*"tutorial\/core\/operation-registry\.js",/);
 });
 
 test('director routes final teardown through performFullCleanup helper', () => {

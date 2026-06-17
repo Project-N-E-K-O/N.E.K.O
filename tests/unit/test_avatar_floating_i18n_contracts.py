@@ -52,13 +52,6 @@ def test_avatar_floating_tutorial_copy_uses_csv_i18n_columns():
         for locale, expected in expected_by_locale.items():
             assert _get(_locale(locale), dotted_key) == expected
 
-    english = _locale("en")
-    for fallback_locale in ("es", "pt"):
-        fallback = _locale(fallback_locale)
-        for dotted_key in samples:
-            assert _get(fallback, dotted_key) == _get(english, dotted_key)
-
-
 def test_avatar_floating_zh_tw_uses_zh_guide_audio_locale():
     source = DIRECTOR_PATH.read_text(encoding="utf-8")
     assert "candidate.indexOf('zh') === 0) return 'zh';" in source
@@ -81,13 +74,14 @@ def test_avatar_floating_scene_text_keys_exist_for_all_supported_locales():
         assert missing == []
 
     english = _locale("en")
-    for fallback_locale in ("es", "pt"):
-        fallback = _locale(fallback_locale)
-        mismatched = [
+    for translated_locale in ("es", "pt"):
+        translated = _locale(translated_locale)
+        untranslated = [
             key for key in sorted(text_keys)
-            if _get(fallback, key) != _get(english, key)
+            if key.startswith("tutorial.avatarFloating.")
+            and _get(translated, key) == _get(english, key)
         ]
-        assert mismatched == []
+        assert untranslated == []
 
 
 def test_avatar_floating_reset_toast_keys_exist_for_all_supported_locales():
@@ -148,7 +142,7 @@ def test_day2_voice_used_intro_uses_matching_audio_key():
     assert voice_used_line not in director_source
     for locale, expected in voice_used_copy.items():
         assert _get(_locale(locale), voice_used_key) == expected
-    assert _get(_locale("es"), voice_used_key) == voice_used_copy["en"]
-    assert _get(_locale("pt"), voice_used_key) == voice_used_copy["en"]
+    assert _get(_locale("es"), voice_used_key) != voice_used_copy["en"]
+    assert _get(_locale("pt"), voice_used_key) != voice_used_copy["en"]
     assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
     assert "return 'avatar_floating_day2_intro_voice_used';" in director_source
