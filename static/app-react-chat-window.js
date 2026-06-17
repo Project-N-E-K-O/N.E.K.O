@@ -4198,7 +4198,10 @@
     }
 
     function isYuiGuideChatMessage(message) {
-        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+        if (!message) return false;
+        if (typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0) return true;
+        var source = typeof message.source === 'string' ? message.source : '';
+        return source === 'yui_guide' || source === 'yui-guide-director';
     }
 
     function clearGuideMessages() {
