@@ -2399,13 +2399,16 @@
                             effectDurationMs: event.data.effectDurationMs,
                             targetIndex: event.data.targetIndex
                         };
+                        var cursorRetryDelayMs = Number.isFinite(Number(cursorOptions.effectDurationMs))
+                            ? Math.max(0, Math.floor(Number(cursorOptions.effectDurationMs)))
+                            : 720;
                         applyYuiGuideChatCursor(cursorKind, cursorOptions);
                         window.setTimeout(function () {
                             if (cursorRequestToken !== yuiGuideChatCursorRequestToken) {
                                 return;
                             }
                             applyYuiGuideChatCursor(cursorKind, cursorOptions);
-                        }, 720);
+                        }, cursorRetryDelayMs);
                         break;
                     }
                     case 'yui_guide_set_compact_tool_fan_open': {
@@ -2936,6 +2939,11 @@
             : 0;
         var screenPoint = getYuiGuideChatCursorScreenPoint(kind, targetIndex);
         if (!screenPoint) {
+            if (yuiGuideChatCursorVisible && isYuiGuidePcOverlayAvailable()) {
+                sendYuiGuidePcOverlayPatch({
+                    cursor: { visible: false }
+                });
+            }
             yuiGuideChatCursorVisible = false;
             return;
         }
