@@ -60,7 +60,7 @@ test('guide helpers are exported from a standalone module and re-exported by com
     assert.match(helpersSource, /function deepFreeze\(value\)/);
     assert.match(helpersSource, /function registerGuide\(config, options\)/);
     assert.match(helpersSource, /function audioFilesForAllLocales\(fileName\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-guide-helpers\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/guide-helpers\.js'\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.deepFreeze\(value\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.registerGuide\(config, options\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.audioFilesForAllLocales\(fileName\)/);

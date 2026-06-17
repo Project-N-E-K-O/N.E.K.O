@@ -629,14 +629,8 @@
         return false;
     }
 
-    function isNewUserIcebreakerBlockingGreeting(reason) {
-        if (isNewUserIcebreakerPeriodActive()) return true;
-        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
-        if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
-            && !hasCompletedNewUserIcebreaker()) {
-            return true;
-        }
-        return false;
+    function isNewUserIcebreakerBlockingGreeting() {
+        return isNewUserIcebreakerPeriodActive();
     }
 
     function sendHomeTutorialState(reason) {
