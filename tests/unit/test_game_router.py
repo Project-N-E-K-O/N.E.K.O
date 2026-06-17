@@ -20,10 +20,10 @@ from utils.llm_client import AIMessage, HumanMessage
 
 
 class _FakeRequest:
-    def __init__(self, payload, *, mutation_headers=True):
+    def __init__(self, payload, *, mutation_headers=True, path="/api/game/new_user_icebreaker/context"):
         self._payload = payload
         self.base_url = "http://127.0.0.1:8000/"
-        self.url = SimpleNamespace(path="/api/game/new_user_icebreaker/context")
+        self.url = SimpleNamespace(path=path)
         self.method = "POST"
         self.headers = {}
         if mutation_headers:
@@ -139,21 +139,22 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
     mgr = FakeManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    _allow_icebreaker_route()
 
-    result = await game_router.game_project_context(
-        "new_user_icebreaker",
-        _FakeRequest({
-            "lanlan_name": "Lan",
-            "role": "assistant",
-            "text": "教程看完啦？",
-            "session_id": "icebreaker-day1-test",
-        }),
-    )
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "教程看完啦？",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
 
-    assert result["ok"] is True
-    assert result["method"] == "project_session_history"
-    assert mgr.calls == [("assistant", "教程看完啦？")]
+        assert result["ok"] is True
+        assert result["method"] == "project_session_history"
+        assert mgr.calls == [("assistant", "教程看完啦？")]
 
 
 @pytest.mark.asyncio
@@ -169,22 +170,22 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
     mgr = FakeManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    _allow_icebreaker_route()
 
-    result = await game_router.game_project_context(
-        "new_user_icebreaker",
-        _FakeRequest({
-            "lanlan_name": "Lan",
-            "role": "user",
-            "text": "icebreaker choice",
-            "session_id": "icebreaker-day1-test",
-        }),
-    )
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "icebreaker choice",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
 
-    assert result["ok"] is True
-    assert result["method"] == "project_session_history"
-    assert mgr.calls == [("user", "icebreaker choice")]
-    game_router._game_route_states.pop(game_router._route_state_key("Lan", "new_user_icebreaker"), None)
+        assert result["ok"] is True
+        assert result["method"] == "project_session_history"
+        assert mgr.calls == [("user", "icebreaker choice")]
 
 
 @pytest.mark.asyncio

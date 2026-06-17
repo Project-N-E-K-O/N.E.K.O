@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from main_logic.core import LLMSessionManager
 from utils.llm_client import AIMessage, HumanMessage
 
@@ -48,7 +50,7 @@ def test_icebreaker_context_waits_for_next_session_when_none_active():
     assert len(mgr.pending_icebreaker_context) == 2
 
     mgr.session = _FakeSession()
-    LLMSessionManager._flush_pending_icebreaker_context(mgr)
+    asyncio.run(LLMSessionManager._flush_pending_icebreaker_context(mgr))
 
     history = mgr.session._conversation_history
     assert [type(message) for message in history] == [AIMessage, HumanMessage]
@@ -56,6 +58,7 @@ def test_icebreaker_context_waits_for_next_session_when_none_active():
     assert mgr.pending_icebreaker_context == []
 
 
+@pytest.mark.asyncio
 async def test_icebreaker_context_primes_active_realtime_session_immediately():
     session = _FakeRealtimeSession()
     mgr = _make_mgr(session)
@@ -71,6 +74,7 @@ async def test_icebreaker_context_primes_active_realtime_session_immediately():
     assert mgr.pending_icebreaker_context == []
 
 
+@pytest.mark.asyncio
 async def test_pending_icebreaker_context_flushes_to_realtime_session():
     session = _FakeRealtimeSession()
     mgr = _make_mgr(None)
@@ -79,7 +83,7 @@ async def test_pending_icebreaker_context_flushes_to_realtime_session():
     assert LLMSessionManager.append_icebreaker_context(mgr, "user", "我选第一个") is True
     mgr.session = session
 
-    LLMSessionManager._flush_pending_icebreaker_context(mgr)
+    await LLMSessionManager._flush_pending_icebreaker_context(mgr)
     await asyncio.gather(*mgr._bg_tasks)
 
     assert session.prime_context_calls == [
