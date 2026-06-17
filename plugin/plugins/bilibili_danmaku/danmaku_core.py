@@ -614,11 +614,17 @@ class DanmakuListener:
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
                 user_name = inner.get("uname", "未知")
+                raw_uid = inner.get("uid")
+                try:
+                    uid = int(raw_uid or 0)
+                except (TypeError, ValueError):
+                    uid = 0
                 msg_type = inner.get("msg_type", 0)
-                if msg_type == 1:
-                    await self._emit("on_entry", user_name)
+                # msg_type: 1=进场, 2=关注, 3=进场(另一种形式)
+                if msg_type in (1, 3):
+                    await self._emit("on_entry", user_name, uid=uid)
                 elif msg_type == 2:
-                    await self._emit("on_follow", user_name)
+                    await self._emit("on_follow", user_name, uid=uid)
 
                 try:
                     from .livedanmaku import LiveDanmaku as _LD
@@ -750,6 +756,21 @@ class DanmakuListener:
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_sc(data)
 
+    def _handle_diange(data: dict):
+        """VOICE_JOIN_ROOM_COUNT_INFO 等 — 点歌/语音"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_diange(data)
+
+    def _handle_pk_best(data: dict):
+        """PK_LOTTERY_START / PK_LOTTERY_END — PK 最佳"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_pk_best(data)
+
+    def _handle_fans(data: dict):
+        """USER_TOAST_MSG / ROOM_RANK — 粉丝变动"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_fans_change(data)
+
     # ── CMD 分发字典 ──────────────────────────────────────────
     _CMD_HANDLERS = {
         "GUARD_BUY": _handle_guard_buy,
@@ -766,6 +787,10 @@ class DanmakuListener:
         "ROOM_REAL_TIME_MESSAGE_UPDATE": _handle_room_update,
         "ROOM_CHANGE": _handle_room_change,
         "SUPER_CHAT_MESSAGE_JPN": _handle_sc_jpn,
+        "VOICE_JOIN_ROOM_COUNT_INFO": _handle_diange,
+        "PK_LOTTERY_START": _handle_pk_best,
+        "PK_LOTTERY_END": _handle_pk_best,
+        "USER_TOAST_MSG": _handle_fans,
     }
 
     async def _process_packet(self, raw: bytes):

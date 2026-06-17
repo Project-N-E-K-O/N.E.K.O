@@ -178,7 +178,7 @@
   .neko-avatar-container[hidden] { display: none !important; }
   .neko-avatar-container canvas { width: 100%; height: 100%; display: block; }
   #player-sensei-vrm-container {
-    position: fixed; left: 0; top: 0; width: 190px; height: 310px;
+    position: fixed; left: 0; top: 0; width: 292px; height: 476px;
     z-index: 11; pointer-events: none; opacity: .96;
     --sensei-x: -9999px;
     --sensei-y: -9999px;
@@ -395,8 +395,6 @@
   <button class="mode-option" type="button" data-mode="spectator" role="tab" data-i18n="basketball.mode.spectator">自由练习</button>
   <button class="mode-option" type="button" data-mode="shooter" role="tab" data-i18n="basketball.mode.shooter">投篮挑战</button>
   <button class="mode-option" type="button" data-mode="duel" role="tab" data-i18n="basketball.mode.duel">跟Yui对战</button>
-  <button class="mode-option" type="button" data-mode="timed" role="tab" data-i18n="basketball.mode.timed">限时挑战</button>
-  <button class="mode-option" type="button" data-mode="horse" role="tab" data-i18n="basketball.mode.horse">HORSE</button>
 </div>
 <div id="utility-controls">
   <div id="game-audio-controls" aria-label="游戏音频" data-i18n-aria="basketball.audio.controls">
@@ -621,6 +619,12 @@
   var ctx = canvas.getContext('2d');
   var aimingCanvas = document.getElementById('aiming-canvas');
   var aimingCtx = aimingCanvas.getContext('2d');
+  var YUI_SHOOTER_W = 320;
+  var YUI_SHOOTER_H = 480;
+  var YUI_SHOOTER_SCALE = 1.12;
+  var PLAYER_AVATAR_W = 292;
+  var PLAYER_AVATAR_H = 476;
+  var PLAYER_FIGURE_SCALE = 1.38;
   var hud = {
     score: document.getElementById('score-label'),
     streak: document.getElementById('streak-label'),
@@ -699,14 +703,14 @@
     threePointLine: feetToShotPx(NBA_COURT_FEET.threePointBreak),
     midCourtLine: feetToShotPx(rimDistanceFeetFromBaseline(NBA_COURT_FEET.midCourtFromBaseline))
   };
+  var POST_MIDCOURT_DISTANCE_STEP = 45;
+  var MAX_PLAYABLE_SHOT_DISTANCE = COURT_DISTANCES.midCourtLine + POST_MIDCOURT_DISTANCE_STEP;
   var COURT_DISTANCE_MARKS = [
     { key: 'restrictedArc', px: COURT_DISTANCES.restrictedArc, labelKey: 'court.restrictedArc', fallback: '冲撞区' },
     { key: 'freeThrowLine', px: COURT_DISTANCES.freeThrowLine, labelKey: 'court.freeThrowLine', fallback: '罚球线' },
     { key: 'threePointLine', px: COURT_DISTANCES.threePointLine, labelKey: 'court.threePointLine', fallback: '三分线' },
     { key: 'midCourtLine', px: COURT_DISTANCES.midCourtLine, labelKey: 'court.midCourtLine', fallback: '中场线' }
   ];
-  var TIME_ATTACK_DURATION = 60;
-  var HORSE_WORD = 'HORSE';
   var THEMES = {
     default: {
       label: '体育馆',
@@ -768,10 +772,8 @@
   var requestedMode = modeParams ? String(modeParams.get('mode') || '').toLowerCase() : '';
   var launchedFromInvite = !!(modeParams && modeParams.get('session_id'));
   var debugMode = modeParams ? modeParams.get('debug') === '1' : false;
-  var currentMode = requestedMode === 'shooter' || (!requestedMode && launchedFromInvite) ? 'shooter' : 'spectator';
+  var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';
   if (requestedMode === 'duel') currentMode = 'duel';
-  if (requestedMode === 'timed') currentMode = 'timed';
-  if (requestedMode === 'horse') currentMode = 'horse';
   var DUEL_DIFFICULTY = [
     { name: 'max', skillBase: 0.88, growth: 0.010, pressure: 0.07, angleVar: 0.6, powerVar: 1.2, windupMs: 200, reactionMs: 300 },
     { name: 'lv2', skillBase: 0.78, growth: 0.007, pressure: 0.05, angleVar: 1.5, powerVar: 2.5, windupMs: 450, reactionMs: 550 },
@@ -796,8 +798,6 @@
   if (!MOODS[currentMood]) currentMood = 'calm';
   var currentThemeKey = readJson('bb_theme', 'default');
   if (!THEMES[currentThemeKey]) currentThemeKey = 'default';
-  var timedStartedAt = 0;
-  var timedRemainingSeconds = TIME_ATTACK_DURATION;
   var firstTutorialShotGuaranteed = localStorage.getItem('bb_first_tutorial_hit_done') !== '1';
   var swishCombo = 0;
   var airBallCombo = 0;
@@ -1522,8 +1522,6 @@
     var mode = String(value || '');
     if (mode === 'shooter') return _i18n('leaderboard.mode.shooter', '操控');
     if (mode === 'duel') return _i18n('leaderboard.mode.duel', '对战');
-    if (mode === 'timed') return _i18n('leaderboard.mode.timed', '限时');
-    if (mode === 'horse') return _i18n('leaderboard.mode.horse', 'HORSE');
     return _i18n('leaderboard.mode.spectator', '观战');
   }
   function updateModeSwitcher() {
@@ -1537,7 +1535,7 @@
     });
   }
   function switchBasketballMode(nextMode) {
-    var mode = nextMode === 'shooter' ? 'shooter' : (nextMode === 'duel' ? 'duel' : (nextMode === 'timed' ? 'timed' : (nextMode === 'horse' ? 'horse' : 'spectator')));
+    var mode = nextMode === 'shooter' ? 'shooter' : (nextMode === 'duel' ? 'duel' : 'spectator');
     if (mode === currentMode) return;
     try { endRoute(true); } catch (_) {}
     var url = new URL(window.location.href);
@@ -1717,7 +1715,7 @@
   function autoAdjustMood(event) {
     if (!event || typeof event !== 'object') return;
     if (event.kind === 'game_over') {
-      if (game.bestStreak >= 10 || game.duel.playerScore > game.duel.nekoScore) setMood('surprised', { reason: 'player_dominated' });
+      if (game.bestStreak >= 10 || (isDuelMode() && isDuelEliminated() && didPlayerWinDuel())) setMood('surprised', { reason: 'player_dominated' });
       else if (game.bestStreak <= 2) setMood('sad', { reason: 'player_struggled' });
     }
     if (event.kind === 'streak_10') setMood('surprised', { reason: 'streak_10' });
@@ -1729,10 +1727,11 @@
   }
   function getPressureLine() {
     var diff = game.duel.playerScore - game.duel.nekoScore;
-    var isLastRound = game.duel.round >= game.duel.maxRounds;
-    if (isLastRound && diff === 0) return _i18n('lines.pressure.lastTied', '决胜球了，别眨眼');
-    if (isLastRound && diff > 0) return _i18n('lines.pressure.lastAhead', '哼，还没结束呢');
-    if (isLastRound && diff < 0) return _i18n('lines.pressure.lastBehind', '这球拿下就赢了');
+    var playerMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.playerMisses);
+    var nekoMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.nekoMisses);
+    if (playerMissesLeft <= 1 && nekoMissesLeft <= 1) return _i18n('lines.pressure.lastTied', '再丢就结束了，别眨眼');
+    if (nekoMissesLeft <= 1) return _i18n('lines.pressure.lastAhead', '哼，还没结束呢');
+    if (playerMissesLeft <= 1) return _i18n('lines.pressure.lastBehind', '你再丢一球就危险了');
     if (diff >= 2) return _i18n('lines.pressure.playerAhead', '你还挺厉害嘛...');
     if (diff <= -2) return _i18n('lines.pressure.playerBehind', '再加把劲喵');
     return '';
@@ -1751,7 +1750,7 @@
     else if (event.kind === 'streak_15') { kind = 'streak_15'; rarity = 'ssr'; }
     else if (event.kind === 'streak_10') { kind = 'streak_10'; rarity = 'sr'; }
     else if (event.kind === 'streak_5') { kind = 'streak_5'; rarity = 'r'; }
-    else if (event.kind === 'game_over' && isDuelMode() && game.duel.playerScore > game.duel.nekoScore) { kind = 'duel_win'; rarity = 'sr'; }
+    else if (event.kind === 'game_over' && isDuelMode() && isDuelEliminated() && didPlayerWinDuel()) { kind = 'duel_win'; rarity = 'sr'; }
     else if (event.kind === 'game_over' && localStorage.getItem('bb_daily_first_game') !== new Date().toISOString().slice(0, 10)) { kind = 'daily_first_game'; rarity = 'n'; localStorage.setItem('bb_daily_first_game', new Date().toISOString().slice(0, 10)); }
     else if (event.result === 'scored' && Number(event.distance || 0) > 600) { kind = 'ultra_range'; rarity = 'sr'; }
     else if (event.shot_type === 'swish' && !cardEventHistory.first_swish) { kind = 'first_swish'; rarity = 'n'; }
@@ -1763,6 +1762,25 @@
     event.card_rarity_hint = rarity;
     event.card_kind = kind;
     return event;
+  }
+  function buildDuelStatePayload() {
+    return {
+      player_score: game.duel.playerScore,
+      neko_score: game.duel.nekoScore,
+      player_misses: game.duel.playerMisses,
+      neko_misses: game.duel.nekoMisses,
+      max_misses: game.duel.maxMisses,
+      round: game.duel.round,
+      active_shooter: game.duel.activeShooter
+    };
+  }
+  function isDuelEliminated() {
+    return game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;
+  }
+  function didPlayerWinDuel() {
+    if (game.duel.nekoMisses >= game.duel.maxMisses) return true;
+    if (game.duel.playerMisses >= game.duel.maxMisses) return false;
+    return game.duel.playerScore >= game.duel.nekoScore;
   }
   function buildGameSummary() {
     return {
@@ -1776,12 +1794,7 @@
       mood: currentMood,
       theme: currentThemeKey,
       attempts: game.attemptsResults.slice(-12),
-      duel: isDuelMode() ? {
-        player_score: game.duel.playerScore,
-        neko_score: game.duel.nekoScore,
-        round: game.duel.round,
-        max_rounds: game.duel.maxRounds,
-      } : null,
+      duel: isDuelMode() ? buildDuelStatePayload() : null,
     };
   }
   function loadGeneratedQuickLines() {
@@ -2131,9 +2144,9 @@
     var baseY = FLOOR_Y + 26;
     var sx = baseX / BASE_W * window.innerWidth;
     var sy = baseY / BASE_H * window.innerHeight;
-    var scale = 1.04;
-    container.style.width = '214px';
-    container.style.height = '320px';
+    var scale = YUI_SHOOTER_SCALE;
+    container.style.width = YUI_SHOOTER_W + 'px';
+    container.style.height = YUI_SHOOTER_H + 'px';
     container.style.left = sx + 'px';
     container.style.top = sy + 'px';
     container.style.opacity = yuiAsShooter ? '0.96' : '0';
@@ -2250,8 +2263,8 @@
     try {
       showAvatarContainer('live2d');
       var yuiShooterLayout = currentMode === 'shooter' || currentMode === 'duel';
-      var avatarW = yuiShooterLayout ? 214 : 180;
-      var avatarH = yuiShooterLayout ? 320 : 270;
+      var avatarW = yuiShooterLayout ? YUI_SHOOTER_W : 180;
+      var avatarH = yuiShooterLayout ? YUI_SHOOTER_H : 270;
       if (yuiShooterLayout) updateYuiPosition(game.distance);
       await window.live2dManager.initPIXI('neko-l2d-canvas', 'neko-l2d-container', {
         width: avatarW,
@@ -2392,7 +2405,7 @@
   }
   async function initNekoAvatar() {
     var charData = await loadBasketballCharacter();
-    if (currentMode === 'shooter' || currentMode === 'duel' || currentMode === 'timed' || currentMode === 'horse') {
+    if (currentMode === 'shooter' || currentMode === 'duel') {
       var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';
       window.lanlan_config.model_type = 'live2d';
       window.lanlan_config.live3d_sub_type = '';
@@ -2455,35 +2468,6 @@
     if (event.kind === 'very_long_aim') return 'long_aim';
     return event.shot_type || event.kind;
   }
-  function buildHorseStatePayload() {
-    return {
-      word: HORSE_WORD,
-      letters_player: game.horse.lettersPlayer,
-      letters_neko: game.horse.lettersNeko,
-      lettersPlayer: game.horse.lettersPlayer,
-      lettersNeko: game.horse.lettersNeko,
-      phase: game.horse.phase,
-      turn_owner: game.horse.turnOwner,
-      challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null
-    };
-  }
-  function buildHorseFinalScorePayload(horseState) {
-    var playerLetters = horseLetters(horseState.letters_player);
-    var nekoLetters = horseLetters(horseState.letters_neko);
-    var winner = horseState.letters_neko >= HORSE_WORD.length
-      ? 'player'
-      : (horseState.letters_player >= HORSE_WORD.length ? 'neko' : '');
-    return {
-      horse: Object.assign({}, horseState),
-      letters_player: horseState.letters_player,
-      letters_neko: horseState.letters_neko,
-      player_letters: playerLetters,
-      neko_letters: nekoLetters,
-      winner: winner,
-      outcome: winner ? (winner === 'player' ? 'player_win' : 'neko_win') : 'undecided',
-      score_text: 'HORSE ' + playerLetters + ' : ' + nekoLetters
-    };
-  }
   function buildBasketballCurrentStatePayload() {
     var state = {
       game: 'basketball',
@@ -2512,16 +2496,7 @@
       mood: currentMood
     };
     if (isDuelMode()) {
-      state.duel = {
-        player_score: game.duel.playerScore,
-        neko_score: game.duel.nekoScore,
-        round: game.duel.round,
-        active_shooter: game.duel.activeShooter,
-        max_rounds: game.duel.maxRounds
-      };
-    }
-    if (isHorseMode()) {
-      state.horse = buildHorseStatePayload();
+      state.duel = buildDuelStatePayload();
     }
     return state;
   }
@@ -2534,18 +2509,8 @@
     event.record_distance = game.recordDistance;
     event.currentState = buildBasketballCurrentStatePayload();
     if (isDuelMode()) {
-      event.duel = {
-        player_score: game.duel.playerScore,
-        neko_score: game.duel.nekoScore,
-        round: game.duel.round,
-        active_shooter: game.duel.activeShooter,
-        max_rounds: game.duel.maxRounds
-      };
+      event.duel = buildDuelStatePayload();
       event.currentState.duel = event.duel;
-    }
-    if (isHorseMode()) {
-      event.horse = buildHorseStatePayload();
-      event.currentState.horse = event.horse;
     }
     if (event.best_streak == null) event.best_streak = game.bestStreak;
     if (event.made_count == null) event.made_count = game.madeCount;
@@ -2833,24 +2798,13 @@
     resultRecorded: false,
     globalRank: 0,
     globalTotalPlayers: 0,
-    timedRemaining: TIME_ATTACK_DURATION,
-    timedDeadline: 0,
-    timedTimerStarted: false,
-    horse: {
-      lettersPlayer: 0,
-      lettersNeko: 0,
-      phase: 'player_set',
-      challenge: null,
-      turnOwner: 'player',
-      timerDeadline: 0,
-      nekoSpecialUsed: false,
-      nekoSandbagShots: 0
-    },
     duel: {
       playerScore: 0,
       nekoScore: 0,
+      playerMisses: 0,
+      nekoMisses: 0,
+      maxMisses: 3,
       round: 1,
-      maxRounds: 5,
       activeShooter: 'player',
       timer: 0,
       voiceSeq: 0,
@@ -2898,8 +2852,10 @@
     if (!playerSenseiContainer || currentMode === 'shooter') return;
     var sx = getPlayerX() / BASE_W * window.innerWidth;
     var sy = (FLOOR_Y + 18) / BASE_H * window.innerHeight;
-    playerSenseiContainer.style.setProperty('--sensei-x', Math.round(sx - 95) + 'px');
-    playerSenseiContainer.style.setProperty('--sensei-y', Math.round(sy - 310) + 'px');
+    playerSenseiContainer.style.width = PLAYER_AVATAR_W + 'px';
+    playerSenseiContainer.style.height = PLAYER_AVATAR_H + 'px';
+    playerSenseiContainer.style.setProperty('--sensei-x', Math.round(sx - PLAYER_AVATAR_W / 2) + 'px');
+    playerSenseiContainer.style.setProperty('--sensei-y', Math.round(sy - PLAYER_AVATAR_H) + 'px');
   }
   async function initPlayerAvatar() {
     if (currentMode === 'shooter' || !playerSenseiContainer || !playerSenseiCanvas) {
@@ -2995,19 +2951,15 @@
   function isDuelMode() {
     return currentMode === 'duel';
   }
-  function isTimeAttackMode() {
-    return currentMode === 'timed';
-  }
-  function isHorseMode() {
-    return currentMode === 'horse';
-  }
   function isPracticeMode() {
     return currentMode === 'spectator';
   }
   function isPlayerTurn() {
     if (isDuelMode()) return game.duel.activeShooter === 'player';
-    if (isHorseMode()) return game.horse.turnOwner !== 'neko';
     return true;
+  }
+  function canPlayerControlShot() {
+    return game.state === 'ready' && !isPositionTransitioning && isPlayerTurn();
   }
   function nextDistanceStep() {
     var step = 30 + Math.random() * 20;
@@ -3015,6 +2967,12 @@
     if (game.streak >= 10) step += 40;
     if (game.streak >= 15) step += 10 * (game.streak - 14);
     return Math.min(step, 100);
+  }
+  function getMaxPlayableShotDistance() {
+    return MAX_PLAYABLE_SHOT_DISTANCE;
+  }
+  function advanceShotDistance(step) {
+    return Math.min(getMaxPlayableShotDistance(), game.distance + (Number(step) || 0));
   }
   function initNetNodes() {
     netNodes = [];
@@ -3142,9 +3100,6 @@
     game.madeCount = 0;
     game.distance = 200;
     game.attemptsRemaining = game.attemptsTotal;
-    game.timedRemaining = TIME_ATTACK_DURATION;
-    game.timedDeadline = isTimeAttackMode() ? performance.now() + TIME_ATTACK_DURATION * 1000 : 0;
-    game.timedTimerStarted = isTimeAttackMode();
     game.attemptsResults = [];
     game.power = 0;
     game.charging = false;
@@ -3162,6 +3117,8 @@
     clearTimeout(game.duel.timer);
     game.duel.playerScore = 0;
     game.duel.nekoScore = 0;
+    game.duel.playerMisses = 0;
+    game.duel.nekoMisses = 0;
     game.duel.round = 1;
     game.duel.activeShooter = 'player';
     game.duel.timer = 0;
@@ -3171,14 +3128,6 @@
     game.duel.pendingShot = null;
     game.duel.specialUsed = false;
     game.duel.sandbagShots = 0;
-    game.horse.lettersPlayer = 0;
-    game.horse.lettersNeko = 0;
-    game.horse.phase = 'player_set';
-    game.horse.challenge = null;
-    game.horse.turnOwner = 'player';
-    game.horse.timerDeadline = isHorseMode() ? performance.now() + 15000 : 0;
-    game.horse.nekoSpecialUsed = false;
-    game.horse.nekoSandbagShots = 0;
     currentSessionEntryId = '';
     latestShooterRating = '';
     isPositionTransitioning = false;
@@ -3201,18 +3150,11 @@
   function updateHud() {
     if (isDuelMode()) {
       if (hud.score) hud.score.textContent = _i18n('hud.duelScore', '你 {{player}} - {{neko}} Neko', { player: game.duel.playerScore, neko: game.duel.nekoScore });
-      hud.streak.textContent = _i18n('hud.round', '回合 {{round}}/{{max}}', { round: game.duel.round, max: game.duel.maxRounds });
-    } else if (isTimeAttackMode()) {
-      if (hud.score) hud.score.textContent = _i18n('hud.score', '得分 {{score}}', { score: game.totalScore });
-      hud.streak.textContent = _i18n('hud.streak', '连中 {{streak}}', { streak: game.streak });
-    } else if (isHorseMode()) {
-      if (hud.score) hud.score.textContent = _i18n('hud.horseLetters', '你 {{player}} / Neko {{neko}}', {
-        player: HORSE_WORD.slice(0, game.horse.lettersPlayer) || '-',
-        neko: HORSE_WORD.slice(0, game.horse.lettersNeko) || '-',
+      hud.streak.textContent = _i18n('hud.duelMisses', '投丢 你 {{player}}/{{max}} - Neko {{neko}}/{{max}}', {
+        player: game.duel.playerMisses,
+        neko: game.duel.nekoMisses,
+        max: game.duel.maxMisses
       });
-      hud.streak.textContent = game.horse.challenge
-        ? _i18n('hud.horseChallenge', '复刻 {{distance}} {{angle}}°', { distance: pxToMeters(game.horse.challenge.distance), angle: Math.round(game.horse.challenge.angle) })
-        : _i18n('hud.horseSet', '出题回合');
     } else if (isPracticeMode()) {
       if (hud.score) hud.score.textContent = _i18n('hud.practice', '自由练习');
       hud.streak.textContent = _i18n('hud.streak', '连中 {{streak}}', { streak: game.streak });
@@ -3226,13 +3168,7 @@
       for (var i = 0; i < game.attemptsTotal; i++) icons += i < game.attemptsRemaining ? '🏀' : '⚪';
       if (isDuelMode()) {
         hud.attempts.textContent = game.duel.activeShooter === 'player' ? _i18n('hud.yourTurn', '轮到你') : _i18n('hud.nekoTurn', 'Neko出手');
-        hud.attempts.title = _i18n('hud.duelTitle', 'Neko 对战模式：玩家和 Neko 轮流投篮');
-      } else if (isTimeAttackMode()) {
-        hud.attempts.textContent = _i18n('hud.timer', '{{seconds}}秒', { seconds: Math.max(0, Math.ceil(game.timedRemaining)) });
-        hud.attempts.title = _i18n('hud.timedTitle', '限时挑战：60 秒内不限出手次数');
-      } else if (isHorseMode()) {
-        hud.attempts.textContent = game.horse.turnOwner === 'neko' ? _i18n('hud.nekoTurn', 'Neko出手') : _i18n('hud.yourTurn', '轮到你');
-        hud.attempts.title = _i18n('hud.horseTitle', 'HORSE：复刻对手命中的距离、角度和甜区');
+        hud.attempts.title = _i18n('hud.duelTitle', 'Neko 对战模式：轮流投篮，谁先投丢 3 球谁输');
       } else {
         hud.attempts.textContent = isPracticeMode() ? _i18n('hud.unlimitedAttempts', '不限次数') : (icons || _i18n('hud.chances', '机会 {{count}}', { count: Math.max(0, game.attemptsRemaining) }));
         hud.attempts.title = isPracticeMode()
@@ -3303,9 +3239,7 @@
     }
   }
   function shoot() {
-    if (game.state !== 'ready') return;
-    if (isPositionTransitioning) return;
-    if (!isPlayerTurn()) return;
+    if (!canPlayerControlShot()) return;
     resumeAudio();
     if (game.tutorialStep === 2) {
       game.tutorialStep = 3;
@@ -3465,11 +3399,13 @@
     var pressure = game.duel.playerScore - game.duel.nekoScore;
     var diff = DUEL_DIFFICULTY[duelDifficultyIdx];
     var overrideReason = '';
-    if (isDuelMode() && pressure >= 3 && game.duel.round > Math.floor(game.duel.maxRounds / 2) && !game.duel.specialUsed) {
+    var playerMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.playerMisses);
+    var nekoMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.nekoMisses);
+    if (isDuelMode() && pressure >= 3 && nekoMissesLeft <= 1 && !game.duel.specialUsed) {
       diff = DUEL_DIFFICULTY[0];
       game.duel.specialUsed = true;
       overrideReason = 'clutch';
-    } else if (isDuelMode() && pressure <= -3 && game.duel.round >= game.duel.maxRounds - 1 && game.duel.sandbagShots < 2) {
+    } else if (isDuelMode() && pressure <= -3 && playerMissesLeft <= 1 && game.duel.sandbagShots < 2) {
       diff = DUEL_DIFFICULTY[3];
       game.duel.sandbagShots += 1;
       overrideReason = 'excuse';
@@ -3501,26 +3437,14 @@
       distance: game.distance,
       difficulty: getDuelDifficultyName(),
       mood: currentMood,
-      is_deciding_shot: game.duel.round >= game.duel.maxRounds && game.duel.playerScore === game.duel.nekoScore,
-      duel: {
-        player_score: game.duel.playerScore,
-        neko_score: game.duel.nekoScore,
-        round: game.duel.round,
-        active_shooter: game.duel.activeShooter,
-        max_rounds: game.duel.maxRounds
-      },
+      is_deciding_shot: game.duel.nekoMisses >= game.duel.maxMisses - 1 || game.duel.playerMisses >= game.duel.maxMisses - 1,
+      duel: buildDuelStatePayload(),
       currentState: {
         game: 'basketball',
         mode: currentMode,
         distance: game.distance,
         streak: game.streak,
-        duel: {
-          player_score: game.duel.playerScore,
-          neko_score: game.duel.nekoScore,
-          round: game.duel.round,
-          active_shooter: game.duel.activeShooter,
-          max_rounds: game.duel.maxRounds
-        }
+        duel: buildDuelStatePayload()
       }
     };
   }
@@ -3586,174 +3510,6 @@
     clearTimeout(game.duel.timer);
     game.duel.timer = setTimeout(startNekoDuelTurn, (previewDiff.reactionMs || 500) + (previewDiff.windupMs || 450));
   }
-  function horseLetters(count) {
-    return HORSE_WORD.slice(0, clamp(count, 0, HORSE_WORD.length)) || '-';
-  }
-  function endHorseIfNeeded() {
-    if (game.horse.lettersPlayer >= HORSE_WORD.length || game.horse.lettersNeko >= HORSE_WORD.length) {
-      game.state = 'game_over';
-      game.ball = null;
-      sendGameEvent({
-        kind: 'game_over',
-        result: game.horse.lettersNeko >= HORSE_WORD.length ? 'scored' : 'missed',
-        streak: game.streak,
-        final_streak: game.bestStreak,
-        distance: game.lastShotDistance || game.distance,
-        shot_type: game.lastShotType || '',
-        label: 'horse_game_over'
-      });
-      endRoute(false);
-      scheduleShowResult(500);
-      return true;
-    }
-    return false;
-  }
-  function startHorseNekoChallenge() {
-    if (!isHorseMode() || game.state === 'game_over') return;
-    game.horse.turnOwner = 'neko';
-    game.state = 'neko_thinking';
-    updateHud();
-    showAssistHint(_i18n('toast.nekoTurn', 'Neko回合'));
-    setYuiAction('charging', 450);
-    clearTimeout(game.duel.timer);
-    game.duel.timer = setTimeout(function () {
-      if (!isHorseMode() || game.state === 'game_over') return;
-      var shot = getNekoDuelShot();
-      var challenge = game.horse.challenge;
-      var mode = game.horse.phase;
-      var chance = shot.confident ? 0.82 : 0.38;
-      if (challenge) {
-        chance *= Math.max(0.45, 1 - Math.abs(shot.angle - challenge.angle) / 22);
-      }
-      var scored = Math.random() < chance;
-      game.lastShotType = scored ? 'swish' : 'rim_out';
-      game.lastShotDistance = game.distance;
-      game.attemptsResults.push({
-        shooter: 'neko',
-        shot_type: game.lastShotType,
-        distance: game.distance,
-        distance_m: pxToMeters(game.distance),
-        scored: scored,
-        score: scored ? 1 : 0,
-        angle: shot.angle,
-        power: shot.power,
-        horse_phase: mode
-      });
-      recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
-      if (mode === 'neko_set') {
-        if (scored) {
-          game.horse.challenge = {
-            distance: game.distance,
-            angle: shot.angle,
-            sweet: getSweetSpotForDistance(game.distance),
-            owner: 'neko'
-          };
-          game.horse.phase = 'player_reply';
-          game.horse.turnOwner = 'player';
-          game.state = 'ready';
-          showAssistHint(_i18n('toast.copyNeko', '复刻Neko'));
-        } else {
-          game.horse.phase = 'player_set';
-          game.horse.challenge = null;
-          game.horse.turnOwner = 'player';
-          game.state = 'ready';
-          showAssistHint(_i18n('toast.nekoFailed', 'Neko出题失败'));
-        }
-      } else {
-        if (!scored) {
-          game.horse.lettersNeko += 1;
-          speakLine(_i18n('lines.horse.nekoMiss', '没复刻上？记一个 {{letters}}', { letters: horseLetters(game.horse.lettersNeko) }), { expression: 'tease', intensity: 'medium', mood: currentMood }, { kind: 'shot_missed', label: 'horse_neko_miss' });
-        }
-        if (!endHorseIfNeeded()) {
-          game.horse.phase = 'neko_set';
-          game.horse.challenge = null;
-          game.distance = clamp(game.distance + 35, 120, 620);
-          startHorseNekoChallenge();
-        }
-      }
-      updateHud();
-    }, shotDelayForHorse());
-  }
-  function shotDelayForHorse() {
-    return DUEL_DIFFICULTY[duelDifficultyIdx].reactionMs + DUEL_DIFFICULTY[duelDifficultyIdx].windupMs;
-  }
-  function finishHorseShot(scored, shotType, ball) {
-    var previousDistance = ball.startDistance;
-    game.lastShotType = shotType;
-    game.lastShotDistance = previousDistance;
-    var newRecord = false;
-    if (scored) {
-      game.streak += 1;
-      game.madeCount += 1;
-      game.bestStreak = Math.max(game.bestStreak, game.streak);
-      game.totalScore += calcShotScore(shotType, previousDistance, game.streak);
-      if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;
-      newRecord = previousDistance > game.recordDistance;
-      if (newRecord) {
-        game.recordDistance = previousDistance;
-        localStorage.setItem('bb_record_distance', String(Math.round(game.recordDistance)));
-        playYuiVoice('record');
-      }
-    } else {
-      fireExtinguishedUntil = performance.now() + 300;
-      game.streak = 0;
-    }
-    var resultEntry = {
-      shooter: 'player',
-      shot_type: shotType,
-      distance: previousDistance,
-      distance_m: pxToMeters(previousDistance),
-      scored: !!scored,
-      score: scored ? 1 : 0,
-      angle: ball.angle,
-      power: ball.power,
-      horse_phase: game.horse.phase
-    };
-    game.attemptsResults.push(resultEntry);
-    recordShotHistory(resultEntry);
-    playShotResultSound(shotType, scored);
-    if (game.horse.phase === 'player_set') {
-      if (scored) {
-        game.horse.challenge = { distance: previousDistance, angle: ball.angle, sweet: getSweetSpotForDistance(previousDistance), owner: 'player' };
-        game.horse.phase = 'neko_reply';
-        game.state = 'ready';
-        startHorseNekoChallenge();
-      } else {
-        game.horse.phase = 'neko_set';
-        game.horse.challenge = null;
-        startHorseNekoChallenge();
-      }
-    } else if (game.horse.phase === 'player_reply') {
-      if (!scored) {
-        game.horse.lettersPlayer += 1;
-        speakLine(_i18n('lines.horse.playerMiss', '你也记一个 {{letters}}', { letters: horseLetters(game.horse.lettersPlayer) }), { expression: 'tease', intensity: 'medium', mood: currentMood }, { kind: 'shot_missed', label: 'horse_player_miss' });
-      }
-      if (endHorseIfNeeded()) {
-        updateHud();
-        return;
-      }
-      game.horse.phase = 'player_set';
-      game.horse.challenge = null;
-      game.horse.turnOwner = 'player';
-      game.distance = clamp(game.distance + 30, 120, 620);
-      game.state = 'ready';
-      showAssistHint(_i18n('toast.yourSet', '你来出题'));
-    }
-    var eventKind = newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed');
-    sendGameEvent({
-      kind: eventKind,
-      result: scored ? 'scored' : 'missed',
-      streak: game.streak,
-      distance: previousDistance,
-      shot_type: shotType,
-      label: 'horse_player_shot',
-      is_new_record: newRecord,
-      was_perfect: ball.wasPerfect,
-      shot_angle: ball.angle,
-      shot_power: ball.power
-    });
-    updateHud();
-  }
   function finishDuelShot(scored, shotType, ball) {
     var previousDistance = ball.startDistance;
     var shooter = ball.shooter === 'neko' ? 'neko' : 'player';
@@ -3764,6 +3520,10 @@
     var newRecord = false;
     if (shooter === 'player') game.duel.playerScore += point;
     else game.duel.nekoScore += point;
+    if (!scored) {
+      if (shooter === 'player') game.duel.playerMisses += 1;
+      else game.duel.nekoMisses += 1;
+    }
     if (shooter === 'player') {
       if (scored) {
         game.streak += 1;
@@ -3790,33 +3550,40 @@
       scored: !!scored,
       score: point,
       round: game.duel.round,
+      player_misses: game.duel.playerMisses,
+      neko_misses: game.duel.nekoMisses,
+      max_misses: game.duel.maxMisses,
       angle: ball.angle,
       power: ball.power
     });
     recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
     playShotResultSound(shotType, scored);
     if (shooter === 'neko') setYuiAction(scored ? 'react-celebrate' : 'react-disappointed', 620);
-    sendGameEvent({
-      kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),
-      result: scored ? 'scored' : 'missed',
-      streak: game.streak,
-      distance: previousDistance,
-      shot_type: shotType,
-      label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot',
-      is_new_record: newRecord,
-      was_perfect: ball.wasPerfect,
-      shot_angle: ball.angle,
-      shot_power: ball.power
-    });
+    var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;
+    if (!duelFinished) {
+      sendGameEvent({
+        kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),
+        result: scored ? 'scored' : 'missed',
+        streak: game.streak,
+        distance: previousDistance,
+        shot_type: shotType,
+        label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot',
+        is_new_record: newRecord,
+        was_perfect: ball.wasPerfect,
+        shot_angle: ball.angle,
+        shot_power: ball.power
+      });
+    }
     if (shooter === 'player') {
       setPlayerAction(scored ? 'react-celebrate' : 'react-disappointed', 620);
-      scheduleNekoDuelTurn();
-    } else if (game.duel.round >= game.duel.maxRounds) {
+    }
+    if (duelFinished) {
       game.state = 'game_over';
       game.ball = null;
       sendGameEvent({
         kind: 'game_over',
-        result: game.duel.playerScore >= game.duel.nekoScore ? 'scored' : 'missed',
+        result: scored ? 'scored' : 'missed',
+        duel_outcome: didPlayerWinDuel() ? 'player_win' : 'neko_win',
         streak: game.streak,
         final_streak: game.streak,
         distance: previousDistance,
@@ -3826,10 +3593,12 @@
       });
       endRoute(false);
       scheduleShowResult(900);
+    } else if (shooter === 'player') {
+      scheduleNekoDuelTurn();
     } else {
       game.duel.round += 1;
       game.duel.activeShooter = 'player';
-      game.distance = Math.min(620, game.distance + 45);
+      game.distance = advanceShotDistance(POST_MIDCOURT_DISTANCE_STEP);
       game.state = 'ready';
       game.ball = null;
       game.power = 0;
@@ -3847,10 +3616,6 @@
   function finishShot(scored, shotType, ball) {
     if (isDuelMode()) {
       finishDuelShot(scored, shotType, ball);
-      return;
-    }
-    if (isHorseMode()) {
-      finishHorseShot(scored, shotType, ball);
       return;
     }
     var previousDistance = ball.startDistance;
@@ -3914,7 +3679,7 @@
         attempts_total: game.attemptsTotal,
         attempts_results: game.attemptsResults.slice(-8)
       });
-      game.distance += nextDistanceStep();
+      game.distance = advanceShotDistance(nextDistanceStep());
       game.state = 'ready';
       game.ball = null;
       updatePlayerAvatarPosition();
@@ -3935,7 +3700,7 @@
       setPlayerAction('react-celebrate', 620);
       applyNekoControl({ expression: game.streak >= 5 ? 'silent_focus' : 'anticipate', intensity: game.streak >= 10 ? 'high' : 'medium' }, {});
     } else {
-      if (!isPracticeMode() && !isTimeAttackMode() && !isHorseMode()) game.attemptsRemaining = Math.max(0, game.attemptsRemaining - 1);
+      if (!isPracticeMode()) game.attemptsRemaining = Math.max(0, game.attemptsRemaining - 1);
       var streakBeforeMiss = game.streak;
       if (streakBeforeMiss >= 3) fireExtinguishedUntil = performance.now() + 300;
       game.streak = 0;
@@ -3946,7 +3711,7 @@
       recordShotHistory(resultEntry);
       setYuiAction('react-disappointed', 580);
       setPlayerAction('react-disappointed', 620);
-      if (isPracticeMode() || isTimeAttackMode() || isHorseMode() || game.attemptsRemaining > 0) {
+      if (isPracticeMode() || game.attemptsRemaining > 0) {
         game.state = 'ready';
         game.ball = null;
         game.aimStartAt = performance.now();
@@ -4004,38 +3769,18 @@
     var localRating = game.bestStreak >= 15 ? 'S' : (game.bestStreak >= 10 ? 'A' : (game.bestStreak >= 5 ? 'B' : (game.bestStreak >= 2 ? 'C' : 'D')));
     var ratingText = currentMode === 'shooter' ? (' | ' + _i18n('result.rating', '操控评级：{{rating}}', { rating: latestShooterRating || localRating })) : '';
     if (isDuelMode()) {
-      var outcome = game.duel.playerScore > game.duel.nekoScore
+      var outcome = didPlayerWinDuel()
         ? _i18n('result.outcome.youWin', '你赢了')
-        : (game.duel.playerScore < game.duel.nekoScore ? _i18n('result.outcome.nekoWin', 'Neko赢了') : _i18n('result.outcome.tie', '平局'));
-      resultStats.textContent = _i18n('result.duel', '对战结果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最后距离：{{distance}}', {
+        : _i18n('result.outcome.nekoWin', 'Neko赢了');
+      resultStats.textContent = _i18n('result.duelElimination', '对战结果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 投丢：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最后距离：{{distance}}', {
         outcome: outcome,
         player: game.duel.playerScore,
         neko: game.duel.nekoScore,
-        rounds: game.duel.maxRounds,
+        playerMisses: game.duel.playerMisses,
+        nekoMisses: game.duel.nekoMisses,
+        max: game.duel.maxMisses,
+        rounds: game.duel.round,
         distance: pxToMeters(game.lastShotDistance || game.distance)
-      });
-      resultPanel.classList.add('show');
-      return;
-    }
-    if (isHorseMode()) {
-      var horseOutcome = game.horse.lettersNeko >= HORSE_WORD.length
-        ? _i18n('result.outcome.youWin', '你赢了')
-        : (game.horse.lettersPlayer >= HORSE_WORD.length ? _i18n('result.outcome.nekoWin', 'Neko赢了') : _i18n('result.outcome.undecided', '未分胜负'));
-      resultStats.textContent = _i18n('result.horse', 'HORSE结果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳连中：{{best}}', {
-        outcome: horseOutcome,
-        player: horseLetters(game.horse.lettersPlayer),
-        neko: horseLetters(game.horse.lettersNeko),
-        made: game.madeCount,
-        best: game.bestStreak
-      });
-      resultPanel.classList.add('show');
-      return;
-    }
-    if (isTimeAttackMode()) {
-      resultStats.textContent = _i18n('result.timed', '限时挑战：命中 {{made}} 球，最长连中 {{best}}，总分 {{score}}', {
-        made: game.madeCount,
-        best: game.bestStreak,
-        score: game.totalScore
       });
       resultPanel.classList.add('show');
       return;
@@ -4079,7 +3824,7 @@
     game.resultRecorded = true;
     var submittedSessionId = sessionId;
     var submitPromise = submitScore(entry);
-    if (isDuelMode() || isHorseMode() || isTimeAttackMode()) {
+    if (isDuelMode()) {
       submitPromise.catch(function () {});
     } else {
       submitPromise.then(function (res) {
@@ -4106,45 +3851,16 @@
     }, delayMs);
   }
   function update(dt) {
-    if (isTimeAttackMode() && game.state !== 'game_over') {
-      if (!game.timedDeadline) {
-        game.timedDeadline = performance.now() + TIME_ATTACK_DURATION * 1000;
-        game.timedTimerStarted = true;
-      }
-      var previousTimedSeconds = Math.max(0, Math.ceil(game.timedRemaining));
-      game.timedRemaining = Math.max(0, (game.timedDeadline - performance.now()) / 1000);
-      if (Math.max(0, Math.ceil(game.timedRemaining)) !== previousTimedSeconds) updateHud();
-      if (game.timedRemaining <= 0) {
-        game.state = 'game_over';
-        game.ball = null;
-        sendGameEvent({
-          kind: 'game_over',
-          result: 'scored',
-          score: game.totalScore,
-          streak: game.streak,
-          final_streak: game.bestStreak,
-          best_streak: game.bestStreak,
-          made_count: game.madeCount,
-          distance: game.lastShotDistance || game.distance,
-          final_distance: game.lastShotDistance || game.distance,
-          shot_type: game.lastShotType || ''
-        });
-        endRoute(false);
-        scheduleShowResult(0);
-        updateHud();
-        return;
-      }
-    }
     if (game.state === 'ready') {
       if (currentMode === 'shooter') updateYuiPosition(game.distance);
       if (isPositionTransitioning) return;
       if (!game.aimStartAt) game.aimStartAt = performance.now();
-      if (game.charging) {
+      if (game.charging && canPlayerControlShot()) {
         game.power += game.chargeDir * dt * 70;
         if (game.power >= 100) { game.power = 100; game.chargeDir = -1; }
         if (game.power <= 0) { game.power = 0; game.chargeDir = 1; }
         var elapsed = (performance.now() - game.aimStartAt) / 1000;
-        if ((isDuelMode() || isHorseMode()) && elapsed > 4 && performance.now() > psychologicalTalkAt) {
+        if (isDuelMode() && elapsed > 4 && performance.now() > psychologicalTalkAt) {
           psychologicalTalkAt = performance.now() + 4200;
           if (Math.random() < Math.min(0.75, 0.3 + (elapsed - 4) * 0.08)) {
             var mindGameLines = _i18nArray('lines.mindGame', ['你手在抖哦', '想好再投，不急~', '这个距离可不近喵']);
@@ -4619,24 +4335,25 @@
     if (playerSenseiReady) return;
     var px = getPlayerX();
     var py = getPlayerY();
+    var s = PLAYER_FIGURE_SCALE;
     ctx.fillStyle = '#f6c177';
     ctx.beginPath();
-    ctx.arc(px, py - 62, 16, 0, Math.PI * 2);
+    ctx.arc(px, py - 62 * s, 16 * s, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#f7fbff';
-    ctx.lineWidth = 8;
+    ctx.lineWidth = 8 * s;
     ctx.beginPath();
-    ctx.moveTo(px, py - 44);
-    ctx.lineTo(px, py + 10);
-    ctx.moveTo(px - 26, py - 20);
-    ctx.lineTo(px + 8, py - 42);
+    ctx.moveTo(px, py - 44 * s);
+    ctx.lineTo(px, py + 10 * s);
+    ctx.moveTo(px - 26 * s, py - 20 * s);
+    ctx.lineTo(px + 8 * s, py - 42 * s);
     var heldBall = getShotOrigin();
-    ctx.moveTo(px + 10, py - 42);
+    ctx.moveTo(px + 10 * s, py - 42 * s);
     ctx.lineTo(heldBall.x - BALL_R * .45, heldBall.y + BALL_R * .35);
-    ctx.moveTo(px, py + 8);
-    ctx.lineTo(px - 20, py + 54);
-    ctx.moveTo(px, py + 8);
-    ctx.lineTo(px + 24, py + 54);
+    ctx.moveTo(px, py + 8 * s);
+    ctx.lineTo(px - 20 * s, py + 54 * s);
+    ctx.moveTo(px, py + 8 * s);
+    ctx.lineTo(px + 24 * s, py + 54 * s);
     ctx.stroke();
     drawBasketball(heldBall.x, heldBall.y, BALL_R);
   }
@@ -4770,57 +4487,65 @@
       theme: currentThemeKey,
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
     }, _basketballGameMemoryPolicyPayload()), 22000).then(function (res) {
-      if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return;
+      if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return res;
+      if (!res || !res.ok) {
+        routeActive = false;
+        return res;
+      }
       routeActive = true;
       if (res && res.state) {
         applyRouteIdentity(res.state);
         applyPreGameContext(res.state);
       }
-    }).catch(function () {});
-    heartbeatTimer = setInterval(function () {
-      var pageVisible = !document.hidden;
-      post('/route/heartbeat', Object.assign({
-        session_id: sessionId,
-        lanlan_name: getRouteLanlanName(),
-        visible: pageVisible,
-        pageVisible: pageVisible,
-        visibilityState: document.visibilityState || (pageVisible ? 'visible' : 'hidden'),
-        mode: currentMode,
-        gameStarted: true,
-        game_started: true,
-        i18n_language: getRequestLanguage(),
-        currentState: buildBasketballCurrentStatePayload()
-      }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
-    }, 2500);
-    drainTimer = setInterval(function () {
-      var drainSessionId = sessionId;
-      var drainMode = currentMode;
-      var drainLanlanName = getRouteLanlanName();
-      post('/route/drain', Object.assign({ session_id: drainSessionId, lanlan_name: drainLanlanName, mode: drainMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
-        if (sessionId !== drainSessionId || currentMode !== drainMode) return;
-        var items = (res && (res.outputs || res.items || res.lines)) || [];
-        if (Array.isArray(items)) {
-          items.forEach(function (item) {
-            var result = item && typeof item.result === 'object' ? item.result : null;
-            var line = (item && (item.line || item.text || item.content)) || (result && (result.line || result.text || result.content)) || '';
-            var control = (item && item.control) || (result && result.control) || {};
-            if (line) {
-              var event = (item && item.event) || (result && result.event) || {};
-              speakLine(line, control, Object.assign({
-                kind: 'user_reply',
-                source: 'user_reply',
-                label: 'route_drain',
-                session_id: drainSessionId,
-                lanlan_name: drainLanlanName,
-                mode: drainMode,
-                voice_deadline_ms: 900
-              }, event));
-            }
-          });
-        }
-      }).catch(function () {});
-    }, 1800);
-    loadGeneratedQuickLines();
+      heartbeatTimer = setInterval(function () {
+        var pageVisible = !document.hidden;
+        post('/route/heartbeat', Object.assign({
+          session_id: sessionId,
+          lanlan_name: getRouteLanlanName(),
+          visible: pageVisible,
+          pageVisible: pageVisible,
+          visibilityState: document.visibilityState || (pageVisible ? 'visible' : 'hidden'),
+          mode: currentMode,
+          gameStarted: true,
+          game_started: true,
+          i18n_language: getRequestLanguage(),
+          currentState: buildBasketballCurrentStatePayload()
+        }, _basketballGameMemoryPolicyPayload()), 2500).catch(function () {});
+      }, 2500);
+      drainTimer = setInterval(function () {
+        var drainSessionId = sessionId;
+        var drainMode = currentMode;
+        var drainLanlanName = getRouteLanlanName();
+        post('/route/drain', Object.assign({ session_id: drainSessionId, lanlan_name: drainLanlanName, mode: drainMode, i18n_language: getRequestLanguage() }, _basketballGameMemoryPolicyPayload()), 2500).then(function (res) {
+          if (sessionId !== drainSessionId || currentMode !== drainMode) return;
+          var items = (res && (res.outputs || res.items || res.lines)) || [];
+          if (Array.isArray(items)) {
+            items.forEach(function (item) {
+              var result = item && typeof item.result === 'object' ? item.result : null;
+              var line = (item && (item.line || item.text || item.content)) || (result && (result.line || result.text || result.content)) || '';
+              var control = (item && item.control) || (result && result.control) || {};
+              if (line) {
+                var event = (item && item.event) || (result && result.event) || {};
+                speakLine(line, control, Object.assign({
+                  kind: 'user_reply',
+                  source: 'user_reply',
+                  label: 'route_drain',
+                  session_id: drainSessionId,
+                  lanlan_name: drainLanlanName,
+                  mode: drainMode,
+                  voice_deadline_ms: 900
+                }, event));
+              }
+            });
+          }
+        }).catch(function () {});
+      }, 1800);
+      loadGeneratedQuickLines();
+      return res;
+    }).catch(function () {
+      routeActive = false;
+      return { ok: false, reason: 'request_failed' };
+    });
     return routeStartPromise;
   }
   function startRouteAfterCharacterReady() {
@@ -4885,20 +4610,8 @@
       }
     };
     if (isDuelMode()) {
-      payloadObj.duel = {
-        player_score: game.duel.playerScore,
-        neko_score: game.duel.nekoScore,
-        round: game.duel.round,
-        active_shooter: game.duel.activeShooter,
-        max_rounds: game.duel.maxRounds
-      };
+      payloadObj.duel = buildDuelStatePayload();
       payloadObj.currentState.duel = payloadObj.duel;
-    }
-    if (isHorseMode()) {
-      payloadObj.horse = buildHorseStatePayload();
-      Object.assign(payloadObj.finalScore, buildHorseFinalScorePayload(payloadObj.horse));
-      payloadObj.currentState.horse = payloadObj.horse;
-      payloadObj.currentState.score = Object.assign({}, payloadObj.finalScore);
     }
     Object.assign(payloadObj, _basketballGameMemoryPolicyPayload());
     var payload = JSON.stringify(payloadObj);
@@ -4978,8 +4691,14 @@
       _i18n('debug.readout.streaks', '连中={{streak}}  最佳={{best}}  命中={{made}}', { streak: game.streak, best: game.bestStreak, made: game.madeCount }),
       _i18n('debug.readout.score', '分数={{score}}  剩余={{remaining}}/{{total}}', { score: game.totalScore, remaining: game.attemptsRemaining, total: game.attemptsTotal }),
       _i18n('debug.readout.difficulty', '难度={{difficulty}}  心情={{mood}}  主题={{theme}}', { difficulty: getDuelDifficultyName(), mood: currentMood, theme: getThemeLabel(currentThemeKey) }),
-      isDuelMode() ? _i18n('debug.readout.duel', '决斗: 你{{player}}-{{neko}} NEKO R{{round}}', { player: game.duel.playerScore, neko: game.duel.nekoScore, round: game.duel.round }) : '',
-      isHorseMode() ? _i18n('debug.readout.horse', 'HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}', { player: horseLetters(game.horse.lettersPlayer), neko: horseLetters(game.horse.lettersNeko), phase: game.horse.phase }) : '',
+      isDuelMode() ? _i18n('debug.readout.duel', '决斗: 你{{player}}-{{neko}} NEKO miss {{playerMisses}}/{{max}}-{{nekoMisses}}/{{max}} R{{round}}', {
+        player: game.duel.playerScore,
+        neko: game.duel.nekoScore,
+        playerMisses: game.duel.playerMisses,
+        nekoMisses: game.duel.nekoMisses,
+        max: game.duel.maxMisses,
+        round: game.duel.round
+      }) : '',
     ].filter(Boolean).join('\n');
   }
   function setDebugVisible(visible) {
@@ -4993,7 +4712,7 @@
     var event = btn.dataset.debugEvent;
     var streak = btn.dataset.debugStreak;
     if (distance) {
-      game.distance = clamp(Number(distance) || 200, 80, 620);
+      game.distance = clamp(Number(distance) || 200, 80, getMaxPlayableShotDistance());
       updateYuiPosition(game.distance);
       updatePlayerAvatarPosition();
     } else if (event) {
@@ -5051,21 +4770,13 @@
           difficulty: getDuelDifficultyName(),
           mood: currentMood,
           theme: currentThemeKey,
-          timedRemaining: game.timedRemaining,
-          horse: isHorseMode() ? Object.assign({}, game.horse) : null,
-          duel: isDuelMode() ? {
-            playerScore: game.duel.playerScore,
-            nekoScore: game.duel.nekoScore,
-            round: game.duel.round,
-            maxRounds: game.duel.maxRounds,
-            activeShooter: game.duel.activeShooter,
-          } : null,
+          duel: isDuelMode() ? buildDuelStatePayload() : null,
         };
       },
       resetGame: resetGame,
       shoot: shoot,
       setDistance: function (px) {
-        game.distance = clamp(Number(px) || 200, 80, 620);
+        game.distance = clamp(Number(px) || 200, 80, getMaxPlayableShotDistance());
         updateYuiPosition(game.distance);
         updatePlayerAvatarPosition();
         updateHud();
@@ -5108,6 +4819,7 @@
   }
 
   canvas.addEventListener('mousemove', function (ev) {
+    if (!canPlayerControlShot()) return;
     var y = ev.clientY / Math.max(1, window.innerHeight);
     game.aimAngle = clamp(78 - y * 36, 40, 78);
     if (game.tutorialStep === 0) {
@@ -5116,9 +4828,7 @@
     }
   });
   canvas.addEventListener('mousedown', function () {
-    if (game.state !== 'ready') return;
-    if (isPositionTransitioning) return;
-    if (!isPlayerTurn()) return;
+    if (!canPlayerControlShot()) return;
     resumeAudio();
     if (game.tutorialStep === 1) {
       game.tutorialStep = 2;
@@ -5132,8 +4842,10 @@
     setPlayerAction('charging', 0);
   });
   window.addEventListener('mouseup', function () {
-    if (game.charging) shoot();
+    if (game.charging && canPlayerControlShot()) shoot();
     else {
+      game.charging = false;
+      game.power = 0;
       setYuiAction('', 0);
       setPlayerAction('', 0);
     }
@@ -5142,7 +4854,7 @@
     var key = ev.key.toLowerCase();
     resumeAudio();
     var difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[key];
-    if (difficultyHotkey && (isDuelMode() || isHorseMode())) {
+    if (difficultyHotkey && isDuelMode()) {
       ev.preventDefault();
       setDuelDifficulty(difficultyHotkey);
       return;
@@ -5261,10 +4973,6 @@
   updateModeSwitcher();
   updateHud();
   game.aimStartAt = performance.now();
-  if (isTimeAttackMode()) {
-    game.timedDeadline = performance.now() + TIME_ATTACK_DURATION * 1000;
-    game.timedTimerStarted = true;
-  }
   if (lastFinalStreak >= 15) applyNekoControl({ expression: 'anticipate', intensity: 'medium' }, {});
   updateTutorial(_i18n('tutorial.aim', '上下移动鼠标调整投篮角度'));
   checkSeasonalEasterEggs();

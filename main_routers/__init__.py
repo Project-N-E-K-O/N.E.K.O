@@ -21,6 +21,7 @@ keeps returning the real module instead of the APIRouter object.
 """
 
 from . import agent_router
+from . import avatar_drop_router
 from . import capture_router
 from . import characters_router
 from . import cloudsave_router
@@ -39,6 +40,7 @@ from . import workshop_router
 
 __all__ = [
     'agent_router',
+    'avatar_drop_router',
     'capture_router',
     'characters_router',
     'cloudsave_router',

@@ -371,7 +371,7 @@ class UserActivityTracker:
         question heuristic over it: if the AI's reply trips the heuristic
         (ends with ``?`` / ``？`` / a CN sentence-final question particle),
         an unfinished-thread record opens — Phase 2 will be allowed up to
-        ``UNFINISHED_THREAD_MAX_FOLLOWUPS`` (default 2) follow-ups within
+        ``UNFINISHED_THREAD_MAX_FOLLOWUPS`` (default 1) follow-up within
         the 5-minute window even in restricted_screen_only states.
 
         Text is also appended to the AI conversation buffer so the

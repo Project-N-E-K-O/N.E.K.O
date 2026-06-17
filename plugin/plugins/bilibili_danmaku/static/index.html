@@ -805,10 +805,6 @@
         <div class="stat-value" id="statQueue">0</div>
         <div class="stat-label" data-i18n="stat.queue">缓冲</div>
       </div>
-      <div class="stat">
-        <div class="stat-value" id="statViewers">—</div>
-        <div class="stat-label" data-i18n="stat.viewers">人气</div>
-      </div>
     </div>
   </div>
 
@@ -917,6 +913,29 @@
     <div id="danmakuFeed">
       <div class="feed-empty" id="feedEmpty" data-i18n="feed.empty">暂无弹幕，等待连接...</div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title" data-i18n="db.title">📊 弹幕历史查询</div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="input-group">
+        <label data-i18n="db.keyword_label">关键词 / UID</label>
+        <input type="text" id="dbKeyword" data-i18n-placeholder="db.keyword_placeholder" placeholder="留空查全部;输入关键词或用户UID">
+      </div>
+      <div class="input-group" style="max-width:140px;">
+        <label data-i18n="db.limit_label">条数</label>
+        <input type="number" id="dbLimit" value="100" min="10" max="500" style="width:80px;">
+      </div>
+    </div>
+    <div class="btn-group" style="flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" onclick="runDbQuery('query_danmaku')" data-i18n="db.query_danmaku_btn">查弹幕</button>
+      <button class="btn btn-success btn-sm" onclick="runDbQuery('query_gifts')" data-i18n="db.query_gifts_btn">查礼物</button>
+      <button class="btn btn-success btn-sm" onclick="runDbQuery('query_gifts', {summary: true})" data-i18n="db.query_gifts_summary_btn">礼物排行</button>
+      <button class="btn btn-ghost btn-sm" onclick="runDbQuery('query_interact')" data-i18n="db.query_interact_btn">进场记录</button>
+      <button class="btn btn-ghost btn-sm" onclick="runDbQuery('query_interact', {interact_type: 'follow'})" data-i18n="db.query_follow_btn">关注记录</button>
+      <button class="btn btn-danger btn-sm" onclick="runDbQuery('query_stats')" data-i18n="db.query_stats_btn">📊 数据统计</button>
+    </div>
+    <div id="dbResult" style="margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--bg-page);white-space:pre-wrap;word-break:break-word;font-family:Consolas,monospace;font-size:0.8rem;overflow-wrap:anywhere;max-height:400px;overflow-y:auto;" data-i18n="db.no_result">等待查询…</div>
   </div>
 
   <div class="card">
@@ -1467,6 +1486,7 @@
   }
 
   async function saveInterval() {
+    window._intervalDragging = false;
     const val = parseInt(document.getElementById('intervalSlider').value);
     try {
       const data = await callPlugin('set_interval', { seconds: val });
@@ -1536,12 +1556,11 @@
     document.getElementById('statReceived').textContent = data.stats?.received ?? 0;
     document.getElementById('statFiltered').textContent = data.stats?.filtered ?? 0;
     document.getElementById('statQueue').textContent = data.queue_size ?? 0;
-    document.getElementById('statViewers').textContent = data.connection?.viewer_count?.toLocaleString() ?? '—';
 
     if (data.room_id && !document.getElementById('roomIdInput').value) {
       document.getElementById('roomIdInput').value = data.room_id;
     }
-    if (data.interval) {
+    if (data.interval && !window._intervalDragging) {
       document.getElementById('intervalSlider').value = data.interval;
       document.getElementById('intervalDisplay').textContent = data.interval + 's';
     }
@@ -2053,6 +2072,41 @@
     }
   }
 
+  async function runDbQuery(entry, extraArgs = {}) {
+    const resultBox = document.getElementById('dbResult');
+    const keyword = document.getElementById('dbKeyword').value.trim();
+    const limit = parseInt(document.getElementById('dbLimit').value) || 100;
+    resultBox.innerHTML = I18n.t('tool.calling', '查询中...');
+    try {
+      const args = {};
+      if (entry === 'query_gifts' && extraArgs.summary) {
+        args.summary = true;
+      } else if (entry === 'query_interact' && extraArgs.interact_type) {
+        args.interact_type = extraArgs.interact_type;
+      } else if (entry === 'query_stats') {
+        // no extra args
+      } else if (keyword) {
+        // 判断是 UID（纯数字）还是关键词
+        if (/^\d+$/.test(keyword)) {
+          args.uid = keyword;
+        } else {
+          args.keyword = keyword;
+        }
+      }
+      args.limit = limit;
+      const data = await callPlugin(entry, args);
+      if (data && data.message) {
+        resultBox.textContent = data.message;
+      } else {
+        resultBox.textContent = JSON.stringify(data, null, 2);
+      }
+      toast(I18n.t('tool.call_success', '查询成功'), 'success');
+    } catch (e) {
+      resultBox.textContent = I18n.t('tool.call_failed', '查询失败：') + e.message;
+      toast(I18n.t('tool.call_failed', '查询失败：') + e.message, 'error');
+    }
+  }
+
   function clearFeed() {
     feed.innerHTML = '';
     totalShown = 0;
@@ -2454,9 +2508,13 @@
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
+    window._intervalDragging = false;
     document.getElementById('intervalSlider').addEventListener('input', e => {
+      window._intervalDragging = true;
       document.getElementById('intervalDisplay').textContent = e.target.value + 's';
     });
+    // change 不在 release 时重置 flag，避免 refreshStatus 在保存前覆盖用户拖动的值
+    // flag 仅在 saveInterval() 中重置
     document.getElementById('danmakuMaxSlider').addEventListener('input', e => {
       document.getElementById('danmakuMaxDisplay').textContent = e.target.value;
     });
