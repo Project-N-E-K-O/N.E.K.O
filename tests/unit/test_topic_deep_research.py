@@ -70,7 +70,7 @@ async def test_run_deep_research_restores_floor_when_enrich_finds_nothing():
 @pytest.mark.asyncio
 async def test_run_deep_research_budget_timeout_returns_no_updates():
     async def slow_derive(**kwargs):
-        await asyncio.sleep(0.05)
+        await asyncio.Future()
         return "late query"
 
     async def fake_enrich(materials, **kwargs):
@@ -79,13 +79,37 @@ async def test_run_deep_research_budget_timeout_returns_no_updates():
     result = await run_deep_research(
         material={"interest": "x", "keywords": ["x"]},
         lang="zh-CN",
-        budget=DeepResearchBudget(total_wall_clock=0.01),
+        budget=DeepResearchBudget(total_wall_clock=0.05),
         derive_query=slow_derive,
         enrich_materials=fake_enrich,
     )
 
     assert result.material_updates == {}
     assert result.fallback_reason == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_run_deep_research_forwards_per_call_timeout_to_enrich():
+    captured = {}
+
+    async def fake_derive(**kwargs):
+        return "deep query"
+
+    async def fake_enrich(materials, **kwargs):
+        captured["timeout_s"] = kwargs.get("timeout_s")
+        material = dict(materials[0])
+        material["material_hint"] = {"summary": "deep"}
+        return [material]
+
+    await run_deep_research(
+        material={"interest": "x", "keywords": ["x"]},
+        lang="zh-CN",
+        budget=DeepResearchBudget(per_call_timeout=2.5),
+        derive_query=fake_derive,
+        enrich_materials=fake_enrich,
+    )
+
+    assert captured["timeout_s"] == 2.5
 
 
 @pytest.mark.asyncio
@@ -111,4 +135,4 @@ async def test_run_deep_research_keeps_query_and_floor_when_enrich_raises():
         "deep_query": "deep query before failure",
         "material_hint": {"summary": "floor"},
     }
-    assert result.fallback_reason == "enrichment_error"
+    assert result.fallback_reason == "enrichment_error:RuntimeError: fetch failed"

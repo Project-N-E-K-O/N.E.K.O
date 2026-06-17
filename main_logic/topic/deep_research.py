@@ -97,13 +97,20 @@ async def run_deep_research(
         updates: dict[str, Any] = {"deep_query": query}
 
         try:
-            enriched = await enrich([probe], lang=lang, max_materials=1)
-        except Exception:
+            enriched = await enrich(
+                [probe],
+                lang=lang,
+                max_materials=1,
+                timeout_s=normalized_budget.per_call_timeout,
+            )
+        except Exception as exc:
             if floor_hint is not None:
                 updates["material_hint"] = floor_hint
             return DeepResearchResult(
                 material_updates=updates,
-                fallback_reason="enrichment_error",
+                fallback_reason=(
+                    f"enrichment_error:{exc.__class__.__name__}: {exc}"
+                ),
             )
         deep = enriched[0] if enriched else None
         if isinstance(deep, Mapping) and deep.get("material_hint"):
