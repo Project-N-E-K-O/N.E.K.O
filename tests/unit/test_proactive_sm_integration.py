@@ -1375,6 +1375,33 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_ov
     mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
+async def test_deliver_agent_callbacks_text_requeues_when_preempted_before_prompt():
+    """A fresh user turn can arrive during the CLAIM/PHASE2 awaits. The final
+    prompt-adjacent check must requeue the callback and avoid prompt_ephemeral
+    once the proactive sid has gone stale."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-stale-sid", "status": "completed", "summary": "stale"}
+
+    original_fire = mgr.state.fire
+
+    async def _fire_and_rotate_sid(event, **payload):
+        await original_fire(event, **payload)
+        if event is SessionEvent.PROACTIVE_PHASE2:
+            async with mgr.lock:
+                mgr.current_speech_id = "user-fresh-sid"
+                mgr.state.mark_user_input_preempt()
+
+    mgr.state.fire = _fire_and_rotate_sid
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [cb])
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert mgr.pending_agent_callbacks == [cb]
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
 async def test_deliver_agent_callbacks_text_keeps_topic_hook_in_plain_text_session():
     """Non-regression: with no voice active/starting, the text path delivers the
     topic hook normally (prompt_ephemeral fires, returns True)."""

@@ -6461,6 +6461,17 @@ class LLMSessionManager:
                 # Free the inflight slot — text_start/text_end below won't run.
                 self.proactive_manager.release_inflight_noop()
                 return False
+            async with self.lock:
+                preempted_before_prompt = (
+                    self.state.is_proactive_preempted()
+                    or self.current_speech_id != proactive_sid
+                )
+            if preempted_before_prompt:
+                logger.info("[%s] trigger_agent_callbacks: preempted before prompt, re-queueing", self.lanlan_name)
+                self.pending_agent_callbacks.extend(active_callbacks)
+                callbacks_snapshot[:] = []
+                self.proactive_manager.release_inflight_noop()
+                return False
             _proactive_images: list = []
             for _cb in active_callbacks:
                 if isinstance(_cb, dict):
