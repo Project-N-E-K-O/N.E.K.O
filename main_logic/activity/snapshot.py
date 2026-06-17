@@ -205,7 +205,7 @@ class UnfinishedThread:
     chat prompt can grant a special "thread continuation" allowance —
     even in ``restricted_screen_only`` states (gaming / focused_work)
     where external sources and reminiscence are otherwise forbidden.
-    A capped follow-up count (default 2) prevents the AI from harassing
+    A capped follow-up count (default 1) prevents the AI from harassing
     the user about the same hanging question.
     """
     text: str                 # Short tail of the AI message that opened the thread
@@ -294,7 +294,7 @@ class ActivitySnapshot:
     weekday: int = 0                          # 0=Mon
     period: str = 'day'                       # 'morning' | 'afternoon' | 'evening' | 'night'
 
-    # --- Unfinished thread (5-min window, max 2 follow-ups) ---
+    # --- Unfinished thread (5-min window, max 1 follow-up by default) ---
     # Set when the AI's last reply contained a question and the user
     # hasn't responded. Phase 2 prompt is allowed to follow up on this
     # thread regardless of state — including gaming / focused_work where
@@ -599,7 +599,7 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
         focused_work（专注工作中）→ 只就屏幕内容轻聊一句
         专注 VS Code 已 200s; CPU 30s 75%
         18:00 傍晚 | 用户 30s前 | AI 2min前
-        未收尾话题:「…你今天准备几点出发?」(60s前,已跟进 0/2)
+        未收尾话题：「…你今天准备几点出发?」(60s前)
         评估: focused_work 0.7 · chatting 0.2 · idle 0.1
         叙述: 主人在 VS Code 里调试，刚发了求助
         开放话题:
@@ -685,7 +685,6 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
             tail = tail[-40:]
         lines.append(labels['unfinished_thread_fmt'].format(
             tail=tail, age=age_str,
-            used=thread.follow_up_count, cap=thread.max_follow_ups,
         ))
 
     # LLM enrichment — populated only when the emotion-tier loop has run

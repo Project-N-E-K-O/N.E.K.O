@@ -1391,7 +1391,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
 #   hours_ago_fmt                — >= 3600s
 #   time_fmt                     — "{hour:02d}:00 {period}"
 #   period_morning / _afternoon / _evening / _night
-#   unfinished_thread_fmt        — {tail, age, used, cap}
+#   unfinished_thread_fmt        — {tail, age}
 #   activity_scores_label
 #   activity_guess_label
 #   open_threads_label
@@ -1412,7 +1412,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "下午",
         "period_evening": "傍晚",
         "period_night": "夜里",
-        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age},已跟进 {used}/{cap})",
+        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age})",
         "activity_scores_label": "评估",
         "activity_guess_label": "叙述",
         "open_threads_label": "开放话题",
@@ -1434,7 +1434,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "afternoon",
         "period_evening": "evening",
         "period_night": "night",
-        "unfinished_thread_fmt": 'unfinished: "…{tail}" ({age} ago, followed up {used}/{cap})',
+        "unfinished_thread_fmt": 'unfinished thread: "…{tail}" ({age} ago)',
         "activity_scores_label": "scores",
         "activity_guess_label": "narrative",
         "open_threads_label": "open threads",
@@ -1456,7 +1456,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "午後",
         "period_evening": "夕方",
         "period_night": "夜",
-        "unfinished_thread_fmt": "未完話題:「…{tail}」({age}, フォロー {used}/{cap})",
+        "unfinished_thread_fmt": "未完話題:「…{tail}」({age})",
         "activity_scores_label": "評価",
         "activity_guess_label": "叙述",
         "open_threads_label": "保留話題",
@@ -1478,7 +1478,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "오후",
         "period_evening": "저녁",
         "period_night": "밤",
-        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age}, 후속 {used}/{cap})',
+        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age})',
         "activity_scores_label": "평가",
         "activity_guess_label": "서술",
         "open_threads_label": "보류 화제",
@@ -1500,7 +1500,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "день",
         "period_evening": "вечер",
         "period_night": "ночь",
-        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад, {used}/{cap})",
+        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад)",
         "activity_scores_label": "оценки",
         "activity_guess_label": "описание",
         "open_threads_label": "открытые нити",
@@ -1522,7 +1522,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "tarde",
         "period_evening": "atardecer",
         "period_night": "noche",
-        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age}, seguimiento {used}/{cap})',
+        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age})',
         "activity_scores_label": "puntuaciones",
         "activity_guess_label": "narrativa",
         "open_threads_label": "hilos abiertos",
@@ -1544,7 +1544,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "tarde",
         "period_evening": "fim de tarde",
         "period_night": "noite",
-        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás, seguido {used}/{cap})',
+        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás)',
         "activity_scores_label": "pontuações",
         "activity_guess_label": "narrativa",
         "open_threads_label": "tópicos abertos",

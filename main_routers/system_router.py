@@ -1932,12 +1932,21 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
         pass
 
 
-def _allow_open_threads_for_topic_hooks(activity_snapshot) -> bool:
-    if activity_snapshot is None:
-        return True
-    if getattr(activity_snapshot, 'propensity', None) != 'restricted_screen_only':
-        return True
-    return getattr(activity_snapshot, 'unfinished_thread', None) is not None
+def _open_threads_for_activity_state(activity_snapshot, fresh_open_threads) -> list[str]:
+    """Return semantic open_threads that should render in activity state.
+
+    ``unfinished_thread`` is a stronger, rule-based continuation signal (the
+    previous AI question is still hanging and may bypass normal propensity).
+    When it exists, suppress softer LLM-enriched open_threads so Phase 2 sees a
+    single follow-up surface. Otherwise keep open_threads in activity state,
+    where they sit next to live state/tone rather than old reminiscence.
+    """
+    if (
+        activity_snapshot is not None
+        and getattr(activity_snapshot, 'unfinished_thread', None) is not None
+    ):
+        return []
+    return list(fresh_open_threads or [])
 
 
 def _render_followup_topic_hooks(
@@ -1950,7 +1959,9 @@ def _render_followup_topic_hooks(
     blank/duplicate filter are reported as surfaced. Otherwise a blank or
     duplicate followup inside the first three would still be recorded via
     /record_surfaced and pushed into cooldown even though the model never saw
-    it.
+    it. Semantic open_threads intentionally do not flow through this helper:
+    they render inside the activity-state section, where the live state/tone
+    and decision rules can arbitrate them separately from old reminiscence.
     """
     if not followup_topics:
         return "", []
@@ -6459,7 +6470,10 @@ async def proactive_chat(request: Request):
                     activity_snapshot,
                     activity_scores=fresh_enrich.activity_scores,
                     activity_guess=fresh_enrich.activity_guess,
-                    open_threads=fresh_enrich.open_threads,
+                    open_threads=_open_threads_for_activity_state(
+                        activity_snapshot,
+                        fresh_enrich.open_threads,
+                    ),
                 )
             except Exception as _enrich_err:
                 logger.debug(f"[{lanlan_name}] fresh enrichment fetch failed: {_enrich_err}")
@@ -6469,27 +6483,10 @@ async def proactive_chat(request: Request):
             display_snap = None
             state_section = ''
 
-        open_threads_for_topic_hooks = (
-            getattr(display_snap, 'open_threads', None)
-            if display_snap is not None and _allow_open_threads_for_topic_hooks(activity_snapshot)
-            else None
-        )
-        if open_threads_for_topic_hooks or _followup_topics:
-            try:
-                from main_logic.topic.hooks import build_topic_hook_prompt
-                refreshed_topic_hook_prompt = build_topic_hook_prompt(
-                    topic_hook_lang,
-                    followup_topics=_followup_topics if _allow_reminiscence else [],
-                    open_threads=open_threads_for_topic_hooks,
-                )
-                if refreshed_topic_hook_prompt:
-                    followup_topics_prompt = refreshed_topic_hook_prompt
-            except Exception as _topic_hook_err:
-                logger.debug(f"[{lanlan_name}] topic hook prompt build failed: {_topic_hook_err}")
-
         # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
-        # 使用 enriched_memory_context（含回调话题 / 未完线程）而非原始 memory_context
+        # 使用 enriched_memory_context（含回忆线索）而非原始 memory_context。
+        # open_threads 保持在上方 activity state section，不混进 memory_context。
         phase2_memory_context = memory_context
         if followup_topics_prompt:
             phase2_memory_context = memory_context + "\n" + followup_topics_prompt

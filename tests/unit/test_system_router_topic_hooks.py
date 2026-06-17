@@ -3,13 +3,13 @@ from types import SimpleNamespace
 
 import main_routers.system_router as system_router
 from main_routers.system_router import (
-    _allow_open_threads_for_topic_hooks,
+    _open_threads_for_activity_state,
     _render_followup_topic_hooks,
     _resolve_topic_hook_locale,
 )
 
 
-def test_topic_hooks_open_threads_respect_restricted_screen_only():
+def test_unfinished_thread_suppresses_softer_open_threads():
     restricted = SimpleNamespace(propensity="restricted_screen_only", unfinished_thread=None)
     restricted_with_thread = SimpleNamespace(
         propensity="restricted_screen_only",
@@ -17,10 +17,11 @@ def test_topic_hooks_open_threads_respect_restricted_screen_only():
     )
     normal = SimpleNamespace(propensity="open", unfinished_thread=None)
 
-    assert _allow_open_threads_for_topic_hooks(None) is True
-    assert _allow_open_threads_for_topic_hooks(normal) is True
-    assert _allow_open_threads_for_topic_hooks(restricted) is False
-    assert _allow_open_threads_for_topic_hooks(restricted_with_thread) is True
+    threads = ["AI 答应看测试还没看"]
+    assert _open_threads_for_activity_state(None, threads) == threads
+    assert _open_threads_for_activity_state(normal, threads) == threads
+    assert _open_threads_for_activity_state(restricted, threads) == threads
+    assert _open_threads_for_activity_state(restricted_with_thread, threads) == []
 
 
 def test_followup_surfaced_ids_are_limited_to_rendered_topics():
@@ -78,8 +79,8 @@ def test_topic_hook_locale_preserves_traditional_chinese_request_language():
     )
 
     assert topic_hook_lang == "zh-TW"
-    assert "可以自然回憶或接續的話題" in prompt
-    assert "可以自然回忆或接续的话题" not in prompt
+    assert "可自然想起的舊話題：" in prompt
+    assert "可自然想起的旧话题：" not in prompt
 
 
 def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
@@ -93,8 +94,8 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
     )
 
     assert topic_hook_lang == "zh-TW"
-    assert "可以自然回憶或接續的話題" in prompt
-    assert "可以自然回忆或接续的话题" not in prompt
+    assert "可自然想起的舊話題：" in prompt
+    assert "可自然想起的旧话题：" not in prompt
 
 
 def test_open_threads_compute_uses_topic_hook_locale():

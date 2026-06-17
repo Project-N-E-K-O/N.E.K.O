@@ -3,6 +3,15 @@
 This module intentionally does not schedule, persist, or deliver anything.
 It only turns already-approved proactive candidates into a compact prompt
 section that the existing /api/proactive_chat Phase 2 path can consume.
+
+Prompt placement contract:
+* reflection follow-up topics render here and are appended to memory_context,
+  next to the long-term conversation history they extend.
+* open_threads stay in the activity-state section, close to live state/tone and
+  the decision rules. Do not merge them back into this memory-cue section: they
+  are recent unfinished semantic threads, not old reminiscence.
+* background deep-topic hooks are delivered through build_topic_hook_callback
+  in delivery.py, not through this helper.
 """
 from __future__ import annotations
 
@@ -14,55 +23,41 @@ from main_logic.topic.common import clean_text
 
 # Deliberately encouraging, not discouraging: paired with Phase 2's repeated
 # anti-repeat warnings, weak/negative wording made the model treat callbacks as
-# "high repeat risk" and skip them. Frame these as welcome, natural cues. No
-# backend scheduling jargon (frequency/quota): the model only decides whether to
-# open this turn. One natural pick, the rest left to later turns.
-_HEADER_ZH = """======可以自然回忆或接续的话题======
-下面是一些适合自然带出来的旧话题和还没聊完的点。挑一个最顺的，像随口想起一样轻轻提起就好；开口具体、简短、别像问卷，剩下的留给后面慢慢聊。"""
+# "high repeat risk" and skip them. Frame old topics as welcome, natural memory
+# cues. Keep the rendering intentionally quieter than major ====== sections:
+# memory cues should be available near conversation history, not compete with
+# recent-chat dedup or activity-state decision blocks.
+_INTRO_ZH = "可自然想起的旧话题：\n\n以下旧话题距今较久，适合自然回忆与跟进；只在能顺手接、像随口想起时轻轻带出，别硬聊。"
+_INTRO_ZH_TW = "可自然想起的舊話題：\n\n以下舊話題距今較久，適合自然回憶與跟進；只在能順手接、像隨口想起時輕輕帶出，別硬聊。"
+_INTRO_EN = "Older topics that may come to mind:\n\nThe older topics below are far enough back for natural reminiscence or follow-up; use one only when it flows easily, as if it just came to mind."
+_INTRO_JA = "自然に思い出せる古い話題：\n\n以下は以前の会話で出た古い話題です。自然に流れるときだけ、ふと思い出したように軽く切り出してください。"
+_INTRO_KO = "자연스럽게 떠올릴 오래된 화제:\n\n아래는 이전 대화에서 나온 오래된 화제입니다. 자연스럽게 이어질 때만 문득 떠올린 듯 가볍게 꺼내세요."
+_INTRO_ES = "Temas antiguos que pueden surgir:\n\nLos temas antiguos de abajo vienen de conversaciones previas; usa uno solo si fluye con naturalidad, como si acabara de ocurrírsete."
+_INTRO_PT = "Temas antigos que podem voltar:\n\nOs temas antigos abaixo vêm de conversas anteriores; use apenas um quando fluir naturalmente, como se tivesse acabado de lembrar."
+_INTRO_RU = "Старые темы, которые можно вспомнить:\n\nСтарые темы ниже достаточно давние для естественного возврата; используй одну только если она легко ложится в разговор."
 
-_HEADER_ZH_TW = """======可以自然回憶或接續的話題======
-下面是一些適合自然帶出來的舊話題和還沒聊完的點。挑一個最順的，像隨口想起一樣輕輕提起就好；開口具體、簡短、別像問卷，剩下的留給後面慢慢聊。"""
-
-_HEADER_EN = """======Topics worth recalling or picking back up======
-Below are older topics and unfinished points that fit a natural callback. Pick whichever flows best and bring it up lightly, as if it just came to mind; keep the opener specific and short, not survey-like, and leave the rest for later turns."""
-
-_HEADER_JA = """======自然に思い出して続けられる話題======
-以下は自然に持ち出せる昔の話題やまだ終わっていない点です。一番しっくりくるものを一つ、ふと思い出したように軽く切り出してください。具体的で短く、アンケートっぽくならないように、残りは後のターンに回します。"""
-
-_HEADER_KO = """======자연스럽게 떠올려 이어갈 화제======
-아래는 자연스럽게 꺼낼 수 있는 예전 화제와 아직 끝나지 않은 점들입니다. 가장 잘 맞는 하나를 문득 떠오른 듯 가볍게 꺼내세요. 구체적이고 짧게, 설문처럼 굴지 말고, 나머지는 다음 턴에 맡기세요."""
-
-_HEADER_ES = """======Temas para recordar o retomar con naturalidad======
-Abajo hay temas antiguos y puntos sin terminar que encajan en un retorno natural. Elige el que mejor fluya y sácalo con ligereza, como si acabara de ocurrírsete; que la apertura sea concreta, breve y no parezca una encuesta, y deja el resto para turnos posteriores."""
-
-_HEADER_PT = """======Temas para relembrar ou retomar com naturalidade======
-Abaixo há temas antigos e pontos não concluídos que cabem em um retorno natural. Escolha o que fluir melhor e traga-o de leve, como se tivesse acabado de lembrar; mantenha a abertura concreta, curta e sem parecer um questionário, e deixe o resto para turnos seguintes."""
-
-_HEADER_RU = """======Темы, к которым приятно вернуться======
-Ниже — старые темы и незавершённые моменты, подходящие для естественного возврата. Выбери ту, что заходит лучше всего, и заведи её легко, будто только что вспомнил; начни конкретно и коротко, без анкетного тона, остальное оставь на следующие ходы."""
-
-_HEADERS = {
-    "zh": _HEADER_ZH,
-    "zh-CN": _HEADER_ZH,
-    "zh-TW": _HEADER_ZH_TW,
-    "en": _HEADER_EN,
-    "ja": _HEADER_JA,
-    "ko": _HEADER_KO,
-    "es": _HEADER_ES,
-    "pt": _HEADER_PT,
-    "ru": _HEADER_RU,
+_INTROS = {
+    "zh": _INTRO_ZH,
+    "zh-CN": _INTRO_ZH,
+    "zh-TW": _INTRO_ZH_TW,
+    "en": _INTRO_EN,
+    "ja": _INTRO_JA,
+    "ko": _INTRO_KO,
+    "es": _INTRO_ES,
+    "pt": _INTRO_PT,
+    "ru": _INTRO_RU,
 }
 
 _LABELS = {
-    "zh": {"memory": "可以顺手接的话题", "thread": "刚才没聊完的点"},
-    "zh-CN": {"memory": "可以顺手接的话题", "thread": "刚才没聊完的点"},
-    "zh-TW": {"memory": "可以順手接的話題", "thread": "剛才沒聊完的點"},
-    "en": {"memory": "Optional memory hook", "thread": "Open thread"},
-    "ja": {"memory": "自然に拾える話題", "thread": "未完了の話題"},
-    "ko": {"memory": "가볍게 이어갈 화제", "thread": "아직 끝나지 않은 점"},
-    "es": {"memory": "Tema opcional de memoria", "thread": "Hilo abierto"},
-    "pt": {"memory": "Gancho opcional de memória", "thread": "Ponto ainda em aberto"},
-    "ru": {"memory": "Тема из памяти", "thread": "Незавершенная мысль"},
+    "zh": "较久前的回忆线索",
+    "zh-CN": "较久前的回忆线索",
+    "zh-TW": "較久前的回憶線索",
+    "en": "Older memory cue",
+    "ja": "古い記憶の手がかり",
+    "ko": "오래된 기억 단서",
+    "es": "Pista de memoria antigua",
+    "pt": "Pista de memória antiga",
+    "ru": "Давняя подсказка памяти",
 }
 
 def _lang_key(lang: str) -> str:
@@ -91,45 +86,28 @@ def _iter_followup_texts(followup_topics: Iterable[Mapping[str, Any]] | None) ->
     return texts
 
 
-def _iter_open_threads(open_threads: Iterable[Any] | None) -> list[str]:
-    texts: list[str] = []
-    seen: set[str] = set()
-    for item in open_threads or []:
-        text = clean_text(item)
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        texts.append(text)
-    return texts
-
-
 def build_topic_hook_prompt(
     lang: str,
     *,
     followup_topics: Iterable[Mapping[str, Any]] | None = None,
-    open_threads: Iterable[Any] | None = None,
     max_items: int = 3,
 ) -> str:
-    """Render optional topic hooks for the existing proactive prompt.
+    """Render old reflection follow-up topics for the proactive prompt.
 
     The output is deliberately a prompt section, not final copy. Phase 2 still
-    owns character voice, timing, and whether to pass. Only the followup
-    (reflection) and open-thread surfaces are rendered here; the background
-    topic pool delivers its own materials through build_topic_hook_callback,
-    not this prompt section.
+    owns character voice, timing, and whether to pass. This helper renders only
+    old reflection follow-ups; open_threads stay in the activity-state section,
+    and the background topic pool delivers through build_topic_hook_callback.
     """
     key = _lang_key(lang)
-    labels = _LABELS.get(key, _LABELS["en"])
-    header = _HEADERS.get(key, _HEADER_EN)
+    label = _LABELS.get(key, _LABELS["en"])
+    intro = _INTROS.get(key, _INTROS["en"])
 
     memory_texts = _iter_followup_texts(followup_topics)[:max_items]
-    thread_texts = _iter_open_threads(open_threads)[:max_items]
-    if not memory_texts and not thread_texts:
+    if not memory_texts:
         return ""
 
-    lines = [header]
+    lines = [intro]
     for text in memory_texts:
-        lines.append(f"- {labels['memory']}: {text}")
-    for text in thread_texts:
-        lines.append(f"- {labels['thread']}: {text}")
+        lines.append(f"- {label}: {text}")
     return "\n".join(lines) + "\n"
