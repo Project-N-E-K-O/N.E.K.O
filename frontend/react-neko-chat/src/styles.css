@@ -5525,6 +5525,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: transparent;
 }
 
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {
+  border-color: #8b949e;
+  background: #202124;
+  color: #f3f4f6;
+}
+
 [data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {
   border-color: rgba(176, 219, 255, 0.16);
   background:

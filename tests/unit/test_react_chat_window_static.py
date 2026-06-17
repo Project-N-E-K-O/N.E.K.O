@@ -893,6 +893,11 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
         '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
         ".compact-input-tool-fan .compact-input-tool-item > img,",
     )
+    dark_tooltip_block = css_block(
+        styles,
+        '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {',
+        '[data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {',
+    )
 
     assert "pointer-events: none;" in tooltip_block
     assert "user-select: none;" in tooltip_block
@@ -905,6 +910,9 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     assert "transform-origin: 0 0;" in tooltip_block
     assert "transform: translate(0, 0);" in visible_block
     assert "scale(" not in visible_block
+    assert "border-color: #8b949e;" in dark_tooltip_block
+    assert "background: #202124;" in dark_tooltip_block
+    assert "color: #f3f4f6;" in dark_tooltip_block
 
 
 def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
