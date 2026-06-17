@@ -47,7 +47,7 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
     get_basketball_pregame_context_formatter_labels,
@@ -6940,7 +6940,10 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 async def game_project_context(game_type: str, request: Request):
     """Append game-scoped UI dialogue into the active project session history."""
     if str(game_type or "") != "new_user_icebreaker":
-        return {"ok": False, "reason": "unsupported_game_type", "game_type": game_type}
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "unsupported_game_type", "game_type": game_type},
+        )
 
     try:
         data = await request.json()
@@ -6949,6 +6952,16 @@ async def game_project_context(game_type: str, request: Request):
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
 
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+
     role = str(data.get("role") or "").strip()
     text = str(data.get("text") or "").strip()
     if role not in {"assistant", "user"}:
@@ -6956,7 +6969,12 @@ async def game_project_context(game_type: str, request: Request):
     if not text:
         return {"ok": False, "reason": "missing_text"}
 
-    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if "lanlan_name" not in data:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    raw_lanlan_name = data.get("lanlan_name")
+    if raw_lanlan_name is None or str(raw_lanlan_name).strip() == "":
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    lanlan_name = _resolve_lanlan_name(raw_lanlan_name)
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
@@ -7003,10 +7021,8 @@ async def game_project_context(game_type: str, request: Request):
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
     except Exception as exc:
         logger.warning(
-            "🎮 新用户破冰上下文追加失败: lanlan=%s role=%s session=%s err=%s",
+            "new_user_icebreaker context append failed for %s: %s",
             lanlan_name,
-            role,
-            data.get("session_id") or "",
             exc,
             exc_info=True,
         )
@@ -7018,13 +7034,21 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
         }
+    if ok is False:
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
 
     return {
         "ok": bool(ok),
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "game_type": game_type,
-        "session_id": str(data.get("session_id") or ""),
+        "session_id": session_id,
     }
 
 

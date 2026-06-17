@@ -1427,9 +1427,9 @@ function CompactChatApp({
   onChoiceSelect,
   avatarToolMenuOpenRequest = null,
   compactToolFanOpenRequest = null,
-  compactHistoryOpenRequest = null,
   compactToolWheelRotateRequest = null,
   compactToolWheelIndexRequest = null,
+  compactHistoryOpenRequest = null,
   onCompactChatStateChange,
   onCompactMinimizeRequest,
   rollbackDraft,
@@ -1541,6 +1541,7 @@ function CompactChatApp({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
+  const compactCapsuleEntryLocked = compactTextEntryLocked || guideChatButtonsLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -1593,8 +1594,8 @@ function CompactChatApp({
   const lastToolCursorResetKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
-  const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
+  const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
@@ -1966,6 +1967,18 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory({ persist: false });
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
+
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
@@ -5027,6 +5040,7 @@ function CompactChatApp({
     const requestId = request.id;
     lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
+      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       if (activeAvatarToolIds.length === 0) {
@@ -5044,23 +5058,13 @@ function CompactChatApp({
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
+      lastCompactToolFanOpenRequestIdRef.current = request.id;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
-
-  useEffect(() => {
-    const request = compactHistoryOpenRequest;
-    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
-    lastCompactHistoryOpenRequestIdRef.current = request.id;
-    if (request.open) {
-      openCompactExportHistory();
-      return;
-    }
-    closeCompactExportHistory({ persist: false });
-  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => {
     const request = compactToolWheelIndexRequest;
@@ -6581,11 +6585,10 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
-                          disabled={compactTextEntryLocked}
+                          disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;
-                            if (compactTextEntryLocked) return;
-                            if (isGuideChatButtonLockActive()) return;
+                            if (compactCapsuleEntryLocked) return;
                             requestCompactChatState('input');
                           }}
                         >

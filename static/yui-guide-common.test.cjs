@@ -21,8 +21,7 @@ const dayGuideFiles = [
     'tutorial/yui-guide/days/day3-interaction-guide.js',
     'tutorial/yui-guide/days/day4-companion-guide.js',
     'tutorial/yui-guide/days/day5-personalization-guide.js',
-    'tutorial/yui-guide/days/day6-agent-guide.js',
-    'tutorial/yui-guide/days/day7-graduation-guide.js'
+    'tutorial/yui-guide/days/day6-agent-guide.js'
 ];
 
 test('common guide helpers freeze config, register guides, and create locale audio maps', () => {
@@ -501,8 +500,9 @@ test('app interpage recognizes explicit Yui guide dedup bypass messages', () => 
     assert.match(source, /function shouldBypassYuiGuideMessageDedup\(action,\s*message\)/);
     assert.match(source, /message\s*&&\s*message\.bypassDedup === true/);
     assert.match(source, /\|\| action === 'yui_guide_set_chat_cursor'/);
+    assert.doesNotMatch(source, /\|\| action === 'yui_guide_drag_chat_cursor'/);
+    assert.doesNotMatch(source, /\|\| action === 'yui_guide_arc_chat_cursor'/);
     assert.doesNotMatch(source, /action === 'yui_guide_set_chat_cursor' && !\(message && message\.freezePoint === true\)/);
-    assert.match(source, /shouldBypassYuiGuideMessageDedup\(message\.action,\s*message\)/);
     assert.match(source, /shouldBypassYuiGuideMessageDedup\(event\.data\.action,\s*event\.data\)/);
 });
 
@@ -809,6 +809,8 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/timeline-engine.js'), -1);
     assert.notEqual(indexTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
+    assert.match(indexTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
+    assert.match(chatTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
     assert.ok(
         indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') >= 0
             && indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
@@ -848,6 +850,7 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
         'chat.html should load tutorial/yui-guide/common.js before app-interpage.js'
     );
     assert.match(appInterpageSource, /createYuiGuideTargetGeometryRegistry\(\)/);
+    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightElement\(\) \{[\s\S]*document\.createElement\('div'\)[\s\S]*spotlight\.id = 'yui-guide-chat-spotlight'/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)/);
     assert.match(appInterpageSource, /entry\.localSelectors\.some\(function \(selector\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);

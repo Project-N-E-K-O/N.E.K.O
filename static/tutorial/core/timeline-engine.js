@@ -156,9 +156,9 @@
             return Promise.resolve(resultPromise);
         }
 
-        watchNonBlockingEvent(resultPromise, event) {
+        watchNonBlockingEvent(event, resultPromise) {
             Promise.resolve(resultPromise).catch((error) => {
-                console.warn('[TutorialTimelineEngine] Non-blocking event failed:', event && event.id, error);
+                console.warn('[TutorialTimeline] non-blocking event failed:', event && event.command, error);
             });
         }
 
@@ -236,7 +236,8 @@
                         };
                     }
                 } else {
-                    this.watchNonBlockingEvent(resultPromise, event);
+                    this.watchNonBlockingEvent(event, resultPromise);
+                    await Promise.resolve();
                 }
             }
 
@@ -256,7 +257,7 @@
                 if (event.blocking === true) {
                     await Promise.resolve(resultPromise);
                 } else {
-                    this.watchNonBlockingEvent(resultPromise, event);
+                    this.watchNonBlockingEvent(event, resultPromise);
                 }
                 if (this.isRunCancelled(runToken)) {
                     return {

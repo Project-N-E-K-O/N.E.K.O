@@ -22,7 +22,7 @@
     const S = window.appState;
     const C = window.appConst;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
 
     // ======================== proactive leader election ========================
     //
@@ -131,6 +131,41 @@
         if (!timestamps.length) return false;
         const latest = Math.max.apply(Math, timestamps);
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
+    function getNewUserIcebreakerBlockingRetryMs() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) {
+                    return getNewUserIcebreakerRetryDelayMs();
+                }
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return 0;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return 0;
+
+        let latest = 0;
+        for (let day = 1; day <= 7; day += 1) {
+            const entry = days[String(day)];
+            if (!entry || typeof entry !== 'object') continue;
+            [
+                Number(entry.triggeredAt || 0),
+                Number(entry.updatedAt || 0),
+                Number(entry.completedAt || 0),
+                Number(entry.endedAt || 0)
+            ].forEach((value) => {
+                if (Number.isFinite(value) && value > latest) {
+                    latest = value;
+                }
+            });
+        }
+        if (!latest) return 0;
+        const remaining = NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS - (Date.now() - latest);
+        return remaining > 0 ? remaining : 0;
     }
 
     /**
@@ -611,12 +646,19 @@
         if (isNewUserIcebreakerPeriodActive()) {
             console.log('[Proactive] new-user icebreaker active, retry schedule later');
             S.proactiveChatBackoffLevel = 0;
-            S.proactiveChatTimer = setTimeout(scheduleProactiveChat, getNewUserIcebreakerRetryDelayMs());
+            S.proactiveChatTimer = setTimeout(
+                scheduleProactiveChat,
+                getNewUserIcebreakerBlockingRetryMs() || getNewUserIcebreakerRetryDelayMs()
+            );
             return;
         }
         if (!canTriggerProactively()) {
             console.log('主动搭话前置条件不满足，不启动调度器');
             S.proactiveChatBackoffLevel = 0;
+            var icebreakerRetryMs = getNewUserIcebreakerBlockingRetryMs();
+            if (icebreakerRetryMs > 0) {
+                S.proactiveChatTimer = setTimeout(scheduleProactiveChat, icebreakerRetryMs + 250);
+            }
             return;
         }
 

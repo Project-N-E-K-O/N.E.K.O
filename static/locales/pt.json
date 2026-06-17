@@ -3297,6 +3297,10 @@
             "desc": "Para obter a melhor experiência do tutorial, recomendamos entrar no modo de tela cheia.\nNo modo de tela cheia, o conteúdo do tutorial será mais claro e não será obscurecido por outros elementos.",
             "enterFullscreen": "Entrar no tutorial em tela cheia"
         },
+        "reset": {
+            "daySuccess": "O tutorial de iniciante do dia {{day}} foi redefinido. Atualize o Neko para iniciá-lo novamente.",
+            "dayFailed": "Falha ao redefinir o tutorial de iniciante. Tente novamente mais tarde."
+        },
         "drag_hint": "Segure e arraste para mover a dica de ferramenta",
         "yuiGuide": {
             "buttons": {
@@ -3304,7 +3308,7 @@
                 "sayHello": "Olá"
             },
             "lines": {
-                "introBasic": "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente! Quer me contar alguma novidade de hoje? Ou talvez só chamar meu nome? Vai, testa! Mal posso esperar para ouvir sua voz!",
+                "introBasic": "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente. Quer me contar algo novo que aconteceu hoje? Ou só dizer meu nome? Vai, experimenta! Mal posso esperar pra ouvir sua voz!",
                 "takeoverCaptureCursor": "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo esticar minhas patinhas até o seu teclado e mouse! Posso ajudar você a digitar, abrir páginas da web... mas, se esse cursor ficar balançando por aí, talvez eu não resista e pule em cima dele! Está pronto para minhas travessuras... quer dizer, minha ajuda? Miau!",
                 "takeoverPluginPreviewHome": "Além dos recursos que eu apresentei antes, também tem um montão de plugins superdivertidos aqui!",
                 "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler comentários do Bilibili, como também posso ajudar você a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a super deusa felina onipotente! Hmph!",

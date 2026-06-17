@@ -1,41 +1,406 @@
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
-const daysDir = path.join(repoRoot, 'static', 'tutorial', 'yui-guide', 'days');
-const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial', 'yui-guide', 'director.js'), 'utf8');
+const guideAudioRoot = path.join(__dirname, 'assets', 'tutorial', 'guide-audio');
+const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const supportedRecordedLocales = ['zh', 'ja', 'en', 'ko', 'ru'];
+const guideFiles = [
+    'tutorial/yui-guide/days/day1-home-guide.js',
+    'tutorial/yui-guide/days/day2-screen-voice-guide.js',
+    'tutorial/yui-guide/days/day3-interaction-guide.js',
+    'tutorial/yui-guide/days/day4-companion-guide.js',
+    'tutorial/yui-guide/days/day5-personalization-guide.js',
+    'tutorial/yui-guide/days/day6-agent-guide.js',
+    'tutorial/yui-guide/days/day7-graduation-guide.js'
+];
 
-function collectGuideSources() {
-  return fs.readdirSync(daysDir)
-    .filter((fileName) => fileName.endsWith('-guide.js'))
-    .map((fileName) => ({
-      fileName,
-      source: fs.readFileSync(path.join(daysDir, fileName), 'utf8')
-    }));
-}
-
-function collectDurationKeys() {
-  const match = directorSource.match(/const GUIDE_AUDIO_DURATIONS_BY_KEY = Object\.freeze\(\{([\s\S]*?)\n\s*\}\);/);
-  assert.ok(match, 'expected GUIDE_AUDIO_DURATIONS_BY_KEY in director.js');
-  return new Set([...match[1].matchAll(/^\s*([a-zA-Z0-9_]+):\s*Object\.freeze\(\{/gm)].map((entry) => entry[1]));
-}
-
-test('registered Yui guide audio keys have duration configs', () => {
-  const durationKeys = collectDurationKeys();
-  const missing = [];
-
-  for (const { fileName, source } of collectGuideSources()) {
-    const voiceKeys = [...source.matchAll(/voiceKey:\s*'([^']+)'/g)].map((entry) => entry[1]);
-    const mappedKeys = [...source.matchAll(/^\s*([a-zA-Z0-9_]+):\s*audioFilesForKey\('/gm)].map((entry) => entry[1]);
-
-    for (const key of new Set(voiceKeys.concat(mappedKeys))) {
-      if (!durationKeys.has(key)) {
-        missing.push(fileName + ':' + key);
-      }
+function loadGuides() {
+    const context = vm.createContext({ window: {} });
+    const helperPath = path.join(__dirname, 'tutorial/core/guide-helpers.js');
+    const commonPath = path.join(__dirname, 'tutorial/yui-guide/common.js');
+    vm.runInContext(fs.readFileSync(helperPath, 'utf8'), context, { filename: helperPath });
+    vm.runInContext(fs.readFileSync(commonPath, 'utf8'), context, { filename: commonPath });
+    for (const fileName of guideFiles) {
+        const filePath = path.join(__dirname, fileName);
+        vm.runInContext(fs.readFileSync(filePath, 'utf8'), context, { filename: filePath });
     }
-  }
+    return context.window.YuiGuideDailyGuides || {};
+}
 
-  assert.deepEqual(missing, []);
+function collectRoundVoiceKeys(guides) {
+    const keys = [];
+    for (const day of [1, 2, 3, 4, 5, 6, 7]) {
+        const guide = guides[day] || {};
+        const scenes = guide.round && Array.isArray(guide.round.scenes)
+            ? guide.round.scenes
+            : [];
+        for (const scene of scenes) {
+            if (typeof scene.voiceKey === 'string' && scene.voiceKey.trim()) {
+                keys.push({ day, sceneId: scene.id, voiceKey: scene.voiceKey.trim() });
+            }
+        }
+    }
+    return keys;
+}
+
+function mergeAudioFilesByKey(guides) {
+    const result = {};
+    for (const day of [1, 2, 3, 4, 5, 6, 7]) {
+        Object.assign(result, (guides[day] && guides[day].audioFilesByKey) || {});
+    }
+    return result;
+}
+
+test('daily tutorial round scenes have recorded audio files for supported locales', () => {
+    const guides = loadGuides();
+    const audioFilesByKey = mergeAudioFilesByKey(guides);
+    const missing = [];
+
+    for (const entry of collectRoundVoiceKeys(guides)) {
+        const files = audioFilesByKey[entry.voiceKey];
+        const missingKey = `${entry.day}:${entry.sceneId}:${entry.voiceKey}`;
+        for (const locale of supportedRecordedLocales) {
+            const audioFile = files && typeof files[locale] === 'string' ? files[locale] : '';
+            if (!audioFile || !fs.existsSync(path.join(guideAudioRoot, locale, audioFile))) {
+                missing.push(`${missingKey}:${locale}:${audioFile || '<no file>'}`);
+            }
+        }
+    }
+
+    assert.deepEqual(missing, []);
+});
+
+test('daily tutorial audio keys have measured duration config for supported locales', () => {
+    const guides = loadGuides();
+    const audioFilesByKey = mergeAudioFilesByKey(guides);
+    const missing = [];
+
+    for (const key of Object.keys(audioFilesByKey).sort()) {
+        for (const locale of supportedRecordedLocales) {
+            const pattern = new RegExp(`${key}: Object\\.freeze\\(\\{[^}]*\\b${locale}:\\s*\\d+`);
+            if (!pattern.test(directorSource)) {
+                missing.push(`${key}:${locale}`);
+            }
+        }
+    }
+
+    assert.deepEqual(missing, []);
+    assert.match(directorSource, /day1_history_handle:\s*Object\.freeze\(\{\s*zh:\s*5580,/);
+});
+
+test('avatar floating narration duration does not estimate tutorial audio from text', () => {
+    const methodMatch = directorSource.match(/getAvatarFloatingNarrationDurationMs\(voiceKey, text\)\s*\{([\s\S]*?)\n\s*\}/);
+
+    assert.ok(methodMatch, 'expected getAvatarFloatingNarrationDurationMs');
+    assert.match(methodMatch[1], /getGuideVoiceDurationMs/);
+    assert.doesNotMatch(methodMatch[1], /estimateSpeechDurationMs/);
+});
+
+test('day2 proactive chat uses its own recorded line instead of the detail narration', () => {
+    const guides = loadGuides();
+    const day2Scenes = guides[2].round.scenes;
+    const proactiveScene = day2Scenes.find(scene => scene.id === 'day2_proactive_chat');
+
+    assert.equal(proactiveScene.voiceKey, 'takeover_settings_peek_detail_part_2');
+});
+
+test('day2 voice-used intro has recorded audio files for supported locales', () => {
+    const guides = loadGuides();
+    const audioFilesByKey = mergeAudioFilesByKey(guides);
+    const files = audioFilesByKey.avatar_floating_day2_intro_voice_used || {};
+    const missing = [];
+
+    for (const locale of supportedRecordedLocales) {
+        const audioFile = typeof files[locale] === 'string' ? files[locale] : '';
+        if (!audioFile || !fs.existsSync(path.join(guideAudioRoot, locale, audioFile))) {
+            missing.push(`${locale}:${audioFile || '<no file>'}`);
+        }
+    }
+
+    assert.deepEqual(missing, []);
+});
+
+test('day1 round scenes use timeline playback while specialized behavior delegates to operations', () => {
+    const guides = loadGuides();
+    const day1Scenes = guides[1].round.scenes;
+    const timelineSceneIds = day1Scenes
+        .filter(scene => scene.timelinePlayback === true)
+        .map(scene => scene.id);
+
+    assert.equal(timelineSceneIds.length, 9);
+    assert.equal(timelineSceneIds[0], 'day1_intro_activation');
+    assert.equal(timelineSceneIds[1], 'day1_intro_greeting');
+    assert.equal(timelineSceneIds[2], 'day1_capsule_drag_hint');
+    assert.equal(timelineSceneIds[3], 'day1_history_handle');
+    assert.equal(timelineSceneIds[4], 'day1_intro_basic_voice');
+    assert.equal(timelineSceneIds[5], 'day1_screen_entry');
+    assert.equal(timelineSceneIds[6], 'day1_screen_entry_invite');
+    assert.equal(timelineSceneIds[7], 'day1_takeover_capture_cursor');
+    assert.equal(timelineSceneIds[8], 'day1_takeover_return_control');
+});
+
+test('day1 activation and greeting delegate flow-owned timing through timeline operations', () => {
+    const guides = loadGuides();
+    const day1Scenes = guides[1].round.scenes;
+    const activation = day1Scenes.find(scene => scene.id === 'day1_intro_activation');
+    const greeting = day1Scenes.find(scene => scene.id === 'day1_intro_greeting');
+    const activationOperation = activation.timeline.find(event => event.command === 'operation.run');
+    const greetingOperation = greeting.timeline.find(event => event.command === 'operation.run');
+
+    assert.equal(activation.timelinePlayback, true);
+    assert.equal(activation.timelineAudio, false);
+    assert.equal(activation.afterSceneDelayMs, 0);
+    assert.equal(activationOperation.operation, 'day1-intro-activation-flow');
+    assert.equal(activationOperation.blocking, true);
+
+    assert.equal(greeting.timelinePlayback, true);
+    assert.equal(greeting.timelineAudio, false);
+    assert.equal(greeting.afterSceneDelayMs, 0);
+    assert.equal(greetingOperation.operation, 'day1-intro-greeting-flow');
+    assert.equal(greetingOperation.blocking, true);
+});
+
+test('day1 intro basic voice starts showcase from timeline after narration starts', () => {
+    const guides = loadGuides();
+    const scene = guides[1].round.scenes.find(item => item.id === 'day1_intro_basic_voice');
+    const operationCommand = scene.timeline.find(event => event.command === 'operation.run');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.ok(operationCommand);
+    assert.equal(operationCommand.at, 1);
+    assert.equal(operationCommand.operation, 'day1-intro-basic-voice-showcase');
+    assert.equal(operationCommand.blocking, true);
+    assert.equal(scene.interruptible, undefined);
+});
+
+test('day1 takeover capture delegates keyboard-control sequence through timeline operation', () => {
+    const guides = loadGuides();
+    const scene = guides[1].round.scenes.find(item => item.id === 'day1_takeover_capture_cursor');
+    const operationCommand = scene.timeline.find(event => event.command === 'operation.run');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.ok(operationCommand);
+    assert.equal(operationCommand.at, 1);
+    assert.equal(operationCommand.operation, 'day1-managed-scene:takeover_capture_cursor');
+    assert.equal(operationCommand.blocking, true);
+    assert.equal(scene.interruptible, undefined);
+});
+
+test('day2 round scenes use timeline playback after proactive chat closes settings panel from timeline', () => {
+    const guides = loadGuides();
+    const day2Scenes = guides[2].round.scenes;
+    const timelineSceneIds = day2Scenes
+        .filter(scene => scene.timelinePlayback === true)
+        .map(scene => scene.id);
+
+    assert.equal(timelineSceneIds.length, 7);
+    assert.equal(timelineSceneIds[0], 'day2_intro_context');
+    assert.equal(timelineSceneIds[1], 'day2_personalization_space');
+    assert.equal(timelineSceneIds[2], 'day2_personalization_detail');
+    assert.equal(timelineSceneIds[3], 'day2_proactive_chat');
+    assert.equal(timelineSceneIds[4], 'day2_wrap_intro');
+    assert.equal(timelineSceneIds[5], 'day2_wrap_companion');
+    assert.equal(timelineSceneIds[6], 'day2_wrap');
+});
+
+test('day2 personalization detail delegates narration and panel tour to SettingsTourFlow from timeline', () => {
+    const guides = loadGuides();
+    const scene = guides[2].round.scenes.find(item => item.id === 'day2_personalization_detail');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.equal(scene.timelineAudio, false);
+    assert.equal(scene.afterSceneDelayMs, 0);
+    assert.equal(Array.isArray(scene.timeline), true);
+    assert.equal(scene.timeline.length, 1);
+    assert.equal(scene.timeline[0].at, 0);
+    assert.equal(scene.timeline[0].command, 'settingsTour.play');
+    assert.equal(scene.timeline[0].blocking, true);
+});
+
+test('day2 proactive chat closes settings panel only after narration ends from timeline', () => {
+    const guides = loadGuides();
+    const scene = guides[2].round.scenes.find(item => item.id === 'day2_proactive_chat');
+    const closeCommand = scene.timeline.find(event => event.command === 'settingsPanel.close');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.ok(closeCommand);
+    assert.equal(closeCommand.afterAudioEnd, true);
+    assert.equal(closeCommand.panel, 'settings');
+    assert.equal(closeCommand.collapseSidePanels, true);
+    assert.equal(closeCommand.blocking, true);
+});
+
+test('day3 round scenes use timeline playback after galgame wheel rotation has a dedicated command', () => {
+    const guides = loadGuides();
+    const day3Scenes = guides[3].round.scenes;
+    const timelineSceneIds = day3Scenes
+        .filter(scene => scene.timelinePlayback === true)
+        .map(scene => scene.id);
+
+    assert.equal(timelineSceneIds.length, 7);
+    assert.equal(timelineSceneIds[0], 'day3_tool_toggle_intro');
+    assert.equal(timelineSceneIds[1], 'day3_avatar_tools');
+    assert.equal(timelineSceneIds[2], 'day3_avatar_tools_props');
+    assert.equal(timelineSceneIds[3], 'day3_galgame_entry');
+    assert.equal(timelineSceneIds[4], 'day3_galgame_choices');
+    assert.equal(timelineSceneIds[5], 'day3_wrap');
+    assert.equal(timelineSceneIds[6], 'day3_wrap_ready');
+});
+
+test('day4 round scenes use timeline playback after settings tours delegate to SettingsTourFlow', () => {
+    const guides = loadGuides();
+    const day4Scenes = guides[4].round.scenes;
+    const timelineSceneIds = day4Scenes
+        .filter(scene => scene.timelinePlayback === true)
+        .map(scene => scene.id);
+
+    assert.equal(timelineSceneIds.length, 8);
+    assert.equal(timelineSceneIds[0], 'day4_intro_companion');
+    assert.equal(timelineSceneIds[1], 'day4_chat_settings');
+    assert.equal(timelineSceneIds[2], 'day4_model_behavior');
+    assert.equal(timelineSceneIds[3], 'day4_gaze_follow');
+    assert.equal(timelineSceneIds[4], 'day4_privacy_mode');
+    assert.equal(timelineSceneIds[5], 'day4_model_lock');
+    assert.equal(timelineSceneIds[6], 'day4_return_home');
+    assert.equal(timelineSceneIds[7], 'day4_wrap');
+});
+
+test('day4 migrated settings scenes delegate narration and panel tour to SettingsTourFlow from timeline', () => {
+    const guides = loadGuides();
+    const sceneIds = ['day4_chat_settings', 'day4_model_behavior', 'day4_gaze_follow', 'day4_privacy_mode'];
+
+    for (const sceneId of sceneIds) {
+        const scene = guides[4].round.scenes.find(item => item.id === sceneId);
+
+        assert.equal(scene.timelinePlayback, true);
+        assert.equal(scene.timelineAudio, false);
+        assert.equal(scene.afterSceneDelayMs, 0);
+        assert.equal(Array.isArray(scene.timeline), true);
+        assert.equal(scene.timeline.length, 1);
+        assert.equal(scene.timeline[0].at, 0);
+        assert.equal(scene.timeline[0].command, 'settingsTour.play');
+        assert.equal(scene.timeline[0].blocking, true);
+    }
+});
+
+test('day5 round scenes use timeline playback after settings and panic delegate to SettingsTourFlow', () => {
+    const guides = loadGuides();
+    const day5Scenes = guides[5].round.scenes;
+    const timelineSceneIds = day5Scenes
+        .filter(scene => scene.timelinePlayback === true)
+        .map(scene => scene.id);
+
+    assert.equal(timelineSceneIds.length, 4);
+    assert.equal(timelineSceneIds[0], 'day5_character_settings');
+    assert.equal(timelineSceneIds[1], 'day5_character_panic');
+    assert.equal(timelineSceneIds[2], 'day5_memory_entry');
+    assert.equal(timelineSceneIds[3], 'day5_wrap');
+});
+
+test('day5 settings scenes delegate narration, stand-in timing and panic performance to SettingsTourFlow from timeline', () => {
+    const guides = loadGuides();
+    const sceneIds = ['day5_character_settings', 'day5_character_panic'];
+
+    for (const sceneId of sceneIds) {
+        const scene = guides[5].round.scenes.find(item => item.id === sceneId);
+
+        assert.equal(scene.timelinePlayback, true);
+        assert.equal(scene.timelineAudio, false);
+        assert.equal(scene.afterSceneDelayMs, 0);
+        assert.equal(Array.isArray(scene.timeline), true);
+        assert.equal(scene.timeline.length, 1);
+        assert.equal(scene.timeline[0].at, 0);
+        assert.equal(scene.timeline[0].command, 'settingsTour.play');
+        assert.equal(scene.timeline[0].blocking, true);
+        assert.notEqual(scene.avatarStandIn, false);
+    }
+});
+
+test('day6 round scenes use timeline playback after plugin handoff delegates to existing operation flow', () => {
+    const guides = loadGuides();
+    const day6Scenes = guides[6].round.scenes;
+    const timelineSceneIds = day6Scenes
+        .filter(scene => scene.timelinePlayback === true)
+        .map(scene => scene.id);
+
+    assert.equal(timelineSceneIds.length, 8);
+    assert.equal(timelineSceneIds[0], 'day6_intro_agent');
+    assert.equal(timelineSceneIds[1], 'day6_agent_status_master');
+    assert.equal(timelineSceneIds[2], 'day6_plugin_side_panel');
+    assert.equal(timelineSceneIds[3], 'day6_plugin_dashboard');
+    assert.equal(timelineSceneIds[4], 'day6_agent_task_hud');
+    assert.equal(timelineSceneIds[5], 'day6_agent_task_hud_control');
+    assert.equal(timelineSceneIds[6], 'day6_wrap_cleanup');
+    assert.equal(timelineSceneIds[7], 'day6_wrap');
+});
+
+test('day6 agent status opens the Agent panel through timeline operation after narration starts', () => {
+    const guides = loadGuides();
+    const scene = guides[6].round.scenes.find(item => item.id === 'day6_agent_status_master');
+    const operationCommand = scene.timeline.find(event => event.command === 'operation.run');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.ok(operationCommand);
+    assert.equal(operationCommand.at, 1);
+    assert.equal(operationCommand.operation, 'day6-plugin-open-agent-panel-flow');
+    assert.equal(operationCommand.blocking, true);
+});
+
+test('day6 plugin side panel opens management preview through timeline operation after narration starts', () => {
+    const guides = loadGuides();
+    const scene = guides[6].round.scenes.find(item => item.id === 'day6_plugin_side_panel');
+    const operationCommand = scene.timeline.find(event => event.command === 'operation.run');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.ok(operationCommand);
+    assert.equal(operationCommand.at, 1);
+    assert.equal(operationCommand.operation, 'day6-plugin-open-management-panel-flow');
+    assert.equal(operationCommand.blocking, true);
+});
+
+test('day6 plugin dashboard handoff runs through timeline operation after narration starts', () => {
+    const guides = loadGuides();
+    const scene = guides[6].round.scenes.find(item => item.id === 'day6_plugin_dashboard');
+    const operationCommand = scene.timeline.find(event => event.command === 'operation.run');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.ok(operationCommand);
+    assert.equal(operationCommand.at, 1);
+    assert.equal(operationCommand.operation, 'day6-plugin-dashboard-handoff-flow');
+    assert.equal(operationCommand.blocking, true);
+});
+
+test('day6 task HUD keeps cleanupBefore and real HUD preparation on the timeline path', () => {
+    const guides = loadGuides();
+    const scene = guides[6].round.scenes.find(item => item.id === 'day6_agent_task_hud');
+
+    assert.equal(scene.timelinePlayback, true);
+    assert.equal(scene.cleanupBefore, true);
+    assert.equal(scene.operation, 'show-task-hud');
+    assert.equal(scene.target, '#agent-task-hud');
+    assert.equal(scene.cursorAction, 'move');
+});
+
+test('day7 round scenes are opted into timeline playback after the petal cue path is covered', () => {
+    const guides = loadGuides();
+    const day7Scenes = guides[7].round.scenes;
+    const memoryReview = day7Scenes.find(scene => scene.id === 'day7_memory_review');
+    const memoryControl = day7Scenes.find(scene => scene.id === 'day7_memory_control');
+    const graduationWrap = day7Scenes.find(scene => scene.id === 'day7_graduation_wrap');
+
+    assert.equal(memoryReview.timelinePlayback, true);
+    assert.equal(memoryControl.timelinePlayback, true);
+    assert.equal(graduationWrap.timelinePlayback, true);
+});
+
+test('director merges audio maps from all registered daily guides', () => {
+    const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+
+    assert.match(directorSource, /function collectGuideAudioFilesByKey\(\)/);
+    assert.match(directorSource, /window\.YuiGuideDailyGuides/);
+    assert.doesNotMatch(directorSource, /GUIDE_AUDIO_FILES_BY_KEY = Object\.freeze\(Object\.assign\(\{\}, DAY1_HOME_GUIDE\.audioFilesByKey/);
 });

@@ -960,6 +960,75 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
+def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    purges = []
+    notes = []
+
+    class FakeTopicPool:
+        def purge_all_accumulated_signals(self):
+            purges.append("*")
+
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert purges == []
+    assert notes == [('user', 'test_lanlan', 'secret user turn', 'zh-CN')]
+
+
+def test_topic_turn_sink_keeps_current_character_when_activity_is_private():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    purges = []
+    notes = []
+
+    class FakeTopicPool:
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: False,
+    )
+    dispatcher.add_sink(
+        TopicHookTurnSink(
+            pool_factory=lambda: FakeTopicPool(),
+            activity_private_check=lambda: True,
+        )
+    )
+
+    dispatcher.note_user_message(text='private foreground turn', now=1.0)
+
+    assert purges == []
+    assert notes == [('user', 'test_lanlan', 'private foreground turn', 'zh-CN')]
+
+
+def test_activity_guess_loop_does_not_purge_topic_signals_on_private_ticks():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+
+    assert "await self._purge_topic_candidates_for_privacy()" not in source
+    assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
+
+
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────
 
 

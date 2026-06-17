@@ -1385,6 +1385,8 @@
                 if (storageLocationState && storageLocationState.limited) {
                     renderMemoryBrowserLimitedState(storageLocationState);
                 }
+                refreshTutorialCascaderDayLabels();
+                syncTutorialResetCascader();
             });
         }
         window.addEventListener('localechange', function () {

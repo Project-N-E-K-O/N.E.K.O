@@ -166,6 +166,7 @@ from utils.web_scraper import (
 )
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
+from utils.meme_moderation import moderate_meme_image_url
 from utils.logger_config import get_module_logger
 from utils.autostart_prompt_state import (
     get_autostart_prompt_state_response,
@@ -1442,7 +1443,7 @@ async def _record_source_used(
     kind: str,
     title: str = '',
 ) -> None:
-    """Called after a source is successfully consumed: update the in-memory table → prune → persist asynchronously.
+    """Called after a source is consumed or deliberately suppressed: update memory → prune → persist.
 
     Concurrent records are serialized by an asyncio.Lock; persistence goes through
     atomic_write_json_async (fsync + os.replace in the thread pool), so the main
@@ -6302,6 +6303,35 @@ async def proactive_chat(request: Request):
                     if meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_pre_meme_moderation"))
+                        )
+                    moderation = await moderate_meme_image_url(meme_url, fail_closed=False)
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_post_meme_moderation"))
+                        )
+                    if not moderation.allowed:
+                        logger.info(
+                            "[%s]- Phase 1 meme candidate moderation blocked: reason=%s cached=%s url_hash=%s title=%s",
+                            lanlan_name,
+                            moderation.reason,
+                            moderation.cached,
+                            moderation.url_hash,
+                            meme_title[:30],
+                        )
+                        await _record_source_used(
+                            url=meme_url,
+                            kind='image',
+                            title=meme_title,
+                        )
+                        logger.info(
+                            "[%s]- 已记录被 moderation 拦截的表情包 source 衰减历史: url_hash=%s",
+                            lanlan_name,
+                            meme_topic_key[:16],
+                        )
+                        continue
                     single_meme_topic = get_meme_topic_line(
                         proactive_lang,
                         keyword=meme_content.get('keyword', ''),
@@ -6320,7 +6350,7 @@ async def proactive_chat(request: Request):
                     logger.debug(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                     break
                 else:
-                    logger.debug(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 未选出可用表情包候选，跳过表情包话题")
             else:
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         

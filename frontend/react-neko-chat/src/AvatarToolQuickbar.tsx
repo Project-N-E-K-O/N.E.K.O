@@ -47,7 +47,7 @@ export default function AvatarToolQuickbar({
       <div
         id="composer-tool-popover-compact"
         className="avatar-tool-quickbar-scroll"
-        data-avatar-tool-quickbar-compat="true"
+        data-avatar-tool-quickbar-compat
       >
         {activeTools.length > 0 ? activeTools.map((tool) => {
           const label = getToolLabel(tool);

@@ -59,6 +59,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
     _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
     _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
+    _PROJECT_ROOT / "static/tutorial/core/round-prelude-controller.js",
+    _PROJECT_ROOT / "static/tutorial/core/universal-manager.js",
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
     _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/wakeup.js",
