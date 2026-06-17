@@ -18,15 +18,26 @@
     document.removeEventListener('pointerup', onDragEnd, true);
     document.removeEventListener('pointercancel', onDragEnd, true);
     document.removeEventListener('mouseup', onDragEnd, true);
+    document.removeEventListener('pointermove', onResizeMove, true);
+    document.removeEventListener('pointerup', onResizeEnd, true);
+    document.removeEventListener('pointercancel', onResizeEnd, true);
+    document.removeEventListener('mouseup', onResizeEnd, true);
     window.removeEventListener('pointerup', onDragEnd, true);
     window.removeEventListener('mouseup', onDragEnd, true);
+    window.removeEventListener('pointerup', onResizeEnd, true);
+    window.removeEventListener('mouseup', onResizeEnd, true);
     window.removeEventListener('blur', onDragEnd, true);
+    window.removeEventListener('blur', onResizeEnd, true);
     window.removeEventListener('resize', onResize, true);
     restoreDragHitTesting();
+    restoreResizeHitTesting();
     dragState = null;
+    resizeState = null;
   }
 
   var dragState = null;
+  var resizeState = null;
+  var RESIZE_HANDLES = ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw'];
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
@@ -37,6 +48,8 @@
     var rect = win.getBoundingClientRect();
     win.style.left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - rect.width - margin)) + 'px';
     win.style.top = clamp(rect.top, margin, Math.max(margin, window.innerHeight - rect.height - margin)) + 'px';
+    win.style.width = Math.min(rect.width, Math.max(320, window.innerWidth - margin * 2)) + 'px';
+    win.style.height = Math.min(rect.height, Math.max(260, window.innerHeight - margin * 2)) + 'px';
   }
 
   function onDragMove(e) {
@@ -109,6 +122,129 @@
     window.addEventListener('mouseup', onDragEnd, true);
     window.addEventListener('blur', onDragEnd, true);
     e.preventDefault();
+  }
+
+  function getResizeMinSize() {
+    return {
+      width: Math.min(520, Math.max(320, window.innerWidth - 24)),
+      height: Math.min(420, Math.max(260, window.innerHeight - 24))
+    };
+  }
+
+  function restoreResizeHitTesting() {
+    if (!resizeState) return;
+    if (resizeState.frame) resizeState.frame.style.pointerEvents = resizeState.prevFramePointerEvents || '';
+    if (resizeState.handle && resizeState.pointerId != null && typeof resizeState.handle.releasePointerCapture === 'function') {
+      try { resizeState.handle.releasePointerCapture(resizeState.pointerId); } catch (_) { /* pointer already released */ }
+    }
+  }
+
+  function onResizeMove(e) {
+    if (!resizeState) return;
+    if (resizeState.pointerId != null && e.pointerId != null && e.pointerId !== resizeState.pointerId) return;
+    if (e.buttons === 0 && e.pointerType !== 'touch') {
+      onResizeEnd(e);
+      return;
+    }
+    e.preventDefault();
+
+    var edge = resizeState.edge;
+    var dx = e.clientX - resizeState.startX;
+    var dy = e.clientY - resizeState.startY;
+    var min = getResizeMinSize();
+    var margin = resizeState.margin;
+    var viewportRight = window.innerWidth - margin;
+    var viewportBottom = window.innerHeight - margin;
+    var left = resizeState.startLeft;
+    var top = resizeState.startTop;
+    var width = resizeState.startWidth;
+    var height = resizeState.startHeight;
+    var right = resizeState.startLeft + resizeState.startWidth;
+    var bottom = resizeState.startTop + resizeState.startHeight;
+
+    if (edge.indexOf('e') !== -1) {
+      width = clamp(resizeState.startWidth + dx, min.width, viewportRight - left);
+    }
+    if (edge.indexOf('s') !== -1) {
+      height = clamp(resizeState.startHeight + dy, min.height, viewportBottom - top);
+    }
+    if (edge.indexOf('w') !== -1) {
+      left = clamp(resizeState.startLeft + dx, margin, right - min.width);
+      width = right - left;
+    }
+    if (edge.indexOf('n') !== -1) {
+      top = clamp(resizeState.startTop + dy, margin, bottom - min.height);
+      height = bottom - top;
+    }
+
+    resizeState.win.style.left = left + 'px';
+    resizeState.win.style.top = top + 'px';
+    resizeState.win.style.width = width + 'px';
+    resizeState.win.style.height = height + 'px';
+  }
+
+  function onResizeEnd(e) {
+    if (resizeState && e && resizeState.pointerId != null && e.pointerId != null && e.pointerId !== resizeState.pointerId) return;
+    if (resizeState && resizeState.win) resizeState.win.classList.remove('is-resizing');
+    restoreResizeHitTesting();
+    document.removeEventListener('pointermove', onResizeMove, true);
+    document.removeEventListener('pointerup', onResizeEnd, true);
+    document.removeEventListener('pointercancel', onResizeEnd, true);
+    document.removeEventListener('mouseup', onResizeEnd, true);
+    window.removeEventListener('pointerup', onResizeEnd, true);
+    window.removeEventListener('mouseup', onResizeEnd, true);
+    window.removeEventListener('blur', onResizeEnd, true);
+    resizeState = null;
+  }
+
+  function startResize(e, win, handle, edge) {
+    if (e.button !== 0) return;
+    if (dragState) onDragEnd();
+    if (resizeState) onResizeEnd();
+    var rect = win.getBoundingClientRect();
+    var frame = win.querySelector('.neko-social-embed-iframe');
+    resizeState = {
+      win: win,
+      handle: handle,
+      frame: frame,
+      prevFramePointerEvents: frame ? frame.style.pointerEvents : '',
+      pointerId: e.pointerId,
+      edge: edge,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      startWidth: rect.width,
+      startHeight: rect.height,
+      margin: 12
+    };
+    win.style.left = rect.left + 'px';
+    win.style.top = rect.top + 'px';
+    win.style.width = rect.width + 'px';
+    win.style.height = rect.height + 'px';
+    if (frame) frame.style.pointerEvents = 'none';
+    if (typeof handle.setPointerCapture === 'function' && e.pointerId != null) {
+      try { handle.setPointerCapture(e.pointerId); } catch (_) { /* ignore unsupported capture */ }
+    }
+    win.classList.add('is-resizing');
+    document.addEventListener('pointermove', onResizeMove, true);
+    document.addEventListener('pointerup', onResizeEnd, true);
+    document.addEventListener('pointercancel', onResizeEnd, true);
+    document.addEventListener('mouseup', onResizeEnd, true);
+    window.addEventListener('pointerup', onResizeEnd, true);
+    window.addEventListener('mouseup', onResizeEnd, true);
+    window.addEventListener('blur', onResizeEnd, true);
+    e.preventDefault();
+  }
+
+  function appendResizeHandles(win) {
+    RESIZE_HANDLES.forEach(function (edge) {
+      var handle = document.createElement('div');
+      handle.className = 'neko-social-embed-resize-handle neko-social-embed-resize-' + edge;
+      handle.setAttribute('aria-hidden', 'true');
+      handle.addEventListener('pointerdown', function (e) { startResize(e, win, handle, edge); });
+      win.appendChild(handle);
+    });
   }
 
   function onResize() {
@@ -184,6 +320,7 @@
 
     win.appendChild(bar);
     win.appendChild(frame);
+    appendResizeHandles(win);
     backdrop.appendChild(win);
     document.body.appendChild(backdrop);
     keepWindowInViewport(win);
