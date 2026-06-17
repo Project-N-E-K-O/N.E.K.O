@@ -1186,9 +1186,17 @@ class UserActivityTracker:
             from main_logic.topic.pipeline import get_topic_hook_pool
             pool = get_topic_hook_pool()
             if all_characters:
-                pool.purge_all_accumulated_signals()
+                async_purge_all = getattr(pool, "purge_all_accumulated_signals_async", None)
+                if async_purge_all is not None:
+                    await async_purge_all()
+                else:
+                    pool.purge_all_accumulated_signals()
             else:
-                pool.purge_accumulated_signals(self.lanlan_name)
+                async_purge = getattr(pool, "purge_accumulated_signals_async", None)
+                if async_purge is not None:
+                    await async_purge(self.lanlan_name)
+                else:
+                    pool.purge_accumulated_signals(self.lanlan_name)
         except Exception as exc:
             logger.debug("[%s] topic candidate privacy purge failed: %s", self.lanlan_name, exc)
 

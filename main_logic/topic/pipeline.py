@@ -8,6 +8,7 @@ The proactive endpoint reads only the prepared pool.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -174,6 +175,32 @@ def _material_bigram_units(material: Mapping[str, Any]) -> set[str]:
     return {unit for unit in _material_topic_units(material) if len(unit) >= 2}
 
 
+def _topic_fingerprint(value: Any) -> str:
+    text = _clean_text(value, limit=120).lower()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _topic_fingerprints(values: Iterable[Any]) -> set[str]:
+    return {fingerprint for value in values if (fingerprint := _topic_fingerprint(value))}
+
+
+def _stored_topic_fingerprint(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) == 16 and all(char in "0123456789abcdef" for char in text):
+        return text
+    return _topic_fingerprint(text)
+
+
+def _stored_topic_fingerprints(values: Iterable[Any]) -> set[str]:
+    return {
+        fingerprint
+        for value in values
+        if (fingerprint := _stored_topic_fingerprint(value))
+    }
+
+
 async def _default_analyzer(*, lang: str, global_signals: str = ""):
     from main_logic.activity.llm_enrichment import call_topic_candidates
 
@@ -285,7 +312,7 @@ class TopicHookPool:
         self._persist_used_topics()
         self._cancel_trigger(name)
 
-    def _purge_accumulated_signals(self, name: str) -> None:
+    def _purge_accumulated_signals(self, name: str, *, flush: bool = True) -> bool:
         """Drop privacy-tainted candidate evidence without touching pending delivery material.
 
         Kept separate from _consume_accumulated_signals: privacy purge is the
@@ -297,12 +324,21 @@ class TopicHookPool:
         self._dirty.discard(name)
         if changed or had_dirty:
             self._purge_generation[name] += 1
-        if changed:
+        if changed and flush:
             self._signal_store.flush()
+        return changed
+
+    async def _purge_accumulated_signals_async(self, name: str) -> None:
+        if self._purge_accumulated_signals(name, flush=False):
+            await asyncio.to_thread(self._signal_store.flush)
 
     def purge_accumulated_signals(self, lanlan_name: str) -> None:
         """Public privacy-redaction hook for conversation-turn sinks."""
         self._purge_accumulated_signals(str(lanlan_name or "default"))
+
+    async def purge_accumulated_signals_async(self, lanlan_name: str) -> None:
+        """Async privacy-redaction hook for heartbeat paths."""
+        await self._purge_accumulated_signals_async(str(lanlan_name or "default"))
 
     def purge_all_accumulated_signals(self) -> None:
         """Drop privacy-tainted candidate evidence for every known character."""
@@ -310,7 +346,16 @@ class TopicHookPool:
         for name in names:
             self._purge_accumulated_signals(name)
 
-    def _consume_accumulated_signals(self, name: str) -> None:
+    async def purge_all_accumulated_signals_async(self) -> None:
+        """Async privacy-redaction hook for every known character."""
+        names = set(self._signal_store.names()) | set(self._dirty)
+        should_flush = False
+        for name in names:
+            should_flush = self._purge_accumulated_signals(name, flush=False) or should_flush
+        if should_flush:
+            await asyncio.to_thread(self._signal_store.flush)
+
+    def _consume_accumulated_signals(self, name: str, *, flush: bool = True) -> None:
         """Consume analyzed evidence for this process, but keep it durable.
 
         A prepared hook is still only in memory until delivery. Keeping the
@@ -318,26 +363,56 @@ class TopicHookPool:
         instead of losing the opportunity between candidate generation and
         delivery. Privacy purge remains the destructive path.
         """
-        self._signal_store.flush()
+        if flush:
+            self._signal_store.flush()
         self._dirty.discard(name)
+
+    async def _consume_accumulated_signals_async(self, name: str) -> None:
+        self._consume_accumulated_signals(name, flush=False)
+        await asyncio.to_thread(self._signal_store.flush)
 
     def _discard_delivered_signals(
         self,
         name: str,
         material: Mapping[str, Any] | None = None,
+        *,
+        flush: bool = True,
     ) -> None:
         """Drop durable evidence once the pending hook is done."""
         cutoff = None
         if material is not None:
             cutoff = material.get("_signal_cutoff_at")
-        if self._signal_store.clear_until(name, timestamp=cutoff):
+        if self._signal_store.clear_until(name, timestamp=cutoff) and flush:
             self._signal_store.flush()
 
-    def _discard_analyzed_signals(self, name: str, cutoff: float | None) -> None:
-        """Drop durable evidence after analysis proves no hook is pending."""
+    async def _discard_delivered_signals_async(
+        self,
+        name: str,
+        material: Mapping[str, Any] | None = None,
+    ) -> None:
+        cutoff = None
+        if material is not None:
+            cutoff = material.get("_signal_cutoff_at")
         if self._signal_store.clear_until(name, timestamp=cutoff):
+            await asyncio.to_thread(self._signal_store.flush)
+
+    def _discard_analyzed_signals(
+        self,
+        name: str,
+        cutoff: float | None,
+        *,
+        flush: bool = True,
+    ) -> None:
+        """Drop durable evidence after analysis proves no hook is pending."""
+        if self._signal_store.clear_until(name, timestamp=cutoff) and flush:
             self._signal_store.flush()
         self._dirty.discard(name)
+
+    async def _discard_analyzed_signals_async(self, name: str, cutoff: float | None) -> None:
+        changed = self._signal_store.clear_until(name, timestamp=cutoff)
+        self._dirty.discard(name)
+        if changed:
+            await asyncio.to_thread(self._signal_store.flush)
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
         cleaned = _clean_text(text)
@@ -400,7 +475,7 @@ class TopicHookPool:
     ) -> None:
         name = str(lanlan_name or "default")
         if _privacy_mode_active():
-            self._purge_accumulated_signals(name)
+            await self._purge_accumulated_signals_async(name)
             return
         seen_seq = self._seq.get(name, 0)
         seen_purge_generation = self._purge_generation.get(name, 0)
@@ -453,7 +528,7 @@ class TopicHookPool:
             # before storing, else candidate material collected across a
             # privacy interval could survive. Pending delivery material from a
             # previous non-private snapshot is intentionally left alone.
-            self._purge_accumulated_signals(name)
+            await self._purge_accumulated_signals_async(name)
             logger.info("[%s] topic material discarded: privacy turned on during analysis", name)
             return
         cleaned = self._filter_available_materials(name, cleaned)
@@ -469,12 +544,12 @@ class TopicHookPool:
                     name,
                     idx,
                     _material_log_preview(material),
-                )
+            )
             self._schedule_trigger(name, cleaned[0], topic_lang)
-            self._consume_accumulated_signals(name)
+            await self._consume_accumulated_signals_async(name)
         else:
             logger.info("[%s] topic material ready: none", name)
-            self._discard_analyzed_signals(name, signal_cutoff_at)
+            await self._discard_analyzed_signals_async(name, signal_cutoff_at)
 
     def _schedule(self, name: str) -> None:
         # Candidate analysis is driven by the activity heartbeat via
@@ -500,7 +575,7 @@ class TopicHookPool:
                 set(self._signal_store.names()) | set(self._dirty)
             )
             for name in names:
-                self._purge_accumulated_signals(name)
+                await self._purge_accumulated_signals_async(name)
             return
         current_time = float(now if now is not None else time.time())
         if lanlan_name is not None:
@@ -627,7 +702,7 @@ class TopicHookPool:
             if self._daily_quota_reached(name) or self._topic_was_used_today(name, current_material):
                 current_material["status"] = "skipped"
                 self._materials[name] = []
-                self._discard_delivered_signals(name, current_material)
+                await self._discard_delivered_signals_async(name, current_material)
                 logger.info("[%s] topic material trigger skipped: already used or daily quota reached", name)
                 return
             # "Search first, then chat": once the delivery bridge looks open,
@@ -668,7 +743,7 @@ class TopicHookPool:
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
             self._mark_topic_used(name, current_material)
-            self._discard_delivered_signals(name, current_material)
+            await self._discard_delivered_signals_async(name, current_material)
             logger.info(
                 "[%s] topic material triggered once: %s",
                 name,
@@ -813,14 +888,22 @@ class TopicHookPool:
         interest = _clean_text(material.get("interest"), limit=90)
         keywords = _material_keywords(material)
         bigram_units = _material_bigram_units(material)
+        hook_id_hash = _topic_fingerprint(hook_id)
+        keyword_hashes = _topic_fingerprints(keywords)
+        bigram_hashes = _topic_fingerprints(bigram_units)
         for record in self._prune_used_topics(name):
             if hook_id and record.get("hook_id") == hook_id:
+                return True
+            if hook_id_hash and record.get("hook_id_hash") == hook_id_hash:
                 return True
             if interest and record.get("interest") == interest:
                 return True
             # Primary: a shared LLM keyword means the same topic.
             record_keywords = set(record.get("keywords") or ())
             if keywords and record_keywords and (keywords & record_keywords):
+                return True
+            record_keyword_hashes = set(record.get("keyword_hashes") or ())
+            if keyword_hashes and record_keyword_hashes and (keyword_hashes & record_keyword_hashes):
                 return True
             # Parallel ngram veto: runs even when keywords miss. The ngram view
             # is noisy, so it only vetoes on a strict AND — sim >= 0.6 AND >= 2
@@ -831,6 +914,15 @@ class TopicHookPool:
                 if shared >= 2 and _topic_similarity(bigram_units, record_bigrams) >= 0.6:
                     logger.info(
                         "[%s] topic dedup veto by ngram fallback (keyword miss): shared=%d interest=%s",
+                        name, shared, interest,
+                    )
+                    return True
+            record_bigram_hashes = set(record.get("bigram_hashes") or ())
+            if bigram_hashes and record_bigram_hashes:
+                shared = len(bigram_hashes & record_bigram_hashes)
+                if shared >= 2 and _topic_similarity(bigram_hashes, record_bigram_hashes) >= 0.6:
+                    logger.info(
+                        "[%s] topic dedup veto by persisted ngram fingerprint: shared=%d interest=%s",
                         name, shared, interest,
                     )
                     return True
@@ -857,9 +949,12 @@ class TopicHookPool:
             {
                 "used_at": float(material.get("used_at") or time.time()),
                 "hook_id": str(material.get("hook_id") or "").strip(),
+                "hook_id_hash": _topic_fingerprint(material.get("hook_id")),
                 "interest": _clean_text(material.get("interest"), limit=90),
                 "keywords": sorted(_material_keywords(material)),
+                "keyword_hashes": sorted(_topic_fingerprints(_material_keywords(material))),
                 "bigram_units": sorted(_material_bigram_units(material)),
+                "bigram_hashes": sorted(_topic_fingerprints(_material_bigram_units(material))),
             }
         )
         self._persist_used_topics()
@@ -887,7 +982,24 @@ class TopicHookPool:
                     used_at = float(entry.get("used_at"))
                 except (TypeError, ValueError):
                     continue
-                loaded.append({"used_at": used_at})
+                loaded.append(
+                    {
+                        "used_at": used_at,
+                        "hook_id_hash": _stored_topic_fingerprint(
+                            entry.get("hook_id_hash") or entry.get("hook_id")
+                        ),
+                        "keyword_hashes": sorted(
+                            _stored_topic_fingerprints(
+                                entry.get("keyword_hashes") or entry.get("keywords") or []
+                            )
+                        ),
+                        "bigram_hashes": sorted(
+                            _stored_topic_fingerprints(
+                                entry.get("bigram_hashes") or entry.get("bigram_units") or []
+                            )
+                        ),
+                    }
+                )
             if loaded:
                 self._used_topics[safe_name].extend(loaded)
         for name in list(self._used_topics):
@@ -901,7 +1013,22 @@ class TopicHookPool:
             "version": 1,
             "characters": {
                 name: [
-                    {"used_at": float(record.get("used_at") or 0.0)}
+                    {
+                        "used_at": float(record.get("used_at") or 0.0),
+                        "hook_id_hash": _stored_topic_fingerprint(
+                            record.get("hook_id_hash") or record.get("hook_id")
+                        ),
+                        "keyword_hashes": sorted(
+                            _stored_topic_fingerprints(
+                                record.get("keyword_hashes") or record.get("keywords") or []
+                            )
+                        ),
+                        "bigram_hashes": sorted(
+                            _stored_topic_fingerprints(
+                                record.get("bigram_hashes") or record.get("bigram_units") or []
+                            )
+                        ),
+                    }
                     for record in records
                     if float(record.get("used_at") or 0.0) > 0
                 ]

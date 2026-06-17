@@ -887,7 +887,13 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     async def fake_analyzer(*, lang, global_signals):
         nonlocal analyzer_calls
         analyzer_calls += 1
-        return [{"interest": "重启后不该立刻重投的话题", "relevance": 90}]
+        return [
+            {
+                "interest": "重启后不该立刻重投的话题",
+                "keywords": ["跨重启同题"],
+                "relevance": 90,
+            }
+        ]
 
     async def fake_trigger(*, lanlan_name, material, lang):
         delivered.append(material["interest"])
@@ -901,7 +907,7 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
         candidate_quiet_seconds=0,
         trigger_delay_seconds=0,
         min_user_turns_for_topic=1,
-        daily_topic_limit=1,
+        daily_topic_limit=2,
         signal_store_path=path,
     )
     pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
@@ -912,10 +918,13 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     used_path = path.with_name("topic_signals.used_topics.json")
     used_payload = json.loads(used_path.read_text(encoding="utf-8"))
     assert used_payload["characters"]["妮可"][0]["used_at"] > 0
-    assert "重启后不该立刻重投的话题" not in used_path.read_text(encoding="utf-8")
+    used_text = used_path.read_text(encoding="utf-8")
+    assert used_payload["characters"]["妮可"][0]["keyword_hashes"]
+    assert "重启后不该立刻重投的话题" not in used_text
+    assert "跨重启同题" not in used_text
 
     store = TopicSignalStore(min_user_turns_for_topic=1, persistence_path=path)
-    store.note_turn("妮可", actor="user", text="重启后仍然残留的一条新候选证据", now=time.time())
+    store.note_turn("妮可", actor="user", text="重启后仍然残留的同题候选证据", now=time.time())
     store.flush()
 
     restarted = TopicHookPool(
@@ -926,13 +935,13 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
         candidate_quiet_seconds=0,
         trigger_delay_seconds=0,
         min_user_turns_for_topic=1,
-        daily_topic_limit=1,
+        daily_topic_limit=2,
         signal_store_path=path,
     )
     await restarted.process_ready_topics(now=time.time() + 120, lang="zh-CN")
     await asyncio.sleep(0.02)
 
-    assert analyzer_calls == 1
+    assert analyzer_calls == 2
     assert delivered == ["重启后不该立刻重投的话题"]
     assert restarted.get_ready_materials("妮可") == []
 
@@ -982,6 +991,10 @@ async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_p
     pool.note_user_message("妮可", "这段候选证据投递完成后不该继续留在磁盘", lang="zh-CN")
     await pool.process_now("妮可")
     await asyncio.wait_for(delivered.wait(), timeout=1.0)
+    for _ in range(20):
+        if not pool._trigger_tasks.get("妮可"):
+            break
+        await asyncio.sleep(0.01)
 
     reloaded = TopicSignalStore(
         min_user_turns_for_topic=1,
