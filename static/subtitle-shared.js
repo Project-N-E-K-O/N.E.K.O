@@ -1138,6 +1138,7 @@
 
         var api = options && options.api;
         var host = options && options.host ? options.host : 'web';
+        var windowEdgeInset = host === 'window' ? Math.max(0, Number(options && options.windowEdgeInset) || 0) : 0;
         var resizeState = null;
 
         function isPanelLocked() {
@@ -1183,8 +1184,8 @@
                 }
                 if (typeof api.setSize === 'function') {
                     api.setSize(
-                        result.bounds.width,
-                        result.bounds.height,
+                        result.bounds.width + windowEdgeInset * 2,
+                        result.bounds.height + windowEdgeInset * 2,
                         {
                             panelBounds: result.bounds
                         }

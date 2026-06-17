@@ -2424,6 +2424,9 @@ def test_subtitle_window_handles_stay_inside_native_window_hit_margin(mock_page:
                 dragStop: () => {},
                 enableInteraction: () => {},
                 disableInteraction: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -2513,6 +2516,9 @@ def test_subtitle_window_size_bridge_expands_only_native_bounds(mock_page: Page)
                 dragStop: () => {},
                 enableInteraction: () => {},
                 disableInteraction: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -2550,6 +2556,101 @@ def test_subtitle_window_size_bridge_expands_only_native_bounds(mock_page: Page)
 
 
 @pytest.mark.frontend
+def test_subtitle_window_fallback_resize_includes_native_edge_insets(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__setSizeCalls = [];
+            window.__settingsChanges = [];
+            window.nekoSubtitle = {
+                setSize: (w, h, options) => window.__setSizeCalls.push({
+                    width: w,
+                    height: h,
+                    panelBounds: options && options.panelBounds,
+                }),
+                changeSettings: (change) => window.__settingsChanges.push(change),
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 260,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.evaluate(
+        """
+        () => {
+            window.__controller = window.nekoSubtitleShared.initSubtitleUI({
+                host: 'window',
+                api: window.nekoSubtitle,
+                windowEdgeInset: 6,
+                propagateSetting: window.nekoSubtitle.changeSettings,
+            });
+        }
+        """
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const display = document.getElementById('subtitle-display');
+            const handle = document.querySelector('.subtitle-resize-se');
+            handle.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: 260,
+                clientY: 68,
+            }));
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: 300,
+                clientY: 90,
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                clientX: 300,
+                clientY: 90,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                inlineWidth: display.style.width,
+                inlineHeight: display.style.height,
+                setSizeCalls: window.__setSizeCalls,
+                settingsChanges: window.__settingsChanges,
+            };
+        }
+        """
+    )
+
+    assert result["inlineWidth"] == "300px"
+    assert result["inlineHeight"] == "90px"
+    assert result["setSizeCalls"][-1] == {
+        "width": 312,
+        "height": 102,
+        "panelBounds": {"width": 300, "height": 90},
+    }
+    assert result["settingsChanges"][-1]["type"] == "bounds"
+    assert result["settingsChanges"][-1]["value"] == {"width": 300, "height": 90}
+
+
+@pytest.mark.frontend
 def test_subtitle_window_skips_duplicate_size_bridge_updates(mock_page: Page):
     _open_subtitle_harness(
         mock_page,
@@ -2578,6 +2679,9 @@ def test_subtitle_window_skips_duplicate_size_bridge_updates(mock_page: Page):
                 dragStop: () => {},
                 enableInteraction: () => {},
                 disableInteraction: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 600,
@@ -2670,6 +2774,9 @@ def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_
                 dragStop: () => {},
                 enableInteraction: () => {},
                 disableInteraction: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -2783,6 +2890,9 @@ def test_subtitle_window_left_and_top_resize_use_native_bridge_without_carrier_b
                 dragStop: () => {},
                 enableInteraction: () => {},
                 disableInteraction: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -3072,6 +3182,9 @@ def test_subtitle_window_boundary_resize_uses_native_window_resize_bounds(
                 changeSettings: (change) => window.__propagatedSubtitleSettings.push(change),
                 dragStart: () => {},
                 dragStop: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -3231,6 +3344,9 @@ def test_subtitle_window_native_resize_keeps_panel_size_until_main_frame_arrives
                 changeSettings: () => {},
                 dragStart: () => {},
                 dragStop: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -3342,6 +3458,9 @@ def test_subtitle_window_resize_handles_do_not_start_window_drag(
                 changeSettings: () => {},
                 dragStart: () => window.__dragCalls.push('start'),
                 dragStop: () => window.__dragCalls.push('stop'),
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -3434,6 +3553,9 @@ def test_subtitle_window_drag_starts_only_after_non_edge_movement(
                 changeSettings: () => {},
                 dragStart: () => window.__dragCalls.push('start'),
                 dragStop: () => window.__dragCalls.push('stop'),
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
             };
             window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
                 width: 260,
@@ -4397,6 +4519,9 @@ def test_subtitle_shared_cleanup_and_owner_guard_contracts():
     assert "width = Math.max(MIN_PANEL_WIDTH, Math.min(node.offsetWidth + 8, maxWidth));" in shared_script
     assert "if (refs.settingsBtn)" in shared_script
     assert "if (refs.settingsBtn && refs.settingsPanel)" not in shared_script
+    assert "var windowEdgeInset = host === 'window' ? Math.max(0, Number(options && options.windowEdgeInset) || 0) : 0;" in shared_script
+    assert "result.bounds.width + windowEdgeInset * 2" in shared_script
+    assert "result.bounds.height + windowEdgeInset * 2" in shared_script
     assert "handleMouseUp();" in shared_script
     assert "stopDrag();" in shared_script
     assert "document.body.style.userSelect = '';" in shared_script
@@ -4414,6 +4539,7 @@ def test_subtitle_shared_cleanup_and_owner_guard_contracts():
     assert "pushNativeResizeCursor(e);" in subtitle_window_script
     assert "pushNativeResizeCursor(e.touches[0]);" in subtitle_window_script
     assert "cursor: getEventScreenPoint(e)" in subtitle_window_script
+    assert "windowEdgeInset: DESKTOP_WINDOW_EDGE_INSET" in subtitle_window_script
 
 
 @pytest.mark.frontend

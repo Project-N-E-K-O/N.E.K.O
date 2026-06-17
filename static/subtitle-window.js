@@ -822,6 +822,7 @@
         var uiOptions = {
             host: 'window',
             api: window.nekoSubtitle,
+            windowEdgeInset: DESKTOP_WINDOW_EDGE_INSET,
             propagateSetting: propagateSubtitleSetting,
             onSettingsApplied: function(state, refs, detail) {
                 var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
