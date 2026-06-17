@@ -228,6 +228,21 @@ def _cache_set(cache_key: str, result: MemeModerationResult) -> None:
     _cache[cache_key] = (time.monotonic(), replace(result, cached=False))
 
 
+def _moderation_policy_cache_key(
+    *,
+    url_hash: str,
+    provider: str,
+    model: str,
+    base_url: str,
+) -> str:
+    threshold_parts = [
+        f"{category}:{_score_threshold_for(category, default_threshold):.6f}"
+        for category, default_threshold in sorted(_DEFAULT_BLOCK_SCORE_THRESHOLDS.items())
+    ]
+    policy = "|".join([url_hash, provider, model, base_url, *threshold_parts])
+    return _url_hash(policy)
+
+
 def _image_payload_cache_get(cache_key: str, ttl_seconds: float) -> str | None:
     item = _image_payload_cache.get(cache_key)
     if not item:
@@ -247,7 +262,7 @@ def _image_payload_cache_set(cache_key: str, payload: str) -> None:
 
 
 def _api_key_from_env() -> str:
-    return _read_env("UNIAPI_API_KEY") or _read_env("MEME_MODERATION_API_KEY")
+    return _read_env("MEME_MODERATION_API_KEY") or _read_env("UNIAPI_API_KEY")
 
 
 def _read_config_text(config: dict[str, Any], key: str) -> str:
@@ -565,8 +580,19 @@ async def moderate_meme_image_url(
         "MEME_MODERATION_CACHE_TTL_SECONDS",
         _DEFAULT_CACHE_TTL_SECONDS,
     )
+    base_url = (
+        _read_env("UNIAPI_BASE_URL")
+        or _read_config_text(moderation_config, "base_url")
+        or _DEFAULT_UNIAPI_BASE_URL
+    ).rstrip("/")
 
-    cached = _cache_get(full_hash, ttl_seconds)
+    verdict_cache_key = _moderation_policy_cache_key(
+        url_hash=full_hash,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+    )
+    cached = _cache_get(verdict_cache_key, ttl_seconds)
     if cached is not None:
         return cached
 
@@ -589,11 +615,6 @@ async def moderate_meme_image_url(
             url_hash=short_hash,
         )
 
-    base_url = (
-        _read_env("UNIAPI_BASE_URL")
-        or _read_config_text(moderation_config, "base_url")
-        or _DEFAULT_UNIAPI_BASE_URL
-    ).rstrip("/")
     endpoint = f"{base_url}/moderations"
     try:
         moderation_image_url = await _build_moderation_image_url(
@@ -770,5 +791,5 @@ async def moderate_meme_image_url(
     # Cache only allowed moderation results. Blocked images should be rechecked
     # after provider or local score thresholds change instead of staying stuck.
     if result.allowed:
-        _cache_set(full_hash, result)
+        _cache_set(verdict_cache_key, result)
     return result

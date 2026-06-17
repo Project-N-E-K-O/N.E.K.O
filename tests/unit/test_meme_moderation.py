@@ -300,6 +300,23 @@ def test_env_endpoint_and_model_override_api_providers_fallback(monkeypatch):
     assert client.post_calls[0]["json"]["model"] == "env-model"
 
 
+def test_moderation_specific_env_key_precedes_generic_uniapi_key(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setenv("NEKO_UNIAPI_API_KEY", "generic-key")
+    monkeypatch.setenv("NEKO_MEME_MODERATION_API_KEY", "moderation-key")
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+        )
+    )
+
+    assert result.allowed is True
+    assert client.post_calls[0]["headers"]["Authorization"] == "Bearer moderation-key"
+
+
 def test_wrapped_config_file_key_is_supported(monkeypatch):
     use_direct_url_payload(monkeypatch)
     write_config({"meme_moderation_config": {"api_key": "wrapped-key"}})
@@ -671,6 +688,36 @@ def test_successful_results_are_cached(monkeypatch):
     assert first.cached is False
     assert second.cached is True
     assert len(client.post_calls) == 1
+
+
+def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "policy-one")
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "policy-two")
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert first.cached is False
+    assert second.cached is False
+    assert len(client.post_calls) == 2
+    assert client.post_calls[0]["json"]["model"] == "policy-one"
+    assert client.post_calls[1]["json"]["model"] == "policy-two"
 
 
 def test_api_gpt_ge_defaults_to_data_url(monkeypatch):
