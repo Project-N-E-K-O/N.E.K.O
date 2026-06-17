@@ -1061,6 +1061,23 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
+    def append_icebreaker_context(self, role: str, text: str) -> bool:
+        """Append guide icebreaker context to the active project session history."""
+        content = str(text or "").strip()
+        if not content:
+            return False
+        if not self.session or not hasattr(self.session, "_conversation_history"):
+            return False
+
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role in {"assistant", "ai", "model"}:
+            message = AIMessage(content=content)
+        else:
+            message = HumanMessage(content=content)
+
+        self.session._conversation_history.append(message)
+        return True
+
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
         return bool(getattr(self, "goodbye_silent", False))

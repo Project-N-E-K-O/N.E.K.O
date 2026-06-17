@@ -52,12 +52,12 @@
             await toPromise(() => this.beginAvatarOverride()).catch((error) => {
                 this.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，继续教程:', error);
             }).finally(() => {
-                this.revealPrepared();
+                return toPromise(() => this.revealPrepared());
             });
 
             await toPromise(() => this.ensureVisible(sceneId)).catch((error) => {
                 this.warn('[Tutorial] 悬浮窗教程确认 YUI 模型失败，继续教程:', error);
-                this.revealPrepared();
+                return toPromise(() => this.revealPrepared());
             });
 
             await toPromise(() => this.sleep(delayMs));

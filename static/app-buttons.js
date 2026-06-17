@@ -1908,6 +1908,13 @@
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
             if (micButton.disabled || S.isRecording) return;
+            if (mod._textSessionStartPromise) {
+                window.showStatusToast(
+                    window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...',
+                    3000
+                );
+                return;
+            }
             if (micButton.classList.contains('active')) return;
 
             // Immediately activate
@@ -2654,6 +2661,12 @@
                     }
 
                     await mod._textSessionStartPromise;
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    S.sessionStartedResolver = null;
+                    S.sessionStartedRejecter = null;
                 } catch (error) {
                     console.error(window.t('console.startTextSessionFailed'), error);
                     window.hideVoicePreparingToast();

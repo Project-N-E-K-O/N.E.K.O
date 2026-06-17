@@ -287,13 +287,16 @@
                     return;
                 }
                 restoreOpacityTargets();
-                if (transition && typeof transition.done === 'function') {
-                    await transition.done();
-                }
-                if (transition && typeof transition.finish === 'function') {
-                    await transition.finish();
-                }
             } finally {
+                if (transition && !transition.__yuiGuideFinished) {
+                    transition.__yuiGuideFinished = true;
+                    if (typeof transition.done === 'function') {
+                        await transition.done();
+                    }
+                    if (typeof transition.finish === 'function') {
+                        await transition.finish();
+                    }
+                }
                 restoreOpacityTargets();
             }
         }
