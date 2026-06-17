@@ -129,7 +129,9 @@
     class HomeTutorialPromptLifecycleStateStore {
         constructor(stateRef, heartbeatTokenFactory) {
             this.state = stateRef;
-            this.createHeartbeatToken = heartbeatTokenFactory;
+            this.createHeartbeatToken = typeof heartbeatTokenFactory === 'function'
+                ? heartbeatTokenFactory
+                : function noopHeartbeatToken() { return ''; };
         }
 
         setPromptDrivenTutorialToken(token) {
@@ -189,7 +191,9 @@
             };
 
             if (this.hasReplaySensitiveHeartbeatMetrics(snapshot)) {
-                snapshot.heartbeatToken = this.createHeartbeatToken();
+                snapshot.heartbeatToken = typeof this.createHeartbeatToken === 'function'
+                    ? this.createHeartbeatToken()
+                    : '';
             }
 
             return snapshot;

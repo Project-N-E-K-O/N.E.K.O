@@ -2604,15 +2604,17 @@
         "enable": "字幕翻译",
         "enableAriaLabel": "字幕翻译开关",
         "markdownPlaceholder": "[格式化内容]",
+        "display": {
+            "emptyHint": "暂无翻译内容"
+        },
         "settings": {
             "targetLang": "目标语言",
-            "opacity": "不透明度",
-            "dragAnywhere": "整体拖动",
-            "size": "大小",
-            "sizeSmall": "小",
-            "sizeMedium": "中",
-            "sizeLarge": "大",
-            "settingsBtn": "字幕设置"
+            "opacity": "背景不透明度",
+            "passthroughInteraction": "透明区域穿透",
+            "settingsBtn": "字幕设置",
+            "lockPosition": "锁定位置",
+            "unlockPosition": "解锁位置",
+            "closePanel": "关闭翻译面板"
         }
     },
     "viewer": {

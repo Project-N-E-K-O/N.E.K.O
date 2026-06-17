@@ -2604,15 +2604,17 @@
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
         "markdownPlaceholder": "[整形済みコンテンツ]",
+        "display": {
+            "emptyHint": "翻訳はまだありません"
+        },
         "settings": {
             "targetLang": "翻訳先の言語",
-            "opacity": "不透明度",
-            "dragAnywhere": "全体ドラッグ",
-            "size": "サイズ",
-            "sizeSmall": "小",
-            "sizeMedium": "中",
-            "sizeLarge": "大",
-            "settingsBtn": "字幕設定"
+            "opacity": "背景の不透明度",
+            "passthroughInteraction": "透明領域をクリック透過",
+            "settingsBtn": "字幕設定",
+            "lockPosition": "位置をロック",
+            "unlockPosition": "位置ロックを解除",
+            "closePanel": "翻訳パネルを閉じる"
         }
     },
     "viewer": {

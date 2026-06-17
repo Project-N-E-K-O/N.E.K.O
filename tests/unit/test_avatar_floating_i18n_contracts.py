@@ -85,6 +85,13 @@ def test_avatar_floating_scene_text_keys_exist_for_all_supported_locales():
         assert untranslated == []
 
 
+def test_avatar_floating_reset_toast_keys_exist_for_all_supported_locales():
+    for locale in ("zh-CN", "zh-TW", "en", "ja", "ru", "ko", "es", "pt"):
+        data = _locale(locale)
+        assert _get(data, "tutorial.reset.daySuccess")
+        assert _get(data, "tutorial.reset.dayFailed")
+
+
 def test_day2_voice_used_intro_uses_matching_audio_key():
     day2_source = (ROOT / "static" / "tutorial/yui-guide/days/day2-screen-voice-guide.js").read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
@@ -138,8 +145,5 @@ def test_day2_voice_used_intro_uses_matching_audio_key():
         assert _get(_locale(locale), voice_used_key) == expected
     assert _get(_locale("es"), voice_used_key) != voice_used_copy["en"]
     assert _get(_locale("pt"), voice_used_key) != voice_used_copy["en"]
-    generic_scene_block = director_source.split(
-        "if (Number(day) === 1 && this.isDay1SpecialAvatarFloatingScene(scene)",
-        1,
-    )[1].split("const introChatSpotlightTarget", 1)[0]
-    assert "const voiceKey = this.resolveAvatarFloatingSceneVoiceKey(scene);" in generic_scene_block
+    assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
+    assert "return 'avatar_floating_day2_intro_voice_used';" in director_source

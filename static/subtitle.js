@@ -4,10 +4,10 @@
 // ──────────
 //   1. 一个 AI 回合（turn）= 一段连续讲话，可能被切成多个聊天气泡。
 //   2. 字幕跨气泡持久显示，不会被新气泡清空。
-//   3. turn 进行中：流式原文实时写入字幕（updateSubtitleStreamingText）。
-//   4. turn 结束：调用 /api/translate；如果需要翻译则用译文替换原文，
-//      否则保留原文。
-//   5. 下一个 turn-start 才清空字幕，开始下一段。
+//   3. turn 进行中：流式原文只进入当前 turn 缓存和增量翻译队列。
+//   4. 字幕面板只写入译文或结构化占位符；译文回来前沿用旧链路空白等待，不预览原文。
+//   5. turn 结束：补齐剩余句子的翻译队列，不把整段原文写入面板。
+//   6. 下一个 turn-start 才清空字幕，开始下一段。
 //
 // 翻译开关由 React 聊天窗口的 composer 按钮控制，状态走 window.subtitleBridge。
 // 旧的字幕提示气泡（subtitle-prompt-message）已下线，相关 prompt/detect 代码全部移除。
@@ -28,6 +28,8 @@ function normalizeLanguageCode(lang) {
     if (value.indexOf('en') === 0) return 'en';
     if (value.indexOf('ko') === 0) return 'ko';
     if (value.indexOf('ru') === 0) return 'ru';
+    if (value.indexOf('es') === 0) return 'es';
+    if (value.indexOf('pt') === 0) return 'pt';
     return 'zh';
 }
 
@@ -82,8 +84,10 @@ function syncSubtitleRenderState(source) {
         userLanguage: userLanguage || (currentSettings && currentSettings.userLanguage) || 'zh',
         uiLocale: currentSettings ? currentSettings.uiLocale : (SubtitleShared.getCurrentUiLocale ? SubtitleShared.getCurrentUiLocale() : 'zh-CN'),
         subtitleOpacity: currentSettings ? currentSettings.subtitleOpacity : 95,
-        subtitleDragAnywhere: currentSettings ? currentSettings.subtitleDragAnywhere : false,
-        subtitleSize: currentSettings ? currentSettings.subtitleSize : 'medium'
+        subtitlePanelBounds: currentSettings ? currentSettings.subtitlePanelBounds : { width: 600, height: 68 },
+        subtitlePanelPosition: currentSettings ? currentSettings.subtitlePanelPosition : null,
+        subtitlePanelLocked: currentSettings ? !!currentSettings.subtitlePanelLocked : false,
+        subtitleInteractionPassthrough: currentSettings ? currentSettings.subtitleInteractionPassthrough !== false : true
     }, { source: source || 'subtitle-core' });
 }
 
@@ -295,24 +299,25 @@ function writeSubtitleText(text) {
         if (!display) return;
         var preset = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
             ? SubtitleShared.getSettings()
-            : { subtitleSize: 'medium' };
-        var presetSize = SubtitleShared && typeof SubtitleShared.getSizePreset === 'function'
-            ? SubtitleShared.getSizePreset(preset.subtitleSize)
-            : { width: display.offsetWidth || 600, minHeight: parseInt(display.style.minHeight, 10) || 80 };
+            : { subtitlePanelBounds: { width: display.offsetWidth || 600, height: display.offsetHeight || 68 } };
+        var panelBounds = SubtitleShared && typeof SubtitleShared.getPanelBounds === 'function'
+            ? SubtitleShared.getPanelBounds(preset.subtitlePanelBounds)
+            : { width: display.offsetWidth || 600, height: display.offsetHeight || 68 };
         var layout = SubtitleShared && typeof SubtitleShared.measureSubtitleLayout === 'function'
             ? SubtitleShared.measureSubtitleLayout({
                 mode: 'web',
                 text: text,
-                presetKey: preset.subtitleSize,
-                maxWidth: presetSize.width,
-                minHeight: presetSize.minHeight,
-                maxHeight: presetSize.maxHeight,
-                baseFont: presetSize.fontSize,
-                availableWidth: Math.max(0, (display.clientWidth || presetSize.width) - 48),
-                availableHeight: presetSize.maxHeight
+                panelBounds: panelBounds,
+                maxWidth: panelBounds.width,
+                minHeight: panelBounds.height,
+                maxHeight: panelBounds.height,
+                baseFont: 17,
+                // Keep in sync with PANEL_TEXT_HORIZONTAL_RESERVE in subtitle-shared.js.
+                availableWidth: Math.max(0, (display.clientWidth || panelBounds.width) - 110),
+                availableHeight: panelBounds.height
             })
             : { fontSize: 17 };
-        subtitleText.style.fontSize = layout.fontSize < presetSize.fontSize ? layout.fontSize + 'px' : '';
+        subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }
@@ -336,6 +341,14 @@ function resetIncrementalTranslationState() {
         incrementalAbortController.abort();
         incrementalAbortController = null;
     }
+}
+
+function cancelPendingSubtitleTranslations() {
+    if (currentTranslateAbortController) {
+        currentTranslateAbortController.abort();
+        currentTranslateAbortController = null;
+    }
+    resetIncrementalTranslationState();
 }
 
 function resumeIncrementalTranslationQueue() {
@@ -443,6 +456,38 @@ function updateIncrementalDisplay() {
     var fullText = incrementalTranslatedSentences.join(' ');
     ensureSubtitleVisibleIfEnabled();
     writeSubtitleText(fullText);
+}
+
+function showSubtitleWithoutOriginalAndRestartCurrentTurn() {
+    if (!isSubtitleTranslationOwner()) {
+        syncSubtitleRenderState('subtitle-non-owner-skip-show');
+        return;
+    }
+
+    if (currentTurnIsStructured) {
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(getStructuredPlaceholder());
+        return;
+    }
+
+    var incrementalText = incrementalTranslatedSentences.join(' ');
+    if (incrementalText.trim()) {
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(incrementalText);
+    } else {
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText('');
+    }
+    resumeIncrementalTranslationQueue();
+
+    if (!(currentTurnOriginalText && currentTurnOriginalText.trim())) {
+        return;
+    }
+    if (isCurrentTurnFinalized) {
+        translateAndShowSubtitle(currentTurnOriginalText);
+        return;
+    }
+    updateSubtitleStreamingText(currentTurnOriginalText);
 }
 
 /**
@@ -569,7 +614,7 @@ function onAssistantTurnStart() {
         return;
     }
     resetSubtitleTurnState();
-    // 开关开启时保留显示框（保持空白等待新文本），关闭时连框一起隐藏
+    // 开关开启时保留显示框；译文尚未产生前沿用旧链路的空白等待。
     if (subtitleEnabled) {
         writeSubtitleText('');
         ensureSubtitleVisibleIfEnabled();
@@ -640,13 +685,21 @@ function initSubtitleHostUi() {
     }
     subtitleUiController = SubtitleShared.initSubtitleUI({
         host: 'web',
+        onClose: function() {
+            if (window.subtitleBridge && typeof window.subtitleBridge.setSubtitleEnabled === 'function') {
+                window.subtitleBridge.setSubtitleEnabled(false);
+            }
+        },
         onLanguageChange: function(lang) {
             if (window.subtitleBridge && typeof window.subtitleBridge.setUserLanguage === 'function') {
                 window.subtitleBridge.setUserLanguage(lang);
             }
         },
         onSettingsApplied: function(state, refs, detail) {
-            if (detail && detail.source === 'subtitle-ui-size' && refs && refs.text && refs.text.textContent) {
+            var shouldRemeasureText = detail && (
+                detail.source === 'subtitle-ui-resize'
+            );
+            if (shouldRemeasureText && refs && refs.text && refs.text.textContent) {
                 writeSubtitleText(refs.text.textContent);
             }
             syncSubtitleRenderState(detail && detail.source ? detail.source : 'subtitle-ui-apply');
@@ -708,6 +761,9 @@ async function initSubtitleAfterStorageBarrier() {
     initSubtitleHostUi();
     await getUserLanguage();
     syncSettingsPanel();
+    if (subtitleEnabled) {
+        showSubtitleWithoutOriginalAndRestartCurrentTurn();
+    }
     syncSubtitleRenderState('subtitle-dom-ready');
     window.addEventListener('neko-assistant-turn-start', onAssistantTurnStart);
 
@@ -744,7 +800,7 @@ window.subtitleBridge = {
     isCurrentTurnFinalized: function() {
         return isCurrentTurnFinalized;
     },
-    /** 仅同步状态，不做副作用（用于服务器设置回灌） */
+    /** 同步开启状态并执行显示/隐藏副作用（用于服务器设置回灌和窗口控制） */
     setSubtitleEnabled: function(enabled) {
         subtitleEnabled = !!enabled;
         applySharedSubtitleSettings({
@@ -754,16 +810,9 @@ window.subtitleBridge = {
         });
 
         if (subtitleEnabled) {
-            // 只显示译文；翻译回来前不预览原文
-            var incrementalText = incrementalTranslatedSentences.join(' ');
-            ensureSubtitleVisibleIfEnabled();
-            if (incrementalText.trim()) {
-                writeSubtitleText(incrementalText);
-            } else {
-                writeSubtitleText('');
-            }
-            resumeIncrementalTranslationQueue();
+            showSubtitleWithoutOriginalAndRestartCurrentTurn();
         } else {
+            cancelPendingSubtitleTranslations();
             hideSubtitle();
         }
         syncSettingsPanel();
@@ -784,33 +833,10 @@ window.subtitleBridge = {
         console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
 
         if (!subtitleEnabled) {
-            if (currentTranslateAbortController) {
-                currentTranslateAbortController.abort();
-                currentTranslateAbortController = null;
-            }
+            cancelPendingSubtitleTranslations();
             hideSubtitle();
         } else {
-            // 只显示译文；翻译回来前不预览原文
-            var incrementalText = incrementalTranslatedSentences.join(' ');
-            if (incrementalText.trim()) {
-                ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText(incrementalText);
-                resumeIncrementalTranslationQueue();
-                if (isCurrentTurnFinalized) {
-                    translateAndShowSubtitle(currentTurnOriginalText);
-                }
-            } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
-                ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText('');
-                resumeIncrementalTranslationQueue();
-                if (isCurrentTurnFinalized) {
-                    translateAndShowSubtitle(currentTurnOriginalText);
-                }
-            } else {
-                ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText('');
-                resumeIncrementalTranslationQueue();
-            }
+            showSubtitleWithoutOriginalAndRestartCurrentTurn();
         }
 
         // 同步设置面板状态

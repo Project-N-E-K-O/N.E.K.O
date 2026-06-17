@@ -454,7 +454,7 @@
                     durationMs > 0 ? durationMs + 500 : undefined
                 );
             }
-            const primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '');
+            const primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');
             if (typeof director.runAvatarFloatingSceneOperation === 'function') {
                 return await director.runAvatarFloatingSceneOperation(
                     legacyScene,

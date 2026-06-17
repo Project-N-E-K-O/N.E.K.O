@@ -4140,6 +4140,27 @@
         renderWindow();
     }
 
+    function setAvatarToolMenuOpen(open, reason) {
+        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        return setTutorialChatRequest('compactToolFanOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
     function rotateCompactToolWheel(direction, stepCount, options) {
         var normalizedDirection = direction === -1 ? -1 : 1;
         var normalizedStepCount = Number.isFinite(stepCount)
@@ -4249,7 +4270,10 @@
     }
 
     function isYuiGuideChatMessage(message) {
-        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+        if (!message) return false;
+        if (typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0) return true;
+        var source = typeof message.source === 'string' ? message.source : '';
+        return source === 'yui_guide' || source === 'yui-guide-director';
     }
 
     function clearGuideMessages() {
