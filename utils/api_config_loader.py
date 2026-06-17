@@ -511,7 +511,7 @@ def get_meme_moderation_config() -> Dict[str, Any]:
     2. the ``meme_moderation_config`` field of ``config/api_providers.json`` (compatibility path)
 
     Returns:
-        Dict: {'api_key': str}
+        Dict: {'api_key': str, 'base_url': str, 'model': str}
         Falls back to defaults (empty string) when missing/unreadable/fields absent.
     """
     raw: Optional[Dict[str, Any]] = None
@@ -534,6 +534,8 @@ def get_meme_moderation_config() -> Dict[str, Any]:
         raw = get_config().get('meme_moderation_config') or {}
     return {
         'api_key': str(raw.get('api_key', '') or '').strip(),
+        'base_url': str(raw.get('base_url', '') or raw.get('url', '') or '').strip(),
+        'model': str(raw.get('model', '') or raw.get('model_name', '') or '').strip(),
     }
 
 

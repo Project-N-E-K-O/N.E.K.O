@@ -189,20 +189,13 @@ def test_missing_key_allows_without_request_even_when_enabled():
     assert client.post_calls == []
 
 
-def test_env_key_auto_enables_default_vapi(monkeypatch):
+def test_env_key_auto_enables_default_openai(monkeypatch):
     monkeypatch.setenv("NEKO_MEME_MODERATION_API_KEY", "test-key")
-    image_client = FakeClient(
-        get_response=FakeResponse(
-            headers={"Content-Type": "image/jpeg"},
-            content=b"abc",
-        )
-    )
     moderation_client = FakeClient(
         post_response=FakeResponse(
             json_data=moderation_json(False, model="nsfw-classifier")
         )
     )
-    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
 
     result = run(
         mm.moderate_meme_image_url(
@@ -214,17 +207,23 @@ def test_env_key_auto_enables_default_vapi(monkeypatch):
     assert result.allowed is True
     assert result.reason == "pass"
     assert result.model == "nsfw-classifier"
-    assert moderation_client.post_calls[0]["url"] == "https://api.gpt.ge/v1/moderations"
+    assert moderation_client.post_calls[0]["url"] == "https://api.openai.com/v1/moderations"
     assert moderation_client.post_calls[0]["headers"]["Authorization"] == "Bearer test-key"
-    assert moderation_client.post_calls[0]["json"]["model"] == "gi-image-moderation"
+    assert moderation_client.post_calls[0]["json"]["model"] == "omni-moderation-latest"
     payload_url = moderation_client.post_calls[0]["json"]["input"][0]["image_url"]["url"]
-    assert payload_url == "data:image/jpeg;base64,YWJj"
+    assert payload_url == "https://img.soutula.com/example.jpg"
 
 
 def test_config_file_key_auto_enables_and_overrides_env(monkeypatch):
     use_direct_url_payload(monkeypatch)
     monkeypatch.setenv("NEKO_MEME_MODERATION_API_KEY", "env-key")
-    write_config({"api_key": "file-key"})
+    write_config(
+        {
+            "api_key": "file-key",
+            "base_url": "https://moderation-config.test/v1",
+            "model": "config-moderation-model",
+        }
+    )
     client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
 
     result = run(
@@ -236,7 +235,9 @@ def test_config_file_key_auto_enables_and_overrides_env(monkeypatch):
 
     assert result.allowed is True
     assert result.reason == "pass"
+    assert client.post_calls[0]["url"] == "https://moderation-config.test/v1/moderations"
     assert client.post_calls[0]["headers"]["Authorization"] == "Bearer file-key"
+    assert client.post_calls[0]["json"]["model"] == "config-moderation-model"
 
 
 def test_wrapped_config_file_key_is_supported(monkeypatch):
@@ -260,7 +261,13 @@ def test_api_providers_config_key_is_fallback(monkeypatch):
     monkeypatch.setattr(
         acl,
         "get_config",
-        lambda: {"meme_moderation_config": {"api_key": "fallback-key"}},
+        lambda: {
+            "meme_moderation_config": {
+                "api_key": "fallback-key",
+                "base_url": "https://fallback-config.test/v1",
+                "model": "fallback-moderation-model",
+            }
+        },
     )
     client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
 
@@ -272,12 +279,12 @@ def test_api_providers_config_key_is_fallback(monkeypatch):
     )
 
     assert result.allowed is True
+    assert client.post_calls[0]["url"] == "https://fallback-config.test/v1/moderations"
     assert client.post_calls[0]["headers"]["Authorization"] == "Bearer fallback-key"
+    assert client.post_calls[0]["json"]["model"] == "fallback-moderation-model"
 
 
 def test_unflagged_image_passes_and_uses_openai_payload(monkeypatch):
-    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.uniapi.io/v1")
-    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "omni-moderation-latest")
     client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
 
     result = run(
@@ -299,7 +306,7 @@ def test_unflagged_image_passes_and_uses_openai_payload(monkeypatch):
         "hentai": False,
         "porn": False,
     }
-    assert client.post_calls[0]["url"] == "https://api.uniapi.io/v1/moderations"
+    assert client.post_calls[0]["url"] == "https://api.openai.com/v1/moderations"
     assert client.post_calls[0]["headers"]["Authorization"] == "Bearer test-key"
     assert client.post_calls[0]["json"] == {
         "model": "omni-moderation-latest",
@@ -498,8 +505,12 @@ def test_successful_results_are_cached(monkeypatch):
 
 
 def test_api_gpt_ge_defaults_to_data_url(monkeypatch):
-    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.gpt.ge/v1")
-    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "gi-image-moderation")
+    write_config(
+        {
+            "base_url": "https://api.gpt.ge/v1",
+            "model": "gi-image-moderation",
+        }
+    )
     image_client = FakeClient(
         get_response=FakeResponse(
             headers={"Content-Type": "image/jpeg"},
@@ -532,7 +543,7 @@ def test_api_gpt_ge_defaults_to_data_url(monkeypatch):
 
 
 def test_image_fetch_failure_blocks_and_skips_post(monkeypatch):
-    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.gpt.ge/v1")
+    write_config({"base_url": "https://api.gpt.ge/v1"})
     image_client = FakeClient(get_error=httpx.ConnectError("image fetch failed"))
     moderation_client = FakeClient()
     monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
@@ -552,7 +563,7 @@ def test_image_fetch_failure_blocks_and_skips_post(monkeypatch):
 
 
 def test_ssl_fallback_is_disabled_by_default(monkeypatch):
-    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.gpt.ge/v1")
+    write_config({"base_url": "https://api.gpt.ge/v1"})
     ssl_error = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
     image_client = FakeClient(get_error=httpx.ConnectError(ssl_error))
     moderation_client = FakeClient()
@@ -579,7 +590,7 @@ def test_ssl_fallback_is_disabled_by_default(monkeypatch):
 
 
 def test_ssl_fallback_can_be_enabled(monkeypatch):
-    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://api.gpt.ge/v1")
+    write_config({"base_url": "https://api.gpt.ge/v1"})
     monkeypatch.setenv("NEKO_MEME_MODERATION_ALLOW_SSL_FALLBACK", "1")
     ssl_error = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
     image_client = FakeClient(get_error=httpx.ConnectError(ssl_error))

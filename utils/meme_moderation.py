@@ -37,8 +37,8 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
 
-_DEFAULT_UNIAPI_BASE_URL = "https://api.gpt.ge/v1"
-_DEFAULT_MODEL = "gi-image-moderation"
+_DEFAULT_UNIAPI_BASE_URL = "https://api.openai.com/v1"
+_DEFAULT_MODEL = "omni-moderation-latest"
 _DEFAULT_TIMEOUT_SECONDS = 8.0
 _DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600
 _DEFAULT_CACHE_MAX_ITEMS = 1024
@@ -222,12 +222,9 @@ def _api_key_from_env() -> str:
     return _read_env("UNIAPI_API_KEY") or _read_env("MEME_MODERATION_API_KEY")
 
 
-def _api_key_from_config() -> str:
-    return get_meme_moderation_config().get("api_key", "")
-
-
-def _api_key_from_runtime_sources() -> str:
-    return _api_key_from_config() or _api_key_from_env()
+def _read_config_text(config: dict[str, Any], key: str) -> str:
+    value = config.get(key, "")
+    return str(value or "").strip()
 
 
 def _default_moderation_enabled(api_key: str) -> bool:
@@ -387,13 +384,21 @@ async def moderate_meme_image_url(
     fail_closed: bool | None = None,
 ) -> MemeModerationResult:
     """Moderate a remote meme image URL."""
+    moderation_config = get_meme_moderation_config()
     provider = _read_env("MEME_MODERATION_PROVIDER", "uniapi").lower()
-    model = _read_env("MEME_MODERATION_MODEL", _DEFAULT_MODEL)
+    model = (
+        _read_config_text(moderation_config, "model")
+        or _read_env("MEME_MODERATION_MODEL", _DEFAULT_MODEL)
+    )
     url = (url or "").strip()
     full_hash = _url_hash(url) if url else ""
     short_hash = full_hash[:12]
 
-    key = (api_key or "").strip() or _api_key_from_runtime_sources()
+    key = (
+        (api_key or "").strip()
+        or _read_config_text(moderation_config, "api_key")
+        or _api_key_from_env()
+    )
     if enabled is None:
         enabled = _read_bool_env(
             "MEME_MODERATION_ENABLED",
@@ -461,7 +466,10 @@ async def moderate_meme_image_url(
             url_hash=short_hash,
         )
 
-    base_url = _read_env("UNIAPI_BASE_URL", _DEFAULT_UNIAPI_BASE_URL).rstrip("/")
+    base_url = (
+        _read_config_text(moderation_config, "base_url")
+        or _read_env("UNIAPI_BASE_URL", _DEFAULT_UNIAPI_BASE_URL)
+    ).rstrip("/")
     endpoint = f"{base_url}/moderations"
     try:
         moderation_image_url = await _build_moderation_image_url(
