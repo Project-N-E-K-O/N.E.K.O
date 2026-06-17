@@ -366,10 +366,9 @@ def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
     if _gptsovits_tts_overrides_native_tts_for_ui(cm, core_config):
         return None
 
-    assist_api = str(core_config.get('assistApi') or '').strip().lower()
-    if assist_api == 'mimo' and assist_api in _PROVIDERS:
-        return assist_api
-
+    # MiMo（assistApi=mimo / TTS_PROVIDER=mimo）不再走这里：它是 hosted provider，
+    # 预制目录由 tts_provider_registry 的 preset_catalog 提供，/voices 与校验改查
+    # 注册表（见设计文档 §4，MiMo 归 hosted）。此处只认仍属 native 的 TTS_PROVIDER。
     tts_provider = str(
         core_config.get('TTS_PROVIDER') or core_config.get('ttsProvider') or ''
     ).strip().lower()
@@ -432,7 +431,6 @@ _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
     "utils.gemini_tts_voices",
     "utils.stepfun_tts_voices",
     "utils.grok_tts_voices",
-    "utils.mimo_tts_voices",
 )
 
 

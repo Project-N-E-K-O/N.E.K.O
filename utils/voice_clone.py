@@ -30,6 +30,7 @@ Qwen/CosyVoice voice cloning:
 """
 
 import asyncio
+import base64
 import io
 import binascii
 import logging
@@ -341,6 +342,152 @@ class MinimaxVoiceCloneClient:
             language=language,
             voice_description=f"Cloned by N.E.K.O - {safe_prefix}",
         )
+
+
+# ============================================================================
+# Xiaomi MiMo 语音克隆
+# ============================================================================
+#
+# 与 MiniMax/CosyVoice/ElevenLabs 的「上传样本 → 远端注册 → 拿 voice_id」不同，MiMo 的
+# voiceclone（mimo-v2.5-tts-voiceclone）没有注册步骤（已核实官方文档：无 create-voice /
+# 远端 voice_id）：参考音频每次合成请求内联在 OpenAI 兼容 chat-completions 的 ``audio.voice``
+# 里（``data:audio/...;base64,...``）。
+#
+# **对偶 MiniMax 的存储模型**：MiniMax 在 voice_storage.json 的 voice_meta 里存远端 voice_id
+# 作克隆身份；MiMo 在同一处存**参考音频本身（base64）**作克隆身份——整段落进 voice_meta、
+# 随 voice_storage.json 云同步，不另起本地文件存储。enrollment 时用 MiMo 做一次校验性合成
+# 确认 key + 样本可用（对偶其它家真打远端注册接口）；试听（synthesize_preview）同样内联样本，
+# 对偶 MiniMax 的预览。dispatch 由 mimo provider 按 voice_meta.provider 选中后读出样本内联。
+
+# voice_storage 中标识 MiMo 克隆音色的前缀（按 MiMo API key 末 8 位分桶）
+MIMO_VOICE_STORAGE_KEY = '__MIMO__'
+# MiMo 校验 / 试听用 wav（自包含、非流式一次性返回，便于直接取音频）；运行时 worker 才用
+# pcm16 流式。Codex review #1851：非流式请求不应再要 pcm16 裸流。
+_MIMO_PREVIEW_AUDIO_FORMAT = 'wav'
+
+
+class MimoVoiceCloneError(VoiceCloneError):
+    """MiMo voice-clone related error"""
+
+
+def _extract_mimo_audio_bytes(payload: dict) -> bytes:
+    """Pull base64 audio out of a MiMo chat-completions (non-stream) response.
+
+    Mirrors the worker's extractor but lives here so utils stays off main_logic.
+    Returns decoded bytes, or b'' when no audio field is present.
+    """
+    candidates: list = [payload.get('audio')]
+    for choice in payload.get('choices') or []:
+        if isinstance(choice, dict):
+            candidates.append((choice.get('message') or {}).get('audio'))
+            candidates.append(choice.get('audio'))
+    for cand in candidates:
+        b64 = ''
+        if isinstance(cand, str):
+            b64 = cand
+        elif isinstance(cand, dict):
+            b64 = cand.get('data') or cand.get('audio') or cand.get('content') or ''
+        if not b64:
+            continue
+        try:
+            return base64.b64decode(b64)
+        except (binascii.Error, ValueError, TypeError):
+            # 上游返回了非字符串/非 bytes 的 audio 字段也不应冒泡，按"无音频"继续尝试下一候选。
+            continue
+    return b''
+
+
+class MimoVoiceCloneClient:
+    """MiMo voice-clone enrollment + preview client.
+
+    MiMo has no remote voice registration; ``validate_sample`` confirms the
+    reference sample + API key actually synthesize via the voiceclone model (one
+    short non-stream request), so a bad key / unsupported format / oversized
+    sample fails fast at enrollment instead of going silent at runtime.
+    ``synthesize_preview`` returns audible bytes for the voice-list preview
+    button (dual to MiniMax's ``synthesize_preview``).
+    """
+
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
+        self.api_key = api_key
+        self.base_url = base_url or None
+
+    def _build_payload(self, audio_bytes: bytes, mime_type: str, text: str) -> dict:
+        from utils.mimo_tts_voices import MIMO_TTS_VOICECLONE_MODEL, mimo_voice_clone_data_uri
+        return {
+            'model': MIMO_TTS_VOICECLONE_MODEL,
+            'messages': [{'role': 'assistant', 'content': text}],
+            'audio': {
+                # 非流式取一次性音频：wav 自包含，不要 pcm16 裸流（Codex review）。
+                'format': _MIMO_PREVIEW_AUDIO_FORMAT,
+                'voice': mimo_voice_clone_data_uri(audio_bytes, mime_type),
+            },
+            'stream': False,
+        }
+
+    async def _post(self, payload: dict) -> dict:
+        from utils.mimo_tts_voices import mimo_chat_completions_url
+        url = mimo_chat_completions_url(self.base_url)
+        headers = {'Content-Type': 'application/json', 'api-key': self.api_key}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            raise MimoVoiceCloneError("MiMo 请求超时，请稍后重试") from e
+        except Exception as e:
+            raise MimoVoiceCloneError(f"MiMo 请求失败: {e}") from e
+        if resp.status_code != 200:
+            raise MimoVoiceCloneError(
+                f"MiMo 请求失败: HTTP {resp.status_code}, {resp.text[:300]}"
+            )
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise MimoVoiceCloneError("MiMo 返回了无法解析的响应") from e
+        if isinstance(data, dict) and data.get('error'):
+            err = data['error']
+            msg = err.get('message') if isinstance(err, dict) else str(err)
+            raise MimoVoiceCloneError(f"MiMo 请求失败: {msg}")
+        return data if isinstance(data, dict) else {}
+
+    async def validate_sample(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = 'audio/wav',
+        *,
+        sample_text: str = '你好呀，很高兴认识你。',
+    ) -> None:
+        """Synthesize a short line with the reference sample to confirm it works.
+
+        Confirms the call actually *produced audio* (not just HTTP 200): if the
+        upstream returns success but an empty/missing audio field the sample is
+        unusable, and enrollment must fail here rather than going silent at
+        runtime / preview.
+
+        Raises:
+            MimoVoiceCloneError on a non-200 response / network failure / no audio.
+        """
+        data = await self._post(self._build_payload(audio_bytes, mime_type, sample_text))
+        if not _extract_mimo_audio_bytes(data):
+            raise MimoVoiceCloneError("MiMo 校验未产出音频，参考样本可能不可用")
+
+    async def synthesize_preview(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = 'audio/wav',
+        *,
+        text: str = '你好呀，很高兴认识你。',
+    ) -> bytes:
+        """Synthesize a preview line with the reference sample, returning wav bytes.
+
+        Raises:
+            MimoVoiceCloneError on failure / when no audio is returned.
+        """
+        data = await self._post(self._build_payload(audio_bytes, mime_type, text))
+        audio = _extract_mimo_audio_bytes(data)
+        if not audio:
+            raise MimoVoiceCloneError("MiMo 预览成功但未返回音频")
+        return audio
 
 
 # ============================================================================

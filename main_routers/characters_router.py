@@ -93,12 +93,14 @@ from utils.config_manager import (
     strip_generated_persona_selection_prompt,
 )
 from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.voice_config import read_legacy_voice_id
 from utils.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
     normalize_native_voice,
     resolve_native_voice_for_routing,
 )
+from utils import tts_provider_registry
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.initial_personality_state import (
@@ -117,6 +119,9 @@ from utils.voice_clone import (
     MINIMAX_PREFIX_MAX_LENGTH,
     get_minimax_base_url,
     get_minimax_storage_prefix,
+    MimoVoiceCloneClient,
+    MimoVoiceCloneError,
+    MIMO_VOICE_STORAGE_KEY,
     QwenVoiceCloneClient,
     QwenVoiceCloneError,
     qwen_language_hints,
@@ -776,6 +781,27 @@ def _get_active_native_preview_provider(config_manager, voice_id: object) -> str
     if uses_provider_native_voice:
         return active_provider
     return None
+
+
+def _is_unpreviewable_selected_preset_voice(config_manager, core_config, voice_id, voice_data) -> bool:
+    """Whether voice_id is a built-in preset of the currently selected hosted/local
+    provider (e.g. MiMo) that has no dedicated preview path yet — and is NOT a user clone.
+
+    A cloned voice whose id collides with a preset name must still preview through its
+    clone path: runtime dispatch selects clone providers (priority 30/40/50) ahead of a
+    static-catalog provider like MiMo (60), so the clone wins. Any id present in a voice
+    storage bucket is therefore never treated as an unpreviewable preset (dual to the
+    native-preview collision guard, which passes voice_id_exists_in_any_storage)."""
+    if voice_data:
+        return False
+    try:
+        if config_manager.voice_id_exists_in_any_storage(voice_id):
+            return False
+    except Exception:
+        # 存储桶查询异常（极少见的 IO 错误）：按「无法确认是克隆」继续走下方预制判定，
+        # 不因一次查询失败改变结论；留一条带堆栈的 debug 便于排查（同 _grok 撞名查模式）。
+        logger.debug("voice_id_exists_in_any_storage 查询失败，按非克隆继续判定", exc_info=True)
+    return tts_provider_registry.is_selected_preset_voice(core_config or {}, config_manager, voice_id)
 
 
 def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
@@ -1465,6 +1491,89 @@ async def _elevenlabs_clone_voice(
     except Exception as exc:
         raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while adding voice") from exc
     raw_voice_id = payload.get("voice_id") or payload.get("voiceId") or ""
+    if not raw_voice_id:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
+    return _prefixed_elevenlabs_voice_id(raw_voice_id)
+
+
+# ── ElevenLabs voice design (text description → generated voice) ──────────────
+# Voice design is the third voice source (besides preset/clone): a text prompt is
+# turned into voice previews, the user picks one, and create-from-preview lands it
+# as a normal ElevenLabs voice_id (stored with source='design'). Dispatch then
+# reuses the existing ElevenLabs clone path (voice_meta.provider=='elevenlabs'),
+# so no separate worker is needed (design doc §7).
+ELEVENLABS_VOICE_DESIGN_DESC_MIN = 20
+ELEVENLABS_VOICE_DESIGN_DESC_MAX = 1000
+# ElevenLabs voice-design previews require a ``text`` between 100 and 1000 chars to
+# synthesize audible samples. ``auto_generate_text`` only returns generated voice ids
+# (no audio), which would yield empty/unplayable previews — so we always pass a fixed
+# preview line instead (must stay ≥ 100 chars).
+ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT = (
+    "Hello! This is a preview of your designed voice. I can read your stories, chat "
+    "with you about your day, and keep you company whenever you would like a friendly "
+    "voice nearby. How do I sound to you so far?"
+)
+
+
+async def _elevenlabs_design_previews(
+    *,
+    api_key: str,
+    base_url: str,
+    voice_description: str,
+) -> list[dict]:
+    """Call POST /v1/text-to-voice/design — returns the list of voice previews.
+
+    Each preview has ``generated_voice_id`` (the handle for create-from-preview)
+    and ``audio_base_64`` (an mp3 sample for the user to audition). We let
+    ElevenLabs auto-generate the preview text so the caller only supplies a
+    description.
+    """
+    url = f"{base_url.rstrip('/')}/v1/text-to-voice/design"
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    payload = {
+        "voice_description": voice_description,
+        # 显式给 text（≥100 chars）而非 auto_generate_text，确保返回可试听的 audio_base_64。
+        "text": ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
+    }
+    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    _raise_for_elevenlabs_response(resp, "voice design")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while designing voice") from exc
+    previews = data.get("previews") if isinstance(data, dict) else None
+    if not isinstance(previews, list) or not previews:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice previews")
+    return previews
+
+
+async def _elevenlabs_create_voice_from_preview(
+    *,
+    api_key: str,
+    base_url: str,
+    voice_name: str,
+    voice_description: str,
+    generated_voice_id: str,
+) -> str:
+    """Call POST /v1/text-to-voice — persist a designed preview into a voice_id."""
+    safe_name = (voice_name or 'NEKO Designed Voice').strip()[:100] or 'NEKO Designed Voice'
+    url = f"{base_url.rstrip('/')}/v1/text-to-voice"
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    payload = {
+        "voice_name": safe_name,
+        "voice_description": voice_description,
+        "generated_voice_id": generated_voice_id,
+        "labels": {"source": "NEKO"},
+    }
+    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    _raise_for_elevenlabs_response(resp, "voice design create")
+    try:
+        payload_resp = resp.json()
+    except Exception as exc:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while creating designed voice") from exc
+    raw_voice_id = payload_resp.get("voice_id") or payload_resp.get("voiceId") or ""
     if not raw_voice_id:
         raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
     return _prefixed_elevenlabs_voice_id(raw_voice_id)
@@ -2868,12 +2977,12 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
-    old_voice_id = str(get_reserved(
+    old_voice_id = read_legacy_voice_id(get_reserved(
         characters['猫娘'][name],
         'voice_id',
         default='',
         legacy_keys=('voice_id',)
-    ) or '').strip()
+    ))
 
     # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
     if old_voice_id == voice_id:
@@ -2893,7 +3002,8 @@ async def update_catgirl_voice_id(name: str, request: Request):
             'available_voices': available_voices
         }, status_code=400)
 
-    set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
+    # 用户设音色：惰性迁移这一条到结构对象（用到哪条迁哪条，见 voice_id_to_storage_value）。
+    set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
     await _config_manager.asave_characters(characters)
 
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
@@ -3192,7 +3302,7 @@ async def unregister_voice(name: str):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
         # 检查是否已有voice_id
-        old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+        old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
 
@@ -3771,8 +3881,8 @@ async def update_catgirl(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
 
-    old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
-    voice_id_will_change = voice_id_in_payload and str(old_voice_id or '').strip() != requested_voice_id
+    old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+    voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
     if voice_id_will_change:
         session_manager = get_session_manager()
         if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
@@ -3802,9 +3912,9 @@ async def update_catgirl(name: str, request: Request):
         if k != '档案名' and v:
             characters['猫娘'][name][k] = v
 
-    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段。
+    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
     if voice_id_in_payload:
-        set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
+        set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
 
     # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
     if model_type_in_payload and requested_model_type:
@@ -3814,7 +3924,7 @@ async def update_catgirl(name: str, request: Request):
 
     await _config_manager.asave_characters(characters)
 
-    new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
     voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
     prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
 
@@ -4034,7 +4144,7 @@ async def clear_voice_ids():
         # 清除所有猫娘的voice_id
         if '猫娘' in characters:
             for name in characters['猫娘']:
-                if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
+                if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):
                     set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
 
@@ -4209,8 +4319,35 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
     core_config = await _config_manager.aget_core_config()
-    active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
-    if active_native_provider:
+    # 先看有没有自带静态预制目录的 provider 被选中（如 MiMo，hosted）。与 dispatch
+    # 同一优先级判定：选中的 provider 若有 preset_catalog 就用它，并压过 core-native
+    # （assistApi=mimo 在 dispatch 里 priority 60 也先于 native 命中）；GPT-SoVITS /
+    # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
+    # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    # 选声目录与 dispatch 同一优先级：先看哪个注册表 provider 赢得当前配置。
+    #  - 赢家有静态预制目录（如 MiMo）→ 出该目录，压过 core-native（用 is not None，
+    #    空目录也算命中，不误回退）。
+    #  - 赢家无静态目录（vLLM-Omni / GPT-SoVITS，用户自填/自部署音色）→ 既不出目录、
+    #    也不回退 core-native：dispatch 会路由到该赢家，露出 gemini 等原生音色会让用户
+    #    选中后被误传给赢家触发 unsupported-voice（PR #1848 Codex review）。
+    #  - 无注册表 provider 赢 → 回退 core-native（gemini/step/...）。
+    # 复用 native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    winning_provider_key = tts_provider_registry.selected_provider_key(
+        core_config or {}, _config_manager
+    )
+    selected_preset_catalog = (
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
+        if winning_provider_key else None
+    )
+    active_native_provider = (
+        get_active_realtime_native_provider_for_ui(_config_manager)
+        if winning_provider_key is None else None
+    )
+    if selected_preset_catalog is not None:
+        result["native_voices"] = selected_preset_catalog
+    elif active_native_provider:
         native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
         if active_native_provider == 'free_intl':
             # 海外免费（lanlan.app/Gemini）：yui + default(=Leda) 两个置顶 pin，
@@ -4257,7 +4394,7 @@ async def get_voices():
         if not isinstance(catgirl_config, dict):
             logger.warning(f"角色配置格式异常，已跳过 voice_owners 统计: {catgirl_name}")
             continue
-        vid = get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',))
+        vid = read_legacy_voice_id(get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',)))
         if vid:
             voice_owners.setdefault(vid, []).append(catgirl_name)
     result["voice_owners"] = voice_owners
@@ -4318,6 +4455,77 @@ async def get_voice_preview(
 
         preview_language = _get_voice_preview_language(request, language, i18n_language)
         text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+
+        # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
+        # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
+        # 在此显式拦下返回「暂不支持试听」，避免落到下方 DashScope/CosyVoice 通用分支拿着
+        # 该 provider 的 key/voice_id 误合成（PR #1848 Codex review；真试听留作后续）。
+        # 与预制同名的克隆音色不拦（dispatch 克隆 provider 先于 MiMo 命中），仍走克隆试听。
+        preview_core_config = await _config_manager.aget_core_config()
+        if _is_unpreviewable_selected_preset_voice(
+            _config_manager, preview_core_config, voice_id, voice_data
+        ):
+            return JSONResponse({
+                'success': False,
+                'error': f'当前预制音色暂不支持试听: {voice_id}',
+                'code': 'PRESET_VOICE_PREVIEW_UNSUPPORTED',
+            }, status_code=400)
+
+        # MiMo 克隆音色（provider=='mimo'）试听：读 voice_meta 里的参考样本 base64，用
+        # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
+        # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
+        if provider == 'mimo':
+            sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
+            if not sample_b64:
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 克隆音色缺少参考样本，无法试听: {voice_id}',
+                    'code': 'MIMO_VOICE_SAMPLE_MISSING',
+                }, status_code=400)
+            mimo_api_key = _config_manager.get_tts_api_key('mimo')
+            if not mimo_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'MIMO_API_KEY_MISSING',
+                    'code': 'MIMO_API_KEY_MISSING',
+                }, status_code=400)
+            # base_url 与 dispatch 同源：assistApi=mimo（Token Plan 唯一场景）用 OPENROUTER_URL，
+            # 否则用 voice_meta 存的 mimo_base_url，缺省默认端点。
+            if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
+                mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
+            else:
+                mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
+            try:
+                sample_bytes = base64.b64decode(sample_b64)
+            except ValueError:  # binascii.Error 是 ValueError 子类
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 克隆音色样本损坏，无法试听: {voice_id}',
+                    'code': 'MIMO_VOICE_SAMPLE_CORRUPT',
+                }, status_code=400)
+            try:
+                mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                audio_data = await mimo_client.synthesize_preview(
+                    sample_bytes,
+                    (voice_data or {}).get('clone_sample_mime') or 'audio/wav',
+                    text=text,
+                )
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"MiMo 克隆音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except MimoVoiceCloneError as e:
+                logger.error(f"MiMo 克隆音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 预览生成失败: {str(e)}',
+                    'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"MiMo 克隆音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 预览生成失败: {str(e)}',
+                }, status_code=500)
 
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:
@@ -4602,7 +4810,7 @@ async def delete_voice(voice_id: str):
 
             if '猫娘' in characters:
                 for name in characters['猫娘']:
-                    if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)) == voice_id:
+                    if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))) == voice_id:
                         set_reserved(characters['猫娘'][name], 'voice_id', '')
                         cleaned_count += 1
 
@@ -5080,6 +5288,23 @@ async def voice_clone(
         storage_key = f'__ELEVENLABS__{api_key[-8:]}'
         provider_label = 'ElevenLabs'
 
+    elif provider == 'mimo':
+        if not api_key:
+            return JSONResponse({
+                'error': 'MIMO_API_KEY_MISSING',
+                'code': 'MIMO_API_KEY_MISSING',
+                'message': '未配置 MiMo API Key，请先在设置中填写'
+            }, status_code=400)
+        # base_url 须与 api_key 同源：assistApi=mimo（含 Token Plan）时 get_core_config 已把
+        # OPENROUTER_URL 解析成对应端点（普通 / token-plan-*），get_tts_api_key('mimo') 也据此
+        # 返回配套 key；否则用默认 xiaomimimo 端点。和 _mimo_resolve 的 base_url 规则对偶。
+        if str(core_config.get('assistApi') or '').strip().lower() == 'mimo':
+            base_url = (core_config.get('OPENROUTER_URL') or '').strip()
+        else:
+            base_url = ''
+        storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
+        provider_label = 'MiMo'
+
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
@@ -5159,7 +5384,40 @@ async def voice_clone(
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'provider': 'elevenlabs',
+                'source': 'clone',
                 'elevenlabs_base_url': base_url,
+                'created_at': datetime.now().isoformat()
+            }
+
+        elif provider == 'mimo':
+            # MiMo 没有远端注册接口（已核实官方文档：voiceclone 只能每次内联参考音频，无
+            # create-voice / 远端 voice_id）。所以严格对偶 MiniMax 的做法是：把克隆身份整段
+            # 落进 voice_storage.json 的 voice_meta——MiniMax 那里存的是远端 voice_id，这里存
+            # 参考音频本身（base64）。不另起本地文件存储，voice_meta 随 voice_storage.json 一起
+            # 云同步（与 MiniMax 同构）。校验样本可用后再落库。
+            client = MimoVoiceCloneClient(api_key=api_key, base_url=base_url or None)
+            sample_bytes = normalized_buffer.getvalue()
+            await client.validate_sample(sample_bytes, mime_type='audio/wav')
+            # voice_id 维度必须与 MD5 去重键 (storage_key, audio_md5, ref_language) 一致：
+            #  - 含 key 末 8 位：同一音频在不同 MiMo key 下落不同 voice_id，避免跨 __MIMO__ 桶
+            #    同名被 delete_voice_for_current_api 按 id 扫桶误删（Codex review #1851）。
+            #  - 含 ref_language：去重带 ref_language，若 id 不带则「同音频换语言」绕过去重却又
+            #    生成同名 id，覆盖掉前一条 voice_data（CodeRabbit review #1851）。
+            voice_id = f'mimo-clone-{api_key[-8:]}-{ref_language}-{audio_md5[:12]}'
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'mimo',
+                'source': 'clone',
+                # 克隆身份：参考音频 base64（对偶 MiniMax 的远端 voice_id），dispatch/preview
+                # 读它内联进 voiceclone 请求。存进 voice_meta 即随 voice_storage.json 云同步。
+                'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
+                'clone_sample_mime': 'audio/wav',
+                # base_url 存进 voice_meta（对偶 minimax_base_url）；dispatch 在 assistApi=mimo
+                # （Token Plan 的唯一场景）时仍按当前配置重解析，保证 key/端点配套。
+                'mimo_base_url': base_url or '',
                 'created_at': datetime.now().isoformat()
             }
 
@@ -5201,7 +5459,7 @@ async def voice_clone(
             'code': 'ELEVENLABS_UPSTREAM_ERROR',
             'provider': provider,
         }, status_code=502)
-    except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError) as e:
         logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
         if '超时' in error_detail:
@@ -5221,6 +5479,19 @@ async def voice_clone(
         logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
+        # MiMo 与其它家不同：它没有远端音色资源（克隆身份 = voice_meta 里的样本 base64，
+        # save 失败＝什么都没落库，voice_id 是本地生成、此刻指向空）。返回 200+local_save_failed
+        # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
+        # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
+        # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
+        if provider == 'mimo':
+            return JSONResponse({
+                'error': f'{provider_label}音色保存失败: {str(save_error)}',
+                'code': 'TTS_VOICE_SAVE_FAILED',
+                'provider': provider,
+            }, status_code=500)
+        # 其它 provider（cosyvoice/minimax/elevenlabs）远端音色已创建，本地保存失败仍返回
+        # 200+local_save_failed，避免客户端重试重复创建远端资源、浪费配额（PR #528 既定规则）。
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',
@@ -5233,6 +5504,177 @@ async def voice_clone(
         'voice_id': voice_id,
         'message': f'{provider_label}音色注册成功并已保存到音色库',
         'provider': provider,
+    })
+
+
+def _validate_voice_design_description(raw: object) -> tuple[str, JSONResponse | None]:
+    """Validate a voice-design description against ElevenLabs' 20–1000 char window."""
+    description = str(raw or '').strip()
+    if len(description) < ELEVENLABS_VOICE_DESIGN_DESC_MIN:
+        return description, JSONResponse({
+            'error': 'VOICE_DESIGN_DESCRIPTION_TOO_SHORT',
+            'code': 'VOICE_DESIGN_DESCRIPTION_TOO_SHORT',
+            'min': ELEVENLABS_VOICE_DESIGN_DESC_MIN,
+        }, status_code=400)
+    if len(description) > ELEVENLABS_VOICE_DESIGN_DESC_MAX:
+        return description, JSONResponse({
+            'error': 'VOICE_DESIGN_DESCRIPTION_TOO_LONG',
+            'code': 'VOICE_DESIGN_DESCRIPTION_TOO_LONG',
+            'max': ELEVENLABS_VOICE_DESIGN_DESC_MAX,
+        }, status_code=400)
+    return description, None
+
+
+@router.post('/voice_design_preview')
+async def voice_design_preview(request: Request):
+    """Generate ElevenLabs voice-design previews from a text description.
+
+    Returns a list of previews ``[{generated_voice_id, audio (base64 mp3),
+    media_type, duration_secs}]`` for the user to audition; nothing is persisted
+    yet — :func:`voice_design_create` lands the chosen preview as a voice.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    # request.json() 也可能返回数组/字符串/null（合法 JSON 但非对象）——直接 .get 会 500。
+    if not isinstance(data, dict):
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+
+    description, err = _validate_voice_design_description(data.get('description'))
+    if err is not None:
+        return err
+
+    _config_manager = get_config_manager()
+    api_key = _config_manager.get_tts_api_key('elevenlabs')
+    if not api_key:
+        return JSONResponse({
+            'error': 'ELEVENLABS_API_KEY_MISSING',
+            'code': 'ELEVENLABS_API_KEY_MISSING',
+            'message': '未配置 ElevenLabs API Key，请先在设置中填写',
+        }, status_code=400)
+    base_url = await _get_elevenlabs_base_url(_config_manager)
+
+    try:
+        previews = await _elevenlabs_design_previews(
+            api_key=api_key, base_url=base_url, voice_description=description,
+        )
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs voice design 上游错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+        }, status_code=502)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"ElevenLabs voice design 失败: {e}")
+        return JSONResponse({'error': f'语音设计失败: {str(e)}'}, status_code=500)
+
+    # 只保留既有 generated_voice_id 又带 audio_base_64 的可试听项——预览接口的契约是给前端
+    # 可试听的选项。若过滤后为空（上游没回可用音频），按上游异常返回 502，不伪装成 success。
+    result_previews = [
+        {
+            'generated_voice_id': p.get('generated_voice_id', ''),
+            'audio': p.get('audio_base_64', ''),
+            'media_type': p.get('media_type', 'audio/mpeg'),
+            'duration_secs': p.get('duration_secs'),
+        }
+        for p in previews
+        if isinstance(p, dict) and p.get('generated_voice_id') and p.get('audio_base_64')
+    ]
+    if not result_previews:
+        return JSONResponse({
+            'error': 'ElevenLabs 未返回可试听的语音预览',
+            'code': 'ELEVENLABS_PREVIEWS_EMPTY',
+        }, status_code=502)
+    return JSONResponse({'success': True, 'previews': result_previews})
+
+
+@router.post('/voice_design_create')
+async def voice_design_create(request: Request):
+    """Persist a chosen ElevenLabs design preview into a reusable voice.
+
+    The voice lands as a normal ElevenLabs voice (``source='design'``) in the
+    ElevenLabs voice_storage bucket, so dispatch reuses the existing ElevenLabs
+    clone path (``voice_meta.provider=='elevenlabs'``).
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+
+    description, err = _validate_voice_design_description(data.get('description'))
+    if err is not None:
+        return err
+    generated_voice_id = str(data.get('generated_voice_id') or '').strip()
+    if not generated_voice_id:
+        return JSONResponse({
+            'error': 'VOICE_DESIGN_PREVIEW_MISSING',
+            'code': 'VOICE_DESIGN_PREVIEW_MISSING',
+        }, status_code=400)
+    name = str(data.get('name') or data.get('prefix') or '').strip()
+
+    _config_manager = get_config_manager()
+    api_key = _config_manager.get_tts_api_key('elevenlabs')
+    if not api_key:
+        return JSONResponse({
+            'error': 'ELEVENLABS_API_KEY_MISSING',
+            'code': 'ELEVENLABS_API_KEY_MISSING',
+            'message': '未配置 ElevenLabs API Key，请先在设置中填写',
+        }, status_code=400)
+    base_url = await _get_elevenlabs_base_url(_config_manager)
+
+    try:
+        voice_id = await _elevenlabs_create_voice_from_preview(
+            api_key=api_key,
+            base_url=base_url,
+            voice_name=name or 'NEKO Designed Voice',
+            voice_description=description,
+            generated_voice_id=generated_voice_id,
+        )
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs voice design create 上游错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+        }, status_code=502)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"ElevenLabs voice design create 失败: {e}")
+        return JSONResponse({'error': f'语音设计保存失败: {str(e)}'}, status_code=500)
+
+    voice_data = {
+        'voice_id': voice_id,
+        'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+        'prefix': name or 'Designed Voice',
+        'provider': 'elevenlabs',
+        'source': 'design',
+        'design_description': description,
+        'elevenlabs_base_url': base_url,
+        'created_at': datetime.now().isoformat(),
+    }
+    storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+    try:
+        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+    except Exception as save_error:
+        logger.error(f"保存 ElevenLabs 设计音色到音色库失败: {save_error}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': 'ElevenLabs 设计音色创建成功，但本地保存失败',
+            'local_save_failed': True,
+            'error': str(save_error),
+            'provider': 'elevenlabs',
+        }, status_code=200)
+
+    return JSONResponse({
+        'voice_id': voice_id,
+        'message': 'ElevenLabs 设计音色创建成功并已保存到音色库',
+        'provider': 'elevenlabs',
+        'source': 'design',
     })
 
 

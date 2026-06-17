@@ -579,6 +579,9 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-id', 'history:scroll');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-kind', 'scroll');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
@@ -635,6 +638,7 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
       expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
@@ -4010,6 +4014,13 @@ describe('App', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-id', 'input:text');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-kind', 'input-text');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-id', 'input:minimize');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-kind', 'input-minimize');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-id', 'input:tool-toggle');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-kind', 'input-tool-toggle');
     expect(container.querySelector('.compact-chat-capsule-button')).toBeNull();
     expect(container.querySelector('.composer-bottom-bar')).toBeNull();
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
@@ -5224,12 +5235,27 @@ describe('App', () => {
       expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
       expect(emojiButton).toHaveClass('is-active');
 
-      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      const firstQuickToolButton = fan.querySelector<HTMLButtonElement>('#composer-avatar-tool-quickbar .avatar-tool-quickbar-button');
+      expect(firstQuickToolButton).not.toBeNull();
+      fireEvent.click(firstQuickToolButton!);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+      expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
       expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
       expect(avatarTool.querySelector('.composer-emoji-btn')).toHaveClass('is-active');
-      expect(fan.querySelector('#composer-avatar-tool-quickbar')).not.toBeNull();
+      expect(fan.querySelector('#composer-avatar-tool-quickbar')).toBeNull();
+
+      fireEvent.click(emojiButton);
+
+      expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
     } finally {
       vi.useRealTimers();
     }
@@ -7271,7 +7297,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps the lollipop avatar-range image through transient avatar bounds loss', async () => {
+  it('keeps the lollipop desktop cursor image stable across avatar range changes', async () => {
     vi.useFakeTimers();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -7314,7 +7340,7 @@ describe('App', () => {
       });
 
       const avatarImage = () => document.body.querySelector('.avatar-cursor-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       boundsAvailable = false;
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -7323,7 +7349,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -7453,20 +7479,60 @@ describe('App', () => {
 
     expect(screen.getByRole('group', { name: 'Avatar quick tools' })).toBeInTheDocument();
 
-    const lollipopButton = screen.getByRole('button', { name: '棒棒糖' });
-    expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
+    const firstQuickToolButton = document.body.querySelector<HTMLButtonElement>('.avatar-tool-quickbar-button');
+    expect(firstQuickToolButton).not.toBeNull();
+    expect(firstQuickToolButton).toHaveAttribute('aria-pressed', 'false');
 
-    fireEvent.click(lollipopButton);
+    fireEvent.click(firstQuickToolButton!);
 
-    expect(lollipopButton).toHaveClass('is-active');
-    expect(lollipopButton).toHaveAttribute('aria-pressed', 'true');
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
 
-    fireEvent.click(lollipopButton);
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    expect(screen.getByRole('button', { name: 'Avatar tools' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Avatar quick tools' })).toBeInTheDocument();
-    expect(lollipopButton).not.toHaveClass('is-active');
-    expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
+  });
+
+  it('closes the transparent compact tool fan after selecting an avatar cursor tool', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(fan).toHaveAttribute('aria-hidden', 'true');
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
+  });
+
+  it('clears the selected compact avatar tool from the avatar wheel button', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    const firstQuickToolButton = document.body.querySelector<HTMLButtonElement>('.avatar-tool-quickbar-button');
+    expect(firstQuickToolButton).not.toBeNull();
+    fireEvent.click(firstQuickToolButton!);
+
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    const avatarTool = fan?.querySelector<HTMLElement>('.compact-input-tool-item-avatar');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarCursorOverlay()).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
   });
 
   it('disables avatar sub-actions when the avatar wheel slot is not actionable', async () => {
@@ -7475,12 +7541,10 @@ describe('App', () => {
     await openCompactInputTools();
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    const lollipopButton = screen.getByRole('button', { name: '棒棒糖' }) as HTMLButtonElement;
-    fireEvent.click(lollipopButton);
 
-    const clearButton = screen.getByRole('button', { name: '恢复鼠标' }) as HTMLButtonElement;
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('.avatar-tool-quickbar-button');
     const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
-    expect(clearButton).not.toBeDisabled();
+    expect(lollipopButton).not.toBeNull();
     expect(lollipopButton).not.toBeDisabled();
     expect(editButton).not.toBeDisabled();
 
@@ -7489,8 +7553,6 @@ describe('App', () => {
     fireEvent.wheel(fan, { deltaY: 80 });
 
     expect(fan.querySelector('.compact-input-tool-item-avatar')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
-    expect(clearButton).toBeDisabled();
-    expect(clearButton).toHaveAttribute('tabindex', '-1');
     expect(lollipopButton).toBeDisabled();
     expect(editButton).toBeDisabled();
   });
@@ -7500,15 +7562,18 @@ describe('App', () => {
 
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    const fistButton = screen.getByRole('button', { name: '猫爪' });
-    fireEvent.click(fistButton);
+    const quickToolButtons = document.body.querySelectorAll<HTMLButtonElement>('.avatar-tool-quickbar-button');
+    const fistButton = quickToolButtons[1];
+    expect(fistButton).not.toBeUndefined();
+    fireEvent.click(fistButton!);
 
-    expect(fistButton).toHaveAttribute('aria-pressed', 'true');
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
-    fireEvent.click(fistButton);
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    expect(screen.getByRole('button', { name: 'Avatar tools' })).toBeInTheDocument();
-    expect(fistButton).toHaveAttribute('aria-pressed', 'false');
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
   });
 
   it('emits avatar tool state changes for desktop hosts', async () => {
@@ -7530,11 +7595,16 @@ describe('App', () => {
       active: true,
       toolId: 'hammer',
       variant: 'primary',
+      imageKind: 'cursor',
       tool: expect.objectContaining({
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
         cursorHotspotX: 50,
         cursorHotspotY: 54,
+        cursorNaturalWidth: 100,
+        cursorNaturalHeight: 96,
+        cursorDisplayWidth: 100,
+        cursorDisplayHeight: 96,
       }),
     }));
   });
@@ -7551,7 +7621,25 @@ describe('App', () => {
 
     const overlay = queryAvatarCursorOverlay();
     expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(218.16px, 294.24px, 0)');
+  });
+
+  it('moves the desktop cursor overlay synchronously with pointer movement', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+      clientX: 240,
+      clientY: 320,
+    });
+
+    const overlay = queryAvatarCursorOverlay();
+    expect(overlay).not.toBeNull();
+
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
+
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
   });
 
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {
@@ -7628,8 +7716,9 @@ describe('App', () => {
 
     fireEvent.blur(window);
 
+    await openCompactInputTools();
     onAvatarToolStateChange.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: false,

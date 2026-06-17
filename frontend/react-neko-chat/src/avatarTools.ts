@@ -29,6 +29,10 @@ export type AvatarToolItem = {
   cursorImagePathAlt2?: string;
   cursorHotspotX?: number;
   cursorHotspotY?: number;
+  cursorNaturalWidth?: number;
+  cursorNaturalHeight?: number;
+  cursorDisplayWidth?: number;
+  cursorDisplayHeight?: number;
 };
 
 export const ACTIVE_AVATAR_TOOLS_STORAGE_KEY = 'neko.reactChatWindow.activeAvatarTools';
@@ -48,6 +52,10 @@ export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] = [
     menuIconScale: 1.18,
     cursorHotspotX: 27,
     cursorHotspotY: 46,
+    cursorNaturalWidth: 55,
+    cursorNaturalHeight: 80,
+    cursorDisplayWidth: 74,
+    cursorDisplayHeight: 108,
   },
   {
     id: 'fist',
@@ -59,6 +67,10 @@ export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] = [
     cursorImagePathAlt: '/static/icons/cat_claw2_cursor.png',
     cursorHotspotX: 39,
     cursorHotspotY: 46,
+    cursorNaturalWidth: 78,
+    cursorNaturalHeight: 80,
+    cursorDisplayWidth: 78,
+    cursorDisplayHeight: 80,
   },
   {
     id: 'hammer',
@@ -75,6 +87,10 @@ export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] = [
     menuIconOffsetYAlt: -1,
     cursorHotspotX: 50,
     cursorHotspotY: 54,
+    cursorNaturalWidth: 100,
+    cursorNaturalHeight: 96,
+    cursorDisplayWidth: 100,
+    cursorDisplayHeight: 96,
   },
 ];
 

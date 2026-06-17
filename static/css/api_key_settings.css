@@ -963,14 +963,18 @@ opacity: 0.95 !important;
 
 .mimo-assist-select-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    flex-wrap: wrap;
     gap: 12px;
-    max-width: 760px;
+    width: 100%;
+    max-width: 600px;
 }
 
 .mimo-assist-select-row .api-provider-dropdown,
 .mimo-assist-select-row select {
-    flex: 1 1 420px;
+    flex: 0 0 100%;
+    width: 100%;
+    max-width: 600px;
 }
 
 .mimo-token-plan-toggle {
@@ -1462,6 +1466,28 @@ input:checked + .slider:before {
 
 .gsv-refresh-btn:hover {
     background: #40C5F1;
+    color: #fff;
+}
+
+/* GPT-SoVITS「教程文档」跳转按钮 */
+.gsv-tutorial-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--accent-blue);
+    background: #fff;
+    color: var(--text-blue);
+    font-weight: 500;
+    font-size: 0.85em;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+}
+
+.gsv-tutorial-link:hover {
+    background: var(--accent-blue);
     color: #fff;
 }
 

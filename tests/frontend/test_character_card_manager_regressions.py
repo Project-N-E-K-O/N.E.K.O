@@ -377,6 +377,75 @@ def test_character_card_manager_voice_dropdown_prefers_clone_prefix(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_voice_dropdown_groups_by_provider_source(
+    mock_page: Page,
+    running_server: str,
+):
+    """source-first voice picking (§5): voices grouped by "<Provider> · source".
+
+    - registered clones grouped per provider (MiniMax / ElevenLabs clones do not mix);
+    - free presets -> "Free · preset"; native -> "<Provider> · preset";
+    - each source group carries data-voice-source-group and a label containing "·".
+    """
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {
+                            mm1: { voice_id: 'mm1', prefix: 'MM Voice', provider: 'minimax' },
+                            el1: { voice_id: 'el1', prefix: 'EL Voice', provider: 'elevenlabs' }
+                        },
+                        free_voices: { playfulGirl: 'voice-tone-FREE1' },
+                        native_voices: {
+                            nativePuck: { prefix: 'Puck', provider: 'gemini', provider_label: 'Gemini' }
+                        }
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200, headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+            await _loadPanelVoices(select, '');
+
+            const groups = Array.from(select.querySelectorAll('optgroup')).map(g => ({
+                label: g.label,
+                source: g.dataset.voiceSourceGroup || '',
+                values: Array.from(g.querySelectorAll('option')).map(o => o.value)
+            }));
+            return { groups };
+        }
+        """
+    )
+
+    groups = state["groups"]
+    # 克隆按 provider 分两组，互不混
+    mm = next((g for g in groups if "MiniMax" in g["label"]), None)
+    el = next((g for g in groups if "ElevenLabs" in g["label"]), None)
+    assert mm and mm["source"] == "clone" and mm["values"] == ["mm1"]
+    assert el and el["source"] == "clone" and el["values"] == ["el1"]
+    assert "·" in mm["label"] and "·" in el["label"]
+    # 免费预制组（值为 free voice_id）
+    free = next((g for g in groups if "voice-tone-FREE1" in g["values"]), None)
+    assert free and free["source"] == "preset" and "·" in free["label"]
+    # native 预制组（Gemini · 预制）
+    native = next((g for g in groups if "Gemini" in g["label"]), None)
+    assert native and native["source"] == "preset" and "·" in native["label"]
+
+
+@pytest.mark.frontend
 def test_character_card_manager_creates_tag_scroll_buttons_for_dynamic_wrapper(
     mock_page: Page,
     running_server: str,
