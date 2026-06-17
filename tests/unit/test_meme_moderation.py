@@ -164,6 +164,8 @@ class SequencePostClient(FakeClient):
         self.post_responses = list(post_responses)
 
     async def post(self, url, *, headers=None, json=None, timeout=None):
+        if not self.post_responses:
+            raise AssertionError("Unexpected extra moderation POST call in SequencePostClient")
         self.post_calls.append(
             {
                 "url": url,
@@ -181,6 +183,8 @@ class SequenceStreamClient(FakeClient):
         self.get_responses = list(get_responses)
 
     def stream(self, method, url, *, headers=None, timeout=None, **kwargs):
+        if not self.get_responses:
+            raise AssertionError("Unexpected extra image stream call in SequenceStreamClient")
         self.get_calls.append(
             {
                 "method": method,
@@ -221,6 +225,21 @@ def run(coro):
 
 def use_direct_url_payload(monkeypatch):
     monkeypatch.setenv("NEKO_MEME_MODERATION_IMAGE_INPUT_MODE", "url")
+
+
+def test_sequence_clients_report_extra_requests():
+    post_client = SequencePostClient([FakeResponse(json_data=moderation_json(False))])
+    stream_client = SequenceStreamClient(
+        [FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")]
+    )
+
+    run(post_client.post("https://example.test/moderations"))
+    with pytest.raises(AssertionError, match="Unexpected extra moderation POST call"):
+        run(post_client.post("https://example.test/moderations"))
+
+    stream_client.stream("GET", "https://img.soutula.com/one.jpg")
+    with pytest.raises(AssertionError, match="Unexpected extra image stream call"):
+        stream_client.stream("GET", "https://img.soutula.com/two.jpg")
 
 
 def write_config(data):
@@ -500,6 +519,31 @@ def test_flagged_outside_threshold_categories_still_block(monkeypatch):
     assert result.reason == "flagged"
 
 
+def test_flagged_sexual_minors_blocks_even_below_threshold(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                True,
+                scores={"sexual/minors": 0.65},
+                categories={"sexual/minors": True},
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "flagged"
+
+
 def test_flagged_openai_scores_block_when_no_local_threshold_keys(monkeypatch):
     use_direct_url_payload(monkeypatch)
     client = FakeClient(
@@ -667,6 +711,42 @@ def test_rate_limit_backoff_is_scoped_to_active_config(monkeypatch):
     assert second.reason == "pass"
     assert len(first_client.post_calls) == 1
     assert len(second_client.post_calls) == 1
+
+
+def test_backoff_expiry_resets_when_fingerprint_changes(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setattr(mm.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setenv("NEKO_MEME_MODERATION_PAYMENT_BACKOFF_SECONDS", "600")
+    first_client = FakeClient(post_response=FakeResponse(status_code=402))
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/one.jpg",
+            http_client=first_client,
+            enabled=True,
+            api_key="stale-key",
+        )
+    )
+    first_until = mm._provider_backoff_until
+
+    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://healthy-provider.test/v1")
+    monkeypatch.setenv("NEKO_MEME_MODERATION_RATE_LIMIT_BACKOFF_SECONDS", "3")
+    second_client = FakeClient(post_response=FakeResponse(status_code=429))
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/two.jpg",
+            http_client=second_client,
+            enabled=True,
+            api_key="fresh-key",
+        )
+    )
+
+    assert first.allowed is False
+    assert first.reason == "payment_required"
+    assert second.allowed is False
+    assert second.reason == "rate_limited"
+    assert first_until == 1600.0
+    assert mm._provider_backoff_until == 1003.0
 
 
 def test_payment_required_sets_backoff(monkeypatch):

@@ -54,7 +54,7 @@ _DEFAULT_BLOCK_SCORE_THRESHOLDS = {
 }
 _SCORE_CATEGORY_ALIASES = {
     "porn": ("porn", "sexual"),
-    "hentai": ("hentai", "sexual/minors"),
+    "hentai": ("hentai",),
     "sexy": ("sexy",),
 }
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -407,7 +407,10 @@ def _rate_limit_backoff_seconds(response: httpx.Response | None) -> float:
 def _set_provider_backoff(seconds: float, reason: str, fingerprint: str) -> float:
     global _provider_backoff_fingerprint, _provider_backoff_reason, _provider_backoff_until
     until = time.monotonic() + max(1.0, seconds)
-    _provider_backoff_until = max(_provider_backoff_until, until)
+    if _provider_backoff_fingerprint == fingerprint:
+        _provider_backoff_until = max(_provider_backoff_until, until)
+    else:
+        _provider_backoff_until = until
     _provider_backoff_reason = reason
     _provider_backoff_fingerprint = fingerprint
     return _provider_backoff_until
