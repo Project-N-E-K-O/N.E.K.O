@@ -198,6 +198,20 @@ def _topic_activity_gate_open(mgr: Any, lanlan_name: str) -> bool:
     return allowed
 
 
+def topic_hook_delivery_available(lanlan_name: str) -> bool:
+    """Preflight whether a topic hook could be delivered right now."""
+    mgr = _resolve_topic_manager(lanlan_name)
+    if mgr is None:
+        return False
+    if not _topic_activity_gate_open(mgr, lanlan_name):
+        return False
+    if callable(getattr(mgr, "submit_proactive_callback", None)):
+        return True
+    return callable(getattr(mgr, "enqueue_agent_callback", None)) and callable(
+        getattr(mgr, "trigger_agent_callbacks", None)
+    )
+
+
 def _live_topic_lang(mgr: Any, captured_lang: str) -> str:
     """Re-resolve the topic language at firing time.
 

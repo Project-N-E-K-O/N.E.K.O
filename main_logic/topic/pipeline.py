@@ -31,6 +31,7 @@ TopicTrigger = Callable[
     ...,
     Awaitable[bool],
 ]
+DeliveryAvailable = Callable[[str], bool]
 
 _MAX_TEXT_CHARS = 1000
 _CANDIDATE_AFTER_QUIET_SECONDS = 60.0
@@ -214,9 +215,11 @@ class TopicHookPool:
         min_user_turns_for_topic: int = 4,
         daily_topic_limit: int = _MAX_DAILY_TOPIC_TRIGGERS,
         signal_store_path: Any | None = None,
+        delivery_available: DeliveryAvailable | None = None,
     ) -> None:
         self._analyzer = analyzer or _default_analyzer
         self._topic_trigger = topic_trigger
+        self._delivery_available = delivery_available
         self._auto_schedule = auto_schedule
         self._enable_online_enrichment = enable_online_enrichment
         self._enable_deep_search = enable_deep_search
@@ -280,6 +283,10 @@ class TopicHookPool:
         self._signal_store.flush()
         self._dirty.discard(name)
 
+    def purge_accumulated_signals(self, lanlan_name: str) -> None:
+        """Public privacy-redaction hook for conversation-turn sinks."""
+        self._purge_accumulated_signals(str(lanlan_name or "default"))
+
     def _consume_accumulated_signals(self, name: str) -> None:
         """Consume analyzed evidence for this process, but keep it durable.
 
@@ -291,9 +298,16 @@ class TopicHookPool:
         self._signal_store.flush()
         self._dirty.discard(name)
 
-    def _discard_delivered_signals(self, name: str) -> None:
+    def _discard_delivered_signals(
+        self,
+        name: str,
+        material: Mapping[str, Any] | None = None,
+    ) -> None:
         """Drop durable evidence once the pending hook is done."""
-        self._signal_store.clear(name)
+        cutoff = None
+        if material is not None:
+            cutoff = material.get("_signal_cutoff_at")
+        self._signal_store.clear_until(name, timestamp=cutoff)
         self._signal_store.flush()
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
@@ -380,6 +394,7 @@ class TopicHookPool:
             if stored_lang and stored_lang != "zh"
             else (lang or stored_lang or "zh")
         )
+        signal_cutoff_at = self._signal_store.last_turn_at(name)
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         raw_materials = await self._analyzer(
             lang=topic_lang,
@@ -415,6 +430,8 @@ class TopicHookPool:
         cleaned = self._filter_available_materials(name, cleaned)
         if self._daily_quota_reached(name):
             cleaned = []
+        for material in cleaned:
+            material["_signal_cutoff_at"] = signal_cutoff_at
         self._materials[name] = cleaned
         if cleaned:
             for idx, material in enumerate(cleaned, start=1):
@@ -580,20 +597,26 @@ class TopicHookPool:
             if self._daily_quota_reached(name) or self._topic_was_used_today(name, current_material):
                 current_material["status"] = "skipped"
                 self._materials[name] = []
-                self._discard_delivered_signals(name)
+                self._discard_delivered_signals(name, current_material)
                 logger.info("[%s] topic material trigger skipped: already used or daily quota reached", name)
                 return
-            # "Search first, then chat": prepare a deeper, big-model-derived
-            # online lead before attempting to open. This runs in the trigger
-            # task (off the user hot path) and caches onto current_material, so
-            # a reschedule reuses it instead of re-searching. The actual open is
-            # re-gated by the delivery bridge AFTER this prepare completes.
+            # "Search first, then chat": once the delivery bridge looks open,
+            # prepare a deeper online lead off the user hot path. A later gate
+            # close just keeps the prepared material pending for the next retry.
             if self._seconds_until_next_delivery_window(name) > 0:
                 self._reschedule_trigger_window(name, current_material, lang)
+                return
+            if not self._delivery_available_now(name):
+                logger.info("[%s] topic material trigger waiting: delivery gate closed", name)
+                self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
             if self._seconds_until_next_delivery_window(name) > 0:
                 self._reschedule_trigger_window(name, current_material, lang)
+                return
+            if not self._delivery_available_now(name):
+                logger.info("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
+                self._reschedule_trigger_retry(name, current_material, lang)
                 return
             triggered = await self._topic_trigger(
                 lanlan_name=name,
@@ -611,7 +634,7 @@ class TopicHookPool:
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
             self._mark_topic_used(name, current_material)
-            self._discard_delivered_signals(name)
+            self._discard_delivered_signals(name, current_material)
             logger.info(
                 "[%s] topic material triggered once: %s",
                 name,
@@ -680,6 +703,15 @@ class TopicHookPool:
                     material[key] = deep[key]
         elif floor_hint is not None:
             material["material_hint"] = floor_hint
+
+    def _delivery_available_now(self, name: str) -> bool:
+        if self._delivery_available is None:
+            return True
+        try:
+            return bool(self._delivery_available(name))
+        except Exception as exc:
+            logger.debug("[%s] topic delivery availability check failed: %s", name, exc)
+            return False
 
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
@@ -801,9 +833,16 @@ def _default_topic_trigger():
     return trigger_topic_hook_once
 
 
+def _default_delivery_available():
+    from main_logic.topic.delivery import topic_hook_delivery_available
+
+    return topic_hook_delivery_available
+
+
 _GLOBAL_TOPIC_POOL = TopicHookPool(
     topic_trigger=_default_topic_trigger(),
     signal_store_path=_default_signal_store_path(),
+    delivery_available=_default_delivery_available(),
 )
 
 

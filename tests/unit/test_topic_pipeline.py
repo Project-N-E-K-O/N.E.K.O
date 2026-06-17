@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 import threading
 import time
 from datetime import datetime
@@ -61,6 +62,45 @@ def test_topic_signal_store_persists_recent_turns_across_instances(tmp_path):
     )
     assert reloaded.is_ready("妮可")
     assert "换工作" in reloaded.format_global_signals("妮可", lang="zh-CN")
+
+
+def test_topic_signal_store_flushes_pruned_entries_after_load(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    now = time.time()
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "characters": {
+                    "妮可": [
+                        {
+                            "actor": "user",
+                            "text": "十二小时前的原始证据",
+                            "timestamp": now - 20,
+                        },
+                        {
+                            "actor": "user",
+                            "text": "仍然有效的新证据",
+                            "timestamp": now,
+                        },
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    TopicSignalStore(
+        min_user_turns_for_topic=1,
+        persistence_path=path,
+        retention_seconds=10,
+    )
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    entries = persisted["characters"]["妮可"]
+    assert len(entries) == 1
+    assert entries[0]["text"] == "仍然有效的新证据"
 
 
 def test_topic_signal_store_batches_persistence_off_chat_path(monkeypatch, tmp_path):
@@ -617,6 +657,93 @@ async def test_topic_pool_rechecks_quiet_window_before_delivery_prepare(monkeypa
     await asyncio.sleep(0.05)
     assert deep_calls == ["旧话题"]
     assert delivered == ["旧话题"]
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_preserves_post_candidate_signals_after_delivery():
+    delivered = []
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "旧话题",
+                "keywords": ["旧话题"],
+                "relevance": 90,
+            }
+        ]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.1,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段")
+
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.03)
+    pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡")
+    await asyncio.sleep(0.18)
+
+    signals = pool._signal_store.format_global_signals("妮可", lang="zh-CN")
+    assert delivered == ["旧话题"]
+    assert "新话题" in signals
+    assert "旧话题" not in signals
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_waits_for_delivery_gate_before_deep_prepare(monkeypatch):
+    deep_calls = []
+    delivered = []
+    gate = {"open": False}
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "需要等投递窗口的话题",
+                "keywords": ["窗口"],
+                "relevance": 90,
+            }
+        ]
+
+    async def fake_deepen(self, name, material, lang):
+        deep_calls.append(material["interest"])
+        material["material_hint"] = {"summary": "prepared"}
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    monkeypatch.setattr(TopicHookPool, "_deepen_material", fake_deepen)
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        topic_trigger=fake_trigger,
+        delivery_available=lambda name: gate["open"],
+        trigger_delay_seconds=0,
+        trigger_retry_delay_seconds=0.03,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "投递窗口关闭时也不能提前烧掉深搜准备")
+
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.01)
+
+    assert deep_calls == []
+    assert delivered == []
+    assert "deep_search_done" not in pool._materials["妮可"][0]
+
+    gate["open"] = True
+    await asyncio.sleep(0.05)
+
+    assert deep_calls == ["需要等投递窗口的话题"]
+    assert delivered == ["需要等投递窗口的话题"]
 
 
 @pytest.mark.asyncio

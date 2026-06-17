@@ -902,9 +902,13 @@ def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
 def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_turns():
     from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
 
+    purges = []
     timestamps = []
 
     class FakeTopicPool:
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
         def note_turn_timestamp(self, lanlan_name, *, lang='zh', now=None):
             timestamps.append((lanlan_name, lang, now))
 
@@ -917,6 +921,7 @@ def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_tur
 
     dispatcher.note_user_message(text='secret user turn', now=1.0)
 
+    assert purges == ['test_lanlan']
     assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
 
 

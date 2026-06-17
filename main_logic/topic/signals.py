@@ -205,6 +205,26 @@ class TopicSignalStore:
             self._turns.pop(str(lanlan_name or "default"), None)
         self._request_persist()
 
+    def clear_until(self, lanlan_name: str, *, timestamp: float | None) -> None:
+        if timestamp is None:
+            self.clear(lanlan_name)
+            return
+        name = str(lanlan_name or "default")
+        cutoff = float(timestamp)
+        with self._persist_lock:
+            turns = self._turns.get(name)
+            if not turns:
+                return
+            retained = [
+                turn for turn in turns
+                if float(turn.timestamp) > cutoff
+            ][-self._max_turns:]
+            if retained:
+                self._turns[name] = deque(retained, maxlen=self._max_turns)
+            else:
+                self._turns.pop(name, None)
+        self._request_persist()
+
     def names(self) -> list[str]:
         with self._persist_lock:
             return list(self._turns)
@@ -269,23 +289,25 @@ class TopicSignalStore:
             if _is_meaningful_turn(turn.text)
         ]
 
-    def _prune(self, lanlan_name: str, *, now: float | None = None) -> None:
+    def _prune(self, lanlan_name: str, *, now: float | None = None) -> bool:
         name = str(lanlan_name or "default")
         turns = self._turns.get(name)
         if not turns:
-            return
+            return False
         if self._retention_seconds <= 0:
             self._turns.pop(name, None)
-            return
+            return True
         current_time = float(now if now is not None else time.time())
         retained = [
             turn for turn in turns
             if current_time - float(turn.timestamp) <= self._retention_seconds
         ][-self._max_turns:]
+        changed = len(retained) != len(turns)
         if retained:
             self._turns[name] = deque(retained, maxlen=self._max_turns)
         else:
             self._turns.pop(name, None)
+        return changed
 
     def _load(self) -> None:
         path = self._persistence_path
@@ -298,6 +320,7 @@ class TopicSignalStore:
         characters = payload.get("characters") if isinstance(payload, dict) else None
         if not isinstance(characters, dict):
             return
+        pruned_on_load = False
         for name, entries in characters.items():
             if not isinstance(entries, list):
                 continue
@@ -316,7 +339,11 @@ class TopicSignalStore:
                 self._turns[safe_name].append(
                     TopicTurnSignal(actor=actor, text=text, timestamp=timestamp)
                 )
-            self._prune(safe_name)
+            pruned_on_load = self._prune(safe_name) or pruned_on_load
+        if pruned_on_load:
+            with self._persist_lock:
+                self._persist_dirty = True
+            self.flush()
 
     def flush(self) -> None:
         """Persist any pending topic signals.

@@ -141,6 +141,13 @@ class TopicHookTurnSink:
         pool = self._pool()
         if not event.text_allowed or not event.text:
             if event.had_text:
+                purge_accumulated_signals = getattr(
+                    pool,
+                    "purge_accumulated_signals",
+                    None,
+                )
+                if purge_accumulated_signals is not None:
+                    purge_accumulated_signals(event.lanlan_name)
                 note_turn_timestamp = getattr(pool, "note_turn_timestamp", None)
                 if note_turn_timestamp is not None:
                     note_turn_timestamp(
