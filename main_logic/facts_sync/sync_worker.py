@@ -1,15 +1,14 @@
-"""Facts 同步 worker（NEKO → N.E.K.O.Servers /api/facts/sync）。
+"""Facts sync worker for ``POST /api/facts/sync`` to N.E.K.O.Servers.
 
-设计要点：
-- **默认禁用**：仅当 ``NEKO_FACTS_SYNC_ENABLED=1`` 且 ``NEKO_SOCIAL_BASE_URL`` 已配
-  才真正启动。其余情况悄悄退出，不破坏 NEKO 现有行为。
-- **批次**：单次最多 50 条（与 Servers 端约定一致）；超量自动拆批。
-- **去抖**：每 5 分钟 sweep 一次；每个 lanlan_name 维护一个本地"已同步 hash"集合
-  （``memory/<lanlan>/facts_sync_state.json``），避免重复 POST 已成功的内容。
-- **过滤**：跳过 ``private == True`` 和 ``importance < 0.5`` 的事实（服务端再次
-  把关 importance >= 0.3，本地用 0.5 更严格让上行更克制）。
-- **失败重试**：网络/HTTP 非 2xx 时把未同步的 hash 集合留在 state 里，下次 sweep 自动重试；
-  超过 5 次失败的 hash 落到 ``facts_sync_pending.jsonl`` 给运维查。
+Design notes:
+- Disabled by default; it starts only when ``NEKO_FACTS_SYNC_ENABLED=1`` and
+  ``NEKO_SOCIAL_BASE_URL`` is configured.
+- Each batch contains at most 50 facts to match the server contract.
+- A sweep runs every five minutes. Each character stores synced hashes in
+  ``memory/<lanlan>/facts_sync_state.json`` to avoid duplicate POSTs.
+- Private facts and low-importance facts are filtered locally before upload.
+- Network and non-2xx HTTP failures leave hashes pending for the next sweep;
+  hashes that fail too often are written to ``facts_sync_pending.jsonl``.
 """
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ _register_lock = asyncio.Lock()
 
 
 def _enabled() -> bool:
-    """读环境变量决定是否启用。默认关。"""
+    """Read the environment flag that enables the worker; default is off."""
     return os.environ.get("NEKO_FACTS_SYNC_ENABLED", "0") in ("1", "true", "TRUE", "yes")
 
 
@@ -80,7 +79,7 @@ def _append_jsonl(path: Path, record: dict) -> None:
 
 
 def _get_client_id() -> str | None:
-    """从 cloudsave_local_state.json 读 client_id（M1-j 已用同一来源）。"""
+    """Read ``client_id`` from the same cloudsave local state used by M1-j."""
     try:
         cm = get_config_manager()
         state = cm.load_cloudsave_local_state()
@@ -94,7 +93,7 @@ def _get_client_id() -> str | None:
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:
-    """memory/ 下每个子目录对应一个 lanlan_name。"""
+    """Return character directories under ``memory/``."""
     if not memory_dir.exists():
         return []
     try:
@@ -108,7 +107,7 @@ def _select_unsynced_facts(
     facts_data: list[dict],
     already_synced_hashes: set[str],
 ) -> list[dict]:
-    """挑出未同步 + 通过过滤的 fact 子集。保留 fact_hash + text + importance + redacted 四个字段。"""
+    """Select unsynced facts that pass local filters for upload."""
     out: list[dict] = []
     for fact in facts_data:
         if not isinstance(fact, dict):
@@ -142,10 +141,10 @@ def _select_unsynced_facts(
 
 
 async def _ensure_client_registered(base_url: str, client_id: str) -> bool:
-    """幂等地把当前 client_id 注册到 Servers。成功后缓存避免重复 register。
+    """Idempotently register the current client_id with Servers.
 
-    M2-i 漏点修复：worker 第一次 sweep 前必须 POST /api/clients/register，
-    否则 X-Client-Id 在 Servers clients 表查不到，所有 facts 推送都 401。
+    The first sweep must call ``POST /api/clients/register`` before facts are
+    pushed; otherwise Servers cannot resolve ``X-Client-Id`` and returns 401.
     """
     cache_key = f"{base_url}|{client_id}"
     if _client_registered.get(cache_key):
@@ -206,7 +205,7 @@ async def _sync_one_lanlan(
     client_id: str,
     base_url: str,
 ) -> None:
-    """处理单个 lanlan_name 子目录。"""
+    """Sync one character directory."""
     facts_path = lanlan_dir / "facts.json"
     if not facts_path.exists():
         return
@@ -303,10 +302,10 @@ async def _sweep_once() -> None:
 
 
 async def start_facts_sync_worker() -> None:
-    """长期运行的 worker。被 main_server.on_startup 包在 asyncio.create_task 里调。
+    """Run the long-lived facts sync worker scheduled by main_server startup.
 
-    入口处 gate：如果 NEKO_FACTS_SYNC_ENABLED=0 或没配 NEKO_SOCIAL_BASE_URL，直接 return
-    （不报错，保持安静）。
+    The entry gate returns quietly when the feature flag is off or the social
+    base URL is missing.
     """
     if not _enabled():
         logger.info("facts_sync: disabled (set NEKO_FACTS_SYNC_ENABLED=1 to enable)")

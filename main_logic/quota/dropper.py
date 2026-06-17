@@ -1,15 +1,13 @@
-"""配额掉落规则引擎（NEKO 本地）。
+"""Local quota-drop rule engine placeholder.
 
-【已退役 · 统一券经济】对话掉落的「判定 + 发券」已整体迁到 NEKO-PC Electron 私有客户端的
-forge-dropper（直接消费既有 WS 帧做判定，再调云端 ``POST /api/forge/credits/grant`` 发券）。
-NEKO 这一侧因此不再做任何判定、不再直接调云端、不再广播 ``card_drop_available`` 自动开卡——
-否则 docker 自部署（无官方客户端）会白白调用云端、规则也会暴露在公开仓。
+The conversation drop decision and credit grant path has moved to the private
+NEKO-PC Electron forge-dropper. NEKO no longer decides drops, calls the cloud
+directly, or broadcasts ``card_drop_available`` automatically from this module.
 
-hook：
-- ``on_text_message(lanlan_name, text) -> None``：**已退役为 no-op**（仅保留 hook 注册以兼容）。
-  原 word_count + keywords 判定 / ``cloud_sync`` / ``ux_state`` / 规则加载均废弃，下方保留这些
-  定义仅为兼容老 import，可后续随 ``config/quota_rules.yaml`` 一并删除。
-- ``on_utterance(bucket, event) -> None``：M2-j v1 留位（emotion 触发 v2 再开）。
+Hooks:
+- ``on_text_message(lanlan_name, text) -> None`` is now a compatibility no-op.
+- ``on_utterance(bucket, event) -> None`` remains a placeholder for future
+  emotion-triggered rules.
 """
 
 from __future__ import annotations
@@ -52,12 +50,11 @@ def _load_rules() -> dict[str, Any]:
 
 
 def _emit_card_drop_event(lanlan_name: str | None, trigger_type: str) -> None:
-    """掉落触发时把「掉了一张卡」事件 WS 广播给前端，让前端起开卡演出。
+    """Broadcast a card-drop event to frontend clients when a drop fires.
 
-    经 main_logic.agent_event_bus 的 WS 广播器 seam 推送（app 启动时注册真正的
-    _broadcast_to_all_connected），在当前 event loop 上 fire-and-forget 调度
-    （与 cloud_sync.send_drop_hint 同套路，互不阻塞）；低层不 import app，避免层级倒挂。
-    前端 app-websocket.js onmessage 据 type == 'card_drop_available' 分发到开卡模态。
+    The event uses the websocket broadcaster registered in
+    ``main_logic.agent_event_bus`` and is scheduled fire-and-forget on the
+    current loop, keeping this lower-level module independent from ``app``.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -79,7 +76,7 @@ def _emit_card_drop_event(lanlan_name: str | None, trigger_type: str) -> None:
 
 
 def _maybe_drop(lanlan_name: str | None, trigger_type: str, cooldown_sec: int, *, reset_word: bool = False) -> bool:
-    """统一的"触发掉落"路径：cooldown 检查 → 更新 state → fire-and-forget 调云端 + 推前端。"""
+    """Run the shared drop path: cooldown, state update, cloud hint, and event."""
     if not ux_state.can_trigger(trigger_type, cooldown_sec):
         return False
     snapshot = ux_state.record_drop(trigger_type, reset_word_count=reset_word)
@@ -93,27 +90,20 @@ def _maybe_drop(lanlan_name: str | None, trigger_type: str, cooldown_sec: int, *
 
 
 def on_text_message(lanlan_name: str, text: str) -> None:
-    """register_text_user_message_hook 入口。必须返回 None 不抢现有消费者。
+    """Entry point for ``register_text_user_message_hook``; always return None.
 
-    【已退役 · 统一券经济】对话掉落的「判定 + 发券」全部迁到 **NEKO-PC Electron 私有客户端**
-    的 forge-dropper：它直接消费既有 WS 帧（``neko-assistant-turn-start`` /
-    ``neko-assistant-emotion-ready`` / ``game_window_state_change``）做「随机心情 combo +
-    聊满N轮 / 挂机 / 小游戏 保底」判定，并由 Electron 直接调云端
-    ``POST /api/forge/credits/grant`` 发券（服务器抽稀有度 + 落库 + 扣每日发券额度；仅登录用户）。
-
-    NEKO 这一侧因此不再做任何判定、不再直接调云端、不再广播 ``card_drop_available`` 自动开卡——
-    否则 docker 自部署（无官方客户端）会白白调用云端、规则也会暴露在公开仓。本 hook 保持 no-op；
-    下方 ``_maybe_drop`` / ``cloud_sync`` / ``ux_state`` / 规则加载均已废弃（保留定义仅为兼容老
-    import，可后续随 ``config/quota_rules.yaml`` 一并删除）。
+    The conversation drop decision and credit grant path lives in the private
+    NEKO-PC Electron forge-dropper. This hook remains a no-op for compatibility
+    so public NEKO builds do not expose rules or call cloud grant endpoints.
     """
     return None
 
 
 def on_utterance(bucket: str, event: dict) -> None:
-    """register_user_utterance_sink 入口。M2-j v1 仅打 debug，无实际触发。
+    """Entry point for ``register_user_utterance_sink``.
 
-    M2-j v2 计划：接入情感强度判定（plugin/core/state.py 的 emotion 数值），
-    当 window 内累计 emotion_intensity >= 阈值时触发 emotion drop。
+    The current M2-j placeholder only logs debug information. Future versions can
+    add emotion-intensity based rules.
     """
     if not _enabled():
         return

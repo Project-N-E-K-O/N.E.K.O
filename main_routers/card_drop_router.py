@@ -1,17 +1,19 @@
-"""对话掉落卡片 —— NEKO 瘦客户端职责。
+"""Conversation card-drop thin-client routes for NEKO.
 
-职责切分（用户定）：
-- NEKO Electron 只负责：① 对话触发掉落 ② **从本地记忆给 5选1 候选** ③ 显示开卡演出。
-- 云端 N.E.K.O.Servers 负责：从选中记忆**文本**生成卡（稀有度/编号/故事/卡面）+ 存储。
-- 卡册去**猫娘社区 web** 看，NEKO 不渲染卡册。
+Responsibility split:
+- NEKO handles local drop triggering, local memory candidate selection, and the
+  card reveal animation.
+- N.E.K.O.Servers generates and stores the final card from the selected memory
+  text, including rarity, number, story, and art.
+- Card collection browsing lives in the community web app, not in NEKO.
 
-端点：
-- GET  /api/card-drop/candidates?lanlan_name=...&size=5
-      → **本地**读 memory/<角色>/facts.json 偏重要随机抽 size 条 + 预设补满（不走云端）。
-- POST /api/card-drop/draw  {lanlan_name, source_text, prefer_tags?}
-      → 代理云端 POST /api/cards/draw（补 X-Client-Id）。source_text = 选中候选的文本。
+Endpoints:
+- ``GET /api/card-drop/candidates`` reads local ``memory/<character>/facts.json``
+  and returns weighted candidates with presets as fallback.
+- ``POST /api/card-drop/draw`` proxies the selected source text to the cloud
+  ``/api/cards/draw`` endpoint with ``X-Client-Id``.
 
-云端契约见 N.E.K.O.Servers app/modules/cards/router.py。
+The cloud contract lives in N.E.K.O.Servers ``app/modules/cards/router.py``.
 """
 
 from __future__ import annotations
@@ -50,13 +52,13 @@ _PRESETS = [
 
 
 def _social_base_url() -> str:
-    """云端 base url；未配则用 dev 默认 localhost:8080。"""
+    """Return the cloud base URL, falling back to the local dev default."""
     raw = (os.environ.get("NEKO_SOCIAL_BASE_URL", "") or "").strip().rstrip("/")
     return raw or _DEFAULT_SOCIAL_BASE_URL
 
 
 def _get_client_id() -> str | None:
-    """从 cloudsave 本地状态读 client_id（与 facts_sync / puller 同一来源）。"""
+    """Read ``client_id`` from the same local cloudsave state as sync workers."""
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
@@ -78,7 +80,7 @@ def _require_ctx() -> tuple[str, str]:
 
 
 def _relay(r: httpx.Response):
-    """透传云端响应：成功返 JSON；4xx/5xx 透传状态码 + detail。"""
+    """Relay a cloud response, returning JSON or raising an HTTP error."""
     if r.status_code >= 400:
         try:
             detail = r.json().get("detail") or r.text[:200]
@@ -137,11 +139,10 @@ def _access_token() -> str | None:
 
 
 async def _store_session(base: str, access: str | None, refresh: str | None, user: dict) -> dict:
-    """存 JWT 到 community_auth.json + bind-client 迁移游客卡到账号。
+    """Store JWTs and bind the local client so guest cards migrate to the user.
 
-    邮箱密码登录与 Steam 登录共用这一段落地逻辑。返回 bind 结果
-    ``{"bound": bool, "error": str|None}`` 并一并存进 auth 文件（供 auth-status 透出），
-    这样「此设备已绑到别的账号 → 卡没迁移」不会被静默吞、UI 也不会谎报「已存入卡册」。
+    Email/password and Steam login share this path. The bind result is persisted
+    and exposed through auth-status so client-binding conflicts are visible.
     """
     bind: dict = {"bound": False, "error": None}
     cid = _get_client_id()
@@ -176,7 +177,7 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
 
 
 async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
-    """邮箱密码登录落地：存 JWT + bind-client。返回 (user, bind)。"""
+    """Complete email/password login by storing JWTs and binding the client."""
     tokens = login_out.get("tokens") or {}
     user = login_out.get("user") or {}
     bind = await _store_session(base, tokens.get("access_token"), tokens.get("refresh_token"), user)
@@ -207,7 +208,7 @@ def _mark_steam_pending() -> None:
 
 
 def _consume_steam_pending() -> bool:
-    """一次性消费 pending 标记：存在且未过期返回 True（消费后即删，防重放）。"""
+    """Consume the one-time Steam pending marker if it exists and is fresh."""
     p = _steam_pending_path()
     if not p or not p.exists():
         return False
@@ -224,7 +225,7 @@ def _consume_steam_pending() -> bool:
 
 
 def _local_facts(lanlan_name: str) -> list[dict]:
-    """读本地 memory/<角色>/facts.json，返回 [{text, importance}]（过滤 private/redacted/空）。"""
+    """Read local facts for one character, filtering private or empty entries."""
     try:
         from utils.config_manager import get_config_manager
         mem = Path(get_config_manager().memory_dir)
@@ -263,7 +264,7 @@ def _local_facts(lanlan_name: str) -> list[dict]:
 
 
 def _weighted_sample(items: list[dict], k: int) -> list[dict]:
-    """按 importance 加权随机抽 k 条（Efraimidis-Spirakis，不放回，偏重要）。"""
+    """Sample up to ``k`` items without replacement, weighted by importance."""
     if k <= 0 or not items:
         return []
     if len(items) <= k:
@@ -370,7 +371,7 @@ async def logout_endpoint():
 
 
 def _neko_steam_callback_url(request: Request) -> str:
-    """NEKO 本地 Steam 回调地址（与请求同源，桌面端必为 localhost）。"""
+    """Return the local Steam callback URL using the request origin."""
     return f"{str(request.base_url).rstrip('/')}/api/card-drop/steam-callback"
 
 

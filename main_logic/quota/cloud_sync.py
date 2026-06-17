@@ -1,10 +1,10 @@
-"""调 N.E.K.O.Servers 云端 ``POST /api/quotas/drop-hint``。
+"""Send fire-and-forget ``POST /api/quotas/drop-hint`` calls to Servers.
 
-设计要点：
-- **fire-and-forget**：不阻塞调用方（hook 是同步上下文，但内部 ``asyncio.create_task``）。
-- **idem_key 防重**：``sha256(client_id + utc_date + trigger_type + counter)``，
-  让重发不会让服务器多发 bonus。
-- **不抛错**：任何失败（网络、HTTP 4xx/5xx、解析失败）只记日志，不影响主对话流。
+Design notes:
+- Fire-and-forget so synchronous hooks are not blocked.
+- The idempotency key combines client id, UTC date, trigger type, a counter, and
+  current time to avoid duplicate cloud grants on retries.
+- Failures are logged only and never interrupt the main conversation flow.
 """
 
 from __future__ import annotations
@@ -102,10 +102,9 @@ async def _post_drop_hint_async(
 
 
 def send_drop_hint(lanlan_name: str | None, trigger_type: str) -> None:
-    """同步入口：在调用方所在 event loop 上 schedule 一次出站调用。
+    """Schedule one outbound drop-hint call on the caller's running loop.
 
-    如果没有 running loop（罕见 — hooks 几乎总是在 async route 上下文），
-    或者没配 base_url / client_id，直接返回不抛错。
+    If no loop is running, or the base URL/client id is missing, return quietly.
     """
     base_url = _social_base_url()
     if not base_url:

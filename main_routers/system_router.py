@@ -688,7 +688,7 @@ async def get_system_status(response: Response):
 
 @router.get("/system/client-id")
 async def get_system_client_id(response: Response):
-    """Return the persistent ``client_id`` used by N.E.K.O.Servers / 社交平台.
+    """Return the persistent ``client_id`` used by N.E.K.O.Servers.
 
     Loaded from ``state/cloudsave_local_state.json`` (see
     ``utils.config_manager.ConfigManager.build_default_cloudsave_local_state``).

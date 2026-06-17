@@ -1,14 +1,14 @@
-"""Card cache puller（NEKO → N.E.K.O.Servers GET /api/cards/mine）。
+"""Card cache puller for ``GET /api/cards/mine`` from N.E.K.O.Servers.
 
-设计要点：
-- **默认禁用**：仅当 ``NEKO_CARD_CACHE_ENABLED=1`` 且 ``NEKO_SOCIAL_BASE_URL`` 已配
-  才真启动。
-- **简单版（M5）**：每次 sweep 拉最近 ``limit=100`` 张，与本地 ``memory/<lanlan>/cards/``
-  下的 ``<id>.json`` 文件对比。已存在的跳过；新出现的写入。**M6+** 引入 ``?since=ISO``
-  增量参数 + ETag。
-- **失败不阻塞**：网络/HTTP 非 2xx 时只记日志，下次 sweep 再试。
-- **身份**：游客模式用 ``X-Client-Id``（与 facts_sync 一致）；登录态 JWT 由 NEKO-PC
-  通过 IPC 推到 NEKO 后再加，M6 工作。
+Design notes:
+- Disabled by default; it starts only when ``NEKO_CARD_CACHE_ENABLED=1`` and
+  ``NEKO_SOCIAL_BASE_URL`` is configured.
+- The M5 version pulls the latest ``limit=100`` cards each sweep, skips existing
+  local ``memory/<lanlan>/cards/<id>.json`` files, and writes new cards. M6+
+  can add ``?since=ISO`` plus ETag support.
+- Network and non-2xx HTTP failures are logged and retried on the next sweep.
+- Guest identity uses ``X-Client-Id`` like facts_sync. Authenticated JWT wiring
+  from NEKO-PC IPC is left for M6.
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def _write_json_atomic(path: Path, data: Any) -> None:
 
 
 async def _pull_once() -> int:
-    """单次 sweep；返回本次新写入的卡片数。"""
+    """Run one sweep and return the number of newly written cards."""
     base_url = _social_base_url()
     if not base_url:
         return 0
@@ -126,7 +126,7 @@ async def _pull_once() -> int:
 
 
 async def start_card_cache_puller() -> None:
-    """长期运行的 worker。被 main_server.on_startup 包在 asyncio.create_task 里调。"""
+    """Run the long-lived card cache worker scheduled by main_server startup."""
     if not _enabled():
         logger.info("card_cache: disabled (set NEKO_CARD_CACHE_ENABLED=1 to enable)")
         return

@@ -1752,13 +1752,13 @@ _card_forge_active_character: dict = {}  # {dataUrl, name}
 
 @app.post('/card-forge/active-character')
 async def set_card_forge_active_character(payload: dict):
-    """由 app-chat-avatar.js 在捕获头像后调用，存储当前猫娘名（与头像 dataUrl）供 card-forge 获取。
+    """Store the active character name and optional avatar data for card-forge.
 
-    用 in-payload 语义区分"省略字段（不动）" vs "显式空串（清空）"：
-    - POST {"dataUrl": "x"}        只更新 dataUrl，保留已存 name
-    - POST {"name": ""}            显式清空 name
-    - POST {"dataUrl": "", "name": ""}  显式清空全部
-    前端调用方因此应该 *只在字段有意义时* 把它放进 body，避免误擦。
+    In-payload semantics distinguish omitted fields from explicit empty values:
+    - POST {"dataUrl": "x"} updates only dataUrl and keeps the stored name.
+    - POST {"name": ""} explicitly clears the stored name.
+    - POST {"dataUrl": "", "name": ""} explicitly clears both fields.
+    Callers should include only meaningful fields to avoid accidental erasure.
     """
     if not isinstance(payload, dict):
         return {"ok": True}
@@ -1771,11 +1771,11 @@ async def set_card_forge_active_character(payload: dict):
 
 @app.get('/card-forge/active-character')
 async def get_card_forge_active_character(include_avatar: bool = False):
-    """card-forge 前端轮询此端点获取最新猫娘名。
+    """Return the active character name polled by the card-forge frontend.
 
-    默认不返回 avatar dataUrl —— card-forge 前端目前每 5 秒轮询一次,只读 `name`,
-    把几十 KB 的 base64 dataUrl 一起回包纯属浪费。需要 avatar 的调用方
-    (例如未来的卡仓预览面板) 显式传 `?include_avatar=true`。
+    Avatar dataUrl is omitted by default because card-forge polls this endpoint
+    every few seconds and currently needs only ``name``. Future avatar consumers
+    can opt in with ``?include_avatar=true``.
     """
     from fastapi.responses import JSONResponse
     payload: dict[str, str] = {
