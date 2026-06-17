@@ -17,6 +17,7 @@ from datetime import date, datetime
 from typing import Any
 
 from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
+from main_logic.topic.deep_research import run_deep_research
 from main_logic.topic.materials import enrich_topic_materials_online
 from main_logic.topic.signals import TopicSignalStore
 
@@ -515,7 +516,7 @@ class TopicHookPool:
     async def _deepen_material(
         self, name: str, material: dict[str, Any], lang: str
     ) -> None:
-        """Delivery-time deep search: derive a focused query and re-enrich.
+        """Delivery-time deep search: prepare a focused online lead.
 
         Idempotent per material (``deep_search_done``) so a rescheduled trigger
         reuses the prepared lead instead of re-searching. Any failure leaves the
@@ -527,39 +528,15 @@ class TopicHookPool:
         if material.get("deep_search_done"):
             return
         material["deep_search_done"] = True
-        try:
-            from main_logic.activity.llm_enrichment import derive_deep_search_query
-            query = await derive_deep_search_query(
-                interest=str(material.get("interest") or ""),
-                keywords=list(material.get("keywords") or []),
-                floor_angle=str(material.get("online_angle") or ""),
-                lang=lang,
-            )
-        except Exception as exc:
-            logger.debug("[%s] deep search query derivation failed: %s", name, exc)
-            return
-        if not query:
-            return
-        material["deep_query"] = query
-        # Re-run online enrichment with the derived query. Clear the floor hint
-        # so the deeper result can replace it; restore the floor if the deep
-        # fetch turns up nothing.
-        floor_hint = material.get("material_hint")
-        material.pop("material_hint", None)
-        try:
-            enriched = await enrich_topic_materials_online(
-                [material], lang=lang, max_materials=1
-            )
-        except Exception as exc:
-            logger.debug("[%s] deep search enrichment failed: %s", name, exc)
-            enriched = None
-        deep = enriched[0] if enriched else None
-        if isinstance(deep, Mapping) and deep.get("material_hint"):
-            for key in ("material_hint", "online_used", "online_query", "online_angle"):
-                if key in deep:
-                    material[key] = deep[key]
-        elif floor_hint is not None:
-            material["material_hint"] = floor_hint
+        result = await run_deep_research(
+            material=material,
+            lang=lang,
+            enrich_materials=enrich_topic_materials_online,
+        )
+        if result.material_updates:
+            material.update(result.material_updates)
+        if result.fallback_reason:
+            logger.debug("[%s] deep search fallback: %s", name, result.fallback_reason)
 
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
