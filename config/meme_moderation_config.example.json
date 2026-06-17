@@ -1,4 +1,0 @@
-{
-  "_comment": "Copy to config/meme_moderation_config.json for local/private builds. Never commit a real API key.",
-  "api_key": ""
-}
