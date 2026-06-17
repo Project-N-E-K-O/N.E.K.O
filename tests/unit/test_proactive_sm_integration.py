@@ -1183,6 +1183,26 @@ async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
 
 
+async def test_deliver_proactive_batch_drops_topic_hook_when_release_predicate_closes():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    hook_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "status": "completed",
+        "summary": "deep topic",
+        "channel": "topic_hook",
+        "_topic_release_available": lambda: False,
+        DELIVERY_ACK_FUTURE_KEY: hook_future,
+    }
+    other_cb = {"status": "completed", "summary": "task done", "channel": "agent_task"}
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    await LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
+
+    assert hook_future.done() and hook_future.result() is False
+    mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+
+
 async def test_drop_pending_topic_hooks_for_voice_sweeps_both_queues():
     """The voice-start sweep removes topic hooks from pending_agent_callbacks AND
     the paired pending_extra_replies (hot-swap prime channel), resolves ack False

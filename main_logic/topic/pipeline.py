@@ -310,6 +310,12 @@ class TopicHookPool:
         self._signal_store.clear_until(name, timestamp=cutoff)
         self._signal_store.flush()
 
+    def _discard_analyzed_signals(self, name: str, cutoff: float | None) -> None:
+        """Drop durable evidence after analysis proves no hook is pending."""
+        self._signal_store.clear_until(name, timestamp=cutoff)
+        self._signal_store.flush()
+        self._dirty.discard(name)
+
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
         cleaned = _clean_text(text)
         if not cleaned:
@@ -442,9 +448,10 @@ class TopicHookPool:
                     _material_log_preview(material),
                 )
             self._schedule_trigger(name, cleaned[0], topic_lang)
+            self._consume_accumulated_signals(name)
         else:
             logger.info("[%s] topic material ready: none", name)
-        self._consume_accumulated_signals(name)
+            self._discard_analyzed_signals(name, signal_cutoff_at)
 
     def _schedule(self, name: str) -> None:
         # Candidate analysis is driven by the activity heartbeat via
@@ -618,9 +625,13 @@ class TopicHookPool:
                 logger.info("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
+            delivery_material = deepcopy(current_material)
+            delivery_material["_topic_release_available"] = (
+                lambda _name=name: self._seconds_until_quiet_window(_name) <= 0
+            )
             triggered = await self._topic_trigger(
                 lanlan_name=name,
-                material=deepcopy(current_material),
+                material=delivery_material,
                 lang=lang,
             )
             if not triggered:

@@ -105,7 +105,7 @@ def build_topic_hook_callback(material: Mapping[str, Any], *, lang: str) -> dict
         template["final"],
     ]
     detail = "\n".join(part for part in detail_parts if part)
-    return {
+    callback = {
         "event": "agent_task_callback",
         "origin": "event",
         "task_id": hook_id or "topic_hook",
@@ -127,6 +127,10 @@ def build_topic_hook_callback(material: Mapping[str, Any], *, lang: str) -> dict
         },
         "context_type": "topic_hook",
     }
+    release_available = material.get("_topic_release_available")
+    if callable(release_available):
+        callback["_topic_release_available"] = release_available
+    return callback
 
 
 def _remove_callback_from_manager(mgr: Any, callback: Mapping[str, Any]) -> None:

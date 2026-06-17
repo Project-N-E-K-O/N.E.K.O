@@ -1,3 +1,4 @@
+import json
 import time
 
 from main_logic.topic.signals import TopicSignalStore, TopicTurnSignal, _select_turns_for_prompt
@@ -80,3 +81,27 @@ def test_select_turns_for_prompt_clamps_negative_max_lines():
     ]
 
     assert _select_turns_for_prompt(turns, max_lines=-1) == []
+
+
+def test_topic_signal_store_persists_runtime_retention_prune(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    now = time.time()
+    store = TopicSignalStore(
+        min_user_turns_for_topic=1,
+        retention_seconds=10,
+        persistence_path=path,
+        persistence_flush_delay_seconds=60,
+    )
+    store.note_turn("妮可", actor="user", text="已经过期的原始证据", now=now - 20)
+    store.note_turn("妮可", actor="user", text="仍在窗口内的新证据", now=now)
+    store.flush()
+
+    assert store.last_turn_at("妮可") == now
+    store.flush()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    texts = [
+        item["text"]
+        for item in payload["characters"]["妮可"]
+    ]
+    assert texts == ["仍在窗口内的新证据"]

@@ -232,26 +232,38 @@ class TopicSignalStore:
     def last_turn_at(self, lanlan_name: str) -> float | None:
         name = str(lanlan_name or "default")
         with self._persist_lock:
-            self._prune(name)
+            pruned = self._prune(name)
             turns = self._turns.get(name)
             if not turns:
+                if pruned:
+                    self._request_persist()
                 return None
-            return float(turns[-1].timestamp)
+            timestamp = float(turns[-1].timestamp)
+        if pruned:
+            self._request_persist()
+        return timestamp
 
     def readiness_percent(self, lanlan_name: str) -> int:
         # Coarse "have we heard enough to bother analysing" estimate, for logs.
+        pruned = False
         with self._persist_lock:
-            self._prune(lanlan_name)
+            pruned = self._prune(lanlan_name)
             count = len(self._meaningful_user_turns(lanlan_name))
+        if pruned:
+            self._request_persist()
         return min(100, int(count * 100 / self._min_user_turns_for_topic))
 
     def is_ready(self, lanlan_name: str) -> bool:
+        pruned = False
         with self._persist_lock:
-            self._prune(lanlan_name)
-            return (
+            pruned = self._prune(lanlan_name)
+            ready = (
                 len(self._meaningful_user_turns(lanlan_name))
                 >= self._min_user_turns_for_topic
             )
+        if pruned:
+            self._request_persist()
+        return ready
 
     def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40, lang: str | None = None) -> str:
         """Render the slow-evidence turns as the topic prompt's only context.
@@ -261,9 +273,12 @@ class TopicSignalStore:
         The caller fences this block with the conversation-history watermark.
         """
         name = str(lanlan_name or "default")
+        pruned = False
         with self._persist_lock:
-            self._prune(name)
+            pruned = self._prune(name)
             turns = list(self._turns.get(name, ()))
+        if pruned:
+            self._request_persist()
         if not turns:
             return ""
 

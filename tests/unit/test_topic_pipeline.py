@@ -747,6 +747,36 @@ async def test_topic_pool_waits_for_delivery_gate_before_deep_prepare(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_release_predicate_tracks_new_turns_during_delivery():
+    release_checks = []
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [{"interest": "排队投递时仍要保 quiet gate", "relevance": 90}]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        release_available = material["_topic_release_available"]
+        release_checks.append(release_available())
+        pool.note_user_message("妮可", "trigger 已交给投递队列后又来了新 turn", lang="zh-CN")
+        release_checks.append(release_available())
+        return False
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        trigger_retry_delay_seconds=60,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "一个已经成熟、准备排队投递的话题", lang="zh-CN")
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.03)
+
+    assert release_checks == [True, False]
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
     calls = []
 
@@ -817,6 +847,27 @@ async def test_topic_pool_process_ready_rearms_restored_signals_until_delivery(t
     assert len(calls) == 2
     assert "换城市" in calls[1]
     assert restarted.get_ready_materials("妮可")[0]["interest"] == "恢复后的换城市话题"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_clears_durable_signals_when_analysis_has_no_material(tmp_path):
+    path = tmp_path / "topic_signals.json"
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return []
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        signal_store_path=path,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "这批证据最后没有形成可投递话题", lang="zh-CN")
+    await pool.process_now("妮可")
+
+    assert pool.get_ready_materials("妮可") == []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["characters"] == {}
 
 
 @pytest.mark.asyncio
