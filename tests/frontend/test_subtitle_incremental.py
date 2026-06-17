@@ -4384,8 +4384,13 @@ def test_launcher_packages_top_level_static_html_files():
 def test_subtitle_shared_cleanup_and_owner_guard_contracts():
     shared_script = (PROJECT_ROOT / "static/subtitle-shared.js").read_text(encoding="utf-8")
     subtitle_script = (PROJECT_ROOT / "static/subtitle.js").read_text(encoding="utf-8")
+    subtitle_window_script = (PROJECT_ROOT / "static/subtitle-window.js").read_text(encoding="utf-8")
     show_block = subtitle_script.split("function showSubtitleWithoutOriginalAndRestartCurrentTurn()", 1)[1].split(
         "if (currentTurnIsStructured)",
+        1,
+    )[0]
+    host_apply_block = subtitle_script.split("onSettingsApplied: function(state, refs, detail)", 1)[1].split(
+        "syncSubtitleRenderState",
         1,
     )[0]
 
@@ -4399,6 +4404,9 @@ def test_subtitle_shared_cleanup_and_owner_guard_contracts():
     assert "refs.display.classList.remove('resizing');" in shared_script
     assert "if (!isSubtitleTranslationOwner())" in show_block
     assert "subtitle-non-owner-skip-show" in show_block
+    assert "detail.source === 'subtitle-ui-resize'" in host_apply_block
+    assert "writeSubtitleText(refs.text.textContent);" in host_apply_block
+    assert "if (uiOptions.windowInteractions === 'external') {\n            desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController);\n        }" in subtitle_window_script
 
 
 @pytest.mark.frontend

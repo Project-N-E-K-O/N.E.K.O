@@ -696,7 +696,11 @@ function initSubtitleHostUi() {
             }
         },
         onSettingsApplied: function(state, refs, detail) {
-            if (detail && detail.source === 'subtitle-ui-size' && refs && refs.text && refs.text.textContent) {
+            var shouldRemeasureText = detail && (
+                detail.source === 'subtitle-ui-size' ||
+                detail.source === 'subtitle-ui-resize'
+            );
+            if (shouldRemeasureText && refs && refs.text && refs.text.textContent) {
                 writeSubtitleText(refs.text.textContent);
             }
             syncSubtitleRenderState(detail && detail.source ? detail.source : 'subtitle-ui-apply');

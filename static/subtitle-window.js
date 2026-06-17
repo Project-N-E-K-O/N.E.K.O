@@ -822,7 +822,9 @@
             return;
         }
 
-        desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController);
+        if (uiOptions.windowInteractions === 'external') {
+            desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController);
+        }
 
         window.addEventListener('neko-subtitle-state-sync', function(e) {
             applyStateSync(e.detail || {});
