@@ -1976,7 +1976,7 @@ function CompactChatApp({
       openCompactExportHistory();
       return;
     }
-    closeCompactExportHistory();
+    closeCompactExportHistory({ persist: false });
   }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => () => {
@@ -5063,6 +5063,17 @@ function CompactChatApp({
     }
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory({ persist: false });
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => {
     const request = compactToolWheelIndexRequest;

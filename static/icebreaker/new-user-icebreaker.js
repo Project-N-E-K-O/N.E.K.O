@@ -112,24 +112,32 @@
         return '';
     }
 
-    function postContext(role, text, sessionId) {
+    async function postContext(role, text, sessionId) {
         const lanlanName = resolveLanlanName();
         const content = String(text || '').trim();
         if (!lanlanName || !content || typeof fetch !== 'function') {
-            return;
+            return false;
         }
-        fetch('/api/game/new_user_icebreaker/context', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                lanlan_name: lanlanName,
-                role: role,
-                text: content,
-                session_id: sessionId || ''
-            })
-        }).catch((error) => {
+        try {
+            const response = await fetch('/api/game/new_user_icebreaker/context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lanlan_name: lanlanName,
+                    role: role,
+                    text: content,
+                    session_id: sessionId || ''
+                })
+            });
+            if (!response.ok) {
+                return false;
+            }
+            const body = await response.json().catch(() => null);
+            return !!(body && body.ok === true);
+        } catch (error) {
             console.warn('[NewUserIcebreaker] context write failed:', error);
-        });
+            return false;
+        }
     }
 
     async function start(reason) {
@@ -167,27 +175,31 @@
         return true;
     }
 
-    function completeFromChoice(detail) {
+    async function completeFromChoice(detail) {
         if (!activeSession) {
             return;
         }
+        const session = activeSession;
         const sessionId = String(detail && detail.sessionId || '');
-        if (sessionId && sessionId !== activeSession.id) {
+        if (sessionId && sessionId !== session.id) {
             return;
         }
         const option = detail && detail.option && typeof detail.option === 'object' ? detail.option : {};
         const choice = String((detail && detail.choice) || option.choice || '');
         const label = String((detail && detail.label) || option.label || '');
+        const contextSynced = await postContext('user', label || choice, session.id);
 
         updateDayEntry({
-            sessionId: activeSession.id,
+            sessionId: session.id,
             choice: choice,
             label: label,
-            completed: true,
-            completedAt: now()
+            completed: contextSynced,
+            completedAt: contextSynced ? now() : null,
+            contextSyncPending: !contextSynced
         });
-        postContext('user', label || choice, activeSession.id);
-        activeSession = null;
+        if (activeSession === session) {
+            activeSession = null;
+        }
     }
 
     function handleTutorialEnded(event) {

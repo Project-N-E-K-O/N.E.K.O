@@ -12,6 +12,8 @@ from .game_route_test_helpers import (
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
 from main_routers import game_router
+from main_logic.core import LLMSessionManager
+from utils.llm_client import AIMessage, HumanMessage
 
 
 class _FakeRequest:
@@ -47,6 +49,18 @@ def _allow_basketball_score_session(lanlan_name, session_id, mode="shooter"):
     _mark_game_started(state)
     game_router._game_route_states[game_router._route_state_key(lanlan_name, "basketball")] = state
     game_router._remember_basketball_score_session(lanlan_name, session_id, mode)
+    return state
+
+
+def _allow_icebreaker_route(lanlan_name="Lan", session_id="icebreaker-day1-test"):
+    state = {
+        "game_type": "new_user_icebreaker",
+        "session_id": session_id,
+        "lanlan_name": lanlan_name,
+        "game_route_active": True,
+    }
+    _mark_game_started(state)
+    game_router._game_route_states[game_router._route_state_key(lanlan_name, "new_user_icebreaker")] = state
     return state
 
 
@@ -162,6 +176,7 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
     monkeypatch.setattr(game_router, "_validate_local_mutation_request", lambda request, payload=None: None)
+    _allow_icebreaker_route()
 
     result = await game_router.game_project_context(
         "new_user_icebreaker",
@@ -169,14 +184,13 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
             "lanlan_name": "Lan",
             "role": "assistant",
             "text": "context line",
+            "session_id": "icebreaker-day1-test",
         }),
     )
 
-    assert result == {
-        "ok": False,
-        "reason": "context_append_failed",
-        "lanlan_name": "Lan",
-    }
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
 
 
 @pytest.mark.asyncio
@@ -192,31 +206,127 @@ async def test_new_user_icebreaker_context_endpoint_rejects_stale_session(monkey
     mgr = FakeManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(game_router, "_validate_local_mutation_request", lambda request, payload=None: None)
-    monkeypatch.setattr(
-        game_router,
-        "_get_active_game_route_state",
-        lambda lanlan_name, game_type=None: {
-            "game_type": "new_user_icebreaker",
-            "lanlan_name": lanlan_name,
-            "session_id": "current-session",
-            "game_route_active": True,
-        },
+    with reset_game_route_state():
+        _allow_icebreaker_route(session_id="active-session")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "late line",
+                "session_id": "old-session",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["method"] == "project_session_history"
+    assert mgr.calls == []
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_requires_public_append_method(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self._conversation_history = []
+
+    class FakeManager:
+        def __init__(self):
+            self.session = FakeSession()
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_validate_local_mutation_request", lambda request, payload=None: None)
+    _allow_icebreaker_route()
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "user",
+            "text": "choice a",
+            "session_id": "icebreaker-day1-test",
+        }),
     )
+
+    assert result == {
+        "ok": False,
+        "reason": "context_method_unavailable",
+        "lanlan_name": "Lan",
+    }
+    assert mgr.session._conversation_history == []
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_sync_append_error(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text):
+            raise RuntimeError("session history unavailable")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(game_router, "_validate_local_mutation_request", lambda request, payload=None: None)
+    _allow_icebreaker_route()
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "user",
+            "text": "icebreaker choice",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
+    assert result["game_type"] == "new_user_icebreaker"
+    assert result["session_id"] == "icebreaker-day1-test"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(monkeypatch):
+    class FakeManager:
+        async def append_icebreaker_context_async(self, role, text):
+            raise RuntimeError("session history unavailable")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(game_router, "_validate_local_mutation_request", lambda request, payload=None: None)
+    _allow_icebreaker_route()
 
     result = await game_router.game_project_context(
         "new_user_icebreaker",
         _FakeRequest({
             "lanlan_name": "Lan",
             "role": "assistant",
-            "text": "context line",
-            "session_id": "stale-session",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
         }),
     )
 
-    assert result["skipped"] == "stale_session"
-    assert result["reason"] == "session_id_mismatch"
-    assert result["method"] == "project_session_history"
-    assert mgr.calls == []
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
+    assert result["game_type"] == "new_user_icebreaker"
+    assert result["session_id"] == "icebreaker-day1-test"
+
+
+@pytest.mark.unit
+def test_llm_session_manager_appends_icebreaker_context_to_session_history():
+    class FakeSession:
+        def __init__(self):
+            self._conversation_history = []
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.session = FakeSession()
+
+    assert mgr.append_icebreaker_context("assistant", " hi ") is True
+    assert mgr.append_icebreaker_context("user", " choice ") is True
+    assert isinstance(mgr.session._conversation_history[0], AIMessage)
+    assert mgr.session._conversation_history[0].content == "hi"
+    assert isinstance(mgr.session._conversation_history[1], HumanMessage)
+    assert mgr.session._conversation_history[1].content == "choice"
 
 
 @pytest.mark.unit

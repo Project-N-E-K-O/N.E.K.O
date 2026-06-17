@@ -124,12 +124,6 @@ const compactToolWheelIndexRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
-const compactHistoryOpenRequestSchema = z.object({
-  id: z.string().min(1),
-  open: z.boolean(),
-  reason: z.string().optional(),
-}).nullable();
-
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -233,18 +227,6 @@ export const composerSubmitSchema = z.object({
   requestId: z.string().optional(),
 });
 
-const compactToolFanOpenRequestSchema = z.object({
-  id: z.string().min(1),
-  open: z.boolean(),
-  reason: z.string().optional(),
-}).nullable();
-
-const compactHistoryOpenRequestSchema = z.object({
-  id: z.string().min(1),
-  open: z.boolean(),
-  reason: z.string().optional(),
-}).nullable();
-
 export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
@@ -283,8 +265,6 @@ export const chatWindowPropsSchema = z.object({
   // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
   compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
-  compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
-  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   onCompactChatStateChange: z.function()
     .args(compactChatStateSchema)
     .returns(z.void())
@@ -307,7 +287,6 @@ export const chatWindowPropsSchema = z.object({
   compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
   compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
-  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())

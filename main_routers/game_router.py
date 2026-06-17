@@ -6983,7 +6983,14 @@ async def game_project_context(game_type: str, request: Request):
             exc,
             exc_info=True,
         )
-        return {"ok": False, "reason": "context_append_failed", "lanlan_name": lanlan_name}
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": str(data.get("session_id") or ""),
+        }
 
     return {
         "ok": bool(ok),
