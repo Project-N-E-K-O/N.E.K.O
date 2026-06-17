@@ -2391,6 +2391,7 @@
         if (!message || typeof message !== 'object') return null;
         return {
             id: message.id,
+            source: message.source,
             role: message.role,
             author: message.author,
             time: message.time,
@@ -2451,6 +2452,7 @@
 
         return {
             id: String(message.id),
+            source: message.source ? String(message.source) : undefined,
             role: message.role || 'assistant',
             author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
