@@ -629,6 +629,24 @@ def test_fail_open_option_allows_request_failures(monkeypatch):
     assert result.reason == "request_failed"
 
 
+def test_fail_open_option_allows_request_timeout(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(post_error=httpx.ReadTimeout("moderation timeout"))
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+            fail_closed=False,
+        )
+    )
+
+    assert result.allowed is True
+    assert result.reason == "request_failed"
+
+
 def test_successful_results_are_cached(monkeypatch):
     use_direct_url_payload(monkeypatch)
     client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
@@ -691,6 +709,59 @@ def test_api_gpt_ge_defaults_to_data_url(monkeypatch):
     assert payload_url == "data:image/jpeg;base64,YWJj"
     assert moderation_client.post_calls[0]["url"] == "https://api.gpt.ge/v1/moderations"
     assert moderation_client.post_calls[0]["json"]["model"] == "gi-image-moderation"
+
+
+def test_data_url_payload_is_cached_after_moderation_timeout(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = FakeClient(
+        get_response=FakeResponse(
+            headers={"Content-Type": "image/jpeg"},
+            content=b"abc",
+        )
+    )
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    class FlakyModerationClient(FakeClient):
+        async def post(self, url, *, headers=None, json=None, timeout=None):
+            self.post_calls.append(
+                {
+                    "url": url,
+                    "headers": headers or {},
+                    "json": json,
+                    "timeout": timeout,
+                }
+            )
+            if len(self.post_calls) == 1:
+                raise httpx.ReadTimeout("moderation timeout")
+            return FakeResponse(json_data=moderation_json(False))
+
+    moderation_client = FlakyModerationClient()
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+            fail_closed=False,
+        )
+    )
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+            fail_closed=False,
+        )
+    )
+
+    assert first.allowed is True
+    assert first.reason == "request_failed"
+    assert second.allowed is True
+    assert second.reason == "pass"
+    assert len(image_client.get_calls) == 1
+    assert len(moderation_client.post_calls) == 2
 
 
 def test_image_fetch_failure_blocks_and_skips_post(monkeypatch):

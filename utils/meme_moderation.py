@@ -97,12 +97,14 @@ class MemeModerationResult:
 
 
 _cache: dict[str, tuple[float, MemeModerationResult]] = {}
+_image_payload_cache: dict[str, tuple[float, str]] = {}
 
 
 def clear_meme_moderation_cache() -> None:
     """Clear the in-process moderation cache. Intended for tests and diagnostics."""
     global _provider_backoff_reason, _provider_backoff_until
     _cache.clear()
+    _image_payload_cache.clear()
     _provider_backoff_until = 0.0
     _provider_backoff_reason = "rate_limited"
 
@@ -224,6 +226,24 @@ def _cache_set(cache_key: str, result: MemeModerationResult) -> None:
         oldest_key = min(_cache.items(), key=lambda item: item[1][0])[0]
         _cache.pop(oldest_key, None)
     _cache[cache_key] = (time.monotonic(), replace(result, cached=False))
+
+
+def _image_payload_cache_get(cache_key: str, ttl_seconds: float) -> str | None:
+    item = _image_payload_cache.get(cache_key)
+    if not item:
+        return None
+    created_at, payload = item
+    if time.monotonic() - created_at > ttl_seconds:
+        _image_payload_cache.pop(cache_key, None)
+        return None
+    return payload
+
+
+def _image_payload_cache_set(cache_key: str, payload: str) -> None:
+    if len(_image_payload_cache) >= _DEFAULT_CACHE_MAX_ITEMS:
+        oldest_key = min(_image_payload_cache.items(), key=lambda item: item[1][0])[0]
+        _image_payload_cache.pop(oldest_key, None)
+    _image_payload_cache[cache_key] = (time.monotonic(), payload)
 
 
 def _api_key_from_env() -> str:
@@ -454,15 +474,26 @@ async def _stream_image_response(
         return body, content_type
 
 
-async def _build_moderation_image_url(url: str, base_url: str, timeout_seconds: float) -> str:
+async def _build_moderation_image_url(
+    url: str,
+    base_url: str,
+    timeout_seconds: float,
+    ttl_seconds: float,
+) -> str:
     mode = _read_env(
         "MEME_MODERATION_IMAGE_INPUT_MODE",
         _default_image_input_mode(base_url),
     ).lower().replace("-", "_")
     if mode in {"data_url", "base64"}:
+        payload_cache_key = _url_hash(url)
+        cached_payload = _image_payload_cache_get(payload_cache_key, ttl_seconds)
+        if cached_payload is not None:
+            return cached_payload
         body, content_type = await _download_image_for_moderation(url, timeout_seconds)
         encoded = base64.b64encode(body).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
+        payload = f"data:{content_type};base64,{encoded}"
+        _image_payload_cache_set(payload_cache_key, payload)
+        return payload
     return url
 
 
@@ -569,6 +600,7 @@ async def moderate_meme_image_url(
             url,
             base_url,
             timeout_seconds,
+            ttl_seconds,
         )
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning(
