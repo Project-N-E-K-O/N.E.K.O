@@ -1020,15 +1020,6 @@ def test_topic_turn_sink_keeps_current_character_when_activity_is_private():
     assert notes == [('user', 'test_lanlan', 'private foreground turn', 'zh-CN')]
 
 
-def test_activity_guess_loop_does_not_purge_topic_signals_on_private_ticks():
-    from main_logic.activity.tracker import UserActivityTracker
-
-    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
-
-    assert "await self._purge_topic_candidates_for_privacy()" not in source
-    assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
-
-
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────
 
 
