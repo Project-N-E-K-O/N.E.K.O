@@ -4092,7 +4092,7 @@
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
-            composerDisabled: !!(next || state.homeTutorialInputLocked)
+            composerDisabled: !!next
         });
         renderWindow();
     }
