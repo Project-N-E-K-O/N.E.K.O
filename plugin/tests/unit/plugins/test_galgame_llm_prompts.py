@@ -122,17 +122,17 @@ def test_prompt_rendering_strips_line_importance_metadata() -> None:
 def test_prompt_compaction_uses_importance_before_stripping_metadata() -> None:
     context = {
         "recent_lines": [
-                {
-                    "line_id": "important",
-                    "text": "important " + ("日" * 900),
-                    "_importance_score": 999,
-                },
+            {
+                "line_id": "important",
+                "text": "important " + ("日" * 900),
+                "_importance_score": 999,
+            },
             *[
                 {
-                        "line_id": f"filler-{index}",
-                        "text": "filler " + ("日" * 900),
-                        "_importance_score": 1,
-                    }
+                    "line_id": f"filler-{index}",
+                    "text": "filler " + ("日" * 900),
+                    "_importance_score": 1,
+                }
                 for index in range(19)
             ],
         ]

@@ -13,7 +13,7 @@ from utils.file_utils import robust_json_loads
 from utils.llm_client import create_chat_llm
 from utils.token_tracker import set_call_type
 
-from .context_tokens import count_tokens_heuristic
+from .context_tokens import truncate_tokens_heuristic
 from .llm_prompts import build_prompt_messages_with_metadata
 
 if TYPE_CHECKING:
@@ -61,18 +61,11 @@ def _strip_code_fences(raw_text: str) -> str:
 
 def _bounded_prompt_text(value: object, *, max_tokens: int) -> str:
     text = _as_str(value, str(value))
-    if count_tokens_heuristic(text) <= max_tokens:
-        return text
-    clipped = text
-    while clipped and count_tokens_heuristic(clipped) > max_tokens:
-        clipped = clipped[:-1]
-    omitted = len(text) - len(clipped)
-    result = f"{clipped}\n...[truncated {omitted} chars]"
-    while clipped and count_tokens_heuristic(result) > max_tokens:
-        clipped = clipped[:-1]
-        omitted = len(text) - len(clipped)
-        result = f"{clipped}\n...[truncated {omitted} chars]"
-    return result
+    return truncate_tokens_heuristic(
+        text,
+        max_tokens,
+        notice_template="\n...[truncated {omitted} chars]",
+    )
 
 
 def _api_key_cache_fingerprint(api_key: str) -> str:
