@@ -144,6 +144,92 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 
 旋钮：`TopicHookPool(enable_deep_search=...)` 默认开；衍生档位为 `summary`（与窗口搜索摘要同档，比 emotion 重、比 agent 轻），改档位是 `derive_deep_search_query` 里一行。
 
+## 规划：#1847 后续收口为投递前 research prepare
+
+> 本节是 #1847 的后续目标，不描述当前已落地行为。实现前必须保持本文和 issue 讨论同步。
+
+当前实现里，topic pipeline 还有两个边界不够清楚的历史包袱：
+
+1. `TopicHookPool` 自己维护 `_PROCESS_DEBOUNCE_SECONDS = 45s` 的后台 sleep，再跑 `process_now()`。
+2. background candidate 分析之后立刻做一次轻量联网增强；delivery-time deep search 又在投递前做第二次联网增强。
+
+#1847 收口时应把它们拆成两个清晰阶段：**候选识别只看对话证据，投递准备才做 research**。
+
+### 候选分析 cadence
+
+不要再为 topic 单独开新的 45s debounce loop。候选分析应接入已有 activity/proactive 节奏，优先复用 `UserActivityTracker` 那条更高一层的 heartbeat：
+
+- `main_logic/activity/tracker.py::_ACTIVITY_GUESS_TICK_SECONDS = 20s`
+- `main_logic/activity/tracker.py::_ACTIVITY_GUESS_MIN_REFRESH_SECONDS = 30s`
+
+topic candidate 的成熟条件建议与该 heartbeat 对齐成 **3 个 tick = 60s**，而不是 45s。也就是说：
+
+1. 每个 user/AI turn 只同步落到 topic signal buffer。
+2. 后台候选分析由已有 heartbeat / proactive kickoff 驱动，不由 topic 自己 `sleep(45)` 驱动。
+3. 只有当最近一条可分析 turn 距今至少 60s，且窗口内有足够多有信息量的 user turn 时，才允许触发 candidate LLM。
+4. 每次 candidate LLM 都读取时间窗口内的 capped evidence（例如最近 12h、最多 N 条），不是只读取「上次之后新增的增量」。
+
+这样 topic 的低频分析和 activity enrichment 的节奏一致，也避免一个特性自己私设一条并行调度循环。
+
+### 12 小时跨会话 signal buffer
+
+`TopicSignalStore` 当前是进程内状态。#1847 后续应给 topic signal 增加轻量持久化，使用户短时间内反复重启时不会把已经积累的上下文打散。
+
+目标语义：
+
+- 按角色持久化最近 **12 小时** topic turn signal。
+- session 重启后继续合并处理这些 turn。
+- 超过 12 小时的 signal 可直接清空，不进入 candidate prompt。
+- 隐私模式开启时仍然不写入原文，并清掉可恢复的 topic signal/material。
+- candidate prompt 只读取 rolling window 的 capped evidence；持久化不改变 prompt 的字段契约。
+
+### candidate 阶段不做联网
+
+联网增强不应再发生在 `process_now()` / candidate 分析阶段。candidate 阶段只负责产出轻量 material：
+
+| 字段 | 责任 |
+|---|---|
+| `interest` | 话题核心 |
+| `keywords` | 去重、research seed |
+| `relevance` | 后端阈值过滤 |
+| `risk` | 后端阈值过滤 |
+
+因此 `_seq` / conversation revision 只应该保护 candidate LLM 的结果：如果分析期间来了新 turn，可以丢弃候选分析结果并等下一轮基于完整窗口重算。但一旦候选 material 进入 pending，后续 research prepare 不再受 `_seq` 影响。
+
+### deep search 和联网补强合并
+
+#1847 的 deep-research agent 应整体替换当前「轻量联网增强 + delivery-time 单查询 deep search」的双段结构。目标接点是投递窗口打开前的 prepare：
+
+1. pending material 等待投递窗口。
+2. 窗口打开时执行一次 research prepare：规划查询、选择模态、联网/阅读/反思、合成 `material_hint` / `online_query` / `online_angle`。
+3. prepare 完成后立刻重新检查投递窗口。
+4. 如果窗口仍打开，立即投递。
+5. 如果窗口已关闭，保留 prepared material，下一个窗口打开时直接投递，不重复 research。
+
+research prepare 的失败语义仍是 floor-first：失败、超时或预算耗尽时，保留可用的 floor hint；没有 floor hint 时也不能让异常污染 pending material。
+
+### 投递窗口 gate
+
+`min_trigger_gap_seconds` 和每日配额仍然保留。`topic_hook_delivery_allowed()` 当前检查语音、`closed`、`restricted_screen_only` 的方向是正确的；#1847 后续只需要补一个新条件：
+
+- 如果当前 snapshot 存在 `unfinished_thread`，不要投递全新的 deep topic hook。
+
+原因：unfinished thread 是桌面上已经打开的问题/承诺，应该优先让 proactive reminiscence 或普通 proactive 续上，而不是用一个全新的深话题抢话。这个规则与 proactive prompt 中「unfinished thread 可突破部分安静策略」相反，是刻意的不对称。
+
+### 推荐状态机
+
+```text
+collect persisted turns
+  -> candidate window mature (>= 60s quiet, enough meaningful user turns)
+  -> analyze capped 12h evidence
+  -> pending material
+  -> delivery window opens (gap/quota/activity/no unfinished thread)
+  -> research prepare once
+  -> if window still open: deliver
+     else: keep prepared material
+  -> mark used on confirmed delivery
+```
+
 ## 测试覆盖
 
 - `tests/unit/test_topic_pipeline.py`：采集、打分门控、去重（关键词 + ngram veto）、调度、`_deepen_material`（衍生 query 覆盖 floor / 无结果保 floor / 幂等 + 开关）。
