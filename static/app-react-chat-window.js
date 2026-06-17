@@ -3444,21 +3444,30 @@
         if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.choice !== 'string') return;
         if (source === 'new_user_icebreaker') {
-            var icebreakerDetail = {
-                sessionId: option.sessionId || (state.choicePrompt && state.choicePrompt.sessionId) || '',
+            var prompt = state.choicePrompt;
+            if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+            var detail = {
+                sessionId: option.sessionId || prompt.sessionId || '',
+                gameType: prompt.gameType || 'new_user_icebreaker',
                 choice: option.choice,
+                label: option.label || '',
                 option: option
             };
+            state.choicePrompt = null;
+            renderWindow();
             window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
-                detail: icebreakerDetail
+                detail: detail
             }));
+            dispatchHostEvent('icebreaker-choice-selected', detail);
             try {
                 var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
                 if (channel && typeof channel.postMessage === 'function') {
                     channel.postMessage({
                         action: 'icebreaker_choice_selected',
-                        sessionId: icebreakerDetail.sessionId,
-                        choice: icebreakerDetail.choice,
+                        sessionId: detail.sessionId,
+                        gameType: detail.gameType,
+                        choice: detail.choice,
+                        label: detail.label,
                         option: option,
                         timestamp: Date.now()
                     });
@@ -3739,11 +3748,12 @@
         renderWindow();
     }
 
-    function setIcebreakerChoicePrompt(payload) {
+    function setNewUserIcebreakerPrompt(payload) {
         if (!payload) return;
         var sessionId = String(payload.sessionId || '');
         if (!sessionId) return;
         var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
         var cleanedOptions = rawOptions.map(function (o) {
             return {
                 choice: String((o && o.choice) || ''),
@@ -3751,7 +3761,10 @@
                 sessionId: sessionId
             };
         }).filter(function (o) { return o.choice && o.label; });
-        if (!cleanedOptions.length) return;
+        if (!cleanedOptions.length) {
+            console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
+            return;
+        }
         state.choicePrompt = {
             source: 'new_user_icebreaker',
             sessionId: sessionId,
@@ -3760,6 +3773,10 @@
         };
         invalidatePendingGalgameRequest();
         renderWindow();
+    }
+
+    function setIcebreakerChoicePrompt(payload) {
+        setNewUserIcebreakerPrompt(payload);
     }
 
     function clearIcebreakerChoicePrompt(sessionId) {
@@ -6643,6 +6660,7 @@
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
         setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了

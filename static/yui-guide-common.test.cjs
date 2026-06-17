@@ -96,6 +96,31 @@ test('tutorial bridge command bus is exported from a standalone module and re-ex
     assert.doesNotMatch(commonSource, /function normalizeBridgeMessage\(message/);
 });
 
+test('tutorial bridge command bus restores onmessage fallback on unsubscribe', () => {
+    const calls = [];
+    const previousHandler = (event) => calls.push(['previous', event.data.action]);
+    const channel = { onmessage: previousHandler };
+    const bus = bridgeCommandBus.createTutorialBridgeCommandBus({
+        channelProvider: () => channel
+    });
+
+    const unsubscribe = bus.on('guide-action', (message) => {
+        calls.push(['listener', message.action]);
+    });
+    assert.notEqual(channel.onmessage, previousHandler);
+
+    channel.onmessage({ data: { action: 'guide-action' } });
+    unsubscribe();
+
+    assert.equal(channel.onmessage, previousHandler);
+    channel.onmessage({ data: { action: 'guide-action' } });
+    assert.deepEqual(calls, [
+        ['previous', 'guide-action'],
+        ['listener', 'guide-action'],
+        ['previous', 'guide-action']
+    ]);
+});
+
 test('target geometry registry is exported from a standalone module and re-exported by common', () => {
     const registrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/target-geometry-registry.js'), 'utf8');
     const commonSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/common.js'), 'utf8');
