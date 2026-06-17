@@ -31,6 +31,8 @@ ENV_KEYS = [
     "MEME_MODERATION_TIMEOUT_SECONDS",
     "NEKO_MEME_MODERATION_CACHE_TTL_SECONDS",
     "MEME_MODERATION_CACHE_TTL_SECONDS",
+    "NEKO_MEME_MODERATION_IMAGE_PAYLOAD_CACHE_MAX_BYTES",
+    "MEME_MODERATION_IMAGE_PAYLOAD_CACHE_MAX_BYTES",
     "NEKO_MEME_MODERATION_FAIL_CLOSED",
     "MEME_MODERATION_FAIL_CLOSED",
     "NEKO_MEME_MODERATION_RATE_LIMIT_BACKOFF_SECONDS",
@@ -154,6 +156,41 @@ class FakeClient:
         if self.get_error:
             raise self.get_error
         return FakeStream(self.get_response)
+
+
+class SequencePostClient(FakeClient):
+    def __init__(self, post_responses):
+        super().__init__(post_response=post_responses[0])
+        self.post_responses = list(post_responses)
+
+    async def post(self, url, *, headers=None, json=None, timeout=None):
+        self.post_calls.append(
+            {
+                "url": url,
+                "headers": headers or {},
+                "json": json,
+                "timeout": timeout,
+            }
+        )
+        return self.post_responses.pop(0)
+
+
+class SequenceStreamClient(FakeClient):
+    def __init__(self, get_responses):
+        super().__init__(get_response=get_responses[0])
+        self.get_responses = list(get_responses)
+
+    def stream(self, method, url, *, headers=None, timeout=None, **kwargs):
+        self.get_calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers or {},
+                "timeout": timeout,
+                "kwargs": kwargs,
+            }
+        )
+        return FakeStream(self.get_responses.pop(0))
 
 
 def moderation_json(flagged, *, model="omni-moderation-latest", scores=None, categories=None):
@@ -599,6 +636,39 @@ def test_rate_limit_sets_backoff(monkeypatch):
     assert len(client.post_calls) == 1
 
 
+def test_rate_limit_backoff_is_scoped_to_active_config(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setenv("NEKO_MEME_MODERATION_RATE_LIMIT_BACKOFF_SECONDS", "30")
+    first_client = FakeClient(post_response=FakeResponse(status_code=429))
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/one.jpg",
+            http_client=first_client,
+            enabled=True,
+            api_key="stale-key",
+        )
+    )
+
+    monkeypatch.setenv("NEKO_UNIAPI_BASE_URL", "https://healthy-provider.test/v1")
+    second_client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/two.jpg",
+            http_client=second_client,
+            enabled=True,
+            api_key="fresh-key",
+        )
+    )
+
+    assert first.allowed is False
+    assert first.reason == "rate_limited"
+    assert second.allowed is True
+    assert second.reason == "pass"
+    assert len(first_client.post_calls) == 1
+    assert len(second_client.post_calls) == 1
+
+
 def test_payment_required_sets_backoff(monkeypatch):
     use_direct_url_payload(monkeypatch)
     monkeypatch.setenv("NEKO_MEME_MODERATION_PAYMENT_BACKOFF_SECONDS", "30")
@@ -665,12 +735,16 @@ def test_fail_open_option_allows_request_timeout(monkeypatch):
 
 
 def test_successful_results_are_cached(monkeypatch):
-    use_direct_url_payload(monkeypatch)
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = FakeClient(
+        get_response=FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")
+    )
     client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
 
     first = run(
         mm.moderate_meme_image_url(
-            "https://example.com/cat.jpg",
+            "https://img.soutula.com/cat.jpg",
             http_client=client,
             enabled=True,
             api_key="test-key",
@@ -678,7 +752,7 @@ def test_successful_results_are_cached(monkeypatch):
     )
     second = run(
         mm.moderate_meme_image_url(
-            "https://example.com/cat.jpg",
+            "https://img.soutula.com/cat.jpg",
             http_client=client,
             enabled=True,
             api_key="test-key",
@@ -688,12 +762,17 @@ def test_successful_results_are_cached(monkeypatch):
     assert first.cached is False
     assert second.cached is True
     assert len(client.post_calls) == 1
+    assert len(image_client.get_calls) == 1
 
 
-def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):
+def test_direct_url_payload_does_not_cache_allowed_verdict(monkeypatch):
     use_direct_url_payload(monkeypatch)
-    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "policy-one")
-    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+    client = SequencePostClient(
+        [
+            FakeResponse(json_data=moderation_json(False)),
+            FakeResponse(json_data=moderation_json(True)),
+        ]
+    )
 
     first = run(
         mm.moderate_meme_image_url(
@@ -703,7 +782,6 @@ def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):
             api_key="test-key",
         )
     )
-    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "policy-two")
     second = run(
         mm.moderate_meme_image_url(
             "https://example.com/cat.jpg",
@@ -713,9 +791,44 @@ def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):
         )
     )
 
+    assert first.allowed is True
+    assert first.cached is False
+    assert second.allowed is False
+    assert second.cached is False
+    assert len(client.post_calls) == 2
+
+
+def test_successful_cache_is_scoped_to_moderation_policy(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "policy-one")
+    image_client = FakeClient(
+        get_response=FakeResponse(headers={"Content-Type": "image/jpeg"}, content=b"abc")
+    )
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+    monkeypatch.setenv("NEKO_MEME_MODERATION_MODEL", "policy-two")
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
     assert first.cached is False
     assert second.cached is False
     assert len(client.post_calls) == 2
+    assert len(image_client.get_calls) == 1
     assert client.post_calls[0]["json"]["model"] == "policy-one"
     assert client.post_calls[1]["json"]["model"] == "policy-two"
 
@@ -811,6 +924,45 @@ def test_data_url_payload_is_cached_after_moderation_timeout(monkeypatch):
     assert len(moderation_client.post_calls) == 2
 
 
+def test_data_url_payload_cache_obeys_byte_budget(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    monkeypatch.setenv("NEKO_MEME_MODERATION_IMAGE_PAYLOAD_CACHE_MAX_BYTES", "8")
+    image_client = FakeClient(
+        get_response=FakeResponse(
+            headers={"Content-Type": "image/jpeg"},
+            content=b"abc",
+        )
+    )
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+    first_moderation_client = FakeClient(post_error=httpx.ReadTimeout("moderation timeout"))
+    second_moderation_client = FakeClient(
+        post_response=FakeResponse(json_data=moderation_json(False))
+    )
+
+    first = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=first_moderation_client,
+            enabled=True,
+            api_key="test-key",
+            fail_closed=False,
+        )
+    )
+    second = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=second_moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert first.allowed is True
+    assert first.reason == "request_failed"
+    assert second.allowed is True
+    assert len(image_client.get_calls) == 2
+
+
 def test_image_fetch_failure_blocks_and_skips_post(monkeypatch):
     write_config({"base_url": "https://api.gpt.ge/v1"})
     image_client = FakeClient(get_error=httpx.ConnectError("image fetch failed"))
@@ -875,6 +1027,37 @@ def test_data_url_fetch_rejects_redirect_target_outside_meme_hosts(monkeypatch):
     assert result.allowed is False
     assert result.reason == "image_fetch_failed"
     assert len(image_client.get_calls) == 1
+    assert moderation_client.post_calls == []
+
+
+def test_data_url_fetch_rejects_blocked_redirect_hop_before_request(monkeypatch):
+    write_config({"base_url": "https://api.gpt.ge/v1"})
+    image_client = SequenceStreamClient(
+        [
+            FakeResponse(
+                status_code=302,
+                headers={"Location": "http://127.0.0.1/private.jpg"},
+                url="https://img.soutula.com/example.jpg",
+            ),
+        ]
+    )
+    moderation_client = FakeClient()
+    monkeypatch.setattr(mm, "get_external_http_client", lambda: image_client)
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://img.soutula.com/example.jpg",
+            http_client=moderation_client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "image_fetch_failed"
+    assert len(image_client.get_calls) == 1
+    assert image_client.get_calls[0]["url"] == "https://img.soutula.com/example.jpg"
+    assert image_client.get_calls[0]["kwargs"]["follow_redirects"] is False
     assert moderation_client.post_calls == []
 
 

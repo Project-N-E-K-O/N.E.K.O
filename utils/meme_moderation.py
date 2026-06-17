@@ -29,7 +29,7 @@ import os
 import time
 from dataclasses import dataclass, replace
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -45,6 +45,8 @@ _DEFAULT_MODEL = "omni-moderation-latest"
 _DEFAULT_TIMEOUT_SECONDS = 8.0
 _DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600
 _DEFAULT_CACHE_MAX_ITEMS = 1024
+_DEFAULT_IMAGE_PAYLOAD_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_MAX_IMAGE_REDIRECTS = 5
 _DEFAULT_BLOCK_SCORE_THRESHOLDS = {
     "porn": 0.70,
     "hentai": 0.70,
@@ -82,6 +84,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
 _provider_backoff_until = 0.0
 _provider_backoff_reason = "rate_limited"
+_provider_backoff_fingerprint = ""
 
 
 @dataclass(frozen=True)
@@ -97,16 +100,20 @@ class MemeModerationResult:
 
 
 _cache: dict[str, tuple[float, MemeModerationResult]] = {}
-_image_payload_cache: dict[str, tuple[float, str]] = {}
+_image_payload_cache: dict[str, tuple[float, str, int]] = {}
+_image_payload_cache_bytes = 0
 
 
 def clear_meme_moderation_cache() -> None:
     """Clear the in-process moderation cache. Intended for tests and diagnostics."""
+    global _image_payload_cache_bytes, _provider_backoff_fingerprint
     global _provider_backoff_reason, _provider_backoff_until
     _cache.clear()
     _image_payload_cache.clear()
+    _image_payload_cache_bytes = 0
     _provider_backoff_until = 0.0
     _provider_backoff_reason = "rate_limited"
+    _provider_backoff_fingerprint = ""
 
 
 def _read_env(name: str, default: str = "") -> str:
@@ -153,6 +160,35 @@ def _read_float_env(name: str, default: float) -> float:
         except ValueError:
             logger.warning(
                 "[Meme Moderation] Ignoring %s=%r (not a number); using default %s",
+                key,
+                raw,
+                default,
+            )
+            continue
+        if parsed > 0:
+            return parsed
+        logger.warning(
+            "[Meme Moderation] Ignoring %s=%r (must be > 0); using default %s",
+            key,
+            raw,
+            default,
+        )
+    return default
+
+
+def _read_int_env(name: str, default: int) -> int:
+    for key in (f"NEKO_{name}", name):
+        raw = os.environ.get(key)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if not value:
+            continue
+        try:
+            parsed = int(value)
+        except ValueError:
+            logger.warning(
+                "[Meme Moderation] Ignoring %s=%r (not an integer); using default %s",
                 key,
                 raw,
                 default,
@@ -228,9 +264,21 @@ def _cache_set(cache_key: str, result: MemeModerationResult) -> None:
     _cache[cache_key] = (time.monotonic(), replace(result, cached=False))
 
 
+def _moderation_backoff_fingerprint(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+) -> str:
+    key_hash = _url_hash(api_key) if api_key else ""
+    return _url_hash("|".join([provider, model, base_url, key_hash]))
+
+
 def _moderation_policy_cache_key(
     *,
     url_hash: str,
+    image_hash: str,
     provider: str,
     model: str,
     base_url: str,
@@ -239,26 +287,47 @@ def _moderation_policy_cache_key(
         f"{category}:{_score_threshold_for(category, default_threshold):.6f}"
         for category, default_threshold in sorted(_DEFAULT_BLOCK_SCORE_THRESHOLDS.items())
     ]
-    policy = "|".join([url_hash, provider, model, base_url, *threshold_parts])
+    policy = "|".join([url_hash, image_hash, provider, model, base_url, *threshold_parts])
     return _url_hash(policy)
 
 
 def _image_payload_cache_get(cache_key: str, ttl_seconds: float) -> str | None:
+    global _image_payload_cache_bytes
     item = _image_payload_cache.get(cache_key)
     if not item:
         return None
-    created_at, payload = item
+    created_at, payload, size = item
     if time.monotonic() - created_at > ttl_seconds:
         _image_payload_cache.pop(cache_key, None)
+        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - size)
         return None
     return payload
 
 
 def _image_payload_cache_set(cache_key: str, payload: str) -> None:
-    if len(_image_payload_cache) >= _DEFAULT_CACHE_MAX_ITEMS:
+    global _image_payload_cache_bytes
+    payload_size = len(payload)
+    max_bytes = _read_int_env(
+        "MEME_MODERATION_IMAGE_PAYLOAD_CACHE_MAX_BYTES",
+        _DEFAULT_IMAGE_PAYLOAD_CACHE_MAX_BYTES,
+    )
+    if payload_size > max_bytes:
+        old_item = _image_payload_cache.pop(cache_key, None)
+        if old_item is not None:
+            _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_item[2])
+        return
+    old_item = _image_payload_cache.pop(cache_key, None)
+    if old_item is not None:
+        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_item[2])
+    while (
+        len(_image_payload_cache) >= _DEFAULT_CACHE_MAX_ITEMS
+        or _image_payload_cache_bytes + payload_size > max_bytes
+    ):
         oldest_key = min(_image_payload_cache.items(), key=lambda item: item[1][0])[0]
-        _image_payload_cache.pop(oldest_key, None)
-    _image_payload_cache[cache_key] = (time.monotonic(), payload)
+        _, _, old_size = _image_payload_cache.pop(oldest_key)
+        _image_payload_cache_bytes = max(0, _image_payload_cache_bytes - old_size)
+    _image_payload_cache[cache_key] = (time.monotonic(), payload, payload_size)
+    _image_payload_cache_bytes += payload_size
 
 
 def _api_key_from_env() -> str:
@@ -335,11 +404,12 @@ def _rate_limit_backoff_seconds(response: httpx.Response | None) -> float:
     return _read_float_env("MEME_MODERATION_RATE_LIMIT_BACKOFF_SECONDS", 60.0)
 
 
-def _set_provider_backoff(seconds: float, reason: str) -> float:
-    global _provider_backoff_reason, _provider_backoff_until
+def _set_provider_backoff(seconds: float, reason: str, fingerprint: str) -> float:
+    global _provider_backoff_fingerprint, _provider_backoff_reason, _provider_backoff_until
     until = time.monotonic() + max(1.0, seconds)
     _provider_backoff_until = max(_provider_backoff_until, until)
     _provider_backoff_reason = reason
+    _provider_backoff_fingerprint = fingerprint
     return _provider_backoff_until
 
 
@@ -351,6 +421,13 @@ def _default_image_input_mode(base_url: str) -> str:
     if host == "api.gpt.ge":
         return "data_url"
     return "url"
+
+
+def _image_input_mode(base_url: str) -> str:
+    return _read_env(
+        "MEME_MODERATION_IMAGE_INPUT_MODE",
+        _default_image_input_mode(base_url),
+    ).lower().replace("-", "_")
 
 
 def _referer_for_url(url: str) -> str:
@@ -444,7 +521,7 @@ async def _download_image_for_moderation(url: str, timeout_seconds: float) -> tu
             return await _stream_image_response(client, url, headers, timeout_seconds)
         async with httpx.AsyncClient(
             timeout=timeout_seconds,
-            follow_redirects=True,
+            follow_redirects=False,
             trust_env=True,
             # Last-resort path for certificate-broken meme hosts. This only runs
             # after strict verification fails and the env flag explicitly opts in.
@@ -477,16 +554,37 @@ async def _stream_image_response(
     headers: dict[str, str],
     timeout_seconds: float,
 ) -> tuple[bytes, str]:
-    async with client.stream("GET", url, headers=headers, timeout=timeout_seconds) as response:
-        final_url = str(getattr(response, "url", url) or url)
-        if not _is_allowed_meme_image_fetch_url(final_url):
+    current_url = url
+    for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+        if not _is_allowed_meme_image_fetch_url(current_url):
             raise ValueError("meme image redirect target is not in the allowed host list")
-        response.raise_for_status()
-        content_type = _normalize_image_content_type(response.headers.get("Content-Type", ""))
-        if content_type not in _IMAGE_CONTENT_TYPES:
-            raise ValueError(f"unsupported image content type: {content_type}")
-        body = await _read_limited_response_body(response)
-        return body, content_type
+        async with client.stream(
+            "GET",
+            current_url,
+            headers=headers,
+            timeout=timeout_seconds,
+            follow_redirects=False,
+        ) as response:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            if 300 <= status_code < 400:
+                location = (response.headers.get("Location") or "").strip()
+                if not location:
+                    raise ValueError("meme image redirect response is missing Location")
+                next_url = urljoin(str(getattr(response, "url", current_url) or current_url), location)
+                if not _is_allowed_meme_image_fetch_url(next_url):
+                    raise ValueError("meme image redirect target is not in the allowed host list")
+                current_url = next_url
+                continue
+            final_url = str(getattr(response, "url", current_url) or current_url)
+            if not _is_allowed_meme_image_fetch_url(final_url):
+                raise ValueError("meme image redirect target is not in the allowed host list")
+            response.raise_for_status()
+            content_type = _normalize_image_content_type(response.headers.get("Content-Type", ""))
+            if content_type not in _IMAGE_CONTENT_TYPES:
+                raise ValueError(f"unsupported image content type: {content_type}")
+            body = await _read_limited_response_body(response)
+            return body, content_type
+    raise ValueError("too many meme image redirects")
 
 
 async def _build_moderation_image_url(
@@ -494,22 +592,19 @@ async def _build_moderation_image_url(
     base_url: str,
     timeout_seconds: float,
     ttl_seconds: float,
-) -> str:
-    mode = _read_env(
-        "MEME_MODERATION_IMAGE_INPUT_MODE",
-        _default_image_input_mode(base_url),
-    ).lower().replace("-", "_")
+) -> tuple[str, str | None]:
+    mode = _image_input_mode(base_url)
     if mode in {"data_url", "base64"}:
         payload_cache_key = _url_hash(url)
         cached_payload = _image_payload_cache_get(payload_cache_key, ttl_seconds)
         if cached_payload is not None:
-            return cached_payload
+            return cached_payload, _url_hash(cached_payload)
         body, content_type = await _download_image_for_moderation(url, timeout_seconds)
         encoded = base64.b64encode(body).decode("ascii")
         payload = f"data:{content_type};base64,{encoded}"
         _image_payload_cache_set(payload_cache_key, payload)
-        return payload
-    return url
+        return payload, _url_hash(payload)
+    return url, None
 
 
 async def moderate_meme_image_url(
@@ -586,16 +681,6 @@ async def moderate_meme_image_url(
         or _DEFAULT_UNIAPI_BASE_URL
     ).rstrip("/")
 
-    verdict_cache_key = _moderation_policy_cache_key(
-        url_hash=full_hash,
-        provider=provider,
-        model=model,
-        base_url=base_url,
-    )
-    cached = _cache_get(verdict_cache_key, ttl_seconds)
-    if cached is not None:
-        return cached
-
     if not key:
         return MemeModerationResult(
             allowed=True,
@@ -606,7 +691,16 @@ async def moderate_meme_image_url(
         )
 
     now = time.monotonic()
-    if _provider_backoff_until > now:
+    backoff_fingerprint = _moderation_backoff_fingerprint(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key=key,
+    )
+    if (
+        _provider_backoff_fingerprint == backoff_fingerprint
+        and _provider_backoff_until > now
+    ):
         return MemeModerationResult(
             allowed=not fail_closed,
             provider=provider,
@@ -617,7 +711,7 @@ async def moderate_meme_image_url(
 
     endpoint = f"{base_url}/moderations"
     try:
-        moderation_image_url = await _build_moderation_image_url(
+        moderation_image_url, moderation_image_hash = await _build_moderation_image_url(
             url,
             base_url,
             timeout_seconds,
@@ -636,6 +730,19 @@ async def moderate_meme_image_url(
             reason="image_fetch_failed",
             url_hash=short_hash,
         )
+
+    verdict_cache_key = None
+    if moderation_image_hash:
+        verdict_cache_key = _moderation_policy_cache_key(
+            url_hash=full_hash,
+            image_hash=moderation_image_hash,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+        )
+        cached = _cache_get(verdict_cache_key, ttl_seconds)
+        if cached is not None:
+            return cached
 
     payload = {
         "model": model,
@@ -665,7 +772,7 @@ async def moderate_meme_image_url(
         status = exc.response.status_code if exc.response is not None else 0
         if status == 429:
             backoff_seconds = _rate_limit_backoff_seconds(exc.response)
-            _set_provider_backoff(backoff_seconds, "rate_limited")
+            _set_provider_backoff(backoff_seconds, "rate_limited", backoff_fingerprint)
             logger.warning(
                 "[Meme Moderation] UniAPI rate limited url_hash=%s backoff=%.1fs",
                 short_hash,
@@ -683,7 +790,7 @@ async def moderate_meme_image_url(
                 "MEME_MODERATION_PAYMENT_BACKOFF_SECONDS",
                 10 * 60.0,
             )
-            _set_provider_backoff(backoff_seconds, "payment_required")
+            _set_provider_backoff(backoff_seconds, "payment_required", backoff_fingerprint)
             logger.warning(
                 "[Meme Moderation] UniAPI payment required url_hash=%s backoff=%.1fs",
                 short_hash,
@@ -790,6 +897,6 @@ async def moderate_meme_image_url(
     )
     # Cache only allowed moderation results. Blocked images should be rechecked
     # after provider or local score thresholds change instead of staying stuck.
-    if result.allowed:
+    if result.allowed and verdict_cache_key:
         _cache_set(verdict_cache_key, result)
     return result
