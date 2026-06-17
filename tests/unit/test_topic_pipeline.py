@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import inspect
 import json
 import threading
@@ -1195,8 +1194,11 @@ async def test_activity_tracker_can_start_topic_heartbeat_without_collector():
     assert tracker._collector_started is False
 
     tracker._activity_guess_loop_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await tracker._activity_guess_loop_task
+    result = await asyncio.gather(
+        tracker._activity_guess_loop_task,
+        return_exceptions=True,
+    )
+    assert isinstance(result[0], asyncio.CancelledError)
 
 
 def test_activity_tracker_topic_candidate_heartbeat_uses_full_global_locale():
