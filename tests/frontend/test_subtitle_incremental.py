@@ -3939,8 +3939,13 @@ def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_exte
     mock_page.evaluate(
         """
         () => {
+            window.__subtitleWindowSizes = [];
             window.nekoSubtitle = {
-                setSize: () => {},
+                setSize: (width, height, options) => window.__subtitleWindowSizes.push({
+                    width,
+                    height,
+                    panelBounds: options && options.panelBounds,
+                }),
                 changeSettings: () => {},
                 dragStart: () => {},
                 dragStop: () => {},
@@ -3962,22 +3967,30 @@ def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_exte
             const display = document.getElementById('subtitle-display');
             const panel = document.getElementById('subtitle-settings-panel');
             const button = document.getElementById('subtitle-settings-btn');
+            const sizeBeforeOpen = window.__subtitleWindowSizes[window.__subtitleWindowSizes.length - 1];
             button.click();
             await new Promise((resolve) => setTimeout(resolve, 0));
+            const panelRect = panel.getBoundingClientRect();
+            const sizeAfterOpen = window.__subtitleWindowSizes[window.__subtitleWindowSizes.length - 1];
             const opened = {
                 panelState: display.dataset.subtitlePanelState || '',
                 panelHidden: panel.classList.contains('hidden'),
                 expanded: button.getAttribute('aria-expanded'),
                 externalDataset: display.dataset.subtitleWindowInteractions || '',
+                panelHeight: Math.round(panelRect.height),
+                sizeBeforeOpen,
+                sizeAfterOpen,
             };
             button.click();
             await new Promise((resolve) => setTimeout(resolve, 0));
+            const sizeAfterClose = window.__subtitleWindowSizes[window.__subtitleWindowSizes.length - 1];
             return {
                 opened,
                 closed: {
                     panelState: display.dataset.subtitlePanelState || '',
                     panelHidden: panel.classList.contains('hidden'),
                     expanded: button.getAttribute('aria-expanded'),
+                    sizeAfterClose,
                 },
             };
         }
@@ -3988,9 +4001,19 @@ def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_exte
     assert result["opened"]["panelHidden"] is False
     assert result["opened"]["expanded"] == "true"
     assert result["opened"]["externalDataset"] == ""
+    assert result["opened"]["sizeBeforeOpen"] == {
+        "width": 612,
+        "height": 80,
+        "panelBounds": {"width": 600, "height": 68},
+    }
+    assert result["opened"]["panelHeight"] > 0
+    assert result["opened"]["sizeAfterOpen"]["width"] == 612
+    assert result["opened"]["sizeAfterOpen"]["height"] == 80 + result["opened"]["panelHeight"] + 8
+    assert result["opened"]["sizeAfterOpen"]["panelBounds"] == {"width": 600, "height": 68}
     assert result["closed"]["panelState"] == "controls"
     assert result["closed"]["panelHidden"] is True
     assert result["closed"]["expanded"] == "false"
+    assert result["closed"]["sizeAfterClose"] == result["opened"]["sizeBeforeOpen"]
 
 
 @pytest.mark.frontend

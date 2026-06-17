@@ -50,19 +50,30 @@
         bounds = getRenderedPanelBounds(refs, bounds);
         refs.display.style.maxHeight = 'none';
 
+        function getInlineSettingsHeightReserve() {
+            if (hasExternalSettingsBridge()) return 0;
+            if (!refs.settingsPanel || refs.settingsPanel.classList.contains('hidden')) return 0;
+            var panelRect = refs.settingsPanel.getBoundingClientRect ? refs.settingsPanel.getBoundingClientRect() : null;
+            var panelHeight = panelRect && panelRect.height ? panelRect.height : refs.settingsPanel.offsetHeight;
+            return Math.max(0, Math.ceil(Number(panelHeight) || 0) + 8);
+        }
+
         function setWindowSizeOnce() {
             if (nativeResizing || !api || typeof api.setSize !== 'function') return;
+            var inlineSettingsHeight = getInlineSettingsHeightReserve();
             var payload = {
                 width: bounds.width + DESKTOP_WINDOW_EDGE_INSET * 2,
-                height: bounds.height + DESKTOP_WINDOW_EDGE_INSET * 2,
+                height: bounds.height + inlineSettingsHeight + DESKTOP_WINDOW_EDGE_INSET * 2,
                 panelWidth: bounds.width,
-                panelHeight: bounds.height
+                panelHeight: bounds.height,
+                inlineSettingsHeight: inlineSettingsHeight
             };
             if (lastSizePayload &&
                 lastSizePayload.width === payload.width &&
                 lastSizePayload.height === payload.height &&
                 lastSizePayload.panelWidth === payload.panelWidth &&
-                lastSizePayload.panelHeight === payload.panelHeight) {
+                lastSizePayload.panelHeight === payload.panelHeight &&
+                lastSizePayload.inlineSettingsHeight === payload.inlineSettingsHeight) {
                 return;
             }
             lastSizePayload = payload;
@@ -828,7 +839,7 @@
                 var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
                 var panelStateOnly = changedKeys.length === 1 && changedKeys[0] === 'subtitlePanelState';
                 SubtitleShared.applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, { host: 'window' });
-                if (!panelStateOnly) {
+                if (!panelStateOnly || !hasExternalSettingsBridge()) {
                     resizeWindowToTranscript();
                 }
                 syncExternalSettingsWindow();
