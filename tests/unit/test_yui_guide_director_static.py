@@ -6,6 +6,8 @@ import re
 YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/director.js"
 YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/steps.js"
 YUI_GUIDE_DAY1_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
+SCENE_ORCHESTRATOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/scene-orchestrator.js"
+NEW_USER_ICEBREAKER_PATH = Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
@@ -72,6 +74,42 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
 
     assert compact_capsule_selector in allowed_target_block
     assert compact_input_selector in allowed_target_block
+
+
+def test_steps_keep_default_non_home_page_registrations():
+    source = _read_steps()
+    page_key_block = source.split("const day1Guide = getDailyGuide(1) || {};", 1)[1].split(
+        "const steps = {};",
+        1,
+    )[0]
+
+    assert "const configuredPageKeys = Array.isArray(day1Guide.pageKeys) ? day1Guide.pageKeys : [];" in page_key_block
+    assert "const pageKeys = DEFAULT_PAGE_KEYS.concat(configuredPageKeys).filter" in page_key_block
+    assert "list.indexOf(page) === index" in page_key_block
+
+
+def test_timeline_voice_key_resolution_uses_director_before_normalized_audio():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    runtime_block = source.split("createTimelineAudioRuntime(scene, timelineScene, context)", 1)[1].split(
+        "async runLegacyScene",
+        1,
+    )[0]
+
+    assert "const resolveTimelineVoiceKey = (voiceKey) => {" in runtime_block
+    assert "director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
+    assert "return resolvedSceneVoiceKey || voiceKey || audio.voiceKey || legacyScene.voiceKey || '';" in runtime_block
+    assert "const resolvedVoiceKey = resolveTimelineVoiceKey(voiceKey);" in runtime_block
+    assert "director.getGuideVoiceDurationMs(\n                            resolveTimelineVoiceKey(voiceKey)," in runtime_block
+
+
+def test_icebreaker_does_not_restart_completed_current_day():
+    source = NEW_USER_ICEBREAKER_PATH.read_text(encoding="utf-8")
+    start_block = source.split("async function start(reason)", 1)[1].split(
+        "activeSession = {",
+        1,
+    )[0]
+
+    assert "activeSession || isDayCompleted(DAY) || hasCompletedFinalDay()" in start_block
 
 
 def test_externalized_tutorial_chat_spotlight_targets_compact_input_not_window_shell():

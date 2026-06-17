@@ -6976,12 +6976,30 @@ async def game_project_context(game_type: str, request: Request):
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if callable(append_icebreaker_context_async):
-        ok = await append_icebreaker_context_async(role, text)
-    elif callable(append_icebreaker_context):
-        ok = append_icebreaker_context(role, text)
-    else:
-        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    try:
+        if callable(append_icebreaker_context_async):
+            ok = await append_icebreaker_context_async(role, text)
+        elif callable(append_icebreaker_context):
+            ok = append_icebreaker_context(role, text)
+        else:
+            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    except Exception as exc:
+        logger.warning(
+            "🎮 新用户破冰上下文追加失败: lanlan=%s role=%s session=%s err=%s",
+            lanlan_name,
+            role,
+            data.get("session_id") or "",
+            exc,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "reason": "context_append_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": str(data.get("session_id") or ""),
+        }
 
     return {
         "ok": bool(ok),

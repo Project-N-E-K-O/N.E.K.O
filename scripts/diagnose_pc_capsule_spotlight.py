@@ -209,12 +209,29 @@ def run_browser_probe() -> tuple[list[Check], dict[str, Any]]:
 
 
 def run_pc_static_checks(pc_repo: Path) -> list[Check]:
+    pc_repo = pc_repo.expanduser()
+    preload_path = pc_repo / "src" / "preload-common.js"
+    preload_source = _read(preload_path) if preload_path.exists() else ""
+
     return [
-        Check(
-            "PC static checks not implemented",
-            "FAIL",
-            f"run_pc_static_checks has no assertions yet for pc_repo={pc_repo}.",
-        )
+        _check(
+            pc_repo.exists(),
+            "N.E.K.O.-PC repository exists for static checks",
+            f"PC repository found at {pc_repo}.",
+            f"PC repository was not found at {pc_repo}.",
+        ),
+        _check(
+            preload_path.exists(),
+            "N.E.K.O.-PC preload bridge file exists",
+            f"preload-common.js found at {preload_path}.",
+            f"preload-common.js was not found at {preload_path}.",
+        ),
+        _check(
+            "setupTutorialOverlayBridge" in preload_source,
+            "N.E.K.O.-PC preload exposes the tutorial overlay bridge",
+            "setupTutorialOverlayBridge is present in src/preload-common.js.",
+            "setupTutorialOverlayBridge was not found in src/preload-common.js.",
+        ),
     ]
 
 
