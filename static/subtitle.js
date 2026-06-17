@@ -697,7 +697,6 @@ function initSubtitleHostUi() {
         },
         onSettingsApplied: function(state, refs, detail) {
             var shouldRemeasureText = detail && (
-                detail.source === 'subtitle-ui-size' ||
                 detail.source === 'subtitle-ui-resize'
             );
             if (shouldRemeasureText && refs && refs.text && refs.text.textContent) {

@@ -68,24 +68,24 @@
             emptyHint: 'No translation yet'
         },
         es: {
-            settingsBtn: 'Configuracion de subtitulos',
-            lockPosition: 'Bloquear posicion',
-            unlockPosition: 'Desbloquear posicion',
-            closePanel: 'Cerrar panel de traduccion',
+            settingsBtn: 'Configuración de subtítulos',
+            lockPosition: 'Bloquear posición',
+            unlockPosition: 'Desbloquear posición',
+            closePanel: 'Cerrar panel de traducción',
             targetLang: 'Idioma de destino',
             opacity: 'Opacidad del fondo',
-            passthroughInteraction: 'Clics en area transparente',
-            emptyHint: 'Sin traduccion todavia'
+            passthroughInteraction: 'Clics en área transparente',
+            emptyHint: 'Sin traducción todavía'
         },
         pt: {
-            settingsBtn: 'Configuracoes de legenda',
-            lockPosition: 'Bloquear posicao',
-            unlockPosition: 'Desbloquear posicao',
-            closePanel: 'Fechar painel de traducao',
+            settingsBtn: 'Configurações de legenda',
+            lockPosition: 'Bloquear posição',
+            unlockPosition: 'Desbloquear posição',
+            closePanel: 'Fechar painel de tradução',
             targetLang: 'Idioma de destino',
             opacity: 'Opacidade do fundo',
-            passthroughInteraction: 'Clique atraves da area transparente',
-            emptyHint: 'Sem traducao ainda'
+            passthroughInteraction: 'Clique através da área transparente',
+            emptyHint: 'Sem tradução ainda'
         },
         ja: {
             settingsBtn: '字幕設定',
