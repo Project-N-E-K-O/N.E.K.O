@@ -267,13 +267,23 @@ class TopicHookPool:
         self._cancel_trigger(name)
 
     def _purge_accumulated_signals(self, name: str) -> None:
-        """Drop pre-candidate evidence without touching pending delivery material."""
+        """Drop privacy-tainted candidate evidence without touching pending delivery material.
+
+        Kept separate from _consume_accumulated_signals even though both clear
+        the same store today: privacy purge and post-analysis consumption are
+        different policy points and may diverge later.
+        """
         self._signal_store.clear(name)
         self._signal_store.flush()
         self._dirty.discard(name)
 
     def _consume_accumulated_signals(self, name: str) -> None:
-        """Consume analyzed evidence while preserving delivery timing state."""
+        """Consume analyzed evidence while preserving delivery timing state.
+
+        Kept separate from _purge_accumulated_signals so future consumption can
+        retain non-private bookkeeping, such as aggregate stats, without
+        weakening privacy cleanup.
+        """
         self._signal_store.clear(name)
         self._signal_store.flush()
         self._dirty.discard(name)
