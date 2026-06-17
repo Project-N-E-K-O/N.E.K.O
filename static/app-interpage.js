@@ -2384,6 +2384,14 @@
         }
     }
 
+    function postIcebreakerChoiceSelected(payload) {
+        postIcebreakerBridgeEvent('icebreaker_choice_selected', payload || {});
+    }
+
+    function postIcebreakerFreeTextSubmitted(payload) {
+        postIcebreakerBridgeEvent('icebreaker_free_text_submitted', payload || {});
+    }
+
     function relayYuiGuideMessageToNative(target, message) {
         var bridge = window.nekoTutorialOverlay;
         if (!bridge || !message || typeof message !== 'object') {
@@ -3911,6 +3919,9 @@
     mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;
     mod.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;
     mod.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;
+    mod.postIcebreakerBridgeEvent = postIcebreakerBridgeEvent;
+    mod.postIcebreakerChoiceSelected = postIcebreakerChoiceSelected;
+    mod.postIcebreakerFreeTextSubmitted = postIcebreakerFreeTextSubmitted;
     mod.isVoiceConfigSwitching = isVoiceConfigSwitching;
     mod.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
     mod.applyTutorialChatIdentityOverride = applyTutorialChatIdentityOverride;

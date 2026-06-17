@@ -2889,6 +2889,18 @@
             renderWindow();
             window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', { detail: icebreakerDetail }));
             dispatchHostEvent('icebreaker-free-text-submit', icebreakerDetail);
+            try {
+                var interpage = window.appInterpage;
+                if (interpage && typeof interpage.postIcebreakerFreeTextSubmitted === 'function') {
+                    interpage.postIcebreakerFreeTextSubmitted({
+                        sessionId: icebreakerDetail.sessionId,
+                        text: icebreakerDetail.text,
+                        requestId: icebreakerDetail.requestId
+                    });
+                }
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] free text broadcast failed:', error);
+            }
             return;
         }
 
@@ -3519,16 +3531,14 @@
             }));
             dispatchHostEvent('icebreaker-choice-selected', detail);
             try {
-                var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-                if (channel && typeof channel.postMessage === 'function') {
-                    channel.postMessage({
-                        action: 'icebreaker_choice_selected',
+                var interpage = window.appInterpage;
+                if (interpage && typeof interpage.postIcebreakerChoiceSelected === 'function') {
+                    interpage.postIcebreakerChoiceSelected({
                         sessionId: detail.sessionId,
                         gameType: detail.gameType,
                         choice: detail.choice,
                         label: detail.label,
-                        option: option,
-                        timestamp: Date.now()
+                        option: option
                     });
                 }
             } catch (error) {

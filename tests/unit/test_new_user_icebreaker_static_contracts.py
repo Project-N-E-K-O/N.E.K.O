@@ -319,6 +319,20 @@ def test_icebreaker_context_append_requires_successful_json_payload():
     assert "return true;" not in append_context_block
 
 
+def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    handle_choice_block = runtime.split("function handleChoice(detail)", 1)[1].split(
+        "function handleFreeText(detail)",
+        1,
+    )[0]
+
+    assert "if (session.choiceInFlight) return;" in handle_choice_block
+    assert "session.choiceInFlight = true;" in handle_choice_block
+    assert "if (!message)" in handle_choice_block
+    assert "session.choiceInFlight = false;" in handle_choice_block
+    assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
+
+
 def test_icebreaker_waits_long_enough_for_react_chat_host():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
 
@@ -610,7 +624,7 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
 
     for source in (app_websocket, app_proactive):
         assert "NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1'" in source
-        assert "NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000" in source
+        assert "NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000" in source
         assert "function isNewUserIcebreakerPeriodActive()" in source
         assert "function isRecentNewUserIcebreakerEntry(entry)" in source
         assert "Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS" in source

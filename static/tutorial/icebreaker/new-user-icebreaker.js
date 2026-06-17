@@ -601,19 +601,29 @@
     function handleChoice(detail) {
         if (!activeSession || !detail) return;
         if (detail.sessionId && detail.sessionId !== activeSession.sessionId) return;
-        var node = activeSession.dayConfig.nodes[activeSession.nodeId];
+        var session = activeSession;
+        if (session.choiceInFlight) return;
+        var node = session.dayConfig.nodes[session.nodeId];
         if (!node || !Array.isArray(node.options)) return;
         var choice = String(detail.choice || '');
         var option = node.options.find(function (candidate) {
             return String(candidate.id || '') === choice;
         });
         if (!option) return;
-        var label = (detail.option && detail.option.label) || getText(activeSession.localeData, option.labelKey);
+        session.choiceInFlight = true;
+        var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
         appendChatMessage('user', label, {
-            day: activeSession.day,
-            nodeId: activeSession.nodeId,
+            day: session.day,
+            nodeId: session.nodeId,
             choice: choice
-        }).then(function () {
+        }).then(function (message) {
+            if (!message) {
+                if (activeSession === session) {
+                    session.choiceInFlight = false;
+                    setChoicePrompt(node, session.localeData);
+                }
+                return null;
+            }
             if (option.next) {
                 return deliverNode(option.next);
             }
@@ -621,6 +631,17 @@
                 completeWithHandoff(option);
             }
             return null;
+        }).then(function (result) {
+            if (activeSession === session) {
+                session.choiceInFlight = false;
+            }
+            return result;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] choice handling failed:', error);
+            if (activeSession === session) {
+                session.choiceInFlight = false;
+                setChoicePrompt(node, session.localeData);
+            }
         });
     }
 
