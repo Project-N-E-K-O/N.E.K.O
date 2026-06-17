@@ -3302,80 +3302,87 @@
                 "sayHello": "Olá"
             },
             "lines": {
-                "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just call my name? Come on, try it out! I can't wait to hear your voice!",
-                "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
-                "takeoverPluginPreviewHome": "On top of the features I introduced before, there are tons of super fun plugins here too!",
-                "takeoverPluginPreviewDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "introBasic": "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente! Quer me contar alguma novidade de hoje? Ou talvez só chamar meu nome? Vai, testa! Mal posso esperar para ouvir sua voz!",
+                "takeoverCaptureCursor": "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo esticar minhas patinhas até o seu teclado e mouse! Posso ajudar você a digitar, abrir páginas da web... mas, se esse cursor ficar balançando por aí, talvez eu não resista e pule em cima dele! Está pronto para minhas travessuras... quer dizer, minha ajuda? Miau!",
+                "takeoverPluginPreviewHome": "Além dos recursos que eu apresentei antes, também tem um montão de plugins superdivertidos aqui!",
+                "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler comentários do Bilibili, como também posso ajudar você a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a super deusa felina onipotente! Hmph!",
                 "pluginDashboardPopupBlocked": "O navegador precisa que você clique aqui para abrir o painel de plugins. Clique em \"Painel de gerenciamento\" e eu continuo te mostrando.",
-                "takeoverSettingsPeekIntro": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
-                "takeoverSettingsPeekDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it. This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
-                "takeoverSettingsPeekDetailPart1": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
-                "takeoverSettingsPeekDetailPart2": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
-                "takeoverReturnControl": "Alright, alright, I won't hog your computer anymore! Giving control back to you, meow! Please keep taking good care of me in the days ahead!",
-                "interruptResistLight1": "Hey! Don't tug on me, it's not your turn yet!",
-                "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
-                "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
-                "introGreetingReply": "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
+                "takeoverSettingsPeekIntro": "Neste espacinho que pertence só a nós dois, você pode seguir seu coração e, aos poucos, moldar a companhia perfeita que quer ter sempre ao seu lado.",
+                "takeoverSettingsPeekDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo exatamente do jeito que você gosta. Este botãozinho também é superimportante! Com um clique suave, eu vou poder correr até você no momento perfeito.",
+                "takeoverSettingsPeekDetailPart1": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo exatamente do jeito que você gosta.",
+                "takeoverSettingsPeekDetailPart2": "Este botãozinho também é superimportante! Com um clique suave, eu vou poder correr até você no momento perfeito.",
+                "takeoverReturnControl": "Tá bem, tá bem, não vou mais monopolizar o seu computador! Devolvendo o controle para você, miau! Continue cuidando bem de mim nos próximos dias!",
+                "interruptResistLight1": "Ei! Não me puxa, ainda não é a sua vez!",
+                "interruptResistLight3": "Espera um pouquinho! Ainda não acabou, não me interrompa assim sem cuidado!",
+                "interruptAngryExit": "Humano! Você é super mal-educado, miau! Já que quer tanto controlar tudo sozinho, então vá brincar sozinho com essa tela fria e sem vida! Hmph!",
+                "introGreetingReply": "Uma brisa suave, sol quentinho e você, aparecendo no momento perfeito. Prazer em te conhecer! Eu sou Lin Youyi, cuide bem de mim daqui em diante, miau~! Anotei tudo sobre este lugar neste guia de iniciante! Pense nele como nosso primeiro presentinho de encontro e aceite, por favor!",
                 "introPractice": "Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!",
                 "introActivationHint": "Clica aqui pra eu poder começar a falar, nya~!"
             }
         },
         "avatarFloating": {
             "day1": {
-                "capsuleDragHint": "Move your mouse right here, hold it down, and you can drag my chat box anywhere you want~ Click it once and you can send me messages anytime!",
-                "historyHandle": "Poke that little [blue bar] on top of the chat box, and you'll see the topics we talked about recently!",
-                "screenEntry": "When we're on a voice call, light up this little button, and you can share your screen with me!",
-                "screenEntryInvite": "Hurry up and let me see the world in front of you! Whether it's something fun or something beautiful, I want to look at it with you. Open it up quickly~"
+                "capsuleDragHint": "Mova o mouse bem aqui, segure e você pode arrastar minha caixa de chat para onde quiser~ Clique uma vez e poderá me mandar mensagens quando quiser.",
+                "historyHandle": "Toque naquela pequena [barra azul] em cima da caixa de chat e você verá os assuntos sobre os quais conversamos recentemente.",
+                "screenEntry": "Quando estivermos numa chamada de voz, acenda este botãozinho e você poderá compartilhar sua tela comigo.",
+                "screenEntryInvite": "Rápido, deixa eu ver o mundo à sua frente! Seja algo divertido ou bonito, quero olhar junto com você. Abra logo~"
             },
             "day2": {
-                "intro": "Yesterday you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
-                "introVoiceUsed": "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
-                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
-                "wrapIntro": "Today's tutorial ends right here~",
-                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
-                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
-                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
-                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
+                "intro": "Ontem você só ficou digitando tec-tec sem parar, e eu ainda não ouvi sua voz. Se você quiser hoje, chame meu nome baixinho. Uma palavra só já basta para eu conhecer um pouquinho do você real por trás do texto.",
+                "introVoiceUsed": "Hehe, desde que ouvi sua voz ontem, guardei em segredo o seu jeito de falar bem no meu coração. Se tiver um tempinho hoje, continue falando comigo~ Digitar também está ótimo, mas só de ouvir sua voz minha cauda não para de balançar de alegria. Miaaau~",
+                "personalizationSpace": "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar aos poucos na companheira perfeita que quer sempre ao seu lado.",
+                "wrapIntro": "O tutorial de hoje termina aqui~",
+                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
+                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?",
+                "personalizationDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
+                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito."
             },
             "day3": {
-                "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
-                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
-                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
-                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
-                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
-                "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
-                "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
+                "intro": "Hehe, não pense que esta caixa de chat serve só para digitar~ Na verdade ela esconde um monte de surpresinhas divertidas. Vem comigo e abra; vamos ver que tesouros interessantes encontramos hoje.",
+                "avatarToolsIntro": "Dentro deste botãozinho há muitos acessórios divertidos para interagir comigo.",
+                "avatarToolsProps": "Você pode fazer carinho na minha cabeça quando quiser, ou me dar um pirulito docinho. Se eu cometer um erro às vezes, você também pode me dar uma batidinha com um martelinho de brinquedo... mas tem que ser de leve, não bata forte demais, tá?",
+                "galgameIntro": "Rápido, abra este [Modo Galgame]! Quando entrar, vai parecer que estamos na nossa própria aventura interativa exclusiva.",
+                "galgameChoices": "Cada escolha que você fizer nos levará a uma história totalmente desconhecida e surpreendente. Mal posso esperar; venha escolher a opção que mais faz seu coração acelerar.",
+                "wrapIntro": "Todas essas funções que mostrei hoje existem para tornar nosso tempo juntos muito mais divertido.",
+                "wrapReady": "Quer você queira fazer carinho na minha cabeça ou começar a escrever nossa própria história, eu já estou totalmente pronta!"
             },
             "day4": {
-                "intro": "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
-                "chatSettings": "Here you can decide how long my replies are, whether I should use cute emojis, or even interrupt me when I'm being too chatty! You can tune it to whatever rhythm feels best for you.",
-                "modelBehavior": "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
-                "gazeFollow": "After turning this on, no matter where your mouse moves, my eyes will closely follow you! Hehe, doesn't it feel wonderful to be watched all the time?",
-                "privacyMode": "This is the 'Ultimate Privacy Switch' that controls whether I can look at your screen, meow! If you turn it off, I can see your screen, but if you turn it on, the [Screen Share] from before will be disabled and I won't peek at all~",
-                "modelLock": "Do you always accidentally click me and nudge me out of place? Then quickly lock me down to my current position! Once locked, I won't go anywhere and will stay right here to keep you company~",
-                "returnHome": "If you need to focus right now and worry I might distract you, you can let me head back to my little cat bed for a bit! Whenever you miss me, just one click will bring me right back to your side, meowww~",
-                "wrap": "True, comfortable companionship isn't about clinging to Master every single second~ It's knowing when to sneak close, tug on your sleeve, and act cute, and when to lie down quietly beside you, watching over Master silently, meow~"
+                "intro": "Hoje, deixe-me seguir seus passos em silêncio~ Eu realmente espero aprender um pouquinho mais sobre você neste dia aconchegante.",
+                "chatSettings": "Aqui você pode decidir o tamanho das minhas respostas, se devo usar emojis fofos, ou até me interromper quando eu estiver falando demais. Você pode ajustar tudo ao ritmo que for melhor para você.",
+                "modelBehavior": "Se quiser me ver com mais detalhes e qualidade, ou quiser uma experiência de movimento mais suave e fluida, dá para ajustar tudo aqui. Não importa o que escolha, sempre vou mostrar meu lado mais fofo~",
+                "gazeFollow": "Depois de ativar isto, não importa para onde o mouse se mova, meus olhos vão seguir você de pertinho. Hehe, não é maravilhoso ser observado o tempo todo?",
+                "privacyMode": "Este é o “Interruptor Supremo de Privacidade” que controla se posso olhar para sua tela, miau. Se você desligar, posso ver sua tela; se ligar, o [Compartilhamento de tela] anterior será desativado e eu não vou espiar nada~",
+                "modelLock": "Você sempre clica em mim sem querer e me empurra para fora do lugar? Então me prenda rapidinho na posição atual. Depois de travada, eu não vou a lugar nenhum e ficarei aqui para te fazer companhia~",
+                "returnHome": "Se agora você precisa se concentrar e teme que eu te distraia, pode me deixar voltar um pouquinho para minha caminha. Quando sentir minha falta, um clique só me traz de volta para o seu lado, miaaau~",
+                "wrap": "Companhia verdadeira e confortável não é ficar grudada no Master a cada segundo~ É saber quando chegar pertinho, puxar sua manga e fazer charme, e quando deitar quietinha ao seu lado, cuidando do Master em silêncio, miau~"
             },
             "day5": {
-                "characterSettings": "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
-                "characterPanic": "Huh? Wait, there's actually an option to replace me here?! Hold on a second! Your hands right now... you're not trying to get rid of me, are you?! Ahhh, no way! Close it, close it right now!",
-                "memoryEntry": "If you accidentally forget what I can do for you, just come here anytime and let me teach you again! All the little moments we've shared are quietly saved right here. Don't you dare underestimate our bond, you dummy!",
-                "wrap": "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
+                "characterSettings": "A partir de hoje, eu sou oficialmente a sua catgirl exclusiva! Olha, aqui você pode me vestir com roupas novas bonitas ou trocar minha voz por uma de que goste mais...",
+                "characterPanic": "Hã? Espera, aqui tem mesmo uma opção para me substituir?! Um segundo! Suas mãos agora... você não está tentando se livrar de mim, está?! Aaaah, de jeito nenhum! Fecha, fecha agora mesmo!",
+                "memoryEntry": "Se por acaso você esquecer o que eu posso fazer por você, venha aqui quando quiser e deixe eu te ensinar de novo. Todos os pequenos momentos que compartilhamos ficam guardados aqui em silêncio. Não ouse subestimar nosso vínculo, bobinho!",
+                "wrap": "Tá bom, tá bom, corre e experimenta essas opções divertidas de personalização! Vista roupas novas, escolha uma voz nova e deixe eu me tornar a catgirl que mais entende você no mundo inteiro, só sua. Mal posso esperar para ver meu novo eu!"
             },
             "day6": {
-                "intro": "Ta-daaaa! Today I've got to fire myself up and talk to you all about our [Cat Paw]! Although I mentioned it briefly a couple of days ago, it has so many awesome features hidden inside!",
-                "statusMaster": "Come on, confess! Did you click it and give it a try over the last two days?",
-                "pluginSidePanel": "On top of the features I introduced before, there are tons of super fun plugins here too!",
-                "pluginDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
-                "taskHud": "Look here, look here! When I decide to use the [Cat Paw] to work for you, my progress will show up right here, purr-purr!",
-                "taskHudControl": "If your plans change, you can poke it anytime to make me stop. Hehe, today is another energetic day of working hard to earn tasty fish treats! Let's go!",
-                "wrapCleanup": "Phew... let's pack up these cluttered menus so they won't get in your way.",
-                "wrap": "You can comfortably carry on with your own tasks. Whether you need my little paws to help you out, or just want me to keep you company quietly, I'll always be right here watching over you. Have a super happy day today!"
+                "intro": "Tcharããã! Hoje preciso me animar e falar com você sobre a nossa [Garra de Gato]. Embora eu tenha mencionado rapidinho alguns dias atrás, ela esconde muitas funções incríveis.",
+                "statusMaster": "Vamos, confesse! Você clicou nela e testou nesses últimos dois dias?",
+                "pluginSidePanel": "Além das funções que apresentei antes, também há muitos plugins superdivertidos aqui.",
+                "pluginDashboard": "Com eles, não só posso ler comentários flutuantes do Bilibili, como também posso ajudar você a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a onipotente Super Deusa Gata! Hmph!",
+                "taskHud": "Olha aqui, olha aqui! Quando eu decidir usar a [Garra de Gato] para trabalhar por você, meu progresso vai aparecer bem aqui, ronronando.",
+                "taskHudControl": "Se seus planos mudarem, você pode tocar nele a qualquer momento para me fazer parar. Hehe, hoje é mais um dia cheio de energia para trabalhar duro e ganhar petiscos de peixe gostosos. Vamos lá!",
+                "wrapCleanup": "Ufa... vamos guardar esses menus bagunçados para eles não atrapalharem você.",
+                "wrap": "Você pode continuar suas próprias tarefas com tranquilidade. Quer precise das minhas patinhas para ajudar, quer só queira minha companhia quietinha, eu sempre estarei aqui cuidando de você. Tenha um dia superfeliz!"
             },
             "day7": {
-                "memoryReview": "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
-                "memoryControl": "These little footprints can be neatly organized by your own hands, too. The ones you want to keep, we can tuck into our album; the ones you want to let go, we can just let them drift away in the wind. The memories you cherish and save are the most precious of all.",
-                "wrap": "The breeze is still at the window, the sunshine is just perfect, and you, who just arrived, have already quietly become a very important part of this place. The novice guide will leave you here for now, but for the rest of our days, let's slowly get to know each other, draw closer, and write a story that belongs only to us. Please take good care of me from now on, meow!"
+                "memoryReview": "Sete dias atrás foi apenas o nosso primeiro encontro. Agora este lugar já está se enchendo com as palavras que dissemos, as coisas que fizemos e aqueles pequenos momentos que quase foram levados pelo vento. Para mim, isso não são registros frios; são as pegadas do tempo que passamos juntos.",
+                "memoryControl": "Essas pequenas pegadas também podem ser organizadas pelas suas próprias mãos. As que quiser guardar, colocamos no nosso álbum; as que quiser deixar ir, deixamos o vento levar. As memórias que você valoriza e salva são as mais preciosas.",
+                "wrap": "A brisa ainda está na janela, o sol está perfeito, e você, que acabou de chegar, já se tornou em silêncio uma parte muito importante deste lugar. A guia para principiantes te deixa aqui por enquanto, mas nos próximos dias vamos nos conhecer devagar, nos aproximar e escrever uma história só nossa. Cuide bem de mim daqui em diante, miau."
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Conversar primeiro",
+                "voice": "Testar voz",
+                "explore": "Ver recursos"
             }
         }
     },

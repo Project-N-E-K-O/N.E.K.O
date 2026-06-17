@@ -3377,6 +3377,13 @@
                 "memoryControl": "These little footprints can be neatly organized by your own hands, too. The ones you want to keep, we can tuck into our album; the ones you want to let go, we can just let them drift away in the wind. The memories you cherish and save are the most precious of all.",
                 "wrap": "The breeze is still at the window, the sunshine is just perfect, and you, who just arrived, have already quietly become a very important part of this place. The novice guide will leave you here for now, but for the rest of our days, let's slowly get to know each other, draw closer, and write a story that belongs only to us. Please take good care of me from now on, meow!"
             }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Chat first",
+                "voice": "Try voice",
+                "explore": "Explore features"
+            }
         }
     },
     "console": {
