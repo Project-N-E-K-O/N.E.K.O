@@ -29,7 +29,8 @@ def _load_playwright():
     except Exception as exc:  # pragma: no cover - CLI diagnostic path
         raise RuntimeError(
             "Playwright is required. Run with the repo venv, for example: "
-            ".venv/bin/python scripts/monitor_pc_day1_intro_greeting_cursor.py"
+            ".venv/bin/python scripts/monitor_pc_day1_intro_greeting_cursor.py; "
+            "if Chromium is missing, run `playwright install chromium`."
         ) from exc
     return sync_playwright
 

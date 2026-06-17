@@ -2767,16 +2767,15 @@
 
     function updateYuiGuideChatSpotlight(kind) {
         var spotlight = getYuiGuideChatSpotlightElement();
-        if (!spotlight) {
-            return;
-        }
-
         var target = getYuiGuideChatSpotlightTarget(kind);
         var rect = target && typeof target.getBoundingClientRect === 'function'
             ? target.getBoundingClientRect()
             : null;
 
         if (!rect || rect.width <= 0 || rect.height <= 0) {
+            if (!spotlight) {
+                return;
+            }
             spotlight.hidden = true;
             spotlight.classList.remove('is-visible', 'is-window', 'is-input');
             return;
@@ -2796,6 +2795,9 @@
         }];
         if (isYuiGuidePcOverlayAvailable()) {
             sendYuiGuidePcOverlayPatch({ spotlights: pcRects });
+        }
+        if (!spotlight) {
+            return;
         }
         spotlight.hidden = false;
         spotlight.classList.remove('is-window', 'is-input');

@@ -3288,7 +3288,7 @@
                 "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
                 "takeoverPluginPreviewHome": "On top of the features I introduced before, there are tons of super fun plugins here too!",
                 "takeoverPluginPreviewDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
-                "pluginDashboardPopupBlocked": "El navegador necesita que hagas clic aquí para abrir el panel de plugins. Haz clic en \"Panel de gestión\" y seguiré guiándote.",
+                "pluginDashboardPopupBlocked": "Your browser needs you to click here yourself to open the plugin panel. Click \"Management Panel\" and I'll keep showing you around.",
                 "takeoverSettingsPeekIntro": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
                 "takeoverSettingsPeekDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it. This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
                 "takeoverSettingsPeekDetailPart1": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
@@ -3298,8 +3298,8 @@
                 "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
                 "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
                 "introGreetingReply": "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
-                "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
-                "introActivationHint": "¡Haz clic aquí para que pueda empezar a hablar, nyan~!"
+                "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
+                "introActivationHint": "Click here so I can start talking, nyan~!"
             }
         },
         "avatarFloating": {
