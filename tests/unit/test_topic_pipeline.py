@@ -1092,7 +1092,8 @@ async def test_topic_pool_processes_requested_character_while_privacy_is_enabled
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "隐私开启前的候选证据", lang="zh-CN")
-    last_turn_at = pool._last_turn_at["妮可"]
+    last_turn_at = pool._signal_store.last_turn_at("妮可")
+    assert last_turn_at is not None
 
     await pool.process_ready_topics(
         lanlan_name="妮可",

@@ -268,11 +268,6 @@ class TopicHookPool:
         self._used_topics_lock = threading.RLock()
         self._used_topics_write_lock = threading.Lock()
         self._load_used_topics()
-        self._last_turn_at: dict[str, float] = {
-            name: last_turn_at
-            for name in self._signal_store.names()
-            if (last_turn_at := self._signal_store.last_turn_at(name)) is not None
-        }
         # Restored persisted signals are dirty once after startup: they should
         # be eligible for the next heartbeat, then stop unless a new turn
         # arrives. Do not iterate all signal-store names every tick.
@@ -395,9 +390,6 @@ class TopicHookPool:
         name = str(lanlan_name or "default")
         self._seq[name] += 1
         self._signal_store.note_turn(name, actor="user", text=cleaned)
-        last_turn_at = self._signal_store.last_turn_at(name)
-        if last_turn_at is not None:
-            self._last_turn_at[name] = last_turn_at
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
         self._schedule(name)
@@ -409,9 +401,6 @@ class TopicHookPool:
         name = str(lanlan_name or "default")
         self._seq[name] += 1
         self._signal_store.note_turn(name, actor="ai", text=cleaned)
-        last_turn_at = self._signal_store.last_turn_at(name)
-        if last_turn_at is not None:
-            self._last_turn_at[name] = last_turn_at
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
         self._schedule(name)
@@ -425,7 +414,7 @@ class TopicHookPool:
     ) -> None:
         """Refresh last-activity metadata without storing turn text."""
         name = str(lanlan_name or "default")
-        self._last_turn_at[name] = float(now if now is not None else time.time())
+        del now
         self._langs[name] = lang or self._langs.get(name, "zh")
 
     def get_ready_materials(self, lanlan_name: str, *, max_items: int = 2) -> list[dict[str, Any]]:
@@ -710,7 +699,7 @@ class TopicHookPool:
                 return
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
-            self._mark_topic_used(name, current_material)
+            self._mark_topic_used(name, current_material, persist=False)
             await asyncio.to_thread(self._persist_used_topics)
             self._materials[name] = []
             await self._discard_delivered_signals_async(name, current_material)
@@ -920,7 +909,13 @@ class TopicHookPool:
             available.append(dict(material))
         return available
 
-    def _mark_topic_used(self, name: str, material: Mapping[str, Any]) -> None:
+    def _mark_topic_used(
+        self,
+        name: str,
+        material: Mapping[str, Any],
+        *,
+        persist: bool = True,
+    ) -> None:
         self._prune_used_topics(name)
         with self._used_topics_lock:
             self._used_topics[name].append(
@@ -936,7 +931,8 @@ class TopicHookPool:
                     "bigram_hashes": sorted(_topic_fingerprints(_material_bigram_units(material))),
                 }
             )
-        self._request_used_topics_persist()
+        if persist:
+            self._request_used_topics_persist()
 
     def _request_used_topics_persist(self) -> None:
         if self._used_topics_path is None:
