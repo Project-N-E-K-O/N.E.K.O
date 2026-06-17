@@ -118,9 +118,7 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_appends_real_session_history(monkeypatch):
-    from utils.llm_client import AIMessage, HumanMessage
-
+async def test_new_user_icebreaker_context_endpoint_requires_public_append_method(monkeypatch):
     class FakeSession:
         def __init__(self):
             self._conversation_history = []
@@ -132,16 +130,7 @@ async def test_new_user_icebreaker_context_endpoint_appends_real_session_history
     mgr = FakeManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
-    assistant_result = await game_router.game_project_context(
-        "new_user_icebreaker",
-        _FakeRequest({
-            "lanlan_name": "Lan",
-            "role": "assistant",
-            "text": "tutorial is complete",
-            "session_id": "icebreaker-day1-test",
-        }),
-    )
-    user_result = await game_router.game_project_context(
+    result = await game_router.game_project_context(
         "new_user_icebreaker",
         _FakeRequest({
             "lanlan_name": "Lan",
@@ -151,10 +140,12 @@ async def test_new_user_icebreaker_context_endpoint_appends_real_session_history
         }),
     )
 
-    assert assistant_result["ok"] is True
-    assert user_result["ok"] is True
-    assert [type(message) for message in mgr.session._conversation_history] == [AIMessage, HumanMessage]
-    assert [message.content for message in mgr.session._conversation_history] == ["tutorial is complete", "choice a"]
+    assert result == {
+        "ok": False,
+        "reason": "context_method_unavailable",
+        "lanlan_name": "Lan",
+    }
+    assert mgr.session._conversation_history == []
 
 
 @pytest.mark.unit
