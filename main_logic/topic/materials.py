@@ -22,10 +22,12 @@ logger = logging.getLogger("N.E.K.O.Main.topic.materials")
 
 Fetcher = Callable[[str, int], Awaitable[Mapping[str, Any]]]
 _DEFAULT_ONLINE_INTENTS = ("video", "meme")
+_TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 
 
 def _clean_text(value: Any, *, token_limit: int) -> str:
-    return truncate_to_tokens(clean_text(value, limit=None), token_limit)
+    precap = max(token_limit, token_limit * _TOKEN_PRECAP_CHARS_PER_TOKEN)
+    return truncate_to_tokens(clean_text(value, limit=precap), token_limit)
 
 
 def _source_locale_for_lang(lang: str | None) -> str | None:

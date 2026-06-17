@@ -36,9 +36,10 @@ TopicTrigger = Callable[
     ...,
     Awaitable[bool],
 ]
-DeliveryAvailable = Callable[[str], bool]
+DeliveryAvailable = Callable[..., bool]
 
 _MAX_TEXT_TOKENS = 1000
+_TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _TRIGGER_RETRY_DELAY_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
@@ -46,7 +47,8 @@ _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
 
 
 def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
-    return truncate_to_tokens(clean_text(value, limit=None), token_limit)
+    precap = max(token_limit, token_limit * _TOKEN_PRECAP_CHARS_PER_TOKEN)
+    return truncate_to_tokens(clean_text(value, limit=precap), token_limit)
 
 
 def _clean_timestamp(value: Any) -> float:
@@ -655,7 +657,7 @@ class TopicHookPool:
                 logger.info("[%s] topic material trigger waiting: daily quota reached", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
-            if self._topic_was_used_today(name, current_material):
+            if self._topic_was_recently_used(name, current_material):
                 current_material["status"] = "skipped"
                 self._materials[name] = []
                 await self._discard_delivered_signals_async(name, current_material)
@@ -684,7 +686,10 @@ class TopicHookPool:
                 return
             delivery_material = deepcopy(current_material)
             delivery_material["_topic_release_available"] = (
-                lambda _name=name: self._delivery_available_now(_name)
+                lambda _name=name: self._delivery_available_now(
+                    _name,
+                    include_manager_release=False,
+                )
             )
             triggered = await self._topic_trigger(
                 lanlan_name=name,
@@ -702,6 +707,7 @@ class TopicHookPool:
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
             self._mark_topic_used(name, current_material)
+            await asyncio.to_thread(self._persist_used_topics)
             await self._discard_delivered_signals_async(name, current_material)
             logger.info(
                 "[%s] topic material triggered once: %s",
@@ -772,11 +778,29 @@ class TopicHookPool:
         elif floor_hint is not None:
             material["material_hint"] = floor_hint
 
-    def _delivery_available_now(self, name: str) -> bool:
+    def _delivery_available_now(
+        self,
+        name: str,
+        *,
+        include_manager_release: bool = True,
+    ) -> bool:
         if self._delivery_available is None:
             return True
         try:
-            return bool(self._delivery_available(name))
+            return bool(
+                self._delivery_available(
+                    name,
+                    include_manager_release=include_manager_release,
+                )
+            )
+        except TypeError:
+            if not include_manager_release:
+                return True
+            try:
+                return bool(self._delivery_available(name))
+            except Exception as exc:
+                logger.debug("[%s] topic delivery availability check failed: %s", name, exc)
+                return False
         except Exception as exc:
             logger.debug("[%s] topic delivery availability check failed: %s", name, exc)
             return False
@@ -799,7 +823,7 @@ class TopicHookPool:
         else:
             self._used_topics.pop(name, None)
         if len(records) != previous_len:
-            self._persist_used_topics()
+            self._request_used_topics_persist()
         return today_records
 
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
@@ -826,7 +850,7 @@ class TopicHookPool:
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
 
-    def _topic_was_used_today(self, name: str, material: Mapping[str, Any]) -> bool:
+    def _topic_was_recently_used(self, name: str, material: Mapping[str, Any]) -> bool:
         hook_id = str(material.get("hook_id") or "").strip()
         interest = _clean_text(material.get("interest"), token_limit=90)
         keywords = _material_keywords(material)
@@ -834,7 +858,8 @@ class TopicHookPool:
         hook_id_hash = _topic_fingerprint(hook_id)
         keyword_hashes = _topic_fingerprints(keywords)
         bigram_hashes = _topic_fingerprints(bigram_units)
-        for record in self._prune_used_topics(name):
+        self._prune_used_topics(name)
+        for record in self._recent_used_topics(name):
             if hook_id and record.get("hook_id") == hook_id:
                 return True
             if hook_id_hash and record.get("hook_id_hash") == hook_id_hash:
@@ -878,8 +903,8 @@ class TopicHookPool:
     ) -> list[dict[str, Any]]:
         available: list[dict[str, Any]] = []
         for material in materials:
-            if self._topic_was_used_today(name, material):
-                logger.info("[%s] topic material suppressed as already used today: %s", name, _material_log_preview(material))
+            if self._topic_was_recently_used(name, material):
+                logger.info("[%s] topic material suppressed as already used recently: %s", name, _material_log_preview(material))
                 continue
             available.append(dict(material))
         return available
@@ -898,7 +923,17 @@ class TopicHookPool:
                 "bigram_hashes": sorted(_topic_fingerprints(_material_bigram_units(material))),
             }
         )
-        self._persist_used_topics()
+        self._request_used_topics_persist()
+
+    def _request_used_topics_persist(self) -> None:
+        if self._used_topics_path is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._persist_used_topics()
+            return
+        loop.create_task(asyncio.to_thread(self._persist_used_topics))
 
     def _load_used_topics(self) -> None:
         path = self._used_topics_path

@@ -220,7 +220,11 @@ def _topic_manager_release_gate_open(mgr: Any, lanlan_name: str) -> bool:
     return allowed
 
 
-def topic_hook_delivery_available(lanlan_name: str) -> bool:
+def topic_hook_delivery_available(
+    lanlan_name: str,
+    *,
+    include_manager_release: bool = True,
+) -> bool:
     """Preflight whether a topic hook could be delivered right now."""
     mgr = _resolve_topic_manager(lanlan_name)
     if mgr is None:
@@ -246,7 +250,7 @@ def topic_hook_delivery_available(lanlan_name: str) -> bool:
             )
     if not _topic_activity_gate_open(mgr, lanlan_name):
         return False
-    if not _topic_manager_release_gate_open(mgr, lanlan_name):
+    if include_manager_release and not _topic_manager_release_gate_open(mgr, lanlan_name):
         return False
     if callable(getattr(mgr, "submit_proactive_callback", None)):
         return True

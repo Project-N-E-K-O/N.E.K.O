@@ -1041,9 +1041,18 @@ class UserActivityTracker:
             # mode now; it consumes the persisted conversation signal window
             # and owns its own readiness/pending checks.
             if _privacy_mode_active():
-                from utils.language_utils import get_global_language_full
+                try:
+                    from utils.language_utils import get_global_language, get_global_language_full
+                    topic_lang = get_global_language_full() or get_global_language() or 'en'
+                except Exception as exc:
+                    logger.debug(
+                        "[%s] topic language resolve failed in privacy mode: %s",
+                        self.lanlan_name,
+                        exc,
+                    )
+                    topic_lang = 'en'
                 self._process_topic_candidates_if_ready(
-                    lang=get_global_language_full() or 'en',
+                    lang=topic_lang,
                     now=time.time(),
                 )
                 continue

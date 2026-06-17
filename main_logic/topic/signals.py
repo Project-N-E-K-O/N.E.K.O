@@ -25,6 +25,7 @@ from utils.tokenize import truncate_to_tokens
 # Per-turn evidence cap in tokens. The topic candidate prompt feeds this slow
 # evidence as its only conversation input, so the per-turn budget lives here.
 _MAX_SIGNAL_TOKENS_PER_TURN = 500
+_TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _MAX_GLOBAL_TURNS = 60
 _SIGNAL_RETENTION_SECONDS = 12 * 60 * 60
 _FILLER_TEXTS = {
@@ -106,7 +107,8 @@ _GLOBAL_SIGNAL_LABELS = {
 
 
 def _clean_text(value: Any, *, token_limit: int = _MAX_SIGNAL_TOKENS_PER_TURN) -> str:
-    return truncate_to_tokens(clean_text(value, limit=None), token_limit)
+    precap = max(token_limit, token_limit * _TOKEN_PRECAP_CHARS_PER_TOKEN)
+    return truncate_to_tokens(clean_text(value, limit=precap), token_limit)
 
 
 def _label_key_for_lang(lang: str | None) -> str:
@@ -364,7 +366,7 @@ class TopicSignalStore:
         if pruned_on_load:
             with self._persist_lock:
                 self._persist_dirty = True
-            self.flush()
+            self._request_persist()
 
     def flush(self) -> None:
         """Persist any pending topic signals.
@@ -382,10 +384,13 @@ class TopicSignalStore:
             if not self._persist_dirty:
                 return
             payload = self._persistence_payload_locked()
-            write_result = self._write_payload(payload)
-            if write_result is not False:
-                self._persist_dirty = False
-                return
+            self._persist_dirty = False
+
+        write_result = self._write_payload(payload)
+        if write_result is not False:
+            return
+
+        with self._persist_lock:
             self._persist_dirty = True
             if self._persistence_path is not None and self._persist_timer is None:
                 timer = threading.Timer(self._persistence_flush_delay_seconds, self.flush)

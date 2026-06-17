@@ -245,9 +245,10 @@ def test_topic_hook_delivery_available_false_during_goodbye_silent():
 
     clear_topic_session_manager_getter()
     register_topic_session_manager_getter(lambda name: FakeManager())
-
-    assert topic_hook_delivery_available("妮可") is False
-    clear_topic_session_manager_getter()
+    try:
+        assert topic_hook_delivery_available("妮可") is False
+    finally:
+        clear_topic_session_manager_getter()
 
 
 def test_topic_hook_delivery_available_false_when_manager_cannot_release():
@@ -263,9 +264,10 @@ def test_topic_hook_delivery_available_false_when_manager_cannot_release():
 
     clear_topic_session_manager_getter()
     register_topic_session_manager_getter(lambda name: FakeManager())
-
-    assert topic_hook_delivery_available("妮可") is False
-    clear_topic_session_manager_getter()
+    try:
+        assert topic_hook_delivery_available("妮可") is False
+    finally:
+        clear_topic_session_manager_getter()
 
 
 @pytest.mark.asyncio

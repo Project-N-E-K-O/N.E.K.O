@@ -91,11 +91,12 @@ def test_topic_signal_store_flushes_pruned_entries_after_load(tmp_path):
         encoding="utf-8",
     )
 
-    TopicSignalStore(
+    store = TopicSignalStore(
         min_user_turns_for_topic=1,
         persistence_path=path,
         retention_seconds=10,
     )
+    store.flush()
 
     persisted = json.loads(path.read_text(encoding="utf-8"))
     entries = persisted["characters"]["妮可"]
@@ -490,11 +491,13 @@ async def test_topic_pool_heartbeat_language_does_not_override_character_languag
 
 @pytest.mark.asyncio
 async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
+    entered = asyncio.Event()
     release = asyncio.Event()
     calls = []
 
     async def fake_analyzer(*, lang, **kwargs):
         calls.append(lang)
+        entered.set()
         await release.wait()
         return [
             {
@@ -512,7 +515,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
     pool.note_user_message("妮可", "第一句认真说一下我最近一直在纠结要不要换工作")
 
     task = asyncio.create_task(pool.process_now("妮可"))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
     pool.note_user_message("妮可", "第二句又补充说我主要怕选错以后回不了头")
     release.set()
     assert await task is None
@@ -523,9 +526,11 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
 
 @pytest.mark.asyncio
 async def test_topic_pool_discards_analysis_when_explicit_purge_happens_midflight():
+    entered = asyncio.Event()
     release = asyncio.Event()
 
     async def fake_analyzer(*, lang, **kwargs):
+        entered.set()
         await release.wait()
         return [
             {
@@ -543,7 +548,7 @@ async def test_topic_pool_discards_analysis_when_explicit_purge_happens_midfligh
     pool.note_user_message("妮可", "隐私前聊到的候选证据")
 
     task = asyncio.create_task(pool.process_now("妮可"))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
     pool._purge_accumulated_signals("妮可")
     release.set()
     assert await task is None
@@ -793,6 +798,39 @@ async def test_topic_pool_release_predicate_ignores_new_turns_during_delivery():
     await asyncio.sleep(0.03)
 
     assert release_checks == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_release_predicate_skips_manager_release_after_claim():
+    calls = []
+    release_checks = []
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [{"interest": "提交后不重复检查 manager release", "relevance": 90}]
+
+    def delivery_available(name, *, include_manager_release=True):
+        calls.append(include_manager_release)
+        return True
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        release_checks.append(material["_topic_release_available"]())
+        return False
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        delivery_available=delivery_available,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_retry_delay_seconds=60,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "这个话题先通过 submit 前检查，claim 后 manager release 会变成关闭", lang="zh-CN")
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.03)
+
+    assert calls == [True, True, False]
+    assert release_checks == [True]
 
 
 @pytest.mark.asyncio
@@ -1801,7 +1839,7 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
+async def test_topic_pool_suppresses_same_topic_after_it_was_used_recently():
     delivered = []
 
     async def fake_analyzer(*, lang, **kwargs):
@@ -1836,6 +1874,56 @@ async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
     await asyncio.sleep(0.03)
 
     assert delivered == ["文本世界模型的无撤回机制与幻觉问题"]
+    assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_suppresses_same_topic_across_calendar_day_within_48h(monkeypatch):
+    delivered = []
+    day_one_late = datetime(2026, 6, 14, 23, 50).timestamp()
+    day_two_start = datetime(2026, 6, 15, 0, 1).timestamp()
+    monkeypatch.setattr("main_logic.topic.pipeline.time.time", lambda: day_two_start)
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "跨天但仍在48小时窗口内的话题",
+                "keywords": ["跨天去重"],
+                "relevance": 95,
+            }
+        ]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        min_trigger_gap_seconds=0,
+        min_user_turns_for_topic=1,
+    )
+    pool._used_topics["妮可"] = [
+        {
+            "used_at": day_one_late,
+            "interest": "跨天但仍在48小时窗口内的话题",
+            "keywords": ["跨天去重"],
+            "keyword_hashes": [],
+            "bigram_hashes": [],
+        }
+    ]
+
+    pool.note_user_message(
+        "妮可",
+        "我又继续说跨天去重这件事，虽然过了零点但其实还是同一个话题",
+        lang="zh-CN",
+    )
+    await pool.process_ready_topics(now=day_two_start, lang="zh-CN")
+    await asyncio.sleep(0.03)
+
+    assert delivered == []
     assert pool.get_ready_materials("妮可") == []
 
 
