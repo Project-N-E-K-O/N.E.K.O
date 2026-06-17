@@ -421,6 +421,31 @@ def test_flagged_low_scores_are_allowed_to_reduce_false_positives(monkeypatch):
     assert result.reason == "pass"
 
 
+def test_flagged_outside_threshold_categories_still_block(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    client = FakeClient(
+        post_response=FakeResponse(
+            json_data=moderation_json(
+                True,
+                scores={"porn": 0.10, "hentai": 0.12, "sexy": 0.25, "violence": 0.01},
+                categories={"porn": False, "hentai": False, "sexy": False, "violence": True},
+            )
+        )
+    )
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+            enabled=True,
+            api_key="test-key",
+        )
+    )
+
+    assert result.allowed is False
+    assert result.reason == "flagged"
+
+
 def test_flagged_openai_scores_block_when_no_local_threshold_keys(monkeypatch):
     use_direct_url_payload(monkeypatch)
     client = FakeClient(

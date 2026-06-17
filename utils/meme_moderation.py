@@ -703,8 +703,25 @@ async def moderate_meme_image_url(
         )
 
     blocked_categories = _blocked_score_categories(category_scores)
+    flagged_category_keys = {
+        str(name)
+        for name, value in (categories or {}).items()
+        if value
+    } if isinstance(categories, dict) else set()
+    threshold_category_aliases = {
+        alias
+        for aliases in _SCORE_CATEGORY_ALIASES.values()
+        for alias in aliases
+    }
+    flagged_outside_threshold_policy = bool(
+        flagged and flagged_category_keys - threshold_category_aliases
+    )
     has_threshold_scores = _has_threshold_score_categories(category_scores)
-    blocked = bool(blocked_categories) or (flagged and not has_threshold_scores)
+    blocked = (
+        bool(blocked_categories)
+        or flagged_outside_threshold_policy
+        or (flagged and not has_threshold_scores)
+    )
     reason = "pass"
     if blocked:
         reason = "flagged" if flagged else "score_threshold"
