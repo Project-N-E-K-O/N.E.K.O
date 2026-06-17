@@ -841,6 +841,28 @@ test('daily guide files consume common helpers instead of redeclaring shared hel
     }
 });
 
+test('Day3 guide ships every referenced audio file', () => {
+    const audioRoot = path.join(repoRoot, 'static', 'assets/tutorial/guide-audio');
+    const expectedAudioFiles = [
+        '嘻嘻，可别以为这个聊.mp3',
+        '在这个小按钮里，有许.mp3',
+        '你可以随时来摸摸我的.mp3',
+        '快点开这个【Galg.mp3',
+        '你选的每一个对话，都.mp3',
+        '今天带你认识的这些功.mp3',
+        '不管是想摸摸我的头，.mp3'
+    ];
+
+    for (const locale of ['zh', 'ja', 'en', 'ko', 'ru']) {
+        for (const audioFile of expectedAudioFiles) {
+            assert.ok(
+                fs.existsSync(path.join(audioRoot, locale, audioFile)),
+                locale + ' should ship ' + audioFile
+            );
+        }
+    }
+});
+
 test('director delegates external chat bridge messages to the command bus', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
