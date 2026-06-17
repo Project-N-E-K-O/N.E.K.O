@@ -33,8 +33,10 @@ memory/store/*
 /cache/
 utils/cache/
 config/api.py
+config/meme_moderation_config.json
 config/*.json
 !config/api_providers.json
+!config/meme_moderation_config.example.json
 env/*
 lanlan_frd.exe
 

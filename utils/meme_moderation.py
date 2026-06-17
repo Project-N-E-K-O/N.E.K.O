@@ -15,18 +15,20 @@
 
 """Safety moderation for meme image candidates.
 
-The API key is intentionally read only from runtime sources. Do not commit a
-real key into this file; private builds can inject one before packaging if they
-need a bundled default.
+The API key can be provided by an untracked local config file or by runtime
+environment variables. Do not commit a real key into tracked source files.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
+import sys
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -108,6 +110,43 @@ def _read_env(name: str, default: str = "") -> str:
         if value:
             return value
     return default
+
+
+def _get_app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _get_meme_moderation_config_path() -> Path:
+    return _get_app_root() / "config" / "meme_moderation_config.json"
+
+
+def _read_meme_moderation_config() -> dict[str, Any]:
+    config_path = _get_meme_moderation_config_path()
+    if not config_path.is_file():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception as exc:
+        logger.warning(
+            "[Meme Moderation] Failed to read %s; falling back to environment: %s",
+            config_path.name,
+            exc,
+        )
+        return {}
+    if not isinstance(loaded, dict):
+        logger.warning(
+            "[Meme Moderation] Ignoring %s (top-level value is not an object)",
+            config_path.name,
+        )
+        return {}
+    inner = loaded.get("meme_moderation_config")
+    raw = inner if isinstance(inner, dict) else loaded
+    return raw
 
 
 def _read_bool_env(name: str, default: bool) -> bool:
@@ -220,6 +259,22 @@ def _cache_set(cache_key: str, result: MemeModerationResult) -> None:
 
 def _api_key_from_env() -> str:
     return _read_env("UNIAPI_API_KEY") or _read_env("MEME_MODERATION_API_KEY")
+
+
+def _api_key_from_config() -> str:
+    config = _read_meme_moderation_config()
+    for key in ("api_key", "uniapi_api_key", "meme_moderation_api_key"):
+        raw = config.get(key)
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        if value:
+            return value
+    return ""
+
+
+def _api_key_from_runtime_sources() -> str:
+    return _api_key_from_config() or _api_key_from_env()
 
 
 def _default_moderation_enabled(api_key: str) -> bool:
@@ -385,7 +440,7 @@ async def moderate_meme_image_url(
     full_hash = _url_hash(url) if url else ""
     short_hash = full_hash[:12]
 
-    key = (api_key or "").strip() or _api_key_from_env()
+    key = (api_key or "").strip() or _api_key_from_runtime_sources()
     if enabled is None:
         enabled = _read_bool_env(
             "MEME_MODERATION_ENABLED",

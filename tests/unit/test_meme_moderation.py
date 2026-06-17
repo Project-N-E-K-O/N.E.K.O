@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 
@@ -47,9 +48,11 @@ ENV_KEYS = [
 
 
 @pytest.fixture(autouse=True)
-def clean_moderation_state(monkeypatch):
+def clean_moderation_state(monkeypatch, tmp_path):
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    config_path = tmp_path / "meme_moderation_config.json"
+    monkeypatch.setattr(mm, "_get_meme_moderation_config_path", lambda: config_path)
     mm.clear_meme_moderation_cache()
     yield
     mm.clear_meme_moderation_cache()
@@ -152,6 +155,13 @@ def use_direct_url_payload(monkeypatch):
     monkeypatch.setenv("NEKO_MEME_MODERATION_IMAGE_INPUT_MODE", "url")
 
 
+def write_config(data):
+    mm._get_meme_moderation_config_path().write_text(
+        json.dumps(data),
+        encoding="utf-8",
+    )
+
+
 def test_disabled_allows_without_request():
     client = FakeClient()
 
@@ -208,6 +218,40 @@ def test_env_key_auto_enables_default_vapi(monkeypatch):
     assert moderation_client.post_calls[0]["json"]["model"] == "gi-image-moderation"
     payload_url = moderation_client.post_calls[0]["json"]["input"][0]["image_url"]["url"]
     assert payload_url == "data:image/jpeg;base64,YWJj"
+
+
+def test_config_file_key_auto_enables_and_overrides_env(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    monkeypatch.setenv("NEKO_MEME_MODERATION_API_KEY", "env-key")
+    write_config({"api_key": "file-key"})
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+        )
+    )
+
+    assert result.allowed is True
+    assert result.reason == "pass"
+    assert client.post_calls[0]["headers"]["Authorization"] == "Bearer file-key"
+
+
+def test_wrapped_config_file_key_is_supported(monkeypatch):
+    use_direct_url_payload(monkeypatch)
+    write_config({"meme_moderation_config": {"api_key": "wrapped-key"}})
+    client = FakeClient(post_response=FakeResponse(json_data=moderation_json(False)))
+
+    result = run(
+        mm.moderate_meme_image_url(
+            "https://example.com/cat.jpg",
+            http_client=client,
+        )
+    )
+
+    assert result.allowed is True
+    assert client.post_calls[0]["headers"]["Authorization"] == "Bearer wrapped-key"
 
 
 def test_unflagged_image_passes_and_uses_openai_payload(monkeypatch):
