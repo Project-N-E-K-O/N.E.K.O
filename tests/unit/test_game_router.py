@@ -144,6 +144,46 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
     }
 
 
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_stale_session(monkeypatch):
+    class FakeManager:
+        def __init__(self):
+            self.calls = []
+
+        def append_icebreaker_context(self, role, text):
+            self.calls.append((role, text))
+            return True
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_validate_local_mutation_request", lambda request, payload=None: None)
+    monkeypatch.setattr(
+        game_router,
+        "_get_active_game_route_state",
+        lambda lanlan_name, game_type=None: {
+            "game_type": "new_user_icebreaker",
+            "lanlan_name": lanlan_name,
+            "session_id": "current-session",
+            "game_route_active": True,
+        },
+    )
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "context line",
+            "session_id": "stale-session",
+        }),
+    )
+
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["method"] == "project_session_history"
+    assert mgr.calls == []
+
+
 @pytest.mark.unit
 def test_basketball_prompt_and_control_contract():
     prompt = game_router._build_game_prompt(
