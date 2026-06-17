@@ -3388,6 +3388,18 @@
             handleMiniGameInviteChoice(option);
             return;
         }
+        if (source === 'new_user_icebreaker') {
+            state.choicePrompt = null;
+            renderWindow();
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.handleChoiceSelect === 'function') {
+                window.newUserIcebreaker.handleChoiceSelect(option);
+                return;
+            }
+            window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-choice', {
+                detail: { option: option }
+            }));
+            return;
+        }
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
