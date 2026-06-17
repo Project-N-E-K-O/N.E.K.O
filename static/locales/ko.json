@@ -2604,15 +2604,17 @@
         "enable": "자막 번역",
         "enableAriaLabel": "자막 번역 전환",
         "markdownPlaceholder": "[서식 있는 내용]",
+        "display": {
+            "emptyHint": "아직 번역이 없습니다"
+        },
         "settings": {
             "targetLang": "대상 언어",
-            "opacity": "불투명도",
-            "dragAnywhere": "전체 드래그",
-            "size": "크기",
-            "sizeSmall": "소",
-            "sizeMedium": "중",
-            "sizeLarge": "대",
-            "settingsBtn": "자막 설정"
+            "opacity": "배경 불투명도",
+            "passthroughInteraction": "투명 영역 클릭 통과",
+            "settingsBtn": "자막 설정",
+            "lockPosition": "위치 잠금",
+            "unlockPosition": "위치 잠금 해제",
+            "closePanel": "번역 패널 닫기"
         }
     },
     "viewer": {

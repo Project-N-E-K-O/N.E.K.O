@@ -4195,6 +4195,22 @@
         return changed;
     }
 
+    function isYuiGuideChatMessage(message) {
+        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+    }
+
+    function clearGuideMessages() {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return !isYuiGuideChatMessage(message);
+        });
+        var changed = state.messages.length !== beforeLength;
+        if (changed) {
+            renderWindow();
+        }
+        return changed;
+    }
+
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
@@ -4207,17 +4223,6 @@
         state.choicePrompt = null;
         state._launchedMiniGameSessionIds = Object.create(null);
         renderWindow();
-    }
-
-    function clearGuideMessages() {
-        var beforeLength = state.messages.length;
-        state.messages = state.messages.filter(function (message) {
-            return !message || typeof message.id !== 'string' || message.id.indexOf('yui-guide-') !== 0;
-        });
-        if (state.messages.length !== beforeLength) {
-            renderWindow();
-        }
-        return state.messages.length !== beforeLength;
     }
 
     function getStateSnapshot() {

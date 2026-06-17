@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="subtitle-settings-window-host">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>N.E.K.O. Subtitle Settings</title>
+    <script src="/static/theme-manager.js"></script>
+    <link rel="stylesheet" href="/static/css/subtitle.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+</head>
+<body class="subtitle-settings-window-host">
+    <div id="subtitle-display" data-subtitle-panel-state="settings">
+        <div id="subtitle-settings-panel">
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                <select id="subtitle-lang-select" title="目标语言">
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
+                    <option value="ko">한국어</option>
+                    <option value="ru">Русский</option>
+                    <option value="es">Español</option>
+                    <option value="pt">Português</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-subtitle-label="opacity">背景不透明度</span>
+                <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" title="背景不透明度">
+                <span id="subtitle-opacity-value">95%</span>
+            </div>
+            <div class="subtitle-settings-row subtitle-passthrough-setting-row">
+                <span class="subtitle-settings-label" data-subtitle-label="passthroughInteraction">透明区域穿透</span>
+                <label class="subtitle-settings-switch">
+                    <input type="checkbox" id="subtitle-passthrough-toggle" checked title="透明区域穿透">
+                    <span class="subtitle-settings-track"></span>
+                </label>
+            </div>
+        </div>
+    </div>
+    <script src="/static/subtitle-shared.js"></script>
+    <script src="/static/subtitle-settings-window.js"></script>
+</body>
+</html>

@@ -156,7 +156,7 @@
                     target: cursorTarget,
                     effectDurationMs: numberOrDefault(scene.cursorClickDurationMs, 420)
                 };
-                if (scene.operation && !isGalgameWheelRotationOperation(scene)) {
+                if (scene.operation) {
                     clickEvent.blocking = true;
                     clickEvent.onStart = [{
                         id: sceneId + ':operation',

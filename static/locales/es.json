@@ -2604,15 +2604,17 @@
         "enable": "Traducción de subtítulos",
         "enableAriaLabel": "Alternar traducción de subtítulos",
         "markdownPlaceholder": "[contenido formateado]",
+        "display": {
+            "emptyHint": "Sin traducción todavía"
+        },
         "settings": {
             "targetLang": "Lengua de llegada",
-            "opacity": "Opacidad",
-            "dragAnywhere": "Arrastrar a cualquier lugar",
-            "size": "Tamaño",
-            "sizeSmall": "S",
-            "sizeMedium": "METRO",
-            "sizeLarge": "l",
-            "settingsBtn": "Configuración de subtítulos"
+            "opacity": "Opacidad del fondo",
+            "passthroughInteraction": "Clics en el área transparente",
+            "settingsBtn": "Configuración de subtítulos",
+            "lockPosition": "Bloquear posición",
+            "unlockPosition": "Desbloquear posición",
+            "closePanel": "Cerrar panel de traducción"
         }
     },
     "viewer": {

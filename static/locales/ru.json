@@ -2604,15 +2604,17 @@
         "enable": "Перевод субтитров",
         "enableAriaLabel": "Переключить перевод субтитров",
         "markdownPlaceholder": "[форматированный контент]",
+        "display": {
+            "emptyHint": "Перевода пока нет"
+        },
         "settings": {
             "targetLang": "Целевой язык",
-            "opacity": "Непрозрачность",
-            "dragAnywhere": "Перетаскивание везде",
-            "size": "Размер",
-            "sizeSmall": "М",
-            "sizeMedium": "С",
-            "sizeLarge": "Б",
-            "settingsBtn": "Настройки субтитров"
+            "opacity": "Непрозрачность фона",
+            "passthroughInteraction": "Пропуск кликов в прозрачных областях",
+            "settingsBtn": "Настройки субтитров",
+            "lockPosition": "Заблокировать положение",
+            "unlockPosition": "Разблокировать положение",
+            "closePanel": "Закрыть панель перевода"
         }
     },
     "viewer": {

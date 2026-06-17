@@ -2604,15 +2604,17 @@
         "enable": "Subtitle Translation",
         "enableAriaLabel": "Toggle subtitle translation",
         "markdownPlaceholder": "[formatted content]",
+        "display": {
+            "emptyHint": "No translation yet"
+        },
         "settings": {
             "targetLang": "Target Language",
-            "opacity": "Opacity",
-            "dragAnywhere": "Drag Anywhere",
-            "size": "Size",
-            "sizeSmall": "S",
-            "sizeMedium": "M",
-            "sizeLarge": "L",
-            "settingsBtn": "Subtitle Settings"
+            "opacity": "Background opacity",
+            "passthroughInteraction": "Transparent area passthrough",
+            "settingsBtn": "Subtitle Settings",
+            "lockPosition": "Lock position",
+            "unlockPosition": "Unlock position",
+            "closePanel": "Close translation panel"
         }
     },
     "viewer": {
