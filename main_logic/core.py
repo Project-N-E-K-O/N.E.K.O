@@ -39,6 +39,8 @@ from typing import Any, Awaitable, Callable, Optional
 _REQUEST_ID_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
+_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
+_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -964,21 +966,13 @@ class LLMSessionManager:
             self._activity_tracker,
         )
 
-        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
-        # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
-        # 里的屏幕分享来源。后端只检测「进入」那一刻并推送，去重在前端。
+        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
+        # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
+        # 并推送，去重在前端。原本只对 A/B 实验组 vision_chat_default_off 生效，现该机制
+        # 已合并进 main，对所有用户开放。
         # 屏幕分享来源只在隐私关（vision 开）时才有意义；隐私开时 tracker 心跳本就不
         # tick（见 _activity_guess_loop 的 _privacy_mode_active 早退），自然不会触发。
         async def _push_activity_context_prompt(context: str) -> None:
-            # 后端这里也按 branch 把关：非实验组（main）压根不推这条信号，连前端 drop
-            # 的开销都省，确保控制组完全无感（前端 _isExperimentBranch 是第二道闸）。
-            # 活动 loop 在「主动搭话已开」的 main 用户上也会跑，故这道后端 gate 必要。
-            try:
-                from utils.token_tracker import get_telemetry_branch
-                if get_telemetry_branch() != 'vision_chat_default_off':
-                    return
-            except Exception:
-                return
             ws = self.websocket
             if not (
                 ws
@@ -2145,6 +2139,15 @@ class LLMSessionManager:
             # swallowed inside the dispatcher.
             dispatch_user_utterance(bucket, event)
 
+    def _clean_frontend_memory_text(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]+", "", value)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            return ""
+        return cleaned[:500]
+
     async def _broadcast_voice_transcript_observed(self, transcript: str) -> None:
         """Best-effort fan-out of voice transcripts to plugins.
 
@@ -2416,6 +2419,7 @@ class LLMSessionManager:
             buffer twice)
         """
         transcript_text = transcript.strip()
+        record_transcript_text = transcript_text
         voice_rms_recorded = False
 
         # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
@@ -2472,14 +2476,14 @@ class LLMSessionManager:
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
 
-        if is_voice_source and transcript_text:
-            self._fire_task(self._broadcast_voice_transcript_observed(transcript_text))
+        if is_voice_source and record_transcript_text:
+            self._fire_task(self._broadcast_voice_transcript_observed(record_transcript_text))
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
             # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
             # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
-            if transcript_text:
+            if record_transcript_text:
                 self._note_user_turn(text=transcript)
                 # 真实用户语音消息（已过 echo 抑制 + 非空）才刷「真消息」时间戳，
                 # 给 mini-game 邀请隐式 dismiss 用，避免回声/空噪声误判用户已回应。
@@ -2516,11 +2520,11 @@ class LLMSessionManager:
             # at `_process_stream_data_internal` has already recorded the
             # user message. We still need the queue/cache plumbing below
             # to work normally, so just bypass the tracker block.
-            if transcript_text:
+            if record_transcript_text:
                 self._session_turn_count += 1
 
         # 推送到同步消息队列
-        user_message = {"input_type": "transcript", "data": transcript.strip()}
+        user_message = {"input_type": "transcript", "data": record_transcript_text}
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
         self.sync_message_queue.put({"type": "user", "data": user_message})
@@ -2535,7 +2539,7 @@ class LLMSessionManager:
         )
         logger.info(
             "[%s] voice user_transcript session=%s ws_connected=%s len=%d",
-            self.lanlan_name, type(self.session).__name__, _ws_connected_dbg, len(transcript.strip()),
+            self.lanlan_name, type(self.session).__name__, _ws_connected_dbg, len(record_transcript_text),
         )
         if isinstance(self.session, OmniRealtimeClient):
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -2553,9 +2557,9 @@ class LLMSessionManager:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
             if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role'] == self.lanlan_name:
-                self.message_cache_for_new_session.append({"role": self.master_name, "text": transcript.strip()})
+                self.message_cache_for_new_session.append({"role": self.master_name, "text": record_transcript_text})
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
-                self.message_cache_for_new_session[-1]['text'] += transcript.strip()
+                self.message_cache_for_new_session[-1]['text'] += record_transcript_text
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
@@ -4053,7 +4057,7 @@ class LLMSessionManager:
                         if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
-                            if is_voice_session and msg_input_type == "text":
+                            if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)
@@ -4203,9 +4207,12 @@ class LLMSessionManager:
             default='',
             legacy_keys=('voice_id',),
         )
-        # strip 收口在源头：避免 characters.json 里偶发的前后空白让下游 literal
-        # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
-        return (raw or '').strip()
+        # 声音来源统一架构惰性迁移：characters.json 里 voice 可能是旧扁平串，也可能是
+        # 用户设音色后迁成的结构对象 {source,provider,ref}。read_legacy_voice_id 把两形态
+        # 统一读成 dispatch/route gating 一直消费的 legacy 前缀串（顺带 strip 收口空白），
+        # 下游 literal 比较 / is_free_preset_voice_id 等无需感知存储形态。
+        from utils.voice_config import read_legacy_voice_id
+        return read_legacy_voice_id(raw)
 
     def _apply_voice_id_for_route(self) -> None:
         """Resolve the character card's voice_id into self.voice_id /
@@ -4481,43 +4488,42 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
-    async def _maybe_kick_activity_loop_for_experiment(self) -> None:
-        """A/B experiment group (vision_chat_default_off): start the activity tracker's background heartbeat.
+    async def _maybe_kick_activity_loop_for_context_prompt(self) -> None:
+        """Start the activity tracker's background heartbeat so the context prompt can fire.
 
         Context-prompt detection (entering gaming/entertainment / entering focused
         work) hangs off the tracker's 20s heartbeat, and the heartbeat lazy-starts
         only on the first get_snapshot; get_snapshot in turn is only called by
         paths where proactive chat is on. Proactive chat defaults to off at first
-        start, so without an explicit kick the experiment group would never detect
-        entering a game and the prompt would never show. Here we kick once for the
-        experiment group when the session comes up (get_snapshot is idempotent and
-        won't start the loop twice).
+        start, so without an explicit kick a user who hasn't enabled proactive chat
+        would never detect entering a game and the prompt would never show. Here we
+        kick once when the session comes up (get_snapshot is idempotent and won't
+        start the loop twice).
 
-        Only the experiment group is kicked: avoids adding activity_guess LLM cost
-        for ordinary users who haven't enabled proactive chat. For experiment-group
-        users with privacy on (the overseas default), the heartbeat itself
-        early-exits at _privacy_mode_active, likewise zero LLM cost. The backend
-        branch shares its source with the frontend (both from token_tracker), so
-        even if the judgement here is wrong, the final popup is still gated by the
-        frontend's own branch and won't mis-fire for the control group.
+        The context prompt used to be gated to the vision_chat_default_off A/B group;
+        it's now merged into main and open to everyone, so the kick is no longer
+        branch-gated. It is still gated on the user having *explicitly* allowed
+        autonomous vision (privacy mode off) — see the persisted-pref check below.
         """
         try:
-            from utils.token_tracker import get_telemetry_branch
-            if get_telemetry_branch() != 'vision_chat_default_off':
-                return
-            # 隐私模式开（vision 关）时绝不 kick：get_snapshot 会起 SystemSignalCollector
-            # 并采集窗口/进程信号，绕过隐私模式（loop 只跳过 LLM、collector 仍在采）。
-            # privacy-on 的实验组本就是 no-op（屏幕分享来源开不了），不 kick 即可；隐私关
-            # 时才采集，符合 vision 开的预期。
-            from main_logic.activity.tracker import _privacy_mode_active
-            if _privacy_mode_active():
+            # 只有当 proactiveVisionEnabled 已被显式落盘为 True 才 kick：get_snapshot 会起
+            # SystemSignalCollector 采集窗口/进程信号，且绕过隐私模式（loop 只跳过 LLM、
+            # collector 仍在采）。不能用 is_privacy_mode_active()——它在 proactiveVisionEnabled
+            # 缺失时 fail-open 成「隐私关」，于是首启 settings 尚未同步的窗口里，会把 UI 默认
+            # 隐私开（海外首启 proactiveVisionEnabled 默认 false）的用户误判成可采集，启动一次
+            # session 就采了窗口/进程（Codex P1）。这里改读原始落盘值，缺失/False 一律不 kick，
+            # 等下一次 session（settings 已同步、用户确为 vision 开）再拉起；隐私开的用户本就是
+            # no-op（屏幕分享来源开不了），不 kick 无损。
+            from utils.preferences import aload_global_conversation_settings
+            settings = await aload_global_conversation_settings()
+            if settings.get('proactiveVisionEnabled') is not True:
                 return
             # 清情境弹窗基线：tracker 跨 session 长存，若用户上个 session 结束时就在
             # 游戏/工作、这个 session 仍在同一状态，不清就检测不到「进入」、本会话漏弹。
             self._activity_tracker.reset_context_prompt_baseline()
             await self._activity_tracker.get_snapshot()
         except Exception as e:
-            logger.debug("[%s] 实验组活动心跳 kick 失败: %s", self.lanlan_name, e)
+            logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
@@ -4620,10 +4626,10 @@ class LLMSessionManager:
             self.input_mode = input_mode
             self._reset_voice_echo_suppression_cache()
 
-            # A/B 实验组：拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到
-            # （详见 _maybe_kick_activity_loop_for_experiment）。fire-and-forget，不阻塞
-            # 会话启动；非实验组直接早退、零成本。
-            self._fire_task(self._maybe_kick_activity_loop_for_experiment())
+            # 拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到（详见
+            # _maybe_kick_activity_loop_for_context_prompt）。fire-and-forget，不阻塞会话
+            # 启动；仅在用户已显式开启 vision（隐私关）时才 kick，否则直接早退、零成本。
+            self._fire_task(self._maybe_kick_activity_loop_for_context_prompt())
         
             # 立即通知前端系统正在准备（静默期开始）
             await self.send_session_preparing(input_mode)
@@ -6470,6 +6476,20 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
+                # Delivery-point voice re-gate (1/2 — cheap early-out before the
+                # sid claim). A topic hook can pass the release gate, get copied
+                # into callbacks_snapshot + removed from pending_agent_callbacks,
+                # then this trigger parks on try_start_proactive /
+                # _proactive_write_lock while the user starts an audio session.
+                # That in-flight snapshot is in neither queue, so the voice-start
+                # sweep can't reach it and the release gate's check has gone
+                # stale. Drop topic hooks if voice has since taken over (ack False
+                # so TopicHookPool retries on a text session); the retracted
+                # filter below removes them + their extras. A SECOND identical
+                # re-gate runs right before prompt_ephemeral to catch a takeover
+                # that lands during the CLAIM/PHASE2 awaits in between.
+                if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(callbacks_snapshot):
+                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — voice took over mid-delivery", self.lanlan_name)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -6477,6 +6497,11 @@ class LLMSessionManager:
                 ]
                 if not active_callbacks:
                     logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
+                    # Nothing will emit text_start/text_end to free the manager's
+                    # inflight slot, so release it now (mirrors
+                    # _deliver_proactive_batch's no-op release) — else the next
+                    # cue stalls until the inflight timeout.
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 callbacks_snapshot[:] = active_callbacks
                 # sticky preempt 复查：与 prepare_proactive_delivery 同样，在持有
@@ -6515,6 +6540,13 @@ class LLMSessionManager:
             # and re-passes it (preserve-until-success). NOTE: we do NOT call
             # _stream_cb_media for text mode (that's the voice path, which uses
             # the realtime session's persistent conversation.item).
+            # Delivery-point voice re-gate (2/2 — authoritative, immediately
+            # before prompt_ephemeral). CLAIM/PHASE2 were just awaited above, so
+            # the user may have switched to audio since the pre-claim check;
+            # re-drop topic hooks here so a takeover during those awaits can't
+            # still prompt the old text session.
+            if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(active_callbacks):
+                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — voice took over mid-delivery", self.lanlan_name)
             self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
@@ -6523,6 +6555,8 @@ class LLMSessionManager:
             callbacks_snapshot[:] = active_callbacks
             if not active_callbacks:
                 logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
+                # Free the inflight slot — text_start/text_end below won't run.
+                self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []
             for _cb in active_callbacks:
@@ -6609,6 +6643,26 @@ class LLMSessionManager:
         if self.is_active and self.input_mode == 'audio':
             return True
         return False
+
+    def _voice_delivery_blocked(self) -> bool:
+        """True whenever a deep-topic hook could still reach the voice path, so
+        topic delivery must defer. The union of two predicates, each covering a
+        transition window the other misses:
+          - ``isinstance(self.session, OmniRealtimeClient)``: the live session is
+            realtime. This still holds during an audio→text switch, where
+            ``start_session`` flips the input-mode flags to text while the old
+            voice session lingers in ``self.session`` for several awaited
+            teardown steps — and ``trigger_agent_callbacks`` would still take its
+            ``isinstance``-gated voice branch and inject into that old session.
+          - ``_is_voice_session_active_or_starting()``: a voice session is active
+            or starting, covering the text→audio startup window before the
+            realtime client is installed in ``self.session``.
+        Using the union keeps the gate aligned with the exact condition under
+        which the voice branch fires."""
+        return (
+            isinstance(self.session, OmniRealtimeClient)
+            or self._is_voice_session_active_or_starting()
+        )
 
     async def trigger_greeting(self) -> None:
         """On first connect or character switch, trigger a proactive greeting based on the gap since the last conversation.
@@ -7009,12 +7063,32 @@ class LLMSessionManager:
         fresh deep topic is not a follow-up to something already on the
         table, so it shouldn't borrow that escape hatch.
 
+        Voice sessions never receive deep topic hooks. A topic hook is a
+        text-mode opener; injecting one mid voice conversation would cut across
+        a live spoken exchange, which is exactly the "forced" intrusion this
+        feature avoids. Gate on ``_voice_delivery_blocked()`` — the union of "the
+        live session is realtime" and "a voice session is active/starting" — so
+        the gate matches the exact condition under which
+        ``trigger_agent_callbacks`` takes its voice branch, including both the
+        text→audio startup window (realtime client not yet installed) and the
+        audio→text teardown window (old realtime client still in ``self.session``).
+        Returning False here defers rather than drops — the process-global
+        per-character ``TopicHookPool`` keeps the material pending and retries
+        it once the user is back in a text session, so a voice-heavy user still
+        gets the hook later instead of losing it. This is the chokepoint both
+        delivery gates consult (``_topic_activity_gate_open`` at submit,
+        ``_deliver_proactive_batch`` at release); the session-start drain /
+        already-pending / extras-only paths are closed separately in
+        ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
+
         Fail-open (return True) when no snapshot is available, mirroring the
         proactive path's "snapshot None ⇒ open propensity" default. Privacy
         mode is deliberately NOT re-checked here: it gates *accumulation* (the
         pool is wiped the moment privacy turns on, see enrich_topic_pool), not
         delivery of a hook that was already built from a pre-privacy snapshot.
         """
+        if self._voice_delivery_blocked():
+            return False
         tracker = getattr(self, '_activity_tracker', None)
         if tracker is None:
             return True
@@ -7076,12 +7150,14 @@ class LLMSessionManager:
         behaviour (the manager only governs WHEN the batch is released, not
         how many cues per turn)."""
         callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
-        # Topic hooks re-validate the activity gate at RELEASE: the submit-time
+        # Topic hooks re-validate the delivery gate at RELEASE: the submit-time
         # check in trigger_topic_hook_once can go stale while the manager paces
         # the cue (min-gap / playback). If the user has since moved into a
-        # restricted activity, drop the topic hook (ack=False) so TopicHookPool
-        # retries later instead of opening a fresh deep topic mid-gaming. Other
-        # channels are unaffected.
+        # restricted activity OR a voice session has taken over (topic hooks are
+        # text-mode openers, never injected mid voice — see
+        # topic_hook_delivery_allowed), drop the topic hook (ack=False) so
+        # TopicHookPool retries later instead of opening a fresh deep topic at
+        # the wrong moment. Other channels are unaffected.
         if callbacks and not self.topic_hook_delivery_allowed():
             kept = []
             for cb in callbacks:
@@ -7330,10 +7406,90 @@ class LLMSessionManager:
                 # losing it.
                 self.enqueue_agent_callback(cb)
             manager.reset_gate()
+            # Deep topic hooks are text-mode openers and must never be spoken in
+            # voice. start_session sets the audio starting flags BEFORE calling
+            # us, so when entering / within a voice session this is the one
+            # boundary where we sweep EVERY queued topic hook out of
+            # pending_agent_callbacks (and the paired pending_extra_replies):
+            # both the cbs just drained from the manager AND any released earlier
+            # by _deliver_proactive_batch into the pending queue but left
+            # deferred (SM busy / media-stream fail / no text session). Both the
+            # voice branch of trigger_agent_callbacks (re-fired by start_session)
+            # and the hot-swap prime path inject those two queues WITHOUT
+            # re-consulting topic_hook_delivery_allowed, so neither delivery gate
+            # covers this. Resolve ack False so TopicHookPool defers and retries
+            # on a text session.
+            if self._voice_delivery_blocked():
+                self._drop_pending_topic_hooks_for_voice()
         except Exception:
             # getattr fallback: the except path must never raise itself
             # (a second AttributeError here would abort end_session teardown).
             logger.exception("[%s] proactive_manager reset/drain failed", getattr(self, "lanlan_name", "?"))
+
+    def _drop_pending_topic_hooks_for_voice(self) -> None:
+        """Drop every queued deep-topic hook when entering / within a voice
+        session, across BOTH delivery queues.
+
+        1. ``pending_agent_callbacks``: hooks here still carry their callback, so
+           resolve each one's delivery ack False (``TopicHookPool`` defers +
+           retries on a text session) and retract it, letting
+           ``_purge_retracted_agent_callbacks`` sweep it and its paired
+           ``pending_extra_replies`` entry by ``_callback_delivery_id``.
+        2. ``pending_extra_replies`` orphans: ``drain_agent_callbacks_for_llm``
+           clears ``pending_agent_callbacks`` on a text user turn but leaves the
+           paired extras behind, so a topic hook can survive as an extras-only
+           entry (callback already delivered + acked in text) and be rendered by
+           the hot-swap ``prime_context`` path. Those have no callback left to
+           ack/retract — just drop them. They are identified by
+           ``source_kind == "topic"`` (stamped by ``build_topic_hook_callback``
+           and copied onto the extra by ``enqueue_agent_callback``).
+
+        See ``_reset_proactive_gate`` for why this is needed beyond the submit /
+        release gates."""
+        pending = getattr(self, "pending_agent_callbacks", None) or []
+        hooks = [
+            cb for cb in pending
+            if isinstance(cb, dict) and cb.get("channel") == "topic_hook"
+        ]
+        for cb in hooks:
+            resolve_callback_delivery_ack(cb, False)
+            cb[DELIVERY_RETRACTED_KEY] = True
+        if hooks:
+            self._purge_retracted_agent_callbacks()
+        # Sweep extras-only topic hooks (callback side already gone).
+        extras = getattr(self, "pending_extra_replies", None)
+        dropped_extras = 0
+        if isinstance(extras, list):
+            kept = [
+                extra for extra in extras
+                if not (isinstance(extra, dict) and extra.get("source_kind") == "topic")
+            ]
+            dropped_extras = len(extras) - len(kept)
+            if dropped_extras:
+                self.pending_extra_replies = kept
+        if hooks or dropped_extras:
+            logger.info(
+                "[%s] dropped %d queued + %d extras-only topic hook(s) at voice start: deferred for a text session",
+                self.lanlan_name, len(hooks), dropped_extras,
+            )
+
+    def _retract_topic_hook_snapshots(self, callbacks: list) -> int:
+        """Mark in-flight topic-hook snapshot entries retracted + ack False so the
+        text delivery path drops them and ``TopicHookPool`` retries on a text
+        session. The delivery-point voice re-gate: a snapshot held by an
+        in-flight ``trigger_agent_callbacks`` is in neither pending queue, so the
+        voice-start sweep can't reach it. Returns the number retracted."""
+        n = 0
+        for cb in callbacks:
+            if (
+                isinstance(cb, dict)
+                and cb.get("channel") == "topic_hook"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+            ):
+                resolve_callback_delivery_ack(cb, False)
+                cb[DELIVERY_RETRACTED_KEY] = True
+                n += 1
+        return n
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
@@ -7669,7 +7825,6 @@ class LLMSessionManager:
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
-        
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:
@@ -7697,7 +7852,7 @@ class LLMSessionManager:
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
-                mode = 'text' if input_type == 'text' else 'audio'
+                mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                 await self.start_session(self.websocket, new=False, input_mode=mode)
 
                 # 检查启动是否成功
@@ -7712,7 +7867,6 @@ class LLMSessionManager:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
-        
         # 检查session是否发生致命错误（如1011错误、Response timeout）
         if self.session and isinstance(self.session, OmniRealtimeClient):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
@@ -7755,7 +7909,7 @@ class LLMSessionManager:
                 return
             
             # 根据输入类型确定模式
-            mode = 'text' if input_type == 'text' else 'audio'
+            mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
             await self.start_session(self.websocket, new=False, input_mode=mode)
             
             # 检查启动是否成功
@@ -7812,6 +7966,8 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
+                    memory_text = self._clean_frontend_memory_text(message.get("memory_text"))
+                    record_data = memory_text or data
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
@@ -7821,7 +7977,7 @@ class LLMSessionManager:
                     # 推进 mini-game 邀请隐式 dismiss 判定（CodeRabbit）。注意
                     # last_user_activity_time 仍无条件刷（服务 idle reset，语义是
                     # 「有没有发请求」，与「是不是真消息」不同）。
-                    if data.strip():
+                    if record_data.strip():
                         self.last_user_message_time = time.time()
 
                     # 更新字数限制（可能用户在对话期间修改了设置）
@@ -7853,7 +8009,7 @@ class LLMSessionManager:
                     # 里挂——后者也被 proactive abort 流程调用做清理（见
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
-                    self._note_user_turn(text=data if isinstance(data, str) else None)
+                    self._note_user_turn(text=record_data)
                     # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
                     try:
                         from utils.token_tracker import TokenTracker as _TT
@@ -7870,7 +8026,7 @@ class LLMSessionManager:
                     # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
                     # 文本路径，避免与语音入口重复发布。
                     self._publish_user_utterance_to_plugin_bus(
-                        data if isinstance(data, str) else None,
+                        record_data,
                         is_voice_source=False,
                     )
 
@@ -7880,7 +8036,7 @@ class LLMSessionManager:
                     # （handle_input_transcript）共用同一方法，逻辑见
                     # _dispatch_mini_game_invite_keyword。
                     await self._dispatch_mini_game_invite_keyword(
-                        data if isinstance(data, str) else '',
+                        record_data,
                     )
 
                     openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
@@ -7935,10 +8091,17 @@ class LLMSessionManager:
                             _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
-                    await self.session.stream_text(
-                        data,
-                        system_prefix=_agent_cb_ctx or None,
-                    )
+                    input_transcript_callback = None
+                    if memory_text:
+                        async def input_transcript_callback(_transcript: str, *, _memory_text: str = memory_text) -> None:
+                            await self.handle_input_transcript(_memory_text, is_voice_source=False)
+
+                    stream_text_kwargs = {"system_prefix": _agent_cb_ctx or None}
+                    if input_transcript_callback:
+                        stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
+                    if memory_text:
+                        stream_text_kwargs["history_replacement_text"] = memory_text
+                    await self.session.stream_text(data, **stream_text_kwargs)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
@@ -8078,18 +8241,18 @@ class LLMSessionManager:
                         self.last_audio_send_error_time = current_time
                     return
 
-            elif input_type in ['screen', 'camera']:
+            elif input_type in _IMAGE_INPUT_TYPES:
                 try:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return
-                    # 使用统一的屏幕分享工具处理数据（只验证，不缩放）
+                    # 使用统一的图像工具处理数据（只验证，不缩放）
                     image_b64 = await process_screen_data(data)
 
                     if image_b64:
                         # 叠加 Avatar 文字注解（仅当本条消息携带了位置元数据时）
                         # 不回退到 self._avatar_position：前端未附带位置说明该截图不应叠加
                         # （如窗口截图、手机相机等场景）
-                        av_pos = message.get('avatar_position')
+                        av_pos = message.get('avatar_position') if input_type in {"screen", "camera"} else None
                         if av_pos and isinstance(av_pos, dict):
                             try:
                                 image_b64 = await asyncio.to_thread(
@@ -8105,9 +8268,16 @@ class LLMSessionManager:
                         if isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
+                            image_data = (
+                                ""
+                                if input_type in {"avatar_drop_image", "user_image"}
+                                else f"data:image/jpeg;base64,{image_b64}"
+                            )
                             image_message = {
                                 "input_type": input_type,
-                                "data": f"data:image/jpeg;base64,{image_b64}",
+                                "data": image_data,
+                                "has_image": True,
+                                "mime_type": "image/jpeg",
                             }
                             if message.get("request_id"):
                                 image_message["request_id"] = message.get("request_id")
@@ -8126,12 +8296,12 @@ class LLMSessionManager:
                             # 语音模式直接发送图片
                             await self.session.stream_image(image_b64)
                     else:
-                        logger.error("💥 Stream: 屏幕数据验证失败")
+                        logger.error("💥 Stream: 图像数据验证失败")
                         return
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    logger.error(f"💥 Stream: Error processing screen data: {e}")
+                    logger.error(f"💥 Stream: Error processing image data: {e}")
                     return
 
         except web_exceptions.ConnectionClosedError as e:

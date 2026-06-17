@@ -57,6 +57,61 @@ _configure_stdio_utf8()
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
+
+def _ensure_utf8_filesystem_encoding() -> None:
+    """Restart once with PYTHONUTF8=1 when Linux fs encoding is not UTF-8.
+
+    Embedded Python builds in AppImage or minimal Linux runtimes can fall back
+    to ``ascii`` under a C/POSIX locale when C.UTF-8 is unavailable and PEP 538
+    locale coercion fails. Any non-ASCII path then raises UnicodeEncodeError
+    during calls such as os.makedirs or open, preventing the backend from
+    starting even if the host shell has a UTF-8 LANG that was not propagated.
+
+    Filesystem encoding is fixed at interpreter startup, so the only reliable
+    repair is setting PYTHONUTF8=1 (PEP 540 UTF-8 Mode) and execv-restarting
+    the current process. execv preserves the PID for Electron process tracking,
+    and the environment is inherited by later server subprocesses. Windows
+    already defaults to a UTF-8 filesystem encoding, so it is skipped.
+    """
+    if sys.platform == 'win32':
+        return
+    enc = (sys.getfilesystemencoding() or '').lower().replace('-', '')
+    if enc == 'utf8':
+        return
+    # 已经重启过一次：即便仍非 utf-8（例如 PYTHONUTF8 未被尊重）也放行，
+    # 绝不二次 execv，避免无限重启。
+    if os.environ.get('_NEKO_FS_UTF8_REEXEC') == '1':
+        return
+    os.environ['PYTHONUTF8'] = '1'
+    os.environ['_NEKO_FS_UTF8_REEXEC'] = '1'
+    if IS_FROZEN:
+        argv = [sys.executable, *sys.argv[1:]]
+    else:
+        argv = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+    try:
+        sys.stderr.write(
+            f'[launcher] filesystem encoding is {enc!r}; '
+            're-exec with PYTHONUTF8=1 to support non-ASCII paths\n'
+        )
+    except Exception:
+        # stderr may be closed or unwritable in embedded launchers; losing this
+        # diagnostic is harmless, and the re-exec attempt below is still useful.
+        pass
+    try:
+        os.execv(argv[0], argv)
+    except Exception:
+        # execv 失败（极少见）就放行：本进程仍是 ascii，但 PYTHONUTF8 已留在
+        # os.environ 里，后续 Popen 的子进程仍能拿到 utf-8。好过完全起不来。
+        pass
+
+
+# 仅在作为入口运行时才可能 re-exec：被 tests 当模块 import 时（__name__ !=
+# '__main__'）跳过，否则 ascii-fs 环境下的一次 import 会用 execv 把 pytest
+# 进程顶替掉。__name__ 在模块体执行前即确定，放这里能赶在任何中文路径操作之前。
+if __name__ == '__main__':
+    _ensure_utf8_filesystem_encoding()
+
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
 if IS_FROZEN:
     # 运行在打包后的环境

@@ -44,7 +44,7 @@ def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
 async def test_topic_pool_waits_for_slow_global_collection_before_analysis():
     calls = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, global_signals):
+    async def fake_analyzer(*, lang, global_signals):
         calls.append(global_signals)
         return [
             {
@@ -75,17 +75,16 @@ async def test_topic_pool_waits_for_slow_global_collection_before_analysis():
     await pool.process_now("妮可")
 
     assert len(calls) == 1
-    assert "全局证据:" in calls[0]
+    assert "- [" in calls[0]  # rendered evidence lines, no inner header
     assert "第一句只是随口聊聊" in calls[0]
     assert pool.get_ready_materials("妮可")[0]["interest"] == "慢慢形成的长期兴趣"
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_global_signals_keep_more_than_recent_window():
+async def test_topic_pool_passes_full_global_signals_to_analyzer():
     captured = {}
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, global_signals):
-        captured["recent"] = list(user_msgs)
+    async def fake_analyzer(*, lang, global_signals):
         captured["global"] = global_signals
         return [
             {
@@ -108,16 +107,16 @@ async def test_topic_pool_global_signals_keep_more_than_recent_window():
 
     await pool.process_now("妮可")
 
-    assert "第0次聊换车和预算" not in captured["recent"]
     assert "第0次聊换车和预算" in captured["global"]
+    assert "第9次聊换车和预算" in captured["global"]
 
 
 @pytest.mark.asyncio
 async def test_topic_pool_collects_silently_until_background_processing():
     calls = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
-        calls.append((list(user_msgs), list(ai_msgs), lang))
+    async def fake_analyzer(*, lang, **kwargs):
+        calls.append(lang)
         return [
             {
                 "interest": "想买凯迪拉克但预算压力很大",
@@ -154,9 +153,11 @@ async def test_topic_pool_collects_silently_until_background_processing():
 
 @pytest.mark.asyncio
 async def test_topic_pool_uses_ai_context_without_blocking_collection():
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
-        assert user_msgs == ["我想换工作，但是怕踩坑，最近每天都在想是不是该换个方向"]
-        assert ai_msgs == ["换工作这事可以慢慢拆，别上来就破釜沉舟。"]
+    async def fake_analyzer(*, lang, global_signals=None, **kwargs):
+        # both the user turn and the AI turn reach the analyzer via the
+        # rendered slow evidence (no separate recent-conversation input)
+        assert "我想换工作" in (global_signals or "")
+        assert "换工作这事可以慢慢拆" in (global_signals or "")
         return [
             {
                 "interest": "想换工作但担心选错",
@@ -187,7 +188,7 @@ async def test_topic_pool_uses_ai_context_without_blocking_collection():
 async def test_topic_pool_passes_chat_language_to_online_enrichment(monkeypatch):
     langs = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "看平民代步车的小改件",
@@ -221,8 +222,8 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
     release = asyncio.Event()
     calls = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
-        calls.append(list(user_msgs))
+    async def fake_analyzer(*, lang, **kwargs):
+        calls.append(lang)
         await release.wait()
         return [
             {
@@ -245,7 +246,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
     release.set()
     assert await task is None
 
-    assert calls == [["第一句认真说一下我最近一直在纠结要不要换工作"]]
+    assert len(calls) == 1  # analyzer ran once; its stale result was discarded
     assert pool.get_ready_materials("妮可") == []
 
 
@@ -254,7 +255,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives_during_e
     entered_enrich = asyncio.Event()
     release_enrich = asyncio.Event()
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "旧话题",
@@ -294,7 +295,7 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     calls = 0
     retried = asyncio.Event()
 
-    async def flaky_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def flaky_analyzer(*, lang, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -346,7 +347,7 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
     calls = 0
     retried = asyncio.Event()
 
-    async def flaky_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def flaky_analyzer(*, lang, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -395,7 +396,7 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
 async def test_topic_pool_triggers_ready_hook_after_quiet_window():
     delivered = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "买车像进入新生活阶段",
@@ -433,7 +434,7 @@ async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypat
     delivered = []
     privacy_enabled = False
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "买车像进入新生活阶段",
@@ -474,7 +475,7 @@ async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypat
 async def test_topic_pool_triggers_highest_relevance_material_first():
     delivered = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "低优先级话题",
@@ -516,7 +517,7 @@ async def test_topic_pool_keeps_material_pending_when_delivery_defers():
     first_attempt = asyncio.Event()
     attempts = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "买车像进入新生活阶段",
@@ -553,7 +554,7 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
     attempts = []
     retried = asyncio.Event()
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "买车像进入新生活阶段",
@@ -595,7 +596,7 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
     attempts = []
     retried = asyncio.Event()
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "买车像进入新生活阶段",
@@ -636,7 +637,7 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
 async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_recorded():
     triggered = asyncio.Event()
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "买车像进入新生活阶段",
@@ -674,10 +675,14 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
 async def test_topic_pool_resets_trigger_wait_when_chat_continues():
     delivered = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, global_signals=None, **kwargs):
+        # newest evidence line is the latest turn; echo it as the interest so
+        # the test can prove the post-continue analysis (not the stale one) won
+        last_line = (global_signals or "").strip().splitlines()[-1]
+        interest = last_line.split(": ", 1)[-1] if ": " in last_line else last_line
         return [
             {
-                "interest": user_msgs[-1],
+                "interest": interest,
                 "hook": "接住最新话题",
                 "relevance": 90,
             }
@@ -713,7 +718,7 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
     delivered = []
     analyzer_calls = 0
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         nonlocal analyzer_calls
         interests = [
             "凯迪拉克预算压力",
@@ -793,7 +798,7 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
     delivered = []
     analyzer_calls = 0
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         nonlocal analyzer_calls
         analyzer_calls += 1
         interest = "凯迪拉克预算压力" if analyzer_calls == 1 else "海边旅行计划"
@@ -837,7 +842,7 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
 async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
     delivered = []
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+    async def fake_analyzer(*, lang, **kwargs):
         return [
             {
                 "interest": "文本世界模型的无撤回机制与幻觉问题",
@@ -882,7 +887,7 @@ async def test_enrich_pool_discards_material_when_privacy_toggles_on_mid_analysi
     privacy = {"on": False}
     monkeypatch.setattr(topic_pipeline, "_privacy_mode_active", lambda: privacy["on"])
 
-    async def fake_analyzer(*, user_msgs, ai_msgs, lang, global_signals):
+    async def fake_analyzer(*, lang, global_signals):
         privacy["on"] = True  # user enables privacy while we're "analyzing"
         return [
             {

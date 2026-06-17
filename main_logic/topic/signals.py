@@ -13,17 +13,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
+from main_logic.topic.common import clean_text
 from utils.tokenize import truncate_to_tokens
 
 
 _MAX_SIGNAL_TEXT_CHARS = 500
-# Per-turn evidence cap in tokens, unified with the recent-conversation
-# per-turn budget (llm_enrichment._MAX_CONV_TOKENS_PER_TURN) so both inputs
-# to the emotion-tier topic call share one budget unit.
+# Per-turn evidence cap in tokens. The topic candidate prompt feeds this slow
+# evidence as its only conversation input, so the per-turn budget lives here.
 _MAX_SIGNAL_TOKENS_PER_TURN = 300
 _MAX_GLOBAL_TURNS = 80
-_READY_SCORE = 80
 _FILLER_TEXTS = {
     "你好",
     "啊",
@@ -44,7 +42,6 @@ _FILLER_TEXTS = {
 
 _GLOBAL_SIGNAL_LABELS = {
     "zh": {
-        "evidence": "全局证据",
         "user": "用户",
         "ai": "AI",
         "seconds_ago": "{value}s前",
@@ -52,7 +49,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "{value}h前",
     },
     "zh-TW": {
-        "evidence": "全域證據",
         "user": "使用者",
         "ai": "AI",
         "seconds_ago": "{value}s前",
@@ -60,7 +56,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "{value}h前",
     },
     "en": {
-        "evidence": "Global evidence",
         "user": "User",
         "ai": "AI",
         "seconds_ago": "{value}s ago",
@@ -68,7 +63,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "{value}h ago",
     },
     "ja": {
-        "evidence": "全体証拠",
         "user": "ユーザー",
         "ai": "AI",
         "seconds_ago": "{value}秒前",
@@ -76,7 +70,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "{value}時間前",
     },
     "ko": {
-        "evidence": "전역 증거",
         "user": "사용자",
         "ai": "AI",
         "seconds_ago": "{value}초 전",
@@ -84,7 +77,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "{value}시간 전",
     },
     "es": {
-        "evidence": "Evidencia global",
         "user": "Usuario",
         "ai": "IA",
         "seconds_ago": "hace {value}s",
@@ -92,7 +84,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "hace {value}h",
     },
     "pt": {
-        "evidence": "Evidência global",
         "user": "Usuário",
         "ai": "IA",
         "seconds_ago": "há {value}s",
@@ -100,7 +91,6 @@ _GLOBAL_SIGNAL_LABELS = {
         "hours_ago": "há {value}h",
     },
     "ru": {
-        "evidence": "Глобальные сигналы",
         "user": "Пользователь",
         "ai": "AI",
         "seconds_ago": "{value}с назад",
@@ -142,7 +132,6 @@ class TopicTurnSignal:
     actor: str
     text: str
     timestamp: float
-    lang: str
 
 
 class TopicSignalStore:
@@ -165,7 +154,6 @@ class TopicSignalStore:
         *,
         actor: str,
         text: Any,
-        lang: str = "zh",
         now: float | None = None,
     ) -> None:
         cleaned = truncate_to_tokens(_clean_text(text), _MAX_SIGNAL_TOKENS_PER_TURN)
@@ -178,7 +166,6 @@ class TopicSignalStore:
                 actor=safe_actor,
                 text=cleaned,
                 timestamp=float(now if now is not None else time.time()),
-                lang=lang or "zh",
             )
         )
 
@@ -186,37 +173,22 @@ class TopicSignalStore:
         self._turns.pop(str(lanlan_name or "default"), None)
 
     def readiness_percent(self, lanlan_name: str) -> int:
-        user_turns = self._user_turns(lanlan_name)
-        if not user_turns:
-            return 0
-        meaningful = [turn for turn in user_turns if _turn_information_score(turn.text) >= 20]
-        if not meaningful:
-            return 0
-
-        sample_score = min(
-            40,
-            int(len(meaningful) * 40 / self._min_user_turns_for_topic),
-        )
-        density_score = int(
-            sum(_turn_information_score(turn.text) for turn in meaningful)
-            / len(meaningful)
-            * 0.5
-        )
-        stability_score = _stability_score(meaningful)
-        return max(0, min(100, sample_score + density_score + stability_score))
+        # Coarse "have we heard enough to bother analysing" estimate, for logs.
+        count = len(self._meaningful_user_turns(lanlan_name))
+        return min(100, int(count * 100 / self._min_user_turns_for_topic))
 
     def is_ready(self, lanlan_name: str) -> bool:
-        return self.readiness_percent(lanlan_name) >= _READY_SCORE
+        return (
+            len(self._meaningful_user_turns(lanlan_name))
+            >= self._min_user_turns_for_topic
+        )
 
     def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40, lang: str | None = None) -> str:
-        """Render the slow-evidence turns as prompt context.
+        """Render the slow-evidence turns as the topic prompt's only context.
 
-        Only the raw evidence list is emitted. The local heuristic stats
-        (readiness / density / stability / counts) are deliberately NOT
-        injected — they have no grounding or scale the LLM can use, and the
-        model can read stability straight off the evidence. Those scores
-        stay backend-only, feeding the ``is_ready`` gate (see
-        ``readiness_percent``), not the prompt.
+        Just the turn list — the readiness count gate (see ``is_ready`` /
+        ``readiness_percent``) stays backend-only and never reaches the prompt.
+        The caller fences this block with the conversation-history watermark.
         """
         name = str(lanlan_name or "default")
         labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
@@ -226,7 +198,7 @@ class TopicSignalStore:
 
         selected = _select_turns_for_prompt(turns, max_lines=max_lines)
         base_ts = turns[-1].timestamp
-        lines = [f"{labels['evidence']}:"]
+        lines: list[str] = []
         for turn in selected:
             age_s = max(0.0, base_ts - turn.timestamp)
             age = _format_age(age_s, labels)
@@ -237,6 +209,12 @@ class TopicSignalStore:
     def _user_turns(self, lanlan_name: str) -> list[TopicTurnSignal]:
         name = str(lanlan_name or "default")
         return [turn for turn in self._turns.get(name, ()) if turn.actor == "user"]
+
+    def _meaningful_user_turns(self, lanlan_name: str) -> list[TopicTurnSignal]:
+        return [
+            turn for turn in self._user_turns(lanlan_name)
+            if _is_meaningful_turn(turn.text)
+        ]
 
 
 def _select_turns_for_prompt(
@@ -258,51 +236,18 @@ def _select_turns_for_prompt(
     return all_turns[:head_count] + all_turns[-tail_count:]
 
 
-def _turn_information_score(text: str) -> int:
+def _is_meaningful_turn(text: str) -> bool:
+    """Whether a user turn carries enough signal to count toward readiness.
+
+    Filler words and near-empty turns don't count; anything with a few real
+    information characters does. Coarse "have we heard enough to bother
+    analysing" gate, not a quality score.
+    """
     cleaned = _clean_text(text, limit=120)
-    if not cleaned:
-        return 0
-    normalized = cleaned.lower()
-    if normalized in _FILLER_TEXTS:
-        return 0
-    cjk_count = sum(1 for char in cleaned if "\u4e00" <= char <= "\u9fff")
-    ascii_count = sum(1 for char in cleaned if char.isalnum() and not ("\u4e00" <= char <= "\u9fff"))
-    signal_len = cjk_count + ascii_count
-    if signal_len <= 2:
-        return 0
-    if signal_len <= 4:
-        return 12
-
-    score = min(60, int(signal_len * 2.5))
-    unique_units = _topic_units(cleaned)
-    score += min(20, int(len(unique_units) * 2.5))
-    if any(mark in cleaned for mark in "，。！？,.!?"):
-        score += 5
-    if len(cleaned) >= 18:
-        score += 8
-    if len(cleaned) >= 30:
-        score += 7
-    return max(0, min(100, score))
-
-
-def _topic_units(text: str) -> set[str]:
-    return topic_units(text, limit=120, stop_chars=ZH_TOPIC_STOP_CHARS)
-
-
-def _stability_score(turns: Iterable[TopicTurnSignal]) -> int:
-    unit_counts: dict[str, int] = defaultdict(int)
-    valid_turns = 0
-    for turn in turns:
-        units = _topic_units(turn.text)
-        if not units:
-            continue
-        valid_turns += 1
-        for unit in units:
-            unit_counts[unit] += 1
-    if valid_turns < 2:
-        return 0
-    repeated_units = [
-        unit for unit, count in unit_counts.items()
-        if count >= 2 and (len(unit) >= 2 or "\u4e00" <= unit <= "\u9fff")
-    ]
-    return min(30, len(repeated_units) * 5)
+    if not cleaned or cleaned.lower() in _FILLER_TEXTS:
+        return False
+    signal_len = sum(
+        1 for char in cleaned
+        if ("一" <= char <= "鿿") or char.isalnum()
+    )
+    return signal_len >= 3
