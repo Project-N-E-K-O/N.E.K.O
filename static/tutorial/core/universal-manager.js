@@ -642,8 +642,7 @@ class UniversalTutorialManager {
             return state.pendingRound === round || state.manualResetRound === round;
         }
         if (state.pendingRound !== round && state.manualResetRound !== round) {
-            const today = getTodayLocalDateForAvatarFloatingGuide();
-            return state.lastAutoShownRound === round && state.lastAutoShownDate === today;
+            return this.getNextAvatarFloatingGuideAutoRound() === round;
         }
         return true;
     }
