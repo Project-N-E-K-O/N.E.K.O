@@ -1410,9 +1410,13 @@ class PluginDashboardGuideRuntime {
 
   requestPluginDashboardSkip(detail?: Record<string, unknown>) {
     const normalizedDetail = detail && typeof detail === 'object' ? detail : {}
+    const detailReason = normalizedDetail.reason
+    const normalizedReason = typeof detailReason === 'string' && detailReason.trim()
+      ? detailReason.trim()
+      : 'skip'
     const payload: DesktopTutorialSkipPayload = {
       sessionId: this.activeSessionId,
-      reason: 'skip',
+      reason: normalizedReason,
       source: 'plugin_dashboard',
       detail: normalizedDetail,
     }
@@ -1447,7 +1451,15 @@ class PluginDashboardGuideRuntime {
 
     const button = document.createElement('button')
     button.type = 'button'
-    const label = resolveGuideLocale() === 'zh' ? '跳过' : 'Skip'
+    const locale = resolveGuideLocale()
+    const labelByLocale: Record<string, string> = {
+      zh: '跳过',
+      en: 'Skip',
+      ja: 'スキップ',
+      ko: '건너뛰기',
+      ru: 'Пропустить',
+    }
+    const label = labelByLocale[locale] || labelByLocale.en
     button.textContent = label
     button.setAttribute('aria-label', label)
     button.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
@@ -3672,6 +3684,7 @@ class PluginDashboardLocalTutorialRunner {
 }
 
 let activeLocalTutorialRunner: PluginDashboardLocalTutorialRunner | null = null
+let pluginDashboardRuntimeInitialized = false
 
 export function startPluginDashboardTutorial(options: StartPluginDashboardTutorialOptions) {
   activeLocalTutorialRunner?.cleanup()
@@ -3685,18 +3698,23 @@ export function startPluginDashboardTutorial(options: StartPluginDashboardTutori
 }
 
 export function initPluginDashboardYuiGuideRuntime() {
+  if (pluginDashboardRuntimeInitialized) {
+    return
+  }
+  pluginDashboardRuntimeInitialized = true
+
   const runtime = new PluginDashboardGuideRuntime()
   let receivedStartMessage = false
   runtime.preactivatePendingOverlay()
 
-  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, (event) => {
+  const handleDesktopInterruptAckEvent = (event: Event) => {
     runtime.handleDesktopInterruptAckEvent(event)
-  }, true)
-  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, (event) => {
+  }
+  const handleDesktopNarrationFinishedEvent = (event: Event) => {
     runtime.handleDesktopNarrationFinishedEvent(event)
-  }, true)
+  }
 
-  window.addEventListener('message', (event: MessageEvent) => {
+  const handleRuntimeMessage = (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object') {
       return
@@ -3756,5 +3774,21 @@ export function initPluginDashboardYuiGuideRuntime() {
     }).finally(() => {
       receivedStartMessage = false
     })
-  })
+  }
+
+  const cleanupRuntimeListeners = () => {
+    window.removeEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
+    window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+    window.removeEventListener('message', handleRuntimeMessage)
+    pluginDashboardRuntimeInitialized = false
+  }
+  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
+  runtime.cleanup = () => {
+    cleanupRuntimeListeners()
+    originalRuntimeCleanup()
+  }
+
+  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
+  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+  window.addEventListener('message', handleRuntimeMessage)
 }

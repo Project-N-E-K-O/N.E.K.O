@@ -22,7 +22,7 @@
     const S = window.appState;
     const C = window.appConst;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
 
     // ======================== proactive leader election ========================
     //
@@ -137,7 +137,7 @@
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
                 if (window.newUserIcebreaker.getActiveSession()) {
-                    return NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+                    return getNewUserIcebreakerRetryDelayMs();
                 }
             }
         } catch (_) {}
@@ -646,7 +646,10 @@
         if (isNewUserIcebreakerPeriodActive()) {
             console.log('[Proactive] new-user icebreaker active, retry schedule later');
             S.proactiveChatBackoffLevel = 0;
-            S.proactiveChatTimer = setTimeout(scheduleProactiveChat, getNewUserIcebreakerRetryDelayMs());
+            S.proactiveChatTimer = setTimeout(
+                scheduleProactiveChat,
+                getNewUserIcebreakerBlockingRetryMs() || getNewUserIcebreakerRetryDelayMs()
+            );
             return;
         }
         if (!canTriggerProactively()) {

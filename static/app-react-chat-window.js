@@ -64,7 +64,6 @@
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
-    var tutorialChatRequestSeq = 0;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
     // The active compact↔minimized cycle. `full` is intentionally NOT here: it is
@@ -2391,7 +2390,6 @@
         if (!message || typeof message !== 'object') return null;
         return {
             id: message.id,
-            source: message.source,
             role: message.role,
             author: message.author,
             time: message.time,
@@ -2452,7 +2450,6 @@
 
         return {
             id: String(message.id),
-            source: message.source ? String(message.source) : undefined,
             role: message.role || 'assistant',
             author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
@@ -2510,6 +2507,8 @@
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
             onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
+            compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
             compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
         });
     }
@@ -4059,22 +4058,14 @@
             return;
         }
         state.homeTutorialInteractionLocked = next;
-        var compactStateReset = false;
         if (next && getCurrentCompactChatState() === 'input') {
             resetCompactChatState();
-            compactStateReset = true;
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             composerDisabled: next,
             compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
-        if (compactStateReset) {
-            syncChatSurfaceModeUI();
-            dispatchHostEvent('compact-chat-state-change', {
-                state: getCurrentCompactChatState()
-            });
-        }
     }
 
     function setHomeTutorialInputLocked(locked, reason) {
@@ -4086,43 +4077,14 @@
             resetCompactChatState();
         }
         state.homeTutorialInputLocked = next;
-        var compactStateReset = false;
         if (next && getCurrentCompactChatState() === 'input') {
             resetCompactChatState();
-            compactStateReset = true;
         }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
             compactInputLocked: next
         });
         renderWindow();
-        if (compactStateReset) {
-            syncChatSurfaceModeUI();
-            dispatchHostEvent('compact-chat-state-change', {
-                state: getCurrentCompactChatState()
-            });
-        }
-    }
-
-    function setAvatarToolMenuOpen(open, reason) {
-        return setTutorialChatRequest('avatarToolMenuOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactToolFanOpen(open, reason) {
-        return setTutorialChatRequest('compactToolFanOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
-    }
-
-    function setCompactHistoryOpen(open, reason) {
-        return setTutorialChatRequest('compactHistoryOpenRequest', {
-            open: open === true,
-            reason: typeof reason === 'string' ? reason : ''
-        });
     }
 
     function rotateCompactToolWheel(direction, stepCount, options) {
@@ -4145,6 +4107,13 @@
             : 0;
         return setTutorialChatRequest('compactToolWheelIndexRequest', {
             index: normalizedIndex,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
             reason: typeof reason === 'string' ? reason : ''
         });
     }
@@ -5213,6 +5182,33 @@
             state: normalized
         });
         return normalized;
+    }
+
+    function nextTutorialChatRequestId(prefix) {
+        tutorialChatRequestSeq += 1;
+        return prefix + '-' + Date.now() + '-' + tutorialChatRequestSeq;
+    }
+
+    function setAvatarToolMenuOpen(open, reason) {
+        setViewProps({
+            avatarToolMenuOpenRequest: {
+                id: nextTutorialChatRequestId('avatar-tool-menu'),
+                open: open === true,
+                reason: reason || ''
+            }
+        });
+        return true;
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        setViewProps({
+            compactToolFanOpenRequest: {
+                id: nextTutorialChatRequestId('compact-tool-fan'),
+                open: open === true,
+                reason: reason || ''
+            }
+        });
+        return true;
     }
 
     function commitPendingMinimizedSurfaceMode() {
@@ -6305,25 +6301,25 @@
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
-            setHomeTutorialInputLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
+            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
-            setHomeTutorialInputLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
+            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
-            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
+            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
         });
 
         // Refresh option list whenever an assistant turn finishes streaming.
@@ -6662,9 +6658,9 @@
         setHomeTutorialInputLocked: setHomeTutorialInputLocked,
         setAvatarToolMenuOpen: setAvatarToolMenuOpen,
         setCompactToolFanOpen: setCompactToolFanOpen,
-        setCompactHistoryOpen: setCompactHistoryOpen,
         rotateCompactToolWheel: rotateCompactToolWheel,
         setCompactToolWheelIndex: setCompactToolWheelIndex,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

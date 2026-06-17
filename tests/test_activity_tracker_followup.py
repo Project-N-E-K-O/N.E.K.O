@@ -14,6 +14,7 @@ to avoid touching the real user_preferences.json, and feeds a fabricated
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 
 import pytest
@@ -897,6 +898,84 @@ def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
 
     assert activity_calls == [('user', None, 1.0)]
     assert topic_calls == []
+
+
+def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_turns():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    purges = []
+    timestamps = []
+
+    class FakeTopicPool:
+        def purge_all_accumulated_signals(self):
+            purges.append("*")
+
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
+        def note_turn_timestamp(self, lanlan_name, *, lang='zh', now=None):
+            timestamps.append((lanlan_name, lang, now))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert purges == ['*']
+    assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
+
+
+def test_topic_turn_sink_purges_current_character_when_activity_is_private():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    purges = []
+    notes = []
+    timestamps = []
+
+    class FakeTopicPool:
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
+        def note_turn_timestamp(self, lanlan_name, *, lang='zh', now=None):
+            timestamps.append((lanlan_name, lang, now))
+
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: False,
+    )
+    dispatcher.add_sink(
+        TopicHookTurnSink(
+            pool_factory=lambda: FakeTopicPool(),
+            activity_private_check=lambda: True,
+        )
+    )
+
+    dispatcher.note_user_message(text='private foreground turn', now=1.0)
+
+    assert purges == ['test_lanlan']
+    assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
+    assert notes == []
+
+
+def test_activity_guess_loop_purges_topic_signals_on_private_ticks():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    private_branch = source[
+        source.index("if rule_snap.state == 'private':"):
+        source.index("from utils.language_utils")
+    ]
+
+    assert "await self._purge_topic_candidates_for_privacy()" in private_branch
+    assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────

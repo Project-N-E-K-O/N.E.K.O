@@ -136,9 +136,6 @@ def run_monitor() -> dict[str, Any]:
                 window.__NEKO_MULTI_WINDOW__ = true;
                 window.__monitorEvents = [];
                 window.__relayToChatMessages = [];
-                window.__chatRelayChannel = typeof BroadcastChannel !== 'undefined'
-                    ? new BroadcastChannel('neko_page_channel')
-                    : null;
                 window.__markLocal = (type, detail = {}) => {
                     window.__monitorEvents.push({ at: Math.round(performance.now()), source: 'home', type, detail });
                 };
@@ -166,10 +163,7 @@ def run_monitor() -> dict[str, Any]:
                         const payload = message || {};
                         window.__relayToChatMessages.push(payload);
                         window.__markLocal('native-relay-to-chat', payload);
-                        if (window.__chatRelayChannel) {
-                            window.__chatRelayChannel.postMessage(payload);
-                        }
-                        return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 120));
+                        return Promise.resolve({ ok: true });
                     },
                     relayToPet: (message) => Promise.resolve(window.__markLocal('relay-to-pet-local', message || {})),
                 };
@@ -475,6 +469,21 @@ def run_monitor() -> dict[str, Any]:
             """
         )
 
+        for message in result.get("relayToChatMessages") or []:
+            mark("home", "relay-to-chat-replay", message)
+            chat.evaluate(
+                """
+                async (message) => {
+                    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                    window.__markLocal('relay-from-home', message || {});
+                    window.dispatchEvent(new CustomEvent('neko:tutorial-overlay-relay', { detail: message || {} }));
+                    window.postMessage({ __nekoTutorialOverlayRelay: true, payload: message || {} }, '*');
+                    await wait(300);
+                }
+                """,
+                message or {},
+            )
+
         chat_state = chat.evaluate("() => window.__snapshotDay3Chat ? window.__snapshotDay3Chat() : null")
         chat_events = chat.evaluate("() => window.__monitorEvents || []")
         home_events = home.evaluate("() => window.__monitorEvents || []")
@@ -550,11 +559,13 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
         if isinstance(event.get("detail"), dict) and "toolCount" in (event.get("detail") or {})
     ]
     snapshots = [event.get("detail") or {} for event in snapshot_events]
-    def visible_or_total_tool_count(detail: dict[str, Any]) -> int:
-        value = detail.get("visibleToolCount") if detail.get("visibleToolCount") is not None else detail.get("toolCount")
+    def visible_count(snapshot: dict[str, Any]) -> int:
+        value = snapshot.get("visibleToolCount")
+        if value is None:
+            value = snapshot.get("toolCount")
         return int(value or 0)
 
-    max_tool_count = max([visible_or_total_tool_count(snapshot) for snapshot in snapshots] or [0])
+    max_tool_count = max([visible_count(snapshot) for snapshot in snapshots] or [0])
 
     def closest_snapshot_to(event_types: set[str], source: str | None = None) -> dict[str, Any]:
         targets = [
@@ -583,8 +594,10 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
         detail = event.get("detail") or {}
         if not isinstance(detail, dict):
             continue
-        if visible_or_total_tool_count(detail) >= 3:
-            visible_tool_ids = detail.get("visibleToolIds") or detail.get("toolIds") or []
+        if visible_count(detail) >= 3:
+            visible_tool_ids = detail.get("visibleToolIds") or []
+            if detail.get("visibleToolCount") is None and not visible_tool_ids:
+                visible_tool_ids = detail.get("toolIds") or []
             visible_tool_at = event.get("at")
             break
     close_clicks = count(

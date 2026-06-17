@@ -9,6 +9,7 @@ from main_logic.topic.delivery import (
     build_topic_hook_callback,
     clear_topic_session_manager_getter,
     register_topic_session_manager_getter,
+    topic_hook_delivery_available,
     trigger_topic_hook_once,
 )
 
@@ -228,6 +229,42 @@ async def test_trigger_topic_hook_once_skips_when_activity_gate_closed(monkeypat
     mgr.submit_proactive_callback.assert_not_called()
     mgr.enqueue_agent_callback.assert_not_called()
     mgr.trigger_agent_callbacks.assert_not_called()
+    clear_topic_session_manager_getter()
+
+
+def test_topic_hook_delivery_available_false_during_goodbye_silent():
+    class FakeManager:
+        def is_goodbye_silent(self):
+            return True
+
+        def topic_hook_delivery_allowed(self):
+            return True
+
+        def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
+            raise AssertionError("preflight should not submit")
+
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: FakeManager())
+
+    assert topic_hook_delivery_available("妮可") is False
+    clear_topic_session_manager_getter()
+
+
+def test_topic_hook_delivery_available_false_when_manager_cannot_release():
+    class FakeManager:
+        def topic_hook_delivery_allowed(self):
+            return True
+
+        def _can_release_proactive(self):
+            return False
+
+        def submit_proactive_callback(self, callback, *, priority=0, coalesce_key=None):
+            raise AssertionError("preflight should not submit")
+
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: FakeManager())
+
+    assert topic_hook_delivery_available("妮可") is False
     clear_topic_session_manager_getter()
 
 

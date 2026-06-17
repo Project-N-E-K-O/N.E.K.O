@@ -47,7 +47,7 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
     get_basketball_pregame_context_formatter_labels,
@@ -84,7 +84,6 @@ from config.prompts.prompts_game_route import (
     get_game_recent_history_message_labels,
 )
 from .shared_state import get_config_manager, get_session_manager
-from .system_router import _validate_local_mutation_request
 from main_logic.mirror_meta import (
     MIRROR_USER_TEXT_INPUT_TYPE,
     MIRROR_USER_VOICE_TRANSCRIPT_INPUT_TYPE,
@@ -6719,10 +6718,6 @@ async def game_route_voice_transcript(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
 
-    mgr = get_session_manager().get(lanlan_name)
-    if not mgr:
-        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
-
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
     if not state:
@@ -6945,7 +6940,10 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 async def game_project_context(game_type: str, request: Request):
     """Append game-scoped UI dialogue into the active project session history."""
     if str(game_type or "") != "new_user_icebreaker":
-        return {"ok": False, "reason": "unsupported_game_type", "game_type": game_type}
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "unsupported_game_type", "game_type": game_type},
+        )
 
     try:
         data = await request.json()
@@ -6954,7 +6952,13 @@ async def game_project_context(game_type: str, request: Request):
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
 
-    validation_error = _validate_local_mutation_request(request, payload=data)
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
     if validation_error is not None:
         return validation_error
 
@@ -6965,7 +6969,12 @@ async def game_project_context(game_type: str, request: Request):
     if not text:
         return {"ok": False, "reason": "missing_text"}
 
-    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if "lanlan_name" not in data:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    raw_lanlan_name = data.get("lanlan_name")
+    if raw_lanlan_name is None or str(raw_lanlan_name).strip() == "":
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    lanlan_name = _resolve_lanlan_name(raw_lanlan_name)
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
@@ -7024,6 +7033,14 @@ async def game_project_context(game_type: str, request: Request):
             "lanlan_name": lanlan_name,
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
+        }
+    if ok is False:
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
         }
 
     return {

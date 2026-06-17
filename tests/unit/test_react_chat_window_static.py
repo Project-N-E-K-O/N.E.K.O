@@ -473,44 +473,28 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
 def test_home_tutorial_host_wires_avatar_tool_requests():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
-    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
-    schema_source = REACT_CHAT_MESSAGE_SCHEMA_PATH.read_text(encoding="utf-8")
 
     assert "setHomeTutorialInputLocked: setHomeTutorialInputLocked" in script
     assert "setAvatarToolMenuOpen: setAvatarToolMenuOpen" in script
     assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
-    assert "setCompactHistoryOpen: setCompactHistoryOpen" in script
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
     assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
     assert "avatarToolMenuOpenRequest" in script
     assert "compactToolFanOpenRequest" in script
-    assert "compactHistoryOpenRequest" in script
     assert "compactToolWheelRotateRequest" in script
     assert "compactToolWheelIndexRequest" in script
-    assert "setTutorialChatRequest('compactHistoryOpenRequest'" in script
 
     assert "case 'yui_guide_set_chat_input_locked':" in interpage_source
-    assert "case 'yui_guide_set_compact_history_open':" in interpage_source
     assert "case 'yui_guide_set_avatar_tool_menu_open':" in interpage_source
     assert "case 'yui_guide_set_compact_tool_fan_open':" in interpage_source
     assert "case 'yui_guide_rotate_compact_tool_wheel':" in interpage_source
     assert "case 'yui_guide_set_compact_tool_wheel_index':" in interpage_source
-    assert "queueYuiGuideChatHostCommand" in interpage_source
-    assert "flushPendingYuiGuideChatHostCommands" in interpage_source
     assert "host.setHomeTutorialInputLocked(locked === true" in interpage_source
-    assert "host.setCompactHistoryOpen(open === true" in interpage_source
     assert "host.setAvatarToolMenuOpen(open === true" in interpage_source
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
 
-    assert "compactHistoryOpenRequest = null" in app_source
-    assert "const lastCompactHistoryOpenRequestIdRef = useRef('');" in app_source
-    assert "const request = compactHistoryOpenRequest;" in app_source
-    assert "openCompactExportHistory();" in app_source
-    assert "closeCompactExportHistory();" in app_source
-    assert "compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional()" in schema_source
 
-
-def test_day6_home_template_only_loads_delivered_daily_guide_scripts():
+def test_day7_home_template_loads_delivered_daily_guide_scripts():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     for guide_script in [
@@ -520,12 +504,12 @@ def test_day6_home_template_only_loads_delivered_daily_guide_scripts():
         "tutorial/yui-guide/days/day4-companion-guide.js",
         "tutorial/yui-guide/days/day5-personalization-guide.js",
         "tutorial/yui-guide/days/day6-agent-guide.js",
+        "tutorial/yui-guide/days/day7-graduation-guide.js",
     ]:
         assert f'<script src="/static/{guide_script}' in source
         assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
 
     for future_script in [
-        "tutorial/yui-guide/days/day7-graduation-guide.js",
         "tutorial/icebreaker/new-user-icebreaker.js",
     ]:
         assert f'<script src="/static/{future_script}' not in source
@@ -929,6 +913,29 @@ def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle()
     assert "compactToolWheelRotateRequest" in bundle_source
 
 
+def test_compact_history_open_request_drives_export_panel():
+    host_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    schema_source = REACT_CHAT_MESSAGE_SCHEMA_PATH.read_text(encoding="utf-8")
+
+    assert "compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null" in host_source
+    assert "setTutorialChatRequest('compactHistoryOpenRequest'" in host_source
+    assert "compactChatState: open === true ? 'history' : 'idle'" not in host_source
+    assert "setCompactHistoryOpen: setCompactHistoryOpen" in host_source
+
+    assert "compactHistoryOpenRequest = null" in app_source
+    assert "const lastCompactHistoryOpenRequestIdRef = useRef('');" in app_source
+    assert "const request = compactHistoryOpenRequest;" in app_source
+    assert "lastCompactHistoryOpenRequestIdRef.current = request.id;" in app_source
+    assert "openCompactExportHistory();" in app_source
+    assert "closeCompactExportHistory();" in app_source
+    assert app_source.count("const lastCompactHistoryOpenRequestIdRef = useRef('');") == 1
+    assert app_source.count("const request = compactHistoryOpenRequest;") == 1
+
+    assert "const compactHistoryOpenRequestSchema = z.object({" in schema_source
+    assert "compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional()" in schema_source
+
+
 def test_compact_choice_hit_contract_uses_real_options_only():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     host_styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
@@ -1079,24 +1086,28 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
 def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
         "function isMainUIHiddenByModelManager()",
         1,
     )[0]
 
-    assert "function isDuplicateMessage(action, timestamp)" in script
+    assert "message && message.bypassDedup === true" in bypass_block
+    assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
     assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_set_compact_history_open'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
-    assert "function isYuiGuideCommandForCurrentLanlan(data)" in script
-    assert "if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;" in script
-    assert "case 'yui_guide_set_chat_spotlight':" in script
-    assert "case 'yui_guide_rotate_compact_tool_wheel':" in script
-    assert "queueYuiGuideChatHostCommand" in script
+    assert "case 'yui_guide_set_chat_cursor':" in script
+    assert "case 'yui_guide_drag_chat_cursor':" in script
+    assert "case 'yui_guide_arc_chat_cursor':" in script
+    assert "relayYuiGuideChatCommand(event.data);" in script
+    assert "neko:tutorial-overlay-relay" in script
+    assert "__nekoTutorialOverlayRelay" in script
 
 
 def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():

@@ -423,10 +423,20 @@ def main(argv: list[str]) -> int:
         finally:
             browser.close()
 
-    for index, result in enumerate(results):
-        if index:
-            print()
-        _print_result(result, json_output=args.json)
+    if args.json:
+        print(json.dumps(
+            {
+                "ok": all(result.get("passed") for result in results),
+                "results": results,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
+    else:
+        for index, result in enumerate(results):
+            if index:
+                print()
+            _print_result(result, json_output=False)
     return 0 if all(result.get("passed") for result in results) else 1
 
 

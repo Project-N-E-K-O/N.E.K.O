@@ -2661,6 +2661,12 @@
                     }
 
                     await mod._textSessionStartPromise;
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    S.sessionStartedResolver = null;
+                    S.sessionStartedRejecter = null;
                 } catch (error) {
                     console.error(window.t('console.startTextSessionFailed'), error);
                     window.hideVoicePreparingToast();

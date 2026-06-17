@@ -105,7 +105,7 @@ def build_topic_hook_callback(material: Mapping[str, Any], *, lang: str) -> dict
         template["final"],
     ]
     detail = "\n".join(part for part in detail_parts if part)
-    return {
+    callback = {
         "event": "agent_task_callback",
         "origin": "event",
         "task_id": hook_id or "topic_hook",
@@ -127,6 +127,10 @@ def build_topic_hook_callback(material: Mapping[str, Any], *, lang: str) -> dict
         },
         "context_type": "topic_hook",
     }
+    release_available = material.get("_topic_release_available")
+    if callable(release_available):
+        callback["_topic_release_available"] = release_available
+    return callback
 
 
 def _remove_callback_from_manager(mgr: Any, callback: Mapping[str, Any]) -> None:
@@ -196,6 +200,59 @@ def _topic_activity_gate_open(mgr: Any, lanlan_name: str) -> bool:
             lanlan_name,
         )
     return allowed
+
+
+def _topic_manager_release_gate_open(mgr: Any, lanlan_name: str) -> bool:
+    """Whether the proactive manager would release a submitted callback now."""
+    gate = getattr(mgr, "_can_release_proactive", None)
+    if not callable(gate):
+        return True
+    try:
+        allowed = bool(gate())
+    except Exception as exc:
+        logger.debug("[%s] topic hook manager release preflight failed: %s", lanlan_name, exc)
+        return False
+    if not allowed:
+        logger.info(
+            "[%s] topic hook delivery skipped: proactive manager cannot release yet",
+            lanlan_name,
+        )
+    return allowed
+
+
+def topic_hook_delivery_available(lanlan_name: str) -> bool:
+    """Preflight whether a topic hook could be delivered right now."""
+    mgr = _resolve_topic_manager(lanlan_name)
+    if mgr is None:
+        return False
+    is_goodbye_silent = getattr(mgr, "is_goodbye_silent", None)
+    has_silent_gate = (
+        "is_goodbye_silent" in getattr(mgr, "__dict__", {})
+        or hasattr(type(mgr), "is_goodbye_silent")
+    )
+    if has_silent_gate and callable(is_goodbye_silent):
+        try:
+            if bool(is_goodbye_silent()):
+                logger.info(
+                    "[%s] topic hook delivery skipped: goodbye silence is active",
+                    lanlan_name,
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "[%s] topic hook goodbye-silent preflight failed open: %s",
+                lanlan_name,
+                exc,
+            )
+    if not _topic_activity_gate_open(mgr, lanlan_name):
+        return False
+    if not _topic_manager_release_gate_open(mgr, lanlan_name):
+        return False
+    if callable(getattr(mgr, "submit_proactive_callback", None)):
+        return True
+    return callable(getattr(mgr, "enqueue_agent_callback", None)) and callable(
+        getattr(mgr, "trigger_agent_callbacks", None)
+    )
 
 
 def _live_topic_lang(mgr: Any, captured_lang: str) -> str:

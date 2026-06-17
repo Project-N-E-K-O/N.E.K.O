@@ -1595,8 +1595,8 @@ function CompactChatApp({
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
-  const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
+  const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
@@ -5040,6 +5040,7 @@ function CompactChatApp({
     const requestId = request.id;
     lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
+      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       if (activeAvatarToolIds.length === 0) {
@@ -5057,23 +5058,13 @@ function CompactChatApp({
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
+      lastCompactToolFanOpenRequestIdRef.current = request.id;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
-
-  useEffect(() => {
-    const request = compactHistoryOpenRequest;
-    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
-    lastCompactHistoryOpenRequestIdRef.current = request.id;
-    if (request.open) {
-      openCompactExportHistory();
-      return;
-    }
-    closeCompactExportHistory({ persist: false });
-  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => {
     const request = compactToolWheelIndexRequest;

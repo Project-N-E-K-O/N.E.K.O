@@ -609,6 +609,51 @@ async def test_drain_agent_callbacks_resolves_delivery_ack():
     assert mgr.pending_agent_callbacks == []
 
 
+async def test_drain_agent_callbacks_rechecks_topic_release_gate():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr.topic_hook_delivery_allowed = lambda: True
+    topic_future = asyncio.get_running_loop().create_future()
+    normal_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "_callback_delivery_id": "id-topic-drain",
+        "channel": "topic_hook",
+        "source_kind": "topic",
+        "status": "completed",
+        "summary": "stale deep topic",
+        "_topic_release_available": lambda: False,
+        DELIVERY_ACK_FUTURE_KEY: topic_future,
+    }
+    normal_cb = {
+        "_callback_delivery_id": "id-normal-drain",
+        "status": "completed",
+        "summary": "regular callback",
+        DELIVERY_ACK_FUTURE_KEY: normal_future,
+    }
+    topic_extra = {
+        "_callback_delivery_id": "id-topic-drain",
+        "origin": "event",
+        "summary": "stale deep topic",
+    }
+    normal_extra = {
+        "_callback_delivery_id": "id-normal-drain",
+        "origin": "task_result",
+        "summary": "regular callback",
+    }
+    mgr.pending_agent_callbacks = [topic_cb, normal_cb]
+    mgr.pending_extra_replies = [topic_extra, normal_extra]
+
+    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "regular callback" in rendered
+    assert "stale deep topic" not in rendered
+    assert topic_future.done()
+    assert topic_future.result() is False
+    assert normal_future.done()
+    assert normal_future.result() is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == [normal_extra]
+
+
 async def test_voice_mode_reject_during_await_not_pruned():
     """TOCTOU 回归（Codex P1）：error 事件可能在 inject 仍 await 期间由
     handle_messages 派发 on_rejected——此时 cb 还在队列里（乐观 prune 还没跑）。
@@ -1133,6 +1178,17 @@ def test_topic_hook_delivery_allowed_in_text_session():
     assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
+def test_topic_hook_delivery_blocked_when_unfinished_thread_open():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr._activity_tracker = MagicMock()
+    mgr._activity_tracker.get_snapshot_sync.return_value = MagicMock(
+        propensity="open",
+        unfinished_thread=object(),
+    )
+
+    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+
+
 def test_topic_hook_delivery_does_not_recheck_privacy_preference(monkeypatch):
     """Delivery only gates voice/activity; privacy wipes accumulation upstream."""
     def _raise_privacy_error():
@@ -1169,6 +1225,26 @@ async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     # topic hook held at the gate: ack resolved False so TopicHookPool retries.
     assert hook_future.done() and hook_future.result() is False
     # 非 topic_hook cue 照常进入投递路径。
+    mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
+
+
+async def test_deliver_proactive_batch_drops_topic_hook_when_release_predicate_closes():
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    hook_future = asyncio.get_running_loop().create_future()
+    topic_cb = {
+        "status": "completed",
+        "summary": "deep topic",
+        "channel": "topic_hook",
+        "_topic_release_available": lambda: False,
+        DELIVERY_ACK_FUTURE_KEY: hook_future,
+    }
+    other_cb = {"status": "completed", "summary": "task done", "channel": "agent_task"}
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+
+    await LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
+
+    assert hook_future.done() and hook_future.result() is False
     mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
 
 
@@ -1296,6 +1372,33 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_ov
     assert fut.done() and fut.result() is False
     assert sess.called_with == []  # dropped at the prompt-adjacent re-gate
     assert mgr._voice_delivery_blocked.call_count == 2
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
+async def test_deliver_agent_callbacks_text_requeues_when_preempted_before_prompt():
+    """A fresh user turn can arrive during the CLAIM/PHASE2 awaits. The final
+    prompt-adjacent check must requeue the callback and avoid prompt_ephemeral
+    once the proactive sid has gone stale."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-stale-sid", "status": "completed", "summary": "stale"}
+
+    original_fire = mgr.state.fire
+
+    async def _fire_and_rotate_sid(event, **payload):
+        await original_fire(event, **payload)
+        if event is SessionEvent.PROACTIVE_PHASE2:
+            async with mgr.lock:
+                mgr.current_speech_id = "user-fresh-sid"
+                mgr.state.mark_user_input_preempt()
+
+    mgr.state.fire = _fire_and_rotate_sid
+
+    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [cb])
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert mgr.pending_agent_callbacks == [cb]
     mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 

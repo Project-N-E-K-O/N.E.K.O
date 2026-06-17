@@ -269,6 +269,7 @@ class UserActivityTracker:
         self._activity_guess_state_sig: tuple | None = None
         self._activity_guess_at: float = 0.0
         self._activity_guess_loop_task: asyncio.Task | None = None
+        self._topic_candidate_task: asyncio.Task | None = None
 
         # Frontend-pushed system signal (for remote deployments where the
         # backend's local OS APIs see only the server, not the user).
@@ -387,6 +388,13 @@ class UserActivityTracker:
             # Empty / no-text turns (errors / silenced) skip the bump,
             # since nothing in the buffer changed.
             self._conv_seq += 1
+
+    def is_private_activity_active(self) -> bool:
+        """Whether the latest activity state is private/redacted."""
+        try:
+            return self._sm._current_state == 'private'
+        except Exception:
+            return True
 
     def mark_unfinished_thread_used(self) -> None:
         """Record that a proactive emission just used the override slot.
@@ -1028,10 +1036,13 @@ class UserActivityTracker:
             except asyncio.CancelledError:
                 return
 
-            # 隐私模式：本 tick 不读窗口/进程，也不调 LLM，直接进入下一轮。
-            # 缓存自然衰减（保留最后一次值，proactive_chat 那边 snapshot 已被
-            # gating 成 None，缓存不会被消费）。
+            # 隐私模式：本 tick 不读窗口/进程，也不调 LLM。Topic 的
+            # accumulated signal store 仍要在这里清掉；否则如果用户在
+            # candidate quiet window 内打开隐私，这个 continue 会绕过
+            # TopicHookPool 自己的 privacy purge，等隐私关闭后旧证据会被
+            # 送去 topic LLM。
             if _privacy_mode_active():
+                await self._purge_topic_candidates_for_privacy(all_characters=True)
                 continue
 
             try:
@@ -1064,6 +1075,15 @@ class UserActivityTracker:
                 # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
                 await self._drain_context_prompt()
 
+                # Bail on private — explicitly do NOT send sensitive app
+                # context (or even surrounding conversation) to the
+                # emotion-tier LLM. Existing cached values stay frozen
+                # until the user leaves the private app; on resume the
+                # state-signature dedup will refresh naturally.
+                if rule_snap.state == 'private':
+                    await self._purge_topic_candidates_for_privacy()
+                    continue
+
                 # 主动搭话关时跳过 activity_guess 的 LLM 叙述：它只喂 proactive Phase 2，
                 # 没开主动搭话就没有消费方。上面的 _tick_break_reminders + 情境弹窗 drain
                 # 是纯规则、已经跑过，所以「进游戏/工作」检测照常工作。这样实验组为弹窗
@@ -1075,13 +1095,10 @@ class UserActivityTracker:
                 if rule_snap.state == 'away':
                     continue
 
-                # Bail on private — explicitly do NOT send sensitive app
-                # context (or even surrounding conversation) to the
-                # emotion-tier LLM. Existing cached values stay frozen
-                # until the user leaves the private app; on resume the
-                # state-signature dedup will refresh naturally.
-                if rule_snap.state == 'private':
-                    continue
+                from utils.language_utils import get_global_language, get_global_language_full
+                activity_lang = get_global_language() or 'en'
+                topic_lang = get_global_language_full() or activity_lang
+                self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)
 
                 # Anti-thrash: respect the minimum refresh interval.
                 if (
@@ -1106,9 +1123,6 @@ class UserActivityTracker:
                 if sig == self._activity_guess_state_sig and self._conv_seq == last_conv_seq:
                     continue
 
-                from utils.language_utils import get_global_language
-                lang = get_global_language() or 'en'
-
                 # In-flight guard — capture conv_seq + buffer snapshots
                 # before the LLM call. Same pattern as
                 # ``_do_open_threads_compute``: if a new user/AI message
@@ -1126,7 +1140,7 @@ class UserActivityTracker:
                     rule_state=rule_snap.state,
                     user_msgs=user_msgs_snapshot,
                     ai_msgs=ai_msgs_snapshot,
-                    lang=lang,
+                    lang=activity_lang,
                 )
                 if result is None:
                     continue
@@ -1146,6 +1160,52 @@ class UserActivityTracker:
             except Exception as e:
                 # Stay alive — one bad tick shouldn't kill the loop.
                 logger.debug('[%s] activity_guess loop tick failed: %s', self.lanlan_name, e)
+
+    def _process_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
+        """Let the topic pool piggyback on the activity heartbeat.
+
+        Candidate analysis has its own readiness/quiet-window checks inside
+        the pool. This hook merely supplies the existing 20s cadence, then
+        returns immediately so a slow topic analyzer cannot stall the activity
+        heartbeat.
+        """
+        if self._topic_candidate_task is not None and not self._topic_candidate_task.done():
+            return
+        self._topic_candidate_task = asyncio.create_task(
+            self._run_topic_candidates_if_ready(lang=lang, now=now),
+            name=f"topic-candidates-{self.lanlan_name}",
+        )
+
+    async def _run_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
+        try:
+            from main_logic.topic.pipeline import get_topic_hook_pool
+            await get_topic_hook_pool().process_ready_topics(
+                lanlan_name=self.lanlan_name,
+                lang=lang,
+                now=now,
+            )
+        except Exception as exc:
+            logger.debug("[%s] topic candidate heartbeat failed: %s", self.lanlan_name, exc)
+
+    async def _purge_topic_candidates_for_privacy(self, *, all_characters: bool = False) -> None:
+        """Let the topic pool wipe accumulated signals during privacy ticks."""
+        try:
+            from main_logic.topic.pipeline import get_topic_hook_pool
+            pool = get_topic_hook_pool()
+            if all_characters:
+                async_purge_all = getattr(pool, "purge_all_accumulated_signals_async", None)
+                if async_purge_all is not None:
+                    await async_purge_all()
+                else:
+                    pool.purge_all_accumulated_signals()
+            else:
+                async_purge = getattr(pool, "purge_accumulated_signals_async", None)
+                if async_purge is not None:
+                    await async_purge(self.lanlan_name)
+                else:
+                    pool.purge_accumulated_signals(self.lanlan_name)
+        except Exception as exc:
+            logger.debug("[%s] topic candidate privacy purge failed: %s", self.lanlan_name, exc)
 
     def _refresh_prefs(self) -> None:
         """Pick up live edits to ``user_preferences.json::activity``.

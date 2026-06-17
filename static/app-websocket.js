@@ -20,7 +20,7 @@
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 1000;
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
     const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
     const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
@@ -610,13 +610,11 @@
     }
 
     function isNewUserIcebreakerPeriodActive() {
-        try {
-            if (window.newUserIcebreaker
-                && typeof window.newUserIcebreaker.getActiveSession === 'function'
-                && window.newUserIcebreaker.getActiveSession()) {
-                return true;
-            }
-        } catch (_) {}
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
+        }
 
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
@@ -3406,10 +3404,9 @@
 
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
-        var explicitReason = detail.reason ? String(detail.reason) : '';
-        var reason = explicitReason || (detail.active === false ? 'features-restored' : 'features-suppressed');
-        if (explicitReason) {
-            S._greetingCheckReason = explicitReason;
+        var reason = detail.reason || (detail.active === false ? 'features-restored' : 'features-suppressed');
+        if (detail.active === false && reason) {
+            S._greetingCheckReason = reason;
         }
         sendHomeTutorialState(reason);
         if (detail.active === false) {
