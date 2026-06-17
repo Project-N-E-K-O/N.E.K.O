@@ -1187,6 +1187,10 @@
         msgDiv.className = `status-bar ${type}`;
     }
 
+    function isWarningMessage(message) {
+        return /失败|已关闭/.test(message || '');
+    }
+
     function escapeHtml(str) {
         if (!str) return '';
         return str.replace(/[&<>"']/g, m => ({
@@ -1418,11 +1422,11 @@
             : t('ui.loading.autostart.disable', '🌸 正在关闭开机自启...'), 'warning');
         try {
             const result = await callPlugin('set_autostart', { app_id: appId, enabled: enabled });
+            await loadApps();
             showMessage(`✨ ${result.message || t('ui.success.action', '{action}成功', { action })}`, 'success');
-            await loadApps();
         } catch (err) {
-            showMessage(t('ui.error.autostart', '❌ {error}', { error: err.message }), 'error');
             await loadApps();
+            showMessage(t('ui.error.autostart', '❌ {error}', { error: err.message }), 'error');
         }
     }
 
@@ -1482,10 +1486,16 @@
                 const canApplyAutostart = normalizedPath.endsWith('.exe') ||
                     (editingAppSnapshot?.autostart && !autostart);
 
-                await callPlugin('update_app', {
+                const updateResult = await callPlugin('update_app', {
                     app_id: editingAppId,
                     name, path, aliases, description: desc
                 });
+                if (updateResult.message) {
+                    finalMessage = `✨ ${updateResult.message}`;
+                    if (isWarningMessage(updateResult.message)) {
+                        finalType = 'warning';
+                    }
+                }
                 if (autostartChanged && canApplyAutostart) {
                     try {
                         await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
@@ -1503,7 +1513,7 @@
                 });
                 if (result.message) {
                     finalMessage = `✨ ${result.message}`;
-                    if (result.message.includes('失败')) {
+                    if (isWarningMessage(result.message)) {
                         finalType = 'warning';
                     }
                 }
