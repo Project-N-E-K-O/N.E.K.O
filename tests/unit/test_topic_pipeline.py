@@ -75,7 +75,7 @@ def test_topic_signal_store_flushes_pruned_entries_after_load(tmp_path):
                     "妮可": [
                         {
                             "actor": "user",
-                            "text": "十二小时前的原始证据",
+                            "text": "超出保留窗口的旧证据",
                             "timestamp": now - 20,
                         },
                         {
