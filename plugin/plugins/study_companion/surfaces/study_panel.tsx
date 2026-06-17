@@ -6,20 +6,12 @@ type StudyStatus = {
   status?: string;
   active_mode?: string;
   mode?: string;
-  last_reply?: string;
   last_ocr_text?: string;
   last_error?: string;
   screen_classification?: {
     screen_type?: string;
     confidence?: number;
     reason?: string;
-  };
-  current_question?: {
-    question?: string;
-    answer?: string;
-    hint?: string;
-    topic?: string;
-    difficulty?: number;
   };
   last_answer_evaluation?: {
     verdict?: string;
@@ -47,15 +39,29 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
   { id: 'interactive', labelKey: 'status.mode.interactive', fallback: 'Interactive' },
   { id: 'teaching', labelKey: 'status.mode.teaching', fallback: 'Teaching' },
 ];
-const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
-const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
-const KATEX_RENDER_SCRIPT_URL = '/plugin/study_companion/ui/katex-render.js';
+const KATEX_ASSET_VERSION = 'study-hotfix-20260615v';
+const KATEX_CSS_URL = `/plugin/study_companion/ui/katex.min.css?v=${KATEX_ASSET_VERSION}`;
+const KATEX_SCRIPT_URL = `/plugin/study_companion/ui/katex.min.js?v=${KATEX_ASSET_VERSION}`;
+const KATEX_RENDER_SCRIPT_URL = `/plugin/study_companion/ui/katex-render.js?v=${KATEX_ASSET_VERSION}`;
 let katexLoadPromise: Promise<void> | null = null;
 
 type MathTextPart = {
   type: 'text' | 'math';
   value: string;
   display?: boolean;
+};
+
+type StudyReplySectionVariant = 'analysis' | 'process' | 'answer' | 'transfer';
+
+type StudyReplyBlock =
+  | { type: 'text'; value: string }
+  | { type: 'section'; variant: StudyReplySectionVariant; title: string; value: string };
+
+const STUDY_REPLY_SECTION_CLASS_BY_VARIANT: Record<StudyReplySectionVariant, string> = {
+  analysis: 'study-reply-section--analysis',
+  process: 'study-reply-section--process',
+  answer: 'study-reply-section--answer',
+  transfer: 'study-reply-section--transfer',
 };
 
 type StudyMathTools = {
@@ -98,11 +104,12 @@ function ensureHostedScript(id: string, src: string) {
     };
     const existing = document.getElementById(id) as HTMLScriptElement | null;
     if (existing) {
-      if (existing.dataset.studyKatexLoaded === 'true') {
+      if (existing.getAttribute('src') !== src) {
+        existing.remove();
+      } else if (existing.dataset.studyKatexLoaded === 'true') {
         resolve();
         return;
-      }
-      if (existing.dataset.studyKatexFailed === 'true') {
+      } else if (existing.dataset.studyKatexFailed === 'true') {
         existing.remove();
       } else {
         existing.addEventListener('load', () => resolveLoad(existing), { once: true });
@@ -128,7 +135,11 @@ function ensureHostedKatex() {
     return katexLoadPromise;
   }
   katexLoadPromise = new Promise((resolve) => {
-    if (!document.getElementById('study-companion-katex-css')) {
+    const existingCss = document.getElementById('study-companion-katex-css') as HTMLLinkElement | null;
+    if (existingCss && existingCss.getAttribute('href') !== KATEX_CSS_URL) {
+      existingCss.href = KATEX_CSS_URL;
+    }
+    if (!existingCss) {
       const link = document.createElement('link');
       link.id = 'study-companion-katex-css';
       link.rel = 'stylesheet';
@@ -165,14 +176,79 @@ function renderMathSpans(root: HTMLElement | null) {
   });
 }
 
+function studyReplySectionMeta(value: string): { variant: StudyReplySectionVariant; title: string } | null {
+  const normalized = String(value || '')
+    .replace(/^#{1,4}\s+/, '')
+    .replace(/^\*\*(.+?)\*\*$/, '$1')
+    .replace(/[：:]\s*$/, '')
+    .trim()
+    .toLowerCase();
+  const variants: Record<string, { variant: StudyReplySectionVariant; title: string }> = {
+    解析: { variant: 'analysis', title: '解析' },
+    题目解析: { variant: 'analysis', title: '题目解析' },
+    題目解析: { variant: 'analysis', title: '題目解析' },
+    'problem analysis': { variant: 'analysis', title: 'Problem Analysis' },
+    解题过程: { variant: 'process', title: '解题过程' },
+    解題過程: { variant: 'process', title: '解題過程' },
+    'solution process': { variant: 'process', title: 'Solution Process' },
+    答案: { variant: 'answer', title: '答案' },
+    'final answer': { variant: 'answer', title: 'Final Answer' },
+    举一反三: { variant: 'transfer', title: '举一反三' },
+    舉一反三: { variant: 'transfer', title: '舉一反三' },
+    'transfer practice': { variant: 'transfer', title: 'Transfer Practice' },
+  };
+  return variants[normalized] || null;
+}
+
+function buildStudyReplyBlocks(text: string): StudyReplyBlock[] {
+  const lines = String(text || '').split(/\r?\n/);
+  const blocks: StudyReplyBlock[] = [];
+  let textLines: string[] = [];
+  let section: Extract<StudyReplyBlock, { type: 'section' }> | null = null;
+  const flushText = () => {
+    if (textLines.length > 0) {
+      blocks.push({ type: 'text', value: textLines.join('\n') });
+      textLines = [];
+    }
+  };
+  const flushSection = () => {
+    if (section) {
+      blocks.push(section);
+      section = null;
+    }
+  };
+  for (const line of lines) {
+    const meta = studyReplySectionMeta(line.trim());
+    if (meta) {
+      flushText();
+      flushSection();
+      section = { type: 'section', variant: meta.variant, title: meta.title, value: '' };
+      continue;
+    }
+    if (section) {
+      section.value = section.value ? `${section.value}\n${line}` : line;
+    } else {
+      textLines.push(line);
+    }
+  }
+  flushText();
+  flushSection();
+  return blocks.length > 0 ? blocks : [{ type: 'text', value: text }];
+}
+
 function MathReply({ text, label }: { text: string; label: string }) {
   const containerRef = useRef<HTMLElement | null>(null);
   const [mathReady, setMathReady] = useState(() => Boolean(getStudyMathTools()));
+  const [mathRenderTick, setMathRenderTick] = useState(0);
   useEffect(() => {
     let active = true;
     ensureHostedKatex().then(() => {
       if (active) {
-        setMathReady(Boolean(getStudyMathTools()));
+        const ready = Boolean(getStudyMathTools());
+        setMathReady(ready);
+        if (ready && hasHostedKatex()) {
+          setMathRenderTick((tick) => tick + 1);
+        }
       }
     });
     return () => {
@@ -183,9 +259,27 @@ function MathReply({ text, label }: { text: string; label: string }) {
     if (mathReady) {
       renderMathSpans(containerRef.current);
     }
-  }, [mathReady, text]);
+  }, [mathReady, mathRenderTick, text]);
   const mathTools = mathReady ? getStudyMathTools() : null;
   const parts: MathTextPart[] = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
+  const renderParts = (items: MathTextPart[], keyPrefix: string) => items.map((part, index) => {
+    if (part.type === 'math') {
+      const wrapper = part.display ? '$$' : '$';
+      return (
+        <span
+          key={`${keyPrefix}-math-${index}`}
+          data-study-math="true"
+          data-display={part.display ? 'true' : 'false'}
+          data-math={part.value}
+        >
+          {wrapper}{part.value}{wrapper}
+        </span>
+      );
+    }
+    return <span key={`${keyPrefix}-text-${index}`}>{part.value}</span>;
+  });
+  const blocks = buildStudyReplyBlocks(text);
+  const hasStudySections = blocks.some((block) => block.type === 'section');
   return (
     <div
       ref={containerRef}
@@ -194,22 +288,26 @@ function MathReply({ text, label }: { text: string; label: string }) {
       aria-live="polite"
       aria-label={label}
     >
-      {parts.map((part, index) => {
-        if (part.type === 'math') {
-          const wrapper = part.display ? '$$' : '$';
-          return (
-            <span
-              key={`math-${index}`}
-              data-study-math="true"
-              data-display={part.display ? 'true' : 'false'}
-              data-math={part.value}
-            >
-              {wrapper}{part.value}{wrapper}
-            </span>
-          );
-        }
-        return <span key={`text-${index}`}>{part.value}</span>;
-      })}
+      {hasStudySections
+        ? blocks.map((block, index) => {
+          if (block.type === 'section') {
+            const sectionParts = mathTools ? mathTools.splitByMath(block.value) : [{ type: 'text' as const, value: block.value }];
+            return (
+              <section
+                key={`section-${index}`}
+                className={`study-reply-section ${STUDY_REPLY_SECTION_CLASS_BY_VARIANT[block.variant]}`}
+              >
+                <h3 className="study-reply-section__title">{block.title}</h3>
+                <div className="study-reply-section__body">
+                  {renderParts(sectionParts, `section-${index}`)}
+                </div>
+              </section>
+            );
+          }
+          const textParts = mathTools ? mathTools.splitByMath(block.value) : [{ type: 'text' as const, value: block.value }];
+          return <span key={`text-block-${index}`}>{renderParts(textParts, `text-block-${index}`)}</span>;
+        })
+        : renderParts(parts, 'reply')}
     </div>
   );
 }
@@ -485,7 +583,6 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const explainControllerRef = useRef<AbortController | null>(null);
   const pasteControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
-  const textAutoFilledFromOcrRef = useRef(false);
   const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -543,9 +640,6 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const screen = data.screen_classification && typeof data.screen_classification === 'object'
       ? data.screen_classification as Record<string, unknown>
       : undefined;
-    const question = data.current_question && typeof data.current_question === 'object'
-      ? data.current_question as Record<string, unknown>
-      : undefined;
     const evaluation = data.last_answer_evaluation && typeof data.last_answer_evaluation === 'object'
       ? data.last_answer_evaluation as Record<string, unknown>
       : undefined;
@@ -553,20 +647,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       status: typeof data.status === 'string' ? data.status : undefined,
       active_mode: typeof data.active_mode === 'string' ? data.active_mode : undefined,
       mode: typeof data.mode === 'string' ? data.mode : undefined,
-      last_reply: typeof data.last_reply === 'string' ? data.last_reply : undefined,
       last_ocr_text: typeof data.last_ocr_text === 'string' ? data.last_ocr_text : undefined,
       last_error: typeof data.last_error === 'string' ? data.last_error : undefined,
       screen_classification: screen ? {
         screen_type: typeof screen.screen_type === 'string' ? screen.screen_type : undefined,
         confidence: typeof screen.confidence === 'number' ? screen.confidence : undefined,
         reason: typeof screen.reason === 'string' ? screen.reason : undefined,
-      } : undefined,
-      current_question: question ? {
-        question: typeof question.question === 'string' ? question.question : undefined,
-        answer: typeof question.answer === 'string' ? question.answer : undefined,
-        hint: typeof question.hint === 'string' ? question.hint : undefined,
-        topic: typeof question.topic === 'string' ? question.topic : undefined,
-        difficulty: typeof question.difficulty === 'number' ? question.difficulty : undefined,
       } : undefined,
       last_answer_evaluation: evaluation ? {
         verdict: typeof evaluation.verdict === 'string' ? evaluation.verdict : undefined,
@@ -600,12 +686,6 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   function setStatusLine(data: StudyStatus) {
     setStatus({ ...data, active_mode: String(data.active_mode || data.mode || 'companion') });
-    setQuestion(data.current_question?.question || '');
-  }
-
-  function setManualText(value: string) {
-    textAutoFilledFromOcrRef.current = false;
-    setText(value);
   }
 
   function setTextImageValue(value: string) {
@@ -613,31 +693,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setTextImage(value);
   }
 
-  function clearAutoFilledTextOnImagePaste() {
-    if (!textAutoFilledFromOcrRef.current) {
-      return;
-    }
-    textAutoFilledFromOcrRef.current = false;
-    setText('');
-  }
-
-  async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {
-    const updateReply = options.updateReply !== false;
+  async function refresh(signal?: AbortSignal, _options: { updateReply?: boolean } = {}) {
     const data = normalizeStudyStatus(await callStudyPlugin(props.api, 'study_status', {}, signal));
     if (signal?.aborted) {
       return;
     }
     setStatusLine(data);
-    if (updateReply) {
-      setReply(data.last_reply || '');
-    }
-    setText((prev) => {
-      if (textImageRef.current || prev.trim() || !data.last_ocr_text) {
-        return prev;
-      }
-      textAutoFilledFromOcrRef.current = true;
-      return data.last_ocr_text;
-    });
   }
 
   async function setMode(mode: StudyMode) {
@@ -890,10 +951,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const handleTextPaste = createPasteHandler(
     {
       setImage: setTextImageValue,
-      setTextValue: setManualText,
+      setTextValue: setText,
       setPasteError: setTextPasteError,
       setPastePending: setPastePendingState,
-      onImageAccepted: clearAutoFilledTextOnImagePaste,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
@@ -959,7 +1019,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         </div>
         <div>
           <span>{t('ui.label.question', 'Question')}</span>
-          <strong>{compactText(question || status.current_question?.question)}</strong>
+          <strong>{compactText(question)}</strong>
         </div>
         <div>
           <span>{t('ui.label.answer', 'Answer')}</span>
@@ -971,7 +1031,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
         value={text}
         readOnly={interactionBusy}
-        onChange={(event) => setManualText(event.target.value)}
+        onChange={(event) => setText(event.target.value)}
         onPaste={handleTextPaste}
       />
       {textImage ? (

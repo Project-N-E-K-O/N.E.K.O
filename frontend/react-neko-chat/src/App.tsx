@@ -1415,6 +1415,8 @@ function CompactChatApp({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  compactToolFanOpenRequest = null,
+  compactHistoryOpenRequest = null,
   onCompactChatStateChange,
   onCompactMinimizeRequest,
   rollbackDraft,
@@ -1574,6 +1576,8 @@ function CompactChatApp({
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
+  const lastCompactToolFanOpenRequestIdRef = useRef('');
+  const lastCompactHistoryOpenRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
   const canSubmit = !composerDisabled && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
@@ -3759,8 +3763,8 @@ function CompactChatApp({
     syncCompactInputToolWheelLayout,
   ]);
 
-  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
-    if (composerDisabled || compactInputHasPayload) return;
+  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
+    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
     // 展开时延续上次轮盘中心索引（compactInputToolWheelIndex 是组件级 state，会话内常驻）：
     // hover 抖动重入或重新打开都不主动把用户刚滚到的位置弹回默认位。复位只随页面刷新/组件
     // 重挂发生（useState 初值为环位 0）。取舍脉络：#1697 曾在此「每次展开复位 index=0」，
@@ -3780,6 +3784,7 @@ function CompactChatApp({
       if (!compactInputToolFanOpenIntentRef.current) return;
       setCompactInputToolFanInteractiveState(true);
     }, COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS);
+    return true;
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
@@ -3789,6 +3794,28 @@ function CompactChatApp({
     setCompactInputToolFanInteractiveState,
     updateCompactInputToolFanPosition,
   ]);
+
+  useEffect(() => {
+    const request = compactToolFanOpenRequest;
+    if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactInputToolFan('click', { ignoreDisabled: true });
+      return;
+    }
+    closeCompactInputToolFan();
+  }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory({ persist: false });
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   const shouldOpenCompactToolFanOnHover = useCallback((pointerType: string) => {
     return pointerType === 'mouse';

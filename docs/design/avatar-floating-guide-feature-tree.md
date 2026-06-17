@@ -33,8 +33,6 @@
 
 PC 端迁移的关键目标是解决跨窗口演出不连续的问题：Ghost Cursor 应能从聊天窗输入区平滑移动到模型旁按钮、设置侧边栏、Agent HUD 或其他窗口目标；高光也必须在同一透明层中渲染，避免 Pet 窗口和聊天窗各画一套框导致双高亮、闪现或层级不一致。详细开发计划和可行性检查见 [PC 全局透明教程 Overlay 迁移开发计划](avatar-floating-pc-global-overlay-migration-plan.md)。
 
-外置聊天窗 target 映射必须按场景语义区分：每日首句的胶囊输入框使用 `chat-capsule-input` / `capsule-input`，普通聊天输入区才使用 `chat-input` / `input`。`setExternalizedChatTarget()`、`setExternalizedChatSpotlight()` 和 cursor anchor relay 必须沿用同一套 kind，避免 PC overlay 上一轮胶囊 spotlight 残留或输入框高亮错位。
-
 ## 导演视角与现有按钮校准
 
 七日主线的镜头语言以“先建立空间，再指向入口，最后归还控制”为准。每段台词进入聊天窗后，先让用户看见当前舞台，再让 Ghost Cursor 移动；只有需要展示真实弹窗或菜单时才点击。主页当前可见按钮分为三组，导演动作必须按真实分布走：

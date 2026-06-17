@@ -209,232 +209,222 @@ def run_static_checks(pc_repo: Path) -> list[Check]:
 
 
 def run_browser_bridge_probe() -> tuple[list[Check], dict[str, Any]]:
-    try:
-        sync_playwright = _load_playwright()
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+    sync_playwright = _load_playwright()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
 
-            home = browser.new_page(viewport={"width": 1280, "height": 720})
-            home.route(
-                "**/day1-wobble-home",
-                lambda route: route.fulfill(
-                    status=200,
-                    content_type="text/html",
-                    body="<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>",
-                ),
-            )
-            home.goto("http://neko.test/day1-wobble-home")
-            home.evaluate(
-                """
-                () => {
-                    window.history.pushState({}, '', '/');
-                    window.__NEKO_MULTI_WINDOW__ = true;
-                    window.__pcOverlayUpdates = [];
-                    window.safeT = (key, fallback) => typeof fallback === 'string' ? fallback : key;
-                    window.nekoTutorialOverlay = {
-                        getWindowMetricsSync: () => ({
-                            bounds: { x: 100, y: 50, width: 1200, height: 800 },
-                            contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
-                            zoomFactor: 1,
-                        }),
-                        begin: () => Promise.resolve({ ok: true }),
-                        update: (payload) => {
-                            window.__pcOverlayUpdates.push(payload);
-                            return Promise.resolve({ ok: true });
-                        },
-                        clear: () => Promise.resolve({ ok: true }),
-                    };
-                }
-                """
-            )
-            for script in (
-                "tutorial/visual/highlight-controller.js",
-                "tutorial-interrupt-controller.js",
-                "tutorial/core/interaction-takeover.js",
-                "tutorial/yui-guide/overlay.js",
-                "tutorial/yui-guide/director.js",
-            ):
-                home.add_script_tag(path=str(STATIC_DIR / script))
+        home = browser.new_page(viewport={"width": 1280, "height": 720})
+        home.route(
+            "**/day1-wobble-home",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body="<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>",
+            ),
+        )
+        home.goto("http://neko.test/day1-wobble-home")
+        home.evaluate(
+            """
+            () => {
+                window.history.pushState({}, '', '/');
+                window.__NEKO_MULTI_WINDOW__ = true;
+                window.__pcOverlayUpdates = [];
+                window.safeT = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+                window.nekoTutorialOverlay = {
+                    getWindowMetricsSync: () => ({
+                        bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                        contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                        zoomFactor: 1,
+                    }),
+                    begin: () => Promise.resolve({ ok: true }),
+                    update: (payload) => {
+                        window.__pcOverlayUpdates.push(payload);
+                        return Promise.resolve({ ok: true });
+                    },
+                    clear: () => Promise.resolve({ ok: true }),
+                };
+            }
+            """
+        )
+        for script in (
+            "tutorial/visual/highlight-controller.js",
+            "tutorial-interrupt-controller.js",
+            "tutorial/core/interaction-takeover.js",
+            "tutorial/yui-guide/overlay.js",
+            "tutorial/yui-guide/director.js",
+        ):
+            home.add_script_tag(path=str(STATIC_DIR / script))
 
-            greeting_result = home.evaluate(
-                """
-                async () => {
-                    window.__pcOverlayUpdates = [];
-                    const director = window.createYuiGuideDirector({ page: 'home' });
-                    const calls = [];
-                    director.interactionTakeover = {
-                        setExternalizedChatSpotlight: (kind) => calls.push({ type: 'spotlight', kind }),
-                        setExternalizedChatCursor: (kind, options) => calls.push({
-                            type: 'cursor',
-                            kind,
-                            effect: options && options.effect,
-                            effectDurationMs: options && options.effectDurationMs,
-                        }),
-                    };
-                    director.isHomeChatExternalized = () => true;
-                    director.getStep = () => ({ performance: {} });
-                    director.waitForSceneDelay = async () => true;
-                    director.enableInterrupts = () => {};
-                    director.playIntroGreetingReply = async () => {};
-                    director.introFlowStarted = true;
-                    director.sceneRunId = 41;
-                    director.cursor.showAt(320, 280);
-                    director.cursor.wobble(2000);
-                    await new Promise((resolve) => setTimeout(resolve, 0));
-                    const beforeGreetingUpdateCount = window.__pcOverlayUpdates.length;
-                    const ok = await director.playDay1IntroGreetingRoundScene(41);
-                    await new Promise((resolve) => setTimeout(resolve, 0));
-                    return {
-                        ok,
-                        calls,
-                        beforeGreetingUpdateCount,
-                        updates: window.__pcOverlayUpdates,
-                    };
-                }
-                """
-            )
+        greeting_result = home.evaluate(
+            """
+            async () => {
+                window.__pcOverlayUpdates = [];
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const calls = [];
+                director.interactionTakeover = {
+                    setExternalizedChatSpotlight: (kind) => calls.push({ type: 'spotlight', kind }),
+                    setExternalizedChatCursor: (kind, options) => calls.push({
+                        type: 'cursor',
+                        kind,
+                        effect: options && options.effect,
+                        effectDurationMs: options && options.effectDurationMs,
+                    }),
+                };
+                director.isHomeChatExternalized = () => true;
+                director.getStep = () => ({ performance: {} });
+                director.waitForSceneDelay = async () => true;
+                director.enableInterrupts = () => {};
+                director.playIntroGreetingReply = async () => {};
+                director.introFlowStarted = true;
+                director.sceneRunId = 41;
+                director.cursor.showAt(320, 280);
+                director.cursor.wobble(2000);
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                const beforeGreetingUpdateCount = window.__pcOverlayUpdates.length;
+                const ok = await director.playDay1IntroGreetingRoundScene(41);
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return {
+                    ok,
+                    calls,
+                    beforeGreetingUpdateCount,
+                    updates: window.__pcOverlayUpdates,
+                };
+            }
+            """
+        )
 
-            director_result = home.evaluate(
-                """
-                async () => {
-                    const director = window.createYuiGuideDirector({ page: 'home' });
-                    const calls = [];
-                    director.interactionTakeover = {
-                        setExternalizedChatSpotlight: (kind) => calls.push({ type: 'spotlight', kind }),
-                        setExternalizedChatCursor: (kind, options) => calls.push({
-                            type: 'cursor',
-                            kind,
-                            effect: options && options.effect,
-                            effectDurationMs: options && options.effectDurationMs,
-                        }),
-                    };
-                    director.isHomeChatExternalized = () => true;
-                    director.currentSceneId = 'day1_intro_greeting';
-                    director.prepareAvatarFloatingScene = async () => true;
-                    director.speakGuideLine = async () => null;
-                    director.waitForSceneDelay = async () => true;
-                    director.appendGuideChatMessage = () => {};
-                    director.applyGuideEmotion = () => {};
-                    director.enableInterrupts = () => {};
-                    await director.playAvatarFloatingScene({
-                        id: 'day1_capsule_drag_hint',
-                        text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 双击两下就能随时发消息给我哦！',
-                        voiceKey: 'day1_capsule_drag_hint',
-                        target: 'chat-input',
-                        cursorAction: 'wobble',
-                        cursorWobbleDurationMs: 2000,
-                    }, 1, 2, 9);
-                    return calls;
-                }
-                """
-            )
+        director_result = home.evaluate(
+            """
+            async () => {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const calls = [];
+                director.interactionTakeover = {
+                    setExternalizedChatSpotlight: (kind) => calls.push({ type: 'spotlight', kind }),
+                    setExternalizedChatCursor: (kind, options) => calls.push({
+                        type: 'cursor',
+                        kind,
+                        effect: options && options.effect,
+                        effectDurationMs: options && options.effectDurationMs,
+                    }),
+                };
+                director.isHomeChatExternalized = () => true;
+                director.currentSceneId = 'day1_intro_greeting';
+                director.prepareAvatarFloatingScene = async () => true;
+                director.speakGuideLine = async () => null;
+                director.waitForSceneDelay = async () => true;
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.enableInterrupts = () => {};
+                await director.playAvatarFloatingScene({
+                    id: 'day1_capsule_drag_hint',
+                    text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 双击两下就能随时发消息给我哦！',
+                    voiceKey: 'day1_capsule_drag_hint',
+                    target: 'chat-input',
+                    cursorAction: 'wobble',
+                    cursorWobbleDurationMs: 2000,
+                }, 1, 2, 9);
+                return calls;
+            }
+            """
+        )
 
-            anchor_result = home.evaluate(
-                """
-                async () => {
-                    const director = window.createYuiGuideDirector({ page: 'home' });
-                    director.currentSceneId = 'day1_capsule_drag_hint';
-                    window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
-                        detail: {
-                            x: 640,
-                            y: 430,
-                            kind: 'input',
-                            effect: 'wobble',
-                            effectDurationMs: 2000,
-                            source: 'external-chat',
-                            timestamp: Date.now(),
-                        },
-                    }));
-                    await new Promise((resolve) => setTimeout(resolve, 0));
-                    return {
-                        updates: window.__pcOverlayUpdates,
-                        latestAnchor: director.latestExternalizedChatCursorAnchorPoint,
-                        cursorPosition: director.overlay.getCursorPosition(),
-                    };
-                }
-                """
-            )
+        anchor_result = home.evaluate(
+            """
+            async () => {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                director.currentSceneId = 'day1_capsule_drag_hint';
+                window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                    detail: {
+                        x: 640,
+                        y: 430,
+                        kind: 'input',
+                        effect: 'wobble',
+                        effectDurationMs: 2000,
+                        source: 'external-chat',
+                        timestamp: Date.now(),
+                    },
+                }));
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return {
+                    updates: window.__pcOverlayUpdates,
+                    latestAnchor: director.latestExternalizedChatCursorAnchorPoint,
+                    cursorPosition: director.overlay.getCursorPosition(),
+                };
+            }
+            """
+        )
 
-            chat = browser.new_page(viewport={"width": 1280, "height": 720})
-            chat.route(
-                "**/day1-wobble-chat",
-                lambda route: route.fulfill(
-                    status=200,
-                    content_type="text/html",
-                    body="<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>",
-                ),
-            )
-            chat.goto("http://neko.test/day1-wobble-chat")
-            chat.evaluate(
-                """
-                () => {
-                    window.history.pushState({}, '', '/chat');
-                    window.__relays = [];
-                    window.__updates = [];
-                    window.nekoTutorialOverlay = {
-                        getWindowMetricsSync: () => ({
-                            bounds: { x: 100, y: 50, width: 1200, height: 800 },
-                            contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
-                            zoomFactor: 1,
-                        }),
-                        begin: () => Promise.resolve({ ok: true }),
-                        update: (payload) => {
-                            window.__updates.push(payload);
-                            return Promise.resolve({ ok: true });
-                        },
-                        clear: () => Promise.resolve({ ok: true }),
-                        relayToPet: (payload) => window.__relays.push(payload),
-                    };
-                    window.localStorage.setItem('yuiGuidePcOverlayRunId', 'diagnostic-run');
-                    document.body.innerHTML = `
-                        <div id="react-chat-window-shell" style="position:fixed;left:550px;top:390px;width:470px;height:88px;">
-                            <div id="react-chat-window-root">
-                                <div class="compact-chat-surface-frame"
-                                    data-compact-geometry-owner="surface"
-                                    data-compact-geometry-item="input"
-                                    style="position:fixed;left:600px;top:420px;width:390px;height:54px;border-radius:999px;"></div>
-                            </div>
+        chat = browser.new_page(viewport={"width": 1280, "height": 720})
+        chat.route(
+            "**/day1-wobble-chat",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body="<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>",
+            ),
+        )
+        chat.goto("http://neko.test/day1-wobble-chat")
+        chat.evaluate(
+            """
+            () => {
+                window.history.pushState({}, '', '/chat');
+                window.__relays = [];
+                window.__updates = [];
+                window.nekoTutorialOverlay = {
+                    getWindowMetricsSync: () => ({
+                        bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                        contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                        zoomFactor: 1,
+                    }),
+                    begin: () => Promise.resolve({ ok: true }),
+                    update: (payload) => {
+                        window.__updates.push(payload);
+                        return Promise.resolve({ ok: true });
+                    },
+                    clear: () => Promise.resolve({ ok: true }),
+                    relayToPet: (payload) => window.__relays.push(payload),
+                };
+                window.localStorage.setItem('yuiGuidePcOverlayRunId', 'diagnostic-run');
+                document.body.innerHTML = `
+                    <div id="react-chat-window-shell" style="position:fixed;left:550px;top:390px;width:470px;height:88px;">
+                        <div id="react-chat-window-root">
+                            <div class="compact-chat-surface-frame"
+                                data-compact-geometry-owner="surface"
+                                data-compact-geometry-item="input"
+                                style="position:fixed;left:600px;top:420px;width:390px;height:54px;border-radius:999px;"></div>
                         </div>
-                    `;
-                }
-                """
-            )
-            chat.add_script_tag(path=str(STATIC_DIR / "app-interpage.js"))
-            chat_result = chat.evaluate(
-                """
-                async () => {
-                    window.postMessage({
-                        __nekoTutorialOverlayRelay: true,
-                        payload: {
-                            action: 'yui_guide_set_chat_cursor',
-                            kind: 'input',
-                            effect: 'wobble',
-                            effectDurationMs: 2000,
-                            timestamp: Date.now(),
-                            tutorialRunId: 'diagnostic-run',
-                        },
-                    }, '*');
-                    await new Promise((resolve) => setTimeout(resolve, 180));
-                    const raw = window.localStorage.getItem('neko_yui_guide_external_chat_cursor_screen_point_v1');
-                    return {
-                        relays: window.__relays,
-                        updates: window.__updates,
-                        stored: raw ? JSON.parse(raw) : null,
-                        hasLocalCursor: !!document.getElementById('yui-guide-chat-cursor'),
-                    };
-                }
-                """
-            )
-            browser.close()
-    except Exception as exc:
-        result = {"reason": "browser_probe_failed", "error": str(exc)}
-        return [
-            Check(
-                "Browser bridge probe executed",
-                "FAIL",
-                f"Playwright bridge probe failed: {exc}",
-            )
-        ], result
+                    </div>
+                `;
+            }
+            """
+        )
+        chat.add_script_tag(path=str(STATIC_DIR / "app-interpage.js"))
+        chat_result = chat.evaluate(
+            """
+            async () => {
+                window.postMessage({
+                    __nekoTutorialOverlayRelay: true,
+                    payload: {
+                        action: 'yui_guide_set_chat_cursor',
+                        kind: 'input',
+                        effect: 'wobble',
+                        effectDurationMs: 2000,
+                        timestamp: Date.now(),
+                        tutorialRunId: 'diagnostic-run',
+                    },
+                }, '*');
+                await new Promise((resolve) => setTimeout(resolve, 180));
+                const raw = window.localStorage.getItem('neko_yui_guide_external_chat_cursor_screen_point_v1');
+                return {
+                    relays: window.__relays,
+                    updates: window.__updates,
+                    stored: raw ? JSON.parse(raw) : null,
+                    hasLocalCursor: !!document.getElementById('yui-guide-chat-cursor'),
+                };
+            }
+            """
+        )
+        browser.close()
 
     pc_cursor_updates = [
         update.get("payload", {}).get("cursor")
@@ -710,22 +700,7 @@ console.log(JSON.stringify(result));
     if completed.returncode != 0:
         result = {"stdout": completed.stdout, "stderr": completed.stderr, "returncode": completed.returncode}
     else:
-        try:
-            result = json.loads(completed.stdout.strip() or "{}")
-        except json.JSONDecodeError as exc:
-            result = {
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
-                "reason": "node_probe_invalid_json",
-                "error": str(exc),
-            }
-            return [
-                Check(
-                    "PC renderer probe returned JSON",
-                    "FAIL",
-                    f"Node VM probe returned invalid JSON: {exc}",
-                )
-            ], result
+        result = json.loads(completed.stdout.strip() or "{}")
 
     checks = [
         _check(

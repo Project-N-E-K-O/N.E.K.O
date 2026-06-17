@@ -270,6 +270,54 @@ export const BRAND_CSS = `
     color: var(--ink);
   }
 
+  .study-panel__math-reply .study-reply-section {
+    margin: 0 0 0.85rem;
+    border: 1px solid rgba(31, 35, 41, 0.10);
+    border-left: 4px solid var(--study-section-accent, rgba(47, 125, 87, 0.42));
+    border-radius: var(--radius-sm);
+    background: var(--study-section-bg, rgba(255, 255, 255, 0.72));
+    padding: 10px 12px 11px;
+    white-space: normal;
+  }
+
+  .study-panel__math-reply .study-reply-section--analysis {
+    --study-section-accent: #2f7d57;
+    --study-section-bg: rgba(47, 125, 87, 0.08);
+  }
+
+  .study-panel__math-reply .study-reply-section--process {
+    --study-section-accent: #2f6fbb;
+    --study-section-bg: rgba(47, 111, 187, 0.08);
+  }
+
+  .study-panel__math-reply .study-reply-section--answer {
+    --study-section-accent: #9b6a16;
+    --study-section-bg: rgba(155, 106, 22, 0.09);
+  }
+
+  .study-panel__math-reply .study-reply-section--transfer {
+    --study-section-accent: #7a4aa0;
+    --study-section-bg: rgba(122, 74, 160, 0.08);
+  }
+
+  .study-panel__math-reply .study-reply-section__title {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    margin: 0 0 0.45rem;
+    border-radius: 4px;
+    background: var(--study-section-accent, #2f7d57);
+    color: #fff;
+    padding: 2px 8px;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.35;
+  }
+
+  .study-panel__math-reply .study-reply-section__body {
+    white-space: pre-wrap;
+  }
+
   .study-panel textarea {
     resize: vertical;
     background-image:

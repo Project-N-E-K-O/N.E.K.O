@@ -81,10 +81,10 @@ prompt 只给「明显反复出现 → 高分，顺口一提 → 低分；如实
 `_topic_was_used_today` 主判据是当日已用话题的关键词重合。ngram veto 是**并行兜底**：要求 query/标题间相似度 ≥ 0.6 **且** 共享 ≥ 2 个 2-gram 单元（`_material_bigram_units`，丢弃单字 CJK 噪声）才算重复。
 **理由**：用户不完全信任机械 ngram，但保留它以防关键词漏判；两个条件取「且」是为了让机械 veto 足够保守，不误杀。若日后 ngram 指标暴露严重问题，可单独摘掉这条兜底而不动主判据。
 
-### 隐私语义：只管积累，不管投递
+### 隐私语义：积累清空，投递前也保守复查
 
 隐私模式开启时，`enrich_topic_pool`（pipeline.py）**早退并清空整个池**（user/ai 回合、signal store、materials 全清）。因此隐私态下造不出新的敏感话题。
-**结论**：投递阶段**不**再查隐私。已经排队的 hook 是隐私前快照造的，晚一点投出去可接受。`topic_hook_delivery_allowed`（`main_logic/core.py`）只保留活动倾向门，不查 `is_privacy_mode_enabled()`。详见 commit「drop redundant privacy recheck」。
+**结论**：投递阶段也要保守复查隐私。已经排队的 hook 可能来自隐私前快照，但 deep topic 是可有可无的新开场；如果用户在 quiet window / deep search / delivery pacing 期间打开隐私，宁可 defer / retry，也不要把旧素材突然说出来。`topic_hook_delivery_allowed`（`main_logic/core.py`）会同步查 `is_privacy_mode_enabled()`，读取失败时 fail-closed。
 
 ### 活动倾向门：投递路径上守，retry 路径不守
 
