@@ -1988,6 +1988,19 @@ test('tutorial destroy requests share the PC global overlay cleanup path', () =>
     assert.match(lifecycleCleanupBlock, /this\.clearPcTutorialGlobalOverlay\(rawReason\);/);
 });
 
+test('cross-page termination requests include the PC overlay tutorial run id', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const terminationBlock = managerSource.split('    broadcastYuiGuideTerminationRequest(endMeta = {}) {')[1].split(
+        '    /**\n     * 检查 i18n',
+        1
+    )[0];
+
+    assert.match(terminationBlock, /window\.localStorage\.getItem\('yuiGuidePcOverlayRunId'\)/);
+    assert.match(terminationBlock, /message\.tutorialRunId = tutorialRunId;/);
+    assert.match(terminationBlock, /channel\.postMessage\(message\)/);
+    assert.match(terminationBlock, /relayToPet\(message\)/);
+});
+
 test('PC global overlay cleanup clears the stored run id before the next tutorial run', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const clearOverlayBlock = managerSource.split('    clearPcTutorialGlobalOverlay(reason = ')[1].split(

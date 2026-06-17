@@ -1496,6 +1496,13 @@ class UniversalTutorialManager {
         if (!message) {
             return;
         }
+        let tutorialRunId = '';
+        try {
+            tutorialRunId = window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+        message.tutorialRunId = tutorialRunId;
 
         const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
         if (channel && typeof channel.postMessage === 'function') {
