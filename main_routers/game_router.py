@@ -1882,7 +1882,7 @@ async def _run_pregame_context_ai(
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=prompt_template),
                 HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
             ])
@@ -2525,7 +2525,7 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
@@ -3308,9 +3308,15 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
     source = _build_game_archive_memory_highlight_source(archive)
     language = _archive_prompt_language(archive)
     system_prompt = get_game_archive_memory_highlighter_system_prompt(language)
-    user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
 
     try:
+        # Bound a long game_dialog_log: _build_game_archive stores the whole dialog
+        # in full_dialogues and the source builder appends every line. Head+tail
+        # keeps the early framing + late outcome within a real token budget. Inside
+        # the try so any failure falls back to _fallback_game_archive_memory_highlights.
+        from utils.tokenize import truncate_head_tail_tokens
+        source = truncate_head_tail_tokens(source, 2000, 2000)
+        user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
         from utils.file_utils import robust_json_loads
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
         from utils.token_tracker import set_call_type
@@ -3324,7 +3330,7 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # source bounded above via truncate_head_tail_tokens
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
@@ -3476,7 +3482,7 @@ def _build_game_archive_memory_messages(archive: dict, tail_count: int | None = 
 _POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup", "manual_return_to_start"}
 _POSTGAME_REALTIME_NUDGE_DELAYS = (1.5, 5.0, 9.0)
 _POSTGAME_REALTIME_UNORGANIZED_LIMIT = 12
-_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS = 2400
+_POSTGAME_REALTIME_UNORGANIZED_MAX_TOKENS = 1500
 
 
 def _normalize_postgame_options(raw: Any, *, reason: str) -> dict:
@@ -3576,18 +3582,30 @@ def _archive_unorganized_dialogues(archive: dict, *, limit: int = _POSTGAME_REAL
     return pending[-max(1, limit):]
 
 
-def _append_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_chars: int) -> None:
+def _append_token_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_tokens: int) -> None:
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    if max_tokens <= 0:
+        return
+
     kept: list[str] = []
-    total = 0
+    total_tokens = 0
     for raw in reversed(raw_lines):
         line = str(raw or "").strip()
         if not line:
             continue
-        next_total = total + len(line) + 2
-        if kept and next_total > max_chars:
+        line_tokens = count_tokens(line)
+        next_total = total_tokens + line_tokens
+        if next_total > max_tokens:
+            # Even the first (newest) line must respect the budget — a single
+            # pasted/long dialogue entry would otherwise bypass the cap.
+            if not kept:
+                clipped = truncate_to_tokens(line, max_tokens)
+                if clipped:
+                    kept.insert(0, clipped)
             break
         kept.insert(0, line)
-        total = next_total
+        total_tokens = next_total
     if kept:
         lines.append(header)
         lines.extend(kept)
@@ -3659,11 +3677,11 @@ def _build_game_postgame_context_text(archive: dict) -> str:
         for item in _archive_unorganized_dialogues(archive)
         if isinstance(item, dict)
     ]
-    _append_limited_lines(
+    _append_token_limited_lines(
         lines,
         labels["unorganized_window"],
         unorganized_lines,
-        max_chars=_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS,
+        max_tokens=_POSTGAME_REALTIME_UNORGANIZED_MAX_TOKENS,
     )
 
     last_user = _archive_last_user_text(archive)
@@ -6954,6 +6972,22 @@ async def game_project_context(game_type: str, request: Request):
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state:
+        closed_response = _game_route_closed_session_response(
+            data,
+            session_id=session_id,
+            lanlan_name=lanlan_name,
+            method="project_session_history",
+        )
+        if closed_response:
+            return closed_response
+        return {
+            "ok": False,
+            "reason": "route_not_active",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "method": "project_session_history",
+        }
     stale_response = _game_route_stale_session_response(
         state,
         session_id,
@@ -7822,7 +7856,7 @@ async def game_quick_lines(game_type: str, request: Request):
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=prompt),
                 HumanMessage(content=user_prompt),
             ])

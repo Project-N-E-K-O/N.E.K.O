@@ -1025,8 +1025,8 @@ MAX_KNOWN_POOL_FACTS = 30
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
-PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
-REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
+PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算
+REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
@@ -1068,7 +1068,9 @@ HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSea
 #                                         （≈ 1.3-1.5 CJK char / 4 EN char）
 #   *_TRIGGER_TOKENS                   → 触发某个动作的 token 阈值（不是硬上限）
 #   *_MAX_ITEMS / *_MAX                → 条数（消息 / deque maxlen / list[-N:]）
-#   *_MAX_CHARS                        → 字符数（仅遗留 char-based 流程用）
+#   *_MAX_CHARS                        → 字符数（仅非 prompt-facing 的 UI /
+#                                         payload 防爆流程用，不作为 LLM input
+#                                         budget 证据）
 #   *_BYTES                            → 字节
 #   *_MS                               → 毫秒
 #
@@ -1297,7 +1299,7 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 - 用途：_allm_call_promotion_merge 把同 entity 的所有 confirmed/promoted
   persona 和 reflection 全拼进 prompt，本 cap 防止该池失控。
 - 上游：同一 entity 长期累积的 persona/reflection。
-- 注意：这条不复用 PERSONA_RENDER_TOKEN_BUDGET（render 是给主对话看的，
+- 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
   merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
@@ -1319,6 +1321,37 @@ MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
 - 覆盖：reflection synthesis / persona correction / memory_refine /
   recent review_history 等所有后台跑的 LLM 调用。
 - 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
+
+LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
+"""变长输出 LLM 调用的 max_completion_tokens **runaway guard**（不是紧 budget）。
+- 用途：那些输出长度天然变动、没有紧的 task-specific budget 的调用——memory
+  的结构化 JSON（reflection / recall / persona / facts / refine / dedup recheck）、
+  fact dedup、card-assist、window-title 关键词等。
+- 取值：4096。**必须保持在主流 provider 的输出上限之内**——`max_completion_tokens`
+  是上限不是目标，但很多 provider（OpenAI 及兼容端点）会在请求时就校验它 >
+  模型 max output 而直接 400，而不是退回默认值。这正是 `omni_offline_client.
+  _budget_to_max_tokens` 对 unlimited 直接 **omit 字段**（"large fixed values get
+  rejected as out-of-range by some providers"）的原因。8000 会打爆 max output<8000
+  的自建/老模型；4096 是绝大多数 summary/correction/agent tier 模型都接受的安全档，
+  同时对这些任务的正常输出（含 thinking reasoning）仍是宽裕兜底。
+- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 token budget；本常量是
+  "无紧 budget 但仍需有上限"这类调用的统一来源（见 docs/design/llm-prompt-budget.md §0）。
+- 不适用：有明确紧 budget 的调用（emotion / translation / vision / plugin 粗筛等）
+  仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。
+- 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
+  彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
+
+DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
+"""主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
+- 用途：OmniOfflineClient 的 streaming chat client（stream_text /
+  prompt_ephemeral 共用同一个 self.llm）。SDK 的 timeout 是整次请求上限，
+  对流式即"出完整条回复"的时间。
+- 取值：刻意取大（180s）——正常 TTS 短回复 / summary 3000-token 长回复
+  都远低于此，不会被截；只在上游真正卡死（既不出 token 也不断流）时兜底
+  释放连接。比 MEMORY_LLM_HARD_TIMEOUT_SECONDS 大，因为主对话是用户面前
+  路径，宁可多等也不能误截正常回复。
+- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
+  主对话流式路径的统一来源。"""
 
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
@@ -1424,6 +1457,39 @@ TASK_ERROR_MAX_TOKENS = 350
 """任务错误消息字段的 token 上限。
 - 用途：_emit_task_result 的 error 档位。
 - 上游：异常 stack / API 错误响应。"""
+
+AGENT_CALLBACK_TEXT_MAX_TOKENS = 1000
+"""单条 agent callback 的 summary/detail 注入 LLM 的 token 上限（per-item）。
+- 用途：`Core.enqueue_agent_callback` 落队前对每条 callback 的 summary/detail
+  截断。task_result 类回流已在 _emit_task_result 用 TASK_*_MAX_TOKENS 截过
+  （≤1000），本档对齐 TASK_LARGE_DETAIL 不会误伤；真正的兜底对象是
+  **push_message / proactive_message** 这条 plugin 事件流——proactive_bridge
+  直接聚合 text parts 写进 summary/detail，此前没有任何 cap。
+- 上游：plugin SDK push_message() 的 text parts / 外部通知。"""
+
+AGENT_CALLBACK_TOTAL_MAX_TOKENS = 3000
+"""一次注入 LLM 的 agent callback 指令总和 token 上限（total）。
+- 用途：`_build_callback_instruction`（文本轮 system_prefix / proactive 触发）
+  和 `_render_pending_extra_replies_by_origin`（语音 hot-swap final_prime_text）
+  渲染完成后对整段做兜底截断。防 N 条 callback 累加撑爆本轮 prompt。
+- 与 per-item 配合：单条 cap 防长贴，total cap 防大量短条累加（见
+  docs/design/llm-prompt-budget.md §2.1 三层防护）。"""
+
+AGENT_CALLBACK_QUEUE_MAX_ITEMS = 50
+"""pending_agent_callbacks / pending_extra_replies 队列长度上限（flood guard）。
+- 用途：`enqueue_agent_callback` 落队后裁到最近 N 条，防 plugin 事件流灌爆
+  内存（队列此前无容量上限，drain 时全量 snapshot）。丢最旧的（最新事件
+  最相关）。
+- 与 AGENT_TASK_TRACKER_MAX_RECORDS=50 同口径。"""
+
+AGENT_DEDUP_CANDIDATES_MAX = 50
+"""task deduper 单次比对的 existing-task 候选条数上限。
+- 用途：`brain/deduper.py:_build_prompt` 只取前 N 条 candidate 拼 prompt，
+  防 backlog/flood 下 `_collect_existing_task_descriptions` 把上百条任务全量
+  塞进 dedup prompt。配合 per-item 头尾截断（TASK_DETAIL_MAX_TOKENS）给输入
+  一个真实总上限。
+- 与 FACT_DEDUP_BATCH_LIMIT=20 类似（LLM 配对决策的舒适 batch）；dedup 只做
+  一次 N×1 比对，放宽到 50。"""
 
 # ---- Agent: defensive char-caps (NOT token caps) ----
 # 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
@@ -1863,13 +1929,13 @@ TRANSLATION_OUTPUT_MAX_TOKENS = 1000
 - 用途：单 chunk 翻译输出上限。
 - 上游：LLM 输出。"""
 
-TRANSLATION_CHUNK_MAX_CHARS_SHORT = 5000
-"""翻译短文本路径的分块字符数上限（chars，遗留 char-based）。
-- 用途：单次翻译调用的输入字符数；长文本被切成多块串行翻译。
+TRANSLATION_CHUNK_MAX_TOKENS_SHORT = 2000
+"""翻译短文本路径的分块 token 上限。
+- 用途：单次翻译调用的输入 token 数；长文本被切成多块串行翻译。
 - 上游：用户/系统传入的待翻译原文。"""
 
-TRANSLATION_CHUNK_MAX_CHARS_LONG = 15000
-"""翻译长文本路径的分块字符数上限（chars，遗留 char-based）。
+TRANSLATION_CHUNK_MAX_TOKENS_LONG = 5000
+"""翻译长文本路径的分块 token 上限。
 - 用途：长文本翻译路径下的更大 chunk size。
 - 上游：用户/系统传入的待翻译原文。"""
 
@@ -2071,8 +2137,8 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
-    'PERSONA_RENDER_TOKEN_BUDGET',
-    'REFLECTION_RENDER_TOKEN_BUDGET',
+    'PERSONA_RENDER_MAX_TOKENS',
+    'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
     # §3.7 LLM Context & Output Budget
     'RECENT_HISTORY_MAX_ITEMS',
@@ -2091,6 +2157,8 @@ __all__ = [
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'LLM_OUTPUT_GUARD_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
@@ -2110,6 +2178,10 @@ __all__ = [
     'TASK_SUMMARY_MAX_TOKENS',
     'TASK_LARGE_DETAIL_MAX_TOKENS',
     'TASK_ERROR_MAX_TOKENS',
+    'AGENT_CALLBACK_TEXT_MAX_TOKENS',
+    'AGENT_CALLBACK_TOTAL_MAX_TOKENS',
+    'AGENT_CALLBACK_QUEUE_MAX_ITEMS',
+    'AGENT_DEDUP_CANDIDATES_MAX',
     'AGENT_TASK_TRACKER_MAX_RECORDS',
     'AGENT_RECENT_CTX_PER_ITEM_TOKENS',
     'AGENT_RECENT_CTX_TOTAL_TOKENS',
@@ -2165,8 +2237,8 @@ __all__ = [
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',
-    'TRANSLATION_CHUNK_MAX_CHARS_SHORT',
-    'TRANSLATION_CHUNK_MAX_CHARS_LONG',
+    'TRANSLATION_CHUNK_MAX_TOKENS_SHORT',
+    'TRANSLATION_CHUNK_MAX_TOKENS_LONG',
     'VISION_ANALYSIS_MAX_TOKENS',
     'CONNECTIVITY_TEST_MAX_TOKENS',
     'MCP_TOOL_RESULT_MAX_TOKENS',

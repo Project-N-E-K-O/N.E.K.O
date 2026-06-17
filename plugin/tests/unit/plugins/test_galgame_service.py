@@ -255,7 +255,7 @@ def test_build_config_reads_context_optimization_fields() -> None:
     assert cfg.context_persist_require_game_id is False
     assert cfg.llm_repeat_detection_enabled is True
     assert cfg.llm_repeat_similarity_threshold == 0.9
-    assert invalid.context_counting_mode == "char"
+    assert invalid.context_counting_mode == "token"
     assert invalid.context_scene_summary_mode == "rolling"
     assert invalid.llm_repeat_similarity_threshold == 1.0
     assert low_threshold.llm_repeat_similarity_threshold == 0.0

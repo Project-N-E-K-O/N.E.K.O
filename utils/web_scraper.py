@@ -1265,10 +1265,12 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         # 使用summary模型配置
         summary_config = config_manager.get_model_api_config('summary')
         
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = create_chat_llm(
             summary_config['model'], summary_config['base_url'],
             summary_config['api_key'],
             timeout=10.0, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; short keyword output but covers a thinking model's reasoning too
         )
         
         # 清理/脱敏窗口标题用于日志显示
@@ -1289,10 +1291,11 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         # Gemini 的 OpenAI 兼容接口需要实际的 user content；
         # 仅发送 system message 可能被底层适配为空 contents。
         set_call_type("web_scraper")
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
+        async with llm:  # ensure the per-call client is closed (no connection leak on repeated calls)
+            response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # input is the OS window title (uncapped by design, cf. llm-prompt-budget.md §6).
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
             # 窗口标题不写 logger，但记下长度元数据便于调试

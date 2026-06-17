@@ -70,6 +70,7 @@ class LMMEngineOpenAI(LMMEngine):
                 base_url=self.base_url,
                 api_key=api_key,
                 temperature=temperature,
+                timeout=120.0,  # noqa: LLM_OUTPUT_BUDGET  # output budget is set per-call on the raw .chat.completions.create() (max_completion_tokens below); this sets the transport timeout (hang-guard for VLM GUI reasoning).
                 max_retries=0,
             )
         return (
@@ -206,6 +207,7 @@ class LMMEngineGemini(LMMEngine):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=temperature,
+                timeout=120.0,  # noqa: LLM_OUTPUT_BUDGET  # output budget is set per-call on the raw .chat.completions.create() (max_completion_tokens below); this sets the transport timeout (hang-guard for VLM GUI reasoning).
                 max_retries=0,
             )
         # Use the temperature passed to generate, otherwise use the instance's temperature, otherwise default to 0.0
@@ -262,6 +264,7 @@ class LMMEngineOpenRouter(LMMEngine):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=temperature,
+                timeout=120.0,  # noqa: LLM_OUTPUT_BUDGET  # output budget is set per-call on the raw .chat.completions.create() (max_completion_tokens below); this sets the transport timeout (hang-guard for VLM GUI reasoning).
                 max_retries=0,
             )
         # Use self.temperature if set, otherwise use the temperature argument
@@ -326,6 +329,7 @@ class LMMEngineAzureOpenAI(LMMEngine):
                 azure_endpoint=azure_endpoint,
                 api_key=api_key,
                 api_version=api_version,
+                timeout=120.0,  # hang-guard; output budget is set per-call on .create() (max_completion_tokens)
             )
         # Use self.temperature if set, otherwise use the temperature argument
         set_call_type("agent_cua")
@@ -388,6 +392,7 @@ class LMMEnginevLLM(LMMEngine):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=temperature,
+                timeout=120.0,  # noqa: LLM_OUTPUT_BUDGET  # output budget is set per-call on the raw .chat.completions.create() (max_completion_tokens below); this sets the transport timeout (hang-guard for VLM GUI reasoning).
                 max_retries=0,
             )
         # Use self.temperature if set, otherwise use the temperature argument
@@ -432,6 +437,7 @@ class LMMEngineHuggingFace(LMMEngine):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=temperature,
+                timeout=120.0,  # noqa: LLM_OUTPUT_BUDGET  # output budget is set per-call on the raw .chat.completions.create() (max_completion_tokens below); this sets the transport timeout (hang-guard for VLM GUI reasoning).
                 max_retries=0,
             )
         return (
@@ -479,6 +485,7 @@ class LMMEngineParasail(LMMEngine):
                 base_url=base_url if base_url else "https://api.parasail.io/v1",
                 api_key=api_key,
                 temperature=temperature,
+                timeout=120.0,  # noqa: LLM_OUTPUT_BUDGET  # output budget is set per-call on the raw .chat.completions.create() (max_completion_tokens below); this sets the transport timeout (hang-guard for VLM GUI reasoning).
                 max_retries=0,
             )
         return (

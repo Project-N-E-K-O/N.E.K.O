@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from plugin.plugins.galgame_plugin.llm_backend import (
-    _JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS,
+    _JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS,
     GalgameLLMBackend,
 )
 from plugin.plugins.galgame_plugin.llm_gateway import LLMGateway
@@ -99,7 +99,7 @@ def _agent_reply_context() -> dict[str, Any]:
 async def test_json_correction_prompt_bounds_bad_output_and_succeeds() -> None:
     bad_output = (
         "not json "
-        + ("x" * (_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS + 32))
+        + ("x" * ((_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS * 4) + 32))
         + "TAIL_SHOULD_NOT_BE_INCLUDED"
     )
     backend = RecordingBackend([bad_output, '{"reply":"ok"}'])

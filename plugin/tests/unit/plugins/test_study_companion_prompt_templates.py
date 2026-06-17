@@ -39,7 +39,7 @@ def test_concept_prompt_templates_require_all_variables() -> None:
 
 
 def test_prompt_context_limits_cover_all_structured_operations() -> None:
-    assert set(templates.STUDY_PROMPT_CONTEXT_MAX_CHARS) == {
+    assert set(templates.STUDY_PROMPT_CONTEXT_MAX_TOKENS) == {
         "concept_explain",
         "question_generate",
         "answer_evaluate",
