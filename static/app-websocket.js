@@ -610,12 +610,11 @@
     }
 
     function isNewUserIcebreakerPeriodActive() {
-        if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function') {
-            return false;
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
         }
-        try {
-            if (window.newUserIcebreaker.getActiveSession()) return true;
-        } catch (_) {}
 
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
@@ -631,9 +630,6 @@
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function') {
-            return false;
-        }
         if (isNewUserIcebreakerPeriodActive()) return true;
         var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
         if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')

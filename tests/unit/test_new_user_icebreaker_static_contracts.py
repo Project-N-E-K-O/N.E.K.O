@@ -623,6 +623,8 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
             flags=re.S,
         ).group("body")
         assert "getActiveSession()" in period_body
+        assert "if (!window.newUserIcebreaker" not in period_body
+        assert period_body.index("readNewUserIcebreakerStore()") > period_body.index("getActiveSession()")
         assert "entry.started === true" not in period_body
         assert "entry.completed === true" not in period_body
         assert "|| entry.triggeredAt" not in period_body

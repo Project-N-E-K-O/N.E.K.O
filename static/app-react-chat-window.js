@@ -2298,7 +2298,7 @@
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
             galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
-            composerDisabled: !!(state.homeTutorialInteractionLocked || state.homeTutorialInputLocked),
+            composerDisabled: !!state.homeTutorialInteractionLocked,
             compactInputLocked: !!state.homeTutorialInputLocked
         };
     }
@@ -4041,7 +4041,7 @@
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
             compactInputLocked: next,
-            composerDisabled: !!(state.homeTutorialInteractionLocked || next)
+            composerDisabled: !!state.homeTutorialInteractionLocked
         });
         renderWindow();
     }
