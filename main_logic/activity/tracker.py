@@ -1028,10 +1028,13 @@ class UserActivityTracker:
             except asyncio.CancelledError:
                 return
 
-            # 隐私模式：本 tick 不读窗口/进程，也不调 LLM，直接进入下一轮。
-            # 缓存自然衰减（保留最后一次值，proactive_chat 那边 snapshot 已被
-            # gating 成 None，缓存不会被消费）。
+            # 隐私模式：本 tick 不读窗口/进程，也不调 LLM。Topic 的
+            # accumulated signal store 仍要在这里清掉；否则如果用户在
+            # candidate quiet window 内打开隐私，这个 continue 会绕过
+            # TopicHookPool 自己的 privacy purge，等隐私关闭后旧证据会被
+            # 送去 topic LLM。
             if _privacy_mode_active():
+                await self._purge_topic_candidates_for_privacy(now=time.time())
                 continue
 
             try:
@@ -1164,6 +1167,17 @@ class UserActivityTracker:
             )
         except Exception as exc:
             logger.debug("[%s] topic candidate heartbeat failed: %s", self.lanlan_name, exc)
+
+    async def _purge_topic_candidates_for_privacy(self, *, now: float) -> None:
+        """Let the topic pool wipe accumulated signals during privacy ticks."""
+        try:
+            from main_logic.topic.pipeline import get_topic_hook_pool
+            await get_topic_hook_pool().process_ready_topics(
+                lanlan_name=self.lanlan_name,
+                now=now,
+            )
+        except Exception as exc:
+            logger.debug("[%s] topic candidate privacy purge failed: %s", self.lanlan_name, exc)
 
     def _refresh_prefs(self) -> None:
         """Pick up live edits to ``user_preferences.json::activity``.

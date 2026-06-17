@@ -525,10 +525,23 @@ async def test_topic_pool_process_ready_rearms_restored_signals(tmp_path):
     )
 
     await pool.process_ready_topics(now=base + 121, lang="zh-CN")
+    await pool.process_ready_topics(now=base + 141, lang="zh-CN")
 
     assert len(calls) == 1
     assert "换城市" in calls[0]
     assert pool.get_ready_materials("妮可")[0]["interest"] == "恢复后的换城市话题"
+
+    restarted = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        candidate_quiet_seconds=60,
+        min_user_turns_for_topic=2,
+        signal_store_path=path,
+    )
+
+    await restarted.process_ready_topics(now=base + 161, lang="zh-CN")
+
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
@@ -550,12 +563,57 @@ async def test_topic_pool_process_ready_scopes_to_requested_character():
     now = time.time() + 120
 
     await pool.process_ready_topics(lanlan_name="妮可", now=now, lang="zh-CN")
+    await pool.process_ready_topics(lanlan_name="妮可", now=now + 20, lang="zh-CN")
 
     assert len(calls) == 1
     assert "妮可自己的可分析话题" in calls[0]
     assert "兰兰自己的可分析话题" not in calls[0]
     assert pool.get_ready_materials("妮可")
     assert pool.get_ready_materials("兰兰") == []
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_purges_requested_character_while_privacy_is_enabled(monkeypatch):
+    from main_logic.topic import pipeline as topic_pipeline
+
+    calls = []
+    privacy_enabled = False
+
+    async def fake_analyzer(*, lang, global_signals):
+        calls.append(global_signals)
+        return [{"interest": "隐私前信号不该分析", "relevance": 90}]
+
+    monkeypatch.setattr(
+        topic_pipeline,
+        "_privacy_mode_active",
+        lambda: privacy_enabled,
+    )
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        candidate_quiet_seconds=60,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "隐私开启前的候选证据", lang="zh-CN")
+    last_turn_at = pool._last_turn_at["妮可"]
+
+    privacy_enabled = True
+    await pool.process_ready_topics(
+        lanlan_name="妮可",
+        now=last_turn_at + 30,
+        lang="zh-CN",
+    )
+
+    privacy_enabled = False
+    await pool.process_ready_topics(
+        lanlan_name="妮可",
+        now=last_turn_at + 90,
+        lang="zh-CN",
+    )
+
+    assert calls == []
+    assert pool.get_ready_materials("妮可") == []
 
 
 @pytest.mark.asyncio
@@ -1322,25 +1380,30 @@ async def test_deepen_material_keeps_floor_when_deep_search_finds_nothing(monkey
 @pytest.mark.asyncio
 async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
     from main_logic.topic import pipeline as topic_pipeline
-    calls = []
+    derive_calls = []
+    enrich_calls = []
 
     async def fake_derive(**kwargs):
-        calls.append(1)
+        derive_calls.append(1)
         return "q"
+
+    async def fake_enrich(materials, **kwargs):
+        enrich_calls.append([dict(m) for m in materials])
+        return [dict(m, material_hint={"summary": "floor-online"}) for m in materials]
 
     monkeypatch.setattr(
         "main_logic.activity.llm_enrichment.derive_deep_search_query", fake_derive
     )
-    monkeypatch.setattr(
-        topic_pipeline, "enrich_topic_materials_online", _async_identity_enrich
-    )
+    monkeypatch.setattr(topic_pipeline, "enrich_topic_materials_online", fake_enrich)
 
-    # disabled → never derives, never marks done
+    # deep-search disabled → never derives, but still runs floor online enrichment
     pool_off = TopicHookPool(auto_schedule=False, enable_deep_search=False)
     m1 = {"interest": "x", "keywords": ["x"]}
     await pool_off._deepen_material("n", m1, "zh")
-    assert calls == []
-    assert "deep_search_done" not in m1
+    assert derive_calls == []
+    assert len(enrich_calls) == 1
+    assert m1["deep_search_done"] is True
+    assert m1["material_hint"] == {"summary": "floor-online"}
 
     # online enrichment disabled → stays fully offline, including query derivation
     pool_online_off = TopicHookPool(
@@ -1349,7 +1412,8 @@ async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
     )
     m_offline = {"interest": "x", "keywords": ["x"]}
     await pool_online_off._deepen_material("n", m_offline, "zh")
-    assert calls == []
+    assert derive_calls == []
+    assert len(enrich_calls) == 1
     assert "deep_search_done" not in m_offline
 
     # enabled → derives once; second call is a cached no-op
@@ -1357,5 +1421,6 @@ async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
     m2 = {"interest": "x", "keywords": ["x"]}
     await pool_on._deepen_material("n", m2, "zh")
     await pool_on._deepen_material("n", m2, "zh")
-    assert calls == [1]
+    assert derive_calls == [1]
+    assert len(enrich_calls) == 2
     assert m2["deep_search_done"] is True

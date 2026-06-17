@@ -248,7 +248,15 @@ class TopicHookPool:
         self._tasks: dict[str, asyncio.Task] = {}
         self._trigger_tasks: dict[str, asyncio.Task] = {}
         self._used_topics: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._dirty: set[str] = set()
+        self._last_turn_at: dict[str, float] = {
+            name: last_turn_at
+            for name in self._signal_store.names()
+            if (last_turn_at := self._signal_store.last_turn_at(name)) is not None
+        }
+        # Restored persisted signals are dirty once after startup: they should
+        # be eligible for the next heartbeat, then stop unless a new turn
+        # arrives. Do not iterate all signal-store names every tick.
+        self._dirty: set[str] = set(self._signal_store.names())
         self._seq: dict[str, int] = defaultdict(int)
 
     def _purge_character_state(self, name: str) -> None:
@@ -264,6 +272,12 @@ class TopicHookPool:
         self._signal_store.flush()
         self._dirty.discard(name)
 
+    def _consume_accumulated_signals(self, name: str) -> None:
+        """Consume analyzed evidence while preserving delivery timing state."""
+        self._signal_store.clear(name)
+        self._signal_store.flush()
+        self._dirty.discard(name)
+
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
         cleaned = _clean_text(text)
         if not cleaned:
@@ -271,6 +285,9 @@ class TopicHookPool:
         name = str(lanlan_name or "default")
         self._seq[name] += 1
         self._signal_store.note_turn(name, actor="user", text=cleaned)
+        last_turn_at = self._signal_store.last_turn_at(name)
+        if last_turn_at is not None:
+            self._last_turn_at[name] = last_turn_at
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
         self._schedule(name)
@@ -282,6 +299,9 @@ class TopicHookPool:
         name = str(lanlan_name or "default")
         self._seq[name] += 1
         self._signal_store.note_turn(name, actor="ai", text=cleaned)
+        last_turn_at = self._signal_store.last_turn_at(name)
+        if last_turn_at is not None:
+            self._last_turn_at[name] = last_turn_at
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
         self._schedule(name)
@@ -375,7 +395,7 @@ class TopicHookPool:
             self._schedule_trigger(name, cleaned[0], topic_lang)
         else:
             logger.info("[%s] topic material ready: none", name)
-        self._dirty.discard(name)
+        self._consume_accumulated_signals(name)
 
     def _schedule(self, name: str) -> None:
         # Candidate analysis is driven by the activity heartbeat via
@@ -405,11 +425,10 @@ class TopicHookPool:
             return
         current_time = float(now if now is not None else time.time())
         if lanlan_name is not None:
-            names = {str(lanlan_name or "default")}
+            requested_name = str(lanlan_name or "default")
+            names = {requested_name} if requested_name in self._dirty else set()
         else:
-            # Include persisted names as well as newly dirty ones so a restart
-            # after collecting enough evidence does not strand restored signals.
-            names = set(self._signal_store.names()) | set(self._dirty)
+            names = set(self._dirty)
         for name in sorted(names):
             last_turn_at = self._signal_store.last_turn_at(name)
             if last_turn_at is None:
@@ -586,25 +605,25 @@ class TopicHookPool:
         cheap keyword floor hint intact, and ``deep_search_done`` is set up front
         so a flaky derivation is not retried on every reschedule.
         """
-        if not self._enable_deep_search or not self._enable_online_enrichment:
+        if not self._enable_online_enrichment:
             return
         if material.get("deep_search_done"):
             return
         material["deep_search_done"] = True
-        try:
-            from main_logic.activity.llm_enrichment import derive_deep_search_query
-            query = await derive_deep_search_query(
-                interest=str(material.get("interest") or ""),
-                keywords=list(material.get("keywords") or []),
-                floor_angle=str(material.get("online_angle") or ""),
-                lang=lang,
-            )
-        except Exception as exc:
-            logger.debug("[%s] deep search query derivation failed: %s", name, exc)
-            return
-        if not query:
-            return
-        material["deep_query"] = query
+        if self._enable_deep_search:
+            try:
+                from main_logic.activity.llm_enrichment import derive_deep_search_query
+                query = await derive_deep_search_query(
+                    interest=str(material.get("interest") or ""),
+                    keywords=list(material.get("keywords") or []),
+                    floor_angle=str(material.get("online_angle") or ""),
+                    lang=lang,
+                )
+            except Exception as exc:
+                logger.debug("[%s] deep search query derivation failed: %s", name, exc)
+                query = ""
+            if query:
+                material["deep_query"] = query
         # Re-run online enrichment with the derived query. Clear the floor hint
         # so the deeper result can replace it; restore the floor if the deep
         # fetch turns up nothing.
@@ -670,7 +689,7 @@ class TopicHookPool:
     def _seconds_until_quiet_window(self, name: str, *, now: float | None = None) -> float:
         if self._trigger_delay_seconds <= 0:
             return 0.0
-        last_turn_at = self._signal_store.last_turn_at(name)
+        last_turn_at = self._last_turn_at.get(name)
         if last_turn_at is None:
             return 0.0
         current_time = float(now if now is not None else time.time())
