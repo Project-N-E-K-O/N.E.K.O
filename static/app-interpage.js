@@ -2452,6 +2452,11 @@
                         }));
                         break;
                     }
+                    case 'yui_guide_tutorial_lifecycle_ended': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        clearYuiGuidePcOverlayBridgeState(event.data.reason || '', event.data.tutorialRunId || '');
+                        break;
+                    }
                     case 'request_avatar_capture': {
                         if (isStandaloneChatPage()) break;
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2776,9 +2781,14 @@
 
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
+    var yuiGuidePcOverlayActive = false;
+    var yuiGuidePcOverlayReady = false;
+    var yuiGuidePcOverlayRunIdOverride = '';
     var yuiGuideChatCursorPoint = null;
+    var yuiGuideChatCursorRequestToken = 0;
     var yuiGuideChatCursorMoveTimer = 0;
     var yuiGuideChatCursorArcRequestToken = 0;
+    var yuiGuideCompactToolWheelRotateRetryToken = 0;
 
     function getYuiGuideChatVisibleElement(selector) {
         var matches = Array.prototype.slice.call(document.querySelectorAll(selector || ''));
@@ -3036,6 +3046,7 @@
 
     function applyYuiGuideChatCursor(kind, options) {
         var normalizedOptions = options || {};
+        yuiGuideChatCursorRequestToken += 1;
         yuiGuideChatCursorArcRequestToken += 1;
         if (!kind) {
             if (yuiGuideChatCursorMoveTimer) {
@@ -3057,6 +3068,7 @@
 
     function applyYuiGuideChatCursorDrag(kind, options) {
         var normalizedOptions = options || {};
+        yuiGuideChatCursorRequestToken += 1;
         yuiGuideChatCursorArcRequestToken += 1;
         var startPoint = yuiGuideChatCursorPoint
             || getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
@@ -3071,6 +3083,7 @@
 
     function applyYuiGuideChatCursorArc(kind, options) {
         var normalizedOptions = options || {};
+        yuiGuideChatCursorRequestToken += 1;
         var center = getYuiGuideChatCursorTargetPoint(kind, normalizedOptions.targetIndex);
         if (!center) {
             return;
@@ -3197,6 +3210,38 @@
         yuiGuideChatSpotlightTimer = window.setInterval(function () {
             updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
         }, 120);
+    }
+
+    function clearYuiGuidePcOverlayBridgeState(reason, tutorialRunId) {
+        var rawReason = typeof reason === 'string' && reason ? reason : 'lifecycle-ended';
+        yuiGuidePcOverlayActive = false;
+        yuiGuidePcOverlayReady = false;
+        yuiGuidePcOverlayRunIdOverride = '';
+        yuiGuideChatCursorRequestToken += 1;
+        yuiGuideChatCursorArcRequestToken += 1;
+        yuiGuideCompactToolWheelRotateRetryToken += 1;
+        applyYuiGuideChatSpotlight('');
+        applyYuiGuideChatCursor('');
+        applyYuiGuideChatLockState(false);
+        applyYuiGuideChatInputLocked(false, rawReason);
+        applyYuiGuideAvatarToolMenuOpen(false, rawReason);
+        applyYuiGuideCompactHistoryOpen(false, rawReason);
+        applyYuiGuideCompactToolFanOpen(false, rawReason);
+        if (
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.clear === 'function'
+        ) {
+            try {
+                window.nekoTutorialOverlay.clear({
+                    reason: rawReason,
+                    tutorialRunId: typeof tutorialRunId === 'string' ? tutorialRunId : ''
+                });
+            } catch (_) {}
+        }
+    }
+
+    function createYuiGuideTargetGeometryRegistry() {
+        return null;
     }
 
     // =====================================================================

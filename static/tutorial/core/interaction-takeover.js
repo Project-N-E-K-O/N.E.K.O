@@ -278,6 +278,15 @@
             return null;
         }
 
+        resolveLanlanName() {
+            const appStateName = this.window && this.window.appState && this.window.appState.lanlan_name;
+            if (typeof appStateName === 'string' && appStateName) {
+                return appStateName;
+            }
+            const configName = this.window && this.window.lanlan_config && this.window.lanlan_config.lanlan_name;
+            return typeof configName === 'string' ? configName : '';
+        }
+
         postExternalChatCommand(action, payload, options) {
             if (!this.isHomeChatExternalized()) {
                 return false;
@@ -294,6 +303,9 @@
             }, payload || {});
             if (!Number.isFinite(message.timestamp)) {
                 message.timestamp = Date.now();
+            }
+            if (!message.lanlan_name) {
+                message.lanlan_name = this.resolveLanlanName();
             }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
