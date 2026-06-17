@@ -1392,10 +1392,10 @@
 
         function scheduleClean(source) {
             clearControlsHideTimer();
-            if (isInlineSettingsOpen()) return;
+            if (isSettingsOpen()) return;
             controlsHideTimer = setTimeout(function() {
                 controlsHideTimer = null;
-                if (isInlineSettingsOpen()) return;
+                if (isSettingsOpen()) return;
                 if (refs.display.matches && refs.display.matches(':hover')) return;
                 if (hasFocusWithinPanel()) return;
                 applyPanelState('clean', source || 'subtitle-ui-clean');

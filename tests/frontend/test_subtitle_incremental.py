@@ -3970,7 +3970,7 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
     assert result["immediate"]["externalPayload"]["anchor"]["width"] == 600
     assert result["immediate"]["externalPayload"]["anchor"]["height"] == 68
     assert result["afterCleanDelay"] == {
-        "panelState": "clean",
+        "panelState": "settings",
         "panelHidden": True,
         "openCount": 1,
         "closeCount": 0,
@@ -3978,7 +3978,7 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
         "sizeCount": 1,
     }
     assert result["afterPointerReturn"] == {
-        "panelState": "controls",
+        "panelState": "settings",
         "openCount": 1,
         "closeCount": 0,
     }
