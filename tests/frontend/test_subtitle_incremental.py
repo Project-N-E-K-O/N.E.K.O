@@ -2303,15 +2303,8 @@ def test_subtitle_empty_turn_does_not_request_translation_or_show_original_text(
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize(
-    "template_name",
-    ["index.html", "subtitle.html"],
-)
-def test_subtitle_templates_share_new_panel_control_scaffold(
-    template_name: str,
-):
-    template = (PROJECT_ROOT / "templates" / template_name).read_text(encoding="utf-8")
-
+def test_subtitle_window_template_keeps_legacy_panel_control_scaffold():
+    template = (PROJECT_ROOT / "templates" / "subtitle.html").read_text(encoding="utf-8")
     assert 'id="subtitle-display"' in template
     assert 'id="subtitle-scroll"' in template
     assert 'id="subtitle-text"' in template
@@ -2347,6 +2340,30 @@ def test_subtitle_templates_share_new_panel_control_scaffold(
     assert 'data-size="small"' not in template
     assert template.index('id="subtitle-scroll"') < template.index('id="subtitle-panel-controls"')
     assert template.index('id="subtitle-panel-controls"') < template.index('id="subtitle-settings-panel"')
+
+
+@pytest.mark.frontend
+def test_chat_template_wires_day6_subtitle_controls():
+    template = (PROJECT_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="subtitle-display"' in template
+    assert 'id="subtitle-scroll"' in template
+    assert 'id="subtitle-text"' in template
+    assert 'id="subtitle-settings-btn"' in template
+    assert 'id="subtitle-settings-panel"' in template
+    assert 'data-subtitle-label="dragAnywhere"' in template
+    assert 'id="subtitle-drag-mode-toggle"' in template
+    assert 'data-subtitle-label="size"' in template
+    assert 'class="subtitle-size-btn"' in template
+    assert 'data-size="small"' in template
+    assert 'data-size="medium"' in template
+    assert 'data-size="large"' in template
+    assert 'id="subtitle-drag-handle"' in template
+    assert 'id="subtitle-drag-arrows"' in template
+    assert 'id="subtitle-passthrough-toggle"' not in template
+    assert 'id="subtitle-lock-btn"' not in template
+    assert 'id="subtitle-close-btn"' not in template
+    assert 'subtitle-resize-edge' not in template
 
 
 @pytest.mark.frontend
@@ -3137,6 +3154,141 @@ def test_subtitle_boundary_resize_persists_free_panel_bounds(
     assert result["legacyScaleStorage"] is None
     assert result["legacySizeStorage"] is None
     assert result["hasDragHandle"] is False
+
+
+@pytest.mark.frontend
+def test_day6_subtitle_controls_update_bounds_lock_and_drag_position(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 1200, "height": 720})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible; position:fixed; left:200px; top:180px; transform:none;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden">
+                <div class="subtitle-settings-row">
+                    <label class="subtitle-settings-switch">
+                        <input type="checkbox" id="subtitle-drag-mode-toggle" aria-label="Drag anywhere">
+                    </label>
+                </div>
+                <div class="subtitle-size-group">
+                    <button type="button" class="subtitle-size-btn" data-size="small">Small</button>
+                    <button type="button" class="subtitle-size-btn active" data-size="medium">Medium</button>
+                    <button type="button" class="subtitle-size-btn" data-size="large">Large</button>
+                </div>
+            </div>
+            <div id="subtitle-drag-handle"></div>
+        </div>
+        """,
+        path="/subtitle-day6-controls-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.clear();
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 600,
+                height: 68,
+            }));
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({ host: 'web' });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            const toggle = document.getElementById('subtitle-drag-mode-toggle');
+            const handle = document.getElementById('subtitle-drag-handle');
+            const largeButton = document.querySelector('.subtitle-size-btn[data-size="large"]');
+
+            const initial = {
+                dragChecked: toggle.checked,
+                locked: shared.getSettings().subtitlePanelLocked,
+                activeSize: document.querySelector('.subtitle-size-btn.active').dataset.size,
+            };
+
+            toggle.checked = false;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const lockedAfterToggleOff = shared.getSettings().subtitlePanelLocked;
+
+            largeButton.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterLarge = {
+                bounds: shared.getSettings().subtitlePanelBounds,
+                stored: JSON.parse(window.localStorage.getItem('subtitlePanelBounds')),
+                activeSize: document.querySelector('.subtitle-size-btn.active').dataset.size,
+                largePressed: largeButton.getAttribute('aria-pressed'),
+            };
+
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeDragRect = display.getBoundingClientRect();
+            handle.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                button: 0,
+                clientX: beforeDragRect.left + 8,
+                clientY: beforeDragRect.top + 8,
+            }));
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: beforeDragRect.left + 48,
+                clientY: beforeDragRect.top + 38,
+            }));
+            document.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                clientX: beforeDragRect.left + 48,
+                clientY: beforeDragRect.top + 38,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterDragRect = display.getBoundingClientRect();
+            const storedPosition = JSON.parse(window.localStorage.getItem('subtitlePanelPosition'));
+            controller.destroy();
+
+            return {
+                initial,
+                lockedAfterToggleOff,
+                afterLarge,
+                unlockedBeforeDrag: shared.getSettings().subtitlePanelLocked,
+                beforeDrag: {
+                    left: Math.round(beforeDragRect.left),
+                    top: Math.round(beforeDragRect.top),
+                },
+                afterDrag: {
+                    left: Math.round(afterDragRect.left),
+                    top: Math.round(afterDragRect.top),
+                },
+                storedPosition,
+            };
+        }
+        """
+    )
+
+    assert result["initial"] == {
+        "dragChecked": True,
+        "locked": False,
+        "activeSize": "medium",
+    }
+    assert result["lockedAfterToggleOff"] is True
+    assert result["afterLarge"]["bounds"] == {"width": 760, "height": 92}
+    assert result["afterLarge"]["stored"] == {"width": 760, "height": 92}
+    assert result["afterLarge"]["activeSize"] == "large"
+    assert result["afterLarge"]["largePressed"] == "true"
+    assert result["unlockedBeforeDrag"] is False
+    assert result["afterDrag"]["left"] > result["beforeDrag"]["left"]
+    assert result["afterDrag"]["top"] > result["beforeDrag"]["top"]
+    assert result["storedPosition"]["coordinateSpace"] == "viewport"
+    assert round(result["storedPosition"]["left"]) == result["afterDrag"]["left"]
+    assert round(result["storedPosition"]["top"]) == result["afterDrag"]["top"]
 
 
 @pytest.mark.frontend
@@ -4599,7 +4751,7 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
 
 @pytest.mark.frontend
 def test_subtitle_window_passthrough_poll_matches_desktop_chat_latency():
-    script = (PROJECT_ROOT / "static/subtitle-window.js").read_text()
+    script = (PROJECT_ROOT / "static/subtitle-window.js").read_text(encoding="utf-8")
 
     assert "var INTERACTION_PASSTHROUGH_POLL_MS = 16;" in script
     assert "setInterval(updateNativeInteractionPassthrough, INTERACTION_PASSTHROUGH_POLL_MS)" in script
