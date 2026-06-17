@@ -236,6 +236,12 @@
             if (director.overlay && typeof director.overlay.clearActionSpotlight === 'function') {
                 director.overlay.clearActionSpotlight();
             }
+            if (
+                director.interactionTakeover
+                && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
+            ) {
+                director.interactionTakeover.setExternalizedChatSpotlight('');
+            }
             return true;
         }
 
