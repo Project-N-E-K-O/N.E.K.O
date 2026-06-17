@@ -109,6 +109,7 @@ async def test_run_deep_research_forwards_per_call_timeout_to_enrich():
         enrich_materials=fake_enrich,
     )
 
+    assert "timeout_s" in captured
     assert captured["timeout_s"] == 2.5
 
 
