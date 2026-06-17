@@ -938,7 +938,8 @@ def test_activity_guess_loop_purges_topic_signals_on_private_ticks():
         source.index("from utils.language_utils")
     ]
 
-    assert "await self._purge_topic_candidates_for_privacy(now=ts)" in private_branch
+    assert "await self._purge_topic_candidates_for_privacy()" in private_branch
+    assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────

@@ -879,6 +879,65 @@ async def test_topic_pool_process_ready_rearms_restored_signals_until_delivery(t
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_path):
+    path = tmp_path / "topic_signals.json"
+    delivered = []
+    analyzer_calls = 0
+
+    async def fake_analyzer(*, lang, global_signals):
+        nonlocal analyzer_calls
+        analyzer_calls += 1
+        return [{"interest": "重启后不该立刻重投的话题", "relevance": 90}]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append(material["interest"])
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        topic_trigger=fake_trigger,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        candidate_quiet_seconds=0,
+        trigger_delay_seconds=0,
+        min_user_turns_for_topic=1,
+        daily_topic_limit=1,
+        signal_store_path=path,
+    )
+    pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
+    await pool.process_now("妮可", lang="zh-CN")
+    await asyncio.sleep(0.02)
+
+    assert delivered == ["重启后不该立刻重投的话题"]
+    used_path = path.with_name("topic_signals.used_topics.json")
+    used_payload = json.loads(used_path.read_text(encoding="utf-8"))
+    assert used_payload["characters"]["妮可"][0]["used_at"] > 0
+    assert "重启后不该立刻重投的话题" not in used_path.read_text(encoding="utf-8")
+
+    store = TopicSignalStore(min_user_turns_for_topic=1, persistence_path=path)
+    store.note_turn("妮可", actor="user", text="重启后仍然残留的一条新候选证据", now=time.time())
+    store.flush()
+
+    restarted = TopicHookPool(
+        analyzer=fake_analyzer,
+        topic_trigger=fake_trigger,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        candidate_quiet_seconds=0,
+        trigger_delay_seconds=0,
+        min_user_turns_for_topic=1,
+        daily_topic_limit=1,
+        signal_store_path=path,
+    )
+    await restarted.process_ready_topics(now=time.time() + 120, lang="zh-CN")
+    await asyncio.sleep(0.02)
+
+    assert analyzer_calls == 1
+    assert delivered == ["重启后不该立刻重投的话题"]
+    assert restarted.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_clears_durable_signals_when_analysis_has_no_material(tmp_path):
     path = tmp_path / "topic_signals.json"
 
@@ -1025,14 +1084,17 @@ async def test_topic_pool_purges_requested_character_while_privacy_is_enabled(mo
 
 
 @pytest.mark.asyncio
-async def test_activity_tracker_privacy_purge_uses_global_topic_pool(monkeypatch):
+async def test_activity_tracker_global_privacy_purge_uses_global_topic_pool(monkeypatch):
     from main_logic.activity.tracker import UserActivityTracker
 
     calls = []
 
     class FakePool:
-        async def process_ready_topics(self, **kwargs):
-            calls.append(kwargs)
+        def purge_all_accumulated_signals(self):
+            calls.append("all")
+
+        def purge_accumulated_signals(self, lanlan_name):
+            calls.append(lanlan_name)
 
     monkeypatch.setattr(
         "main_logic.topic.pipeline.get_topic_hook_pool",
@@ -1040,9 +1102,33 @@ async def test_activity_tracker_privacy_purge_uses_global_topic_pool(monkeypatch
     )
 
     tracker = UserActivityTracker("妮可")
-    await tracker._purge_topic_candidates_for_privacy(now=123.0)
+    await tracker._purge_topic_candidates_for_privacy(all_characters=True)
 
-    assert calls == [{"now": 123.0}]
+    assert calls == ["all"]
+
+
+@pytest.mark.asyncio
+async def test_activity_tracker_private_tick_purges_only_current_character(monkeypatch):
+    from main_logic.activity.tracker import UserActivityTracker
+
+    calls = []
+
+    class FakePool:
+        def purge_all_accumulated_signals(self):
+            calls.append("all")
+
+        def purge_accumulated_signals(self, lanlan_name):
+            calls.append(lanlan_name)
+
+    monkeypatch.setattr(
+        "main_logic.topic.pipeline.get_topic_hook_pool",
+        lambda: FakePool(),
+    )
+
+    tracker = UserActivityTracker("妮可")
+    await tracker._purge_topic_candidates_for_privacy()
+
+    assert calls == ["妮可"]
 
 
 @pytest.mark.asyncio

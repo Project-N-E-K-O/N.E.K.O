@@ -8,17 +8,20 @@ The proactive endpoint reads only the prepared pool.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
 from main_logic.topic.materials import enrich_topic_materials_online
 from main_logic.topic.signals import TopicSignalStore
+from utils.file_utils import atomic_write_json
 
 
 logger = logging.getLogger("N.E.K.O.Main.topic.pipeline")
@@ -196,6 +199,13 @@ def _default_signal_store_path():
         return None
 
 
+def _used_topics_path_for_signal_store(path: Any | None) -> Path | None:
+    if not path:
+        return None
+    signal_path = Path(path)
+    return signal_path.with_name(f"{signal_path.stem}.used_topics.json")
+
+
 class TopicHookPool:
     """In-memory per-character topic pool prepared by background work."""
 
@@ -246,11 +256,13 @@ class TopicHookPool:
             min_user_turns_for_topic=min_user_turns_for_topic,
             persistence_path=signal_store_path or None,
         )
+        self._used_topics_path = _used_topics_path_for_signal_store(signal_store_path)
         self._langs: dict[str, str] = {}
         self._materials: dict[str, list[dict[str, Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._trigger_tasks: dict[str, asyncio.Task] = {}
         self._used_topics: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._load_used_topics()
         self._last_turn_at: dict[str, float] = {
             name: last_turn_at
             for name in self._signal_store.names()
@@ -269,6 +281,8 @@ class TopicHookPool:
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
+        self._used_topics.pop(name, None)
+        self._persist_used_topics()
         self._cancel_trigger(name)
 
     def _purge_accumulated_signals(self, name: str) -> None:
@@ -736,6 +750,7 @@ class TopicHookPool:
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
         current_day = _local_day(current_time)
+        previous_len = len(self._used_topics.get(name, []))
         records = []
         today_records = []
         for record in self._used_topics.get(name, []):
@@ -749,6 +764,8 @@ class TopicHookPool:
             self._used_topics[name] = records
         else:
             self._used_topics.pop(name, None)
+        if len(records) != previous_len:
+            self._persist_used_topics()
         return today_records
 
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
@@ -845,6 +862,58 @@ class TopicHookPool:
                 "bigram_units": sorted(_material_bigram_units(material)),
             }
         )
+        self._persist_used_topics()
+
+    def _load_used_topics(self) -> None:
+        path = self._used_topics_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        characters = payload.get("characters") if isinstance(payload, dict) else None
+        if not isinstance(characters, dict):
+            return
+        for name, entries in characters.items():
+            if not isinstance(entries, list):
+                continue
+            safe_name = str(name or "default")
+            loaded: list[dict[str, Any]] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    used_at = float(entry.get("used_at"))
+                except (TypeError, ValueError):
+                    continue
+                loaded.append({"used_at": used_at})
+            if loaded:
+                self._used_topics[safe_name].extend(loaded)
+        for name in list(self._used_topics):
+            self._prune_used_topics(name)
+
+    def _persist_used_topics(self) -> None:
+        path = self._used_topics_path
+        if path is None:
+            return
+        payload = {
+            "version": 1,
+            "characters": {
+                name: [
+                    {"used_at": float(record.get("used_at") or 0.0)}
+                    for record in records
+                    if float(record.get("used_at") or 0.0) > 0
+                ]
+                for name, records in self._used_topics.items()
+                if records
+            },
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.debug("topic used-history persistence failed", exc_info=True)
 
 
 def _default_topic_trigger():

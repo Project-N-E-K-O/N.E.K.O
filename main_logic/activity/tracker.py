@@ -1035,7 +1035,7 @@ class UserActivityTracker:
             # TopicHookPool 自己的 privacy purge，等隐私关闭后旧证据会被
             # 送去 topic LLM。
             if _privacy_mode_active():
-                await self._purge_topic_candidates_for_privacy(now=time.time())
+                await self._purge_topic_candidates_for_privacy(all_characters=True)
                 continue
 
             try:
@@ -1068,6 +1068,15 @@ class UserActivityTracker:
                 # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
                 await self._drain_context_prompt()
 
+                # Bail on private — explicitly do NOT send sensitive app
+                # context (or even surrounding conversation) to the
+                # emotion-tier LLM. Existing cached values stay frozen
+                # until the user leaves the private app; on resume the
+                # state-signature dedup will refresh naturally.
+                if rule_snap.state == 'private':
+                    await self._purge_topic_candidates_for_privacy()
+                    continue
+
                 # 主动搭话关时跳过 activity_guess 的 LLM 叙述：它只喂 proactive Phase 2，
                 # 没开主动搭话就没有消费方。上面的 _tick_break_reminders + 情境弹窗 drain
                 # 是纯规则、已经跑过，所以「进游戏/工作」检测照常工作。这样实验组为弹窗
@@ -1077,15 +1086,6 @@ class UserActivityTracker:
 
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':
-                    continue
-
-                # Bail on private — explicitly do NOT send sensitive app
-                # context (or even surrounding conversation) to the
-                # emotion-tier LLM. Existing cached values stay frozen
-                # until the user leaves the private app; on resume the
-                # state-signature dedup will refresh naturally.
-                if rule_snap.state == 'private':
-                    await self._purge_topic_candidates_for_privacy(now=ts)
                     continue
 
                 from utils.language_utils import get_global_language, get_global_language_full
@@ -1180,11 +1180,15 @@ class UserActivityTracker:
         except Exception as exc:
             logger.debug("[%s] topic candidate heartbeat failed: %s", self.lanlan_name, exc)
 
-    async def _purge_topic_candidates_for_privacy(self, *, now: float) -> None:
+    async def _purge_topic_candidates_for_privacy(self, *, all_characters: bool = False) -> None:
         """Let the topic pool wipe accumulated signals during privacy ticks."""
         try:
             from main_logic.topic.pipeline import get_topic_hook_pool
-            await get_topic_hook_pool().process_ready_topics(now=now)
+            pool = get_topic_hook_pool()
+            if all_characters:
+                pool.purge_all_accumulated_signals()
+            else:
+                pool.purge_accumulated_signals(self.lanlan_name)
         except Exception as exc:
             logger.debug("[%s] topic candidate privacy purge failed: %s", self.lanlan_name, exc)
 
