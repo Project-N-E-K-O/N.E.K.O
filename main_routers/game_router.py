@@ -6994,7 +6994,7 @@ async def game_project_context(game_type: str, request: Request):
         )
         return {
             "ok": False,
-            "reason": "context_append_failed",
+            "reason": "context_write_failed",
             "error": str(exc),
             "lanlan_name": lanlan_name,
             "game_type": game_type,

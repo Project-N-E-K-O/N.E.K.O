@@ -5059,7 +5059,7 @@ function CompactChatApp({
       openCompactExportHistory();
       return;
     }
-    closeCompactExportHistory();
+    closeCompactExportHistory({ persist: false });
   }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
 
   useEffect(() => {
