@@ -1,0 +1,168 @@
+(function () {
+    'use strict';
+
+    const STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const DAY = 1;
+    const HOST_WAIT_INTERVAL_MS = 80;
+    const HOST_WAIT_TIMEOUT_MS = 5000;
+
+    let activeSession = null;
+
+    function now() {
+        return Date.now();
+    }
+
+    function readStore() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            const parsed = raw ? JSON.parse(raw) : null;
+            return parsed && typeof parsed === 'object' ? parsed : { days: {} };
+        } catch (_) {
+            return { days: {} };
+        }
+    }
+
+    function writeStore(store) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+        } catch (_) {}
+    }
+
+    function updateDayEntry(patch) {
+        const store = readStore();
+        const days = store.days && typeof store.days === 'object' ? store.days : {};
+        const key = String(DAY);
+        days[key] = Object.assign({}, days[key] || {}, patch || {}, {
+            day: DAY,
+            updatedAt: now()
+        });
+        store.days = days;
+        writeStore(store);
+        return days[key];
+    }
+
+    function hasCompletedFinalDay() {
+        const store = readStore();
+        const days = store.days && typeof store.days === 'object' ? store.days : null;
+        const finalDay = days && days['7'];
+        return !!(finalDay && finalDay.completed === true);
+    }
+
+    function getHost() {
+        return window.reactChatWindowHost || null;
+    }
+
+    function waitForHost() {
+        const startedAt = now();
+        return new Promise((resolve) => {
+            function tick() {
+                const host = getHost();
+                if (host && typeof host.setNewUserIcebreakerPrompt === 'function') {
+                    resolve(host);
+                    return;
+                }
+                if (now() - startedAt >= HOST_WAIT_TIMEOUT_MS) {
+                    resolve(null);
+                    return;
+                }
+                window.setTimeout(tick, HOST_WAIT_INTERVAL_MS);
+            }
+            tick();
+        });
+    }
+
+    function translate(key, fallback) {
+        try {
+            if (typeof window.t === 'function') {
+                const translated = window.t(key, fallback);
+                if (typeof translated === 'string' && translated && translated !== key) {
+                    return translated;
+                }
+            }
+        } catch (_) {}
+        return fallback;
+    }
+
+    function getPromptOptions() {
+        return [
+            { choice: 'chat', label: translate('tutorial.icebreaker.day1.chat', '先聊聊天') },
+            { choice: 'voice', label: translate('tutorial.icebreaker.day1.voice', '试试语音') },
+            { choice: 'explore', label: translate('tutorial.icebreaker.day1.explore', '看看功能') }
+        ];
+    }
+
+    async function start(reason) {
+        if (activeSession || hasCompletedFinalDay()) {
+            return false;
+        }
+
+        activeSession = {
+            id: 'new-user-icebreaker-' + DAY + '-' + now().toString(36),
+            day: DAY,
+            reason: reason || 'tutorial-ended',
+            startedAt: now()
+        };
+        updateDayEntry({
+            triggeredAt: activeSession.startedAt,
+            sessionId: activeSession.id,
+            reason: activeSession.reason,
+            completed: false
+        });
+
+        const host = await waitForHost();
+        if (!activeSession) {
+            return false;
+        }
+        if (!host) {
+            console.warn('[NewUserIcebreaker] React chat host unavailable');
+            activeSession = null;
+            return false;
+        }
+
+        host.setNewUserIcebreakerPrompt({
+            sessionId: activeSession.id,
+            options: getPromptOptions()
+        });
+        return true;
+    }
+
+    function completeFromChoice(detail) {
+        if (!activeSession) {
+            return;
+        }
+        const sessionId = String(detail && detail.sessionId || '');
+        if (sessionId && sessionId !== activeSession.id) {
+            return;
+        }
+
+        updateDayEntry({
+            sessionId: activeSession.id,
+            choice: String(detail && detail.choice || ''),
+            label: String(detail && detail.label || ''),
+            completed: true,
+            completedAt: now()
+        });
+        activeSession = null;
+    }
+
+    function handleTutorialEnded(event) {
+        const detail = event && event.detail ? event.detail : {};
+        if (detail.page && detail.page !== 'home') {
+            return;
+        }
+        start(detail.reason || 'tutorial-ended');
+    }
+
+    window.newUserIcebreaker = {
+        start: start,
+        getActiveSession: function () {
+            return activeSession;
+        }
+    };
+
+    window.addEventListener('neko:tutorial-completed', handleTutorialEnded);
+    window.addEventListener('neko:tutorial-skipped', handleTutorialEnded);
+    window.addEventListener('neko:icebreaker-choice-selected', function (event) {
+        completeFromChoice(event && event.detail ? event.detail : {});
+    });
+})();

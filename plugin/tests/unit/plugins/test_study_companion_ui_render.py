@@ -447,12 +447,24 @@ def test_study_companion_math_and_mastery_colors_meet_contrast_contract() -> Non
 
     assert "#replyText .katex" in style_css
     assert ".study-panel__math-reply .katex" in style_css
+    assert "#replyText .study-reply-section" in style_css
+    assert ".study-panel__math-reply .study-reply-section" in style_css
+    assert ".study-reply-section--analysis" in style_css
+    assert ".study-reply-section--process" in style_css
+    assert ".study-reply-section--answer" in style_css
+    assert ".study-reply-section--transfer" in style_css
+    assert ".study-reply-section__title" in style_css
     assert re.search(
         r"#replyText \.katex,\s*\.study-panel__math-reply \.katex \{[^}]*color: var\(--ink\);",
         style_css,
         flags=re.DOTALL,
     )
     assert ".study-panel__math-reply .katex" in surface_utils
+    assert ".study-panel__math-reply .study-reply-section" in surface_utils
+    assert ".study-panel__math-reply .study-reply-section--analysis" in surface_utils
+    assert ".study-panel__math-reply .study-reply-section--process" in surface_utils
+    assert ".study-panel__math-reply .study-reply-section--answer" in surface_utils
+    assert ".study-panel__math-reply .study-reply-section--transfer" in surface_utils
     assert re.search(
         r"\.study-panel__math-reply \.katex \{[^}]*color: var\(--ink\);",
         surface_utils,
