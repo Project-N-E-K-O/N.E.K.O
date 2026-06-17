@@ -2992,6 +2992,11 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
     """Ask a small independent LLM call to select meaningful memory items."""
     char_info = _get_game_route_summary_llm_info(str(archive.get("lanlan_name") or ""))
     source = _build_game_archive_memory_highlight_source(archive)
+    # Bound a long game_dialog_log: _build_game_archive stores the whole dialog in
+    # full_dialogues and the source builder appends every line. Head+tail keeps the
+    # early framing + late outcome of the session within a real token budget.
+    from utils.tokenize import truncate_head_tail_tokens
+    source = truncate_head_tail_tokens(source, 2000, 2000)
     language = _archive_prompt_language(archive)
     system_prompt = get_game_archive_memory_highlighter_system_prompt(language)
     user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
@@ -3010,7 +3015,7 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
+            result = await llm.ainvoke([  # source bounded above via truncate_head_tail_tokens
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])

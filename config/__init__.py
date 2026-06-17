@@ -1317,18 +1317,24 @@ MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
   recent review_history 等所有后台跑的 LLM 调用。
 - 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
 
-LLM_OUTPUT_GUARD_MAX_TOKENS = 8000
+LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
 """变长输出 LLM 调用的 max_completion_tokens **runaway guard**（不是紧 budget）。
 - 用途：那些输出长度天然变动、没有紧的 task-specific budget 的调用——memory
   的结构化 JSON（reflection / recall / persona / facts / refine / dedup recheck）、
   fact dedup、card-assist、window-title 关键词等。
-- 取值：刻意取大（8000，> 现有最大的 COMPUTER_USE_MAX_TOKENS=6000）。正常输出
-  （含 thinking 模型的 reasoning token）都远低于此，不会被截；只在模型失控
-  （死循环 / 复读）时兜底，挡住成本 / 延迟 / 上下文爆炸。
+- 取值：4096。**必须保持在主流 provider 的输出上限之内**——`max_completion_tokens`
+  是上限不是目标，但很多 provider（OpenAI 及兼容端点）会在请求时就校验它 >
+  模型 max output 而直接 400，而不是退回默认值。这正是 `omni_offline_client.
+  _budget_to_max_tokens` 对 unlimited 直接 **omit 字段**（"large fixed values get
+  rejected as out-of-range by some providers"）的原因。8000 会打爆 max output<8000
+  的自建/老模型；4096 是绝大多数 summary/correction/agent tier 模型都接受的安全档，
+  同时对这些任务的正常输出（含 thinking reasoning）仍是宽裕兜底。
 - 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 token budget；本常量是
   "无紧 budget 但仍需有上限"这类调用的统一来源（见 docs/design/llm-prompt-budget.md §0）。
 - 不适用：有明确紧 budget 的调用（emotion / translation / vision / plugin 粗筛等）
-  仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。"""
+  仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。
+- 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
+  彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
 
 DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
 """主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
