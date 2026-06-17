@@ -1024,6 +1024,7 @@
 
     let allApps = [];
     let editingAppId = null;
+    let editingAppSnapshot = null;
 
     async function callPlugin(entry, args = {}) {
         const createResp = await fetch(RUNS_URL, {
@@ -1094,6 +1095,32 @@
             return trimmed.slice(1, -1).trim();
         }
         return trimmed;
+    }
+
+    function updateModalAutostartState() {
+        const path = stripPathQuotes(document.getElementById('appPath').value).toLowerCase();
+        const isExe = path.endsWith('.exe');
+        const autostartCheckbox = document.getElementById('appAutostart');
+        const autostartHint = document.getElementById('autostartHint');
+
+        if (editingAppId && editingAppSnapshot) {
+            const originalPath = stripPathQuotes(editingAppSnapshot.path || '').toLowerCase();
+            const pathUnchanged = path === originalPath;
+            const canEnable = isExe && (!pathUnchanged || editingAppSnapshot.exists);
+            const canDisableCurrent = Boolean(editingAppSnapshot.autostart);
+            autostartCheckbox.disabled = !canEnable && !canDisableCurrent;
+            if (!canEnable && !canDisableCurrent) {
+                autostartCheckbox.checked = false;
+            }
+            autostartHint.textContent = canEnable ? '支持开机自启' : '仅存在的 .exe 文件支持开机自启';
+            return;
+        }
+
+        autostartCheckbox.disabled = !isExe;
+        if (!isExe) {
+            autostartCheckbox.checked = false;
+        }
+        autostartHint.textContent = isExe ? '支持开机自启' : '仅支持 .exe 文件';
     }
 
     function getTypeTag(type) {
@@ -1291,25 +1318,22 @@
         document.getElementById('appDesc').value = app ? (app.description || '') : '';
         
         const autostartCheckbox = document.getElementById('appAutostart');
-        const autostartHint = document.getElementById('autostartHint');
         if (app) {
-            const isExe = app.type === 'exe';
             autostartCheckbox.checked = app.autostart || false;
-            autostartCheckbox.disabled = !isExe;
-            autostartHint.textContent = isExe ? '支持开机自启' : '仅支持 .exe 文件';
         } else {
             autostartCheckbox.checked = false;
-            autostartCheckbox.disabled = true;
-            autostartHint.textContent = '请先输入 .exe 文件路径';
         }
         
         editingAppId = app ? app.id : null;
+        editingAppSnapshot = app;
+        updateModalAutostartState();
         document.getElementById('appModal').classList.add('active');
     }
 
     function closeModal() {
         document.getElementById('appModal').classList.remove('active');
         editingAppId = null;
+        editingAppSnapshot = null;
     }
 
     async function saveApp() {
@@ -1333,7 +1357,8 @@
                     app_id: editingAppId,
                     name, path, aliases, description: desc
                 });
-                if (stripPathQuotes(path).toLowerCase().endsWith('.exe')) {
+                if (stripPathQuotes(path).toLowerCase().endsWith('.exe') ||
+                    (editingAppSnapshot?.autostart && !autostart)) {
                     await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
                 }
                 showMessage('✨ 更新成功', 'success');
@@ -1405,19 +1430,8 @@
         document.getElementById('tutorialModal').classList.remove('active');
     }
 
-    document.getElementById('appPath').addEventListener('input', (e) => {
-        const path = stripPathQuotes(e.target.value).toLowerCase();
-        const isExe = path.endsWith('.exe');
-        const autostartCheckbox = document.getElementById('appAutostart');
-        const autostartHint = document.getElementById('autostartHint');
-        
-        if (!editingAppId) {
-            autostartCheckbox.disabled = !isExe;
-            if (!isExe) {
-                autostartCheckbox.checked = false;
-            }
-            autostartHint.textContent = isExe ? '支持开机自启' : '仅支持 .exe 文件';
-        }
+    document.getElementById('appPath').addEventListener('input', () => {
+        updateModalAutostartState();
     });
 
     document.addEventListener('DOMContentLoaded', loadApps);
