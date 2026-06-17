@@ -159,6 +159,7 @@ def test_repo_is_clean():
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         text=True,
+        timeout=120,  # never let a misbehaving scan hang the test suite
     )
     assert result.returncode == 0, (
         f"check_llm_budget.py reported violations:\n{result.stdout}\n{result.stderr}"
