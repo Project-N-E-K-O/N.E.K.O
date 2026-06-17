@@ -118,6 +118,38 @@ def test_normalize_free_preset():
     assert vc == VoiceConfig(source=SOURCE_PRESET, provider="free", ref="voice-tone-PGLiTXeJCS")
 
 
+def test_normalize_hosted_preset_marks_selected_provider():
+    # 选中的 hosted/local provider 的预制音色（如 MiMo 的 Milo）→ source=preset/provider=<key>
+    vc = normalize_voice_id(
+        "Milo",
+        hosted_preset_provider=lambda r: "mimo" if r == "Milo" else None,
+    )
+    assert vc == VoiceConfig(source=SOURCE_PRESET, provider="mimo", ref="Milo")
+
+
+def test_normalize_hosted_preset_after_native_before_free():
+    # 解析顺序与 validate_voice_id 一致：native 命中先于 hosted preset，hosted preset 先于 free
+    native_first = normalize_voice_id(
+        "Milo",
+        is_native=lambda r: True,
+        native_provider="step",
+        hosted_preset_provider=lambda r: "mimo",
+    )
+    assert native_first.provider == "step"
+    hosted_before_free = normalize_voice_id(
+        "Milo",
+        hosted_preset_provider=lambda r: "mimo",
+        free_voice_ids={"Milo"},
+    )
+    assert hosted_before_free.provider == "mimo"
+
+
+def test_normalize_hosted_preset_miss_carries_ref():
+    # lookup 返回 None（未选中该 provider / 非预制）→ 不误标，裸 ref 原样带过
+    vc = normalize_voice_id("Milo", hosted_preset_provider=lambda r: None)
+    assert vc == VoiceConfig(ref="Milo")
+
+
 def test_normalize_unresolved_carries_ref():
     vc = normalize_voice_id("totally-unknown")
     assert vc == VoiceConfig(ref="totally-unknown")

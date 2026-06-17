@@ -157,6 +157,7 @@ def normalize_voice_id(
     clone_provider_lookup: "Any" = None,
     is_native: "Any" = None,
     native_provider: str = "",
+    hosted_preset_provider: "Any" = None,
     free_voice_ids: "Any" = (),
 ) -> "VoiceConfig":
     """Resolve a legacy ``voice_id`` (prefixed *or* bare) to a structured VoiceConfig.
@@ -171,13 +172,19 @@ def normalize_voice_id(
     3. ``clone_provider_lookup(ref)`` returns a provider (the ref is a cloned voice
        in the current API's voice_storage) → ``{clone, <provider>, ref}``.
     4. ``is_native(ref)`` → ``{preset, <native_provider>, ref}``.
-    5. ``ref in free_voice_ids`` → ``{preset, free, ref}``.
-    6. otherwise unresolved → ``{ref}`` only (provider/source unknown; carried through
+    5. ``hosted_preset_provider(ref)`` returns a provider key (the ref is a built-in
+       preset of the currently selected hosted/local provider, e.g. MiMo's "Milo")
+       → ``{preset, <provider key>, ref}``.
+    6. ``ref in free_voice_ids`` → ``{preset, free, ref}``.
+    7. otherwise unresolved → ``{ref}`` only (provider/source unknown; carried through
        so nothing is lost — callers treat an unresolved ref as "leave as-is").
 
     Args:
         clone_provider_lookup: ``ref -> provider|None`` (None = not a known clone).
         is_native: ``ref -> bool``.
+        hosted_preset_provider: ``ref -> provider key|None`` — the selected
+            hosted/local provider's key when ``ref`` is one of its preset voices,
+            else None (mirrors ``tts_provider_registry.is_selected_preset_voice``).
         free_voice_ids: container of free preset voice ids.
     """
     parsed = parse_legacy_voice_id(voice_id)
@@ -198,6 +205,11 @@ def normalize_voice_id(
 
     if is_native is not None and is_native(ref):
         return VoiceConfig(source=SOURCE_PRESET, provider=str(native_provider or ""), ref=ref)
+
+    if hosted_preset_provider is not None:
+        provider = hosted_preset_provider(ref)
+        if provider:
+            return VoiceConfig(source=SOURCE_PRESET, provider=str(provider), ref=ref)
 
     if ref in free_voice_ids:
         return VoiceConfig(source=SOURCE_PRESET, provider="free", ref=ref)

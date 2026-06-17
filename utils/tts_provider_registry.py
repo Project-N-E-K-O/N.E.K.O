@@ -372,6 +372,30 @@ def selected_provider_key(
     return provider.key if provider is not None else None
 
 
+def selected_preset_provider_key(
+    core_config: Mapping[str, Any],
+    cm: "ConfigManager",
+    voice_id: str | None,
+) -> str | None:
+    """Key of the currently selected provider **iff** ``voice_id`` is one of its
+    preset_catalog voices, else None — resolved in a single ``selected_provider``
+    dispatch.
+
+    Write-side dual of :func:`is_selected_preset_voice`: the normalizer
+    (``ConfigManager.normalize_voice_id_to_config``) needs both "is this a selected
+    preset" and "whose preset" together to tag ``{source:preset, provider:<key>}``.
+    Folding the two into one dispatch (instead of ``is_selected_preset_voice`` +
+    ``selected_provider_key``) closes the window where a future provider whose
+    ``is_selected`` depends on ``ctx.voice_id`` could answer the membership and the
+    key queries with different winners."""
+    provider = selected_provider(
+        DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
+    )
+    if provider is None or not is_preset_voice(provider.key, voice_id):
+        return None
+    return provider.key
+
+
 def is_selected_preset_voice(
     core_config: Mapping[str, Any],
     cm: "ConfigManager",
@@ -380,12 +404,7 @@ def is_selected_preset_voice(
     """Whether ``voice_id`` is a built-in voice of the currently selected provider
     (used by ``validate_voice_id`` so a hosted provider's presets are saveable
     only while that provider is selected — dual to ``is_saveable_native_voice``)."""
-    provider = selected_provider(
-        DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
-    )
-    if provider is None:
-        return False
-    return is_preset_voice(provider.key, voice_id)
+    return selected_preset_provider_key(core_config, cm, voice_id) is not None
 
 
 def ui_metadata() -> list[dict[str, Any]]:
