@@ -122,9 +122,9 @@ def _register_install_routes() -> None:
     )
 
 
-def _plugin_detail_ui_url(*, plugin_id: str, port: str) -> str:
+def _static_plugin_ui_url(*, plugin_id: str, port: str) -> str:
     safe_plugin_id = quote(plugin_id, safe="")
-    return f"http://127.0.0.1:{port}/ui/plugins/{safe_plugin_id}?tab=ui"
+    return f"http://127.0.0.1:{port}/plugin/{safe_plugin_id}/ui/"
 
 
 try:
@@ -380,7 +380,7 @@ class StudyCompanionPlugin(
         if not (1 <= port_num <= 65535):
             port_num = 48916
         port = str(port_num)
-        url = _plugin_detail_ui_url(plugin_id=self.plugin_id, port=port)
+        url = _static_plugin_ui_url(plugin_id=self.plugin_id, port=port)
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(_open_url_in_browser, url),
