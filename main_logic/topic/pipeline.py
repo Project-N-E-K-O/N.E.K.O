@@ -213,7 +213,7 @@ class TopicHookPool:
         min_trigger_gap_seconds: float = _MIN_TOPIC_TRIGGER_GAP_SECONDS,
         min_user_turns_for_topic: int = 4,
         daily_topic_limit: int = _MAX_DAILY_TOPIC_TRIGGERS,
-        signal_store_path: Any = False,
+        signal_store_path: Any | None = None,
     ) -> None:
         self._analyzer = analyzer or _default_analyzer
         self._topic_trigger = topic_trigger
@@ -354,7 +354,6 @@ class TopicHookPool:
         lanlan_name: str,
         *,
         lang: str | None = None,
-        enrich_online: bool | None = None,
     ) -> None:
         name = str(lanlan_name or "default")
         if _privacy_mode_active():
