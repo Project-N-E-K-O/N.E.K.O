@@ -1443,7 +1443,7 @@ async def _record_source_used(
     kind: str,
     title: str = '',
 ) -> None:
-    """Called after a source is successfully consumed: update the in-memory table → prune → persist asynchronously.
+    """Called after a source is consumed or deliberately suppressed: update memory → prune → persist.
 
     Concurrent records are serialized by an asyncio.Lock; persistence goes through
     atomic_write_json_async (fsync + os.replace in the thread pool), so the main
@@ -6303,7 +6303,7 @@ async def proactive_chat(request: Request):
                         return await _end_proactive(
                             JSONResponse(_proactive_preempted_json("phase1_pre_meme_moderation"))
                         )
-                    moderation = await moderate_meme_image_url(meme_url)
+                    moderation = await moderate_meme_image_url(meme_url, fail_closed=False)
                     if mgr.state.is_proactive_preempted():
                         return await _end_proactive(
                             JSONResponse(_proactive_preempted_json("phase1_post_meme_moderation"))
@@ -6317,20 +6317,16 @@ async def proactive_chat(request: Request):
                             moderation.url_hash,
                             meme_title[:30],
                         )
-                        if moderation.reason in {
-                            "rate_limited",
-                            "unsupported_provider",
-                            "request_failed",
-                            "http_error",
-                            "invalid_response",
-                            "payment_required",
-                        }:
-                            logger.info(
-                                "[%s]- Meme moderation service unavailable; stop checking candidates: reason=%s",
-                                lanlan_name,
-                                moderation.reason,
-                            )
-                            break
+                        await _record_source_used(
+                            url=meme_url,
+                            kind='image',
+                            title=meme_title,
+                        )
+                        logger.info(
+                            "[%s]- 已记录被 moderation 拦截的表情包 source 衰减历史: url_hash=%s",
+                            lanlan_name,
+                            meme_topic_key[:16],
+                        )
                         continue
                     single_meme_topic = get_meme_topic_line(
                         proactive_lang,
