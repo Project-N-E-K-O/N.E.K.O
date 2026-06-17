@@ -1,7 +1,7 @@
 import json
 import time
 
-from main_logic.topic.signals import TopicSignalStore, TopicTurnSignal, _select_turns_for_prompt
+from main_logic.topic.signals import TopicSignalStore
 
 
 def test_topic_signal_store_keeps_filler_chat_below_ready_even_after_many_turns():
@@ -39,6 +39,20 @@ def test_topic_signal_store_ready_after_enough_meaningful_user_turns():
     assert "换工作" in formatted
 
 
+def test_topic_signal_store_default_ready_requires_eight_meaningful_user_turns():
+    store = TopicSignalStore()
+    now = time.time()
+
+    for idx in range(7):
+        store.note_turn("妮可", actor="user", text=f"第{idx}个认真话题信号", now=now + idx)
+
+    assert store.is_ready("妮可") is False
+
+    store.note_turn("妮可", actor="user", text="第8个认真话题信号", now=now + 8)
+
+    assert store.is_ready("妮可") is True
+
+
 def test_topic_signal_store_localizes_evidence_lines():
     store = TopicSignalStore(min_user_turns_for_topic=1)
     now = time.time()
@@ -74,13 +88,20 @@ def test_filler_turns_do_not_count_toward_readiness():
     assert substantive.readiness_percent("妮可") > filler.readiness_percent("妮可")
 
 
-def test_select_turns_for_prompt_clamps_negative_max_lines():
-    turns = [
-        TopicTurnSignal(actor="user", text="第一句", timestamp=1.0),
-        TopicTurnSignal(actor="user", text="第二句", timestamp=2.0),
-    ]
+def test_topic_signal_store_renders_the_full_rolling_window():
+    store = TopicSignalStore(min_user_turns_for_topic=1, max_turns=60)
+    now = time.time()
 
-    assert _select_turns_for_prompt(turns, max_lines=-1) == []
+    for idx in range(65):
+        store.note_turn("妮可", actor="user", text=f"第{idx}条长期信号", now=now + idx)
+
+    formatted = store.format_global_signals("妮可")
+
+    assert "第0条长期信号" not in formatted
+    assert "第4条长期信号" not in formatted
+    assert "第5条长期信号" in formatted
+    assert "第64条长期信号" in formatted
+    assert formatted.count("- [") == 60
 
 
 def test_topic_signal_store_persists_runtime_retention_prune(tmp_path):

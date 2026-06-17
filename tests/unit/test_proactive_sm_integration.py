@@ -1190,7 +1190,7 @@ def test_topic_hook_delivery_blocked_when_unfinished_thread_open():
 
 
 def test_topic_hook_delivery_does_not_recheck_privacy_preference(monkeypatch):
-    """Delivery only gates voice/activity; privacy wipes accumulation upstream."""
+    """Delivery only gates voice/activity; privacy is outside deep-topic flow."""
     def _raise_privacy_error():
         raise AssertionError("delivery gate must not read the privacy preference")
 

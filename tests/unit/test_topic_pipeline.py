@@ -30,7 +30,7 @@ async def _async_identity_enrich(materials, **kwargs):
     return [dict(m) for m in materials]
 
 
-def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
+def test_clean_material_ignores_media_intent_and_normalizes_bad_created_at():
     material = _clean_material(
         {
             "interest": "转职",
@@ -41,7 +41,7 @@ def test_clean_material_normalizes_media_intent_string_and_bad_created_at():
     )
 
     assert material is not None
-    assert material["media_intent"] == ["news"]
+    assert "media_intent" not in material
     assert isinstance(material["created_at"], float)
 
 
@@ -103,7 +103,7 @@ def test_topic_signal_store_flushes_pruned_entries_after_load(tmp_path):
     assert entries[0]["text"] == "仍然有效的新证据"
 
 
-def test_topic_pool_privacy_purge_flushes_only_when_signals_changed(monkeypatch):
+def test_topic_pool_explicit_purge_flushes_only_when_signals_changed(monkeypatch):
     pool = TopicHookPool(
         auto_schedule=False,
         min_user_turns_for_topic=1,
@@ -118,7 +118,7 @@ def test_topic_pool_privacy_purge_flushes_only_when_signals_changed(monkeypatch)
     assert flushes == ["flush"]
 
 
-def test_topic_pool_global_privacy_purge_clears_all_characters():
+def test_topic_pool_global_explicit_purge_clears_all_characters():
     pool = TopicHookPool(
         auto_schedule=False,
         min_user_turns_for_topic=1,
@@ -175,7 +175,7 @@ def test_topic_signal_store_keeps_dirty_when_flush_write_fails(monkeypatch, tmp_
         persistence_flush_delay_seconds=60,
     )
 
-    store.note_turn("妮可", actor="user", text="隐私前的候选证据")
+    store.note_turn("妮可", actor="user", text="待清理的候选证据")
     store.flush()
 
     assert attempts == 1
@@ -184,7 +184,7 @@ def test_topic_signal_store_keeps_dirty_when_flush_write_fails(monkeypatch, tmp_
     store._persist_timer.cancel()
 
 
-def test_topic_signal_store_privacy_flush_wins_over_inflight_write(tmp_path):
+def test_topic_signal_store_explicit_flush_wins_over_inflight_write(tmp_path):
     path = tmp_path / "topic_signals.json"
     store = TopicSignalStore(
         min_user_turns_for_topic=1,
@@ -211,15 +211,15 @@ def test_topic_signal_store_privacy_flush_wins_over_inflight_write(tmp_path):
     first_flush.start()
     assert first_write_entered.wait(timeout=1.0)
 
-    privacy_flush = threading.Thread(
+    explicit_flush = threading.Thread(
         target=lambda: (store.clear("妮可"), store.flush())
     )
-    privacy_flush.start()
+    explicit_flush.start()
     release_first_write.set()
     first_flush.join(timeout=1.0)
-    privacy_flush.join(timeout=1.0)
+    explicit_flush.join(timeout=1.0)
     assert not first_flush.is_alive()
-    assert not privacy_flush.is_alive()
+    assert not explicit_flush.is_alive()
 
     reloaded = TopicSignalStore(
         min_user_turns_for_topic=1,
@@ -522,7 +522,7 @@ async def test_topic_pool_discards_stale_analysis_when_new_turn_arrives():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_discards_analysis_when_privacy_purges_midflight():
+async def test_topic_pool_discards_analysis_when_explicit_purge_happens_midflight():
     release = asyncio.Event()
 
     async def fake_analyzer(*, lang, **kwargs):
@@ -638,14 +638,11 @@ async def test_topic_pool_keeps_prepared_material_when_new_turn_arrives_during_p
     pool.note_user_message("妮可", "第二句又补充说我主要怕选错以后回不了头")
     release_enrich.set()
     await asyncio.sleep(0.01)
-    assert delivered == []
-
-    await asyncio.sleep(0.06)
     assert delivered == ["prepared"]
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_rechecks_quiet_window_before_delivery_prepare(monkeypatch):
+async def test_topic_pool_does_not_wait_for_new_turn_before_delivery_prepare(monkeypatch):
     deep_calls = []
     delivered = []
 
@@ -670,20 +667,14 @@ async def test_topic_pool_rechecks_quiet_window_before_delivery_prepare(monkeypa
         analyzer=fake_analyzer,
         auto_schedule=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.04,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段")
 
     await pool.process_now("妮可")
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.01)
     pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡")
-    await asyncio.sleep(0.03)
-
-    assert deep_calls == []
-    assert delivered == []
-
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.01)
     assert deep_calls == ["旧话题"]
     assert delivered == ["旧话题"]
 
@@ -776,11 +767,11 @@ async def test_topic_pool_waits_for_delivery_gate_before_deep_prepare(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_release_predicate_tracks_new_turns_during_delivery():
+async def test_topic_pool_release_predicate_ignores_new_turns_during_delivery():
     release_checks = []
 
     async def fake_analyzer(*, lang, **kwargs):
-        return [{"interest": "排队投递时仍要保 quiet gate", "relevance": 90}]
+        return [{"interest": "排队投递时不再受 quiet gate 影响", "relevance": 90}]
 
     async def fake_trigger(*, lanlan_name, material, lang):
         release_available = material["_topic_release_available"]
@@ -794,7 +785,6 @@ async def test_topic_pool_release_predicate_tracks_new_turns_during_delivery():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
         trigger_retry_delay_seconds=60,
         min_user_turns_for_topic=1,
     )
@@ -802,11 +792,11 @@ async def test_topic_pool_release_predicate_tracks_new_turns_during_delivery():
     await pool.process_now("妮可")
     await asyncio.sleep(0.03)
 
-    assert release_checks == [True, False]
+    assert release_checks == [True, True]
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
+async def test_topic_pool_process_ready_ignores_legacy_candidate_quiet_window():
     calls = []
 
     async def fake_analyzer(*, lang, **kwargs):
@@ -823,10 +813,7 @@ async def test_topic_pool_process_ready_waits_for_candidate_quiet_window():
     last_turn_at = pool._signal_store.last_turn_at("妮可")
     assert last_turn_at is not None
 
-    await pool.process_ready_topics(now=last_turn_at + 59, lang="zh-CN")
-    assert calls == []
-
-    await pool.process_ready_topics(now=last_turn_at + 60, lang="zh-CN")
+    await pool.process_ready_topics(now=last_turn_at + 1, lang="zh-CN")
     assert calls == ["zh-CN"]
     assert pool.get_ready_materials("妮可")[0]["interest"] == "稳定话题"
 
@@ -984,7 +971,7 @@ async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_p
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
+        trigger_retry_delay_seconds=0.01,
         min_user_turns_for_topic=1,
         signal_store_path=path,
     )
@@ -1053,21 +1040,12 @@ async def test_topic_pool_under_ready_signals_do_not_drop_pending_material():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_purges_requested_character_while_privacy_is_enabled(monkeypatch):
-    from main_logic.topic import pipeline as topic_pipeline
-
+async def test_topic_pool_processes_requested_character_while_privacy_is_enabled():
     calls = []
-    privacy_enabled = False
 
     async def fake_analyzer(*, lang, global_signals):
         calls.append(global_signals)
-        return [{"interest": "隐私前信号不该分析", "relevance": 90}]
-
-    monkeypatch.setattr(
-        topic_pipeline,
-        "_privacy_mode_active",
-        lambda: privacy_enabled,
-    )
+        return [{"interest": "隐私模式也不影响抽取", "relevance": 90}]
 
     pool = TopicHookPool(
         analyzer=fake_analyzer,
@@ -1078,26 +1056,18 @@ async def test_topic_pool_purges_requested_character_while_privacy_is_enabled(mo
     pool.note_user_message("妮可", "隐私开启前的候选证据", lang="zh-CN")
     last_turn_at = pool._last_turn_at["妮可"]
 
-    privacy_enabled = True
     await pool.process_ready_topics(
         lanlan_name="妮可",
         now=last_turn_at + 30,
         lang="zh-CN",
     )
 
-    privacy_enabled = False
-    await pool.process_ready_topics(
-        lanlan_name="妮可",
-        now=last_turn_at + 90,
-        lang="zh-CN",
-    )
-
-    assert calls == []
-    assert pool.get_ready_materials("妮可") == []
+    assert len(calls) == 1
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "隐私模式也不影响抽取"
 
 
 @pytest.mark.asyncio
-async def test_activity_tracker_global_privacy_purge_uses_global_topic_pool(monkeypatch):
+async def test_activity_tracker_privacy_purge_noops_for_topic_pool(monkeypatch):
     from main_logic.activity.tracker import UserActivityTracker
 
     calls = []
@@ -1117,11 +1087,11 @@ async def test_activity_tracker_global_privacy_purge_uses_global_topic_pool(monk
     tracker = UserActivityTracker("妮可")
     await tracker._purge_topic_candidates_for_privacy(all_characters=True)
 
-    assert calls == ["all"]
+    assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_activity_tracker_private_tick_purges_only_current_character(monkeypatch):
+async def test_activity_tracker_private_tick_purge_noops_for_topic_pool(monkeypatch):
     from main_logic.activity.tracker import UserActivityTracker
 
     calls = []
@@ -1141,7 +1111,7 @@ async def test_activity_tracker_private_tick_purges_only_current_character(monke
     tracker = UserActivityTracker("妮可")
     await tracker._purge_topic_candidates_for_privacy()
 
-    assert calls == ["妮可"]
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -1276,7 +1246,7 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_triggers_ready_hook_after_quiet_window():
+async def test_topic_pool_triggers_ready_hook_without_quiet_window():
     delivered = []
 
     async def fake_analyzer(*, lang, **kwargs):
@@ -1297,14 +1267,11 @@ async def test_topic_pool_triggers_ready_hook_after_quiet_window():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
 
     await pool.process_now("妮可")
-    assert delivered == []
-
     await asyncio.sleep(0.03)
 
     assert delivered == [("妮可", "买车像进入新生活阶段", "zh-CN")]
@@ -1313,9 +1280,9 @@ async def test_topic_pool_triggers_ready_hook_after_quiet_window():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_delivers_existing_pending_material_when_privacy_turns_on(monkeypatch):
+async def test_topic_pool_delivers_existing_pending_material_when_gate_opens():
     delivered = []
-    privacy_enabled = False
+    gate = {"open": False}
 
     async def fake_analyzer(*, lang, **kwargs):
         return [
@@ -1330,16 +1297,13 @@ async def test_topic_pool_delivers_existing_pending_material_when_privacy_turns_
         delivered.append((lanlan_name, material["interest"], lang))
         return True
 
-    monkeypatch.setattr(
-        "main_logic.topic.pipeline._privacy_mode_active",
-        lambda: privacy_enabled,
-    )
     pool = TopicHookPool(
         analyzer=fake_analyzer,
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
+        delivery_available=lambda name: gate["open"],
+        trigger_retry_delay_seconds=0.01,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
@@ -1347,8 +1311,8 @@ async def test_topic_pool_delivers_existing_pending_material_when_privacy_turns_
     await pool.process_now("妮可")
     assert pool.get_ready_materials("妮可")
 
-    privacy_enabled = True
     await pool.process_ready_topics(lang="zh-CN")
+    gate["open"] = True
     await asyncio.sleep(0.03)
 
     assert delivered == [("妮可", "买车像进入新生活阶段", "zh-CN")]
@@ -1356,9 +1320,8 @@ async def test_topic_pool_delivers_existing_pending_material_when_privacy_turns_
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_redacted_turn_timestamp_quiets_pending_delivery(monkeypatch):
+async def test_topic_pool_redacted_turn_timestamp_does_not_quiet_pending_delivery():
     delivered = []
-    privacy_enabled = False
 
     async def fake_analyzer(*, lang, **kwargs):
         return [
@@ -1373,29 +1336,20 @@ async def test_topic_pool_redacted_turn_timestamp_quiets_pending_delivery(monkey
         delivered.append(material["interest"])
         return True
 
-    monkeypatch.setattr(
-        "main_logic.topic.pipeline._privacy_mode_active",
-        lambda: privacy_enabled,
-    )
     pool = TopicHookPool(
         analyzer=fake_analyzer,
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.04,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
 
     await pool.process_now("妮可")
     await asyncio.sleep(0.02)
-    privacy_enabled = True
     pool.note_turn_timestamp("妮可", lang="zh-CN")
     await asyncio.sleep(0.03)
 
-    assert delivered == []
-
-    await asyncio.sleep(0.05)
     assert delivered == ["买车像进入新生活阶段"]
 
 
@@ -1426,7 +1380,7 @@ async def test_topic_pool_triggers_highest_relevance_material_first():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
+        trigger_retry_delay_seconds=0.01,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我最近认真聊了两个方向，但其中一个明显更适合展开", lang="zh-CN")
@@ -1464,7 +1418,7 @@ async def test_topic_pool_keeps_material_pending_when_delivery_defers():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
+        trigger_retry_delay_seconds=0.01,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
@@ -1503,7 +1457,7 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
+        trigger_retry_delay_seconds=0.01,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
@@ -1589,7 +1543,7 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.01,
+        trigger_retry_delay_seconds=0.01,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
@@ -1644,12 +1598,10 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_resets_trigger_wait_when_chat_continues():
+async def test_topic_pool_keeps_pending_delivery_when_chat_continues():
     delivered = []
 
     async def fake_analyzer(*, lang, global_signals=None, **kwargs):
-        # newest evidence line is the latest turn; echo it as the interest so
-        # the test can prove the post-continue analysis (not the stale one) won
         last_line = (global_signals or "").strip().splitlines()[-1]
         interest = last_line.split(": ", 1)[-1] if ": " in last_line else last_line
         return [
@@ -1669,20 +1621,20 @@ async def test_topic_pool_resets_trigger_wait_when_chat_continues():
         auto_schedule=False,
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
-        trigger_delay_seconds=0.04,
+        delivery_available=lambda name: False,
+        trigger_retry_delay_seconds=60,
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段", lang="zh-CN")
     await pool.process_now("妮可")
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段"
 
-    await asyncio.sleep(0.02)
     pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
-    assert delivered == []
 
-    await asyncio.sleep(0.03)
-    assert delivered == ["新话题：我后来又开始纠结换工作和现实压力怎么平衡"]
+    assert delivered == []
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段"
+    assert "妮可" in pool._dirty
 
 
 @pytest.mark.asyncio
@@ -1729,7 +1681,42 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
             await asyncio.sleep(0.01)
 
     assert delivered == ["凯迪拉克预算压力", "周末海边旅行计划"]
-    assert pool.get_ready_materials("妮可") == []
+    ready = pool.get_ready_materials("妮可")
+    assert [item["interest"] for item in ready] == ["新房装修色差问题"]
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_candidate_ignores_daily_quota():
+    async def fake_analyzer(*, lang, **kwargs):
+        return [
+            {
+                "interest": "新抽取的话题仍可入池",
+                "keywords": ["新抽取"],
+                "relevance": 95,
+            }
+        ]
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=1,
+        min_user_turns_for_topic=1,
+    )
+    pool._mark_topic_used(
+        "妮可",
+        {
+            "used_at": time.time(),
+            "interest": "今天已经投递过的话题",
+            "keywords": ["已投递"],
+        },
+    )
+    assert pool._daily_quota_reached("妮可")
+
+    pool.note_user_message("妮可", "今天 quota 满了，但 candidate 仍然应该能抽取新话题", lang="zh-CN")
+    await pool.process_now("妮可")
+
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "新抽取的话题仍可入池"
 
 
 def test_topic_pool_daily_topic_limit_resets_on_calendar_day():
@@ -1853,20 +1840,14 @@ async def test_topic_pool_suppresses_same_topic_after_it_was_used_today():
 
 
 @pytest.mark.asyncio
-async def test_enrich_pool_discards_material_when_privacy_toggles_on_mid_analysis(monkeypatch):
-    # TOCTOU guard: privacy passes the start-of-call wipe, then flips ON during
-    # the analyzer await. Material collected across the privacy interval must be
-    # discarded, not stored for a later trigger.
-    from main_logic.topic import pipeline as topic_pipeline
-
+async def test_enrich_pool_keeps_material_when_privacy_toggles_on_mid_analysis():
     privacy = {"on": False}
-    monkeypatch.setattr(topic_pipeline, "_privacy_mode_active", lambda: privacy["on"])
 
     async def fake_analyzer(*, lang, global_signals):
-        privacy["on"] = True  # user enables privacy while we're "analyzing"
+        privacy["on"] = True
         return [
             {
-                "interest": "隐私期间产生的话题不该留存",
+                "interest": "隐私切换不影响话题留存",
                 "keywords": ["x"],
                 "relevance": 95,
                 "risk": 10,
@@ -1883,17 +1864,13 @@ async def test_enrich_pool_discards_material_when_privacy_toggles_on_mid_analysi
     await pool.process_now("妮可")
     await asyncio.sleep(0.02)
 
-    assert pool.get_ready_materials("妮可") == []
-    assert pool._materials.get("妮可") in (None, [])
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "隐私切换不影响话题留存"
 
 
 @pytest.mark.asyncio
 async def test_trigger_keeps_prepared_material_when_privacy_toggles_on_during_deepen(monkeypatch):
-    from main_logic.topic import pipeline as topic_pipeline
-
     privacy = {"on": False}
     delivered = []
-    monkeypatch.setattr(topic_pipeline, "_privacy_mode_active", lambda: privacy["on"])
 
     async def fake_analyzer(*, lang, global_signals):
         return [

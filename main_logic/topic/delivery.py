@@ -182,7 +182,7 @@ def _topic_activity_gate_open(mgr: Any, lanlan_name: str) -> bool:
     """Whether the activity propensity gate allows interrupting right now.
 
     Deep topic hooks are fresh text openers, so they respect the same gate as
-    /api/proactive_chat and stay quiet during privacy / gaming / focused-work. A
+    /api/proactive_chat and stay quiet during closed / gaming / focused-work. A
     closed gate keeps the material pending for TopicHookPool to retry once the
     state opens up, without burning the daily quota. A missing or throwing gate
     fails open, matching the proactive path's default.
@@ -259,9 +259,9 @@ def _live_topic_lang(mgr: Any, captured_lang: str) -> str:
     """Re-resolve the topic language at firing time.
 
     The hook captured ``lang`` when scheduled; if the session language changed
-    during the quiet window (set_user_language with no new chat turn to
-    reschedule the trigger), the live tracker locale is authoritative —
-    otherwise a zh-TW switch would surface the hook in the captured locale.
+    while the material was pending/prepared, the live tracker locale is
+    authoritative — otherwise a zh-TW switch would surface the hook in the
+    captured locale.
     """
     getter = getattr(mgr, "current_topic_language", None)
     if not callable(getter):

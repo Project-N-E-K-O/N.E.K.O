@@ -1036,13 +1036,16 @@ class UserActivityTracker:
             except asyncio.CancelledError:
                 return
 
-            # 隐私模式：本 tick 不读窗口/进程，也不调 LLM。Topic 的
-            # accumulated signal store 仍要在这里清掉；否则如果用户在
-            # candidate quiet window 内打开隐私，这个 continue 会绕过
-            # TopicHookPool 自己的 privacy purge，等隐私关闭后旧证据会被
-            # 送去 topic LLM。
+            # 隐私模式：本 tick 不读窗口/进程，也不调 activity LLM。
+            # Deep-topic candidate is intentionally independent from privacy
+            # mode now; it consumes the persisted conversation signal window
+            # and owns its own readiness/pending checks.
             if _privacy_mode_active():
-                await self._purge_topic_candidates_for_privacy(all_characters=True)
+                from utils.language_utils import get_global_language_full
+                self._process_topic_candidates_if_ready(
+                    lang=get_global_language_full() or 'en',
+                    now=time.time(),
+                )
                 continue
 
             try:
@@ -1075,13 +1078,18 @@ class UserActivityTracker:
                 # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
                 await self._drain_context_prompt()
 
+                from utils.language_utils import get_global_language, get_global_language_full
+                activity_lang = get_global_language() or 'en'
+                topic_lang = get_global_language_full() or activity_lang
+                self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)
+
                 # Bail on private — explicitly do NOT send sensitive app
                 # context (or even surrounding conversation) to the
                 # emotion-tier LLM. Existing cached values stay frozen
                 # until the user leaves the private app; on resume the
-                # state-signature dedup will refresh naturally.
+                # state-signature dedup will refresh naturally. Topic
+                # candidate processing has already been kicked above.
                 if rule_snap.state == 'private':
-                    await self._purge_topic_candidates_for_privacy()
                     continue
 
                 # 主动搭话关时跳过 activity_guess 的 LLM 叙述：它只喂 proactive Phase 2，
@@ -1094,11 +1102,6 @@ class UserActivityTracker:
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':
                     continue
-
-                from utils.language_utils import get_global_language, get_global_language_full
-                activity_lang = get_global_language() or 'en'
-                topic_lang = get_global_language_full() or activity_lang
-                self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)
 
                 # Anti-thrash: respect the minimum refresh interval.
                 if (
@@ -1164,8 +1167,8 @@ class UserActivityTracker:
     def _process_topic_candidates_if_ready(self, *, lang: str, now: float) -> None:
         """Let the topic pool piggyback on the activity heartbeat.
 
-        Candidate analysis has its own readiness/quiet-window checks inside
-        the pool. This hook merely supplies the existing 20s cadence, then
+        Candidate analysis has its own dirty/ready/pending checks inside the
+        pool. This hook merely supplies the existing 20s cadence, then
         returns immediately so a slow topic analyzer cannot stall the activity
         heartbeat.
         """
@@ -1188,24 +1191,12 @@ class UserActivityTracker:
             logger.debug("[%s] topic candidate heartbeat failed: %s", self.lanlan_name, exc)
 
     async def _purge_topic_candidates_for_privacy(self, *, all_characters: bool = False) -> None:
-        """Let the topic pool wipe accumulated signals during privacy ticks."""
-        try:
-            from main_logic.topic.pipeline import get_topic_hook_pool
-            pool = get_topic_hook_pool()
-            if all_characters:
-                async_purge_all = getattr(pool, "purge_all_accumulated_signals_async", None)
-                if async_purge_all is not None:
-                    await async_purge_all()
-                else:
-                    pool.purge_all_accumulated_signals()
-            else:
-                async_purge = getattr(pool, "purge_accumulated_signals_async", None)
-                if async_purge is not None:
-                    await async_purge(self.lanlan_name)
-                else:
-                    pool.purge_accumulated_signals(self.lanlan_name)
-        except Exception as exc:
-            logger.debug("[%s] topic candidate privacy purge failed: %s", self.lanlan_name, exc)
+        """Deprecated compatibility no-op.
+
+        Privacy mode no longer purges or gates the deep-topic signal store.
+        """
+        del all_characters
+        return
 
     def _refresh_prefs(self) -> None:
         """Pick up live edits to ``user_preferences.json::activity``.

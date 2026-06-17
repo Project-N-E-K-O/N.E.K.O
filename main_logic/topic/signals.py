@@ -12,7 +12,7 @@ import time
 import threading
 import atexit
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,11 +22,10 @@ from utils.file_utils import atomic_write_json
 from utils.tokenize import truncate_to_tokens
 
 
-_MAX_SIGNAL_TEXT_CHARS = 500
 # Per-turn evidence cap in tokens. The topic candidate prompt feeds this slow
 # evidence as its only conversation input, so the per-turn budget lives here.
-_MAX_SIGNAL_TOKENS_PER_TURN = 300
-_MAX_GLOBAL_TURNS = 80
+_MAX_SIGNAL_TOKENS_PER_TURN = 500
+_MAX_GLOBAL_TURNS = 60
 _SIGNAL_RETENTION_SECONDS = 12 * 60 * 60
 _FILLER_TEXTS = {
     "你好",
@@ -106,8 +105,8 @@ _GLOBAL_SIGNAL_LABELS = {
 }
 
 
-def _clean_text(value: Any, *, limit: int = _MAX_SIGNAL_TEXT_CHARS) -> str:
-    return clean_text(value, limit=limit)
+def _clean_text(value: Any, *, token_limit: int = _MAX_SIGNAL_TOKENS_PER_TURN) -> str:
+    return truncate_to_tokens(clean_text(value, limit=None), token_limit)
 
 
 def _label_key_for_lang(lang: str | None) -> str:
@@ -151,7 +150,7 @@ class TopicSignalStore:
     def __init__(
         self,
         *,
-        min_user_turns_for_topic: int = 4,
+        min_user_turns_for_topic: int = 8,
         max_turns: int = _MAX_GLOBAL_TURNS,
         retention_seconds: float = _SIGNAL_RETENTION_SECONDS,
         persistence_path: str | Path | None = None,
@@ -183,7 +182,7 @@ class TopicSignalStore:
         text: Any,
         now: float | None = None,
     ) -> None:
-        cleaned = truncate_to_tokens(_clean_text(text), _MAX_SIGNAL_TOKENS_PER_TURN)
+        cleaned = _clean_text(text)
         if not cleaned:
             return
         name = str(lanlan_name or "default")
@@ -273,7 +272,7 @@ class TopicSignalStore:
             self._request_persist()
         return ready
 
-    def format_global_signals(self, lanlan_name: str, *, max_lines: int = 40, lang: str | None = None) -> str:
+    def format_global_signals(self, lanlan_name: str, *, lang: str | None = None) -> str:
         """Render the slow-evidence turns as the topic prompt's only context.
 
         Just the turn list — the readiness count gate (see ``is_ready`` /
@@ -291,10 +290,9 @@ class TopicSignalStore:
             return ""
 
         labels = _GLOBAL_SIGNAL_LABELS[_label_key_for_lang(lang)]
-        selected = _select_turns_for_prompt(turns, max_lines=max_lines)
         base_ts = turns[-1].timestamp
         lines: list[str] = []
-        for turn in selected:
+        for turn in turns:
             age_s = max(0.0, base_ts - turn.timestamp)
             age = _format_age(age_s, labels)
             label = labels["user"] if turn.actor == "user" else labels["ai"]
@@ -440,25 +438,6 @@ class TopicSignalStore:
             return False
 
 
-def _select_turns_for_prompt(
-    turns: Iterable[TopicTurnSignal],
-    *,
-    max_lines: int,
-) -> list[TopicTurnSignal]:
-    try:
-        max_lines = int(max_lines)
-    except (TypeError, ValueError):
-        max_lines = 0
-    if max_lines <= 0:
-        return []
-    all_turns = list(turns)
-    if len(all_turns) <= max_lines:
-        return all_turns
-    head_count = min(12, max_lines // 2)
-    tail_count = max_lines - head_count
-    return all_turns[:head_count] + all_turns[-tail_count:]
-
-
 def _is_meaningful_turn(text: str) -> bool:
     """Whether a user turn carries enough signal to count toward readiness.
 
@@ -466,7 +445,7 @@ def _is_meaningful_turn(text: str) -> bool:
     information characters does. Coarse "have we heard enough to bother
     analysing" gate, not a quality score.
     """
-    cleaned = _clean_text(text, limit=120)
+    cleaned = _clean_text(text, token_limit=120)
     if not cleaned or cleaned.lower() in _FILLER_TEXTS:
         return False
     signal_len = sum(

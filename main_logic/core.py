@@ -6969,15 +6969,13 @@ class LLMSessionManager:
         """Whether a background deep-topic hook may interrupt right now.
 
         Deep topic hooks are brand-new text openers — the most intrusive,
-        "better none than forced" kind of proactive content. They must honour the same
-        privacy accumulation gate and the same activity gate as
-        ``/api/proactive_chat``: privacy mode prevents accumulation upstream,
-        while delivery never surfaces when the user's propensity is ``closed``
-        (privacy blacklist) or ``restricted_screen_only`` (gaming /
-        focused_work). Unlike the proactive reminiscence path there is NO
-        open-thread exception — a fresh deep topic is not a follow-up to
-        something already on the table, so it shouldn't borrow that escape
-        hatch.
+        "better none than forced" kind of proactive content. They must honour
+        the same activity gate as ``/api/proactive_chat``: delivery never
+        surfaces when the user's propensity is ``closed`` or
+        ``restricted_screen_only`` (gaming / focused_work). Unlike the
+        proactive reminiscence path there is NO open-thread exception — a
+        fresh deep topic is not a follow-up to something already on the table,
+        so it shouldn't borrow that escape hatch.
 
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
@@ -6997,12 +6995,13 @@ class LLMSessionManager:
         already-pending / extras-only paths are closed separately in
         ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
 
-        Privacy mode is deliberately NOT re-checked here: it gates
-        *accumulation* (the pool is wiped the moment privacy turns on, see
-        enrich_topic_pool), not delivery of a hook that was already built from
-        a pre-privacy snapshot. Activity snapshot lookup remains fail-open when
-        no snapshot is available, mirroring the proactive path's "snapshot None
-        ⇒ open propensity" default.
+        Privacy mode is deliberately NOT checked here and no longer gates the
+        deep-topic chain upstream either. Store/candidate/prepare/delivery all
+        proceed independently from that toggle; this method only answers
+        whether a prepared hook may interrupt the current activity context.
+        Activity snapshot lookup remains fail-open when no snapshot is
+        available, mirroring the proactive path's "snapshot None ⇒ open
+        propensity" default.
         """
         if self._voice_delivery_blocked():
             return False
@@ -7028,11 +7027,11 @@ class LLMSessionManager:
         """Live full-locale topic language, for re-resolving at delivery time.
 
         A topic hook captures its language when it is scheduled; if the
-        session language changes during the quiet window (``set_user_language``
-        with no new chat turn to reschedule the trigger), that captured value
-        goes stale. Topic delivery re-resolves from here so the hook renders in
-        the current locale (preserving zh-TW etc.). Returns None when no
-        dispatcher is available so the caller keeps the captured language.
+        session language changes while the material is pending delivery, that
+        captured value goes stale. Topic delivery re-resolves from here so the
+        hook renders in the current locale (preserving zh-TW etc.). Returns
+        None when no dispatcher is available so the caller keeps the captured
+        language.
         """
         dispatcher = getattr(self, '_turn_dispatcher', None)
         getter = getattr(dispatcher, 'current_language', None)

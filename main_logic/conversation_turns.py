@@ -36,6 +36,7 @@ class ConversationTurnEvent:
     lanlan_name: str
     actor: TurnActor
     text: str | None
+    raw_text: str | None
     lang: str
     timestamp: float
     text_allowed: bool
@@ -51,8 +52,9 @@ class ConversationTurnDispatcher:
     """Small synchronous fanout for per-turn side consumers.
 
     The chat path owns turn timing; individual consumers own their storage,
-    scheduling, and async work. Privacy redaction happens before fanout so raw
-    text does not reach topic/memory-like consumers when privacy mode is on.
+    scheduling, and async work. Privacy redaction still applies to the
+    redacted ``text`` field; sinks that are explicitly allowed to ignore that
+    gate can consume ``raw_text``.
     """
 
     def __init__(
@@ -99,6 +101,7 @@ class ConversationTurnDispatcher:
             lanlan_name=self.lanlan_name,
             actor=actor,
             text=text if text_allowed else None,
+            raw_text=text,
             lang=self._language,
             timestamp=ts,
             text_allowed=text_allowed,
@@ -134,8 +137,11 @@ class TopicHookTurnSink:
         *,
         activity_private_check: Callable[[], bool] | None = None,
     ) -> None:
+        # Compatibility only: older callers passed the activity privacy checker
+        # here. Deep-topic evidence now consumes raw conversation turns and does
+        # not consult activity/private state.
+        del activity_private_check
         self._pool_factory = pool_factory
-        self._activity_private_check = activity_private_check
 
     def _pool(self):
         if self._pool_factory is not None:
@@ -143,66 +149,15 @@ class TopicHookTurnSink:
         from main_logic.topic.pipeline import get_topic_hook_pool
         return get_topic_hook_pool()
 
-    def _activity_private(self) -> bool:
-        if self._activity_private_check is None:
-            return False
-        try:
-            return bool(self._activity_private_check())
-        except Exception:
-            return True
-
-    @staticmethod
-    def _purge_and_mark_turn(
-        pool,
-        event: ConversationTurnEvent,
-        *,
-        all_characters: bool,
-    ) -> None:
-        if all_characters:
-            purge_all_accumulated_signals = getattr(
-                pool,
-                "purge_all_accumulated_signals",
-                None,
-            )
-            if purge_all_accumulated_signals is not None:
-                purge_all_accumulated_signals()
-            else:
-                purge_accumulated_signals = getattr(
-                    pool,
-                    "purge_accumulated_signals",
-                    None,
-                )
-                if purge_accumulated_signals is not None:
-                    purge_accumulated_signals(event.lanlan_name)
-        else:
-            purge_accumulated_signals = getattr(
-                pool,
-                "purge_accumulated_signals",
-                None,
-            )
-            if purge_accumulated_signals is not None:
-                purge_accumulated_signals(event.lanlan_name)
-        note_turn_timestamp = getattr(pool, "note_turn_timestamp", None)
-        if note_turn_timestamp is not None:
-            note_turn_timestamp(
-                event.lanlan_name,
-                lang=event.lang,
-                now=event.timestamp,
-            )
-
     def note_turn(self, event: ConversationTurnEvent) -> None:
         pool = self._pool()
-        if event.text_allowed and event.had_text and self._activity_private():
-            self._purge_and_mark_turn(pool, event, all_characters=False)
-            return
-        if not event.text_allowed or not event.text:
-            if event.had_text:
-                self._purge_and_mark_turn(pool, event, all_characters=True)
+        text = event.raw_text
+        if not text:
             return
         if event.actor == "user":
-            pool.note_user_message(event.lanlan_name, event.text, lang=event.lang)
+            pool.note_user_message(event.lanlan_name, text, lang=event.lang)
         else:
-            pool.note_ai_message(event.lanlan_name, event.text, lang=event.lang)
+            pool.note_ai_message(event.lanlan_name, text, lang=event.lang)
 
 
 def create_default_turn_dispatcher(

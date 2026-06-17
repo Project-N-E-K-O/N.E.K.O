@@ -817,7 +817,7 @@ def test_conversation_turn_dispatcher_preserves_traditional_chinese_topic_locale
     assert calls == [('test_lanlan', '我想用繁體中文聊最近的生活選擇', 'zh-TW')]
 
 
-def test_conversation_turn_dispatcher_redacts_topic_text_in_privacy_mode():
+def test_conversation_turn_dispatcher_keeps_topic_text_in_privacy_mode():
     from main_logic.conversation_turns import (
         ActivityTrackerTurnSink,
         ConversationTurnDispatcher,
@@ -856,7 +856,10 @@ def test_conversation_turn_dispatcher_redacts_topic_text_in_privacy_mode():
         ('user', None, 1.0),
         ('ai', None, 2.0),
     ]
-    assert topic_calls == []
+    assert topic_calls == [
+        ('user', 'test_lanlan', 'secret user turn', 'zh-CN'),
+        ('ai', 'test_lanlan', 'secret ai turn?', 'zh-CN'),
+    ]
 
 
 def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
@@ -897,24 +900,17 @@ def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
     dispatcher.note_user_message(text='secret user turn', now=1.0)
 
     assert activity_calls == [('user', None, 1.0)]
-    assert topic_calls == []
+    assert topic_calls == [('user', 'test_lanlan', 'secret user turn', 'zh-CN')]
 
 
-def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_turns():
+def test_conversation_turn_dispatcher_sends_redacted_turns_to_topic_store():
     from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
 
-    purges = []
-    timestamps = []
+    notes = []
 
     class FakeTopicPool:
-        def purge_all_accumulated_signals(self):
-            purges.append("*")
-
-        def purge_accumulated_signals(self, lanlan_name):
-            purges.append(lanlan_name)
-
-        def note_turn_timestamp(self, lanlan_name, *, lang='zh', now=None):
-            timestamps.append((lanlan_name, lang, now))
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
 
     dispatcher = ConversationTurnDispatcher(
         'test_lanlan',
@@ -925,24 +921,15 @@ def test_conversation_turn_dispatcher_updates_topic_quiet_clock_for_redacted_tur
 
     dispatcher.note_user_message(text='secret user turn', now=1.0)
 
-    assert purges == ['*']
-    assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
+    assert notes == [('user', 'test_lanlan', 'secret user turn', 'zh-CN')]
 
 
-def test_topic_turn_sink_purges_current_character_when_activity_is_private():
+def test_topic_turn_sink_ignores_activity_private_for_signal_store():
     from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
 
-    purges = []
     notes = []
-    timestamps = []
 
     class FakeTopicPool:
-        def purge_accumulated_signals(self, lanlan_name):
-            purges.append(lanlan_name)
-
-        def note_turn_timestamp(self, lanlan_name, *, lang='zh', now=None):
-            timestamps.append((lanlan_name, lang, now))
-
         def note_user_message(self, lanlan_name, text, *, lang='zh'):
             notes.append(('user', lanlan_name, text, lang))
 
@@ -960,21 +947,16 @@ def test_topic_turn_sink_purges_current_character_when_activity_is_private():
 
     dispatcher.note_user_message(text='private foreground turn', now=1.0)
 
-    assert purges == ['test_lanlan']
-    assert timestamps == [('test_lanlan', 'zh-CN', 1.0)]
-    assert notes == []
+    assert notes == [('user', 'test_lanlan', 'private foreground turn', 'zh-CN')]
 
 
-def test_activity_guess_loop_purges_topic_signals_on_private_ticks():
+def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     from main_logic.activity.tracker import UserActivityTracker
 
     source = inspect.getsource(UserActivityTracker._activity_guess_loop)
-    private_branch = source[
-        source.index("if rule_snap.state == 'private':"):
-        source.index("from utils.language_utils")
-    ]
-
-    assert "await self._purge_topic_candidates_for_privacy()" in private_branch
+    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in source
+    assert "await self._purge_topic_candidates_for_privacy()" not in source
+    assert source.index("self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)") < source.index("if rule_snap.state == 'private':")
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
