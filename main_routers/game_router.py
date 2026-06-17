@@ -6934,6 +6934,16 @@ async def game_project_context(game_type: str, request: Request):
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
 
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+
     role = str(data.get("role") or "").strip()
     text = str(data.get("text") or "").strip()
     if role not in {"assistant", "user"}:

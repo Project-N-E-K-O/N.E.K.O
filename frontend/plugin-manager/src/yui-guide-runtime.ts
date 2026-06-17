@@ -3707,14 +3707,14 @@ export function initPluginDashboardYuiGuideRuntime() {
   let receivedStartMessage = false
   runtime.preactivatePendingOverlay()
 
-  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, (event) => {
+  const handleDesktopInterruptAckEvent = (event: Event) => {
     runtime.handleDesktopInterruptAckEvent(event)
-  }, true)
-  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, (event) => {
+  }
+  const handleDesktopNarrationFinishedEvent = (event: Event) => {
     runtime.handleDesktopNarrationFinishedEvent(event)
-  }, true)
+  }
 
-  window.addEventListener('message', (event: MessageEvent) => {
+  const handleRuntimeMessage = (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object') {
       return
@@ -3774,5 +3774,21 @@ export function initPluginDashboardYuiGuideRuntime() {
     }).finally(() => {
       receivedStartMessage = false
     })
-  })
+  }
+
+  const cleanupRuntimeListeners = () => {
+    window.removeEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
+    window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+    window.removeEventListener('message', handleRuntimeMessage)
+    pluginDashboardRuntimeInitialized = false
+  }
+  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
+  runtime.cleanup = () => {
+    cleanupRuntimeListeners()
+    originalRuntimeCleanup()
+  }
+
+  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
+  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+  window.addEventListener('message', handleRuntimeMessage)
 }
