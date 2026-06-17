@@ -60,7 +60,7 @@ class FocusScore:
     """
 
     score: float
-    signals: dict = field(default_factory=dict)
+    signals: dict[str, float | None] = field(default_factory=dict)
 
 
 class FocusScorer:
