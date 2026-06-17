@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from config.prompts import prompts_game
-from main_routers import game_router
+from main_routers import game_router, pages_router
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +15,16 @@ LOCALES_DIR = ROOT / "static" / "locales"
 
 def _basketball_html() -> str:
     return BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+
+class _FakePageRequest:
+    def __init__(self, query_params: dict | None = None):
+        self.query_params = query_params or {}
+
+
+class _FakeTemplates:
+    def TemplateResponse(self, template_name: str, context: dict):
+        return {"template_name": template_name, "context": context}
 
 
 def _get_nested(payload: dict, dotted_key: str):
@@ -38,8 +48,6 @@ def test_basketball_improvement_static_contract():
         'id="game-bgm-volume"',
         'id="game-sfx-volume"',
         'function _i18n(',
-        'data-i18n="basketball.mode.timed"',
-        'data-i18n="basketball.mode.horse"',
         "window.addEventListener('localechange'",
         'id="bb-debug-panel"',
         "data-debug-distance",
@@ -73,11 +81,6 @@ def test_basketball_improvement_static_contract():
         "function drawStreakEffect(",
         "function drawFireBorder(",
         "function drawBackspinBall(",
-        "TIME_ATTACK_DURATION",
-        'data-mode="timed"',
-        'data-mode="horse"',
-        "function startHorseNekoChallenge(",
-        "HORSE_WORD",
         "THEMES =",
         "function cycleTheme(",
         "function checkSeasonalEasterEggs(",
@@ -88,6 +91,57 @@ def test_basketball_improvement_static_contract():
         "firstTutorialShotGuaranteed",
     ):
         assert expected in html
+
+    assert 'data-mode="horse"' not in html
+    assert 'data-i18n="basketball.mode.horse"' not in html
+    assert "requestedMode === 'horse'" not in html
+    assert "nextMode === 'horse'" not in html
+    assert 'data-mode="timed"' not in html
+    assert 'data-i18n="basketball.mode.timed"' not in html
+    assert "requestedMode === 'timed'" not in html
+    assert "nextMode === 'timed'" not in html
+
+
+@pytest.mark.unit
+def test_basketball_timed_mode_is_removed_from_template_runtime():
+    html = _basketball_html()
+
+    for removed in (
+        "TIME_ATTACK_DURATION",
+        "function isTimeAttackMode()",
+        "currentMode === 'timed'",
+        "_i18n('result.timed'",
+        "_i18n('hud.timedTitle'",
+        "_i18n('leaderboard.mode.timed'",
+        "timedRemaining",
+        "timedDeadline",
+        "timedTimerStarted",
+    ):
+        assert removed not in html
+
+
+@pytest.mark.unit
+def test_basketball_horse_mode_is_removed_from_template_runtime():
+    html = _basketball_html()
+
+    for removed in (
+        "HORSE_WORD",
+        "function isHorseMode()",
+        "function buildHorseStatePayload()",
+        "function buildHorseFinalScorePayload(",
+        "function startHorseNekoChallenge()",
+        "function finishHorseShot(",
+        "function horseLetters(",
+        "function endHorseIfNeeded()",
+        "currentMode === 'horse'",
+        "game.horse",
+        "horse_phase",
+        "_i18n('result.horse'",
+        "_i18n('hud.horseTitle'",
+        "_i18n('debug.readout.horse'",
+        "_i18n('lines.horse.",
+    ):
+        assert removed not in html
 
 
 @pytest.mark.unit
@@ -135,11 +189,34 @@ def test_basketball_invite_launches_challenge_mode_and_marks_started():
     html = _basketball_html()
 
     assert "var launchedFromInvite = !!(modeParams && modeParams.get('session_id'));" in html
-    assert (
-        "var currentMode = requestedMode === 'shooter' || (!requestedMode && launchedFromInvite) ? 'shooter' : 'spectator';"
-        in html
-    )
+    assert "basketballInviteRequired" not in html
+    assert "var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';" in html
+    assert "if (requestedMode === 'duel') currentMode = 'duel';" in html
+    assert "launchedFromInvite ? 'duel' : 'shooter'" not in html
     assert "gameStarted: true, game_started: true" in html
+
+
+@pytest.mark.unit
+def test_basketball_rejected_route_start_does_not_activate_frontend_route():
+    html = _basketball_html()
+    start = html.index("function startRoute() {")
+    end = html.index("function startRouteAfterCharacterReady() {", start)
+    start_route = html[start:end]
+
+    assert "if (!res || !res.ok) {" in start_route
+    assert "routeActive = false;" in start_route
+    assert start_route.index("if (!res || !res.ok) {") < start_route.index("routeActive = true;")
+    assert start_route.index("routeActive = true;") < start_route.index("heartbeatTimer = setInterval")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_demo_page_only_renders_shell_without_invite_gate(monkeypatch):
+    monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
+
+    result = await pages_router.basketball_demo(_FakePageRequest())
+
+    assert result["template_name"] == "templates/basketball_demo.html"
 
 
 @pytest.mark.unit
@@ -196,27 +273,21 @@ def test_basketball_i18n_keys_are_registered_in_main_locales():
         "basketball.mode.spectator",
         "basketball.mode.shooter",
         "basketball.mode.duel",
-        "basketball.mode.timed",
-        "basketball.mode.horse",
         "basketball.hud.score",
         "basketball.hud.streak",
         "basketball.hud.record",
         "basketball.hud.duelScore",
+        "basketball.hud.duelMisses",
         "basketball.hud.round",
         "basketball.hud.timer",
         "basketball.hud.practice",
         "basketball.hud.yourTurn",
         "basketball.hud.nekoTurn",
-        "basketball.hud.horseLetters",
-        "basketball.hud.horseChallenge",
-        "basketball.hud.horseSet",
         "basketball.hud.unlimitedAttempts",
         "basketball.hud.chances",
         "basketball.hud.practiceTitle",
         "basketball.hud.attemptsTitle",
         "basketball.hud.duelTitle",
-        "basketball.hud.timedTitle",
-        "basketball.hud.horseTitle",
         "basketball.hud.assist",
         "basketball.hud.on",
         "basketball.hud.off",
@@ -226,8 +297,7 @@ def test_basketball_i18n_keys_are_registered_in_main_locales():
         "basketball.result.retry",
         "basketball.result.rating",
         "basketball.result.duel",
-        "basketball.result.horse",
-        "basketball.result.timed",
+        "basketball.result.duelElimination",
         "basketball.result.practice",
         "basketball.result.summary",
         "basketball.result.attemptsSummary",
@@ -249,8 +319,6 @@ def test_basketball_i18n_keys_are_registered_in_main_locales():
         "basketball.leaderboard.loading",
         "basketball.leaderboard.mode.shooter",
         "basketball.leaderboard.mode.duel",
-        "basketball.leaderboard.mode.timed",
-        "basketball.leaderboard.mode.horse",
         "basketball.leaderboard.mode.spectator",
         "basketball.table.score",
         "basketball.table.bestStreak",
@@ -274,7 +342,6 @@ def test_basketball_i18n_keys_are_registered_in_main_locales():
         "basketball.debug.readout.score",
         "basketball.debug.readout.difficulty",
         "basketball.debug.readout.duel",
-        "basketball.debug.readout.horse",
         "basketball.state.ready",
         "basketball.state.in_flight",
         "basketball.state.game_over",
@@ -332,8 +399,6 @@ def test_basketball_i18n_keys_are_registered_in_main_locales():
         "basketball.lines.pressure.playerBehind",
         "basketball.lines.duel.clutch",
         "basketball.lines.duel.excuse",
-        "basketball.lines.horse.nekoMiss",
-        "basketball.lines.horse.playerMiss",
         "basketball.lines.mindGame",
         "basketball.lines.easterEgg.lateNight",
         "basketball.lines.easterEgg.xmas",
@@ -380,7 +445,7 @@ def test_basketball_runtime_visible_text_uses_i18n_helpers():
 
     expected_i18n_references = (
         "_i18n('leaderboard.empty'",
-        "_i18n('result.duel'",
+        "_i18n('result.duelElimination'",
         "_i18n('result.summary'",
         "_i18n('theme.current'",
         "_i18n('toast.nekoShoot'",
@@ -467,6 +532,27 @@ def test_basketball_court_distances_use_nba_line_calibration():
         'data-debug-distance="600"',
     ):
         assert stale_debug_distance not in html
+
+
+@pytest.mark.unit
+def test_basketball_shot_distance_caps_one_step_beyond_midcourt():
+    html = _basketball_html()
+
+    assert "var POST_MIDCOURT_DISTANCE_STEP = 45;" in html
+    assert (
+        "var MAX_PLAYABLE_SHOT_DISTANCE = COURT_DISTANCES.midCourtLine + POST_MIDCOURT_DISTANCE_STEP;"
+        in html
+    )
+    assert "function getMaxPlayableShotDistance() {" in html
+    assert "return MAX_PLAYABLE_SHOT_DISTANCE;" in html
+    assert "function advanceShotDistance(step) {" in html
+    assert "return Math.min(getMaxPlayableShotDistance(), game.distance + (Number(step) || 0));" in html
+    assert "game.distance = advanceShotDistance(nextDistanceStep());" in html
+    assert "game.distance = advanceShotDistance(POST_MIDCOURT_DISTANCE_STEP);" in html
+    assert "clamp(Number(distance) || 200, 80, getMaxPlayableShotDistance())" in html
+    assert "clamp(Number(px) || 200, 80, getMaxPlayableShotDistance())" in html
+    assert "game.distance += nextDistanceStep();" not in html
+    assert "Math.min(620, game.distance + 45)" not in html
 
 
 @pytest.mark.unit
@@ -684,6 +770,35 @@ def test_basketball_duel_balance_hint_and_anger_cap():
     assert final_pending["remainingRounds"] == 0
     assert final_pending["remainingPoints"] == 2
 
+    miss_pressure = game_router._build_basketball_duel_balance_hint(
+        {"duel": {"player_score": 4, "neko_score": 6, "round": 6, "player_misses": 2, "neko_misses": 1, "max_misses": 3}}
+    )
+    assert miss_pressure["playerMissesLeft"] == 1
+    assert miss_pressure["nekoMissesLeft"] == 2
+    assert miss_pressure["maxMisses"] == 3
+
+    current_state_fallback = game_router._build_basketball_duel_balance_hint(
+        {"currentState": {"duel": {"playerScore": 1, "nekoScore": 5, "playerMisses": 2, "nekoMisses": 0, "maxMisses": 3}}}
+    )
+    assert current_state_fallback["state"] == "neko_leading"
+    assert current_state_fallback["diff"] == 4
+    assert current_state_fallback["playerMissesLeft"] == 1
+
+    merged_current_state = game_router._build_basketball_duel_balance_hint(
+        {
+            "duel": {"player_score": 4},
+            "currentState": {"duel": {"playerScore": 1, "nekoScore": 6, "playerMisses": 2, "nekoMisses": 1, "maxMisses": 3}},
+        }
+    )
+    assert merged_current_state["diff"] == 2
+    assert merged_current_state["playerMissesLeft"] == 1
+    assert merged_current_state["nekoMissesLeft"] == 2
+
+    miss_elimination_ignores_round_decider = game_router._build_basketball_duel_balance_hint(
+        {"duel": {"player_score": 0, "neko_score": 9, "round": 5, "max_rounds": 5, "player_misses": 1, "neko_misses": 1, "max_misses": 3}}
+    )
+    assert miss_elimination_ignores_round_decider["state"] == "neko_leading"
+
     route_state = {
         "preGameContext": {"gameStance": "punishing", "initialMood": "angry"},
         "anger_pressure_accumulated": 24,
@@ -730,7 +845,7 @@ def test_game_memory_generic_keys_update_legacy_policy_fields():
 
 
 @pytest.mark.unit
-def test_basketball_horse_result_records_score_before_returning():
+def test_basketball_completed_result_records_score_before_returning():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "function persistCompletedResult() {" in html
@@ -810,77 +925,6 @@ def test_basketball_route_end_payload_contains_archive_score():
 
 
 @pytest.mark.unit
-def test_basketball_timed_game_over_event_contains_score():
-    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    timed_timeout = html[
-        html.index("if (game.timedRemaining <= 0) {"):
-        html.index("updateHud();", html.index("if (game.timedRemaining <= 0) {"))
-    ]
-
-    assert "kind: 'game_over'," in timed_timeout
-    assert "score: game.totalScore," in timed_timeout
-    assert "endRoute(false);" in timed_timeout
-    assert "scheduleShowResult(0);" in timed_timeout
-
-
-@pytest.mark.unit
-def test_basketball_route_end_payload_contains_horse_state():
-    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    horse_payload_section = html[
-        html.index("function buildHorseStatePayload() {"):
-        html.index("function buildBasketballCurrentStatePayload()", html.index("function buildHorseStatePayload() {"))
-    ]
-    end_route_section = html[
-        html.index("function endRoute("):
-        html.index("function updateThemeButton(", html.index("function endRoute("))
-    ]
-
-    assert "function buildHorseStatePayload() {" in horse_payload_section
-    assert "function buildHorseFinalScorePayload(horseState) {" in horse_payload_section
-    assert "letters_player: game.horse.lettersPlayer," in horse_payload_section
-    assert "letters_neko: game.horse.lettersNeko," in horse_payload_section
-    assert "winner: winner," in horse_payload_section
-    assert "score_text: 'HORSE ' + playerLetters + ' : ' + nekoLetters" in horse_payload_section
-    assert "phase: game.horse.phase," in horse_payload_section
-    assert "turn_owner: game.horse.turnOwner," in horse_payload_section
-    assert "challenge: game.horse.challenge ? Object.assign({}, game.horse.challenge) : null" in horse_payload_section
-    assert "if (isHorseMode()) {" in end_route_section
-    assert "payloadObj.horse = buildHorseStatePayload();" in end_route_section
-    assert "Object.assign(payloadObj.finalScore, buildHorseFinalScorePayload(payloadObj.horse));" in end_route_section
-    assert "payloadObj.currentState.score = Object.assign({}, payloadObj.finalScore);" in end_route_section
-    assert "payloadObj.currentState.horse = payloadObj.horse;" in end_route_section
-
-
-@pytest.mark.unit
-def test_basketball_chat_payload_contains_horse_state():
-    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    send_event_start = html.index("function sendGameEvent(")
-    send_event = html[send_event_start:html.index("function loadLocalLeaderboard(", send_event_start)]
-
-    assert "function buildBasketballCurrentStatePayload() {" in html
-    assert "event.currentState = buildBasketballCurrentStatePayload();" in send_event
-    assert "event.horse = buildHorseStatePayload();" in send_event
-    assert "event.currentState.horse = event.horse;" in send_event
-
-
-@pytest.mark.unit
-def test_basketball_horse_player_event_keeps_shot_time_phase():
-    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    finish_horse = html[
-        html.index("function finishHorseShot("):
-        html.index("function finishDuelShot(", html.index("function finishHorseShot("))
-    ]
-
-    record_phase_index = finish_horse.index("horse_phase: game.horse.phase")
-    push_index = finish_horse.index("game.attemptsResults.push(resultEntry);")
-    player_set_index = finish_horse.index("if (game.horse.phase === 'player_set') {")
-    player_reply_index = finish_horse.index("} else if (game.horse.phase === 'player_reply') {")
-
-    assert record_phase_index < push_index < player_set_index < player_reply_index
-    assert "currentState.attempts_results" in prompts_game.get_basketball_system_prompt("en", mode="horse")
-
-
-@pytest.mark.unit
 def test_basketball_chat_replies_are_ignored_after_session_or_mode_changes():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
     send_event_start = html.index("function sendGameEvent(")
@@ -936,38 +980,6 @@ def test_basketball_memory_toggle_does_not_auto_enable_from_history():
 
 
 @pytest.mark.unit
-def test_basketball_horse_player_game_over_does_not_emit_extra_shot_event():
-    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    finish_horse = html[
-        html.index("function finishHorseShot("):
-        html.index("function finishDuelShot(", html.index("function finishHorseShot("))
-    ]
-
-    game_over_guard = finish_horse.index("if (endHorseIfNeeded()) {")
-    shot_event = finish_horse.index("sendGameEvent({", game_over_guard)
-    assert "updateHud();\n        return;" in finish_horse[game_over_guard:shot_event]
-
-
-@pytest.mark.unit
-def test_basketball_horse_player_makes_update_recorded_stats():
-    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
-    finish_horse = html[
-        html.index("function finishHorseShot("):
-        html.index("function finishDuelShot(", html.index("function finishHorseShot("))
-    ]
-
-    assert "var newRecord = false;" in finish_horse
-    assert "if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;" in finish_horse
-    assert "newRecord = previousDistance > game.recordDistance;" in finish_horse
-    assert "game.recordDistance = previousDistance;" in finish_horse
-    assert "localStorage.setItem('bb_record_distance', String(Math.round(game.recordDistance)));" in finish_horse
-    assert "playYuiVoice('record');" in finish_horse
-    assert "var eventKind = newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed');" in finish_horse
-    assert "kind: eventKind," in finish_horse
-    assert "is_new_record: newRecord," in finish_horse
-
-
-@pytest.mark.unit
 def test_basketball_duel_player_shots_update_recorded_stats():
     html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
     finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]
@@ -983,6 +995,38 @@ def test_basketball_duel_player_shots_update_recorded_stats():
     assert "kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed')," in finish_duel
     assert "is_new_record: newRecord," in finish_duel
     assert "game.streak = 0;" in finish_duel
+
+
+@pytest.mark.unit
+def test_basketball_duel_uses_three_miss_elimination_instead_of_five_round_cap():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+    finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]
+
+    assert "playerMisses: 0," in html
+    assert "nekoMisses: 0," in html
+    assert "maxMisses: 3," in html
+    assert "game.duel.playerMisses = 0;" in html
+    assert "game.duel.nekoMisses = 0;" in html
+    assert "if (!scored) {" in finish_duel
+    assert "if (shooter === 'player') game.duel.playerMisses += 1;" in finish_duel
+    assert "else game.duel.nekoMisses += 1;" in finish_duel
+    duel_finished = "var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;"
+    assert duel_finished in finish_duel
+    assert finish_duel.index(duel_finished) < finish_duel.index("kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed'),")
+    assert "if (!duelFinished) {\n      sendGameEvent({" in finish_duel
+    assert "} else if (shooter === 'player') {" in finish_duel
+    assert "player_misses: game.duel.playerMisses" in html
+    assert "neko_misses: game.duel.nekoMisses" in html
+    assert "max_misses: game.duel.maxMisses" in html
+    assert "result: scored ? 'scored' : 'missed'" in finish_duel
+    assert "duel_outcome: didPlayerWinDuel() ? 'player_win' : 'neko_win'" in finish_duel
+    assert "game.duel.playerScore > game.duel.nekoScore" not in html
+    assert "isDuelMode() && isDuelEliminated() && didPlayerWinDuel()" in html
+    assert "_i18n('hud.duelMisses'" in html
+    assert "_i18n('result.duelElimination'" in html
+    assert "maxRounds: 5" not in html
+    assert "game.duel.round >= game.duel.maxRounds" not in html
+    assert "max_rounds: game.duel.maxRounds" not in html
 
 
 @pytest.mark.unit
@@ -1071,7 +1115,7 @@ def test_basketball_starts_route_after_character_resolution_before_avatar_loadin
     assert "var routeLanlanName = getRouteLanlanName();" in html
     assert "var routeSessionId = sessionId;" in html
     assert "lanlan_name: routeLanlanName" in html
-    assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return;" in html
+    assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return res;" in html
     assert "applyRouteIdentity(res.state);" in html
     startup = html[html.rindex("startRouteAfterCharacterReady();"):]
     assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
@@ -1087,6 +1131,60 @@ def test_basketball_vrm_waits_for_three_before_resolving_modules():
     assert "if (window.THREE) return Promise.resolve();" in wait_section
     assert "window.addEventListener('three-ready', resolve, { once: true });" in wait_section
     assert "return Promise.all([vrmModulesReady, waitForThreeModule()]).then(function () {});" in wait_section
+
+
+@pytest.mark.unit
+def test_basketball_duel_avatars_use_enlarged_layout_constants():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var YUI_SHOOTER_W = 320;" in html
+    assert "var YUI_SHOOTER_H = 480;" in html
+    assert "var PLAYER_AVATAR_W = 292;" in html
+    assert "var PLAYER_AVATAR_H = 476;" in html
+    assert "var PLAYER_FIGURE_SCALE = 1.38;" in html
+    assert "playerSenseiContainer.style.width = PLAYER_AVATAR_W + 'px';" in html
+    assert "playerSenseiContainer.style.height = PLAYER_AVATAR_H + 'px';" in html
+    assert "container.style.width = YUI_SHOOTER_W + 'px';" in html
+    assert "container.style.height = YUI_SHOOTER_H + 'px';" in html
+    assert "var avatarW = yuiShooterLayout ? YUI_SHOOTER_W : 180;" in html
+    assert "var avatarH = yuiShooterLayout ? YUI_SHOOTER_H : 270;" in html
+    assert "Math.round(sx - PLAYER_AVATAR_W / 2)" in html
+    assert "Math.round(sy - PLAYER_AVATAR_H)" in html
+    draw_start = html.index("function drawPlayer() {")
+    draw_section = html[draw_start:html.index("function drawAiming()", draw_start)]
+    assert "var s = PLAYER_FIGURE_SCALE;" in draw_section
+    assert "ctx.arc(px, py - 62 * s, 16 * s" in draw_section
+    assert "ctx.lineWidth = 8 * s;" in draw_section
+
+
+@pytest.mark.unit
+def test_basketball_mouse_input_is_gated_to_player_controlled_shots():
+    html = BASKETBALL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "function canPlayerControlShot() {" in html
+    assert "return game.state === 'ready' && !isPositionTransitioning && isPlayerTurn();" in html
+
+    mousemove = html[
+        html.index("canvas.addEventListener('mousemove'"):
+        html.index("canvas.addEventListener('mousedown'")
+    ]
+    assert "if (!canPlayerControlShot()) return;" in mousemove
+    assert mousemove.index("if (!canPlayerControlShot()) return;") < mousemove.index("game.aimAngle =")
+
+    mousedown = html[
+        html.index("canvas.addEventListener('mousedown'"):
+        html.index("window.addEventListener('mouseup'")
+    ]
+    assert "if (!canPlayerControlShot()) return;" in mousedown
+    assert "if (game.state !== 'ready') return;" not in mousedown
+    assert "if (!isPlayerTurn()) return;" not in mousedown
+
+    mouseup = html[
+        html.index("window.addEventListener('mouseup'"):
+        html.index("window.addEventListener('keydown'")
+    ]
+    assert "if (game.charging && canPlayerControlShot()) shoot();" in mouseup
+    assert "game.charging = false;" in mouseup
 
 
 @pytest.mark.unit

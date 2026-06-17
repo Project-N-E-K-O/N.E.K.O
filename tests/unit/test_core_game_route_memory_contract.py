@@ -177,6 +177,16 @@ def _make_manager():
     return mgr
 
 
+@pytest.mark.unit
+def test_clean_frontend_memory_text_strips_c0_and_c1_controls():
+    mgr = _make_manager()
+
+    assert core_module.LLMSessionManager._clean_frontend_memory_text(
+        mgr,
+        " hello\x00 \x85world\x9f ",
+    ) == "hello world"
+
+
 def _make_transcript_manager():
     mgr = _make_manager()
     mgr.session = object()
@@ -636,6 +646,39 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
         "data": {
             "input_type": "screen",
             "data": "data:image/jpeg;base64,img-b64",
+            "has_image": True,
+            "mime_type": "image/jpeg",
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(monkeypatch):
+    """Avatar Drop images must not put full base64 payloads into the sync queue."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "avatar_drop_image", "data": "raw-image", "request_id": "req-img"},
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "avatar_drop_image",
+            "data": "",
+            "has_image": True,
+            "mime_type": "image/jpeg",
+            "request_id": "req-img",
         },
     }]
 
@@ -1008,6 +1051,33 @@ def test_turn_image_partition_retains_untagged_images_without_user_input():
 
     assert selected == []
     assert remaining == pending
+
+
+@pytest.mark.unit
+def test_cross_server_avatar_drop_image_queue_skips_metadata_only_entries():
+    """Cross-server sync may carry real image data, but not metadata-only Avatar Drop placeholders."""
+    pending = []
+
+    appended = cross_server_module._append_pending_user_image(
+        pending,
+        "data:image/jpeg;base64,current",
+        "req-current",
+        "user_image",
+    )
+    skipped = cross_server_module._append_pending_user_image(
+        pending,
+        "",
+        "req-current",
+        "avatar_drop_image",
+    )
+
+    assert appended is True
+    assert skipped is False
+    assert pending == [{
+        "data": "data:image/jpeg;base64,current",
+        "request_id": "req-current",
+        "input_type": "user_image",
+    }]
 
 
 @pytest.mark.unit

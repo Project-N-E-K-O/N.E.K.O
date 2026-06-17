@@ -937,6 +937,60 @@ function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
 // ==================== Model Provider Dropdowns ====================
 
 /**
+ * 仅靠 api_providers.json 的结构推断某个 provider 是否「只做 TTS」。
+ *
+ * 用于 fail-safe：当后端 /api_providers 的 tts_provider 元数据加载失败（try/except
+ * 返回 tts_providers:[]，success 仍 true）时，_ttsProviders 为空，原本靠注册表
+ * tts_dropdown_only / editable_endpoint 驱动的判定会全部落空，导致这类 provider
+ * （如 vLLM-Omni）漏进 conversation/summary/... 等 LLM 下拉、并被当成普通
+ * OpenAI-compatible 服务商保存。这里用「声明了 tts_default_model / tts_default_voice
+ * 但没有任何 LLM 模型字段」这个结构信号兜底，避免在前端再 re-hardcode 具体 provider key。
+ */
+function isStructuralTtsOnlyProvider(pk) {
+    const p = _assistApiProviders[pk];
+    if (!p || typeof p !== 'object') return false;
+    if (!p.tts_default_model && !p.tts_default_voice) return false;
+    // 任意 LLM 模型字段（conversation_model / summary_model / ...）非空 → 不是纯 TTS。
+    return !MODEL_TYPES.some(mt => {
+        if (mt === 'tts' || mt === 'omni') return false;
+        const v = p[`${mt}_model`];
+        return v && String(v).trim();
+    });
+}
+
+/**
+ * 取某个 provider 的 TTS 元数据：优先用后端注册表（_ttsProviders），缺失时按结构信号
+ * 合成一份最小元数据（tts_dropdown_only + editable_endpoint），让下拉过滤 / 字段解锁 /
+ * 保存路径在元数据缺失时仍按「纯 TTS、用户自配端点」处理。合成元数据 probe_kind='none'
+ * （注册表缺失时探测降级，可接受），不携带任何 provider 专属探测细节。
+ */
+function getTtsProviderMeta(pk) {
+    if (!pk) return null;
+    const meta = _ttsProviders[pk];
+    if (meta) return meta;
+    if (isStructuralTtsOnlyProvider(pk)) {
+        const p = _assistApiProviders[pk] || {};
+        return {
+            key: pk,
+            tts_dropdown_only: true,
+            editable_endpoint: true,
+            default_url: '',
+            default_model: p.tts_default_model || '',
+            default_voice: p.tts_default_voice || '',
+            url_field: 'ttsModelUrl',
+            model_field: 'ttsModelId',
+            voice_field: 'ttsVoiceId',
+            api_key_field: 'ttsModelApiKey',
+            probe_kind: 'none',
+            probe_sub_type: '',
+            probe_ws_path: '',
+            _synthesized: true,
+        };
+    }
+    return null;
+}
+
+/**
  * 填充所有自定义模型的服务商下拉框
  */
 function populateModelProviderDropdowns() {
@@ -965,8 +1019,9 @@ function populateModelProviderDropdowns() {
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
             // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
-            // 成员由后端 tts_provider_registry 驱动，前端不再硬编码 provider key。
-            const _spFilter = _ttsProviders[pk];
+            // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
+            // 用结构信号兜底，前端始终不硬编码 provider key。
+            const _spFilter = getTtsProviderMeta(pk);
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
@@ -980,6 +1035,23 @@ function populateModelProviderDropdowns() {
             }
             sel.appendChild(opt);
         });
+
+        // Registry-only TTS provider（仅在 tts_provider_registry 声明、不在
+        // assist_api_providers 里，如 GPT-SoVITS）：上面的 _assistApiProviders 循环
+        // 遍历不到，否则用户在下拉里永远选不到。这里补进来，且仅进 TTS 下拉。
+        if (mt === 'tts') {
+            Object.keys(_ttsProviders).forEach(pk => {
+                if (_assistApiProviders[pk]) return; // 已在上面的循环里加过
+                const meta = _ttsProviders[pk];
+                if (!meta) return;
+                const opt = document.createElement('option');
+                opt.value = pk;
+                const translationKey = `api.assistProviderNames.${pk}`;
+                const translated = window.t ? window.t(translationKey) : translationKey;
+                opt.textContent = (translated && translated !== translationKey) ? translated : pk;
+                sel.appendChild(opt);
+            });
+        }
 
         // custom
         const optCustom = document.createElement('option');
@@ -1098,12 +1170,12 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
-    } else if (_ttsProviders[provider] && _ttsProviders[provider].editable_endpoint && modelType === 'tts') {
+    } else if (modelType === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
         // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
         // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
-        // tts_provider_registry 的 editable_endpoint 驱动；预填默认值优先取
-        // api_providers.json，缺失时回退注册表 default_*（兼容不在 json 里的新 provider）。
-        const _spMeta = _ttsProviders[provider];
+        // tts_provider_registry 的 editable_endpoint 驱动（缺失时 getTtsProviderMeta
+        // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
+        const _spMeta = getTtsProviderMeta(provider);
         const pInfo = _assistApiProviders[provider] || {};
         if (urlInput) {
             // 切换到该 provider 时：
@@ -1123,6 +1195,14 @@ function onCustomModelProviderChange(modelType) {
             voiceInput.value = pInfo.tts_default_voice || _spMeta.default_voice || '';
         }
         setKeyEditable(keyInput);
+    } else if (modelType === 'tts' && provider === 'gptsovits') {
+        // GPT-SoVITS：用下方专属字段（#gptsovits-config-fields 的 URL + voice grid），
+        // 标准 url/model/key/voice 不参与，故这里不动标准输入（它们会被隐藏）。
+        // 选中即「启用」，无需独立开关。切到 GSV 时若已有 URL 自动拉一次声音列表。
+        const gsvUrl = document.getElementById('gptsovitsApiUrl')?.value.trim();
+        if (gsvUrl && !_isLoadingSavedConfig) {
+            fetchGptSovitsVoices(true);
+        }
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
@@ -1145,8 +1225,42 @@ function onCustomModelProviderChange(modelType) {
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey);
     }
+    if (modelType === 'tts') {
+        updateTtsProviderFieldVisibility(provider);
+    }
     sel.dataset.currentProvider = provider;
 }
+
+/**
+ * 按所选 TTS provider 切换字段可见性：选 gptsovits 时显示 GSV 专属字段（URL + voice
+ * grid）、隐藏标准 url/model/key/voice；其余 provider 反之。GSV「是否启用」= 下拉是否
+ * 选中 gptsovits，取代旧的独立启用开关。
+ */
+function updateTtsProviderFieldVisibility(provider) {
+    const isGsv = (provider === 'gptsovits');
+    const standardFields = document.getElementById('tts-standard-fields');
+    const gsvFields = document.getElementById('gptsovits-config-fields');
+    if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
+    if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
+    if (isGsv) updateGptSovitsTutorialLink();
+}
+
+/**
+ * 设置 GPT-SoVITS「教程文档」按钮的跳转链接：中文（zh-*）走中文文档，其余语言走通用文档。
+ * 语言可能在打开页面后才切换，故同时在 updateTtsProviderFieldVisibility 与 localechange 时调用。
+ */
+function updateGptSovitsTutorialLink() {
+    const link = document.getElementById('gptsovitsTutorialLink');
+    if (!link) return;
+    const lang = (window.i18n && window.i18n.language) || document.documentElement.lang || 'zh-CN';
+    const isChinese = String(lang).toLowerCase().startsWith('zh');
+    link.href = isChinese
+        ? 'https://docs.qq.com/aio/DQ1dDcU9rdURQTWJE?p=RLq03bnCUOGEIa8YwBS58H&client_hint=0'
+        : 'https://docs.qq.com/aio/DQ1dDcU9rdURQTWJE?p=Z7zYbDaFk1FIrs4EBk7spv&client_hint=0';
+}
+
+// 语言切换时同步更新教程文档链接（中文↔其它语言走不同文档）
+window.addEventListener('localechange', updateGptSovitsTutorialLink);
 
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
@@ -1530,13 +1644,15 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
-            // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
+            // 加载 GPT-SoVITS 配置：启用状态以 ttsModelProvider 下拉为准，
+            // 无下拉时回落旧 gptsovitsEnabled / localhost 启发式（兼容存量）
             loadGptSovitsConfig(
                 data.ttsModelUrl,
                 data.ttsVoiceId,
                 data.ttsModelId,
                 data.ttsModelApiKey,
                 data.gptsovitsEnabled,
+                data.ttsModelProvider,
             );
 
             // 加载MCPR_TOKEN
@@ -1549,6 +1665,15 @@ async function loadCurrentApiKey() {
                 const sel = document.getElementById(providerField);
                 if (!sel) return;
 
+                // GPT-SoVITS 迁到 ttsModelProvider 下拉后，「启用 GSV」= 下拉选中 gptsovits。
+                // loadGptSovitsConfig 已在前面把 _loadedGptSovitsState 解析好（含旧
+                // gptsovitsEnabled / legacy 嗅探）；这里据此把 tts 下拉钉到 gptsovits，
+                // 覆盖「有 URL 但无 provider → custom」的旧回退，保证存量配置正确回填。
+                if (mt === 'tts' && _loadedGptSovitsState === 'enabled') {
+                    sel.value = 'gptsovits';
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
                 if (data[providerField]) {
                     // Saved provider value exists — use it
                     const optionExists = Array.from(sel.options).some(opt => opt.value === data[providerField]);
@@ -1604,9 +1729,9 @@ let pendingApiKey = null;
 
 /**
  * 从保存的 TTS 字段解析并加载 GPT-SoVITS v3 配置
- * 优先使用显式 gptsovitsEnabled，旧配置再做有限兼容判断
+ * 启用状态以 ttsModelProvider 下拉为准；无下拉时回落旧 gptsovitsEnabled / localhost 启发式（兼容存量）
  */
-function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelApiKey = '', gptsovitsEnabled = null) {
+function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelApiKey = '', gptsovitsEnabled = null, ttsModelProvider = '') {
     // 检查是否是禁用但保存了配置的情况
     let isDisabledWithConfig = false;
     let savedUrl = '';
@@ -1619,20 +1744,40 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelA
         if (parts.length >= 2) savedVoiceId = parts[1];
     }
 
+    // 启用判定与后端 snapshot 派生对偶（见 utils/config_manager.py）：ttsModelProvider
+    // 一旦「显式选了某个 TTS provider」即唯一真相——选中 gptsovits 才启用、选别家就关，
+    // 旧 gptsovitsEnabled / disabled sentinel 不参与。仅当未显式选择时（provider 缺失/空串，
+    // 或 follow_assist/follow_core 这两个「跟随 assist/core」默认哨兵）才回落 legacy 路径：
+    // 先认 __gptsovits_disabled__| sentinel，再回落显式旧 flag / localhost 启发式。
+    // ⚠️ follow_* 必须当「未显式选」而非显式 provider，否则存量 GSV 用户（gptsovitsEnabled=true
+    // + ttsModelProvider='follow_assist' 默认值）会被前端判成关、与后端分叉（Codex PR#1850 P1）。
+    // 显式 provider 压过 sentinel：provider=gptsovits 共存旧 sentinel 时仍判启用，URL/voice
+    // 从 sentinel 解出做迁移（CodeRabbit/Greptile PR#1850）。这也保证远程 GSV 的 dropdown-only
+    // 用户（启发式不认远程 URL）reload 仍回填，且显式切走后残留旧 flag 不会把 GSV 兜回来。
+    const provider = (ttsModelProvider || '').trim();
+    const isFollowOrUnset = (provider === '' || provider === 'follow_assist' || provider === 'follow_core');
     const hasExplicitEnabledFlag = typeof gptsovitsEnabled === 'boolean';
     const isLegacyEnabled = !hasExplicitEnabledFlag
         && !isDisabledWithConfig
         && looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId, ttsModelApiKey);
-    const isEnabled = !isDisabledWithConfig && (hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled);
-
-    _loadedGptSovitsState = isDisabledWithConfig ? 'disabled' : (isEnabled ? 'enabled' : 'none');
-
-    // 设置启用开关状态
-    const enabledCheckbox = document.getElementById('gptsovitsEnabled');
-    if (enabledCheckbox) {
-        enabledCheckbox.checked = isEnabled;
+    let isEnabled;
+    if (!isFollowOrUnset) {
+        isEnabled = (provider === 'gptsovits');
+    } else if (isDisabledWithConfig) {
+        isEnabled = false;
+    } else {
+        isEnabled = hasExplicitEnabledFlag ? gptsovitsEnabled : isLegacyEnabled;
     }
-    toggleGptSovitsConfig();
+
+    // disabled 态仅在「未显式选 + 存量 sentinel」时成立；显式选了 provider（含 gptsovits）
+    // 以下拉为准，不被 sentinel 拉回 disabled。
+    _loadedGptSovitsState = (isFollowOrUnset && isDisabledWithConfig)
+        ? 'disabled'
+        : (isEnabled ? 'enabled' : 'none');
+
+    // GSV 迁到 ttsModelProvider 下拉后，启用状态由下拉表达（这里不再操作已删除的
+    // gptsovitsEnabled 开关）。下拉值与字段可见性由随后的 provider 还原循环统一处理
+    // （见 MODEL_TYPES 还原里的 _loadedGptSovitsState==='enabled' 分支）。
 
     // 确定要加载的配置
     const urlToLoad = isDisabledWithConfig ? savedUrl : (isEnabled ? ttsModelUrl : '');
@@ -1809,29 +1954,9 @@ function getGptSovitsConfigForSave() {
     };
 }
 
-/**
- * 从 GPT-SoVITS v3 配置字段组装 ttsModelUrl 和 ttsVoiceId
- * 返回 { url, voiceId } 或 null（如果未启用）
- */
-function getGptSovitsConfig() {
-    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
-    if (!enabled) return null;
-
-    const config = getGptSovitsConfigForSave();
-    if (config && config.url.startsWith('http')) return config;
-    return null;
-}
-
-/**
- * 切换 GPT-SoVITS 配置区域的显示/隐藏
- */
-function toggleGptSovitsConfig() {
-    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
-    const configFields = document.getElementById('gptsovits-config-fields');
-    if (configFields) {
-        configFields.style.display = enabled ? 'block' : 'none';
-    }
-}
+// GPT-SoVITS「是否启用」迁到 ttsModelProvider 下拉后，旧的 getGptSovitsConfig（按
+// checkbox 返回 null）与 toggleGptSovitsConfig（按 checkbox 切显隐）已退役：启用状态
+// 由 ttsModelProvider==='gptsovits' 表达，字段显隐由 updateTtsProviderFieldVisibility 驱动。
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
@@ -1981,12 +2106,9 @@ function confirmClearCustomApi() {
     const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
     if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
 
-    // 取消勾选 GPT-SoVITS
-    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
-    if (gptsovitsEnabled && gptsovitsEnabled.checked) {
-        gptsovitsEnabled.checked = false;
-        toggleGptSovitsConfig();
-    }
+    // GSV 启用状态由 ttsModelProvider 下拉表达；上面的 provider 还原循环已把 tts 下拉
+    // 重置为 follow_core 并切回标准字段（updateTtsProviderFieldVisibility），无需再单独
+    // 取消勾选已删除的 gptsovitsEnabled 开关。
     // 清空 GPT-SoVITS 隐藏字段并重置状态，防止保存时残留旧配置
     const gptsovitsApiUrlEl = document.getElementById('gptsovitsApiUrl');
     if (gptsovitsApiUrlEl) gptsovitsApiUrlEl.value = '';
@@ -2177,7 +2299,12 @@ async function save_button_down(e) {
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
-    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
+    // GSV「是否启用」收口到 ttsModelProvider 下拉单一真相：选中 gptsovits 即启用。
+    // gptsovitsEnabled 已退役，保存时不再写进 payload——后端 snapshot 直接从
+    // ttsModelProvider 派生 GPTSOVITS_ENABLED（见 utils/config_manager.py）。这里的
+    // 局部 gptsovitsEnabled 只是本函数内据下拉算出的本地标志，仅供 URL 校验 /
+    // ttsModelUrl·ttsVoiceId 赋值 / ttsProvider 复用，不外发。
+    const gptsovitsEnabled = (document.getElementById('ttsModelProvider')?.value || '').trim() === 'gptsovits';
     const gptsovitsConfigForSave = getGptSovitsConfigForSave();
 
     // 启用 GPT-SoVITS 时校验 URL 协议
@@ -2192,12 +2319,10 @@ async function save_button_down(e) {
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;
-    } else if (!gptsovitsEnabled && _loadedGptSovitsState !== 'none' && !_ttsConfigDirty) {
-        if (gptsovitsConfigForSave) {
-            ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
-        }
-        ttsModelUrl = '';
     }
+    // 退役 __gptsovits_disabled__| 占位符：下拉切走 gptsovits 即「未选」，ttsModelUrl/
+    // ttsVoiceId 直接用标准字段值，不再把旧 GSV 配置冻进 voice_id（旧前缀仍由
+    // loadGptSovitsConfig 读路径兼容解析，只是不再写出）。
 
     const mcpToken = getVal('mcpTokenInput');
 
@@ -2251,7 +2376,7 @@ async function save_button_down(e) {
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
-        mcpToken, enableCustomApi, gptsovitsEnabled,
+        mcpToken, enableCustomApi,
         useMimoTokenPlan,
         assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
         resolvedProviderUrls: _resolvedProviderUrls,
@@ -2317,7 +2442,14 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     if (!params || typeof params !== 'object') return;
 
     const resolveUrl = (modelType, providerMode) => {
-        if (!providerMode || providerMode === 'custom' || (providerMode === 'vllm_omni' && modelType === 'tts')) return '';
+        // editable_endpoint 的注册表 TTS provider（vLLM-Omni 等）端点完全由用户填写，
+        // 不能被 provider profile 的 URL 覆盖；按注册表元数据豁免（缺失时结构信号兜底），
+        // 不再单独硬编码 vllm_omni。
+        if (!providerMode || providerMode === 'custom') return '';
+        if (modelType === 'tts') {
+            const ttsMeta = getTtsProviderMeta(providerMode);
+            if (ttsMeta && ttsMeta.editable_endpoint) return '';
+        }
 
         let providerKey = providerMode;
         let scope = 'assist';
@@ -2342,7 +2474,9 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     };
 
     MODEL_TYPES.forEach(modelType => {
-        if (modelType === 'tts' && params.gptsovitsEnabled) return;
+        // GSV 选中时 tts URL 由 GSV 专属字段提供，跳过自动解析。启用信号收口到
+        // ttsModelProvider 下拉（gptsovitsEnabled 已不再外发）。
+        if (modelType === 'tts' && (params.ttsModelProvider || '').trim() === 'gptsovits') return;
 
         const providerField = `${modelType}ModelProvider`;
         const urlField = `${modelType}ModelUrl`;
@@ -3075,16 +3209,18 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
-            } else if (_ttsProviders[provider]
-                       && _ttsProviders[provider].probe_kind === 'ws_handshake'
-                       && mt === 'tts') {
-                // 特异 TTS provider 的 ws 握手探测（如 vLLM-Omni）：走 Mode 2（custom
-                // 路径），复用后端 _test_websocket，不设 providerKey/providerScope →
-                // 后端用用户输入的 URL。把 base_url 规整成 worker 实际连接的 ws endpoint
-                // （后缀 meta.probe_ws_path），并带 meta.probe_sub_type 让后端分流到对应的
-                // 握手探测，避免发 session.update 触发 vLLM 主动断连导致连通性误判。
+            } else if (mt === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
+                // 端点可编辑的 TTS provider（如 vLLM-Omni）：走 Mode 2（custom 路径），
+                // 不设 providerKey/providerScope → 后端用用户输入的 URL，绝不退化成「指定
+                // 服务商」按 OpenAI-compatible profile 保存。具体探测协议由注册表元数据决定；
+                // 注册表缺失（getTtsProviderMeta 结构兜底，probe_kind='none'）时仅做 HTTP 风格
+                // custom 探测，探测降级但不会被错存成内置服务商。
+                const _spProbe = getTtsProviderMeta(provider);
+                if (_spProbe.probe_kind === 'ws_handshake') {
+                // ws 握手探测：复用后端 _test_websocket。把 base_url 规整成 worker 实际连接的
+                // ws endpoint（后缀 meta.probe_ws_path），并带 meta.probe_sub_type 让后端分流到
+                // 对应的握手探测，避免发 session.update 触发 vLLM 主动断连导致连通性误判。
                 // 协议细节（ws 后缀 / sub_type）由 tts_provider_registry 数据驱动，不再硬编码。
-                const _spProbe = _ttsProviders[provider];
                 const wsPath = _spProbe.probe_ws_path || '';
                 const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
                 let wsEndpoint = '';
@@ -3127,6 +3263,14 @@ const ConnectivityManager = {
                 result.subType = _spProbe.probe_sub_type || '';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                } else {
+                    // 非 ws 的可编辑端点（结构兜底 / 未来 http 探测的 provider）：当 custom
+                    // 处理——用户填的 URL/Key/Model，不绑定内置 provider profile。
+                    result.url = urlInput ? urlInput.value.trim() : '';
+                    result.providerType = 'openai_compatible';
+                    result.key = keyInput ? getRealKey(keyInput) : '';
+                    result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                }
             } else {
                 // 指定服务商：从 Key Book 读取
                 result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: false });

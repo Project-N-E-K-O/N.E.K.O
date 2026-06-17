@@ -3122,6 +3122,49 @@ async def test_stream_text_filters_tool_call_leak_before_ui_and_history(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_stream_text_replaces_full_prompt_history_after_memory_callback(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        sent_user_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
+        assert sent_user_messages[-1].content == "full document prompt"
+        yield LLMStreamChunk(content="ok")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    transcripts: list[str] = []
+
+    async def transcript_callback(text: str) -> None:
+        transcripts.append(text)
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text(
+        "full document prompt",
+        system_prefix="callback result",
+        input_transcript_callback=transcript_callback,
+        history_replacement_text="summary only",
+    )
+
+    assert transcripts == ["full document prompt"]
+    assert isinstance(client._conversation_history[1], HumanMessage)
+    assert client._conversation_history[1].content == "callback result\n\nsummary only"
+    assert "full document prompt" not in [
+        getattr(message, "content", "") for message in client._conversation_history
+    ]
+
+
+@pytest.mark.asyncio
 async def test_prompt_ephemeral_filters_tool_call_leak_before_ui_and_history(monkeypatch):
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import AIMessage, LLMStreamChunk

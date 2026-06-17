@@ -109,6 +109,8 @@ from main_logic.mirror_meta import (
     is_mirror_turn_end_meta,
 )
 
+_USER_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+
 
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
     """Merge the trailing run of consecutive assistant messages after last_synced_index into one.
@@ -218,6 +220,31 @@ def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]
             "url": url,
         })
     return attachments
+
+
+def _append_pending_user_image(
+    pending_user_images: list,
+    data: object,
+    request_id: object,
+    input_type: object = None,
+) -> bool:
+    """Append a real user image entry and return whether one was queued.
+
+    Empty data means the caller only sent metadata, so the placeholder is skipped.
+    """
+    image_data = str(data or "").strip()
+    if not image_data:
+        return False
+    entry = {
+        "data": image_data,
+        "request_id": request_id or "",
+    }
+    if input_type:
+        entry["input_type"] = input_type
+    pending_user_images.append(entry)
+    if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+        del pending_user_images[:-PENDING_USER_IMAGES_MAX]
+    return True
 
 
 def _select_pending_user_images_for_turn(pending_user_images: list, request_id: object) -> list:
@@ -734,24 +761,17 @@ async def run_sync_connector(
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
                             await _try_send_json(sync_slot, {'type': 'user_activity'})
-                        elif input_type == "screen":
-                            last_screen = data
-                            if data:
-                                pending_user_images.append({
-                                    "data": data,
-                                    "request_id": message["data"].get("request_id") or "",
-                                })
-                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
-                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
-                        elif input_type == "camera":
-                            last_screen = data
-                            if data:
-                                pending_user_images.append({
-                                    "data": data,
-                                    "request_id": message["data"].get("request_id") or "",
-                                })
-                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
-                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
+                        elif input_type in _USER_IMAGE_INPUT_TYPES:
+                            if input_type in {"screen", "camera"}:
+                                last_screen = data
+                            appended_image = _append_pending_user_image(
+                                pending_user_images,
+                                data,
+                                message["data"].get("request_id") or "",
+                                input_type,
+                            )
+                            if not appended_image and message["data"].get("has_image"):
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})
 
                     elif message["type"] == "system":
                         try:
