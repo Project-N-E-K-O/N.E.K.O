@@ -7,6 +7,7 @@
     const HOST_WAIT_TIMEOUT_MS = 5000;
 
     let activeSession = null;
+    let choiceSyncInProgress = false;
 
     function now() {
         return Date.now();
@@ -176,7 +177,7 @@
     }
 
     async function completeFromChoice(detail) {
-        if (!activeSession) {
+        if (!activeSession || choiceSyncInProgress) {
             return;
         }
         const session = activeSession;
@@ -187,18 +188,23 @@
         const option = detail && detail.option && typeof detail.option === 'object' ? detail.option : {};
         const choice = String((detail && detail.choice) || option.choice || '');
         const label = String((detail && detail.label) || option.label || '');
-        const contextSynced = await postContext('user', label || choice, session.id);
+        choiceSyncInProgress = true;
+        try {
+            const contextSynced = await postContext('user', label || choice, session.id);
 
-        updateDayEntry({
-            sessionId: session.id,
-            choice: choice,
-            label: label,
-            completed: contextSynced,
-            completedAt: contextSynced ? now() : null,
-            contextSyncPending: !contextSynced
-        });
-        if (activeSession === session) {
-            activeSession = null;
+            updateDayEntry({
+                sessionId: session.id,
+                choice: choice,
+                label: label,
+                completed: contextSynced,
+                completedAt: contextSynced ? now() : null,
+                contextSyncPending: !contextSynced
+            });
+            if (activeSession === session) {
+                activeSession = null;
+            }
+        } finally {
+            choiceSyncInProgress = false;
         }
     }
 

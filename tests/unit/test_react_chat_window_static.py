@@ -1052,10 +1052,14 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     assert "const option = detail && detail.option" in choice_block
     assert "const choice = String((detail && detail.choice) || option.choice || '')" in choice_block
     assert "const label = String((detail && detail.label) || option.label || '')" in choice_block
+    assert "if (!activeSession || choiceSyncInProgress)" in choice_block
+    assert "choiceSyncInProgress = true;" in choice_block
     assert "const contextSynced = await postContext('user', label || choice, session.id);" in choice_block
     assert "completed: contextSynced" in choice_block
     assert "contextSyncPending: !contextSynced" in choice_block
     assert "activeSession = null;" in choice_block
+    assert "} finally {" in choice_block
+    assert "choiceSyncInProgress = false;" in choice_block
     assert "fetch('/api/game/new_user_icebreaker/context'" in script
     assert "return !!(body && body.ok === true);" in script
 
