@@ -41,8 +41,6 @@
         return !!(
             (message && message.bypassDedup === true)
             || action === 'yui_guide_set_chat_cursor'
-            || action === 'yui_guide_drag_chat_cursor'
-            || action === 'yui_guide_arc_chat_cursor'
         );
     }
 
@@ -2397,6 +2395,11 @@
                     case 'yui_guide_arc_chat_cursor': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatCursorArc(event.data.kind || '', event.data);
+                        break;
+                    }
+                    case 'yui_guide_clear_chat_messages': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideClearChatMessages();
                         break;
                     }
                     case 'yui_guide_chat_cursor_anchor': {

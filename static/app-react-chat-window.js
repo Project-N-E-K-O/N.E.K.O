@@ -4039,6 +4039,25 @@
         return changed;
     }
 
+    function isGuideMessage(message) {
+        if (!message) return false;
+        return String(message.id || '').indexOf('yui-guide-') === 0
+            || String(message.source || '') === 'yui-guide-director'
+            || String(message.source || '') === 'yui_guide';
+    }
+
+    function clearGuideMessages() {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return !isGuideMessage(message);
+        });
+        var changed = state.messages.length !== beforeLength;
+        if (changed) {
+            renderWindow();
+        }
+        return changed;
+    }
+
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
@@ -6506,6 +6525,7 @@
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
+        clearGuideMessages: clearGuideMessages,
         clearMessages: clearMessages,
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {
