@@ -144,7 +144,7 @@ Web UI 会显示最近启动过的软件，点击即可快速再次启动。
 [plugin]
 id = "app_launcher"
 name = "应用启动器"
-version = "1.2.0"
+version = "1.3.0"
 
 [plugin.i18n]
 default_locale = "zh-CN"
@@ -209,7 +209,7 @@ plugin.call("export_apps")
 A: 开机自启功能仅支持 Windows 系统，且需要 .exe 类型的可执行文件。如果遇到权限问题，请以管理员身份运行 N.E.K.O。
 
 ### Q: 快捷方式（.lnk）能设置开机自启吗？
-A: 可以！插件会自动处理快捷方式的启动。
+A: 不能。快捷方式可以添加和启动，但开机自启只支持 .exe 文件。
 
 ### Q: 如何在多台电脑间同步配置？
 A: 使用「导出配置」功能将配置导出为 JSON 文件，然后在其他电脑上导入即可。

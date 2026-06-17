@@ -1333,7 +1333,7 @@
                     app_id: editingAppId,
                     name, path, aliases, description: desc
                 });
-                if (path.toLowerCase().endsWith('.exe')) {
+                if (stripPathQuotes(path).toLowerCase().endsWith('.exe')) {
                     await callPlugin('set_autostart', { app_id: editingAppId, enabled: autostart });
                 }
                 showMessage('✨ 更新成功', 'success');
