@@ -157,6 +157,37 @@ def _get_autostart_reg_name(app_id: str) -> str:
     return f"{_AUTORUN_PREFIX}{app_id}"
 
 
+def _coerce_bool_param(value: Any, *, field_name: str) -> bool:
+    """Normalize bool-like API values without treating non-empty strings as truthy."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    raise SdkError(f"{field_name} 必须是布尔值")
+
+
+def _normalize_aliases(aliases: Optional[List[str]]) -> List[str]:
+    if aliases is None:
+        return []
+    if isinstance(aliases, str) or not isinstance(aliases, list):
+        raise SdkError("aliases 必须是字符串数组")
+
+    processed = []
+    for alias in aliases:
+        if not isinstance(alias, str):
+            raise SdkError("aliases 必须是字符串数组")
+        alias = alias.strip()
+        if alias and alias not in processed:
+            processed.append(alias)
+    return processed
+
+
 def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> tuple[bool, str]:
     """
     设置开机自启（Windows 注册表）
@@ -327,29 +358,29 @@ class AppLauncherPlugin(NekoPluginBase):
                 return app
         return None
 
-    def _find_app_by_name_or_alias(self, apps: List[Dict[str, Any]], query: str) -> Optional[Dict[str, Any]]:
-        """通过名称或别名查找应用（模糊匹配）"""
+    def _find_apps_by_name_or_alias(self, apps: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        """通过名称或别名分阶段查找应用，保留歧义结果给调用方处理。"""
         query = query.lower().strip()
         if not query:
-            return None
+            return []
 
-        for app in apps:
-            if app.get("name", "").lower() == query:
-                return app
+        def _aliases(app: Dict[str, Any]) -> List[str]:
             aliases = app.get("aliases", [])
-            for alias in aliases:
-                if alias.lower() == query:
-                    return app
+            return [alias.lower() for alias in aliases if isinstance(alias, str)]
 
-        for app in apps:
-            if query in app.get("name", "").lower():
-                return app
-            aliases = app.get("aliases", [])
-            for alias in aliases:
-                if query in alias.lower():
-                    return app
+        phases = (
+            lambda app: app.get("name", "").lower() == query,
+            lambda app: query in _aliases(app),
+            lambda app: query in app.get("name", "").lower(),
+            lambda app: any(query in alias for alias in _aliases(app)),
+        )
 
-        return None
+        for phase in phases:
+            matches = [app for app in apps if phase(app)]
+            if matches:
+                return matches
+
+        return []
 
     def _update_app_autostart_field(self, app_id: str, autostart: bool) -> None:
         """更新应用记录中的 autostart 字段"""
@@ -508,6 +539,11 @@ class AppLauncherPlugin(NekoPluginBase):
         """添加软件"""
         name = name.strip()
         path = path.strip()
+        try:
+            autostart = _coerce_bool_param(autostart, field_name="autostart")
+            processed_aliases = _normalize_aliases(aliases)
+        except SdkError as exc:
+            return Err(exc)
 
         if not name:
             return Err(SdkError("软件名称不能为空"))
@@ -517,13 +553,6 @@ class AppLauncherPlugin(NekoPluginBase):
 
         resolved_path = _resolve_path(path)
         file_type = _get_file_type(resolved_path)
-
-        processed_aliases = []
-        if aliases:
-            for alias in aliases:
-                alias = alias.strip()
-                if alias and alias not in processed_aliases:
-                    processed_aliases.append(alias)
 
         app_id = uuid.uuid4().hex[:12]
         app = {
@@ -649,7 +678,14 @@ class AppLauncherPlugin(NekoPluginBase):
             query_source = f"ID: {app_id}"
 
         if not target and name and name.strip():
-            target = self._find_app_by_name_or_alias(apps, name.strip())
+            matches = self._find_apps_by_name_or_alias(apps, name.strip())
+            if len(matches) == 1:
+                target = matches[0]
+            elif len(matches) > 1:
+                options = [f"{a.get('name')} (ID: {a.get('id')})" for a in matches]
+                return Err(SdkError(
+                    f"匹配到多个软件 ({name})，请使用 app_id 指定: {', '.join(options)}"
+                ))
             query_source = f"名称/别名: {name}"
 
         if not target:
@@ -797,12 +833,10 @@ class AppLauncherPlugin(NekoPluginBase):
                 app["type"] = _get_file_type(new_resolved)
                 path_changed = new_path != old_path
             if aliases is not None:
-                processed = []
-                for alias in aliases:
-                    alias = alias.strip()
-                    if alias and alias not in processed:
-                        processed.append(alias)
-                app["aliases"] = processed
+                try:
+                    app["aliases"] = _normalize_aliases(aliases)
+                except SdkError as exc:
+                    return Err(exc)
             if description is not None:
                 app["description"] = description.strip()
 
@@ -869,6 +903,11 @@ class AppLauncherPlugin(NekoPluginBase):
     async def set_autostart(self, app_id: str, enabled: bool, **_):
         """设置开机自启"""
         app_id = app_id.strip()
+        try:
+            enabled = _coerce_bool_param(enabled, field_name="enabled")
+        except SdkError as exc:
+            return Err(exc)
+
         if not app_id:
             return Err(SdkError("app_id 不能为空"))
 
