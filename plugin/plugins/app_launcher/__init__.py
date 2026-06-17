@@ -182,13 +182,13 @@ def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> 
             resolved_path = _resolve_path(path)
             if not _file_exists(resolved_path):
                 return False, f"文件不存在: {resolved_path}"
-            
+
             file_type = _get_file_type(resolved_path)
-            if file_type == "lnk":
-                command = f'explorer "{resolved_path}"'
-            else:
-                command = f'"{resolved_path}"'
-            
+            if file_type != "exe":
+                return False, f"开机自启仅支持 .exe 文件: {resolved_path}"
+
+            command = f'"{resolved_path}"'
+
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 _AUTORUN_KEY_PATH,
@@ -808,10 +808,21 @@ class AppLauncherPlugin(NekoPluginBase):
             # 路径改变时刷新开机自启命令
             autostart_msg = ""
             if path_changed and app.get("autostart", False):
-                success, msg = _set_autostart_windows(app_id, app.get("name", ""), app.get("path", ""), True)
-                if not success:
-                    autostart_msg = f"，但开机自启更新失败: {msg}"
-                    self.logger.warning("Failed to refresh autostart for app {}: {}", app_id, msg)
+                if app.get("type") != "exe":
+                    success, msg = _set_autostart_windows(app_id, app.get("name", ""), old_path, False)
+                    if success:
+                        app["autostart"] = False
+                        apps[target_idx] = app
+                        self._save_apps_unlocked(apps)
+                        autostart_msg = "，已关闭开机自启（仅支持 .exe 文件）"
+                    else:
+                        autostart_msg = f"，但开机自启关闭失败: {msg}"
+                        self.logger.warning("Failed to disable autostart for app {}: {}", app_id, msg)
+                else:
+                    success, msg = _set_autostart_windows(app_id, app.get("name", ""), app.get("path", ""), True)
+                    if not success:
+                        autostart_msg = f"，但开机自启更新失败: {msg}"
+                        self.logger.warning("Failed to refresh autostart for app {}: {}", app_id, msg)
 
         self.logger.info("App updated: id={} name={}", app_id, app.get("name"))
 

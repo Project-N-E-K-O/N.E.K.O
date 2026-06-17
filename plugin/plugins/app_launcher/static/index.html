@@ -1214,6 +1214,11 @@
             const desc = app.description ? `<div class="app-desc">${escapeHtml(app.description)}</div>` : '';
             const autostartChecked = app.autostart ? 'checked' : '';
             const autostartTag = app.autostart ? '<span class="tag tag-autostart">🌸 自启</span>' : '';
+            const canEnableAutostart = app.exists && app.type === 'exe';
+            const autostartDisabled = !canEnableAutostart && !app.autostart ? 'disabled' : '';
+            const autostartTitle = canEnableAutostart
+                ? '开机自启'
+                : (app.autostart ? '关闭当前开机自启' : '仅存在的 .exe 文件支持开机自启');
 
             html += `
                 <div class="app-item" data-id="${escapeHtml(app.id)}">
@@ -1229,10 +1234,10 @@
                         ${desc}
                     </div>
                     <div class="app-actions">
-                        <label class="toggle-switch" title="开机自启">
+                        <label class="toggle-switch" title="${autostartTitle}">
                             <input type="checkbox" ${autostartChecked} 
                                    onchange="toggleAutostart('${escapeHtml(app.id)}', this.checked)"
-                                   ${!app.exists && !app.autostart ? 'disabled title="文件不存在且未设置开机自启"' : ''}>
+                                   ${autostartDisabled}>
                             <span class="toggle-slider"></span>
                         </label>
                         <button class="action-btn action-btn-launch" onclick="launchApp('${escapeHtml(app.id)}')" title="启动">▶️</button>
