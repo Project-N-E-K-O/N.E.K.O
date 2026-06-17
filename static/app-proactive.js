@@ -133,6 +133,19 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
+    function getNewUserIcebreakerEntryRemainingMs(entry) {
+        if (!entry || typeof entry !== 'object') return 0;
+        const timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter((value) => Number.isFinite(value) && value > 0);
+        if (!timestamps.length) return 0;
+        const latest = Math.max.apply(Math, timestamps);
+        return Math.max(0, NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS - (Date.now() - latest));
+    }
+
     /**
      * Returns whether a new-user icebreaker is currently owning the greeting slot.
      *
@@ -163,6 +176,44 @@
         return false;
     }
     mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
+
+    function hasCompletedNewUserIcebreakerDay(day) {
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        const entry = days && days[String(day)];
+        return !!(entry && entry.completed === true);
+    }
+
+    window.NekoNewUserIcebreakerState = Object.assign({}, window.NekoNewUserIcebreakerState || {}, {
+        readStore: readNewUserIcebreakerStore,
+        isRecentEntry: isRecentNewUserIcebreakerEntry,
+        isPeriodActive: isNewUserIcebreakerPeriodActive,
+        hasCompletedDay: hasCompletedNewUserIcebreakerDay,
+    });
+
+    function getNewUserIcebreakerRetryDelayMs() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return 1000;
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return 0;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return 0;
+
+        let remainingMs = 0;
+        for (let day = 1; day <= 7; day += 1) {
+            remainingMs = Math.max(
+                remainingMs,
+                getNewUserIcebreakerEntryRemainingMs(days[String(day)])
+            );
+        }
+        return remainingMs;
+    }
+    mod.getNewUserIcebreakerRetryDelayMs = getNewUserIcebreakerRetryDelayMs;
 
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
@@ -587,6 +638,13 @@
 
         // 前置条件检查：如果不满足触发条件，不启动调度器并重置退避
         if (!canTriggerProactively()) {
+            const icebreakerRetryDelayMs = getNewUserIcebreakerRetryDelayMs();
+            if (icebreakerRetryDelayMs > 0) {
+                const retryDelayMs = Math.max(1000, icebreakerRetryDelayMs + 250);
+                console.log('[Proactive] New-user icebreaker active/recent, retrying proactive schedule in '
+                    + retryDelayMs + 'ms');
+                S.proactiveChatTimer = setTimeout(scheduleProactiveChat, retryDelayMs);
+            }
             console.log('主动搭话前置条件不满足，不启动调度器');
             S.proactiveChatBackoffLevel = 0;
             return;
