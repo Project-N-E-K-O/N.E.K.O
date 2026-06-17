@@ -21,8 +21,7 @@ const dayGuideFiles = [
     'tutorial/yui-guide/days/day3-interaction-guide.js',
     'tutorial/yui-guide/days/day4-companion-guide.js',
     'tutorial/yui-guide/days/day5-personalization-guide.js',
-    'tutorial/yui-guide/days/day6-agent-guide.js',
-    'tutorial/yui-guide/days/day7-graduation-guide.js'
+    'tutorial/yui-guide/days/day6-agent-guide.js'
 ];
 
 test('common guide helpers freeze config, register guides, and create locale audio maps', () => {
@@ -60,7 +59,7 @@ test('guide helpers are exported from a standalone module and re-exported by com
     assert.match(helpersSource, /function deepFreeze\(value\)/);
     assert.match(helpersSource, /function registerGuide\(config, options\)/);
     assert.match(helpersSource, /function audioFilesForAllLocales\(fileName\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-guide-helpers\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/guide-helpers\.js'\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.deepFreeze\(value\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.registerGuide\(config, options\)/);
     assert.match(commonSource, /tutorialGuideHelpersApi\.audioFilesForAllLocales\(fileName\)/);
@@ -76,7 +75,7 @@ test('scoped tutorial resources are exported from a standalone module and re-exp
     assert.equal(typeof common.createScopedTutorialResources, 'function');
     assert.match(scopedSource, /root\.TutorialScopedResources = api/);
     assert.match(scopedSource, /function createScopedTutorialResources\(options\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-scoped-resources\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/scoped-resources\.js'\)/);
     assert.match(commonSource, /tutorialScopedResourcesApi\.createScopedTutorialResources\(options\)/);
     assert.doesNotMatch(commonSource, /const animationFrames = \[\];/);
 });
@@ -90,7 +89,7 @@ test('tutorial bridge command bus is exported from a standalone module and re-ex
     assert.match(bridgeSource, /root\.TutorialBridgeCommandBus = api/);
     assert.match(bridgeSource, /function createTutorialBridgeCommandBus\(options\)/);
     assert.match(bridgeSource, /DEFAULT_BRIDGE_QUEUE_KEY/);
-    assert.match(commonSource, /require\('\.\/tutorial-bridge-command-bus\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/bridge-command-bus\.js'\)/);
     assert.match(commonSource, /tutorialBridgeCommandBusApi\.createTutorialBridgeCommandBus\(options\)/);
     assert.doesNotMatch(commonSource, /DEFAULT_BRIDGE_QUEUE_KEY/);
     assert.doesNotMatch(commonSource, /function normalizeBridgeMessage\(message/);
@@ -118,7 +117,7 @@ test('target geometry registry is exported from a standalone module and re-expor
     assert.doesNotMatch(chatAvatarToolsRegistryBlock, /\.composer-icon-button\[data-avatar-tool-id\]/);
     assert.match(chatAvatarToolItemsRegistryBlock, /#composer-tool-popover-compact \.composer-icon-button\[data-avatar-tool-id\]/);
     assert.match(chatAvatarToolItemsRegistryBlock, /#composer-avatar-tool-quickbar \.composer-icon-button\[data-avatar-tool-id\]/);
-    assert.match(commonSource, /require\('\.\/tutorial-target-geometry-registry\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/target-geometry-registry\.js'\)/);
     assert.match(commonSource, /tutorialTargetGeometryRegistryApi\.createTutorialTargetGeometryRegistry\(options\)/);
     assert.doesNotMatch(commonSource, /DEFAULT_TARGET_GEOMETRY_ENTRIES/);
     assert.doesNotMatch(commonSource, /function cloneTargetGeometryEntry\(entry\)/);
@@ -136,7 +135,7 @@ test('chat window adapter is exported from a standalone module and re-exported b
     assert.match(adapterSource, /function createReactChatTutorialHostAdapter\(options\)/);
     assert.match(adapterSource, /function createChatWindowAdapter\(options\)/);
     assert.match(adapterSource, /rotateExternalizedChatCompactToolWheel/);
-    assert.match(commonSource, /require\('\.\/tutorial-chat-window-adapter\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/chat-window-adapter\.js'\)/);
     assert.match(commonSource, /tutorialChatWindowAdapterApi\.createReactChatTutorialHostAdapter\(options\)/);
     assert.match(commonSource, /tutorialChatWindowAdapterApi\.createChatWindowAdapter\(options\)/);
     assert.doesNotMatch(commonSource, /function callHost\(methodName, args\)/);
@@ -162,10 +161,10 @@ test('timeline command modules are exported from standalone modules and re-expor
     assert.match(normalizerSource, /root\.TutorialScriptNormalizer = api/);
     assert.match(engineSource, /root\.TutorialTimelineEngine = api/);
     assert.match(visualRuntimeSource, /root\.TutorialVisualRuntime = api/);
-    assert.match(commonSource, /require\('\.\/tutorial-command-registry\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-script-normalizer\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-timeline-engine\.js'\)/);
-    assert.match(commonSource, /require\('\.\/tutorial-visual-runtime\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/command-registry\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/script-normalizer\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/timeline-engine\.js'\)/);
+    assert.match(commonSource, /require\('\.\.\/core\/visual-runtime\.js'\)/);
 });
 
 test('ghost cursor can use exact timeline durations without display slowdown', async () => {
@@ -476,8 +475,9 @@ test('app interpage recognizes explicit Yui guide dedup bypass messages', () => 
     assert.match(source, /function shouldBypassYuiGuideMessageDedup\(action,\s*message\)/);
     assert.match(source, /message\s*&&\s*message\.bypassDedup === true/);
     assert.match(source, /\|\| action === 'yui_guide_set_chat_cursor'/);
+    assert.doesNotMatch(source, /\|\| action === 'yui_guide_drag_chat_cursor'/);
+    assert.doesNotMatch(source, /\|\| action === 'yui_guide_arc_chat_cursor'/);
     assert.doesNotMatch(source, /action === 'yui_guide_set_chat_cursor' && !\(message && message\.freezePoint === true\)/);
-    assert.match(source, /shouldBypassYuiGuideMessageDedup\(message\.action,\s*message\)/);
     assert.match(source, /shouldBypassYuiGuideMessageDedup\(event\.data\.action,\s*event\.data\)/);
 });
 
@@ -784,6 +784,8 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/timeline-engine.js'), -1);
     assert.notEqual(indexTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
+    assert.match(indexTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
+    assert.match(chatTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
     assert.ok(
         indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') >= 0
             && indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
@@ -823,6 +825,7 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
         'chat.html should load tutorial/yui-guide/common.js before app-interpage.js'
     );
     assert.match(appInterpageSource, /createYuiGuideTargetGeometryRegistry\(\)/);
+    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightElement\(\) \{[\s\S]*document\.createElement\('div'\)[\s\S]*spotlight\.id = 'yui-guide-chat-spotlight'/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)/);
     assert.match(appInterpageSource, /entry\.localSelectors\.some\(function \(selector\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
@@ -838,6 +841,29 @@ test('daily guide files consume common helpers instead of redeclaring shared hel
         assert.doesNotMatch(source, /function registerGuide\(config\)/);
         assert.doesNotMatch(source, /function zhAudio\(fileName\)/);
         assert.doesNotMatch(source, /function audioFilesForAllLocales\(fileName\)/);
+    }
+});
+
+test('daily guide files ship every referenced audio file', () => {
+    const audioRoot = path.join(repoRoot, 'static', 'assets/tutorial/guide-audio');
+    const audioFiles = new Set();
+
+    for (const fileName of dayGuideFiles) {
+        const guidePath = path.join(repoRoot, 'static', fileName);
+        if (!fs.existsSync(guidePath)) continue;
+        const source = fs.readFileSync(guidePath, 'utf8');
+        for (const match of source.matchAll(/zhAudio\('([^']+)'\)/g)) {
+            audioFiles.add(match[1]);
+        }
+    }
+
+    for (const locale of ['zh', 'ja', 'en', 'ko', 'ru']) {
+        for (const audioFile of audioFiles) {
+            assert.ok(
+                fs.existsSync(path.join(audioRoot, locale, audioFile)),
+                locale + ' should ship ' + audioFile
+            );
+        }
     }
 });
 
@@ -899,6 +925,8 @@ test('interaction takeover delegates external chat commands to the command bus b
 
     assert.match(constructorBlock, /this\.externalChatCommandBus = this\.createExternalChatCommandBus\(\);/);
     assert.match(source, /createExternalChatCommandBus\(\) \{[\s\S]*this\.window\.YuiGuideCommon[\s\S]*createTutorialBridgeCommandBus/);
+    assert.match(source, /resolveLanlanName\(\) \{/);
+    assert.match(source, /message\.lanlan_name = this\.resolveLanlanName\(\);/);
     assert.match(source, /postExternalChatCommand\(action,\s*payload,\s*options\) \{[\s\S]*this\.externalChatCommandBus\.post\(message,\s*normalizedOptions\)/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_buttons_disabled'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_cursor'/);

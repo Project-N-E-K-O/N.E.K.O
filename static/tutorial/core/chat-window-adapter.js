@@ -42,14 +42,24 @@
     function createReactChatTutorialHostAdapter(options) {
         const normalizedOptions = options || {};
         const win = normalizedOptions.window || root || {};
-        const host = normalizedOptions.host || win.reactChatWindowHost || null;
+        const explicitHost = normalizedOptions.host || null;
+
+        function resolveHost() {
+            return explicitHost || (win && win.reactChatWindowHost) || null;
+        }
 
         function callHost(methodName, args) {
+            const host = resolveHost();
             if (!host || typeof host[methodName] !== 'function') {
                 return false;
             }
-            host[methodName].apply(host, args || []);
-            return true;
+            try {
+                host[methodName].apply(host, args || []);
+                return true;
+            } catch (error) {
+                console.warn('[TutorialChatWindowAdapter] host call failed:', methodName, error);
+                return false;
+            }
         }
 
         return {

@@ -101,6 +101,12 @@ const compactToolFanOpenRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
+const compactHistoryOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
 export const COMPACT_TOOL_WHEEL_POSITIONS = 7;
 
 const compactToolWheelRotateRequestSchema = z.object({
@@ -298,6 +304,7 @@ export const chatWindowPropsSchema = z.object({
   galgameLoadingLabel: z.string().optional(),
   avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
   compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
+  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
   compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
   compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),

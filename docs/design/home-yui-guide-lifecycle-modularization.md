@@ -283,7 +283,8 @@ this.interactionTakeover.destroy()
 3. 把多个 DOM 合并成一个矩形高亮区域
 4. 管理 precise highlight class、spotlight variant、spotlight geometry 属性
 5. 同步 retained / scene extra spotlights 到 `YuiGuideOverlay`
-6. 统一解析 selector、DOM、rect、elements 数组等高亮目标配置
+6. 外置聊天窗模式下通过 Director/InteractionTakeover 发起 `setExternalizedChatSpotlight()`，由 `static/app-interpage.js` 在独立 `/chat` 窗口解析 `getYuiGuideChatSpotlightTarget()` 并落到实际 DOM 高光
+7. 统一解析 selector、DOM、rect、elements 数组等高亮目标配置
 
 它不负责：
 

@@ -71,6 +71,7 @@ describe('message-schema', () => {
     expect(props.choicePrompt?.source).toBe('new_user_icebreaker');
     props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
     expect(onChoiceSelect).toHaveBeenCalledTimes(1);
+    expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
   });
 
   it('accepts chat surface mode props', () => {
@@ -81,6 +82,22 @@ describe('message-schema', () => {
 
     expect(props.chatSurfaceMode).toBe('compact');
     expect(props.compactChatState).toBe('input');
+  });
+
+  it('accepts compact history open requests', () => {
+    const props = parseChatWindowProps({
+      compactHistoryOpenRequest: {
+        id: 'compact-history-open-guide',
+        open: true,
+        reason: 'avatar-floating-guide-history',
+      },
+    });
+
+    expect(props.compactHistoryOpenRequest).toEqual({
+      id: 'compact-history-open-guide',
+      open: true,
+      reason: 'avatar-floating-guide-history',
+    });
   });
 
   it('accepts the revived "full" surface mode', () => {

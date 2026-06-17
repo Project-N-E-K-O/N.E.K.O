@@ -48,6 +48,13 @@
         return !!(finalDay && finalDay.completed === true);
     }
 
+    function isDayCompleted(day) {
+        const store = readStore();
+        const days = store.days && typeof store.days === 'object' ? store.days : null;
+        const entry = days && days[String(day)];
+        return !!(entry && entry.completed === true);
+    }
+
     function getHost() {
         return window.reactChatWindowHost || null;
     }
@@ -71,6 +78,14 @@
         });
     }
 
+    function getPromptOptions() {
+        return [
+            { choice: 'chat', label: translate('tutorial.icebreaker.day1.chat', '先聊聊天') },
+            { choice: 'voice', label: translate('tutorial.icebreaker.day1.voice', '试试语音') },
+            { choice: 'explore', label: translate('tutorial.icebreaker.day1.explore', '看看功能') }
+        ];
+    }
+
     function translate(key, fallback) {
         try {
             if (typeof window.t === 'function') {
@@ -83,16 +98,8 @@
         return fallback;
     }
 
-    function getPromptOptions() {
-        return [
-            { choice: 'chat', label: translate('tutorial.icebreaker.day1.chat', '先聊聊天') },
-            { choice: 'voice', label: translate('tutorial.icebreaker.day1.voice', '试试语音') },
-            { choice: 'explore', label: translate('tutorial.icebreaker.day1.explore', '看看功能') }
-        ];
-    }
-
     async function start(reason) {
-        if (activeSession || hasCompletedFinalDay()) {
+        if (activeSession || isDayCompleted(DAY) || hasCompletedFinalDay()) {
             return false;
         }
 

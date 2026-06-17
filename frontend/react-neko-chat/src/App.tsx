@@ -1541,6 +1541,7 @@ function CompactChatApp({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
+  const compactCapsuleEntryLocked = compactTextEntryLocked || guideChatButtonsLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -5037,6 +5038,7 @@ function CompactChatApp({
     const request = avatarToolMenuOpenRequest;
     if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
     const requestId = request.id;
+    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
       lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
@@ -5048,20 +5050,19 @@ function CompactChatApp({
       setToolMenuOpen(opened);
       return;
     }
-    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     setToolMenuOpen(false);
   }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       lastCompactToolFanOpenRequestIdRef.current = request.id;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
-    lastCompactToolFanOpenRequestIdRef.current = request.id;
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
 
@@ -6584,11 +6585,10 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
-                          disabled={compactTextEntryLocked}
+                          disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;
-                            if (compactTextEntryLocked) return;
-                            if (isGuideChatButtonLockActive()) return;
+                            if (compactCapsuleEntryLocked) return;
                             requestCompactChatState('input');
                           }}
                         >
