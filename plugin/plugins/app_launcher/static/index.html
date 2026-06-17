@@ -1464,9 +1464,15 @@
                     finalMessage = t('ui.success.update', '✨ 更新成功');
                 }
             } else {
-                await callPlugin('add_app', {
+                const result = await callPlugin('add_app', {
                     name, path, aliases, description: desc, autostart
                 });
+                if (result.message) {
+                    finalMessage = `✨ ${result.message}`;
+                    if (result.message.includes('失败')) {
+                        finalType = 'warning';
+                    }
+                }
             }
             closeModal();
             await loadApps();
