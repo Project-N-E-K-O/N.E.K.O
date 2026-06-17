@@ -32,6 +32,20 @@ def test_count_tokens_uses_tiktoken_for_chinese():
     assert count_tokens("") == 0
 
 
+def test_token_helpers_treat_special_token_strings_as_literal_text():
+    from utils.tokenize import (
+        _reset_fallback_warned_for_tests,
+        count_tokens,
+        truncate_to_tokens,
+    )
+
+    _reset_fallback_warned_for_tests()
+    text = "user note contains <|endoftext|> literally"
+
+    assert count_tokens(text) > 0
+    assert truncate_to_tokens(text, 8)
+
+
 @pytest.mark.asyncio
 async def test_acount_tokens_runs_in_thread():
     from utils.tokenize import _reset_fallback_warned_for_tests, acount_tokens

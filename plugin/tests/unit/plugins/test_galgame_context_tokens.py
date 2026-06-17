@@ -52,3 +52,17 @@ def test_truncate_tokens_heuristic_bounds_long_text_with_notice() -> None:
     assert count_tokens_heuristic(result) <= 80
     assert result.startswith("prefix ")
     assert "...[truncated " in result
+
+
+def test_truncate_tokens_heuristic_falls_back_when_notice_does_not_fit() -> None:
+    text = "abcdefghijklmnopqrstuvwxyz"
+
+    result = truncate_tokens_heuristic(
+        text,
+        1,
+        notice_template="\n...[truncated {omitted} chars]",
+    )
+
+    assert count_tokens_heuristic(result) <= 1
+    assert result == "abcd"
+    assert "...[truncated " not in result
