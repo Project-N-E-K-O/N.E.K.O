@@ -2414,6 +2414,12 @@
                         applyYuiGuideChatCursorArc(event.data);
                         break;
                     }
+                    case 'yui_guide_clear_chat_messages': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
+                        applyYuiGuideClearChatMessages();
+                        break;
+                    }
                     case 'yui_guide_set_avatar_tool_menu_open': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         if (!isYuiGuideCommandForCurrentLanlan(event.data)) break;
@@ -2731,6 +2737,15 @@
         }
         host.setCompactToolWheelIndex(payload && payload.index, payload && payload.reason);
         return true;
+    }
+
+    function applyYuiGuideClearChatMessages() {
+        var host = getReactChatWindowHost();
+        if (host && typeof host.clearGuideMessages === 'function') {
+            host.clearGuideMessages();
+            return true;
+        }
+        return false;
     }
 
     function isStandaloneChatPage() {

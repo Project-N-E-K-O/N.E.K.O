@@ -229,6 +229,8 @@
                             triggered
                         };
                     }
+                } else {
+                    await Promise.resolve();
                 }
             }
 
