@@ -463,6 +463,8 @@
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
+            this.clearExternalizedChatGuideMessages();
+            this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');
             this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
