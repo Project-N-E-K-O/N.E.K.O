@@ -945,6 +945,8 @@ test('interaction takeover delegates external chat commands to the command bus b
 
     assert.match(constructorBlock, /this\.externalChatCommandBus = this\.createExternalChatCommandBus\(\);/);
     assert.match(source, /createExternalChatCommandBus\(\) \{[\s\S]*this\.window\.YuiGuideCommon[\s\S]*createTutorialBridgeCommandBus/);
+    assert.match(source, /resolveLanlanName\(\) \{/);
+    assert.match(source, /message\.lanlan_name = this\.resolveLanlanName\(\);/);
     assert.match(source, /postExternalChatCommand\(action,\s*payload,\s*options\) \{[\s\S]*this\.externalChatCommandBus\.post\(message,\s*normalizedOptions\)/);
     assert.match(source, /resolveLanlanName\(\) \{[\s\S]*this\.window\.appState[\s\S]*this\.window\.lanlan_config/);
     assert.match(source, /if \(!message\.lanlan_name\) \{[\s\S]*const lanlanName = this\.resolveLanlanName\(\);[\s\S]*message\.lanlan_name = lanlanName;/);

@@ -68,8 +68,8 @@ else:
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.DOTALL)
 _JSON_CORRECTION_MAX_ATTEMPTS = 1
-_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS = 12000
-_JSON_CORRECTION_ERROR_MAX_CHARS = 600
+_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS = 6000
+_JSON_CORRECTION_ERROR_MAX_TOKENS = 300
 _LLM_CALL_TIMEOUT_GRACE_SECONDS = 0.5
 _ANSWER_VERDICTS = frozenset({"correct", "partial", "wrong", "dont_know"})
 
@@ -122,12 +122,36 @@ def _strip_code_fences(raw_text: str) -> str:
     return text
 
 
-def _bounded_prompt_text(value: object, *, max_chars: int) -> str:
+def _bounded_prompt_text(value: object, *, max_tokens: int) -> str:
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
     text = _as_str(value, str(value))
-    if len(text) <= max_chars:
+    if count_tokens(text) <= max_tokens:
         return text
-    omitted = len(text) - max_chars
-    return f"{text[:max_chars]}\n...[truncated {omitted} chars]"
+    clipped = truncate_to_tokens(text, max_tokens)
+    omitted = len(text) - len(clipped)
+    result = f"{clipped}\n...[truncated {omitted} chars]"
+    while clipped and count_tokens(result) > max_tokens:
+        clipped = clipped[:-1]
+        omitted = len(text) - len(clipped)
+        result = f"{clipped}\n...[truncated {omitted} chars]"
+    return result
+
+
+def _bounded_prompt_text_chars(value: object, *, max_chars: int) -> str:
+    """Char-based bound for notebook sources.
+
+    Unlike :func:`_bounded_prompt_text` (token budget, shared with the JSON
+    corrector), this keeps an exact CHARACTER prefix so the reported
+    ``...[truncated N chars]`` count is precise — notebook expand/summarize
+    sources are user-pasted prose where a predictable char cap is the contract.
+    """
+    text = _as_str(value, str(value))
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    clipped = text[:max_chars]
+    omitted = len(text) - len(clipped)
+    return f"{clipped}\n...[truncated {omitted} chars]"
 
 
 def diagnostic_code_for_exception(exc: BaseException) -> str:
@@ -197,8 +221,8 @@ __all__ = [
     "_TOKEN_TRACKER_IMPORT_ERROR",
     "_CODE_FENCE_RE",
     "_JSON_CORRECTION_MAX_ATTEMPTS",
-    "_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS",
-    "_JSON_CORRECTION_ERROR_MAX_CHARS",
+    "_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS",
+    "_JSON_CORRECTION_ERROR_MAX_TOKENS",
     "_LLM_CALL_TIMEOUT_GRACE_SECONDS",
     "_ANSWER_VERDICTS",
     "_as_str",
@@ -209,5 +233,6 @@ __all__ = [
     "_clamp_int",
     "_strip_code_fences",
     "_bounded_prompt_text",
+    "_bounded_prompt_text_chars",
     "diagnostic_code_for_exception",
 ]

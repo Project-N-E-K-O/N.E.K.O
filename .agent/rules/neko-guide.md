@@ -13,6 +13,10 @@ trigger: always_on
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
 - **辅助 LLM 调用约定（memory/ + utils/）**：
   - **不下发 `temperature`**：所有 `utils.llm_client.create_chat_llm` / `ChatOpenAI` 及其包装 helper 一律不传 `temperature=...`，默认 `None` 表示"不写进请求体"。理由：(1) 兼容 o1/o3/gpt-5-thinking/Claude extended-thinking；(2) 各 task 自定温度会引入难复现的回归。守门：`scripts/check_no_temperature.py`（CI 见 `.github/workflows/analyze.yml`）。
+  - **每个 LLM 调用必须有 budget + timeout（硬性，全仓生效）**：
+    - **输出**：每个 `create_chat_llm()` / `ChatOpenAI()` 构造都必须带 **token budget**（`max_completion_tokens=` 或 `max_tokens=`）**和** `timeout=`（或 `request_timeout=`）。没有 budget 输出会失控（成本 / 延迟 / 上下文爆炸），没有 timeout 上游卡死会拖垮整条 async 管线——两者在 `utils/llm_client.py` 都**没有安全默认值**。若 budget/timeout 改在 **调用时** per-call 设（`invoke/ainvoke/astream/..(**overrides)`、或裸 `_client.chat.completions.create()`、或 `asyncio.timeout()/wait_for()` 包裹），**或藏在 `**kwargs` splat 里**（lint 看不到 splat 内容），在构造行加 `# noqa: LLM_OUTPUT_BUDGET` 并注明理由。
+    - **输入**：每条拼进 `messages` 的字符串都要先过 token budget（`truncate_to_tokens` / `truncate_head_tail_tokens` / `*_MAX_TOKENS` 常量，见 `docs/design/llm-prompt-budget.md`）。lint 用启发式检查"调用所在函数里有没有 budget 痕迹"，故意保守、会有误报；确实不该 cap 的（用户配置 / OS 窗口标题等"咎由自取"项，见 §6）用 `# noqa: LLM_INPUT_BUDGET` 并注明理由。
+    - 守门：`scripts/check_llm_budget.py`（CI 见 `.github/workflows/analyze.yml`）。预算常量统一维护在 `config/__init__.py` §3.7，索引见 `docs/design/llm-prompt-budget.md`。
   - **模型从 tier 拿，不 hardcoded fallback**：每个 LLM 调用都通过 `config_manager.get_model_api_config(<tier>)` 拿 model/base_url/api_key 三件套。不要再写 `api_config.get('model', SETTING_PROPOSER_MODEL)` 这类 fallback——`SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 退环境。tier 未配好时让 API 直接拒绝，比静默回退到 qwen-max 更安全。
   - **memory 子模块按职责选 tier**：fact extraction / signal detection / reflection synthesis / fact dedup / recall rerank 走 `summary`；recent.review + persona.correction + promotion merge 走 `correction`。不要为单点新增 hardcoded 模型名。
 

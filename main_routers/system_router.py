@@ -2841,6 +2841,7 @@ async def _deliver_break_reminder_via_llm(
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
+                timeout=timeout_seconds,  # mirror the asyncio.timeout() wrapping this stream
             ) as llm:
                 async for chunk in llm.astream(messages):
                     if mgr.state.is_proactive_preempted(proactive_sid):
@@ -3400,6 +3401,7 @@ async def emotion_analysis(request: Request):
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
+            timeout=30,
         )
         async with llm:
             result = await llm.ainvoke(messages)
@@ -5780,14 +5782,16 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+            from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
+                timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
-            return create_chat_llm(m, bu, ak, **kw)
+            return create_chat_llm(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
 
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,

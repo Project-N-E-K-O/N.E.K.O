@@ -72,8 +72,8 @@
                     </div>
                     <div class="file-list tutorial-section">
                         <div class="file-list-title" data-i18n="memory.tutorialReset">新手引导</div>
-                        <div class="tutorial-reset-wrapper">
-                            <select id="tutorial-reset-select">
+                        <div class="tutorial-reset-wrapper tutorial-reset-cascade">
+                            <select id="tutorial-reset-select" hidden aria-hidden="true" tabindex="-1">
                                 <option value="" data-i18n="memory.tutorialSelectPage">-- 选择页面 --</option>
                                 <option value="all" data-i18n="memory.tutorialAllPages">全部页面</option>
                                 <option value="home" data-i18n="memory.tutorialPageHome">主页</option>
@@ -86,7 +86,36 @@
                                 <option value="memory_browser" data-i18n="memory.tutorialPageMemoryBrowser">记忆浏览</option>
                                 <option value="current_personality" data-i18n="memory.tutorialPageCurrentPersonality">当前角色性格</option>
                             </select>
-                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetTutorialForPage(document.getElementById('tutorial-reset-select').value)" disabled>
+                            <div class="tutorial-cascader" id="tutorial-reset-cascader">
+                                <button type="button" class="tutorial-cascader-trigger" aria-haspopup="listbox" aria-expanded="false">
+                                    <span class="tutorial-reset-value">-- 选择页面 --</span>
+                                    <span class="tutorial-cascader-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div class="tutorial-cascader-popup" hidden>
+                                    <div class="tutorial-cascader-column tutorial-cascader-page-column" role="listbox" aria-label="选择页面" data-i18n-aria="memory.tutorialSelectPage">
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="all" data-i18n="memory.tutorialAllPages">全部页面</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="home" data-i18n="memory.tutorialPageHome">主页</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="model_manager" data-i18n="memory.tutorialPageModelManager">模型设置</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="parameter_editor" data-i18n="memory.tutorialPageParameterEditor">捏脸系统</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="emotion_manager" data-i18n="memory.tutorialPageEmotionManager">情感管理</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="chara_manager" data-i18n="memory.tutorialPageCharaManager">角色管理</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="settings" data-i18n="memory.tutorialPageSettings">API设置</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="voice_clone" data-i18n="memory.tutorialPageVoiceClone">语音克隆</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="memory_browser" data-i18n="memory.tutorialPageMemoryBrowser">记忆浏览</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="current_personality" data-i18n="memory.tutorialPageCurrentPersonality">当前角色性格</button>
+                                    </div>
+                                    <div class="tutorial-cascader-column tutorial-cascader-day-column" role="listbox" aria-label="主页七日新手教程" data-i18n-aria="memory.tutorialHomeDayColumn" hidden>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="1">第 1 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="2">第 2 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="3">第 3 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="4">第 4 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="5">第 5 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="6">第 6 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="7">第 7 天</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetSelectedTutorial()" disabled>
                                 <span data-i18n="memory.resetTutorialBtn">重置引导</span>
                             </button>
                         </div>
@@ -170,10 +199,17 @@
     <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day1-home-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day2-screen-voice-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day3-interaction-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day4-companion-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day5-personalization-guide.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/standin-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/spotlight-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/ghost-cursor-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/petal-transition-controller.js?v={{ static_asset_version }}"></script>
@@ -186,9 +222,11 @@
     <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
-    <!-- 通用教程管理器 -->
+    <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
+    <!-- 通用教程管理器 -->
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>

@@ -265,10 +265,12 @@ class CompressedRecentHistoryManager:
         avoiding a 3× blow-up stacked on the business-level retry.
         """
         api_config = self._config_manager.get_model_api_config('summary')
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=30, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length summary/JSON isn't truncated
         )
 
     def _get_review_llm(self):
@@ -287,10 +289,12 @@ class CompressedRecentHistoryManager:
         the safety net.
         """
         api_config = self._config_manager.get_model_api_config('correction')
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,
         )
 
@@ -502,7 +506,7 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_compression")
                 llm = self._get_llm()
                 try:
-                    response_content = (await llm.ainvoke(prompt)).content
+                    response_content = (await llm.ainvoke(prompt)).content  # noqa: LLM_INPUT_BUDGET  # compression prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
                 finally:
                     await llm.aclose()
                 response_content = str(response_content).strip()
@@ -1023,7 +1027,7 @@ class CompressedRecentHistoryManager:
                 )
                 review_llm = self._get_review_llm()
                 try:
-                    response_content = (await review_llm.ainvoke(prompt)).content
+                    response_content = (await review_llm.ainvoke(prompt)).content  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
                 finally:
                     await review_llm.aclose()
 

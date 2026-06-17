@@ -374,6 +374,7 @@ class OpenClawAdapter:
                 max_completion_tokens=OPENCLAW_MAGIC_INTENT_MAX_TOKENS,
                 max_retries=0,
                 extra_body=None,
+                timeout=10,  # quick magic-intent classification on the user path
             )
             response = await llm.ainvoke(
                 [

@@ -52,6 +52,7 @@ def test_avatar_floating_tutorial_copy_uses_csv_i18n_columns():
         for locale, expected in expected_by_locale.items():
             assert _get(_locale(locale), dotted_key) == expected
 
+
 def test_avatar_floating_zh_tw_uses_zh_guide_audio_locale():
     source = DIRECTOR_PATH.read_text(encoding="utf-8")
     assert "candidate.indexOf('zh') === 0) return 'zh';" in source

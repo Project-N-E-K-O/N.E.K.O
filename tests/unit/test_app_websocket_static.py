@@ -67,6 +67,12 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
         "function _sendGreetingCheckIfReady()",
         1,
     )[0]
+    blocking_block = source.split("function isNewUserIcebreakerBlockingGreeting(reason)", 1)[1].split(
+        "function sendHomeTutorialState(reason)",
+        1,
+    )[0]
+    assert "if (!window.newUserIcebreaker || typeof window.newUserIcebreaker.getActiveSession !== 'function')" not in blocking_block
+    assert "if (isNewUserIcebreakerPeriodActive()) return true;" in blocking_block
     assert "sendHomeTutorialState('greeting-check-consumed-by-icebreaker')" in consume_block
     assert "S._greetingCheckPending = false;" in consume_block
     assert "_resetGreetingCheckRetry(true);" in consume_block

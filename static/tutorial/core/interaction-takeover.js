@@ -317,6 +317,9 @@
             if (!Number.isFinite(message.timestamp)) {
                 message.timestamp = Date.now();
             }
+            if (!message.lanlan_name) {
+                message.lanlan_name = this.resolveLanlanName();
+            }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
                 return this.externalChatCommandBus.post(message, normalizedOptions);
@@ -463,6 +466,8 @@
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
+            this.clearExternalizedChatGuideMessages();
+            this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');
             this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');

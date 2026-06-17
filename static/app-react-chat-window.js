@@ -2390,6 +2390,7 @@
         if (!message || typeof message !== 'object') return null;
         return {
             id: message.id,
+            source: message.source,
             role: message.role,
             author: message.author,
             time: message.time,
@@ -2450,6 +2451,7 @@
 
         return {
             id: String(message.id),
+            source: message.source ? String(message.source) : undefined,
             role: message.role || 'assistant',
             author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
@@ -4196,7 +4198,10 @@
     }
 
     function isYuiGuideChatMessage(message) {
-        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+        if (!message) return false;
+        if (typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0) return true;
+        var source = typeof message.source === 'string' ? message.source : '';
+        return source === 'yui_guide' || source === 'yui-guide-director';
     }
 
     function clearGuideMessages() {

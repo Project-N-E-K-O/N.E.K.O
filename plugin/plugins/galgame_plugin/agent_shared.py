@@ -79,7 +79,10 @@ from .service import (
     resolve_effective_current_line,
 )
 
-_CHOICE_INSTRUCTION_TEXT_MAX_CHARS = 160
+# Menu-choice text is short by nature; cap it tight so an over-long (e.g.
+# injection) choice string is truncated before being quoted into the
+# instruction. ~50 heuristic tokens ≈ 33 CJK / 200 ASCII chars. Tunable.
+_CHOICE_INSTRUCTION_TEXT_MAX_TOKENS = 50
 _CHOICE_INSTRUCTION_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TITLE_START_TEXT_MARKERS = (
     "start",

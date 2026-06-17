@@ -236,6 +236,8 @@ def test_chat_templates_version_react_chat_bundle_from_react_assets():
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
+    assert 'app-interpage.js?v={{ static_asset_version }}' in chat_template
+    assert 'app-interpage.js?v={{ static_asset_version }}' in index_template
 
 
 def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
@@ -473,10 +475,12 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "setHomeTutorialInputLocked: setHomeTutorialInputLocked" in script
     assert "setAvatarToolMenuOpen: setAvatarToolMenuOpen" in script
     assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
+    assert "setCompactHistoryOpen: setCompactHistoryOpen" in script
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
     assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
     assert "avatarToolMenuOpenRequest" in script
     assert "compactToolFanOpenRequest" in script
+    assert "compactHistoryOpenRequest" in script
     assert "compactToolWheelRotateRequest" in script
     assert "compactToolWheelIndexRequest" in script
 

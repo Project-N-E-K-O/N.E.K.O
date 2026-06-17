@@ -883,15 +883,16 @@ class ReflectionEngine:
             # try/except 兜底返回 []）。
             # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
             # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
-            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
+            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -2211,13 +2212,15 @@ class ReflectionEngine:
             api_config = self._config_manager.get_model_api_config('summary')
             # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
             # max_retries=0: 禁 SDK 自动重试。
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON isn't truncated
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -2279,14 +2282,16 @@ class ReflectionEngine:
             # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
             # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
             # extra_body=None: 显式开 thinking。
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=90, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -2812,14 +2817,16 @@ class ReflectionEngine:
             from utils.llm_client import create_chat_llm
             set_call_type("memory_recheck_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -3255,10 +3262,12 @@ class ReflectionEngine:
         # reflection 锁做 stamp 和 CAS），所以 90s 不阻塞同角色其他 reflection 写。
         # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
         # extra_body=None: 显式开 thinking。
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
             timeout=90, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,
         )
         try:
