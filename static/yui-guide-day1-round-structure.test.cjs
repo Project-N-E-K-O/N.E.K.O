@@ -197,6 +197,7 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /'chat-capsule-input': 'capsule-input'/);
   assert.match(appInterpageSource, /if \(kind === 'capsule-input'\) \{[\s\S]*data-compact-geometry-part="capsuleBody"/);
   assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*if \(isYuiGuidePcOverlayAvailable\(\)\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}\);/);
+  assert.match(appInterpageSource, /if \(!rect \|\| rect\.width <= 0 \|\| rect\.height <= 0\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: \[\] \}\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);
   assert.match(directorSource, /setExternalizedChatCursorEffect\(kind,\s*effect,\s*options\)[\s\S]*this\.rememberExternalizedChatCursorHandoffPoint\(normalizedKind,\s*cursorOptions\.effect\);[\s\S]*this\.interactionTakeover\.setExternalizedChatCursor\(normalizedKind,\s*cursorOptions\);/);

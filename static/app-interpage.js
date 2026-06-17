@@ -2773,6 +2773,9 @@
             : null;
 
         if (!rect || rect.width <= 0 || rect.height <= 0) {
+            if (isYuiGuidePcOverlayAvailable()) {
+                sendYuiGuidePcOverlayPatch({ spotlights: [] });
+            }
             if (!spotlight) {
                 return;
             }
