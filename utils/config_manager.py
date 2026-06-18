@@ -4163,6 +4163,22 @@ class ConfigManager:
                     return resolved_url or core_profile.get('CORE_URL', '')
                 return ''
 
+            def _resolve_game_follow_model_id(prefix: str, provider: str) -> str:
+                if prefix not in ('gameMain', 'gameSummary'):
+                    return ''
+                if provider == 'follow_core':
+                    follow_core_profile = assist_api_profiles.get(core_api_value)
+                    if isinstance(follow_core_profile, dict):
+                        if prefix == 'gameSummary':
+                            return follow_core_profile.get('SUMMARY_MODEL', '') or config.get('SUMMARY_MODEL', '')
+                        return follow_core_profile.get('CONVERSATION_MODEL', '') or config.get('CONVERSATION_MODEL', '')
+                    return config.get('CORE_MODEL', '')
+                if provider != 'follow_assist':
+                    return ''
+                if prefix == 'gameSummary':
+                    return config.get('SUMMARY_MODEL', '')
+                return config.get('CONVERSATION_MODEL', '')
+
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)
                 ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
@@ -4223,7 +4239,12 @@ class ConfigManager:
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif cfg_model is not None:
-                    config[model_key] = cfg_model or config.get(model_key, '')
+                    if cfg_model:
+                        config[model_key] = cfg_model
+                    else:
+                        followed_model = _resolve_game_follow_model_id(prefix, provider)
+                        if followed_model:
+                            config[model_key] = followed_model
 
                 # API Key 处理：
                 #   follow_core   → 从核心 API Key 派生

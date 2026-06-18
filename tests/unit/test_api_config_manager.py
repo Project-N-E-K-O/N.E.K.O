@@ -377,6 +377,58 @@ class TestCustomApiToggle:
         assert result['api_key'] == 'sk-game-main-custom'
 
     @pytest.mark.unit
+    def test_game_follow_assist_derives_model_id_from_assist_profile(self, config_manager):
+        """Mini-game follow-assist slots keep model/url/key from the same assist provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'gemini',
+            'assistApiKeyGemini': 'sk-gemini',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_assist',
+            'gameMainModelId': '',
+            'gameSummaryModelProvider': 'follow_assist',
+            'gameSummaryModelId': '',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        core_config = config_manager.get_core_config()
+
+        assert game_main['model'] == core_config['CONVERSATION_MODEL']
+        assert game_main['base_url'] == core_config['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-gemini'
+        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['base_url'] == core_config['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-gemini'
+
+    @pytest.mark.unit
+    def test_game_follow_core_derives_model_id_from_core_profile(self, config_manager):
+        """Mini-game follow-core slots keep model/url/key from the same core provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-openai',
+            'coreApi': 'openai',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_core',
+            'gameMainModelId': '',
+            'gameSummaryModelProvider': 'follow_core',
+            'gameSummaryModelId': '',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        from utils.api_config_loader import get_assist_api_profiles
+        openai_profile = get_assist_api_profiles()['openai']
+
+        assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
+        assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-core-openai'
+        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-core-openai'
+
+    @pytest.mark.unit
     def test_custom_api_key_empty_string_valid(self, config_manager):
         """Empty string is a legal API key for local providers (no auth needed)."""
         _write_core_config(config_manager, {
