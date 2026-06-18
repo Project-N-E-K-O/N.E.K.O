@@ -161,8 +161,12 @@ async def test_create_chat_llm_async_closes_late_result_after_cancellation(
     await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=1)
 
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        result = await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        pytest.fail(f"expected cancellation, got {result!r}")
 
     release.set()
     await asyncio.wait_for(closed.wait(), timeout=2)
