@@ -1009,6 +1009,7 @@ class LLMSessionManager:
         self.pending_context_appends: list[dict] = []
         self._context_append_sequence = 0
         self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()
+        self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -1518,11 +1519,31 @@ class LLMSessionManager:
         )
         if pending_needed and payload["lifetime"] == "current_session":
             payload["_dedup_pending_ready"] = True
+        request_key = self._context_append_request_key(payload)
         if self._context_append_request_seen(payload):
+            inflight = getattr(self, "_context_append_inflight_results", None)
+            if isinstance(inflight, dict) and request_key in inflight:
+                original_result = await asyncio.shield(inflight[request_key])
+                if original_result.appended:
+                    return ContextAppendResult(
+                        appended=False,
+                        deduped=True,
+                        targets=original_result.targets,
+                        reason="duplicate_request_id",
+                    )
+                return original_result
             return ContextAppendResult(appended=False, deduped=True, reason="duplicate_request_id")
         reserved_request_id = bool(payload["request_id"])
+        inflight_result: asyncio.Future[ContextAppendResult] | None = None
         if reserved_request_id:
             self._remember_context_append_request_id(payload)
+            if request_key is not None:
+                inflight = getattr(self, "_context_append_inflight_results", None)
+                if not isinstance(inflight, dict):
+                    inflight = {}
+                    self._context_append_inflight_results = inflight
+                inflight_result = asyncio.get_running_loop().create_future()
+                inflight[request_key] = inflight_result
 
         if pending_needed:
             if payload["lifetime"] in {"next_session", "session_family"}:
@@ -1541,16 +1562,38 @@ class LLMSessionManager:
             payload["_sequence"] = sequence
             payload["_pending_ready"] = True
             pending.append(payload)
-            return ContextAppendResult(appended=True, targets=("pending_ready",))
+            result = ContextAppendResult(appended=True, targets=("pending_ready",))
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(result)
+            if request_key is not None:
+                inflight = getattr(self, "_context_append_inflight_results", None)
+                if isinstance(inflight, dict):
+                    inflight.pop(request_key, None)
+            return result
 
         try:
             result = await self._append_context_to_targets(payload)
         except Exception:
             if reserved_request_id:
                 self._forget_context_append_request_id(payload)
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(ContextAppendResult(
+                    appended=False,
+                    reason="context_inject_failed",
+                ))
+            if request_key is not None:
+                inflight = getattr(self, "_context_append_inflight_results", None)
+                if isinstance(inflight, dict):
+                    inflight.pop(request_key, None)
             raise
         if not result.appended and reserved_request_id:
             self._forget_context_append_request_id(payload)
+        if inflight_result is not None and not inflight_result.done():
+            inflight_result.set_result(result)
+        if request_key is not None:
+            inflight = getattr(self, "_context_append_inflight_results", None)
+            if isinstance(inflight, dict):
+                inflight.pop(request_key, None)
         return result
 
     async def _flush_pending_context_appends(self) -> int:

@@ -810,19 +810,72 @@ async def test_append_context_reserves_request_id_before_awaiting_prime():
     ))
     await asyncio.wait_for(entered.wait(), timeout=1)
 
-    duplicate = await mgr.append_context(
+    duplicate_task = asyncio.create_task(mgr.append_context(
         source="game.realtime_context",
         role="user",
         text="same context replay",
         request_id="ctx-1",
-    )
+    ))
+    await asyncio.sleep(0)
+    assert duplicate_task.done() is False
+
     release.set()
     first_result = await first
+    duplicate = await duplicate_task
 
     assert first_result.appended is True
     assert duplicate.appended is False
     assert duplicate.deduped is True
     assert duplicate.reason == "duplicate_request_id"
+    assert session.calls == [("same context", True)]
+
+
+@pytest.mark.asyncio
+async def test_append_context_duplicate_waits_for_failed_original_before_reporting():
+    mgr = _make_manager()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _FailingBlockingPrimeSession:
+        def __init__(self):
+            self.calls = []
+
+        async def prime_context(self, text, *, skipped=False):
+            self.calls.append((text, skipped))
+            entered.set()
+            await release.wait()
+            raise RuntimeError("prime unavailable")
+
+    session = _FailingBlockingPrimeSession()
+    mgr.session = session
+
+    first = asyncio.create_task(mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context",
+        request_id="ctx-1",
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    duplicate_task = asyncio.create_task(mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context replay",
+        request_id="ctx-1",
+    ))
+    await asyncio.sleep(0)
+    assert duplicate_task.done() is False
+
+    release.set()
+    first_result = await first
+    duplicate = await duplicate_task
+
+    assert first_result.appended is False
+    assert first_result.deduped is False
+    assert first_result.reason == "realtime_prime_failed"
+    assert duplicate.appended is False
+    assert duplicate.deduped is False
+    assert duplicate.reason == "realtime_prime_failed"
     assert session.calls == [("same context", True)]
 
 
