@@ -68,6 +68,8 @@ async def test_append_context_does_not_prime_text_session_after_history_append()
     assert result.appended is True
     assert result.targets == ("active_history",)
     assert len(session._conversation_history) == 1
+    assert isinstance(session._conversation_history[0], AIMessage)
+    assert session._conversation_history[0].content == "tutorial finished"
     assert session.calls == []
 
 
@@ -259,6 +261,7 @@ async def test_append_context_reserves_request_id_before_awaiting_prime():
     assert first_result.appended is True
     assert duplicate.appended is False
     assert duplicate.deduped is True
+    assert duplicate.reason == "duplicate_request_id"
     assert session.calls == [("user: same context", True)]
 
 
