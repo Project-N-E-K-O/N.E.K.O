@@ -181,6 +181,57 @@ async def test_final_swap_reset_preserves_unconsumed_next_session_context():
 
 
 @pytest.mark.asyncio
+async def test_append_context_preserves_system_role_in_next_session_cache():
+    mgr = _make_manager()
+
+    result = await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="keep this as system context",
+        lifetime="next_session",
+    )
+
+    assert result.appended is True
+    assert result.targets == ("new_session_cache",)
+    assert mgr.next_session_context_messages == [
+        {"role": "system", "text": "keep this as system context"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_final_swap_primes_late_next_session_context_before_consuming():
+    mgr = _make_manager()
+    mgr.next_session_context_messages = [
+        {"role": "Lan", "text": "already transferred"},
+        {"role": "system", "text": "late before promote"},
+    ]
+
+    class _AppendingPrimeSession:
+        def __init__(self):
+            self.calls = []
+
+        async def prime_context(self, text, *, skipped=False):
+            self.calls.append((text, skipped))
+            if len(self.calls) == 1:
+                mgr.next_session_context_messages.append(
+                    {"role": "Master", "text": "late during prime"}
+                )
+
+    session = _AppendingPrimeSession()
+    mgr.session = session
+
+    consumed = await mgr._prime_late_next_session_context_after_swap(1)
+    mgr._consume_next_session_context_messages(consumed)
+
+    assert consumed == 3
+    assert session.calls == [
+        ("system | late before promote\n", True),
+        ("Master | late during prime\n", True),
+    ]
+    assert mgr.next_session_context_messages == []
+
+
+@pytest.mark.asyncio
 async def test_append_context_when_ready_flushes_before_user_input():
     mgr = _make_manager()
     mgr.session_ready = False

@@ -1241,11 +1241,12 @@ class LLMSessionManager:
         if not isinstance(cache, list):
             cache = []
             self.next_session_context_messages = cache
-        speaker = (
-            getattr(self, "master_name", "user")
-            if role == "user"
-            else getattr(self, "lanlan_name", "assistant")
-        )
+        if role == "user":
+            speaker = getattr(self, "master_name", "user")
+        elif role == "assistant":
+            speaker = getattr(self, "lanlan_name", "assistant")
+        else:
+            speaker = "system"
         cache.append({"role": speaker, "text": text})
         return True
 
@@ -1261,6 +1262,31 @@ class LLMSessionManager:
         cache = getattr(self, "next_session_context_messages", None)
         if isinstance(cache, list):
             del cache[:count]
+
+    async def _prime_late_next_session_context_after_swap(self, start_index: int) -> int:
+        consumed_count = max(0, start_index)
+        session = getattr(self, "session", None)
+        prime_context = getattr(session, "prime_context", None)
+        if not callable(prime_context):
+            return consumed_count
+
+        for _ in range(_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES):
+            snapshot = self._snapshot_next_session_context_messages()
+            late_context = snapshot[consumed_count:]
+            if not late_context:
+                break
+            try:
+                await prime_context(self._convert_cache_to_str(late_context), skipped=True)
+            except (web_exceptions.ConnectionClosed, AttributeError) as exc:
+                logger.warning(
+                    "[%s] final-swap late next-session context prime failed: %s",
+                    self.lanlan_name,
+                    exc,
+                )
+                break
+            consumed_count += len(late_context)
+
+        return consumed_count
 
     async def _append_context_to_targets(self, payload: dict) -> ContextAppendResult:
         role = payload["role"]
@@ -8108,7 +8134,10 @@ class LLMSessionManager:
                 self.initial_next_session_context_snapshot_len
                 + len(incremental_next_session_context)
             )
-            self._consume_next_session_context_messages(transferred_next_context_count)
+            consumed_next_context_count = await self._prime_late_next_session_context_after_swap(
+                transferred_next_context_count
+            )
+            self._consume_next_session_context_messages(consumed_next_context_count)
 
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
