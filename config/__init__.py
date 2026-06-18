@@ -1854,6 +1854,16 @@ FOCUS_IDLE_REPLIED_RETENTION = 0.6
 - 须 < FOCUS_IDLE_SILENT_RETENTION：开口比沉默消耗更多。调低 = 开口后退得更快。
 - 上游：SM.update_focus 的 retention_override（idle 收尾按 action 选这两档之一）。"""
 
+# 调参护栏：把两档冷却的注释约定变成 fail-fast 的硬校验，避免后续误配把语义反转——
+# >= 1.0 会让 idle tick 不降反升（破坏「绝不抬升」），silent <= replied 会让「开口」
+# 比「沉默」消耗更少（快慢档颠倒）。模块加载即校验，配错直接报错而非静默跑坏。
+if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION < FOCUS_IDLE_SILENT_RETENTION < 1.0):
+    raise ValueError(
+        "Focus idle retentions must satisfy 0 < replied < silent < 1 "
+        f"(got replied={FOCUS_IDLE_REPLIED_RETENTION}, "
+        f"silent={FOCUS_IDLE_SILENT_RETENTION})"
+    )
+
 FOCUS_CHARGE_ENTER = 1.0
 """进入凝神的电荷阈值。
 - 用途：charge ≥ 此值 → REGULAR→FOCUS。
