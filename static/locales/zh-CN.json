@@ -1063,10 +1063,12 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "mimo": "MiMo（小米）",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
