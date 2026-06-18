@@ -44,6 +44,7 @@ _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
+_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
 _CONTEXT_APPEND_DEFAULT_MAX_TOKENS = 1000
 _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "game.icebreaker": 500,
@@ -867,9 +868,11 @@ class LLMSessionManager:
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
         self.message_cache_for_new_session = []
+        self.next_session_context_messages: list[dict] = []
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self.initial_next_session_context_snapshot_len = 0
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
         self.session_start_time = None
@@ -1235,10 +1238,10 @@ class LLMSessionManager:
             return content[: max(max_tokens * 8, max_tokens)].strip()
 
     def _append_context_to_new_session_cache(self, role: str, text: str) -> bool:
-        cache = getattr(self, "message_cache_for_new_session", None)
+        cache = getattr(self, "next_session_context_messages", None)
         if not isinstance(cache, list):
             cache = []
-            self.message_cache_for_new_session = cache
+            self.next_session_context_messages = cache
         speaker = (
             getattr(self, "master_name", "user")
             if role == "user"
@@ -1343,26 +1346,45 @@ class LLMSessionManager:
             self._forget_context_append_request_id(payload["source"], payload["request_id"])
         return result
 
-    async def _flush_pending_context_appends(self) -> None:
+    async def _flush_pending_context_appends(self) -> int:
         pending = getattr(self, "pending_context_appends", None)
         if not isinstance(pending, list) or not pending:
-            return
+            return 0
         self.pending_context_appends = []
         pending.sort(key=lambda payload: (
             payload.get("ordering_key") or f"~{int(payload.get('_sequence', 0)):020d}",
             int(payload.get("_sequence", 0)),
         ))
         retry: list[dict] = []
+        flushed = 0
         for payload in pending:
             try:
                 result = await self._append_context_to_targets(payload)
                 if not result.appended:
                     retry.append(payload)
+                else:
+                    flushed += 1
             except Exception as exc:
                 retry.append(payload)
                 print(f"[{self.lanlan_name}] context append flush failed: {exc}")
         if retry:
             self.pending_context_appends = retry + self.pending_context_appends
+        return flushed
+
+    async def _drain_pending_context_appends_before_ready(self) -> None:
+        for _ in range(_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES):
+            pending = getattr(self, "pending_context_appends", None)
+            if not isinstance(pending, list) or not pending:
+                return
+            flushed = await self._flush_pending_context_appends()
+            pending = getattr(self, "pending_context_appends", None)
+            if not isinstance(pending, list) or not pending:
+                return
+            if flushed <= 0:
+                return
+        pending = getattr(self, "pending_context_appends", None)
+        if isinstance(pending, list) and pending:
+            print(f"[{self.lanlan_name}] context append ready drain left {len(pending)} pending item(s)")
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
@@ -2194,6 +2216,7 @@ class LLMSessionManager:
                         self.summary_triggered_time = datetime.now()
                         self.message_cache_for_new_session = []
                         self.initial_cache_snapshot_len = 0
+                        self.initial_next_session_context_snapshot_len = 0
                         self.sync_message_queue.put({'type': 'system', 'data': 'renew session'})
 
                 # 2. agent 任务结果即时触发（无需等待 40s）：有挂起的额外提示 → 立刻启动预热
@@ -3932,6 +3955,9 @@ class LLMSessionManager:
 
         if clear_main_cache:
             self.message_cache_for_new_session = []
+            if from_final_swap:
+                self.next_session_context_messages = []
+            self.initial_next_session_context_snapshot_len = 0
 
     async def _cleanup_pending_session_resources(self):
         """[Hot-swap related] Safely cleans up ONLY PENDING connector and session if they exist AND are not the current main session."""
@@ -5174,10 +5200,12 @@ class LLMSessionManager:
             # 重置状态
             if new:
                 self.message_cache_for_new_session = []
+                self.next_session_context_messages = []
                 self.last_time = None
                 self.is_preparing_new_session = False
                 self.summary_triggered_time = None
                 self.initial_cache_snapshot_len = 0
+                self.initial_next_session_context_snapshot_len = 0
                 # 清空输入缓存（新对话时不需要保留旧的输入）
                 async with self.input_cache_lock:
                     self.pending_input_data.clear()
@@ -5241,7 +5269,7 @@ class LLMSessionManager:
                 # 在 queued context 写入 session 前保持输入闸门关闭；否则第一条
                 # 缓存/并发用户输入可能抢在上下文前面进入模型。
                 async with self.input_cache_lock:
-                    await self._flush_pending_context_appends()
+                    await self._drain_pending_context_appends_before_ready()
                     self.session_ready = True
 
                 # 处理在session启动期间可能已经缓存的输入数据
@@ -5596,6 +5624,8 @@ class LLMSessionManager:
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()
+            next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
+            self.initial_next_session_context_snapshot_len = len(next_session_context_messages)
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             from utils.internal_http_client import get_internal_http_client
             _hs_client = get_internal_http_client()
@@ -5610,7 +5640,11 @@ class LLMSessionManager:
                 raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
             if not resp.is_success:
                 raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-            initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
+            initial_prompt += (
+                resp.text
+                + self._convert_cache_to_str(next_session_context_messages)
+                + self._convert_cache_to_str(self.message_cache_for_new_session)
+            )
             print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
@@ -5653,6 +5687,7 @@ class LLMSessionManager:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
+                self.initial_next_session_context_snapshot_len = 0
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
                 if not self.background_preparation_task or self.background_preparation_task.done():
@@ -7897,7 +7932,14 @@ class LLMSessionManager:
         try:
             new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
             old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
-            incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
+            next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
+            incremental_next_session_context = next_session_context_messages[
+                self.initial_next_session_context_snapshot_len:
+            ]
+            incremental_cache = (
+                list(incremental_next_session_context)
+                + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
+            )
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
                 final_prime_text = self._convert_cache_to_str(incremental_cache)

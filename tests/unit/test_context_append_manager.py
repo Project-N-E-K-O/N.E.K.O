@@ -15,6 +15,8 @@ def _make_manager():
     mgr.session_ready = True
     mgr.is_preparing_new_session = False
     mgr.message_cache_for_new_session = []
+    mgr.next_session_context_messages = []
+    mgr.initial_next_session_context_snapshot_len = 0
     return mgr
 
 
@@ -106,7 +108,29 @@ async def test_append_context_seeds_next_session_cache_when_preparing():
 
     assert result.appended is True
     assert result.targets == ("new_session_cache",)
-    assert mgr.message_cache_for_new_session == [{"role": "Master", "text": "choice A"}]
+    assert mgr.next_session_context_messages == [{"role": "Master", "text": "choice A"}]
+    assert mgr.message_cache_for_new_session == []
+
+
+@pytest.mark.asyncio
+async def test_append_context_next_session_context_survives_preparation_cache_reset():
+    mgr = _make_manager()
+
+    result = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="carry this tutorial note",
+        audience="model",
+        lifetime="next_session",
+    )
+
+    mgr.message_cache_for_new_session = []
+
+    assert result.appended is True
+    assert result.targets == ("new_session_cache",)
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "carry this tutorial note"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -186,6 +210,49 @@ async def test_pending_context_can_flush_before_session_ready_opens():
 
     assert mgr.session_ready is False
     assert [message.content for message in history] == ["system: queued context"]
+
+
+@pytest.mark.asyncio
+async def test_pending_context_drain_includes_items_queued_during_flush():
+    mgr = _make_manager()
+    mgr.session_ready = False
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+
+    await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="first context",
+        timing="when_ready",
+        ordering_key="001",
+    )
+
+    original_append = mgr._append_context_to_targets
+    queued_late = False
+
+    async def append_and_queue(payload):
+        nonlocal queued_late
+        result = await original_append(payload)
+        if not queued_late:
+            queued_late = True
+            await mgr.append_context(
+                source="topic.hook",
+                role="system",
+                text="second context",
+                timing="when_ready",
+                ordering_key="002",
+            )
+        return result
+
+    mgr._append_context_to_targets = append_and_queue
+    await mgr._drain_pending_context_appends_before_ready()
+
+    assert mgr.session_ready is False
+    assert mgr.pending_context_appends == []
+    assert [message.content for message in history] == [
+        "system: first context",
+        "system: second context",
+    ]
 
 
 @pytest.mark.asyncio
@@ -294,9 +361,10 @@ async def test_append_context_keeps_partial_targets_when_realtime_prime_fails():
     assert result.targets == ("new_session_cache",)
     assert duplicate.appended is False
     assert duplicate.deduped is True
-    assert mgr.message_cache_for_new_session == [
+    assert mgr.next_session_context_messages == [
         {"role": "Lan", "text": "cached for next session"},
     ]
+    assert mgr.message_cache_for_new_session == []
 
 
 @pytest.mark.asyncio
