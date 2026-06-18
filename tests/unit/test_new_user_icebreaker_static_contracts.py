@@ -331,11 +331,17 @@ def test_icebreaker_context_append_requires_successful_json_payload():
     assert "'X-CSRF-Token'" in runtime
     assert "error_code === 'csrf_validation_failed'" in append_context_block
     assert "refreshLocalMutationHeaders()" in append_context_block
-    assert "return response.json();" in append_context_block
+    assert "function parseContextResponse(response)" in append_context_block
+    assert "return response.json().then(function (data)" in append_context_block
     assert "return !!(data && data.ok);" in append_context_block
-    assert append_context_block.index("return response.json();") < append_context_block.index(
+    assert append_context_block.index("function parseContextResponse(response)") < append_context_block.index(
+        "function postContextWithHeaders(headers, allowRetry)"
+    )
+    assert append_context_block.index("return response.json().then(function (data)") < append_context_block.index(
         "return !!(data && data.ok);"
     )
+    assert "return parseContextResponse(response);" in append_context_block
+    assert "return response;\n            }).then(function (response)" not in append_context_block
     assert "return true;" not in append_context_block
 
 

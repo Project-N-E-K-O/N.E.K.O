@@ -320,6 +320,13 @@
                 request_id: String(extra.requestId || '')
             }
         };
+        function parseContextResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
         function postContextWithHeaders(headers, allowRetry) {
             return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
                 method: 'POST',
@@ -336,15 +343,10 @@
                                 return postContextWithHeaders(nextHeaders, false);
                             });
                         }
-                        return response;
+                        return parseContextResponse(response);
                     });
                 }
-                return response;
-            }).then(function (response) {
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-                return response.json();
-            }).then(function (data) {
-                return !!(data && data.ok);
+                return parseContextResponse(response);
             });
         }
 
