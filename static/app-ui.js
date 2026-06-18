@@ -3621,8 +3621,7 @@
 
         // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份，
-        // 然后在**应用内嵌入「拟态窗」**（iframe 模态，见 static/social-embed.js）打开社区——
-        // 不再弹系统浏览器 / 新标签页。
+        // 然后在 Electron 内交给系统浏览器打开，避免被 setWindowOpenHandler 拦成桌面 BrowserWindow。
         window.addEventListener('live2d-social-click', async () => {
             try {
                 const cfgRes = await fetch('/api/system/social/config');
@@ -3663,28 +3662,12 @@
                 } catch (cidErr) {
                     console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
                 }
-                // 应用内嵌入拟态窗打开（iframe 模态，不调系统浏览器）。
-                // openSocialEmbed 由 static/social-embed.js 提供（桌宠 pe:none 穿透坑已在其内处理）。
-                if (typeof window.openSocialEmbed === 'function') {
-                    // openSocialEmbed 返回 false = URL 非法/非 http(s) 被拒（静默失败兜底）→ 提示用户
-                    if (window.openSocialEmbed(url) === false) {
-                        console.error('[social] openSocialEmbed rejected url:', url);
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(
-                                window.t ? window.t('app.socialOpenFailed', { error: 'invalid url' }) : '社交窗口打开失败',
-                                4000
-                            );
-                        }
-                    }
-                } else {
-                    console.error('[social] openSocialEmbed unavailable (social-embed.js not loaded)');
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(
-                            window.t ? window.t('app.socialOpenFailed', { error: 'embed unavailable' }) : '社交窗口打开失败',
-                            4000
-                        );
-                    }
+                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                    await window.electronShell.openExternal(url);
+                    return;
                 }
+                const opened = window.open(url, '_blank', 'noopener,noreferrer');
+                try { opened && opened.focus && opened.focus(); } catch (_) { /* ignore */ }
             } catch (err) {
                 console.error('[social] open failed:', err);
                 if (typeof window.showStatusToast === 'function') {
