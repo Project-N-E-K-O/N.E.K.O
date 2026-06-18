@@ -1720,20 +1720,25 @@ class OmniOfflineClient:
         return summary
 
     @staticmethod
-    def _focus_stream_overrides(thinking_on: bool, uses_vision: bool) -> dict:
+    def _focus_stream_overrides(thinking_on: bool, uses_vision: bool, model: str) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
-        Returns ``{"extra_body": None}`` (drop the thinking-off body → reason
-        freely) only when ``thinking_on`` AND the turn does not use a vision
-        model; otherwise ``{}`` (instance default, thinking off). The vision
-        guard mirrors the proactive Phase-2 rule: a vision model + thinking
-        reliably times out (see ``main_routers/system_router.py`` Phase-2
-        note). ``uses_vision`` must be True both when this turn carries images
-        AND when the session has already sent images this session (image data
-        persists in history, so a later text-only turn still runs on the
-        vision model).
+        When thinking-on (and not on a vision model), override extra_body with
+        ``focus_extra_body(model)`` — the provider's resolved extra_body minus
+        the thinking-disable keys. This lets thinking run free while PRESERVING
+        non-thinking provider extras (e.g. step-2-mini's built-in web_search),
+        which a blunt ``extra_body=None`` would silently drop. Returns ``{}``
+        (instance default, thinking off) otherwise.
+
+        ``uses_vision`` must be True both when this turn carries images AND when
+        the session has already sent images (image data persists in history, so
+        a later text-only turn still runs on the vision model — vision + thinking
+        reliably times out, see ``main_routers/system_router.py`` Phase-2 note).
         """
-        return {"extra_body": None} if (thinking_on and not uses_vision) else {}
+        if not (thinking_on and not uses_vision):
+            return {}
+        from config.providers import focus_extra_body
+        return {"extra_body": focus_extra_body(model)}
 
     async def stream_text(
         self,
@@ -2007,7 +2012,7 @@ class OmniOfflineClient:
                         # session (sticky flag, not model-name equality — see the
                         # _focus_images_seen note where has_images is computed).
                         _focus_overrides = self._focus_stream_overrides(
-                            thinking_on, self._focus_images_seen,
+                            thinking_on, self._focus_images_seen, self.model,
                         )
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
@@ -3062,6 +3067,11 @@ class OmniOfflineClient:
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
         if images:
+            # Focus vision guard: proactive media permanently moves the session
+            # onto the vision model too, so mark it like stream_text does —
+            # otherwise a later text-only Focus turn would run thinking-on on the
+            # vision model and hit the vision+thinking timeout.
+            self._focus_images_seen = True
             if self.vision_model and self.vision_model != self.model:
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"

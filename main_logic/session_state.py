@@ -302,10 +302,14 @@ class SessionStateMachine:
         snap_subs: "list[Subscriber]" = []
         async with self._write_lock:
             if not th.enabled:
-                # Master switch off: guarantee REGULAR, clear any residue
-                # from a run that toggled the flag off mid-session.
-                if self.mode is not CognitionMode.REGULAR:
-                    self._clear_focus_state()
+                # Master switch off: clear ALL focus residue unconditionally —
+                # not just when mode==FOCUS. The leaky accumulator can sit in
+                # REGULAR with _focus_charge just under the enter bar; if the
+                # flag is flipped off there, leaving the charge frozen would let
+                # an unrelated mild cue enter Focus on stale pre-disable evidence
+                # once re-enabled. _clear_focus_state is idempotent when already
+                # clean.
+                self._clear_focus_state()
                 return self.mode
 
             decision = _focus_decide(

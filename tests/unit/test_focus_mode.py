@@ -300,6 +300,22 @@ async def test_sm_disable_mid_episode_clears_stale_focus(monkeypatch):
     assert sm.mode is CognitionMode.REGULAR
 
 
+async def test_sm_disable_clears_charge_even_in_regular(monkeypatch):
+    # Accumulator sitting in REGULAR just below the enter bar; flag off must
+    # zero the charge too, so re-enabling can't enter on stale pre-disable charge.
+    _patch_charge(monkeypatch, enter=1.0)
+    sm = SessionStateMachine(lanlan_name="x")
+    await sm.update_focus(0.6)  # REGULAR, charge building (~0.6)
+    assert sm.mode is CognitionMode.REGULAR
+    assert sm.snapshot()["focus_charge"] > 0
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
+    await sm.update_focus(0.0)
+    assert sm.snapshot()["focus_charge"] == 0.0
+    # re-enable: a lone mild cue must NOT enter (charge started from zero)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    assert await sm.update_focus(0.6) is CognitionMode.REGULAR
+
+
 async def test_sm_reset_clears_focus(monkeypatch):
     _patch_charge(monkeypatch)
     sm = SessionStateMachine(lanlan_name="x")
@@ -347,17 +363,21 @@ async def _drain(agen):
 
 
 def test_focus_stream_overrides_decision():
-    """The thinking-on override decision, including the vision guard.
-
-    This is the contract ``stream_text`` applies before streaming: thinking-on
-    only when focus is active AND there are no pending images (a vision model +
-    thinking reliably times out, so an image-bearing focus turn stays
-    thinking-off)."""
+    """The thinking-on override decision, vision guard, and provider-extra
+    preservation. ``stream_text`` applies this before streaming: thinking-on
+    only when focus is active AND not on a vision model; and when it does
+    override, it strips only thinking keys (keeps e.g. web_search)."""
     from main_logic.omni_offline_client import OmniOfflineClient as _C
-    assert _C._focus_stream_overrides(True, False) == {"extra_body": None}
-    assert _C._focus_stream_overrides(True, True) == {}    # vision guard
-    assert _C._focus_stream_overrides(False, False) == {}
-    assert _C._focus_stream_overrides(False, True) == {}
+    # pure-thinking provider → override drops to None (nothing non-thinking left)
+    assert _C._focus_stream_overrides(True, False, "claude-sonnet-4-6") == {"extra_body": None}
+    # unknown model → no resolved extra_body → None
+    assert _C._focus_stream_overrides(True, False, "test-model") == {"extra_body": None}
+    # step-2-mini ships a web_search tool → it MUST survive (not nuked to None)
+    so = _C._focus_stream_overrides(True, False, "step-2-mini")
+    assert so["extra_body"] is not None and "tools" in so["extra_body"]
+    # vision guard / not-thinking → no override at all
+    assert _C._focus_stream_overrides(True, True, "step-2-mini") == {}
+    assert _C._focus_stream_overrides(False, False, "step-2-mini") == {}
 
 
 async def test_focus_override_threads_through_visible_stream():
@@ -386,13 +406,13 @@ async def test_focus_override_threads_through_visible_stream():
         c.llm = _FakeLLM()
         return c
 
-    # focus turn (no images): _focus_stream_overrides → {"extra_body": None}
+    # focus turn (no images, unknown model): _focus_stream_overrides → {"extra_body": None}
     c = _make_client()
-    overrides = OmniOfflineClient._focus_stream_overrides(True, False)
+    overrides = OmniOfflineClient._focus_stream_overrides(True, False, c.model)
     await _drain(c._astream_visible_with_tools(["m"], **overrides))
     assert captured[-1].get("extra_body", "MISSING") is None
 
     # regular turn: no extra_body threaded
     c2 = _make_client()
-    await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, False)))
+    await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, False, c2.model)))
     assert "extra_body" not in captured[-1]
