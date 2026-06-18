@@ -222,6 +222,8 @@ async def test_chat_openai_finalizer_closes_injected_http_clients(monkeypatch):
     del client
     gc.collect()
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
     close.assert_called_once_with()
     aclose.assert_awaited_once_with()
+    assert not llm_client_module._PENDING_CLIENT_CLOSE_TASKS

@@ -97,6 +97,7 @@ _active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvar
 
 _DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
 _DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
+_PENDING_CLIENT_CLOSE_TASKS: set[asyncio.Task[None]] = set()
 
 
 def _create_httpx_default_ssl_context() -> ssl.SSLContext:
@@ -122,6 +123,14 @@ def _get_default_ssl_context() -> ssl.SSLContext:
         return _DEFAULT_SSL_CONTEXT
 
 
+async def _close_async_openai_client_best_effort(aclient: AsyncOpenAI) -> None:
+    try:
+        await aclient.close()
+    except Exception:
+        # Finalizer-triggered cleanup must never surface async close failures.
+        pass
+
+
 def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
     try:
         client.close()
@@ -132,11 +141,16 @@ def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI)
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
+    close_coro = _close_async_openai_client_best_effort(aclient)
     try:
-        loop.create_task(aclient.close())
+        task = loop.create_task(close_coro)
     except Exception:
+        close_coro.close()
         # The loop may be closing; explicit aclose() remains the deterministic path.
         pass
+    else:
+        _PENDING_CLIENT_CLOSE_TASKS.add(task)
+        task.add_done_callback(_PENDING_CLIENT_CLOSE_TASKS.discard)
 
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
