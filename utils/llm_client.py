@@ -131,16 +131,16 @@ async def _close_async_openai_client_best_effort(aclient: AsyncOpenAI) -> None:
         pass
 
 
-def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
-    try:
-        client.close()
-    except Exception:
-        # Destructors/finalizers must never raise during GC or interpreter shutdown.
-        pass
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
+def _schedule_async_openai_client_close_best_effort(
+    aclient: AsyncOpenAI,
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
     close_coro = _close_async_openai_client_best_effort(aclient)
     try:
         task = loop.create_task(close_coro)
@@ -150,6 +150,27 @@ def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI)
     else:
         _PENDING_CLIENT_CLOSE_TASKS.add(task)
         task.add_done_callback(_PENDING_CLIENT_CLOSE_TASKS.discard)
+
+
+def _close_async_openai_client_from_sync_best_effort(aclient: AsyncOpenAI) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_close_async_openai_client_best_effort(aclient))
+        except Exception:
+            pass
+        return
+    _schedule_async_openai_client_close_best_effort(aclient, loop=loop)
+
+
+def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
+    try:
+        client.close()
+    except Exception:
+        # Destructors/finalizers must never raise during GC or interpreter shutdown.
+        pass
+    _schedule_async_openai_client_close_best_effort(aclient)
 
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
@@ -759,6 +780,8 @@ class ChatOpenAI:
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""
         self._client.close()
+        _close_async_openai_client_from_sync_best_effort(self._aclient)
+        self._client_finalizer.detach()
 
     async def __aenter__(self):
         return self

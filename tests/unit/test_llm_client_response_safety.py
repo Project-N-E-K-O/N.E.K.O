@@ -227,3 +227,32 @@ async def test_chat_openai_finalizer_closes_injected_http_clients(monkeypatch):
     close.assert_called_once_with()
     aclose.assert_awaited_once_with()
     assert not llm_client_module._PENDING_CLIENT_CLOSE_TASKS
+
+
+@pytest.mark.asyncio
+async def test_chat_openai_sync_close_detaches_finalizer_after_closing_clients(monkeypatch):
+    client = llm_client_module.ChatOpenAI(
+        model="model-a",
+        base_url="https://example.com/v1",
+        api_key="sk-test",
+    )
+    close = MagicMock()
+    aclose = AsyncMock()
+    monkeypatch.setattr(client._client, "close", close)
+    monkeypatch.setattr(client._aclient, "close", aclose)
+
+    finalizer = client._client_finalizer
+    client.close()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert not finalizer.alive
+    close.assert_called_once_with()
+    aclose.assert_awaited_once_with()
+    del client
+    gc.collect()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    close.assert_called_once_with()
+    aclose.assert_awaited_once_with()
+    assert not llm_client_module._PENDING_CLIENT_CLOSE_TASKS
