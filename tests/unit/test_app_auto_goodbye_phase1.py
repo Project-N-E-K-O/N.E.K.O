@@ -772,6 +772,109 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
     assert "postGoodbyeChatComposerHiddenState(false, 'return-click')" in app_ui_source
 
 
+def test_app_interpage_initializes_goodbye_bridge_exports_with_tutorial_bridge_fallback():
+    script = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const source = fs.readFileSync(__APP_INTERPAGE_PATH__, 'utf8');
+        const listeners = {};
+        const storage = {
+          getItem() { return null; },
+          setItem() {},
+          removeItem() {}
+        };
+        const quietConsole = {
+          log() {},
+          warn() {},
+          error() {}
+        };
+        const windowStub = {
+          appState: { lanlan_name: 'Yui' },
+          appConst: {},
+          lanlan_config: { lanlan_name: 'Yui' },
+          location: { origin: 'http://localhost', pathname: '/chat' },
+          addEventListener(type, handler) { (listeners[type] ||= []).push(handler); },
+          removeEventListener() {},
+          dispatchEvent() {},
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          localStorage: storage,
+          console: quietConsole
+        };
+        windowStub.window = windowStub;
+
+        const documentStub = {
+          hidden: false,
+          body: { classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } } },
+          head: { appendChild() {} },
+          documentElement: { appendChild() {} },
+          createElement() {
+            return {
+              hidden: false,
+              style: {},
+              classList: { add() {}, remove() {} },
+              setAttribute() {},
+              appendChild() {}
+            };
+          },
+          getElementById() { return null; },
+          querySelector() { return null; },
+          querySelectorAll() { return []; },
+          addEventListener(type, handler) { (listeners[`document:${type}`] ||= []).push(handler); },
+          removeEventListener() {}
+        };
+
+        class CustomEvent {
+          constructor(type, init) {
+            this.type = type;
+            this.detail = init && init.detail;
+          }
+        }
+        class BroadcastChannel {
+          constructor(name) { this.name = name; }
+          postMessage() {}
+          close() {}
+        }
+
+        const context = {
+          window: windowStub,
+          document: documentStub,
+          localStorage: storage,
+          console: quietConsole,
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          CustomEvent,
+          BroadcastChannel,
+          URL,
+          location: windowStub.location
+        };
+
+        try {
+          vm.runInNewContext(source, context, { filename: 'static/app-interpage.js' });
+        } catch (error) {
+          console.error(error && (error.stack || error.message) || error);
+          process.exit(1);
+        }
+
+        if (!windowStub.appInterpage || typeof windowStub.postGoodbyeChatComposerHiddenState !== 'function') {
+          process.exit(2);
+        }
+        windowStub.postGoodbyeChatComposerHiddenState(true, 'harness-goodbye');
+        if (!windowStub.__nekoGoodbyeChatComposerHidden || windowStub.__nekoGoodbyeChatComposerHidden.hidden !== true) {
+          process.exit(3);
+        }
+        """
+    ).replace("__APP_INTERPAGE_PATH__", json.dumps(str(APP_INTERPAGE_PATH)))
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():
     source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 

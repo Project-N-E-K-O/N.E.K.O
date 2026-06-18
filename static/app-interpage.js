@@ -32,6 +32,114 @@
     var _processedMsgKeys = {};
     var CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS = 250;
     var _lastCrossWindowIdleActivityAt = 0;
+    var YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
+    var ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
+    var yuiGuideBridgeCommandBus = null;
+
+    function createAppInterpageScopedResources() {
+        if (
+            window.YuiGuideCommon
+            && typeof window.YuiGuideCommon.createScopedTutorialResources === 'function'
+        ) {
+            try {
+                return window.YuiGuideCommon.createScopedTutorialResources({ window: window });
+            } catch (error) {
+                console.warn('[YuiGuide] scoped resource helper unavailable; using local fallback:', error);
+            }
+        }
+
+        var destroyed = false;
+        var timers = [];
+        var intervals = [];
+        var listeners = [];
+
+        function removeFrom(list, value) {
+            var index = list.indexOf(value);
+            if (index !== -1) {
+                list.splice(index, 1);
+            }
+        }
+
+        function addEventListener(target, type, handler, options) {
+            if (destroyed || !target || typeof target.addEventListener !== 'function') {
+                return null;
+            }
+            target.addEventListener(type, handler, options);
+            listeners.push({
+                target: target,
+                type: type,
+                handler: handler,
+                options: options
+            });
+            return handler;
+        }
+
+        function setScopedTimeout(callback, delayMs) {
+            if (destroyed || typeof window.setTimeout !== 'function') {
+                return 0;
+            }
+            var timerId = window.setTimeout(function scopedTimeoutCallback() {
+                removeFrom(timers, timerId);
+                if (typeof callback === 'function') {
+                    callback();
+                }
+            }, delayMs);
+            timers.push(timerId);
+            return timerId;
+        }
+
+        function clearScopedTimeout(timerId) {
+            if (!timerId || typeof window.clearTimeout !== 'function') {
+                return;
+            }
+            removeFrom(timers, timerId);
+            window.clearTimeout(timerId);
+        }
+
+        function setScopedInterval(callback, delayMs) {
+            if (destroyed || typeof window.setInterval !== 'function') {
+                return 0;
+            }
+            var intervalId = window.setInterval(function scopedIntervalCallback() {
+                if (typeof callback === 'function') {
+                    callback();
+                }
+            }, delayMs);
+            intervals.push(intervalId);
+            return intervalId;
+        }
+
+        function clearScopedInterval(intervalId) {
+            if (!intervalId || typeof window.clearInterval !== 'function') {
+                return;
+            }
+            removeFrom(intervals, intervalId);
+            window.clearInterval(intervalId);
+        }
+
+        function destroy() {
+            destroyed = true;
+            timers.slice().forEach(clearScopedTimeout);
+            intervals.slice().forEach(clearScopedInterval);
+            listeners.splice(0).forEach(function (entry) {
+                try {
+                    entry.target.removeEventListener(entry.type, entry.handler, entry.options);
+                } catch (_) {}
+            });
+        }
+
+        return {
+            addEventListener: addEventListener,
+            setTimeout: setScopedTimeout,
+            clearTimeout: clearScopedTimeout,
+            setInterval: setScopedInterval,
+            clearInterval: clearScopedInterval,
+            destroy: destroy,
+            isDestroyed: function () { return destroyed; }
+        };
+    }
+
+    var yuiGuideInterpageResources = createAppInterpageScopedResources();
 
     /**
      * Returns true if this action+timestamp was already processed (duplicate).
