@@ -1761,24 +1761,28 @@ class LLMSessionManager:
             return False
         return self.state.mode is CognitionMode.FOCUS
 
-    async def _focus_idle_cooldown(self, *, replied: bool) -> None:
-        """Path B (idle) Focus COOLDOWN: decay the charge once, after a proactive
-        turn finishes. A proactive turn NEVER raises the charge — entering and
-        sustaining Focus is driven solely by the inline path (the user's own
-        messages). This only lets an active episode cool down.
+    async def _focus_idle_cooldown(self, *, replied: bool, episode_token) -> None:
+        """Path B (idle) Focus COOLDOWN: decay the charge once, after a Phase-2
+        proactive turn finishes. A proactive turn NEVER raises the charge —
+        entering and sustaining Focus is driven solely by the inline path (the
+        user's own messages). This only lets an active episode cool down.
 
         Two-tier decay by whether the turn actually spoke:
-          * ``replied=True`` (action == "chat", a proactive reply was delivered)
-            → faster ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of
-            the episode.
-          * ``replied=False`` (guarded / preempted / empty / pass — she stayed
-            silent) → slower ``FOCUS_IDLE_SILENT_RETENTION``: just waiting barely
-            spends it.
+          * ``replied=True`` (a Phase-2 proactive reply was delivered) → faster
+            ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of the episode.
+          * ``replied=False`` (Phase-2 reached but produced no reply — empty /
+            aborted) → slower ``FOCUS_IDLE_SILENT_RETENTION``: barely spends it.
         So Focus persistence is driven by how often she speaks, not raw time.
 
-        Pure charge cooldown: privacy-independent, no snapshot. Best-effort;
-        never blocks the proactive exit. Called from the proactive unified exit
-        (``_end_proactive``) so every path ticks exactly once.
+        ``episode_token`` is the focus episode id observed when this proactive
+        turn made its thinking decision. If the SM is no longer in that same
+        episode (the inline path exited and/or entered a new one while this
+        proactive request was finishing), the decay is SKIPPED — a stale
+        proactive tick must not decay a fresh, user-driven episode.
+
+        Decays with ``count_turn=False`` so a proactive tick never consumes a
+        hard-cap turn slot (that bounds inline turns). Pure charge cooldown:
+        privacy-independent, no snapshot. Best-effort; never blocks the exit.
         """
         from config import (  # live read
             FOCUS_MODE_ENABLED,
@@ -1790,14 +1794,25 @@ class LLMSessionManager:
                 # Master switch off → update_focus self-clears any residue.
                 await self.state.update_focus(0.0)
                 return
+            # Race guard: only decay the episode this turn actually observed.
+            current_episode = self.state.snapshot().get("focus_episode_id")
+            if current_episode != episode_token:
+                logger.debug(
+                    "[%s] focus idle cooldown skipped: episode changed (%s → %s)",
+                    self.lanlan_name, episode_token, current_episode,
+                )
+                return
             retention = (
                 FOCUS_IDLE_REPLIED_RETENTION if replied
                 else FOCUS_IDLE_SILENT_RETENTION
             )
             # score=0 + retention<1 ⇒ charge can only decay (never cross the
             # enter bar from REGULAR), so this can't ENTER Focus — only cool an
-            # inline-driven episode toward the exit bar.
-            mode = await self.state.update_focus(0.0, retention_override=retention)
+            # inline-driven episode toward the exit bar. count_turn=False keeps
+            # it off the hard-cap turn budget.
+            mode = await self.state.update_focus(
+                0.0, retention_override=retention, count_turn=False,
+            )
             logger.info(
                 "[%s] 凝神 idle(cooldown replied=%s): charge=%s mode=%s",
                 self.lanlan_name, replied,

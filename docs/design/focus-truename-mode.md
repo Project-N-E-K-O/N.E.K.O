@@ -33,8 +33,14 @@ inert until `FOCUS_MODE_ENABLED` is turned on):
   no LLM rebuild.
 * `main_routers/system_router.py` — proactive Phase-2 generate sites (main
   stream / format-fix / BM25 regen) take `disable_thinking=not
-  _focus_idle_thinking()`; the cooldown decay runs once at the unified exit
-  `_end_proactive`, keyed on whether the turn delivered (`action=="chat"`).
+  _focus_idle_thinking()`. The cooldown decay runs at the unified exit
+  `_end_proactive`, but ONLY for turns that reached the Phase-2 idle decision
+  (short-circuit replies — mini-game invite / break-reminder — never spend
+  Focus), keyed on whether the turn delivered (`action=="chat"`). It decays
+  with `count_turn=False` (a cooldown tick never spends a hard-cap turn slot)
+  and is pinned to the episode the thinking decision observed (a stale tick
+  won't decay a freshly inline-entered episode). Voice nudges never run a
+  Focus reply, so they don't cool down either.
 * `tests/unit/test_focus_mode.py` — focus unit tests (hysteresis / scorer /
   SM / lexicon / `thinking_on` threading / idle cooldown) + SM regression.
 
@@ -195,7 +201,7 @@ where the user opens up** — which flows through `stream_text`, *not*
 | Path | Scenario | Entry point | Mounting site |
 |---|---|---|---|
 | **A: Inline focus** | user sends a message → score it → if over the bar, upgrade *this* reply | lightweight scorer before `stream_text` generation | `main_logic/core.py` `stream_text` entry (near the `last_user_activity_time` / USER_INPUT fire) |
-| **B: Idle cooldown** | a proactive turn fires while in focus → keep it thinking-on, but decay the charge afterwards (never raise it) | thinking read before Phase-2 generate; decay at the proactive unified exit | `main_routers/system_router.py` — three Phase-2 sites take `disable_thinking = not _focus_idle_thinking()` (suppressed under vision); `_end_proactive` calls `_focus_idle_cooldown(replied=action=="chat")` |
+| **B: Idle cooldown** | a Phase-2 proactive turn fires while in focus → keep it thinking-on, but decay the charge afterwards (never raise it) | thinking read before Phase-2 generate; decay at the proactive unified exit, gated to Phase-2 turns | `main_routers/system_router.py` — three Phase-2 sites take `disable_thinking = not _focus_idle_thinking()` (suppressed under vision); `_end_proactive` calls `_focus_idle_cooldown(replied=action=="chat", episode_token=...)` only when the Phase-2 idle decision was reached (count_turn=False, episode-pinned) |
 
 ### Path coupling — this is the key to "she lingers"
 

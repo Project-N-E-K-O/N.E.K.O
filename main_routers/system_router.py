@@ -4880,6 +4880,10 @@ async def proactive_chat(request: Request):
                 await _increment_proactive_chat_total(lanlan_name)
             else:
                 logger.info("[%s] 主动搭话本轮未发起：语音 nudge 被 guard 跳过", lanlan_name)
+            # No Focus cooldown here: a voice nudge is realtime and never runs a
+            # Focus thinking-on reply, so it is not a Focus proactive turn — the
+            # cooldown is applied only at the text Phase-2 idle path (which is
+            # where _focus_idle_thinking actually gates thinking-on).
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -4907,6 +4911,14 @@ async def proactive_chat(request: Request):
         # screen-only delay block further down and the matching
         # ``S.proactiveFixedScheduleMode`` branch in static/app-proactive.js.
         _next_schedule_fixed_mode = False
+
+        # Focus idle cooldown bookkeeping (read by _end_proactive via closure).
+        # Set only when the flow reaches the Phase-2 idle Focus decision, so
+        # short-circuit replies (mini-game invite, break-reminder, must-fire)
+        # that return before Phase 2 never spend Focus charge. The episode token
+        # pins the decay to the episode the thinking decision observed.
+        _focus_phase2_reached = False
+        _focus_episode_token = None
 
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
             """Wraps every normal/short-circuit proactive exit: idempotently fires PROACTIVE_DONE.
@@ -4942,15 +4954,19 @@ async def proactive_chat(request: Request):
                     lanlan_name,
                     body.get("message") or body.get("error") or "(无原因说明)",
                 )
-            # Idle Focus cooldown: a proactive turn never raises the charge, it
-            # only decays it — faster when she actually spoke (action=="chat":
-            # a reply spends more of the episode) than when she stayed silent
-            # (guard / preempted / empty: barely spent). Entry/sustain stay
-            # inline-only. Runs at this unified exit so every path ticks once.
-            try:
-                await mgr._focus_idle_cooldown(replied=_replied)
-            except Exception as _focus_err:
-                logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
+            # Idle Focus cooldown — only for turns that reached the Phase-2 idle
+            # Focus decision (short-circuit replies never set the flag, so they
+            # don't spend Focus). A proactive turn never raises the charge; it
+            # decays — faster when it delivered a reply (_replied) than when
+            # Phase 2 produced nothing. count_turn=False + episode-token guard
+            # live inside _focus_idle_cooldown.
+            if _focus_phase2_reached:
+                try:
+                    await mgr._focus_idle_cooldown(
+                        replied=_replied, episode_token=_focus_episode_token,
+                    )
+                except Exception as _focus_err:
+                    logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
@@ -6624,6 +6640,11 @@ async def proactive_chat(request: Request):
         # all three Phase-2 generate sites below (main stream / format-fix regen
         # / BM25 anti-repeat regen).
         _focus_phase2_thinking = mgr._focus_idle_thinking()
+        # Mark that this turn reached the Phase-2 idle Focus decision and pin the
+        # episode it observed — _end_proactive applies the cooldown only for such
+        # turns, and only if still in this same episode (race guard).
+        _focus_phase2_reached = True
+        _focus_episode_token = mgr.state.snapshot().get("focus_episode_id")
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)

@@ -275,6 +275,7 @@ class SessionStateMachine:
     async def update_focus(
         self, score: float, *, topic_changed: bool = False,
         retention_override: float | None = None,
+        count_turn: bool = True,
     ) -> CognitionMode:
         """Apply one Focus hysteresis tick for a just-scored turn; return the resulting mode.
 
@@ -297,6 +298,10 @@ class SessionStateMachine:
         ``_write_lock``, and dispatches ``FOCUS_ENTER`` / ``FOCUS_EXIT``
         outside the lock. Returns the post-tick ``mode`` so the caller can
         immediately build the LLM thinking-on (FOCUS) or off (REGULAR).
+
+        ``count_turn=False`` (idle cooldown) decays the charge without spending
+        a ``FOCUS_HARD_CAP_TURNS`` slot — the cap bounds real inline turns, not
+        proactive cooldown ticks.
 
         ``FOCUS_EXIT`` carries ``episode_id`` + ``episode_started_at`` so a
         future memory-side subscriber can slice the emotional episode out of
@@ -328,6 +333,7 @@ class SessionStateMachine:
                 score=score,
                 topic_changed=topic_changed,
                 th=th,
+                count_turn=count_turn,
             )
             if decision.action is _FocusAction.ENTER:
                 self.mode = CognitionMode.FOCUS
@@ -396,6 +402,7 @@ class SessionStateMachine:
             "mode": self.mode.value,
             "focus_turn_count": self._focus_turn_count,
             "focus_charge": round(self._focus_charge, 3),
+            "focus_episode_id": self._focus_episode_id,
         }
 
     # ── 写路径 ──────────────────────────────────────────────────────
@@ -557,6 +564,7 @@ def _focus_decide(
     score: float,
     topic_changed: bool,
     th: FocusThresholds,
+    count_turn: bool = True,
 ) -> _FocusDecision:
     """Pure leaky-accumulator transition for one scored turn.
 
@@ -599,8 +607,14 @@ def _focus_decide(
             return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="hard_cap")
         if new_charge < th.exit:
             return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="decayed")
+        # ``count_turn=False`` (idle cooldown) decays the charge WITHOUT spending
+        # a hard-cap turn slot — the cap bounds real inline conversation turns,
+        # not proactive cooldown ticks (a silent scheduler poll must not age the
+        # episode toward the hard cap).
         return _FocusDecision(
-            _FocusAction.STAY, turn_count=focus_turn_count + 1, charge=new_charge,
+            _FocusAction.STAY,
+            turn_count=focus_turn_count + (1 if count_turn else 0),
+            charge=new_charge,
         )
 
     # TRUE_NAME (v2) or any future mode — focus machine does not act.
