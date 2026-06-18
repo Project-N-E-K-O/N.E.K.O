@@ -339,10 +339,13 @@ async def trigger_topic_hook_once(
     can never resurface outside TopicHookPool's one-shot bookkeeping — only the
     pool may retry and mark used / burn quota.
     """
+    if not topic_hook_delivery_available(
+        lanlan_name,
+        include_manager_release=False,
+    ):
+        return False
     mgr = _resolve_topic_manager(lanlan_name)
     if mgr is None:
-        return False
-    if not _topic_activity_gate_open(mgr, lanlan_name):
         return False
 
     lang = _live_topic_lang(mgr, lang)

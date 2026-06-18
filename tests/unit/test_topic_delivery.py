@@ -14,6 +14,14 @@ from main_logic.topic.delivery import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _default_proactive_chat_enabled(monkeypatch):
+    monkeypatch.setattr(
+        "utils.preferences.load_global_conversation_settings",
+        lambda: {"proactiveChatEnabled": True},
+    )
+
+
 def test_build_topic_hook_callback_contains_natural_opening_instruction():
     callback = build_topic_hook_callback(
         {
@@ -226,6 +234,35 @@ async def test_trigger_topic_hook_once_skips_when_activity_gate_closed(monkeypat
 
     assert delivered is False
     mgr.topic_hook_delivery_allowed.assert_called_once()
+    mgr.submit_proactive_callback.assert_not_called()
+    mgr.enqueue_agent_callback.assert_not_called()
+    mgr.trigger_agent_callbacks.assert_not_called()
+    clear_topic_session_manager_getter()
+
+
+@pytest.mark.asyncio
+async def test_trigger_topic_hook_once_skips_when_proactive_chat_disabled(monkeypatch):
+    mgr = MagicMock()
+    mgr.topic_hook_delivery_allowed = MagicMock(return_value=True)
+    mgr.submit_proactive_callback = MagicMock()
+    mgr.enqueue_agent_callback = MagicMock()
+    mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "utils.preferences.load_global_conversation_settings",
+        lambda: {"proactiveChatEnabled": False},
+    )
+
+    clear_topic_session_manager_getter()
+    register_topic_session_manager_getter(lambda name: mgr)
+
+    delivered = await trigger_topic_hook_once(
+        lanlan_name="妮可",
+        material={"hook_id": "topic_car", "interest": "用户把买车当成新阶段"},
+        lang="zh-CN",
+    )
+
+    assert delivered is False
+    mgr.topic_hook_delivery_allowed.assert_not_called()
     mgr.submit_proactive_callback.assert_not_called()
     mgr.enqueue_agent_callback.assert_not_called()
     mgr.trigger_agent_callbacks.assert_not_called()
