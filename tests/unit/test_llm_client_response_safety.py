@@ -9,6 +9,7 @@ choices[0].message 是 None 的合法响应。原来 ainvoke/invoke 直接
 from __future__ import annotations
 
 import asyncio
+import ssl
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -170,3 +171,34 @@ async def test_create_chat_llm_async_closes_late_result_after_cancellation(
 
     release.set()
     await asyncio.wait_for(closed.wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_chat_openai_reuses_default_ssl_context(monkeypatch):
+    original_create_default_context = ssl.create_default_context
+    calls = []
+
+    def counting_create_default_context(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_create_default_context(*args, **kwargs)
+
+    monkeypatch.setattr(llm_client_module, "_DEFAULT_SSL_CONTEXT", None)
+    monkeypatch.setattr(ssl, "create_default_context", counting_create_default_context)
+
+    clients = [
+        llm_client_module.ChatOpenAI(
+            model="model-a",
+            base_url="https://example.com/v1",
+            api_key="sk-test",
+        ),
+        llm_client_module.ChatOpenAI(
+            model="model-b",
+            base_url="https://example.com/v1",
+            api_key="sk-test",
+        ),
+    ]
+    try:
+        assert len(calls) == 1
+    finally:
+        for client in clients:
+            await client.aclose()

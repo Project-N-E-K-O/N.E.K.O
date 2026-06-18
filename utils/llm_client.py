@@ -29,10 +29,13 @@ import asyncio
 import contextvars
 import json as _json
 import re
+import ssl
+import threading
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
-from openai import AsyncOpenAI, OpenAI
+import httpx
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
 
 # ────────────────────────────────────────────────────────────────
@@ -90,6 +93,21 @@ def strip_thinking_segments(text: str | None) -> str:
 _active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvars.ContextVar(
     "_neko_active_character_master_lanlan", default=None
 )
+
+_DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
+_DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
+
+
+def _get_default_ssl_context() -> ssl.SSLContext:
+    """Return the process-wide default TLS context for short-lived LLM clients."""
+    global _DEFAULT_SSL_CONTEXT
+    if _DEFAULT_SSL_CONTEXT is not None:
+        return _DEFAULT_SSL_CONTEXT
+
+    with _DEFAULT_SSL_CONTEXT_LOCK:
+        if _DEFAULT_SSL_CONTEXT is None:
+            _DEFAULT_SSL_CONTEXT = httpx.create_ssl_context(verify=True)
+        return _DEFAULT_SSL_CONTEXT
 
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
@@ -409,7 +427,10 @@ class ChatOpenAI:
             client_kw["timeout"] = _timeout
         if default_headers:
             client_kw["default_headers"] = default_headers
+        ssl_context = _get_default_ssl_context()
+        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
         self._aclient = AsyncOpenAI(**client_kw)
+        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
         self._client = OpenAI(**client_kw)
 
     def _is_anthropic(self) -> bool:
