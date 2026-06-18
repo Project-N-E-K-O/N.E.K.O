@@ -14,12 +14,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import utils.llm_client as llm_client_module
-from utils.llm_client import ChatOpenAI
 
 
-def _make_client_with_response(resp) -> ChatOpenAI:
+def _make_client_with_response(resp) -> llm_client_module.ChatOpenAI:
     """Construct a ChatOpenAI and stub both sync/async create() to return resp."""
-    client = ChatOpenAI(model="free-agent-model", base_url="https://example.com/v1", api_key="free-access")
+    client = llm_client_module.ChatOpenAI(
+        model="free-agent-model",
+        base_url="https://example.com/v1",
+        api_key="free-access",
+    )
     client._aclient = MagicMock()
     client._aclient.chat = MagicMock()
     client._aclient.chat.completions = MagicMock()

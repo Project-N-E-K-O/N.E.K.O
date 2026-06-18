@@ -173,6 +173,39 @@ async def test_galgame_option_generation_timeout_returns_fallback(monkeypatch):
     }
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_option_generation_init_error_returns_fallback(monkeypatch):
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+
+    def fake_create_chat_llm(*_args, **_kwargs):
+        raise RuntimeError("client init failed")
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "What do you think?"}],
+                "language": "en",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["fallback"] is True
+    assert data["error"] == "client init failed"
+    assert _option_texts(data) == list(get_galgame_fallback_options("en"))
+
+
 @pytest.mark.parametrize(
     "model_output, expected",
     [
