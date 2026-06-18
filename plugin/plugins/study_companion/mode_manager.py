@@ -401,11 +401,11 @@ class ModeManager:
         current_mode = normalize_mode(self.current_mode)
         checkpoint_before = self.snapshot()
         normalized_reason = str(reason or "").strip().lower()
-        ui_switch = normalized_reason == "ui"
-        explicit_switch = _is_explicit_mode_switch_reason(reason)
+        lock_override_switch = normalized_reason == "ui"
+        dwell_bypass_switch = _is_explicit_mode_switch_reason(reason)
 
         if current_mode == requested_mode:
-            if ui_switch and self.mode_lock_until:
+            if lock_override_switch and self.mode_lock_until:
                 self.mode_lock_until = 0.0
                 checkpoint_before = self.snapshot()
             return {
@@ -420,7 +420,8 @@ class ModeManager:
                 "checkpoint": checkpoint_before,
             }
 
-        if self.mode_lock_until and now_ts < self.mode_lock_until and not ui_switch:
+        # UI controls may clear a stale lock; text intents still respect active locks.
+        if self.mode_lock_until and now_ts < self.mode_lock_until and not lock_override_switch:
             return {
                 "changed": False,
                 "old_mode": current_mode,
@@ -438,7 +439,7 @@ class ModeManager:
                 "checkpoint": checkpoint_before,
             }
 
-        if explicit_switch:
+        if dwell_bypass_switch:
             self._record_mode_switch_attempt(
                 mode=requested_mode, reason=reason, at=now_ts
             )
