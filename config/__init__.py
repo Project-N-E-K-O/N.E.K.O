@@ -2108,6 +2108,7 @@ from config.providers import (  # noqa: E402, F401
     MODELS_EXTRA_BODY_MAP,
     get_extra_body,
     get_agent_extra_body,
+    focus_extra_body,
 )
 
 
@@ -2153,6 +2154,7 @@ __all__ = [
     'MODELS_EXTRA_BODY_MAP',
     'get_extra_body',
     'get_agent_extra_body',
+    'focus_extra_body',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',
     'EXTRA_BODY_GEMINI',

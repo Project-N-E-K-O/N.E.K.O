@@ -83,6 +83,7 @@ from config import (
     AUTOSTART_CSRF_TOKEN,
     MEMORY_SERVER_PORT,
     get_extra_body,
+    focus_extra_body,
     PROACTIVE_PHASE1_FETCH_PER_SOURCE,
     PROACTIVE_PHASE1_TOTAL_TOPICS,
     PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
@@ -5777,7 +5778,10 @@ async def proactive_chat(request: Request):
                             max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                             use_vision: bool = False, disable_thinking: bool = True):
             """
-            Create an LLM instance. use_vision=True uses the vision model; when disable_thinking=False, extra_body is not injected.
+            Create an LLM instance. use_vision=True uses the vision model;
+            when disable_thinking=False (Focus thinking-on) the provider's
+            thinking-disable extras are stripped while other auto-resolved
+            extras (e.g. web_search) are preserved.
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
@@ -5791,7 +5795,13 @@ async def proactive_chat(request: Request):
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
             )
             if not disable_thinking:
-                kw["extra_body"] = None  # skip auto-resolved extra_body
+                # Focus thinking-on: strip ONLY the thinking-disable keys from
+                # the provider's auto-resolved extra_body, KEEP the rest. Setting
+                # extra_body=None would skip all auto-resolved extras and
+                # silently drop e.g. step-2-mini's built-in web_search on focused
+                # proactive Phase-2 generations (对偶 inline path
+                # OmniOfflineClient._focus_stream_overrides → focus_extra_body).
+                kw["extra_body"] = focus_extra_body(m)
             return await create_chat_llm_async(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
 
         async def _llm_call_with_retry(
