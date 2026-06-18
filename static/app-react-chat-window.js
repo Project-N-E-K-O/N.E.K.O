@@ -4125,9 +4125,6 @@
             resetCompactChatState();
         }
         state.homeTutorialInteractionLocked = next;
-        if (next && getCurrentCompactChatState() === 'input') {
-            resetCompactChatState();
-        }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
             composerDisabled: !!next
@@ -4144,9 +4141,6 @@
             resetCompactChatState();
         }
         state.homeTutorialInputLocked = next;
-        if (next && getCurrentCompactChatState() === 'input') {
-            resetCompactChatState();
-        }
         state.viewProps = Object.assign({}, ensureViewProps(), {
             compactChatState: getCurrentCompactChatState(),
             compactInputLocked: next,
@@ -6381,7 +6375,6 @@
             setHomeTutorialInteractionLocked(true, 'tutorial-started');
             setHomeTutorialInputLocked(true, 'tutorial-started');
             setGalgameModeTemporarilyDisabled(true);
-            setHomeTutorialInteractionLocked(true, 'tutorial-started');
         });
 
         window.addEventListener('neko:tutorial-completed', function (event) {
