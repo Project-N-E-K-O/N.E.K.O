@@ -1187,8 +1187,12 @@
         var rect = refs.display.getBoundingClientRect ? refs.display.getBoundingClientRect() : null;
         var state = getSettings();
         var bounds = getPanelBounds(state.subtitlePanelBounds);
-        var width = refs.display.offsetWidth || (rect ? rect.width : 0) || Math.min(bounds.width, window.innerWidth);
-        var height = refs.display.offsetHeight || (rect ? rect.height : 0) || bounds.height;
+        var targetWidth = Number(refs.display.dataset ? refs.display.dataset.subtitlePanelWidth : 0);
+        var targetHeight = Number(refs.display.dataset ? refs.display.dataset.subtitlePanelHeight : 0);
+        var width = (Number.isFinite(targetWidth) && targetWidth > 0 ? targetWidth : 0) ||
+            refs.display.offsetWidth || (rect ? rect.width : 0) || Math.min(bounds.width, window.innerWidth);
+        var height = (Number.isFinite(targetHeight) && targetHeight > 0 ? targetHeight : 0) ||
+            refs.display.offsetHeight || (rect ? rect.height : 0) || bounds.height;
         var maxX = Math.max(0, window.innerWidth - width);
         var maxY = Math.max(0, window.innerHeight - height);
         return {

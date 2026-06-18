@@ -629,6 +629,271 @@ def test_subtitle_window_danmaku_mode_does_not_move_when_native_bounds_fail(mock
     assert result["afterOff"]["mask"] == ""
 
 
+@pytest.mark.frontend
+def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="settings">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="false">
+                <button type="button" id="subtitle-settings-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel">
+                <label class="subtitle-settings-switch">
+                    <input type="checkbox" id="subtitle-danmaku-mode-btn">
+                    <span class="subtitle-settings-track" aria-hidden="true"></span>
+                </label>
+            </div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+        path="/subtitle-web-danmaku-layout-harness",
+    )
+    mock_page.set_viewport_size({"width": 1280, "height": 720})
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({ width: 655, height: 109 }));
+            window.localStorage.setItem('subtitlePanelPosition', JSON.stringify({
+                left: 300,
+                top: 500,
+                coordinateSpace: 'viewport',
+            }));
+            window.localStorage.setItem('subtitlePanelLocked', 'false');
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'false');
+            window.localStorage.setItem('subtitleOpacity', '72');
+            window.fetch = () => Promise.resolve({
+                json: () => Promise.resolve({ success: true, language: 'zh' }),
+            });
+            window.lanlan_config = { model_type: 'live2d' };
+            window.__avatarBoundsCalls = 0;
+            window.live2dManager = {
+                currentModel: {},
+                getModelScreenBounds: () => {
+                    window.__avatarBoundsCalls += 1;
+                    return {
+                        left: 800,
+                        top: 300,
+                        right: 1000,
+                        bottom: 700,
+                        width: 200,
+                        height: 400,
+                        centerX: 900,
+                        centerY: 500,
+                    };
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const panel = document.getElementById('subtitle-settings-panel');
+            shared.updateSettings({ subtitleDanmakuMode: true }, { source: 'test-enable-web-danmaku' });
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            const afterOn = {
+                settings: shared.getSettings(),
+                style: {
+                    left: display.style.left,
+                    top: display.style.top,
+                    width: display.style.width,
+                    height: display.style.height,
+                },
+                panelState: display.dataset.subtitlePanelState || '',
+                panelHidden: panel.classList.contains('hidden'),
+                storage: {
+                    bounds: JSON.parse(window.localStorage.getItem('subtitlePanelBounds')),
+                    position: JSON.parse(window.localStorage.getItem('subtitlePanelPosition')),
+                    locked: window.localStorage.getItem('subtitlePanelLocked'),
+                    passthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
+                    opacity: window.localStorage.getItem('subtitleOpacity'),
+                    danmaku: window.localStorage.getItem('subtitleDanmakuMode'),
+                },
+                avatarBoundsCalls: window.__avatarBoundsCalls,
+            };
+            shared.updateSettings({ subtitleDanmakuMode: false }, { source: 'test-disable-web-danmaku' });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const afterOff = {
+                settings: shared.getSettings(),
+                style: {
+                    left: display.style.left,
+                    top: display.style.top,
+                    width: display.style.width,
+                    height: display.style.height,
+                },
+                panelState: display.dataset.subtitlePanelState || '',
+                panelHidden: panel.classList.contains('hidden'),
+                storage: {
+                    bounds: JSON.parse(window.localStorage.getItem('subtitlePanelBounds')),
+                    position: JSON.parse(window.localStorage.getItem('subtitlePanelPosition')),
+                    locked: window.localStorage.getItem('subtitlePanelLocked'),
+                    passthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
+                    opacity: window.localStorage.getItem('subtitleOpacity'),
+                    danmaku: window.localStorage.getItem('subtitleDanmakuMode'),
+                },
+            };
+            return { afterOn, afterOff };
+        }
+        """
+    )
+
+    assert result["afterOn"]["settings"]["subtitleDanmakuMode"] is True
+    assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
+    assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
+    assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
+    assert result["afterOn"]["settings"]["subtitlePanelPosition"] == {
+        "left": 800,
+        "top": 221,
+        "coordinateSpace": "viewport",
+    }
+    assert result["afterOn"]["style"] == {
+        "left": "800px",
+        "top": "221px",
+        "width": "200px",
+        "height": "67px",
+    }
+    assert result["afterOn"]["panelState"] == "clean"
+    assert result["afterOn"]["panelHidden"] is True
+    assert result["afterOn"]["storage"] == {
+        "bounds": {"width": 655, "height": 109},
+        "position": {"left": 300, "top": 500, "coordinateSpace": "viewport"},
+        "locked": "false",
+        "passthrough": "false",
+        "opacity": "72",
+        "danmaku": "true",
+    }
+    assert result["afterOn"]["avatarBoundsCalls"] >= 1
+
+    assert result["afterOff"]["settings"]["subtitleDanmakuMode"] is False
+    assert result["afterOff"]["settings"]["subtitlePanelLocked"] is False
+    assert result["afterOff"]["settings"]["subtitleInteractionPassthrough"] is False
+    assert result["afterOff"]["settings"]["subtitleOpacity"] == 72
+    assert result["afterOff"]["settings"]["subtitlePanelBounds"] == {"width": 655, "height": 109}
+    assert result["afterOff"]["settings"]["subtitlePanelPosition"] == {
+        "left": 300,
+        "top": 500,
+        "coordinateSpace": "viewport",
+    }
+    assert result["afterOff"]["style"] == {
+        "left": "300px",
+        "top": "500px",
+        "width": "655px",
+        "height": "109px",
+    }
+    assert result["afterOff"]["panelState"] == "clean"
+    assert result["afterOff"]["panelHidden"] is True
+    assert result["afterOff"]["storage"] == {
+        "bounds": {"width": 655, "height": 109},
+        "position": {"left": 300, "top": 500, "coordinateSpace": "viewport"},
+        "locked": "false",
+        "passthrough": "false",
+        "opacity": "72",
+        "danmaku": "false",
+    }
+
+
+@pytest.mark.frontend
+def test_web_subtitle_danmaku_mode_does_not_take_over_electron_pet(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host lanlan-pet-mode",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-web-danmaku-electron-pet-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__LANLAN_IS_ELECTRON_PET__ = true;
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({ width: 655, height: 109 }));
+            window.localStorage.setItem('subtitlePanelPosition', JSON.stringify({
+                left: 300,
+                top: 500,
+                coordinateSpace: 'viewport',
+            }));
+            window.localStorage.setItem('subtitlePanelLocked', 'false');
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'false');
+            window.localStorage.setItem('subtitleOpacity', '72');
+            window.fetch = () => Promise.resolve({
+                json: () => Promise.resolve({ success: true, language: 'zh' }),
+            });
+            window.lanlan_config = { model_type: 'live2d' };
+            window.__avatarBoundsCalls = 0;
+            window.live2dManager = {
+                currentModel: {},
+                getModelScreenBounds: () => {
+                    window.__avatarBoundsCalls += 1;
+                    return { left: 800, top: 300, width: 200, height: 400, centerX: 900, centerY: 500 };
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            shared.updateSettings({ subtitleDanmakuMode: true }, { source: 'test-enable-web-danmaku' });
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            return {
+                settings: shared.getSettings(),
+                style: {
+                    left: display.style.left,
+                    top: display.style.top,
+                    width: display.style.width,
+                    height: display.style.height,
+                },
+                avatarBoundsCalls: window.__avatarBoundsCalls,
+            };
+        }
+        """
+    )
+
+    assert result["settings"]["subtitleDanmakuMode"] is True
+    assert result["settings"]["subtitlePanelLocked"] is False
+    assert result["settings"]["subtitleInteractionPassthrough"] is False
+    assert result["settings"]["subtitleOpacity"] == 72
+    assert result["settings"]["subtitlePanelBounds"] == {"width": 655, "height": 109}
+    assert result["settings"]["subtitlePanelPosition"] == {
+        "left": 300,
+        "top": 500,
+        "coordinateSpace": "viewport",
+    }
+    assert result["style"] == {
+        "left": "300px",
+        "top": "500px",
+        "width": "655px",
+        "height": "109px",
+    }
+    assert result["avatarBoundsCalls"] == 0
+
+
 def _open_subtitle_harness(
     mock_page: Page,
     body_class: str,
