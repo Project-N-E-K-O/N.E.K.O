@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from main_logic.core import LLMSessionManager
@@ -22,8 +20,10 @@ class _FakeRealtimeSession:
 def _make_mgr(session=None):
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.session = session
-    mgr.pending_icebreaker_context = []
-    mgr._bg_tasks = set()
+    mgr.is_preparing_new_session = False
+    mgr.message_cache_for_new_session = []
+    mgr.lanlan_name = "Lan"
+    mgr.master_name = "Master"
     return mgr
 
 
@@ -38,59 +38,46 @@ def test_icebreaker_context_appends_to_active_conversation_history():
     assert history[0].content == "你好呀"
     assert isinstance(history[1], HumanMessage)
     assert history[1].content == "继续打字"
-    assert mgr.pending_icebreaker_context == []
+    assert mgr.message_cache_for_new_session == []
 
 
-def test_icebreaker_context_waits_for_next_session_when_none_active():
+@pytest.mark.asyncio
+async def test_icebreaker_context_primes_active_realtime_session():
+    session = _FakeRealtimeSession()
+    mgr = _make_mgr(session)
+
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "assistant", "先认识一下") is True
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "user", "我选第一个") is True
+
+    assert session.prime_context_calls == [
+        ("assistant: 先认识一下", True),
+        ("user: 我选第一个", True),
+    ]
+
+
+def test_icebreaker_context_reuses_hot_swap_message_cache_when_preparing():
     mgr = _make_mgr(None)
+    mgr.is_preparing_new_session = True
 
     assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "先认识一下") is True
     assert LLMSessionManager.append_icebreaker_context(mgr, "user", "看得差不多了") is True
 
-    assert len(mgr.pending_icebreaker_context) == 2
-
-    mgr.session = _FakeSession()
-    asyncio.run(LLMSessionManager._flush_pending_icebreaker_context(mgr))
-
-    history = mgr.session._conversation_history
-    assert [type(message) for message in history] == [AIMessage, HumanMessage]
-    assert [message.content for message in history] == ["先认识一下", "看得差不多了"]
-    assert mgr.pending_icebreaker_context == []
+    assert mgr.message_cache_for_new_session == [
+        {"role": "Lan", "text": "先认识一下"},
+        {"role": "Master", "text": "看得差不多了"},
+    ]
 
 
 @pytest.mark.asyncio
-async def test_icebreaker_context_primes_active_realtime_session_immediately():
+async def test_icebreaker_realtime_context_also_reuses_hot_swap_cache_when_preparing():
     session = _FakeRealtimeSession()
     mgr = _make_mgr(session)
+    mgr.is_preparing_new_session = True
 
-    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "先认识一下") is True
-    assert LLMSessionManager.append_icebreaker_context(mgr, "user", "我选第一个") is True
-    await asyncio.gather(*mgr._bg_tasks)
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "assistant", "先认识一下") is True
 
-    assert session.prime_context_calls == [
-        ("assistant: 先认识一下", True),
-        ("user: 我选第一个", True),
-    ]
-    assert mgr.pending_icebreaker_context == []
-
-
-@pytest.mark.asyncio
-async def test_pending_icebreaker_context_flushes_to_realtime_session():
-    session = _FakeRealtimeSession()
-    mgr = _make_mgr(None)
-
-    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "先认识一下") is True
-    assert LLMSessionManager.append_icebreaker_context(mgr, "user", "我选第一个") is True
-    mgr.session = session
-
-    await LLMSessionManager._flush_pending_icebreaker_context(mgr)
-    await asyncio.gather(*mgr._bg_tasks)
-
-    assert session.prime_context_calls == [
-        ("assistant: 先认识一下", True),
-        ("user: 我选第一个", True),
-    ]
-    assert mgr.pending_icebreaker_context == []
+    assert mgr.message_cache_for_new_session == [{"role": "Lan", "text": "先认识一下"}]
+    assert session.prime_context_calls == [("assistant: 先认识一下", True)]
 
 
 def test_icebreaker_context_rejects_empty_or_unknown_role():

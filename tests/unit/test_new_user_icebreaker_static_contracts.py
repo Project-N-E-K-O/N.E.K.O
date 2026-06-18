@@ -270,13 +270,16 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert 'action == "icebreaker_context_append"' not in websocket_router
 
 
-def test_icebreaker_context_request_ids_are_idempotent():
+def test_icebreaker_context_reuses_existing_session_context_paths():
     core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
 
-    assert "self._icebreaker_context_request_ids: OrderedDict[str, None] = OrderedDict()" in core
-    assert "def _claim_icebreaker_context_request_id" in core
-    assert "if clean_request_id in seen:" in core
-    assert "if not self._claim_icebreaker_context_request_id(request_id):" in core
+    assert "pending_icebreaker_context" not in core
+    assert "_icebreaker_context_request_ids" not in core
+    assert "def _flush_pending_icebreaker_context" not in core
+    assert "def append_icebreaker_context_async" in core
+    assert "_conversation_history" in core
+    assert "message_cache_for_new_session" in core
+    assert 'await prime_context(f"{normalized_role}: {content}", skipped=True)' in core
 
 
 def test_icebreaker_context_appends_are_serialized_before_chat_progression():
