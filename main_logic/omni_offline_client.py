@@ -1520,6 +1520,14 @@ class OmniOfflineClient:
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
+            # Focus vision guard: this is the single choke point for vision-model
+            # switches. Record whether the session is now committed to a separate
+            # persistent vision model — used to recompute _focus_images_seen after
+            # repetition recovery wipes _conversation_history (the in-history image
+            # is gone, so only a permanent model switch should keep thinking off).
+            # Name-comparison can't tell vision from conversation when they're
+            # equal (shared-model profiles), hence this explicit flag.
+            self._focus_vision_committed = bool(use_vision_config)
             # ⚠️ 同步 self.base_url / self.api_key —— 否则后续 _astream_with_tools
             # 重新计算 _use_genai_sdk 时拿到的还是旧 conversation 配置，会
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
@@ -1573,7 +1581,16 @@ class OmniOfflineClient:
                 self._conversation_history = [self._conversation_history[0]]
             else:
                 self._conversation_history = []
-            
+
+            # Focus vision guard: the image-bearing history just got erased, so
+            # an image that only "persisted in history" (shared-model profile)
+            # no longer suppresses thinking — recompute the sticky flag from the
+            # one thing that survives a history wipe: an actual persistent
+            # vision-model switch. In shared-model profiles _focus_vision_committed
+            # is False (no switch happened) → flag clears; on a separate vision
+            # model it stays True (switch is irreversible).
+            self._focus_images_seen = getattr(self, "_focus_vision_committed", False)
+
             # 清空重复检测缓存
             self._recent_responses.clear()
             

@@ -564,10 +564,19 @@ def _focus_decide(
     noisy mid-score turn could reset and thereby stick focus on indefinitely.
     """
     if topic_changed:
-        # explicit subject switch clears the emotional thread
+        # An explicit subject switch ends the OLD emotional thread — no charge
+        # leaks across the pivot. But the new topic may itself be vulnerable
+        # ("对了，我撑不住了" / "btw I'm overwhelmed"), so the current turn's
+        # score still seeds the new topic from a clean slate (a topic-switch
+        # opener must not make Focus deaf to the new topic's own evidence).
         if mode is CognitionMode.FOCUS:
+            # Pivot away from the active episode ends it; the new topic
+            # re-accumulates from REGULAR starting next turn.
             return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="topic_switch")
-        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=0.0)
+        new_charge = min(score, th.enter)
+        if new_charge >= th.enter:
+            return _FocusDecision(_FocusAction.ENTER, turn_count=1, charge=new_charge, reason="charge")
+        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=new_charge)
 
     new_charge = min(charge * th.retention + score, th.enter)
 

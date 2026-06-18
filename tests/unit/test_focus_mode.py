@@ -127,10 +127,23 @@ def test_decide_topic_switch_exits_focus_and_clears_regular():
     d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, charge=1.0,
                       score=0.95, topic_changed=True, th=_th())
     assert d.action is _FocusAction.EXIT and d.reason == "topic_switch"
-    # in REGULAR a topic switch clears the accumulator (stay, charge=0)
+    # in REGULAR a topic switch drops the OLD accumulator (no leak), score=0
     d2 = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.8,
                        score=0.0, topic_changed=True, th=_th())
     assert d2.action is _FocusAction.STAY and d2.charge == 0.0
+
+
+def test_decide_topic_switch_seeds_new_topic_with_current_score():
+    # A topic-switch opener that is ITSELF vulnerable ("对了，我撑不住了") must
+    # not be dropped: the old charge is cleared (no leak) but this turn's score
+    # seeds the new topic from a clean slate.
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.9,
+                      score=0.4, topic_changed=True, th=_th(enter=1.0))
+    assert d.action is _FocusAction.STAY and d.charge == 0.4  # seeded, not 0, not 0.9
+    # a strong vulnerable pivot enters Focus immediately on the new topic
+    d2 = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.0,
+                       score=1.0, topic_changed=True, th=_th(enter=1.0))
+    assert d2.action is _FocusAction.ENTER and d2.charge == 1.0
 
 
 def test_decide_hard_cap_yields_exactly_n_focus_turns():
@@ -438,6 +451,34 @@ async def test_focus_override_threads_through_visible_stream():
     c2 = _make_client()
     await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, False, c2.model)))
     assert "extra_body" not in captured[-1]
+
+
+async def test_check_repetition_resets_vision_guard():
+    """Repetition recovery wipes _conversation_history → the sticky Focus vision
+    guard must recompute from the only thing that survives a wipe: a real
+    persistent vision-model switch. Shared-model (no switch) clears it; a
+    committed separate vision model keeps it (the switch is irreversible)."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    def _mk(committed):
+        c = OmniOfflineClient.__new__(OmniOfflineClient)
+        c._recent_responses = ["同一句重复回复", "同一句重复回复"]
+        c._max_recent_responses = 5
+        c._repetition_threshold = 0.5
+        c._conversation_history = []
+        c.on_repetition_detected = None
+        c._focus_vision_committed = committed
+        c._focus_images_seen = True  # set earlier by an image-bearing turn
+        return c
+
+    # shared-model profile (no persistent switch) → flag clears after wipe
+    c1 = _mk(False)
+    assert await c1._check_repetition("同一句重复回复") is True
+    assert c1._focus_images_seen is False
+    # separate vision model committed → flag survives (irreversible switch)
+    c2 = _mk(True)
+    assert await c2._check_repetition("同一句重复回复") is True
+    assert c2._focus_images_seen is True
 
 
 # ── 6. caller-level Focus gates: charge hygiene + privacy-independence ─────
