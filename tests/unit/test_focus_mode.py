@@ -12,7 +12,9 @@ Coverage:
    language) scanning, topic-switch anchoring.
 5. ``stream_text`` thinking-on threading (Path A wiring).
 6. Idle cooldown: proactive ticks decay charge (two-tier retention by whether
-   the turn spoke), never enter; thinking read is mode-only.
+   the turn spoke), never enter; thinking read is mode-only; decay is pinned to
+   the observed episode + turn (skips on no-episode / episode-changed / inline
+   recharge of the same episode).
 """
 import os
 import sys
@@ -507,16 +509,17 @@ async def test_idle_cooldown_replied_exits_focus_faster(monkeypatch):
     _patch_charge(monkeypatch, enter=1.0, exit=0.3, idle_silent=0.95, idle_replied=0.6)
     mgr = _bare_mgr()
     await mgr.state.update_focus(1.0)  # inline enter, charge cap 1.0
-    tok = mgr.state.snapshot()["focus_episode_id"]
+    snap = mgr.state.snapshot()
+    tok, turn = snap["focus_episode_id"], snap["focus_turn_count"]
     assert mgr.state.mode is CognitionMode.FOCUS
     # silent tick barely moves it (×0.95); replied tick spends it (×0.6)
-    await mgr._focus_idle_cooldown(replied=False, episode_token=tok)
+    await mgr._focus_idle_cooldown(replied=False, episode_token=tok, turn_token=turn)
     assert abs(mgr.state.snapshot()["focus_charge"] - 0.95) < 1e-9
     # 0.95 → 0.57 → 0.342 → 0.2052 (<0.3) ⇒ exits on the 3rd replied tick
     for _ in range(2):
-        await mgr._focus_idle_cooldown(replied=True, episode_token=tok)
+        await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
         assert mgr.state.mode is CognitionMode.FOCUS
-    await mgr._focus_idle_cooldown(replied=True, episode_token=tok)
+    await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
     assert mgr.state.mode is CognitionMode.REGULAR
 
 
@@ -527,9 +530,10 @@ async def test_idle_cooldown_does_not_spend_hard_cap(monkeypatch):
     _patch_charge(monkeypatch, enter=1.0, exit=0.1, hard_cap=2, idle_silent=0.99)
     mgr = _bare_mgr()
     await mgr.state.update_focus(1.0)
-    tok = mgr.state.snapshot()["focus_episode_id"]
+    snap = mgr.state.snapshot()
+    tok, turn = snap["focus_episode_id"], snap["focus_turn_count"]
     for _ in range(5):  # > hard_cap, but cooldown doesn't bump turn_count
-        await mgr._focus_idle_cooldown(replied=False, episode_token=tok)
+        await mgr._focus_idle_cooldown(replied=False, episode_token=tok, turn_token=turn)
     assert mgr.state.mode is CognitionMode.FOCUS  # not force-exited by hard cap
     # entry set turn_count=1; cooldown ticks (count_turn=False) never bumped it
     assert mgr.state.snapshot()["focus_turn_count"] == 1
@@ -544,6 +548,46 @@ async def test_idle_cooldown_skips_when_episode_changed(monkeypatch):
     charge_now = mgr.state.snapshot()["focus_charge"]
     await mgr._focus_idle_cooldown(replied=True, episode_token="stale-other-episode")
     assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
+
+
+async def test_idle_cooldown_skips_when_no_episode_observed(monkeypatch):
+    # A proactive turn that ran while REGULAR observes no episode (token=None).
+    # The cooldown must NOT erode the pre-entry accumulator the inline path is
+    # building toward ENTER — entering Focus is the inline path's job alone.
+    _patch_charge(monkeypatch, enter=1.0, idle_silent=0.95, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)  # REGULAR, charge building under the bar
+    assert mgr.state.mode is CognitionMode.REGULAR
+    snap = mgr.state.snapshot()
+    assert snap["focus_episode_id"] is None
+    charge_now = snap["focus_charge"]
+    await mgr._focus_idle_cooldown(
+        replied=True, episode_token=None, turn_token=snap["focus_turn_count"],
+    )
+    assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
+    assert mgr.state.mode is CognitionMode.REGULAR
+
+
+async def test_idle_cooldown_skips_when_inline_recharged_same_episode(monkeypatch):
+    # Turn race within ONE episode: a user message lands mid-flight and the
+    # inline path recharges the same episode (turn count bumps). The stale
+    # proactive cooldown must not decay that fresh, user-driven charge — the
+    # turn-count token mismatch makes it a no-op even though the episode id matches.
+    _patch_charge(monkeypatch, retention=0.5, enter=1.0, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS, episode A, turn_count 1
+    snap = mgr.state.snapshot()
+    ep_tok, turn_tok = snap["focus_episode_id"], snap["focus_turn_count"]
+    # Inline turn recharges the same episode while the proactive turn finishes.
+    await mgr.state.update_focus(0.5)  # same episode A, turn_count -> 2
+    fresh = mgr.state.snapshot()
+    assert fresh["focus_episode_id"] == ep_tok          # same episode
+    assert fresh["focus_turn_count"] != turn_tok        # but turn moved
+    charge_fresh = fresh["focus_charge"]
+    await mgr._focus_idle_cooldown(
+        replied=True, episode_token=ep_tok, turn_token=turn_tok,
+    )
+    assert mgr.state.snapshot()["focus_charge"] == charge_fresh  # not decayed
 
 
 async def test_idle_cooldown_disabled_clears_regular_charge(monkeypatch):

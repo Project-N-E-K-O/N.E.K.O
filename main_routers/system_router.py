@@ -4919,6 +4919,7 @@ async def proactive_chat(request: Request):
         # pins the decay to the episode the thinking decision observed.
         _focus_phase2_reached = False
         _focus_episode_token = None
+        _focus_turn_token = None
 
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
             """Wraps every normal/short-circuit proactive exit: idempotently fires PROACTIVE_DONE.
@@ -4964,6 +4965,7 @@ async def proactive_chat(request: Request):
                 try:
                     await mgr._focus_idle_cooldown(
                         replied=_replied, episode_token=_focus_episode_token,
+                        turn_token=_focus_turn_token,
                     )
                 except Exception as _focus_err:
                     logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
@@ -6641,10 +6643,13 @@ async def proactive_chat(request: Request):
         # / BM25 anti-repeat regen).
         _focus_phase2_thinking = mgr._focus_idle_thinking()
         # Mark that this turn reached the Phase-2 idle Focus decision and pin the
-        # episode it observed — _end_proactive applies the cooldown only for such
-        # turns, and only if still in this same episode (race guard).
+        # focus state it observed (episode id + turn count) — _end_proactive
+        # applies the cooldown only for such turns, and only if still in this
+        # exact episode/turn (race guard: a no-op if inline moved it since).
         _focus_phase2_reached = True
-        _focus_episode_token = mgr.state.snapshot().get("focus_episode_id")
+        _focus_phase2_snap = mgr.state.snapshot()
+        _focus_episode_token = _focus_phase2_snap.get("focus_episode_id")
+        _focus_turn_token = _focus_phase2_snap.get("focus_turn_count")
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)

@@ -1761,7 +1761,9 @@ class LLMSessionManager:
             return False
         return self.state.mode is CognitionMode.FOCUS
 
-    async def _focus_idle_cooldown(self, *, replied: bool, episode_token) -> None:
+    async def _focus_idle_cooldown(
+        self, *, replied: bool, episode_token, turn_token=None,
+    ) -> None:
         """Path B (idle) Focus COOLDOWN: decay the charge once, after a Phase-2
         proactive turn finishes. A proactive turn NEVER raises the charge —
         entering and sustaining Focus is driven solely by the inline path (the
@@ -1774,11 +1776,19 @@ class LLMSessionManager:
             aborted) → slower ``FOCUS_IDLE_SILENT_RETENTION``: barely spends it.
         So Focus persistence is driven by how often she speaks, not raw time.
 
-        ``episode_token`` is the focus episode id observed when this proactive
-        turn made its thinking decision. If the SM is no longer in that same
-        episode (the inline path exited and/or entered a new one while this
-        proactive request was finishing), the decay is SKIPPED — a stale
-        proactive tick must not decay a fresh, user-driven episode.
+        ``episode_token`` / ``turn_token`` pin the decay to the exact focus state
+        this proactive turn observed when it made its thinking decision — the
+        episode id and the turn count at Phase 2. The decay is SKIPPED unless the
+        SM is STILL in that same episode AND no inline turn has landed since:
+          * ``episode_token is None`` → the turn observed REGULAR (no active
+            episode). There is nothing to cool, and a proactive tick must not
+            erode the pre-entry accumulator the inline path is building toward
+            ENTER — entering Focus is the inline path's job alone.
+          * episode id changed → the inline path exited and/or entered a new
+            episode while this proactive request was finishing.
+          * turn count changed → the inline path recharged THIS same episode (a
+            user message landed mid-flight). A stale proactive tick must not
+            decay that fresh, user-driven charge.
 
         Decays with ``count_turn=False`` so a proactive tick never consumes a
         hard-cap turn slot (that bounds inline turns). Pure charge cooldown:
@@ -1794,12 +1804,28 @@ class LLMSessionManager:
                 # Master switch off → update_focus self-clears any residue.
                 await self.state.update_focus(0.0)
                 return
-            # Race guard: only decay the episode this turn actually observed.
-            current_episode = self.state.snapshot().get("focus_episode_id")
-            if current_episode != episode_token:
+            # Only cool an episode this turn actually observed — never the
+            # REGULAR pre-entry accumulator (entering Focus is inline-only).
+            if episode_token is None:
                 logger.debug(
-                    "[%s] focus idle cooldown skipped: episode changed (%s → %s)",
+                    "[%s] focus idle cooldown skipped: no active episode observed",
+                    self.lanlan_name,
+                )
+                return
+            # Race guard: skip if the focus state moved since this turn observed
+            # it — a different episode (inline exited / re-entered) or a fresh
+            # inline turn that recharged this same episode (turn count bumped).
+            snap = self.state.snapshot()
+            current_episode = snap.get("focus_episode_id")
+            current_turn = snap.get("focus_turn_count")
+            if current_episode != episode_token or (
+                turn_token is not None and current_turn != turn_token
+            ):
+                logger.debug(
+                    "[%s] focus idle cooldown skipped: focus state changed "
+                    "(episode %s→%s, turn %s→%s)",
                     self.lanlan_name, episode_token, current_episode,
+                    turn_token, current_turn,
                 )
                 return
             retention = (
