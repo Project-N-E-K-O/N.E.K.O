@@ -1275,10 +1275,12 @@ function onCustomModelProviderChange(modelType) {
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
+        if (modelIdInput) modelIdInput.removeAttribute('readonly');
         setKeyEditable(keyInput);
     } else {
         // Specific provider
         const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+        if (modelIdInput) modelIdInput.removeAttribute('readonly');
         if (modelType === 'omni') {
             const coreProfile = _coreApiProviders[provider] || {};
             if (urlInput) {
@@ -4372,21 +4374,6 @@ function initConnectivityLights() {
 
             input.addEventListener('input', handleCustomEndpointChange);
             input.addEventListener('change', handleCustomEndpointChange);
-        });
-    });
-
-    // Source model changes must also update follower slots while loading saved config programmatically.
-    ['conversation', 'summary'].forEach(mt => {
-        ['Url', 'Id'].forEach(suffix => {
-            const input = document.getElementById(`${mt}Model${suffix}`);
-            if (!input) return;
-
-            const handleSourceModelChange = debounce(() => {
-                syncModelFollowers(mt);
-            }, 300);
-
-            input.addEventListener('input', handleSourceModelChange);
-            input.addEventListener('change', handleSourceModelChange);
         });
     });
 

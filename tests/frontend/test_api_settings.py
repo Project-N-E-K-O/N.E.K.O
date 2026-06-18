@@ -963,6 +963,45 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
 
 
 @pytest.mark.frontend
+def test_switching_game_model_away_from_follow_clears_model_readonly(mock_page: Page, running_server: str):
+    """Game model IDs must be editable again after leaving follow-conversation/summary modes."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#gameMainModelProvider option[value='follow_conversation']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#gameMainModelProvider option[value='custom']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#gameMainModelProvider option[value='qwen']", state="attached", timeout=10000)
+
+    value = mock_page.evaluate("""
+        () => {
+            const provider = document.getElementById('gameMainModelProvider');
+            const model = document.getElementById('gameMainModelId');
+
+            provider.value = 'follow_conversation';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const followReadonly = model.hasAttribute('readonly');
+
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const customReadonly = model.hasAttribute('readonly');
+
+            model.setAttribute('readonly', 'readonly');
+            provider.value = 'qwen';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const namedReadonly = model.hasAttribute('readonly');
+
+            return { followReadonly, customReadonly, namedReadonly };
+        }
+    """)
+
+    assert value == {
+        "followReadonly": True,
+        "customReadonly": False,
+        "namedReadonly": False,
+    }
+
+
+@pytest.mark.frontend
 def test_switching_tts_provider_away_from_vllm_clears_fallback_voice(mock_page: Page, running_server: str):
     """The vLLM fallback voice is provider-specific and must not leak into follow_* TTS."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")

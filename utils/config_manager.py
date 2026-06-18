@@ -4238,13 +4238,12 @@ class ConfigManager:
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
+                elif provider in ('follow_core', 'follow_assist'):
+                    followed_model = _resolve_game_follow_model_id(prefix, provider)
+                    if followed_model:
+                        config[model_key] = followed_model
                 elif cfg_model is not None:
-                    if cfg_model:
-                        config[model_key] = cfg_model
-                    else:
-                        followed_model = _resolve_game_follow_model_id(prefix, provider)
-                        if followed_model:
-                            config[model_key] = followed_model
+                    config[model_key] = cfg_model or config.get(model_key, '')
 
                 # API Key 处理：
                 #   follow_core   → 从核心 API Key 派生

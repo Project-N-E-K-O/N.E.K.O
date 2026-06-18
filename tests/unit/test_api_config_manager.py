@@ -386,9 +386,9 @@ class TestCustomApiToggle:
             'assistApiKeyGemini': 'sk-gemini',
             'enableCustomApi': True,
             'gameMainModelProvider': 'follow_assist',
-            'gameMainModelId': '',
+            'gameMainModelId': 'stale-game-main-model',
             'gameSummaryModelProvider': 'follow_assist',
-            'gameSummaryModelId': '',
+            'gameSummaryModelId': 'stale-game-summary-model',
         })
 
         game_main = config_manager.get_model_api_config('game_main')
@@ -411,9 +411,9 @@ class TestCustomApiToggle:
             'assistApi': 'qwen',
             'enableCustomApi': True,
             'gameMainModelProvider': 'follow_core',
-            'gameMainModelId': '',
+            'gameMainModelId': 'stale-game-main-model',
             'gameSummaryModelProvider': 'follow_core',
-            'gameSummaryModelId': '',
+            'gameSummaryModelId': 'stale-game-summary-model',
         })
 
         game_main = config_manager.get_model_api_config('game_main')
