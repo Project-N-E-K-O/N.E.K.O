@@ -416,6 +416,57 @@ def test_mimo_token_plan_toggle_wraps_below_assist_provider(mock_page: Page, run
 
 
 @pytest.mark.frontend
+def test_mimo_token_plan_keeps_settings_scroll_container_stable(mock_page: Page, running_server: str):
+    """Expanding Token Plan at the bottom should not leave the page at the old scroll limit."""
+    mock_page.set_viewport_size({"width": 1816, "height": 1376})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    mock_page.select_option("#assistApiSelect", "mimo")
+    expect(mock_page.locator("#mimoTokenPlanToggleRow")).to_be_visible(timeout=5000)
+
+    metrics = mock_page.evaluate("""
+        async () => {
+            const content = document.querySelector('.container-content');
+            content.scrollTop = content.scrollHeight;
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            const toggle = document.getElementById('useMimoTokenPlan');
+            const beforeMaxScroll = content.scrollHeight - content.clientHeight;
+            const beforeScrollTop = content.scrollTop;
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            const rect = content.getBoundingClientRect();
+            const customRect = document.getElementById('custom-api-section').getBoundingClientRect();
+            const afterMaxScroll = content.scrollHeight - content.clientHeight;
+            return {
+                beforeMaxScroll,
+                beforeScrollTop,
+                afterMaxScroll,
+                afterScrollTop: content.scrollTop,
+                contentBottom: rect.bottom,
+                documentScrollHeight: document.documentElement.scrollHeight,
+                viewportHeight: window.innerHeight,
+                customTop: customRect.top,
+                customDisplay: getComputedStyle(document.getElementById('custom-api-section')).display,
+            };
+        }
+    """)
+
+    assert abs(metrics["beforeScrollTop"] - metrics["beforeMaxScroll"]) <= 2
+    assert metrics["afterMaxScroll"] > metrics["beforeMaxScroll"]
+    assert abs(metrics["afterScrollTop"] - metrics["afterMaxScroll"]) <= 2
+    assert abs(metrics["contentBottom"] - metrics["viewportHeight"]) <= 2
+    assert metrics["documentScrollHeight"] <= metrics["viewportHeight"] + 2
+    assert metrics["customDisplay"] != "none"
+    assert 0 <= metrics["customTop"] < metrics["viewportHeight"]
+
+
+@pytest.mark.frontend
 def test_mimo_token_plan_connectivity_tries_endpoint_candidates(mock_page: Page, running_server: str):
     """Token Plan connectivity should try regional MiMo endpoints until one succeeds."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")

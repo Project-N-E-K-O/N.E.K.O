@@ -241,6 +241,20 @@ function getEffectiveAssistUrl(providerKey, profile, { useTokenPlan = true } = {
     return getProviderOpenrouterUrl(providerKey, profile);
 }
 
+function isApiSettingsScrolledToBottom(container, tolerance = 4) {
+    if (!container) return false;
+    return container.scrollHeight - container.clientHeight - container.scrollTop <= tolerance;
+}
+
+function keepApiSettingsBottomIfNeeded(shouldStickToBottom) {
+    if (!shouldStickToBottom) return;
+    requestAnimationFrame(() => {
+        const container = document.querySelector('.container-content');
+        if (!container) return;
+        container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    });
+}
+
 function updateMimoTokenPlanControls() {
     const showMimoControls = isMimoAssistSelected();
     const active = isMimoTokenPlanActive();
@@ -249,6 +263,8 @@ function updateMimoTokenPlanControls() {
     const keyRow = document.getElementById('mimoTokenPlanKeyRow');
     const tokenPlanInput = document.getElementById('mimoTokenPlanKeyInput');
     const assistInput = document.getElementById('assistApiKeyInput');
+    const scrollContainer = document.querySelector('.container-content');
+    const wasAtBottom = isApiSettingsScrolledToBottom(scrollContainer);
 
     if (toggleRow) toggleRow.style.display = showMimoControls ? 'inline-flex' : 'none';
     if (toggle) toggle.disabled = !showMimoControls;
@@ -266,6 +282,8 @@ function updateMimoTokenPlanControls() {
             assistInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
         }
     }
+
+    keepApiSettingsBottomIfNeeded(wasAtBottom);
 }
 
 function isAliyunUsApiUrl(url) {
