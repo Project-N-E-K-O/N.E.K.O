@@ -1422,11 +1422,11 @@ class LLMSessionManager:
             else:
                 current_session_failed_reason = "no_current_session_target"
 
-        if (
-            payload.get("_pending_ready")
-            and current_session_required
-            and not current_session_delivered
-        ):
+        current_session_delivery_required = (
+            current_session_required
+            and not bool(getattr(self, "is_preparing_new_session", False))
+        )
+        if current_session_delivery_required and not current_session_delivered:
             return ContextAppendResult(
                 appended=False,
                 targets=tuple(targets),

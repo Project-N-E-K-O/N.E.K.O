@@ -3866,6 +3866,13 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         lanlan_name=str(archive.get("lanlan_name") or ""),
         source="game_end",
     )
+    if _active_realtime_session(mgr) is not session:
+        return {
+            "ok": False,
+            "mode": "realtime",
+            "action": "skip",
+            "reason": "realtime_session_changed",
+        }
 
     if _is_gemini_realtime_session(session):
         instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
@@ -7679,6 +7686,18 @@ async def game_realtime_context(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
 
     lanlan_name = str(data.get("lanlan_name") or "").strip()
     if not lanlan_name:

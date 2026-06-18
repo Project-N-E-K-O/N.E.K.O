@@ -3389,6 +3389,30 @@ async def test_realtime_context_skips_gemini_prime_to_avoid_hidden_response(monk
     assert session.create_response_calls == []
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_endpoint_requires_local_mutation_csrf(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, mutation_headers=False, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert mgr.append_context_calls == []
+    assert session.prime_context_calls == []
+
+
 class _FakeGameRouteManager:
     def __init__(self):
         self.is_active = False
@@ -4768,6 +4792,41 @@ async def test_game_end_skips_postgame_nudge_when_context_append_deduped(monkeyp
     assert result["postgame"]["reason"] == "context_deduped"
     assert mgr.voice_nudge_calls == 0
     assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_context_aborts_when_active_session_changes(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+
+    def swap_session(_archive):
+        mgr.session = replacement
+        return "[Game Module Postgame Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_build_game_postgame_context_text", swap_session)
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+
+    assert result == {
+        "ok": False,
+        "mode": "realtime",
+        "action": "skip",
+        "reason": "realtime_session_changed",
+    }
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 @pytest.mark.unit

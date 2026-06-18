@@ -779,7 +779,7 @@ async def test_append_context_reserves_request_id_before_awaiting_prime():
 
 
 @pytest.mark.asyncio
-async def test_append_context_keeps_partial_targets_when_realtime_prime_fails():
+async def test_append_context_requires_current_delivery_when_ready_session_family_prime_fails():
     mgr = _make_manager()
 
     class _FailingPrimeSession:
@@ -803,12 +803,13 @@ async def test_append_context_keeps_partial_targets_when_realtime_prime_fails():
         request_id="ctx-partial",
     )
 
-    assert result.appended is True
+    assert result.appended is False
     assert result.targets == ("new_session_cache",)
-    assert duplicate.appended is False
-    assert duplicate.deduped is True
+    assert result.reason == "realtime_prime_failed"
+    assert duplicate.deduped is False
     assert mgr.next_session_context_messages == [
         {"role": "Lan", "text": "cached for next session"},
+        {"role": "Lan", "text": "cached for next session again"},
     ]
     assert mgr.message_cache_for_new_session == []
 

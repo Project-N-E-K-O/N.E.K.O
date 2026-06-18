@@ -39,6 +39,22 @@ async def test_prime_context_skipped_accumulates_cached_instructions():
     assert client.instructions == "base instructions\nassistant: hello\nuser: choice"
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_create_response_propagates_send_failure(monkeypatch):
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._gemini_session = object()
+
+    async def fail_send_user_turn(_text):
+        raise RuntimeError("gemini send failed")
+
+    monkeypatch.setattr(client, "_gemini_send_user_turn", fail_send_user_turn)
+
+    with pytest.raises(RuntimeError, match="gemini send failed"):
+        await OmniRealtimeClient.create_response(client, "postgame context")
+
+
 @pytest.fixture
 def mock_websocket():
     """Returns a mock websocket object."""
