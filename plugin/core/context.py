@@ -1916,6 +1916,13 @@ class PluginContext:
                 "persisted": False,
                 "message": "Config persistence timed out; update is applied in plugin memory only",
             }
+        except asyncio.CancelledError:
+            if isinstance(old_effective_config, dict):
+                self._set_effective_config_cache(old_effective_config)
+            else:
+                self._effective_config = None
+                self._refresh_instance_runtime_config({})
+            raise
         except Exception:
             if isinstance(old_effective_config, dict):
                 self._set_effective_config_cache(old_effective_config)

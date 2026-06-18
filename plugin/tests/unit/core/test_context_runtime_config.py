@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import asyncio
+
 import pytest
 
 from plugin.core.context import PluginContext
@@ -119,6 +121,34 @@ async def test_context_update_own_config_rolls_back_rejected_updates(tmp_path: P
     ctx._send_request_and_wait_async = _reject  # type: ignore[method-assign]
 
     with pytest.raises(RuntimeError, match="protected config key"):
+        await ctx.update_own_config({"plugin": {"store": {"enabled": True}}})
+
+    assert ctx._effective_config == {"plugin": {"store": {"enabled": False}}}
+    assert instance.refreshed == [
+        {"plugin": {"store": {"enabled": True}}},
+        {"plugin": {"store": {"enabled": False}}},
+    ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_context_update_own_config_rolls_back_cancelled_updates(tmp_path: Path) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"plugin": {"store": {"enabled": False}}}
+
+    async def _cancel(**kwargs: object) -> dict[str, object]:
+        raise asyncio.CancelledError()
+
+    ctx._send_request_and_wait_async = _cancel  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
         await ctx.update_own_config({"plugin": {"store": {"enabled": True}}})
 
     assert ctx._effective_config == {"plugin": {"store": {"enabled": False}}}
