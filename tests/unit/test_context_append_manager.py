@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
@@ -752,6 +753,35 @@ async def test_append_context_dedups_request_id_inside_manager():
         "same hook",
         "same id, different source",
     ]
+
+
+def test_promoted_pending_request_id_keeps_ttl_eviction_order(monkeypatch):
+    mgr = _make_manager()
+    mgr.session = object()
+    mgr._context_append_request_ids = OrderedDict()
+    pending_payload = {
+        "source": "topic.hook",
+        "request_id": "old-hook",
+        "lifetime": "current_session",
+        "_dedup_pending_ready": True,
+    }
+    current_payload = {
+        "source": "topic.hook",
+        "request_id": "new-hook",
+        "lifetime": "current_session",
+        "_dedup_session_id": id(mgr.session),
+    }
+
+    monkeypatch.setattr(core_module.time, "time", lambda: 1000.0)
+    mgr._remember_context_append_request_id(pending_payload)
+    monkeypatch.setattr(core_module.time, "time", lambda: 1110.0)
+    mgr._remember_context_append_request_id(current_payload)
+
+    mgr._promote_context_append_request_id_to_current_session(pending_payload)
+
+    monkeypatch.setattr(core_module.time, "time", lambda: 1121.0)
+    assert mgr._context_append_request_seen(pending_payload) is False
+    assert mgr._context_append_request_seen(current_payload) is True
 
 
 @pytest.mark.asyncio

@@ -1210,7 +1210,9 @@ class LLMSessionManager:
         new_key = self._context_append_request_key(payload)
         if timestamp is not None and new_key is not None:
             seen[new_key] = timestamp
-            seen.move_to_end(new_key)
+            self._context_append_request_ids = OrderedDict(
+                sorted(seen.items(), key=lambda item: item[1])
+            )
 
     def _remember_context_append_request_id(self, payload: Mapping[str, Any]) -> None:
         key = self._context_append_request_key(payload)
