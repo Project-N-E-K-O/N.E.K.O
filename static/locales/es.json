@@ -1067,7 +1067,7 @@
             "elevenlabs": "ElevenLabs",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "enrutador abierto",
+            "openrouter": "OpenRouter (agregador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
