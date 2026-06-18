@@ -307,8 +307,9 @@ def test_plugin_database_configure_database_name_updates_storage_path(tmp_path) 
     assert db.db_name == "new.db"
     assert db._db_path == plugin_dir / "new.db"
 
-    with pytest.raises(ValueError, match="plain filename"):
-        db.configure_database_name("nested/new.db")
+    for invalid_name in ("nested/new.db", r"nested\new.db"):
+        with pytest.raises(ValueError, match="plain filename"):
+            db.configure_database_name(invalid_name)
 
 
 @pytest.mark.asyncio

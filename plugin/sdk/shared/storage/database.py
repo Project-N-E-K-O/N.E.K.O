@@ -293,6 +293,8 @@ class PluginDatabase(StorageResultTemplate):
     @staticmethod
     def _normalize_db_name(db_name: str | None) -> str:
         raw_db_name = db_name or "plugin.db"
+        if "/" in raw_db_name or "\\" in raw_db_name:
+            raise ValueError("db_name must be a plain filename within plugin_dir")
         db_path = Path(raw_db_name)
         if db_path.is_absolute() or any(part == ".." for part in db_path.parts):
             raise ValueError("db_name must stay within plugin_dir")
