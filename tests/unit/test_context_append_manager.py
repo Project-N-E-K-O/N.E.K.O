@@ -557,6 +557,41 @@ async def test_when_ready_durable_context_delivered_in_start_prompt_is_not_repla
 
 
 @pytest.mark.asyncio
+async def test_concurrent_loser_does_not_clear_winner_start_prompt_marks():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    queued = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="winner prompt context",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-winner",
+    )
+    snapshot = mgr._snapshot_next_session_context_messages()
+    winner_owner = object()
+    loser_owner = object()
+    mgr._mark_pending_context_appends_delivered_in_start_prompt(
+        snapshot,
+        owner=winner_owner,
+    )
+    mgr._clear_pending_context_start_prompt_marks(owner=loser_owner)
+
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+    flushed = await mgr._flush_pending_context_appends()
+
+    assert queued.appended is True
+    assert flushed == 1
+    assert mgr.pending_context_appends == []
+    assert history == []
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "winner prompt context"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_late_prime_failure_still_allows_transferred_prefix_consumption():
     mgr = _make_manager()
     mgr.next_session_context_messages = [

@@ -1295,7 +1295,12 @@ class LLMSessionManager:
             speaker = "system"
         return (speaker, str(payload.get("text") or ""))
 
-    def _mark_pending_context_appends_delivered_in_start_prompt(self, snapshot: list[dict]) -> None:
+    def _mark_pending_context_appends_delivered_in_start_prompt(
+        self,
+        snapshot: list[dict],
+        *,
+        owner: object | None = None,
+    ) -> None:
         pending = getattr(self, "pending_context_appends", None)
         if not isinstance(pending, list) or not pending or not snapshot:
             return
@@ -1317,15 +1322,19 @@ class LLMSessionManager:
             if count <= 0:
                 continue
             payload["_delivered_in_start_prompt"] = True
+            payload["_delivered_in_start_prompt_owner"] = owner
             available[key] = count - 1
 
-    def _clear_pending_context_start_prompt_marks(self) -> None:
+    def _clear_pending_context_start_prompt_marks(self, *, owner: object | None = None) -> None:
         pending = getattr(self, "pending_context_appends", None)
         if not isinstance(pending, list):
             return
         for payload in pending:
             if isinstance(payload, dict):
+                if owner is not None and payload.get("_delivered_in_start_prompt_owner") is not owner:
+                    continue
                 payload.pop("_delivered_in_start_prompt", None)
+                payload.pop("_delivered_in_start_prompt_owner", None)
 
     def _snapshot_next_session_context_messages(self) -> list[dict]:
         cache = getattr(self, "next_session_context_messages", None)
@@ -5228,8 +5237,10 @@ class LLMSessionManager:
                 _lang = normalize_language_code(self.user_language, format='short')
                 initial_prompt = await self._build_initial_prompt()
                 next_session_context_messages = self._snapshot_next_session_context_messages()
+                start_prompt_context_owner = object()
                 self._mark_pending_context_appends_delivered_in_start_prompt(
-                    next_session_context_messages
+                    next_session_context_messages,
+                    owner=start_prompt_context_owner,
                 )
 
                 # 等待上面预先发出的 /new_dialog 完成
@@ -5354,7 +5365,7 @@ class LLMSessionManager:
                         concurrent_winner = True
 
                 if concurrent_winner:
-                    self._clear_pending_context_start_prompt_marks()
+                    self._clear_pending_context_start_prompt_marks(owner=start_prompt_context_owner)
                     logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
                     try:
                         await new_session.close()
