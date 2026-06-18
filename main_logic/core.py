@@ -8707,8 +8707,7 @@ class LLMSessionManager:
         #
         # 自适应 back-off：活跃出帧时贴近 5ms 保证低延迟取帧；持续空闲（会话静默、
         # 等首包入队）时逐步退到 50ms，把空转唤醒从 200 次/秒降到 ~20 次/秒，避免多
-        # 并发会话时空闲 handler 把 event loop 拖忙。50ms 取帧延迟相对 jitter buffer
-        # 的首包 1000ms 缓冲可忽略。
+        # 并发会话时空闲 handler 把 event loop 拖忙。50ms 取帧延迟相对音频缓冲可忽略。
         _ACTIVE_POLL_INTERVAL = 0.005   # 5ms
         _IDLE_POLL_INTERVAL = 0.05      # 50ms
         _IDLE_AFTER_EMPTY_POLLS = 20    # 连续空轮询 ~100ms 后切到空闲间隔

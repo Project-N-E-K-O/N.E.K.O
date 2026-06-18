@@ -79,15 +79,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         pending_text_buffer = ""  # 延迟发送的文本缓冲，用于首 N 字语言检测
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
-        # Qwen/Bailian 流式合成本身节奏偏碎：上游 audio.delta 之间常夹 200-700ms 的
-        # 低能量静音，低延迟直出时听感就是"一字一顿"。用一个正常大小的 jitter buffer
-        # 攒够 PCM 再下发，既能盖过上游短停顿、也让前端有连续音频可播：
-        #   - 首包缓冲 1000ms：开口前多攒一点，吸收最不稳定的起播抖动；
-        #   - 后续稳定缓冲 500ms：合并碎片，chunk 数显著下降、低能量静音明显减少。
-        # 二者均可经环境变量覆盖（设 0 即关闭对应缓冲，退回低延迟直出）。
+        # Qwen realtime can produce 1-2s inter-chunk gaps. A small jitter buffer
+        # gives the client enough queued PCM to ride over short upstream stalls.
         qwen_audio_bytes_per_second = 48000 * 2
-        qwen_initial_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_INITIAL_BUFFER_MS", 1000, 0) / 1000 * qwen_audio_bytes_per_second)
-        qwen_steady_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_STEADY_BUFFER_MS", 500, 0) / 1000 * qwen_audio_bytes_per_second)
+        qwen_initial_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_INITIAL_BUFFER_MS", 400, 0) / 1000 * qwen_audio_bytes_per_second)
+        qwen_steady_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_STEADY_BUFFER_MS", 200, 0) / 1000 * qwen_audio_bytes_per_second)
 
         class QwenAudioJitterBuffer:
             def __init__(self):
