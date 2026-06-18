@@ -242,6 +242,14 @@ def test_final_swap_primes_late_context_before_flushing_cached_audio():
     )
 
 
+def test_final_swap_consumes_next_session_context_after_cached_audio_flush():
+    source = inspect.getsource(core_module.LLMSessionManager._perform_final_swap_sequence)
+
+    assert source.index("_flush_hot_swap_audio_cache") < source.index(
+        "_consume_next_session_context_messages(consumed_next_context_count)"
+    )
+
+
 @pytest.mark.asyncio
 async def test_append_context_when_ready_flushes_before_user_input():
     mgr = _make_manager()
@@ -463,6 +471,60 @@ async def test_when_ready_durable_context_is_cached_before_readiness_flush():
     assert duplicate.deduped is True
     assert mgr.next_session_context_messages == [
         {"role": "Lan", "text": "durable setup"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_when_ready_durable_context_delivered_in_start_prompt_is_not_replayed():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    queued = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="already in start prompt",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-start",
+    )
+    snapshot = mgr._snapshot_next_session_context_messages()
+    mgr._mark_pending_context_appends_delivered_in_start_prompt(snapshot)
+
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+    await mgr._flush_pending_context_appends()
+
+    assert queued.appended is True
+    assert mgr.pending_context_appends == []
+    assert history == []
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "already in start prompt"},
+    ]
+
+    mgr._consume_next_session_context_messages(len(snapshot))
+    assert mgr.next_session_context_messages == []
+
+
+@pytest.mark.asyncio
+async def test_late_prime_failure_still_allows_transferred_prefix_consumption():
+    mgr = _make_manager()
+    mgr.next_session_context_messages = [
+        {"role": "Lan", "text": "already transferred"},
+        {"role": "system", "text": "late context"},
+    ]
+
+    class _FailingPrimeSession:
+        async def prime_context(self, text, *, skipped=False):
+            raise RuntimeError("provider rejected late prime")
+
+    mgr.session = _FailingPrimeSession()
+
+    consumed = await mgr._prime_late_next_session_context_after_swap(1, 2)
+    mgr._consume_next_session_context_messages(consumed)
+
+    assert consumed == 1
+    assert mgr.next_session_context_messages == [
+        {"role": "system", "text": "late context"},
     ]
 
 

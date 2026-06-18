@@ -1285,6 +1285,48 @@ class LLMSessionManager:
         cache.append({"role": speaker, "text": text})
         return True
 
+    def _context_payload_cache_key(self, payload: Mapping[str, Any]) -> tuple[str, str]:
+        role = str(payload.get("role") or "").strip().lower()
+        if role == "user":
+            speaker = getattr(self, "master_name", "user")
+        elif role == "assistant":
+            speaker = getattr(self, "lanlan_name", "assistant")
+        else:
+            speaker = "system"
+        return (speaker, str(payload.get("text") or ""))
+
+    def _mark_pending_context_appends_delivered_in_start_prompt(self, snapshot: list[dict]) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if not isinstance(pending, list) or not pending or not snapshot:
+            return
+        available: dict[tuple[str, str], int] = {}
+        for entry in snapshot:
+            if not isinstance(entry, Mapping):
+                continue
+            key = (str(entry.get("role") or ""), str(entry.get("text") or ""))
+            available[key] = available.get(key, 0) + 1
+        for payload in pending:
+            if (
+                not isinstance(payload, dict)
+                or not payload.get("_durable_cached")
+                or payload.get("_delivered_in_start_prompt")
+            ):
+                continue
+            key = self._context_payload_cache_key(payload)
+            count = available.get(key, 0)
+            if count <= 0:
+                continue
+            payload["_delivered_in_start_prompt"] = True
+            available[key] = count - 1
+
+    def _clear_pending_context_start_prompt_marks(self) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if not isinstance(pending, list):
+            return
+        for payload in pending:
+            if isinstance(payload, dict):
+                payload.pop("_delivered_in_start_prompt", None)
+
     def _snapshot_next_session_context_messages(self) -> list[dict]:
         cache = getattr(self, "next_session_context_messages", None)
         if not isinstance(cache, list) or not cache:
@@ -1316,7 +1358,7 @@ class LLMSessionManager:
             return consumed_count
         try:
             await prime_context(self._convert_cache_to_str(late_context), skipped=True)
-        except (web_exceptions.ConnectionClosed, AttributeError) as exc:
+        except Exception as exc:
             logger.warning(
                 "[%s] final-swap late next-session context prime failed: %s",
                 self.lanlan_name,
@@ -1333,6 +1375,8 @@ class LLMSessionManager:
         audience = payload["audience"]
         lifetime = payload["lifetime"]
         targets: list[str] = []
+        if payload.get("_delivered_in_start_prompt") and lifetime in {"next_session", "session_family"}:
+            return ContextAppendResult(appended=True, targets=("start_prompt",))
         if lifetime in {"next_session", "session_family"}:
             if payload.get("_durable_cached"):
                 targets.append("new_session_cache")
@@ -5138,6 +5182,7 @@ class LLMSessionManager:
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             _mem_start = time.time()
             _new_dialog_task = asyncio.create_task(_fetch_new_dialog())
+            llm_next_context_count_to_consume_after_start = 0
 
             # 定义 LLM Session 启动协程
             async def start_llm_session():
@@ -5147,6 +5192,7 @@ class LLMSessionManager:
                 first.  Only after connect() succeeds is it promoted to self.session.
                 On failure the half-initialised session is closed and an exception raised.
                 """
+                nonlocal llm_next_context_count_to_consume_after_start
                 # 强 CAS 语义：只允许在 self.session 为 None（start_session 已清场）
                 # 或已经是自己的 new_session 时赋值。任何其他状态都视为并发落败，
                 # 必须关闭本次 new_session，避免覆盖赢家造成孤儿。
@@ -5158,6 +5204,9 @@ class LLMSessionManager:
                 _lang = normalize_language_code(self.user_language, format='short')
                 initial_prompt = await self._build_initial_prompt()
                 next_session_context_messages = self._snapshot_next_session_context_messages()
+                self._mark_pending_context_appends_delivered_in_start_prompt(
+                    next_session_context_messages
+                )
 
                 # 等待上面预先发出的 /new_dialog 完成
                 try:
@@ -5276,11 +5325,12 @@ class LLMSessionManager:
                         self.session = new_session
                         if not self.current_speech_id:
                             self.current_speech_id = str(uuid4())
-                        self._consume_next_session_context_messages(len(next_session_context_messages))
+                        llm_next_context_count_to_consume_after_start = len(next_session_context_messages)
                     else:
                         concurrent_winner = True
 
                 if concurrent_winner:
+                    self._clear_pending_context_start_prompt_marks()
                     logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
                     try:
                         await new_session.close()
@@ -5384,6 +5434,10 @@ class LLMSessionManager:
 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
+                self._consume_next_session_context_messages(
+                    llm_next_context_count_to_consume_after_start
+                )
+                llm_next_context_count_to_consume_after_start = 0
 
                 # WebSocket 重连后，投递因断线积压的 agent 任务回调
                 if self.pending_agent_callbacks:
@@ -8147,12 +8201,11 @@ class LLMSessionManager:
                 except Exception as e:
                     logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
-            next_context_count_before_promote = len(self._snapshot_next_session_context_messages())
-
             # ── 步骤 3：promote 新 session ────────────────────────────────────────
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
             self.session = new_session
+            next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
@@ -8181,9 +8234,8 @@ class LLMSessionManager:
             )
             consumed_next_context_count = await self._prime_late_next_session_context_after_swap(
                 transferred_next_context_count,
-                next_context_count_before_promote,
+                next_context_count_at_promote,
             )
-            self._consume_next_session_context_messages(consumed_next_context_count)
 
             # ── 步骤 4：启动新 listener ───────────────────────────────────────────
             if self.session and hasattr(self.session, 'handle_messages'):
@@ -8193,6 +8245,7 @@ class LLMSessionManager:
             # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
             # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
             await self._flush_hot_swap_audio_cache()
+            self._consume_next_session_context_messages(consumed_next_context_count)
 
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
