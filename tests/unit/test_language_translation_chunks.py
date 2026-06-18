@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from utils import tokenize
-from utils.language_utils import _split_text_into_token_chunks
+from utils.language_utils import TranslationService, _split_text_into_token_chunks
 
 
 def test_translation_token_chunks_preserve_original_unicode_text() -> None:
@@ -35,3 +39,39 @@ def test_translation_token_chunks_do_not_depend_on_truncated_decode(
     assert chunks == ["abcde", "fghij", "klmno", "pqrst", "uvwxy", "z"]
     assert "".join(chunks) == text
     assert calls.count(text) == 1
+
+
+@pytest.mark.asyncio
+async def test_translation_service_llm_client_creation_is_single_flight(
+    monkeypatch,
+) -> None:
+    class _ConfigManager:
+        def get_model_api_config(self, _group: str) -> dict[str, str]:
+            return {
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "model": "test-model",
+            }
+
+    created_clients: list[object] = []
+
+    async def fake_create_chat_llm_async(*_args: object, **_kwargs: object) -> object:
+        await asyncio.sleep(0)
+        client = object()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        "utils.language_utils.create_chat_llm_async",
+        fake_create_chat_llm_async,
+    )
+
+    service = TranslationService(_ConfigManager())
+
+    clients = await asyncio.gather(
+        service._get_llm_client(),
+        service._get_llm_client(),
+    )
+
+    assert len(created_clients) == 1
+    assert clients == [created_clients[0], created_clients[0]]

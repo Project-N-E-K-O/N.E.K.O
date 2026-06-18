@@ -1295,14 +1295,18 @@ class TranslationService:
             if self._llm_client is not None:
                 return self._llm_client
 
-            from config import TRANSLATION_OUTPUT_MAX_TOKENS
-            self._llm_client = await create_chat_llm_async(
-                config['model'], config['base_url'], config['api_key'],
-                max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
-                timeout=30.0,
-            )
-            
-            return self._llm_client
+            async with self._get_cache_lock():
+                if self._llm_client is not None:
+                    return self._llm_client
+
+                from config import TRANSLATION_OUTPUT_MAX_TOKENS
+                self._llm_client = await create_chat_llm_async(
+                    config['model'], config['base_url'], config['api_key'],
+                    max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
+                    timeout=30.0,
+                )
+
+                return self._llm_client
         except Exception as e:
             logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
             return None
