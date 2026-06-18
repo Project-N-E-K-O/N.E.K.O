@@ -6509,28 +6509,22 @@ async def proactive_chat(request: Request):
         # unfinished_thread）仍取自早期 snapshot，避免 Phase 1 中途 state 变化
         # 导致 gating 决策（restricted_screen_only 收紧 enabled_modes 等）和最终
         # prompt 不一致。
-        # Freshest snapshot to feed the idle Focus decision below — Phase 1
-        # (source fetch + memory + LLM) just elapsed, so silence duration and
-        # open-thread signals moved on. Falls back to the entry snapshot if the
-        # refresh fails / is unavailable.
-        _focus_idle_snapshot = activity_snapshot
+        # Freshest enrichment for the proactive prompt — Phase 1 (source fetch +
+        # memory + LLM) just elapsed, so activity scores / open threads moved on.
+        # Falls back to the entry snapshot if the refresh fails / is unavailable.
+        # (The idle Focus decision no longer consumes a snapshot — it is a pure
+        # charge cooldown — so this block only feeds the prompt now.)
         if activity_snapshot is not None:
             from dataclasses import replace as _dc_replace
             from main_logic.activity import format_activity_state_section
             try:
                 fresh_enrich = await mgr._activity_tracker.get_snapshot()
                 # restricted_screen_only deliberately strips semantic open_threads
-                # so gaming / focused-work prompts stay screen-only. The idle Focus
-                # decision must see the SAME filtered threads the prompt does —
-                # otherwise _signal_open_thread could charge / enter Focus from a
-                # text follow-up signal this workflow just suppressed. Keep
-                # fresh_enrich's silence duration (freshest), only swap open_threads.
+                # so gaming / focused-work prompts stay screen-only — render the
+                # prompt with that filtered set.
                 _filtered_open_threads = _open_threads_for_activity_state(
                     activity_snapshot,
                     fresh_enrich.open_threads,
-                )
-                _focus_idle_snapshot = _dc_replace(
-                    fresh_enrich, open_threads=_filtered_open_threads,
                 )
                 display_snap = _dc_replace(
                     activity_snapshot,
@@ -6617,7 +6611,7 @@ async def proactive_chat(request: Request):
         # (silence + open-thread) and decide whether Phase-2 generation runs
         # thinking-on. Dominates all three Phase-2 generate sites below
         # (main stream / format-fix regen / BM25 anti-repeat regen).
-        _focus_phase2_thinking = await mgr._focus_idle_decision(_focus_idle_snapshot)
+        _focus_phase2_thinking = await mgr._focus_idle_decision()
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)

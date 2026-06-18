@@ -1720,7 +1720,7 @@ class LLMSessionManager:
             # they typed is core to an AI companion. Privacy mode governs only
             # SCREEN / app-state visibility (see docs/contributing/
             # developer-notes.md rule 6). Hence no snapshot fetch here.
-            scored = self._focus_scorer.score(None, user_text=user_text)
+            scored = self._focus_scorer.score(user_text=user_text)
             topic_changed = detect_topic_switch(user_text)
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
@@ -1746,47 +1746,42 @@ class LLMSessionManager:
                              self.lanlan_name, _exit_err)
             return False
 
-    async def _focus_idle_decision(self, snapshot) -> bool:
-        """Path B (idle) Focus gate: score a silence window (no fresh user
-        message) and return whether THIS proactive reply should run thinking-on.
+    async def _focus_idle_decision(self) -> bool:
+        """Path B (idle) Focus COOLDOWN: a proactive turn fired with no fresh
+        user message. Returns whether THIS proactive reply runs thinking-on.
 
-        Idle-path signals are silence + open-thread (keyword/cadence need a
-        message and are N/A). Advances the SAME ``self.state`` hysteresis as
-        the inline path so a focus episode is one shared state regardless of
-        which path drove it. Best-effort; degrades to regular on any failure
-        or when the master switch is off. When no snapshot is available this
-        tick (tracker unavailable / privacy nulls SCREEN data) the idle signals
-        can't be computed, so it simply skips — it does NOT clear the
-        accumulator, since the privacy-independent inline path is still driving
-        the episode and clearing here would wipe a live one.
+        A proactive turn NEVER raises the Focus charge — entering and sustaining
+        Focus is driven solely by the inline path (the user's own messages).
+        This tick only lets an active episode cool down, decaying the charge by
+        the slower idle retention (``config.FOCUS_IDLE_CHARGE_RETENTION`` >
+        the inline retention) so Focus fades gradually across proactive turns
+        instead of being propped up. It is a pure time/charge cooldown:
+        privacy-independent, no snapshot, no screen signals.
 
-        Note (tuning): because proactive fires on a schedule, idle ticks can
-        accumulate toward the low-streak exit faster than conversational turns
-        — the cross-path interaction is a known knob (see
-        docs/design/focus-truename-mode.md).
+        Best-effort; degrades to regular on failure or when the master switch
+        is off (which self-clears the accumulator).
+
+        Note (tuning): proactive fires on a schedule, so a long silence runs
+        several cooldown ticks — the effective decay rate is coupled to the
+        proactive cadence, and each tick also consumes one
+        ``FOCUS_HARD_CAP_TURNS`` slot (see docs/design/focus-truename-mode.md).
         """
-        from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
+        from config import FOCUS_MODE_ENABLED, FOCUS_IDLE_CHARGE_RETENTION  # live read
         if not FOCUS_MODE_ENABLED:
-            # Clear unconditionally (not just on FOCUS) so a REGULAR charge
-            # frozen under the enter bar can't survive a disabled window —
-            # mirrors the inline disabled gate. update_focus self-clears when
-            # the switch is off.
+            # Master switch off → update_focus self-clears any residue.
             await self.state.update_focus(0.0)
             return False
-        if snapshot is None:
-            # No activity data this idle tick (tracker unavailable / privacy
-            # nulls SCREEN data). Idle signals (silence / open_thread) need it,
-            # so skip scoring — but do NOT touch the accumulator: the
-            # privacy-independent inline path keeps driving the episode, and
-            # clearing here would wipe a legitimate in-progress Focus.
-            return False
         try:
-            scored = self._focus_scorer.score(snapshot, user_text=None)
-            mode = await self.state.update_focus(scored.score)
+            # score=0 + slower idle retention ⇒ charge can only decay (never
+            # cross the enter bar from REGULAR), so this tick can't ENTER Focus,
+            # only let an inline-driven episode cool toward the exit bar.
+            mode = await self.state.update_focus(
+                0.0, retention_override=FOCUS_IDLE_CHARGE_RETENTION,
+            )
             logger.info(
-                "[%s] 凝神 idle: score=%.2f charge=%s mode=%s signals=%s",
-                self.lanlan_name, scored.score,
-                self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
+                "[%s] 凝神 idle(cooldown): charge=%s mode=%s",
+                self.lanlan_name,
+                self.state.snapshot().get("focus_charge"), mode.value,
             )
             return mode is CognitionMode.FOCUS
         except Exception as e:

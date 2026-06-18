@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Union
 
@@ -274,16 +274,23 @@ class SessionStateMachine:
     # ── Focus mode 凝神 ─────────────────────────────────────────────
     async def update_focus(
         self, score: float, *, topic_changed: bool = False,
+        retention_override: float | None = None,
     ) -> CognitionMode:
         """Apply one Focus hysteresis tick for a just-scored turn; return the resulting mode.
 
-        Called once per scored turn by BOTH trigger paths (inline
-        ``stream_text`` and idle ``proactive_chat``) after the shared
-        ``FocusScorer`` produces ``score`` ∈ [0, 1]. Drives the
-        ``REGULAR ⇄ FOCUS`` transition with asymmetric thresholds + a hard
-        turn cap (``config.FOCUS_*``). ``topic_changed=True`` forces an
-        immediate exit regardless of score — a clear subject switch ends the
-        emotional episode.
+        Called once per turn by BOTH trigger paths. The INLINE path
+        (``stream_text``, a real user message) feeds the ``FocusScorer`` score
+        ∈ [0, 1] and is the ONLY path that can raise the charge / enter Focus.
+        The IDLE path (``proactive_chat``) feeds ``score=0`` with
+        ``retention_override`` set to the slower idle retention: a proactive
+        turn never props Focus up, it only lets an active episode cool down a
+        notch. Drives the ``REGULAR ⇄ FOCUS`` transition with asymmetric
+        thresholds + a hard turn cap (``config.FOCUS_*``). ``topic_changed=True``
+        forces an immediate exit regardless of score.
+
+        ``retention_override`` (when not None) replaces ``FOCUS_CHARGE_RETENTION``
+        for this tick only — used by the idle cooldown so proactive turns decay
+        the charge more slowly than inline turns.
 
         The transition itself is a pure function (``_focus_decide``); this
         method only wires config thresholds, mutates state under
@@ -297,6 +304,8 @@ class SessionStateMachine:
         docs/design/focus-truename-mode.md).
         """
         th = _focus_thresholds_from_config()
+        if retention_override is not None:
+            th = replace(th, retention=float(retention_override))
         emit_event: Optional[SessionEvent] = None
         emit_payload: dict = {}
         snap_subs: "list[Subscriber]" = []

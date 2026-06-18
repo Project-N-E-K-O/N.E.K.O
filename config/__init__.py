@@ -1836,7 +1836,17 @@ FOCUS_CHARGE_RETENTION = 0.5
 - 调高（如 0.7/0.8）= 记性更长、零散信号更易累积进入、进去后更黏；
   调低（如 0.3）= 漏得快、难累积、退得利落。
 - 稳态：持续每轮 score=s 时 charge → s/(1-retention)（如 retention=0.5、s=0.5 → 趋近 1.0）。
-- 这是「敏感度」主旋钮。"""
+- 这是「敏感度」主旋钮。仅用于 inline（用户发声）路径。"""
+
+FOCUS_IDLE_CHARGE_RETENTION = 0.9
+"""idle（proactive 主动搭话）tick 的电荷保留率（须 > FOCUS_CHARGE_RETENTION）。
+- 用途：proactive 那一轮 score 恒 0、只让 charge 以此（较慢）速率衰减：
+  charge = charge × 此值。proactive 绝不抬升 charge——进入/维持凝神只由 inline
+  （用户自己说的话）驱动，idle 仅做「降温」，让凝神在多次主动搭话间缓慢退去。
+- 取 0.9（比 inline 的 0.5 慢）= 主动搭话不会一两轮就把凝神冲没；调低 = 主动搭话
+  冷却更快。⚠️ 与 proactive 触发频率耦合：proactive 越频繁，等效衰减越快；且每个
+  idle tick 也占 FOCUS_HARD_CAP_TURNS 一轮，硬顶可能先到。
+- 上游：SM.update_focus 的 retention_override（仅 idle 路径传）。"""
 
 FOCUS_CHARGE_ENTER = 1.0
 """进入凝神的电荷阈值。
@@ -1857,20 +1867,16 @@ FOCUS_HARD_CAP_TURNS = 8
 - 上游：SM 的 focus_turn_count 计数器。"""
 
 FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
-    "keyword": 0.45,      # 用户消息命中脆弱情绪词（inline 路径专属）
-    "cadence": 0.20,      # 回复字数相对基线骤跌（inline 路径专属）
-    "silence": 0.20,      # 静默时长（idle 路径专属）
-    "open_thread": 0.15,  # 存在未收尾话题 / 到点的 followup（idle 路径专属）
+    "keyword": 0.45,      # 用户消息命中脆弱情绪词
+    "cadence": 0.20,      # 回复字数相对基线骤跌
 }
-"""FocusScorer 各信号的相对权重。
-- 用途：scorer 按当前路径取「适用」信号子集，对子集内权重重新归一后加权平均
-  → 该轮 score（再喂给累加器）。inline（有新消息）适用 keyword+cadence；idle
-  （无新消息）适用 silence+open_thread。不适用的信号返回 None、不进归一化分母。
-- ⚠️ open_thread 仅 idle 适用：inline 路径上 on_user_message 已先清掉 unfinished_thread，
-  再读只会得结构性 0 拉低均值；用户脆弱回复由 keyword 捕获。故 inline 实际分母是
-  keyword+cadence（0.45+0.20），不含 open_thread。
+"""FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
+- 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
+  keyword/cadence 都需要一条真实用户消息；样本不足时 cadence 返回 None、不进分母。
+- idle（proactive）路径不评分：它只用 FOCUS_IDLE_CHARGE_RETENTION 让 charge 衰减，
+  绝不抬升，故不在此表里（凝神的进入/维持只由 inline 驱动）。
 - 上游：各子信号各自归一化到 [0,1]。
-- 设计依据：keyword 是 inline 最强单信号故权重最高。改这里直接改触发性格，慎调。"""
+- 设计依据：keyword 是最强单信号故权重最高。改这里直接改触发性格，慎调。"""
 
 FOCUS_KEYWORD_SATURATION = 3
 """脆弱情绪关键词命中数的饱和点。
@@ -1895,15 +1901,9 @@ FOCUS_CADENCE_DROP_RATIO = 0.4
   中间线性。例：基线 30 字、ratio 0.4，则 ≤12 字（「嗯。」「知道了。」）算满格。
 - 上游：当前消息长度与基线中位数之比。"""
 
-FOCUS_SILENCE_MIN_SECONDS = 300
-"""silence 子信号的起跳静默秒数。
-- 用途：seconds_since_user_msg < 此值 → silence 子信号 = 0（日常停顿不算）。
-- 上游：ActivitySnapshot.seconds_since_user_msg。"""
-
-FOCUS_SILENCE_FULL_SECONDS = 1800
-"""silence 子信号满格的静默秒数。
-- 用途：seconds_since_user_msg ≥ 此值 → silence = 1.0；MIN~FULL 间线性。
-- 上游：ActivitySnapshot.seconds_since_user_msg。"""
+# NOTE: silence / open_thread 信号已移除——idle（proactive）路径不再评分，改为只用
+# FOCUS_IDLE_CHARGE_RETENTION 让 charge 缓慢衰减（凝神进入/维持只由 inline 驱动）。
+# 故 FOCUS_SILENCE_MIN_SECONDS / FOCUS_SILENCE_FULL_SECONDS 一并退役，避免死配置。
 
 # NOTE: FOCUS_IDLE_THRESHOLD_MULTIPLIER（凝神态下调低 idle 触发阈值「她降临一次后
 # 主动追一两轮」）属 Path B 的 idle-threshold-drop 子特性，该特性尚未接线，故旋钮

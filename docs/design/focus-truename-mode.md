@@ -18,10 +18,14 @@ inert until `FOCUS_MODE_ENABLED` is turned on):
 * `main_logic/session_state.py` — `CognitionMode`, `FocusThresholds`, the
   pure `_focus_decide` hysteresis, `SessionStateMachine.update_focus`,
   `FOCUS_ENTER` / `FOCUS_EXIT` events, reset/snapshot integration.
-* `main_logic/activity/focus_scorer.py` — `FocusScorer`.
+* `main_logic/activity/focus_scorer.py` — `FocusScorer` (**inline-only**:
+  keyword + cadence; idle silence/open-thread signals were removed).
 * `main_logic/core.py` — `FocusScorer` instance + `_focus_inline_decision`
-  (Path A) and `_focus_idle_decision` (Path B) helpers; inline path scores
-  each user message and passes `thinking_on` into `stream_text`.
+  (Path A) and `_focus_idle_decision` (Path B) helpers. The inline path
+  scores each user message and passes `thinking_on` into `stream_text`. The
+  idle path does **not** score — a proactive turn never raises the charge;
+  it only cools an active episode down via `FOCUS_IDLE_CHARGE_RETENTION`
+  (slower than the inline retention). Entry/sustain is inline-only.
 * `main_logic/omni_offline_client.py` — `stream_text(..., thinking_on=...)`
   threads `extra_body=None` (per-call thinking-on override) into `astream`;
   no LLM rebuild.
@@ -35,9 +39,12 @@ Pending: the `FOCUS_EXIT` memory subscriber (cross-process: a new
 `memory_server` endpoint POSTed from a main-process `FOCUS_EXIT`
 subscriber) and the frontend focus indicator.
 
-Known tuning interaction: both paths tick the SAME hysteresis. Because
-proactive fires on a schedule, idle ticks can advance the low-streak exit
-faster than conversational turns — watch this when tuning `T_out` / `K`.
+Known tuning interaction: both paths tick the SAME leaky accumulator, but
+only the inline path adds charge. Idle (proactive) ticks only decay it by
+`FOCUS_IDLE_CHARGE_RETENTION`. Because proactive fires on a schedule, a
+long silence runs several cooldown ticks — so the effective decay rate is
+coupled to the proactive cadence (and each idle tick also consumes one
+`FOCUS_HARD_CAP_TURNS` slot). Watch this when tuning the retentions.
 
 Naming: the user-facing fantasy terms are **凝神 (Focus)** and **真名
 (True-Name)**. Internal identifiers use the English `focus` / `true_name`
@@ -87,10 +94,9 @@ dispatch sub-model tasks, gated behind explicit emotional consent.
    activity snapshot. Privacy mode governs SCREEN / app-state visibility
    only and must never gate Focus (or any other understanding-the-user
    feature) — reading the user's emotional state from what they typed is
-   core to a companion. The idle path's silence/open-thread signals do
-   consume the activity snapshot, so they simply skip a tick when it's
-   absent (and never clear the accumulator on absence). See
-   `docs/contributing/developer-notes.md` rule 6.
+   core to a companion. The idle path does not score and reads no snapshot
+   at all — it is a pure charge cooldown, so it is privacy-independent too.
+   See `docs/contributing/developer-notes.md` rule 6.
 
 ## Mode model
 
@@ -166,8 +172,12 @@ collection needed.
   persona/memory and what I'm now reading about the user?" If yes, it
   does *not* rewrite — it emits a proposal and waits for one-word consent.
 
-A single shared `FocusScorer` produces the score; both trigger paths
-(below) call it so behaviour cannot diverge between inline and idle entry.
+The `FocusScorer` produces the score for the **inline** path only (keyword
++ cadence over the user's message). The **idle** path does not score: a
+proactive turn is a pure cooldown that decays the charge (see below). So
+the silence / open-thread / time-anchored-follow-up signals in Layers 1–2
+above are **not** wired into the trigger — entry and sustain are driven
+solely by what the user actually says.
 
 ## Two trigger paths
 
@@ -181,21 +191,27 @@ where the user opens up** — which flows through `stream_text`, *not*
 | Path | Scenario | Entry point | Mounting site |
 |---|---|---|---|
 | **A: Inline focus** | user sends a message → score it → if over the bar, upgrade *this* reply | lightweight scorer before `stream_text` generation | `main_logic/core.py` `stream_text` entry (near the `last_user_activity_time` / USER_INPUT fire) |
-| **B: Idle focus** | silence window → score over bar → run `proactive_chat` but thinking-on | `proactive_chat` Phase-2 generate (after PHASE2 fired) | `main_routers/system_router.py` — the three Phase-2 generate sites take a score-driven `disable_thinking`, suppressed under vision |
+| **B: Idle cooldown** | a proactive turn fires while in focus → keep it thinking-on, but decay the charge a notch (never raise it) | `proactive_chat` Phase-2 generate (after PHASE2 fired) | `main_routers/system_router.py` — the three Phase-2 generate sites take `disable_thinking = not _focus_idle_decision()`, suppressed under vision |
 
 ### Path coupling — this is the key to "she lingers"
 
-While in focus, **Path B's idle threshold drops**:
-`T_idle = in_focus ? T_base * 0.4 : T_base`.
+A focus episode is entered and re-charged ONLY by the inline path (the
+user's own messages). A proactive turn that fires mid-episode does not
+re-score or prop the charge up — it runs thinking-on (she's still in it)
+and decays the charge by the slower `FOCUS_IDLE_CHARGE_RETENTION`.
 
-Rationale: after the user says something heavy → AI gives a focus reply →
-user goes silent — that silence is *qualitatively different* from
-everyday idle. The idle proactive trigger should fire after a *shorter*
-silence ("she's still thinking about you") rather than the usual N
-minutes. This naturally produces the loop *"after she arrives once, she
-follows up a turn or two before letting go."* Focus's persistence is not
-sticky-by-flag; it is **persistence-via-more-sensitive-idle-trigger**,
-and it ends when the session-level hysteresis (below) decides to exit.
+This produces the loop *"after she arrives once, she follows up a turn or
+two before letting go"* via the **decay rate**, not a more-sensitive idle
+trigger: while the user keeps opening up, inline ticks keep the charge
+above the exit bar; once they go quiet, successive proactive turns cool it
+down until the session-level hysteresis exits. Persistence is the slow
+idle retention, not sticky-by-flag.
+
+(An earlier draft proposed instead *dropping the idle trigger threshold*
+while in focus — `T_idle = in_focus ? T_base * 0.4 : T_base` — so she'd
+re-approach after a shorter silence. That was rejected in favour of the
+cooldown model: the idle path must never make Focus *more* likely, only
+let it fade. The idle-threshold-drop sub-feature is not implemented.)
 
 These two mechanisms are orthogonal: hysteresis decides *when the
 session-level focus mode exits*; path coupling decides *how sensitive the
@@ -326,9 +342,9 @@ later, not a reason to build an inverse table up front.
    on over-bar, build the LLM with thinking-on + stronger model.
 5. `main_routers/system_router.py` — Path B: replace the hard-coded
    `disable_thinking=True` at the proactive **Phase-2** generate sites
-   (main stream / format-fix regen / BM25 regen) with the score-driven
-   choice, suppressed whenever the round uses a vision model. The in-focus
-   idle-threshold drop is a separate deferred sub-feature.
+   (main stream / format-fix regen / BM25 regen) with `not
+   _focus_idle_decision()` (a cooldown tick, suppressed under a vision
+   model). The idle path never raises the charge.
 6. `app/memory_server.py` (+ memory stations) — subscribe to
    `EmotionalEpisodeFinished`; route the episode slice into
    `synthesize_reflections` / `resolve_corrections` / facts / ban-list
@@ -344,8 +360,10 @@ later, not a reason to build an inverse table up front.
 * `T_in` — focus entry water line. **Start tight** ("1–2× / week"),
   collect data, loosen later for under-triggered users. Magic-dilution vs
   magic-burial is a tuning curve, not a one-shot choice.
-* `T_out`, `K`, `M` — exit hysteresis (start `0.3·T_in`, `3`, `8`).
-* `T_base` idle threshold + the `0.4` in-focus multiplier.
+* `T_out`, `M` — exit hysteresis (`FOCUS_CHARGE_EXIT` `0.3`, hard cap `8`).
+* `FOCUS_CHARGE_RETENTION` (inline `0.5`) + `FOCUS_IDLE_CHARGE_RETENTION`
+  (idle cooldown `0.9`, slower) — the latter sets how many proactive turns
+  Focus lingers before fading.
 * **Topic-boundary detection** (gates hard-exit + inline ban-list): cheap
   per-turn classifier model vs keyword/syntax heuristic. *Recommendation:
   heuristic for v1 (zero-cost), upgrade to classifier if false exits hurt.*
