@@ -310,17 +310,14 @@ async function compressImageForStudy(blob, signal) {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(image, 0, 0, width, height);
-    let dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-    if (dataUrl.length > TARGET_DATA_URL_LENGTH) {
-      dataUrl = canvas.toDataURL('image/jpeg', 0.56);
+    let url = canvas.toDataURL('image/jpeg', 0.82);
+    if (url.length > TARGET_DATA_URL_LENGTH) {
+      url = canvas.toDataURL('image/jpeg', 0.56);
     }
-    if (dataUrl.length > TARGET_DATA_URL_LENGTH) {
-      dataUrl = canvas.toDataURL('image/jpeg', 0.3);
+    if (url.length > TARGET_DATA_URL_LENGTH) {
+      url = canvas.toDataURL('image/jpeg', 0.3);
     }
-    if (dataUrl.length > TARGET_DATA_URL_LENGTH) {
-      return null;
-    }
-    return dataUrl;
+    return url.length > TARGET_DATA_URL_LENGTH ? null : url;
   } catch (error) {
     console.warn('study static image paste failed', error);
     return null;

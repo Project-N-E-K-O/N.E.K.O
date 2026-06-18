@@ -2646,7 +2646,7 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
     assert "applyVisionMaxImagePx(llm.llm_vision_max_image_px);" in source
     assert "llmVisionMaxImagePx / Math.max(sourceWidth, sourceHeight)" in source
     assert "768 / Math.max(sourceWidth, sourceHeight)" not in source
-    assert "canvas.toDataURL('image/jpeg', 0.3);\n    }\n    if (dataUrl.length > TARGET_DATA_URL_LENGTH) {\n      return null;\n    }" in source
+    assert "return url.length > TARGET_DATA_URL_LENGTH ? null : url;" in source
     assert "const pasteControllers = { study: null, answer: null };" in source
     assert "async function compressImageForStudy(blob, signal)" in source
     assert "function createImagePasteHandler(options)" in source
