@@ -3777,7 +3777,14 @@ def _is_gemini_realtime_session(session: Any) -> bool:
     return bool(getattr(session, "_is_gemini", False))
 
 
-async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: dict, delays: tuple[float, ...]) -> None:
+async def _run_postgame_realtime_nudge_task(
+    mgr: Any,
+    archive: dict,
+    options: dict,
+    delays: tuple[float, ...],
+    *,
+    expected_session: Any | None = None,
+) -> None:
     lanlan_name = str(archive.get("lanlan_name") or "")
     instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
     _log_game_debug_material(
@@ -3791,9 +3798,19 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
     for attempt, delay in enumerate(delays, start=1):
         try:
             await asyncio.sleep(delay)
-            if not _active_realtime_session(mgr):
+            active_session = _active_realtime_session(mgr)
+            if not active_session:
                 logger.info(
                     "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=no_active_realtime_session",
+                    archive.get("game_type"),
+                    archive.get("session_id"),
+                    lanlan_name,
+                    attempt,
+                )
+                return
+            if expected_session is not None and active_session is not expected_session:
+                logger.info(
+                    "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=realtime_session_changed",
                     archive.get("game_type"),
                     archive.get("session_id"),
                     lanlan_name,
@@ -3974,6 +3991,18 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         len(text),
     )
 
+    if _active_realtime_session(mgr) is not session:
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "context",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "nudge_reason": "realtime_session_changed",
+            "reason": "realtime_session_changed",
+            "bytes": len(text),
+        }
+
     if getattr(append_result, "deduped", False):
         return {
             "ok": True,
@@ -3994,6 +4023,7 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
                 dict(archive),
                 dict(options),
                 _POSTGAME_REALTIME_NUDGE_DELAYS,
+                expected_session=session,
             ))
             nudge_scheduled = True
             nudge_reason = "scheduled"

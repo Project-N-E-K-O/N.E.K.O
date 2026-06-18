@@ -4853,6 +4853,34 @@ async def test_game_end_skips_postgame_nudge_when_context_append_deduped(monkeyp
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgame_realtime_nudge_skips_replacement_session(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.01,))
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+    mgr.session = replacement
+    await asyncio.sleep(0.05)
+
+    assert result["mode"] == "realtime"
+    assert result["nudge_scheduled"] is True
+    assert mgr.voice_nudge_calls == 0
+    assert len(original.prime_context_calls) == 1
+    assert replacement.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_postgame_realtime_context_aborts_when_active_session_changes(monkeypatch, _fake_realtime):
     original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
     replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
