@@ -282,7 +282,7 @@ def test_get_voices_merges_mimo_bucket(monkeypatch):
     monkeypatch.setattr(cm, "get_core_config", lambda: {})
     monkeypatch.setattr(cm, "_is_local_tts_storage_active", lambda *a, **k: False)
     monkeypatch.setattr(cm, "is_free_voice", lambda: False)
-    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
     monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
 
@@ -311,11 +311,17 @@ def test_get_voices_merges_cosyvoice_provider_bucket_for_listing_when_main_cloud
 ):
     cm = get_config_manager()
     voice_id = f"{expected_provider}-clone-x"
-    core_config = {"CORE_API_TYPE": core_api_type, key_field: api_key}
+    main_voice_id = "domestic-main-voice"
+    core_config = {
+        "CORE_API_TYPE": core_api_type,
+        "AUDIO_API_KEY": "domestic-main-key",
+        key_field: api_key,
+    }
     monkeypatch.setattr(cm, "get_model_api_config", lambda t: dict(tts_config))
     monkeypatch.setattr(cm, "get_core_config", lambda: dict(core_config))
     monkeypatch.setattr(cm, "load_voice_storage", lambda: {
-        bucket: {voice_id: {"source": "clone"}}  # provider stamped by merge
+        "domestic-main-key": {main_voice_id: {"source": "main"}},
+        bucket: {voice_id: {"source": "clone"}},  # provider stamped by merge
     })
     monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
     monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
@@ -325,6 +331,7 @@ def test_get_voices_merges_cosyvoice_provider_bucket_for_listing_when_main_cloud
 
     assert voice_id in voices
     assert voices[voice_id]["provider"] == expected_provider
+    assert main_voice_id not in voices
 
 
 @pytest.mark.unit
@@ -413,7 +420,7 @@ def test_get_voices_strips_sample_b64_for_listing(monkeypatch):
     monkeypatch.setattr(cm, "get_core_config", lambda: {})
     monkeypatch.setattr(cm, "_is_local_tts_storage_active", lambda *a, **k: False)
     monkeypatch.setattr(cm, "is_free_voice", lambda: False)
-    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
     monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
 
