@@ -87,7 +87,9 @@ function syncSubtitleRenderState(source) {
         subtitlePanelBounds: currentSettings ? currentSettings.subtitlePanelBounds : { width: 600, height: 68 },
         subtitlePanelPosition: currentSettings ? currentSettings.subtitlePanelPosition : null,
         subtitlePanelLocked: currentSettings ? !!currentSettings.subtitlePanelLocked : false,
-        subtitleInteractionPassthrough: currentSettings ? currentSettings.subtitleInteractionPassthrough !== false : true
+        subtitleInteractionPassthrough: currentSettings ? currentSettings.subtitleInteractionPassthrough !== false : true,
+        subtitleFontSize: currentSettings ? currentSettings.subtitleFontSize : 26,
+        subtitleColorScheme: currentSettings ? currentSettings.subtitleColorScheme : 'default'
     }, { source: source || 'subtitle-core' });
 }
 
@@ -285,12 +287,12 @@ function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
+    subtitleText.style.fontSize = '';
     syncSubtitleRenderState('subtitle-text-write');
 
     // 自适应字号：防抖测量，避免流式高频触发
     if (_subtitleFontResizeTimer) clearTimeout(_subtitleFontResizeTimer);
     if (!text || !text.trim()) {
-        subtitleText.style.fontSize = '';
         syncSubtitleRenderState('subtitle-text-clear');
         return;
     }
@@ -303,6 +305,9 @@ function writeSubtitleText(text) {
         var panelBounds = SubtitleShared && typeof SubtitleShared.getPanelBounds === 'function'
             ? SubtitleShared.getPanelBounds(preset.subtitlePanelBounds)
             : { width: display.offsetWidth || 600, height: display.offsetHeight || 68 };
+        var baseFont = SubtitleShared && typeof SubtitleShared.normalizeSubtitleFontSize === 'function'
+            ? SubtitleShared.normalizeSubtitleFontSize(preset.subtitleFontSize)
+            : (Number(preset.subtitleFontSize) || 26);
         var layout = SubtitleShared && typeof SubtitleShared.measureSubtitleLayout === 'function'
             ? SubtitleShared.measureSubtitleLayout({
                 mode: 'web',
@@ -311,13 +316,13 @@ function writeSubtitleText(text) {
                 maxWidth: panelBounds.width,
                 minHeight: panelBounds.height,
                 maxHeight: panelBounds.height,
-                baseFont: 17,
+                baseFont: baseFont,
                 // Keep in sync with PANEL_TEXT_HORIZONTAL_RESERVE in subtitle-shared.js.
                 availableWidth: Math.max(0, (display.clientWidth || panelBounds.width) - 110),
                 availableHeight: panelBounds.height
             })
-            : { fontSize: 17 };
-        subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+            : { fontSize: baseFont };
+        subtitleText.style.fontSize = layout.fontSize < baseFont ? layout.fontSize + 'px' : '';
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }
@@ -696,8 +701,11 @@ function initSubtitleHostUi() {
             }
         },
         onSettingsApplied: function(state, refs, detail) {
+            var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
             var shouldRemeasureText = detail && (
-                detail.source === 'subtitle-ui-resize'
+                detail.source === 'subtitle-ui-resize' ||
+                detail.source === 'subtitle-ui-font-size' ||
+                changedKeys.indexOf('subtitleFontSize') !== -1
             );
             if (shouldRemeasureText && refs && refs.text && refs.text.textContent) {
                 writeSubtitleText(refs.text.textContent);

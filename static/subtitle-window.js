@@ -180,8 +180,11 @@
         var refs = subtitleWindowController && subtitleWindowController.refs;
         var rects = [];
         if (!refs || !refs.display || refs.display.classList.contains('hidden')) return rects;
+        var state = SubtitleShared.getSettings();
 
-        pushElementRect(rects, refs.text, 10);
+        if (!state.subtitleInteractionPassthrough && !state.subtitlePanelLocked) {
+            pushElementRect(rects, refs.text, 10);
+        }
 
         if (refs.display.dataset.subtitlePanelState === 'controls' ||
             refs.display.dataset.subtitlePanelState === 'settings') {
@@ -195,8 +198,7 @@
             pushElementRect(rects, refs.settingsPanel, 8);
         }
 
-        if (!SubtitleShared.getSettings().subtitlePanelLocked &&
-            refs.resizeHandles && refs.resizeHandles.length) {
+        if (!state.subtitlePanelLocked && refs.resizeHandles && refs.resizeHandles.length) {
             pushDesktopResizeHitRects(rects, refs.display);
             refs.resizeHandles.forEach(function(handle) {
                 pushElementRect(rects, handle, 8);
@@ -769,6 +771,11 @@
         var patch = {};
 
         if (!data) return;
+        if (data.type === 'fontSize') {
+            patch.subtitleFontSize = data.value;
+        } else if (data.type === 'colorScheme') {
+            patch.subtitleColorScheme = data.value;
+        }
         if (Object.prototype.hasOwnProperty.call(data, 'enabled')) {
             patch.subtitleEnabled = !!data.enabled;
         }
@@ -780,6 +787,16 @@
         }
         if (Object.prototype.hasOwnProperty.call(data, 'opacity')) {
             patch.subtitleOpacity = data.opacity;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'fontSize')) {
+            patch.subtitleFontSize = data.fontSize;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleFontSize')) {
+            patch.subtitleFontSize = data.subtitleFontSize;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'colorScheme')) {
+            patch.subtitleColorScheme = data.colorScheme;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleColorScheme')) {
+            patch.subtitleColorScheme = data.subtitleColorScheme;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'bounds')) {
             patch.subtitlePanelBounds = data.bounds;

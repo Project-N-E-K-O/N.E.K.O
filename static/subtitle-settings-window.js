@@ -20,6 +20,11 @@
     function applyIncomingState(data) {
         if (!data || typeof data !== 'object') return;
         var patch = {};
+        if (data.type === 'fontSize') {
+            patch.subtitleFontSize = data.value;
+        } else if (data.type === 'colorScheme') {
+            patch.subtitleColorScheme = data.value;
+        }
         if (Object.prototype.hasOwnProperty.call(data, 'language')) {
             patch.userLanguage = data.language;
         }
@@ -28,6 +33,16 @@
         }
         if (Object.prototype.hasOwnProperty.call(data, 'opacity')) {
             patch.subtitleOpacity = data.opacity;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'fontSize')) {
+            patch.subtitleFontSize = data.fontSize;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleFontSize')) {
+            patch.subtitleFontSize = data.subtitleFontSize;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'colorScheme')) {
+            patch.subtitleColorScheme = data.colorScheme;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleColorScheme')) {
+            patch.subtitleColorScheme = data.subtitleColorScheme;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'locked')) {
             patch.subtitlePanelLocked = !!data.locked;
@@ -47,6 +62,12 @@
         }
         if (Object.prototype.hasOwnProperty.call(data, 'subtitleOpacity')) {
             patch.subtitleOpacity = data.subtitleOpacity;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'subtitleFontSize')) {
+            patch.subtitleFontSize = data.subtitleFontSize;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'subtitleColorScheme')) {
+            patch.subtitleColorScheme = data.subtitleColorScheme;
         }
         if (!Object.keys(patch).length) return;
         SubtitleShared.updateSettings(patch, {

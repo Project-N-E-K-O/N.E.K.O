@@ -113,7 +113,7 @@ def test_subtitle_background_opacity_tracks_dark_theme(
     assert result["dark"]["backgroundImage"] == "none"
     assert result["dark"]["boxShadow"] == "none"
     assert result["dark"]["borderRadius"] == "16px"
-    assert result["dark"]["color"] == "rgb(244, 246, 248)"
+    assert result["dark"]["color"] == "rgb(255, 255, 255)"
     assert result["light"]["inlineBackground"] == ""
     assert result["light"]["backgroundColor"] == "rgba(250, 250, 247, 0.8)"
     assert result["light"]["backgroundImage"] == "none"
@@ -235,7 +235,9 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
                 coordinateSpace: 'viewport',
             }));
             window.localStorage.setItem('subtitlePanelLocked', 'true');
-            window.localStorage.setItem('subtitleInteractionPassthrough', 'false');
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'true');
+            window.localStorage.setItem('subtitleFontSize', '26');
+            window.localStorage.setItem('subtitleColorScheme', 'blue');
         }
         """
     )
@@ -254,7 +256,8 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
             const after = shared.updateSettings({
                 subtitlePanelPosition: { x: 44, y: 88 },
                 subtitlePanelLocked: false,
-                subtitleInteractionPassthrough: true,
+                subtitleInteractionPassthrough: false,
+                subtitleFontSize: 44,
             }, { source: 'phase-2-test' });
             const renderAfter = shared.getRenderState();
             return {
@@ -266,6 +269,8 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
                 storedPosition: window.localStorage.getItem('subtitlePanelPosition'),
                 storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
                 storedPassthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
+                storedFontSize: window.localStorage.getItem('subtitleFontSize'),
+                storedColorScheme: window.localStorage.getItem('subtitleColorScheme'),
                 legacyDragAnywhere: window.localStorage.getItem('subtitleDragAnywhere'),
                 legacySize: window.localStorage.getItem('subtitleSize'),
                 legacyScale: window.localStorage.getItem('subtitlePanelScale'),
@@ -276,6 +281,8 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
                     position: detail.state.subtitlePanelPosition,
                     locked: detail.state.subtitlePanelLocked,
                     passthrough: detail.state.subtitleInteractionPassthrough,
+                    fontSize: detail.state.subtitleFontSize,
+                    colorScheme: detail.state.subtitleColorScheme,
                 })),
             };
         }
@@ -293,14 +300,18 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
         "coordinateSpace": "viewport",
     }
     assert result["before"]["subtitlePanelLocked"] is True
-    assert result["before"]["subtitleInteractionPassthrough"] is False
+    assert result["before"]["subtitleInteractionPassthrough"] is True
+    assert result["before"]["subtitleFontSize"] == 26
+    assert result["before"]["subtitleColorScheme"] == "blue"
     assert "subtitleDragAnywhere" not in result["before"]
     assert "subtitleSize" not in result["before"]
     assert "subtitlePanelScale" not in result["before"]
     assert result["renderBefore"]["subtitlePanelBounds"] == result["before"]["subtitlePanelBounds"]
     assert result["renderBefore"]["subtitlePanelPosition"] == result["before"]["subtitlePanelPosition"]
     assert result["renderBefore"]["subtitlePanelLocked"] is True
-    assert result["renderBefore"]["subtitleInteractionPassthrough"] is False
+    assert result["renderBefore"]["subtitleInteractionPassthrough"] is True
+    assert result["renderBefore"]["subtitleFontSize"] == 26
+    assert result["renderBefore"]["subtitleColorScheme"] == "blue"
     assert result["renderBefore"]["subtitlePanelState"] == "clean"
     assert result["after"]["subtitlePanelPosition"] == {
         "left": 44,
@@ -308,20 +319,24 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
         "coordinateSpace": "viewport",
     }
     assert result["after"]["subtitlePanelLocked"] is False
-    assert result["after"]["subtitleInteractionPassthrough"] is True
+    assert result["after"]["subtitleInteractionPassthrough"] is False
+    assert result["after"]["subtitleFontSize"] == 44
     assert result["renderAfter"]["subtitlePanelPosition"] == result["after"]["subtitlePanelPosition"]
     assert result["renderAfter"]["subtitlePanelLocked"] is False
-    assert result["renderAfter"]["subtitleInteractionPassthrough"] is True
+    assert result["renderAfter"]["subtitleInteractionPassthrough"] is False
+    assert result["renderAfter"]["subtitleFontSize"] == 44
     assert result["storedBounds"] == '{"width":720,"height":96}'
     assert result["storedPosition"] == '{"left":44,"top":88,"coordinateSpace":"viewport"}'
     assert result["storedLocked"] == "false"
-    assert result["storedPassthrough"] == "true"
+    assert result["storedPassthrough"] == "false"
+    assert result["storedFontSize"] == "44"
+    assert result["storedColorScheme"] == "blue"
     assert result["legacyDragAnywhere"] == "true"
     assert result["legacySize"] == "large"
     assert result["legacyScale"] == "133"
     assert result["events"] == [
         {
-            "changedKeys": ["subtitlePanelPosition", "subtitlePanelLocked", "subtitleInteractionPassthrough"],
+            "changedKeys": ["subtitlePanelPosition", "subtitlePanelLocked", "subtitleInteractionPassthrough", "subtitleFontSize"],
             "source": "phase-2-test",
             "bounds": {
                 "width": 720,
@@ -333,9 +348,377 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
                 "coordinateSpace": "viewport",
             },
             "locked": False,
-            "passthrough": True,
+            "passthrough": False,
+            "fontSize": 44,
+            "colorScheme": "blue",
         }
     ]
+
+
+@pytest.mark.frontend
+def test_subtitle_color_scheme_select_persists_and_updates_panel(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel">
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="colorScheme">配色</span>
+                    <select id="subtitle-color-scheme-select" title="配色">
+                        <option value="default" data-subtitle-color-scheme-label="colorSchemeDefault">默认</option>
+                        <option value="red" data-subtitle-color-scheme-label="colorSchemeRed">红</option>
+                        <option value="orange" data-subtitle-color-scheme-label="colorSchemeOrange">橙</option>
+                        <option value="yellow" data-subtitle-color-scheme-label="colorSchemeYellow">黄</option>
+                        <option value="green" data-subtitle-color-scheme-label="colorSchemeGreen">绿</option>
+                        <option value="blue" data-subtitle-color-scheme-label="colorSchemeBlue">蓝</option>
+                        <option value="indigo" data-subtitle-color-scheme-label="colorSchemeIndigo">靛</option>
+                        <option value="violet" data-subtitle-color-scheme-label="colorSchemeViolet">紫</option>
+                    </select>
+                </div>
+                <label class="subtitle-settings-switch subtitle-settings-switch-placeholder">
+                    <input type="checkbox" id="subtitle-danmaku-mode-btn" data-subtitle-danmaku-placeholder="true" disabled>
+                    <span class="subtitle-settings-track" aria-hidden="true"></span>
+                </label>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            const labels = {
+                'subtitle.settings.colorScheme': 'Color',
+                'subtitle.settings.colorSchemeDefault': 'Default',
+                'subtitle.settings.colorSchemeRed': 'Red',
+                'subtitle.settings.colorSchemeOrange': 'Orange',
+                'subtitle.settings.colorSchemeYellow': 'Yellow',
+                'subtitle.settings.colorSchemeGreen': 'Green',
+                'subtitle.settings.colorSchemeBlue': 'Blue',
+                'subtitle.settings.colorSchemeIndigo': 'Indigo',
+                'subtitle.settings.colorSchemeViolet': 'Violet',
+                'subtitle.settings.danmakuMode': 'Danmaku mode',
+            };
+            window.t = (key) => labels[key] || key;
+            window.localStorage.setItem('subtitleColorScheme', 'green');
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const propagated = [];
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({
+                host: 'web',
+                propagateSetting: (change) => propagated.push({
+                    type: change.type,
+                    value: change.value,
+                    patch: change.patch,
+                }),
+            });
+            const display = document.getElementById('subtitle-display');
+            const text = document.getElementById('subtitle-text');
+            const select = document.getElementById('subtitle-color-scheme-select');
+            const danmakuButton = document.getElementById('subtitle-danmaku-mode-btn');
+            const before = {
+                setting: shared.getSettings().subtitleColorScheme,
+                render: shared.getRenderState().subtitleColorScheme,
+                selectValue: select.value,
+                dataset: display.dataset.subtitleColorScheme,
+                textColor: getComputedStyle(text).color,
+                title: select.title,
+                optionLabels: Array.from(select.options).map((option) => option.textContent),
+                danmakuDisabled: danmakuButton.disabled,
+                danmakuPlaceholder: danmakuButton.dataset.subtitleDanmakuPlaceholder,
+                danmakuTitle: danmakuButton.title,
+                danmakuAria: danmakuButton.getAttribute('aria-label'),
+                danmakuType: danmakuButton.type,
+            };
+            select.value = 'violet';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const after = {
+                setting: shared.getSettings().subtitleColorScheme,
+                render: shared.getRenderState().subtitleColorScheme,
+                selectValue: select.value,
+                dataset: display.dataset.subtitleColorScheme,
+                textColor: getComputedStyle(text).color,
+                stored: window.localStorage.getItem('subtitleColorScheme'),
+                propagated,
+            };
+            controller.destroy();
+            return { before, after };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "setting": "green",
+        "render": "green",
+        "selectValue": "green",
+        "dataset": "green",
+        "textColor": "rgb(22, 163, 74)",
+        "title": "Color",
+        "optionLabels": ["Default", "Red", "Orange", "Yellow", "Green", "Blue", "Indigo", "Violet"],
+        "danmakuDisabled": True,
+        "danmakuPlaceholder": "true",
+        "danmakuTitle": "Danmaku mode",
+        "danmakuAria": "Danmaku mode",
+        "danmakuType": "checkbox",
+    }
+    assert result["after"] == {
+        "setting": "violet",
+        "render": "violet",
+        "selectValue": "violet",
+        "dataset": "violet",
+        "textColor": "rgb(147, 51, 234)",
+        "stored": "violet",
+        "propagated": [
+            {
+                "type": "colorScheme",
+                "value": "violet",
+                "patch": {"subtitleColorScheme": "violet"},
+            }
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_subtitle_color_scheme_storage_event_updates_window_realtime(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+        </div>
+        """,
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({ host: 'window' });
+            const display = document.getElementById('subtitle-display');
+            const text = document.getElementById('subtitle-text');
+            const before = {
+                colorScheme: shared.getSettings().subtitleColorScheme,
+                dataset: display.dataset.subtitleColorScheme,
+                textColor: getComputedStyle(text).color,
+            };
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'subtitleColorScheme',
+                newValue: 'violet',
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const after = {
+                colorScheme: shared.getSettings().subtitleColorScheme,
+                renderColorScheme: shared.getRenderState().subtitleColorScheme,
+                dataset: display.dataset.subtitleColorScheme,
+                textColor: getComputedStyle(text).color,
+            };
+            controller.destroy();
+            return { before, after };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "colorScheme": "default",
+        "dataset": "default",
+        "textColor": "rgb(31, 36, 41)",
+    }
+    assert result["after"] == {
+        "colorScheme": "violet",
+        "renderColorScheme": "violet",
+        "dataset": "violet",
+        "textColor": "rgb(147, 51, 234)",
+    }
+
+
+@pytest.mark.frontend
+def test_subtitle_font_size_select_persists_and_updates_panel(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-settings-panel">
+                <div class="subtitle-settings-row">
+                    <span class="subtitle-settings-label" data-subtitle-label="fontSize">字体大小</span>
+                    <select id="subtitle-font-size-select" title="字体大小">
+                        <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
+                        <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
+                        <option value="26" data-subtitle-font-size-label="fontSizeDefault" selected>默认</option>
+                        <option value="34" data-subtitle-font-size-label="fontSizeLarger">较大</option>
+                        <option value="44" data-subtitle-font-size-label="fontSizeLarge">大号</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            const labels = {
+                'subtitle.settings.fontSizeSmall': { [Symbol.toStringTag]: 'Module' },
+                'subtitle.settings.fontSizeSmaller': 'Smaller',
+                'subtitle.settings.fontSizeDefault': 'Default',
+                'subtitle.settings.fontSizeLarger': 'Larger',
+                'subtitle.settings.fontSizeLarge': 'Large',
+            };
+            window.t = (key) => labels[key] || key;
+            window.localStorage.setItem('subtitleFontSize', '34');
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const propagated = [];
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({
+                host: 'web',
+                propagateSetting: (change) => propagated.push({
+                    type: change.type,
+                    value: change.value,
+                    patch: change.patch,
+                }),
+            });
+            const display = document.getElementById('subtitle-display');
+            const text = document.getElementById('subtitle-text');
+            const select = document.getElementById('subtitle-font-size-select');
+            const before = {
+                setting: shared.getSettings().subtitleFontSize,
+                render: shared.getRenderState().subtitleFontSize,
+                selectValue: select.value,
+                optionLabels: Array.from(select.options).map((option) => option.textContent),
+                textFontSize: getComputedStyle(text).fontSize,
+                dataset: display.dataset.subtitleFontSize,
+            };
+            select.value = '44';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const after = {
+                setting: shared.getSettings().subtitleFontSize,
+                render: shared.getRenderState().subtitleFontSize,
+                selectValue: select.value,
+                textFontSize: getComputedStyle(text).fontSize,
+                dataset: display.dataset.subtitleFontSize,
+                stored: window.localStorage.getItem('subtitleFontSize'),
+                propagated,
+            };
+            controller.destroy();
+            return { before, after };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "setting": 34,
+        "render": 34,
+        "selectValue": "34",
+        "optionLabels": ["小号", "Smaller", "Default", "Larger", "Large"],
+        "textFontSize": "34px",
+        "dataset": "34",
+    }
+    assert result["after"] == {
+        "setting": 44,
+        "render": 44,
+        "selectValue": "44",
+        "textFontSize": "44px",
+        "dataset": "44",
+        "stored": "44",
+        "propagated": [
+            {
+                "type": "fontSize",
+                "value": 44,
+                "patch": {"subtitleFontSize": 44},
+            }
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_subtitle_font_size_change_reflows_existing_inline_text(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll">
+                <span id="subtitle-text" style="font-size: 12px;">Translated text.</span>
+            </div>
+            <div id="subtitle-settings-panel">
+                <select id="subtitle-font-size-select" title="字体大小">
+                    <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
+                    <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
+                    <option value="26" data-subtitle-font-size-label="fontSizeDefault" selected>默认</option>
+                    <option value="34" data-subtitle-font-size-label="fontSizeLarger">较大</option>
+                    <option value="44" data-subtitle-font-size-label="fontSizeLarge">大号</option>
+                </select>
+            </div>
+        </div>
+        """,
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const text = document.getElementById('subtitle-text');
+            const select = document.getElementById('subtitle-font-size-select');
+            const before = {
+                inline: text.style.fontSize,
+                computed: getComputedStyle(text).fontSize,
+            };
+            select.value = '44';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const after = {
+                inline: text.style.fontSize,
+                computed: getComputedStyle(text).fontSize,
+                setting: window.nekoSubtitleShared.getSettings().subtitleFontSize,
+            };
+            return { before, after };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "inline": "12px",
+        "computed": "12px",
+    }
+    assert result["after"] == {
+        "inline": "",
+        "computed": "44px",
+        "setting": 44,
+    }
 
 
 @pytest.mark.frontend
@@ -356,6 +739,7 @@ def test_subtitle_panel_runtime_state_is_render_only_not_persisted(
         () => {
             window.localStorage.setItem('subtitlePanelPosition', '{not-json');
             window.localStorage.setItem('subtitlePanelLocked', 'false');
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'false');
         }
         """
     )
@@ -442,7 +826,7 @@ def test_subtitle_panel_controls_settings_state_machine(
             const settingsPanel = document.getElementById('subtitle-settings-panel');
             const inner = document.getElementById('subtitle-settings-inner');
             const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-            const waitForControlsDelay = () => new Promise((resolve) => setTimeout(resolve, 1250));
+            const waitForControlsDelay = () => new Promise((resolve) => setTimeout(resolve, 700));
             const snap = () => ({
                 dataset: display.dataset.subtitlePanelState,
                 render: shared.getRenderState().subtitlePanelState,
@@ -521,7 +905,146 @@ def test_subtitle_panel_controls_settings_state_machine(
 
 
 @pytest.mark.frontend
-def test_web_subtitle_transparent_area_passes_through_while_text_stays_interactive(
+def test_subtitle_panel_controls_hide_after_settings_button_keeps_focus(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-lock-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({ host: 'web' });
+            const display = document.getElementById('subtitle-display');
+            const controls = document.getElementById('subtitle-panel-controls');
+            const settingsBtn = document.getElementById('subtitle-settings-btn');
+            const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+            const waitForControlsDelay = () => new Promise((resolve) => setTimeout(resolve, 700));
+
+            display.dispatchEvent(new Event('pointerenter'));
+            await tick();
+            settingsBtn.focus();
+            settingsBtn.click();
+            await tick();
+            settingsBtn.focus();
+            settingsBtn.click();
+            await tick();
+            const afterClose = {
+                panelState: display.dataset.subtitlePanelState,
+                controlsHidden: controls.getAttribute('aria-hidden'),
+                activeId: document.activeElement && document.activeElement.id,
+            };
+            display.dispatchEvent(new Event('pointerleave'));
+            await waitForControlsDelay();
+            const afterLeaveDelay = {
+                panelState: display.dataset.subtitlePanelState,
+                controlsHidden: controls.getAttribute('aria-hidden'),
+                activeId: document.activeElement && document.activeElement.id,
+            };
+            controller.destroy();
+            return { afterClose, afterLeaveDelay };
+        }
+        """
+    )
+
+    assert result["afterClose"] == {
+        "panelState": "controls",
+        "controlsHidden": "false",
+        "activeId": "",
+    }
+    assert result["afterLeaveDelay"] == {
+        "panelState": "clean",
+        "controlsHidden": "true",
+        "activeId": "",
+    }
+
+
+@pytest.mark.frontend
+def test_subtitle_panel_controls_follow_mousemove_when_pointerenter_is_missed(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean"
+             style="position:fixed;left:120px;top:80px;width:320px;height:88px;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-lock-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({ host: 'window' });
+            const display = document.getElementById('subtitle-display');
+            const controls = document.getElementById('subtitle-panel-controls');
+            const waitForControlsDelay = () => new Promise((resolve) => setTimeout(resolve, 700));
+            const snap = () => ({
+                panelState: display.dataset.subtitlePanelState,
+                controlsHidden: controls.getAttribute('aria-hidden'),
+            });
+
+            const initial = snap();
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: 180,
+                clientY: 120,
+            }));
+            const afterMoveInside = snap();
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                bubbles: true,
+                clientX: 40,
+                clientY: 40,
+            }));
+            await waitForControlsDelay();
+            const afterMoveOutsideDelay = snap();
+            controller.destroy();
+            return { initial, afterMoveInside, afterMoveOutsideDelay };
+        }
+        """
+    )
+
+    assert result["initial"] == {
+        "panelState": "clean",
+        "controlsHidden": "true",
+    }
+    assert result["afterMoveInside"] == {
+        "panelState": "controls",
+        "controlsHidden": "false",
+    }
+    assert result["afterMoveOutsideDelay"] == {
+        "panelState": "clean",
+        "controlsHidden": "true",
+    }
+
+
+@pytest.mark.frontend
+def test_web_subtitle_locked_passthrough_includes_text_area(
     mock_page: Page,
 ):
     mock_page.set_viewport_size({"width": 800, "height": 500})
@@ -537,12 +1060,7 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
                 <button type="button" id="subtitle-settings-btn"></button>
                 <button type="button" id="subtitle-close-btn"></button>
             </div>
-            <div id="subtitle-settings-panel" class="hidden">
-                <label class="subtitle-settings-switch">
-                    <input type="checkbox" id="subtitle-passthrough-toggle" checked>
-                    <span class="subtitle-settings-track"></span>
-                </label>
-            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
         </div>
         """,
     )
@@ -553,6 +1071,7 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
                 width: 360,
                 height: 80,
             }));
+            window.localStorage.setItem('subtitlePanelLocked', 'true');
         }
         """
     )
@@ -575,8 +1094,9 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
             return {
                 displayPointerEvents: getComputedStyle(display).pointerEvents,
                 textPointerEvents: getComputedStyle(text).pointerEvents,
+                lockedDataset: display.dataset.subtitlePanelLocked,
                 passthroughDataset: display.dataset.subtitleInteractionPassthrough,
-                toggleChecked: document.getElementById('subtitle-passthrough-toggle').checked,
+                passthroughToggleExists: !!document.getElementById('subtitle-passthrough-toggle'),
                 textPoint: {
                     x: Math.round(textRect.left + textRect.width / 2),
                     y: Math.round(textRect.top + textRect.height / 2),
@@ -605,7 +1125,7 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
         })
         """
     )
-    mock_page.mouse.move(initial["transparentPoint"]["x"], initial["transparentPoint"]["y"])
+    mock_page.mouse.move(20, 20)
     mock_page.wait_for_timeout(1300)
     after_leave_delay = mock_page.evaluate(
         """
@@ -622,19 +1142,23 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
         """,
         initial["transparentPoint"],
     )
-    after_toggle_off = mock_page.evaluate(
+    after_unlock = mock_page.evaluate(
         """
         (point) => {
             const display = document.getElementById('subtitle-display');
-            const toggle = document.getElementById('subtitle-passthrough-toggle');
-            toggle.checked = false;
-            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            window.nekoSubtitleShared.updateSettings({
+                subtitlePanelLocked: false,
+            }, { source: 'test-unlock' });
             const hit = document.elementFromPoint(point.x, point.y);
             const result = {
                 displayPointerEvents: getComputedStyle(display).pointerEvents,
+                textPointerEvents: getComputedStyle(document.getElementById('subtitle-text')).pointerEvents,
+                lockedDataset: display.dataset.subtitlePanelLocked,
                 passthroughDataset: display.dataset.subtitleInteractionPassthrough,
-                toggleChecked: toggle.checked,
+                passthroughToggleExists: !!document.getElementById('subtitle-passthrough-toggle'),
+                storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
                 storedPassthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
+                settingLocked: window.nekoSubtitleShared.getSettings().subtitlePanelLocked,
                 settingPassthrough: window.nekoSubtitleShared.getSettings().subtitleInteractionPassthrough,
                 transparentHitId: hit && hit.id,
             };
@@ -647,11 +1171,12 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
     )
 
     assert initial["displayPointerEvents"] == "none"
-    assert initial["textPointerEvents"] == "auto"
+    assert initial["textPointerEvents"] == "none"
+    assert initial["lockedDataset"] == "true"
     assert initial["passthroughDataset"] == "true"
-    assert initial["toggleChecked"] is True
+    assert initial["passthroughToggleExists"] is False
     assert initial["transparentHitId"] == "underlay-target"
-    assert initial["textHitId"] == "subtitle-text"
+    assert initial["textHitId"] == "underlay-target"
     assert after_text_hover == {
         "panelState": "controls",
         "controlsHidden": "false",
@@ -661,11 +1186,15 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
         "controlsHidden": "true",
         "transparentHitId": "underlay-target",
     }
-    assert after_toggle_off == {
+    assert after_unlock == {
         "displayPointerEvents": "auto",
+        "textPointerEvents": "auto",
+        "lockedDataset": "false",
         "passthroughDataset": "false",
-        "toggleChecked": False,
+        "passthroughToggleExists": False,
+        "storedLocked": "false",
         "storedPassthrough": "false",
+        "settingLocked": False,
         "settingPassthrough": False,
         "transparentHitId": "subtitle-display",
     }
@@ -695,6 +1224,7 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
         () => {
             window.localStorage.setItem('subtitleEnabled', 'true');
             window.localStorage.setItem('subtitlePanelLocked', 'false');
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'false');
         }
         """
     )
@@ -723,7 +1253,9 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
             await new Promise((resolve) => setTimeout(resolve, 0));
             const afterLock = {
                 locked: shared.getSettings().subtitlePanelLocked,
+                passthrough: shared.getSettings().subtitleInteractionPassthrough,
                 storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
+                storedPassthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
                 ariaPressed: lockBtn.getAttribute('aria-pressed'),
                 iconState: lockBtn.dataset.subtitleLockIcon,
                 iconPath: lockBtn.querySelector('path')?.getAttribute('d') || '',
@@ -736,7 +1268,9 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
             await new Promise((resolve) => setTimeout(resolve, 0));
             const afterUnlock = {
                 locked: shared.getSettings().subtitlePanelLocked,
+                passthrough: shared.getSettings().subtitleInteractionPassthrough,
                 storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
+                storedPassthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
                 ariaPressed: lockBtn.getAttribute('aria-pressed'),
                 iconState: lockBtn.dataset.subtitleLockIcon,
                 iconPath: lockBtn.querySelector('path')?.getAttribute('d') || '',
@@ -760,7 +1294,9 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
 
     assert result["afterLock"] == {
         "locked": True,
+        "passthrough": True,
         "storedLocked": "true",
+        "storedPassthrough": "true",
         "ariaPressed": "true",
         "iconState": "locked",
         "iconPath": "M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v9a1 1 0 01-1 1H6a1 1 0 01-1-1v-9a1 1 0 011-1h1zm2 0h6V7a3 3 0 00-6 0v3z",
@@ -771,7 +1307,9 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
     }
     assert result["afterUnlock"] == {
         "locked": False,
+        "passthrough": False,
         "storedLocked": "false",
+        "storedPassthrough": "false",
         "ariaPressed": "false",
         "iconState": "unlocked",
         "iconPath": "M12 17a2 2 0 100-4 2 2 0 000 4zm6-7h-8V7a3 3 0 015.64-1.44 1 1 0 001.73-1A5 5 0 008 7v3H6a1 1 0 00-1 1v9a1 1 0 001 1h12a1 1 0 001-1v-9a1 1 0 00-1-1z",
@@ -2326,10 +2864,43 @@ def test_subtitle_window_template_keeps_legacy_panel_control_scaffold():
     assert 'data-subtitle-placeholder="暂无翻译内容"' in template
     assert 'data-subtitle-label="opacity">背景不透明度</span>' in template
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in template
+    assert 'data-subtitle-label="fontSize">字体大小</span>' in template
+    assert 'id="subtitle-font-size-select"' in template
+    for size, label_key, fallback in [
+        ("16", "fontSizeSmall", "小号"),
+        ("21", "fontSizeSmaller", "较小"),
+        ("26", "fontSizeDefault", "默认"),
+        ("34", "fontSizeLarger", "较大"),
+        ("44", "fontSizeLarge", "大号"),
+    ]:
+        assert f'<option value="{size}"' in template
+        assert f'data-subtitle-font-size-label="{label_key}"' in template
+        assert f'>{fallback}</option>' in template
+    assert 'data-subtitle-label="colorScheme">配色</span>' in template
+    assert 'id="subtitle-color-scheme-select"' in template
+    for scheme, label_key, fallback in [
+        ("default", "colorSchemeDefault", "默认"),
+        ("red", "colorSchemeRed", "红"),
+        ("orange", "colorSchemeOrange", "橙"),
+        ("yellow", "colorSchemeYellow", "黄"),
+        ("green", "colorSchemeGreen", "绿"),
+        ("blue", "colorSchemeBlue", "蓝"),
+        ("indigo", "colorSchemeIndigo", "靛"),
+        ("violet", "colorSchemeViolet", "紫"),
+    ]:
+        assert f'<option value="{scheme}"' in template
+        assert f'data-subtitle-color-scheme-label="{label_key}"' in template
+        assert f'>{fallback}</option>' in template
+    assert 'id="subtitle-danmaku-mode-btn"' in template
+    assert 'type="checkbox" id="subtitle-danmaku-mode-btn"' in template
+    assert 'subtitle-settings-switch-placeholder' in template
+    assert 'data-subtitle-danmaku-placeholder="true"' in template
+    assert 'disabled' in template
+    assert 'subtitle-settings-track' in template
     assert 'data-subtitle-label="lockPosition"' not in template
     assert 'id="subtitle-lock-toggle"' not in template
-    assert 'data-subtitle-label="passthroughInteraction"' in template
-    assert 'id="subtitle-passthrough-toggle"' in template
+    assert 'data-subtitle-label="passthroughInteraction"' not in template
+    assert 'id="subtitle-passthrough-toggle"' not in template
     assert 'id="subtitle-resize-handles"' in template
     for direction in ["n", "e", "s", "w", "ne", "se", "sw", "nw"]:
         assert f'data-resize-dir="{direction}"' in template
@@ -2379,11 +2950,34 @@ def test_chat_template_keeps_subtitle_as_hidden_bridge_placeholder():
 
 
 @pytest.mark.frontend
-def test_subtitle_window_settings_keeps_passthrough_visible_and_allows_small_bounds():
+def test_subtitle_window_settings_hides_passthrough_toggle_and_allows_small_bounds():
     css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
     assert "body.subtitle-window-host .subtitle-passthrough-setting-row" not in css
     assert "min-width: 200px" not in css
     assert "min-width: 180px" not in css
+
+
+@pytest.mark.frontend
+def test_subtitle_settings_window_includes_color_and_danmaku_placeholders():
+    template = (PROJECT_ROOT / "static" / "subtitle-settings.html").read_text(encoding="utf-8")
+
+    assert 'id="subtitle-color-scheme-select"' in template
+    assert 'data-subtitle-color-scheme-label="colorSchemeDefault"' in template
+    assert 'data-subtitle-color-scheme-label="colorSchemeViolet"' in template
+    assert 'id="subtitle-danmaku-mode-btn"' in template
+    assert 'type="checkbox" id="subtitle-danmaku-mode-btn"' in template
+    assert 'subtitle-settings-switch-placeholder' in template
+    assert 'data-subtitle-danmaku-placeholder="true"' in template
+    assert 'subtitle-settings-track' in template
+
+
+@pytest.mark.frontend
+def test_subtitle_settings_window_panel_size_matches_added_rows():
+    css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
+
+    assert "body.subtitle-settings-window-host {\n    margin: 0;\n    width: 100vw;\n    min-width: 300px;" in css
+    assert "body.subtitle-settings-window-host #subtitle-display" in css
+    assert "min-height: 164px" in css
 
 
 @pytest.mark.frontend
@@ -3646,11 +4240,103 @@ def test_subtitle_window_uses_web_font_size_without_desktop_shrink(
         """
     )
 
-    assert result["displayFontSize"] == "18px"
-    assert result["inlineDisplayFontSize"] == "18px"
-    assert result["textFontSize"] == "18px"
+    assert result["displayFontSize"] == "26px"
+    assert result["inlineDisplayFontSize"] == "26px"
+    assert result["textFontSize"] == "26px"
     assert result["inlineTextFontSize"] == ""
     assert result["lastSize"] == {"width": 612, "height": 80, "panelBounds": {"width": 600, "height": 68}}
+
+
+@pytest.mark.frontend
+def test_subtitle_window_state_sync_updates_font_size_realtime(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <button type="button" id="subtitle-settings-btn"></button>
+            <button type="button" id="subtitle-close-btn"></button>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.nekoSubtitle = {
+                setSize: () => {},
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 612, height: 80 }),
+                getCursorPoint: () => Promise.resolve({ x: 20, y: 20, screenX: 30, screenY: 40 }),
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            const text = document.getElementById('subtitle-text');
+            const before = {
+                setting: window.nekoSubtitleShared.getSettings().subtitleFontSize,
+                colorScheme: window.nekoSubtitleShared.getSettings().subtitleColorScheme,
+                textFontSize: getComputedStyle(text).fontSize,
+                textColor: getComputedStyle(text).color,
+                dataset: display.dataset.subtitleFontSize,
+                colorDataset: display.dataset.subtitleColorScheme,
+            };
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { type: 'colorScheme', value: 'orange' },
+            }));
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { type: 'fontSize', value: 44 },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const after = {
+                setting: window.nekoSubtitleShared.getSettings().subtitleFontSize,
+                colorScheme: window.nekoSubtitleShared.getSettings().subtitleColorScheme,
+                textFontSize: getComputedStyle(text).fontSize,
+                textColor: getComputedStyle(text).color,
+                dataset: display.dataset.subtitleFontSize,
+                colorDataset: display.dataset.subtitleColorScheme,
+            };
+            return { before, after };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "setting": 26,
+        "colorScheme": "default",
+        "textFontSize": "26px",
+        "textColor": "rgb(31, 36, 41)",
+        "dataset": "26",
+        "colorDataset": "default",
+    }
+    assert result["after"] == {
+        "setting": 44,
+        "colorScheme": "orange",
+        "textFontSize": "44px",
+        "textColor": "rgb(249, 115, 22)",
+        "dataset": "44",
+        "colorDataset": "orange",
+    }
 
 
 @pytest.mark.frontend
@@ -4734,7 +5420,7 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
             await new Promise((resolve) => setTimeout(resolve, 120));
             const afterTransparentAgain = window.__subtitleInteractionCalls.slice();
             window.nekoSubtitleShared.updateSettings({
-                subtitleInteractionPassthrough: false,
+                subtitlePanelLocked: false,
             }, { source: 'test-disable-passthrough' });
             await new Promise((resolve) => setTimeout(resolve, 0));
             const afterDisabled = window.__subtitleInteractionCalls.slice();
@@ -4744,9 +5430,9 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
     )
 
     assert result["afterTransparentArea"] == ["disable"]
-    assert result["afterText"] == ["disable", "enable"]
-    assert result["afterTransparentAgain"] == ["disable", "enable", "disable"]
-    assert result["afterDisabled"] == ["disable", "enable", "disable", "enable"]
+    assert result["afterText"] == ["disable"]
+    assert result["afterTransparentAgain"] == ["disable"]
+    assert result["afterDisabled"] == ["disable", "enable"]
 
 
 @pytest.mark.frontend
@@ -5004,7 +5690,7 @@ def test_web_subtitle_panel_drag_persists_position_and_lock_blocks_drag(
         """
     )
 
-    assert result["pointerEvents"] == "none"
+    assert result["pointerEvents"] == "auto"
     assert result["textPointerEvents"] == "auto"
     assert result["hasDragHandle"] is False
     assert result["firstDrag"]["draggingDuringMove"] is True
@@ -5286,6 +5972,10 @@ def test_subtitle_window_state_sync_lock_blocks_drag_bridge(
             }));
             document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
             const afterLockedDrag = window.__dragCalls.slice();
+            const afterLockedState = {
+                locked: shared.getSettings().subtitlePanelLocked,
+                passthrough: shared.getSettings().subtitleInteractionPassthrough,
+            };
 
             window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
                 detail: { subtitlePanelLocked: false },
@@ -5306,13 +5996,17 @@ def test_subtitle_window_state_sync_lock_blocks_drag_bridge(
 
             return {
                 afterLockedDrag,
+                afterLockedState,
                 finalDragCalls: window.__dragCalls,
                 locked: shared.getSettings().subtitlePanelLocked,
+                passthrough: shared.getSettings().subtitleInteractionPassthrough,
             };
         }
         """
     )
 
     assert result["afterLockedDrag"] == []
+    assert result["afterLockedState"] == {"locked": True, "passthrough": True}
     assert result["finalDragCalls"] == ["start", "stop"]
     assert result["locked"] is False
+    assert result["passthrough"] is False

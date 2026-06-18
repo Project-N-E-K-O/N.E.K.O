@@ -14,11 +14,15 @@
         medium: { width: 600, height: 68 },
         large: { width: 760, height: 92 }
     };
+    var DEFAULT_SUBTITLE_FONT_SIZE = 26;
+    var SUBTITLE_FONT_SIZE_OPTIONS = [16, 21, 26, 34, 44];
+    var DEFAULT_SUBTITLE_COLOR_SCHEME = 'default';
+    var SUBTITLE_COLOR_SCHEME_OPTIONS = ['default', 'red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
     var MIN_PANEL_WIDTH = 48;
     var MIN_PANEL_HEIGHT = 28;
     var DEFAULT_TRANSLATION_LANGUAGE = 'zh';
     var DEFAULT_UI_LOCALE = 'zh-CN';
-    var CONTROLS_HIDE_DELAY_MS = 1200;
+    var CONTROLS_HIDE_DELAY_MS = 600;
     var PANEL_TEXT_HORIZONTAL_RESERVE = 110;
     var SETTINGS_KEYS = {
         subtitleEnabled: 'subtitleEnabled',
@@ -27,7 +31,9 @@
         subtitlePanelBounds: 'subtitlePanelBounds',
         subtitlePanelPosition: 'subtitlePanelPosition',
         subtitlePanelLocked: 'subtitlePanelLocked',
-        subtitleInteractionPassthrough: 'subtitleInteractionPassthrough'
+        subtitleInteractionPassthrough: 'subtitleInteractionPassthrough',
+        subtitleFontSize: 'subtitleFontSize',
+        subtitleColorScheme: 'subtitleColorScheme'
     };
     var UI_KEY_MAP = {
         settingsBtn: 'subtitle.settings.settingsBtn',
@@ -41,6 +47,22 @@
         sizeSmall: 'subtitle.settings.sizeSmall',
         sizeMedium: 'subtitle.settings.sizeMedium',
         sizeLarge: 'subtitle.settings.sizeLarge',
+        fontSize: 'subtitle.settings.fontSize',
+        fontSizeSmall: 'subtitle.settings.fontSizeSmall',
+        fontSizeSmaller: 'subtitle.settings.fontSizeSmaller',
+        fontSizeDefault: 'subtitle.settings.fontSizeDefault',
+        fontSizeLarger: 'subtitle.settings.fontSizeLarger',
+        fontSizeLarge: 'subtitle.settings.fontSizeLarge',
+        colorScheme: 'subtitle.settings.colorScheme',
+        colorSchemeDefault: 'subtitle.settings.colorSchemeDefault',
+        colorSchemeRed: 'subtitle.settings.colorSchemeRed',
+        colorSchemeOrange: 'subtitle.settings.colorSchemeOrange',
+        colorSchemeYellow: 'subtitle.settings.colorSchemeYellow',
+        colorSchemeGreen: 'subtitle.settings.colorSchemeGreen',
+        colorSchemeBlue: 'subtitle.settings.colorSchemeBlue',
+        colorSchemeIndigo: 'subtitle.settings.colorSchemeIndigo',
+        colorSchemeViolet: 'subtitle.settings.colorSchemeViolet',
+        danmakuMode: 'subtitle.settings.danmakuMode',
         passthroughInteraction: 'subtitle.settings.passthroughInteraction',
         emptyHint: 'subtitle.display.emptyHint'
     };
@@ -54,6 +76,22 @@
             closePanel: '关闭翻译面板',
             targetLang: '目标语言',
             opacity: '背景不透明度',
+            fontSize: '字体大小',
+            fontSizeSmall: '小号',
+            fontSizeSmaller: '较小',
+            fontSizeDefault: '默认',
+            fontSizeLarger: '较大',
+            fontSizeLarge: '大号',
+            colorScheme: '配色',
+            colorSchemeDefault: '默认',
+            colorSchemeRed: '红',
+            colorSchemeOrange: '橙',
+            colorSchemeYellow: '黄',
+            colorSchemeGreen: '绿',
+            colorSchemeBlue: '蓝',
+            colorSchemeIndigo: '靛',
+            colorSchemeViolet: '紫',
+            danmakuMode: '弹幕模式',
             passthroughInteraction: '透明区域穿透',
             emptyHint: '暂无翻译内容'
         },
@@ -64,6 +102,22 @@
             closePanel: '關閉翻譯面板',
             targetLang: '目標語言',
             opacity: '背景不透明度',
+            fontSize: '字體大小',
+            fontSizeSmall: '小號',
+            fontSizeSmaller: '較小',
+            fontSizeDefault: '預設',
+            fontSizeLarger: '較大',
+            fontSizeLarge: '大號',
+            colorScheme: '配色',
+            colorSchemeDefault: '預設',
+            colorSchemeRed: '紅',
+            colorSchemeOrange: '橙',
+            colorSchemeYellow: '黃',
+            colorSchemeGreen: '綠',
+            colorSchemeBlue: '藍',
+            colorSchemeIndigo: '靛',
+            colorSchemeViolet: '紫',
+            danmakuMode: '彈幕模式',
             passthroughInteraction: '透明區域穿透',
             emptyHint: '暫無翻譯內容'
         },
@@ -74,6 +128,22 @@
             closePanel: 'Close translation panel',
             targetLang: 'Target Language',
             opacity: 'Background opacity',
+            fontSize: 'Font size',
+            fontSizeSmall: 'Small',
+            fontSizeSmaller: 'Smaller',
+            fontSizeDefault: 'Default',
+            fontSizeLarger: 'Larger',
+            fontSizeLarge: 'Large',
+            colorScheme: 'Color',
+            colorSchemeDefault: 'Default',
+            colorSchemeRed: 'Red',
+            colorSchemeOrange: 'Orange',
+            colorSchemeYellow: 'Yellow',
+            colorSchemeGreen: 'Green',
+            colorSchemeBlue: 'Blue',
+            colorSchemeIndigo: 'Indigo',
+            colorSchemeViolet: 'Violet',
+            danmakuMode: 'Danmaku mode',
             passthroughInteraction: 'Transparent area passthrough',
             emptyHint: 'No translation yet'
         },
@@ -84,6 +154,22 @@
             closePanel: 'Cerrar panel de traducción',
             targetLang: 'Idioma de destino',
             opacity: 'Opacidad del fondo',
+            fontSize: 'Tamaño de fuente',
+            fontSizeSmall: 'Pequeño',
+            fontSizeSmaller: 'Más pequeño',
+            fontSizeDefault: 'Predeterminado',
+            fontSizeLarger: 'Más grande',
+            fontSizeLarge: 'Grande',
+            colorScheme: 'Color',
+            colorSchemeDefault: 'Predeterminado',
+            colorSchemeRed: 'Rojo',
+            colorSchemeOrange: 'Naranja',
+            colorSchemeYellow: 'Amarillo',
+            colorSchemeGreen: 'Verde',
+            colorSchemeBlue: 'Azul',
+            colorSchemeIndigo: 'Índigo',
+            colorSchemeViolet: 'Violeta',
+            danmakuMode: 'Modo danmaku',
             passthroughInteraction: 'Clics en área transparente',
             emptyHint: 'Sin traducción todavía'
         },
@@ -94,6 +180,22 @@
             closePanel: 'Fechar painel de tradução',
             targetLang: 'Idioma de destino',
             opacity: 'Opacidade do fundo',
+            fontSize: 'Tamanho da fonte',
+            fontSizeSmall: 'Pequeno',
+            fontSizeSmaller: 'Menor',
+            fontSizeDefault: 'Padrão',
+            fontSizeLarger: 'Maior',
+            fontSizeLarge: 'Grande',
+            colorScheme: 'Cor',
+            colorSchemeDefault: 'Padrão',
+            colorSchemeRed: 'Vermelho',
+            colorSchemeOrange: 'Laranja',
+            colorSchemeYellow: 'Amarelo',
+            colorSchemeGreen: 'Verde',
+            colorSchemeBlue: 'Azul',
+            colorSchemeIndigo: 'Índigo',
+            colorSchemeViolet: 'Violeta',
+            danmakuMode: 'Modo danmaku',
             passthroughInteraction: 'Clique através da área transparente',
             emptyHint: 'Sem tradução ainda'
         },
@@ -104,6 +206,22 @@
             closePanel: '翻訳パネルを閉じる',
             targetLang: '翻訳先の言語',
             opacity: '背景の不透明度',
+            fontSize: '文字サイズ',
+            fontSizeSmall: '小さめ',
+            fontSizeSmaller: 'やや小さめ',
+            fontSizeDefault: '標準',
+            fontSizeLarger: 'やや大きめ',
+            fontSizeLarge: '大きめ',
+            colorScheme: '配色',
+            colorSchemeDefault: '標準',
+            colorSchemeRed: '赤',
+            colorSchemeOrange: '橙',
+            colorSchemeYellow: '黄',
+            colorSchemeGreen: '緑',
+            colorSchemeBlue: '青',
+            colorSchemeIndigo: '藍',
+            colorSchemeViolet: '紫',
+            danmakuMode: '弾幕モード',
             passthroughInteraction: '透明領域をクリック透過',
             emptyHint: '翻訳はまだありません'
         },
@@ -114,6 +232,22 @@
             closePanel: '번역 패널 닫기',
             targetLang: '대상 언어',
             opacity: '배경 불투명도',
+            fontSize: '글자 크기',
+            fontSizeSmall: '작게',
+            fontSizeSmaller: '조금 작게',
+            fontSizeDefault: '기본',
+            fontSizeLarger: '조금 크게',
+            fontSizeLarge: '크게',
+            colorScheme: '색상',
+            colorSchemeDefault: '기본',
+            colorSchemeRed: '빨강',
+            colorSchemeOrange: '주황',
+            colorSchemeYellow: '노랑',
+            colorSchemeGreen: '초록',
+            colorSchemeBlue: '파랑',
+            colorSchemeIndigo: '남색',
+            colorSchemeViolet: '보라',
+            danmakuMode: '탄막 모드',
             passthroughInteraction: '투명 영역 클릭 통과',
             emptyHint: '아직 번역이 없습니다'
         },
@@ -124,6 +258,22 @@
             closePanel: 'Закрыть панель перевода',
             targetLang: 'Целевой язык',
             opacity: 'Непрозрачность фона',
+            fontSize: 'Размер шрифта',
+            fontSizeSmall: 'Малый',
+            fontSizeSmaller: 'Меньше',
+            fontSizeDefault: 'По умолчанию',
+            fontSizeLarger: 'Больше',
+            fontSizeLarge: 'Крупный',
+            colorScheme: 'Цвет',
+            colorSchemeDefault: 'По умолчанию',
+            colorSchemeRed: 'Красный',
+            colorSchemeOrange: 'Оранжевый',
+            colorSchemeYellow: 'Желтый',
+            colorSchemeGreen: 'Зеленый',
+            colorSchemeBlue: 'Синий',
+            colorSchemeIndigo: 'Индиго',
+            colorSchemeViolet: 'Фиолетовый',
+            danmakuMode: 'Режим данмаку',
             passthroughInteraction: 'Пропуск кликов в прозрачных областях',
             emptyHint: 'Перевода пока нет'
         }
@@ -199,6 +349,27 @@
         var number = parseInt(value, 10);
         if (!isFinite(number)) return DEFAULT_BACKGROUND_OPACITY;
         return Math.max(0, Math.min(100, number));
+    }
+
+    function normalizeSubtitleFontSize(value) {
+        var number = parseInt(value, 10);
+        if (!isFinite(number)) return DEFAULT_SUBTITLE_FONT_SIZE;
+        for (var i = 0; i < SUBTITLE_FONT_SIZE_OPTIONS.length; i += 1) {
+            if (number === SUBTITLE_FONT_SIZE_OPTIONS[i]) {
+                return number;
+            }
+        }
+        return DEFAULT_SUBTITLE_FONT_SIZE;
+    }
+
+    function normalizeSubtitleColorScheme(value) {
+        var scheme = String(value || '').trim().toLowerCase();
+        for (var i = 0; i < SUBTITLE_COLOR_SCHEME_OPTIONS.length; i += 1) {
+            if (scheme === SUBTITLE_COLOR_SCHEME_OPTIONS[i]) {
+                return scheme;
+            }
+        }
+        return DEFAULT_SUBTITLE_COLOR_SCHEME;
     }
 
     function formatAlpha(value) {
@@ -318,7 +489,9 @@
             subtitlePanelBounds: clonePanelBounds(DEFAULT_PANEL_BOUNDS),
             subtitlePanelPosition: null,
             subtitlePanelLocked: false,
-            subtitleInteractionPassthrough: true,
+            subtitleInteractionPassthrough: false,
+            subtitleFontSize: DEFAULT_SUBTITLE_FONT_SIZE,
+            subtitleColorScheme: DEFAULT_SUBTITLE_COLOR_SCHEME,
             uiLocale: getCurrentUiLocale()
         };
         try {
@@ -327,8 +500,16 @@
             settingsState.subtitleOpacity = clampOpacity(localStorage.getItem(SETTINGS_KEYS.subtitleOpacity));
             settingsState.subtitlePanelBounds = getPanelBounds(localStorage.getItem(SETTINGS_KEYS.subtitlePanelBounds));
             settingsState.subtitlePanelPosition = normalizePanelPosition(localStorage.getItem(SETTINGS_KEYS.subtitlePanelPosition));
-            settingsState.subtitlePanelLocked = localStorage.getItem(SETTINGS_KEYS.subtitlePanelLocked) === 'true';
-            settingsState.subtitleInteractionPassthrough = localStorage.getItem(SETTINGS_KEYS.subtitleInteractionPassthrough) !== 'false';
+            var storedLocked = localStorage.getItem(SETTINGS_KEYS.subtitlePanelLocked);
+            var storedPassthrough = localStorage.getItem(SETTINGS_KEYS.subtitleInteractionPassthrough);
+            if (storedLocked !== null) {
+                settingsState.subtitlePanelLocked = storedLocked === 'true';
+            } else if (storedPassthrough !== null) {
+                settingsState.subtitlePanelLocked = storedPassthrough !== 'false';
+            }
+            settingsState.subtitleInteractionPassthrough = settingsState.subtitlePanelLocked;
+            settingsState.subtitleFontSize = normalizeSubtitleFontSize(localStorage.getItem(SETTINGS_KEYS.subtitleFontSize));
+            settingsState.subtitleColorScheme = normalizeSubtitleColorScheme(localStorage.getItem(SETTINGS_KEYS.subtitleColorScheme));
         } catch (_) {}
         return settingsState;
     }
@@ -349,6 +530,8 @@
             subtitlePanelPosition: clonePanelPosition(current.subtitlePanelPosition),
             subtitlePanelLocked: current.subtitlePanelLocked,
             subtitleInteractionPassthrough: current.subtitleInteractionPassthrough,
+            subtitleFontSize: current.subtitleFontSize,
+            subtitleColorScheme: current.subtitleColorScheme,
             subtitlePanelState: 'clean'
         };
         return renderState;
@@ -381,6 +564,12 @@
             if (changedKeys.indexOf('subtitleInteractionPassthrough') !== -1) {
                 localStorage.setItem(SETTINGS_KEYS.subtitleInteractionPassthrough, String(nextState.subtitleInteractionPassthrough));
             }
+            if (changedKeys.indexOf('subtitleFontSize') !== -1) {
+                localStorage.setItem(SETTINGS_KEYS.subtitleFontSize, String(nextState.subtitleFontSize));
+            }
+            if (changedKeys.indexOf('subtitleColorScheme') !== -1) {
+                localStorage.setItem(SETTINGS_KEYS.subtitleColorScheme, nextState.subtitleColorScheme);
+            }
         } catch (_) {}
     }
 
@@ -412,7 +601,8 @@
             'text', 'visible', 'subtitleEnabled', 'userLanguage', 'uiLocale',
             'subtitleOpacity', 'subtitlePanelBounds',
             'subtitlePanelPosition', 'subtitlePanelLocked',
-            'subtitleInteractionPassthrough', 'subtitlePanelState'
+            'subtitleInteractionPassthrough', 'subtitleFontSize',
+            'subtitleColorScheme', 'subtitlePanelState'
         ];
         var i;
 
@@ -430,6 +620,8 @@
             if (key === 'subtitlePanelPosition') value = normalizePanelPosition(value);
             if (key === 'subtitlePanelLocked') value = !!value;
             if (key === 'subtitleInteractionPassthrough') value = value !== false;
+            if (key === 'subtitleFontSize') value = normalizeSubtitleFontSize(value);
+            if (key === 'subtitleColorScheme') value = normalizeSubtitleColorScheme(value);
             if (key === 'subtitlePanelState') value = normalizePanelState(value);
             var changed = key === 'subtitlePanelPosition'
                 ? !samePanelPosition(next[key], value)
@@ -478,18 +670,26 @@
         if (hasOwn(patch, 'subtitlePanelPosition')) {
             next.subtitlePanelPosition = normalizePanelPosition(patch.subtitlePanelPosition);
         }
-        if (hasOwn(patch, 'subtitlePanelLocked')) {
-            next.subtitlePanelLocked = !!patch.subtitlePanelLocked;
+        if (hasOwn(patch, 'subtitlePanelLocked') || hasOwn(patch, 'subtitleInteractionPassthrough')) {
+            var boundLocked = hasOwn(patch, 'subtitlePanelLocked')
+                ? !!patch.subtitlePanelLocked
+                : patch.subtitleInteractionPassthrough !== false;
+            next.subtitlePanelLocked = boundLocked;
+            next.subtitleInteractionPassthrough = boundLocked;
         }
-        if (hasOwn(patch, 'subtitleInteractionPassthrough')) {
-            next.subtitleInteractionPassthrough = patch.subtitleInteractionPassthrough !== false;
+        if (hasOwn(patch, 'subtitleFontSize')) {
+            next.subtitleFontSize = normalizeSubtitleFontSize(patch.subtitleFontSize);
+        }
+        if (hasOwn(patch, 'subtitleColorScheme')) {
+            next.subtitleColorScheme = normalizeSubtitleColorScheme(patch.subtitleColorScheme);
         }
         next.uiLocale = uiLocale;
 
         var keys = [
             'subtitleEnabled', 'userLanguage', 'subtitleOpacity',
             'subtitlePanelBounds', 'subtitlePanelPosition',
-            'subtitlePanelLocked', 'subtitleInteractionPassthrough', 'uiLocale'
+            'subtitlePanelLocked', 'subtitleInteractionPassthrough',
+            'subtitleFontSize', 'subtitleColorScheme', 'uiLocale'
         ];
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
@@ -518,13 +718,54 @@
             subtitlePanelBounds: next.subtitlePanelBounds,
             subtitlePanelPosition: next.subtitlePanelPosition,
             subtitlePanelLocked: next.subtitlePanelLocked,
-            subtitleInteractionPassthrough: next.subtitleInteractionPassthrough
+            subtitleInteractionPassthrough: next.subtitleInteractionPassthrough,
+            subtitleFontSize: next.subtitleFontSize,
+            subtitleColorScheme: next.subtitleColorScheme
         }, { source: options && options.source ? options.source : 'subtitle-settings' });
         if (!options || options.silent !== true) {
             dispatchSettingsChange(next, changedKeys, options && options.source);
         }
         return clone(next);
     }
+
+    function getStorageSyncPatch(evt) {
+        var key = evt && evt.key;
+        var value = evt ? evt.newValue : null;
+        var patch = {};
+        if (!key) return patch;
+        if (key === SETTINGS_KEYS.subtitleEnabled) {
+            patch.subtitleEnabled = value === 'true';
+        } else if (key === SETTINGS_KEYS.userLanguage) {
+            patch.userLanguage = value || DEFAULT_TRANSLATION_LANGUAGE;
+        } else if (key === SETTINGS_KEYS.subtitleOpacity) {
+            patch.subtitleOpacity = clampOpacity(value);
+        } else if (key === SETTINGS_KEYS.subtitlePanelBounds) {
+            patch.subtitlePanelBounds = getPanelBounds(value);
+        } else if (key === SETTINGS_KEYS.subtitlePanelPosition) {
+            patch.subtitlePanelPosition = normalizePanelPosition(value);
+        } else if (key === SETTINGS_KEYS.subtitlePanelLocked) {
+            patch.subtitlePanelLocked = value === 'true';
+        } else if (key === SETTINGS_KEYS.subtitleInteractionPassthrough) {
+            patch.subtitleInteractionPassthrough = value !== 'false';
+        } else if (key === SETTINGS_KEYS.subtitleFontSize) {
+            patch.subtitleFontSize = normalizeSubtitleFontSize(value);
+        } else if (key === SETTINGS_KEYS.subtitleColorScheme) {
+            patch.subtitleColorScheme = normalizeSubtitleColorScheme(value);
+        }
+        return patch;
+    }
+
+    function syncSettingsFromStorage(evt) {
+        if (!evt || (evt.storageArea && evt.storageArea !== window.localStorage)) return;
+        var patch = getStorageSyncPatch(evt);
+        if (!Object.keys(patch).length) return;
+        updateSettings(patch, {
+            persist: false,
+            source: 'subtitle-storage-sync'
+        });
+    }
+
+    window.addEventListener('storage', syncSettingsFromStorage);
 
     function getSettings() {
         return clone(ensureSettingsState());
@@ -571,7 +812,7 @@
         if (i18nKey && typeof window.t === 'function') {
             try {
                 var translated = window.t(i18nKey);
-                if (translated && translated !== i18nKey) {
+                if (typeof translated === 'string' && translated && translated !== i18nKey) {
                     return translated;
                 }
             } catch (_) {}
@@ -621,6 +862,9 @@
             langSelect: query(root, '#subtitle-lang-select'),
             opacitySlider: query(root, '#subtitle-opacity-slider'),
             opacityValue: query(root, '#subtitle-opacity-value'),
+            fontSizeSelect: query(root, '#subtitle-font-size-select'),
+            colorSchemeSelect: query(root, '#subtitle-color-scheme-select'),
+            danmakuModeBtn: query(root, '#subtitle-danmaku-mode-btn'),
             passthroughToggle: query(root, '#subtitle-passthrough-toggle'),
             dragModeToggle: query(root, '#subtitle-drag-mode-toggle'),
             sizeButtons: queryAll(root, '.subtitle-size-btn'),
@@ -650,6 +894,9 @@
 
     function applySubtitlePanelBounds(display, bounds, options) {
         var resolved = getPanelBounds(bounds);
+        var fontSize = normalizeSubtitleFontSize(options && hasOwn(options, 'fontSize')
+            ? options.fontSize
+            : getSettings().subtitleFontSize);
         if (!display) return resolved;
         display.dataset.subtitlePanelWidth = String(resolved.width);
         display.dataset.subtitlePanelHeight = String(resolved.height);
@@ -657,7 +904,9 @@
         display.style.height = resolved.height + 'px';
         display.style.minHeight = MIN_PANEL_HEIGHT + 'px';
         display.style.maxHeight = 'none';
-        display.style.fontSize = '18px';
+        display.style.fontSize = fontSize + 'px';
+        display.dataset.subtitleFontSize = String(fontSize);
+        display.style.setProperty('--subtitle-font-size', fontSize + 'px');
         display.style.setProperty('--subtitle-panel-width', resolved.width + 'px');
         display.style.setProperty('--subtitle-panel-height', resolved.height + 'px');
         display.style.setProperty('--subtitle-content-max-height', Math.max(24, resolved.height - 24) + 'px');
@@ -673,11 +922,15 @@
         var passthroughEnabled = state.subtitleInteractionPassthrough !== false;
         refs.display.dataset.subtitlePanelLocked = state.subtitlePanelLocked ? 'true' : 'false';
         refs.display.dataset.subtitleInteractionPassthrough = passthroughEnabled ? 'true' : 'false';
+        refs.display.dataset.subtitleColorScheme = normalizeSubtitleColorScheme(state.subtitleColorScheme);
         if (!refs.display.dataset.subtitlePanelState) {
             refs.display.dataset.subtitlePanelState = 'clean';
         }
         applyBackgroundOpacity(refs.display, state.subtitleOpacity);
-        applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, { host: host });
+        applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, {
+            host: host,
+            fontSize: state.subtitleFontSize
+        });
         if (host === 'web') {
             applyWebPanelPosition(refs, state.subtitlePanelPosition);
         }
@@ -689,6 +942,12 @@
         }
         if (refs.opacityValue) {
             refs.opacityValue.textContent = state.subtitleOpacity + '%';
+        }
+        if (refs.fontSizeSelect) {
+            refs.fontSizeSelect.value = String(normalizeSubtitleFontSize(state.subtitleFontSize));
+        }
+        if (refs.colorSchemeSelect) {
+            refs.colorSchemeSelect.value = normalizeSubtitleColorScheme(state.subtitleColorScheme);
         }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.checked = passthroughEnabled;
@@ -735,6 +994,28 @@
         }
         if (refs.opacitySlider) {
             refs.opacitySlider.title = getUiText('opacity', locale);
+        }
+        if (refs.fontSizeSelect) {
+            refs.fontSizeSelect.title = getUiText('fontSize', locale);
+            Array.prototype.forEach.call(refs.fontSizeSelect.options || [], function(option) {
+                var key = option && option.dataset ? option.dataset.subtitleFontSizeLabel : '';
+                if (!key) return;
+                option.textContent = getUiText(key, locale);
+            });
+        }
+        if (refs.colorSchemeSelect) {
+            refs.colorSchemeSelect.title = getUiText('colorScheme', locale);
+            Array.prototype.forEach.call(refs.colorSchemeSelect.options || [], function(option) {
+                var key = option && option.dataset ? option.dataset.subtitleColorSchemeLabel : '';
+                if (!key) return;
+                option.textContent = getUiText(key, locale);
+            });
+        }
+        if (refs.danmakuModeBtn) {
+            var danmakuText = getUiText('danmakuMode', locale);
+            refs.danmakuModeBtn.textContent = danmakuText;
+            refs.danmakuModeBtn.title = danmakuText;
+            refs.danmakuModeBtn.setAttribute('aria-label', danmakuText);
         }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.title = getUiText('passthroughInteraction', locale);
@@ -785,7 +1066,7 @@
         var text = String(options.text || '');
         var mode = options.mode || 'window';
         var bounds = getPanelBounds(options.panelBounds);
-        var baseFont = options.baseFont || 18;
+        var baseFont = options.baseFont || DEFAULT_SUBTITLE_FONT_SIZE;
         var minFont = options.minFont || 12;
         var fontFamily = options.fontFamily || 'Segoe UI, Arial, sans-serif';
         var maxWidth = options.maxWidth || bounds.width;
@@ -1484,6 +1765,24 @@
             return !!(document.activeElement && refs.display.contains(document.activeElement));
         }
 
+        function blurFocusWithinPanel() {
+            var active = document.activeElement;
+            if (active && refs.display.contains(active) && typeof active.blur === 'function') {
+                active.blur();
+            }
+        }
+
+        function isPointInsidePanel(e) {
+            if (!e || !refs.display || typeof refs.display.getBoundingClientRect !== 'function') return false;
+            var x = Number(e.clientX);
+            var y = Number(e.clientY);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+            var rect = refs.display.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 &&
+                x >= rect.left && x <= rect.right &&
+                y >= rect.top && y <= rect.bottom;
+        }
+
         function showControls(source) {
             clearControlsHideTimer();
             if (panelState !== 'settings') {
@@ -1497,6 +1796,7 @@
             controlsHideTimer = setTimeout(function() {
                 controlsHideTimer = null;
                 if (isSettingsOpen()) return;
+                if (panelPointerInside) return;
                 if (refs.display.matches && refs.display.matches(':hover')) return;
                 if (hasFocusWithinPanel()) return;
                 applyPanelState('clean', source || 'subtitle-ui-clean');
@@ -1536,10 +1836,8 @@
                 refs.settingsPanel.classList.add('hidden');
             }
             applyPanelState(nextPanelState || 'controls', source || 'subtitle-ui-settings-close');
+            blurFocusWithinPanel();
             if (wasExternalSettingsOpen && nextPanelState !== 'clean') {
-                if (refs.settingsBtn && typeof refs.settingsBtn.blur === 'function') {
-                    refs.settingsBtn.blur();
-                }
                 scheduleClean(source || 'subtitle-ui-settings-close');
             }
         }
@@ -1580,14 +1878,20 @@
 
         function setPanelLocked(nextLocked, source) {
             var locked = !!nextLocked;
-            var nextState = updateSettings({ subtitlePanelLocked: locked }, {
+            var nextState = updateSettings({
+                subtitlePanelLocked: locked,
+                subtitleInteractionPassthrough: locked
+            }, {
                 source: source || 'subtitle-ui-lock'
             });
             if (typeof options.propagateSetting === 'function') {
                 options.propagateSetting({
                     type: 'lock',
                     value: locked,
-                    patch: { subtitlePanelLocked: locked },
+                    patch: {
+                        subtitlePanelLocked: locked,
+                        subtitleInteractionPassthrough: locked
+                    },
                     state: nextState
                 });
             }
@@ -1658,12 +1962,28 @@
             });
         }
 
+        var panelPointerInside = false;
+
         if (refs.display) {
             var onPanelPointerEnter = function() {
+                panelPointerInside = true;
                 showControls('subtitle-ui-pointerenter');
             };
             var onPanelPointerLeave = function() {
+                panelPointerInside = false;
                 scheduleClean('subtitle-ui-pointerleave');
+            };
+            var onDocumentMouseMove = function(e) {
+                var inside = isPointInsidePanel(e);
+                if (inside) {
+                    panelPointerInside = true;
+                    showControls('subtitle-ui-mousemove');
+                    return;
+                }
+                if (panelPointerInside || panelState === 'controls') {
+                    panelPointerInside = false;
+                    scheduleClean('subtitle-ui-mousemove-leave');
+                }
             };
             var onPanelClick = function(e) {
                 if (refs.settingsPanel && refs.settingsPanel.contains(e.target)) return;
@@ -1692,6 +2012,7 @@
 
             refs.display.addEventListener('pointerenter', onPanelPointerEnter);
             refs.display.addEventListener('pointerleave', onPanelPointerLeave);
+            document.addEventListener('mousemove', onDocumentMouseMove, true);
             refs.display.addEventListener('click', onPanelClick);
             refs.display.addEventListener('focusin', onPanelFocusIn);
             refs.display.addEventListener('focusout', onPanelFocusOut);
@@ -1699,6 +2020,7 @@
             cleanupFns.push(function() {
                 refs.display.removeEventListener('pointerenter', onPanelPointerEnter);
                 refs.display.removeEventListener('pointerleave', onPanelPointerLeave);
+                document.removeEventListener('mousemove', onDocumentMouseMove, true);
                 refs.display.removeEventListener('click', onPanelClick);
                 refs.display.removeEventListener('focusin', onPanelFocusIn);
                 refs.display.removeEventListener('focusout', onPanelFocusOut);
@@ -1712,6 +2034,7 @@
                 showControls('subtitle-ui-lock');
                 var nextLocked = !getSettings().subtitlePanelLocked;
                 setPanelLocked(nextLocked, 'subtitle-ui-lock');
+                blurFocusWithinPanel();
             };
             refs.lockBtn.addEventListener('click', onLockClick);
             cleanupFns.push(function() {
@@ -1848,15 +2171,59 @@
             });
         }
 
+        if (refs.fontSizeSelect) {
+            var onFontSizeSelect = function() {
+                var nextFontSize = normalizeSubtitleFontSize(refs.fontSizeSelect.value);
+                var nextState = updateSettings({ subtitleFontSize: nextFontSize }, { source: 'subtitle-ui-font-size' });
+                if (typeof options.propagateSetting === 'function') {
+                    options.propagateSetting({
+                        type: 'fontSize',
+                        value: nextFontSize,
+                        patch: { subtitleFontSize: nextFontSize },
+                        state: nextState
+                    });
+                }
+            };
+            refs.fontSizeSelect.addEventListener('change', onFontSizeSelect);
+            cleanupFns.push(function() {
+                refs.fontSizeSelect.removeEventListener('change', onFontSizeSelect);
+            });
+        }
+
+        if (refs.colorSchemeSelect) {
+            var onColorSchemeSelect = function() {
+                var nextColorScheme = normalizeSubtitleColorScheme(refs.colorSchemeSelect.value);
+                var nextState = updateSettings({ subtitleColorScheme: nextColorScheme }, { source: 'subtitle-ui-color-scheme' });
+                if (typeof options.propagateSetting === 'function') {
+                    options.propagateSetting({
+                        type: 'colorScheme',
+                        value: nextColorScheme,
+                        patch: { subtitleColorScheme: nextColorScheme },
+                        state: nextState
+                    });
+                }
+            };
+            refs.colorSchemeSelect.addEventListener('change', onColorSchemeSelect);
+            cleanupFns.push(function() {
+                refs.colorSchemeSelect.removeEventListener('change', onColorSchemeSelect);
+            });
+        }
+
         if (refs.passthroughToggle) {
             var onPassthroughChange = function() {
                 var nextPassthrough = !!refs.passthroughToggle.checked;
-                var nextState = updateSettings({ subtitleInteractionPassthrough: nextPassthrough }, { source: 'subtitle-ui-passthrough' });
+                var nextState = updateSettings({
+                    subtitlePanelLocked: nextPassthrough,
+                    subtitleInteractionPassthrough: nextPassthrough
+                }, { source: 'subtitle-ui-passthrough' });
                 if (typeof options.propagateSetting === 'function') {
                     options.propagateSetting({
                         type: 'interactionPassthrough',
                         value: nextPassthrough,
-                        patch: { subtitleInteractionPassthrough: nextPassthrough },
+                        patch: {
+                            subtitlePanelLocked: nextPassthrough,
+                            subtitleInteractionPassthrough: nextPassthrough
+                        },
                         state: nextState
                     });
                 }
@@ -1905,6 +2272,8 @@
         subscribeSettings: subscribeSettings,
         subscribeRenderState: subscribeRenderState,
         normalizeTranslationLanguageCode: normalizeTranslationLanguageCode,
+        normalizeSubtitleFontSize: normalizeSubtitleFontSize,
+        normalizeSubtitleColorScheme: normalizeSubtitleColorScheme,
         normalizeUiLocale: normalizeUiLocale,
         getCurrentUiLocale: getCurrentUiLocale,
         getUiText: getUiText,
