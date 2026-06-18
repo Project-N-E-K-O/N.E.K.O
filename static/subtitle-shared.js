@@ -20,6 +20,9 @@
     var DEFAULT_UI_LOCALE = 'zh-CN';
     var CONTROLS_HIDE_DELAY_MS = 1200;
     var PANEL_TEXT_HORIZONTAL_RESERVE = 110;
+    var AUTO_SCROLL_DELAY_MS = 120;
+    var AUTO_SCROLL_SPEED_PX_PER_SECOND = 90;
+    var AUTO_SCROLL_USER_OVERRIDE_MS = 2500;
     var SETTINGS_KEYS = {
         subtitleEnabled: 'subtitleEnabled',
         userLanguage: 'userLanguage',
@@ -665,6 +668,198 @@
             display.style.setProperty('--subtitle-max-width', resolved.width + 'px');
         }
         return resolved;
+    }
+
+    function getSubtitleScrollNode(target) {
+        if (target && typeof target.scrollTop === 'number' &&
+            typeof target.scrollHeight === 'number') {
+            return target;
+        }
+        if (target && target.scroll) return target.scroll;
+        return query(document, '#subtitle-scroll');
+    }
+
+    function getSubtitleScrollMax(scroll) {
+        if (!scroll) return 0;
+        return Math.max(0, (scroll.scrollHeight || 0) - (scroll.clientHeight || 0));
+    }
+
+    function isSubtitleScrollScrollable(scroll) {
+        return getSubtitleScrollMax(scroll) > 1;
+    }
+
+    function updateSubtitleScrollState(target) {
+        var scroll = getSubtitleScrollNode(target);
+        if (!scroll || !scroll.dataset) return false;
+        var scrollable = isSubtitleScrollScrollable(scroll);
+        scroll.dataset.subtitleScrollable = scrollable ? 'true' : 'false';
+        return scrollable;
+    }
+
+    function cancelSubtitleAutoScroll(target) {
+        var scroll = getSubtitleScrollNode(target);
+        var state = scroll && scroll._nekoSubtitleAutoScroll;
+        if (!state) return;
+        if (state.timerId !== null && typeof state.timerId !== 'undefined') {
+            clearTimeout(state.timerId);
+        }
+        if (state.frameId !== null && typeof state.frameId !== 'undefined') {
+            cancelAnimationFrame(state.frameId);
+        }
+        scroll._nekoSubtitleAutoScroll = null;
+    }
+
+    function scrollSubtitleToBottom(target) {
+        var scroll = getSubtitleScrollNode(target);
+        if (!scroll) return 0;
+        cancelSubtitleAutoScroll(scroll);
+        updateSubtitleScrollState(scroll);
+        scroll.scrollTop = getSubtitleScrollMax(scroll);
+        return scroll.scrollTop;
+    }
+
+    function requestSubtitleAutoScroll(target, options) {
+        var scroll = getSubtitleScrollNode(target);
+        if (!scroll) return 0;
+        if (!updateSubtitleScrollState(scroll)) {
+            cancelSubtitleAutoScroll(scroll);
+            scroll.scrollTop = 0;
+            return 0;
+        }
+
+        var lastUserScrollAt = Number(scroll._nekoSubtitleLastUserScrollAt) || 0;
+        if (!(options && options.force) &&
+            lastUserScrollAt &&
+            Date.now() - lastUserScrollAt < AUTO_SCROLL_USER_OVERRIDE_MS) {
+            return scroll.scrollTop;
+        }
+
+        var maxScrollTop = getSubtitleScrollMax(scroll);
+        if (scroll.scrollTop >= maxScrollTop - 1) {
+            return scroll.scrollTop;
+        }
+
+        var activeState = scroll._nekoSubtitleAutoScroll;
+        var speed = Math.max(1, Number(options && options.speedPixelsPerSecond) || AUTO_SCROLL_SPEED_PX_PER_SECOND);
+        if (activeState) {
+            activeState.speed = speed;
+            return scroll.scrollTop;
+        }
+
+        var delayMs = Math.max(0, Number(options && options.delayMs));
+        if (!Number.isFinite(delayMs)) {
+            delayMs = AUTO_SCROLL_DELAY_MS;
+        }
+
+        var state = {
+            frameId: null,
+            timerId: null,
+            lastTimestamp: 0,
+            speed: speed
+        };
+        scroll._nekoSubtitleAutoScroll = state;
+
+        function step(timestamp) {
+            if (scroll._nekoSubtitleAutoScroll !== state) return;
+            if (!updateSubtitleScrollState(scroll)) {
+                cancelSubtitleAutoScroll(scroll);
+                return;
+            }
+            var targetTop = getSubtitleScrollMax(scroll);
+            if (scroll.scrollTop >= targetTop - 1) {
+                scroll.scrollTop = targetTop;
+                cancelSubtitleAutoScroll(scroll);
+                return;
+            }
+            if (!state.lastTimestamp) {
+                state.lastTimestamp = timestamp || 0;
+                state.frameId = requestAnimationFrame(step);
+                return;
+            }
+            var elapsedMs = Math.max(0, Math.min(120, (timestamp || 0) - state.lastTimestamp));
+            state.lastTimestamp = timestamp || state.lastTimestamp;
+            var distance = state.speed * elapsedMs / 1000;
+            scroll.scrollTop = Math.min(targetTop, scroll.scrollTop + distance);
+            state.frameId = requestAnimationFrame(step);
+        }
+
+        state.timerId = setTimeout(function() {
+            if (scroll._nekoSubtitleAutoScroll !== state) return;
+            state.timerId = null;
+            state.frameId = requestAnimationFrame(step);
+        }, delayMs);
+
+        return scroll.scrollTop;
+    }
+
+    function getWheelScrollDelta(e, scroll) {
+        if (!e) return 0;
+        var delta = Number(e.deltaY) || 0;
+        if (!delta && e.shiftKey) {
+            delta = Number(e.deltaX) || 0;
+        }
+        if (!delta) return 0;
+        if (e.deltaMode === 1) {
+            delta *= 32;
+        } else if (e.deltaMode === 2) {
+            delta *= Math.max(1, scroll && scroll.clientHeight ? scroll.clientHeight : 1);
+        }
+        return delta;
+    }
+
+    function attachSubtitleScroll(refs) {
+        var scroll = refs && refs.scroll;
+        if (!scroll) return function() {};
+        var mutationObserver = null;
+        var resizeObserver = null;
+        var scheduleUpdateId = null;
+
+        function scheduleScrollStateUpdate() {
+            if (scheduleUpdateId !== null) return;
+            scheduleUpdateId = setTimeout(function() {
+                scheduleUpdateId = null;
+                updateSubtitleScrollState(scroll);
+            }, 0);
+        }
+
+        var onWheel = function(e) {
+            if (!updateSubtitleScrollState(scroll)) return;
+            var delta = getWheelScrollDelta(e, scroll);
+            if (!delta) return;
+            var maxScrollTop = getSubtitleScrollMax(scroll);
+            var nextScrollTop = Math.max(0, Math.min(maxScrollTop, scroll.scrollTop + delta));
+            if (Math.abs(nextScrollTop - scroll.scrollTop) < 1) return;
+            cancelSubtitleAutoScroll(scroll);
+            scroll._nekoSubtitleLastUserScrollAt = Date.now();
+            scroll.scrollTop = nextScrollTop;
+            if (e.preventDefault) e.preventDefault();
+            if (e.stopPropagation) e.stopPropagation();
+        };
+
+        updateSubtitleScrollState(scroll);
+        if (window.MutationObserver) {
+            mutationObserver = new MutationObserver(scheduleScrollStateUpdate);
+            mutationObserver.observe(scroll, {
+                childList: true,
+                characterData: true,
+                subtree: true
+            });
+        }
+        if (window.ResizeObserver) {
+            resizeObserver = new ResizeObserver(scheduleScrollStateUpdate);
+            resizeObserver.observe(scroll);
+        }
+        scroll.addEventListener('wheel', onWheel, { passive: false });
+        return function() {
+            if (scheduleUpdateId !== null) {
+                clearTimeout(scheduleUpdateId);
+                scheduleUpdateId = null;
+            }
+            cancelSubtitleAutoScroll(scroll);
+            if (mutationObserver) mutationObserver.disconnect();
+            if (resizeObserver) resizeObserver.disconnect();
+            scroll.removeEventListener('wheel', onWheel, { passive: false });
+        };
     }
 
     function applySettingsToUi(refs, state, options) {
@@ -1576,6 +1771,7 @@
 
         applyState(state, { changedKeys: [], source: 'init' });
         applyPanelState(panelState, 'subtitle-ui-init');
+        cleanupFns.push(attachSubtitleScroll(refs));
         cleanupFns.push(subscribeSettings(applyState, { immediate: false }));
 
         function setPanelLocked(nextLocked, source) {
@@ -1912,6 +2108,9 @@
         measureSubtitleLayout: measureSubtitleLayout,
         getPanelBounds: getPanelBounds,
         applySubtitlePanelBounds: applySubtitlePanelBounds,
+        scrollSubtitleToBottom: scrollSubtitleToBottom,
+        requestSubtitleAutoScroll: requestSubtitleAutoScroll,
+        cancelSubtitleAutoScroll: cancelSubtitleAutoScroll,
         initSubtitleUI: initSubtitleUI
     };
 })();

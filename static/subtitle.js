@@ -281,10 +281,17 @@ function hideSubtitle() {
  * 长文本自动缩小字号以保持在可视范围内。
  */
 var _subtitleFontResizeTimer = null;
+function requestSubtitleContentAutoScroll() {
+    if (SubtitleShared && typeof SubtitleShared.requestSubtitleAutoScroll === 'function') {
+        SubtitleShared.requestSubtitleAutoScroll(document.getElementById('subtitle-scroll'));
+    }
+}
+
 function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
+    requestSubtitleContentAutoScroll();
     syncSubtitleRenderState('subtitle-text-write');
 
     // 自适应字号：防抖测量，避免流式高频触发
@@ -318,6 +325,7 @@ function writeSubtitleText(text) {
             })
             : { fontSize: 17 };
         subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+        requestSubtitleContentAutoScroll();
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }

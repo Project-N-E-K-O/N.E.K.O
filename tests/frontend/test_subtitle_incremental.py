@@ -553,6 +553,10 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
                 width: 360,
                 height: 80,
             }));
+            document.getElementById('subtitle-text').textContent = Array.from(
+                { length: 20 },
+                (_, index) => `line ${index + 1}`
+            ).join('\\n');
         }
         """
     )
@@ -567,7 +571,7 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
             const display = document.getElementById('subtitle-display');
             const text = document.getElementById('subtitle-text');
             const displayRect = display.getBoundingClientRect();
-            const textRect = text.getBoundingClientRect();
+            const textRect = text.getClientRects()[0] || text.getBoundingClientRect();
             const transparentPoint = {
                 x: Math.round(displayRect.left + 18),
                 y: Math.round(displayRect.top + 18),
@@ -4579,7 +4583,7 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     assert result["externalSettingsOpened"] == 1
     assert result["panelHidden"] is True
     assert result["displayOverflow"] == "visible"
-    assert result["scrollOverflow"] == "hidden"
+    assert result["scrollOverflow"] == "auto"
     assert result["scrollPointerEvents"] == "none"
     assert result["textPointerEvents"] == "auto"
     assert result["scrollRight"] <= result["settingsBtnLeft"] - 6
@@ -4592,6 +4596,371 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     assert result["scrollHeight"] <= 86
     assert result["scrollThumbBackground"] == "rgba(0, 0, 0, 0)"
     assert result["textMarginRight"] == "0px"
+
+
+@pytest.mark.frontend
+def test_subtitle_scroll_box_accepts_mouse_wheel_for_long_translation(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 120})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/subtitle-scroll-wheel-harness",
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            shared.initSubtitleUI({ host: 'window' });
+            shared.applySubtitlePanelBounds(document.getElementById('subtitle-display'), {
+                width: 240,
+                height: 60,
+            }, { host: 'window' });
+            const scroll = document.getElementById('subtitle-scroll');
+            const text = document.getElementById('subtitle-text');
+            text.textContent = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\\n');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            scroll.scrollTop = 0;
+            const scrollStyle = getComputedStyle(scroll);
+            const textStyle = getComputedStyle(text);
+            const wheelDown = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 80,
+            });
+            const wheelDownResult = text.dispatchEvent(wheelDown);
+            const afterDown = scroll.scrollTop;
+            const wheelUp = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: -40,
+            });
+            const wheelUpResult = text.dispatchEvent(wheelUp);
+            const afterUp = scroll.scrollTop;
+
+            scroll.scrollTop = 0;
+            const wheelPastTop = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: -80,
+            });
+            const wheelPastTopResult = text.dispatchEvent(wheelPastTop);
+            const afterPastTop = scroll.scrollTop;
+
+            scroll.scrollTop = scroll.scrollHeight - scroll.clientHeight;
+            const beforePastBottom = scroll.scrollTop;
+            const wheelPastBottom = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 80,
+            });
+            const wheelPastBottomResult = text.dispatchEvent(wheelPastBottom);
+
+            return {
+                overflowY: scrollStyle.overflowY,
+                scrollPointerEvents: scrollStyle.pointerEvents,
+                textPointerEvents: textStyle.pointerEvents,
+                scrollHeight: scroll.scrollHeight,
+                clientHeight: scroll.clientHeight,
+                maxScrollTop: scroll.scrollHeight - scroll.clientHeight,
+                wheelDownResult,
+                wheelDownPrevented: wheelDown.defaultPrevented,
+                afterDown,
+                wheelUpResult,
+                wheelUpPrevented: wheelUp.defaultPrevented,
+                afterUp,
+                wheelPastTopResult,
+                wheelPastTopPrevented: wheelPastTop.defaultPrevented,
+                afterPastTop,
+                beforePastBottom,
+                wheelPastBottomResult,
+                wheelPastBottomPrevented: wheelPastBottom.defaultPrevented,
+                afterPastBottom: scroll.scrollTop,
+            };
+        }
+        """
+    )
+
+    assert result["overflowY"] == "auto"
+    assert result["scrollPointerEvents"] == "none"
+    assert result["textPointerEvents"] == "auto"
+    assert result["scrollHeight"] > result["clientHeight"]
+    assert result["maxScrollTop"] > 0
+    assert result["wheelDownResult"] is False
+    assert result["wheelDownPrevented"] is True
+    assert result["afterDown"] > 0
+    assert result["wheelUpResult"] is False
+    assert result["wheelUpPrevented"] is True
+    assert result["afterUp"] < result["afterDown"]
+    assert result["wheelPastTopResult"] is True
+    assert result["wheelPastTopPrevented"] is False
+    assert result["afterPastTop"] == 0
+    assert result["wheelPastBottomResult"] is True
+    assert result["wheelPastBottomPrevented"] is False
+    assert result["afterPastBottom"] == result["beforePastBottom"]
+
+
+@pytest.mark.frontend
+def test_subtitle_overflow_auto_scroll_is_slow_and_wheel_cancels_it(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 120})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/subtitle-auto-scroll-harness",
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const shared = window.nekoSubtitleShared;
+            shared.initSubtitleUI({ host: 'window' });
+            shared.applySubtitlePanelBounds(document.getElementById('subtitle-display'), {
+                width: 240,
+                height: 60,
+            }, { host: 'window' });
+            const scroll = document.getElementById('subtitle-scroll');
+            const text = document.getElementById('subtitle-text');
+            text.textContent = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\\n');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            const waitFrames = (count) => new Promise((resolve) => {
+                const tick = () => {
+                    count -= 1;
+                    if (count <= 0) {
+                        resolve();
+                        return;
+                    }
+                    requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+            });
+
+            scroll.scrollTop = 0;
+            const maxScrollTop = scroll.scrollHeight - scroll.clientHeight;
+            shared.requestSubtitleAutoScroll(scroll, {
+                speedPixelsPerSecond: 240,
+                delayMs: 0,
+            });
+            await waitFrames(8);
+            const afterAuto = scroll.scrollTop;
+            const wheelUp = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: -999,
+            });
+            const wheelResult = text.dispatchEvent(wheelUp);
+            const afterWheel = scroll.scrollTop;
+            shared.requestSubtitleAutoScroll(scroll, {
+                speedPixelsPerSecond: 240,
+                delayMs: 0,
+            });
+            await waitFrames(8);
+            const afterWheelWait = scroll.scrollTop;
+
+            return {
+                maxScrollTop,
+                afterAuto,
+                wheelResult,
+                wheelPrevented: wheelUp.defaultPrevented,
+                afterWheel,
+                afterWheelWait,
+                scrollableDataset: scroll.dataset.subtitleScrollable,
+            };
+        }
+        """
+    )
+
+    assert result["maxScrollTop"] > 0
+    assert 0 < result["afterAuto"] < result["maxScrollTop"]
+    assert result["wheelResult"] is False
+    assert result["wheelPrevented"] is True
+    assert result["afterWheel"] == 0
+    assert result["afterWheelWait"] == 0
+    assert result["scrollableDataset"] == "true"
+
+
+@pytest.mark.frontend
+def test_subtitle_translation_write_path_starts_overflow_auto_scroll(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 120})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-write-auto-scroll-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 240,
+                height: 60,
+            }));
+            window.waitForStorageLocationStartupBarrier = () => Promise.resolve();
+            window.fetch = async (url) => {
+                if (String(url).includes('/api/config/user_language')) {
+                    return { json: async () => ({ success: true, language: 'en' }) };
+                }
+                if (String(url).includes('/api/translate')) {
+                    return {
+                        ok: true,
+                        json: async () => ({
+                            success: true,
+                            translated_text: Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\\n'),
+                            target_lang: 'en',
+                        }),
+                    };
+                }
+                throw new Error(`Unexpected fetch: ${url}`);
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const waitFrames = (count) => new Promise((resolve) => {
+                const tick = () => {
+                    count -= 1;
+                    if (count <= 0) {
+                        resolve();
+                        return;
+                    }
+                    requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+            });
+            const scroll = document.getElementById('subtitle-scroll');
+            scroll.scrollTop = 0;
+            await window.subtitleBridge.finalizeTurnWithTranslation('A complete sentence.');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const maxScrollTop = scroll.scrollHeight - scroll.clientHeight;
+            await waitFrames(20);
+            return {
+                maxScrollTop,
+                scrollTop: scroll.scrollTop,
+                scrollableDataset: scroll.dataset.subtitleScrollable,
+                textLength: document.getElementById('subtitle-text').textContent.length,
+            };
+        }
+        """
+    )
+
+    assert result["textLength"] > 0
+    assert result["maxScrollTop"] > 0
+    assert result["scrollTop"] > 0
+    assert result["scrollTop"] < result["maxScrollTop"]
+    assert result["scrollableDataset"] == "true"
+
+
+@pytest.mark.frontend
+def test_subtitle_window_transcript_event_starts_overflow_auto_scroll(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 120})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-window-auto-scroll-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 240,
+                height: 60,
+            }));
+            window.nekoSubtitle = {
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const waitFrames = (count) => new Promise((resolve) => {
+                const tick = () => {
+                    count -= 1;
+                    if (count <= 0) {
+                        resolve();
+                        return;
+                    }
+                    requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+            });
+            const scroll = document.getElementById('subtitle-scroll');
+            scroll.scrollTop = 0;
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: {
+                    translated: true,
+                    transcript: Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\\n'),
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const maxScrollTop = scroll.scrollHeight - scroll.clientHeight;
+            await waitFrames(20);
+            return {
+                maxScrollTop,
+                scrollTop: scroll.scrollTop,
+                scrollableDataset: scroll.dataset.subtitleScrollable,
+            };
+        }
+        """
+    )
+
+    assert result["maxScrollTop"] > 0
+    assert result["scrollTop"] > 0
+    assert result["scrollTop"] < result["maxScrollTop"]
+    assert result["scrollableDataset"] == "true"
 
 
 @pytest.mark.frontend
@@ -4703,6 +5072,10 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
                 width: 360,
                 height: 80,
             }));
+            document.getElementById('subtitle-text').textContent = Array.from(
+                { length: 20 },
+                (_, index) => `line ${index + 1}`
+            ).join('\\n');
         }
         """
     )
@@ -4715,7 +5088,8 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
         async () => {
             document.dispatchEvent(new Event('DOMContentLoaded'));
             await new Promise((resolve) => setTimeout(resolve, 0));
-            const textRect = document.getElementById('subtitle-text').getBoundingClientRect();
+            const text = document.getElementById('subtitle-text');
+            const textRect = text.getClientRects()[0] || text.getBoundingClientRect();
             const textPoint = {
                 x: Math.round(textRect.left + textRect.width / 2),
                 y: Math.round(textRect.top + textRect.height / 2),
@@ -4889,7 +5263,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
     assert result["panelHidden"] is False
     assert result["overlapsVertically"] is False
     assert result["displayOverflow"] == "visible"
-    assert result["scrollOverflow"] == "hidden"
+    assert result["scrollOverflow"] == "auto"
     assert result["scrollPointerEvents"] == "none"
     assert result["textPointerEvents"] == "auto"
     assert result["scrollRight"] <= result["settingsBtnLeft"] - 6

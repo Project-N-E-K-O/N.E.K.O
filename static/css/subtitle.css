@@ -135,7 +135,8 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     width: 100%;
     min-width: 0;
     max-height: var(--subtitle-content-max-height, 120px);
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     overscroll-behavior: none;
     pointer-events: none;
     scrollbar-gutter: auto;
@@ -143,6 +144,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     scrollbar-color: transparent transparent;
     padding: 2px 0;
     text-align: center;
+    touch-action: pan-y;
 }
 
 #subtitle-scroll::-webkit-scrollbar {

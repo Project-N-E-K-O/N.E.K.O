@@ -5470,6 +5470,125 @@ describe('App', () => {
     }
   });
 
+  it('routes compact tool wheel background scrolling to the open inline history', () => {
+    const previousHistoryOpen = window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+    const originalElementsFromPoint = document.elementsFromPoint;
+    let scrollRectSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 900 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 300 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return scrollTopByElement.get(this) ?? 0;
+      },
+      set(value: number) {
+        scrollTopByElement.set(this, value);
+      },
+    });
+
+    try {
+      window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
+      const messages = Array.from({ length: 8 }, (_, index) => parseChatMessage({
+        id: `compact-history-wheel-${index}`,
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        author: index % 2 === 0 ? 'Neko' : 'You',
+        time: '10:00',
+        createdAt: index,
+        blocks: [{ type: 'text', text: `History row ${index}` }],
+        status: 'sent',
+      }));
+
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={messages}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      const fan = document.body.querySelector<HTMLDivElement>('.compact-input-tool-fan')!;
+      const fanHitRegion = fan.querySelector<HTMLElement>('.compact-input-tool-fan-hit-region')!;
+      const scroll = document.body.querySelector<HTMLDivElement>('.compact-export-history-scroll')!;
+
+      scrollRectSpy = vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue({
+        left: 20,
+        top: 20,
+        right: 420,
+        bottom: 320,
+        width: 400,
+        height: 300,
+        x: 20,
+        y: 20,
+        toJSON: () => ({}),
+      } as DOMRect);
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: () => [fanHitRegion, fan, scroll],
+      });
+
+      scroll.scrollTop = 120;
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+      act(() => {
+        fireEvent.wheel(fanHitRegion, { deltaY: 80, clientX: 160, clientY: 160 });
+      });
+
+      expect(scroll.scrollTop).toBe(200);
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+      scroll.scrollTop = 0;
+      act(() => {
+        fireEvent.wheel(fanHitRegion, { deltaY: -80, clientX: 160, clientY: 160 });
+      });
+
+      expect(scroll.scrollTop).toBe(0);
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+    } finally {
+      if (previousHistoryOpen === null) {
+        window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, previousHistoryOpen);
+      }
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
+      if (scrollTopDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollTop', scrollTopDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
+      }
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: originalElementsFromPoint || (() => []),
+      });
+      scrollRectSpy?.mockRestore();
+    }
+  });
+
   it('keeps compact tool wheel detent audio silent for an empty URL and plays every detent when configured', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
