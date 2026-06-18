@@ -64,8 +64,48 @@ class LayerService:
     def list_sessions(self) -> list[dict[str, object]]:
         return self.sessions.list_sessions()
 
+    def import_layer_source(
+        self,
+        layer_source_path: str | Path,
+        *,
+        session_id: str | None = None,
+        source: str = "see_through",
+    ) -> ProcessResult:
+        from ..core.pipeline import process_layer_source
+
+        return process_layer_source(
+            layer_source_path,
+            output_dir=self.output_dir,
+            session_id=session_id,
+            source=source,
+        )
+
     def get_session(self, session_id: str) -> ProcessResult | None:
         return self.sessions.load(session_id)
+
+    def export_cubism_handoff(self, session_id: str) -> dict[str, object]:
+        result = self.sessions.load(session_id)
+        if result is None:
+            raise FileNotFoundError(f"Session not found: {session_id}")
+        from ..core.cubism import export_cubism_handoff
+
+        return export_cubism_handoff(result)
+
+    def export_auto_rig_model(
+        self,
+        session_id: str,
+        *,
+        mesh_alpha_threshold: int = 10,
+    ) -> dict[str, object]:
+        result = self.sessions.load(session_id)
+        if result is None:
+            raise FileNotFoundError(f"Session not found: {session_id}")
+        from ..core.auto_rig import export_auto_rig_model
+
+        return export_auto_rig_model(
+            result,
+            mesh_alpha_threshold=mesh_alpha_threshold,
+        )
 
     def delete_session(self, session_id: str) -> bool:
         return self.sessions.delete(session_id)

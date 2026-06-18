@@ -15,13 +15,14 @@ from typing import Callable
 
 from PIL import Image
 
+from .assembly import Live2DAssembler, RawLayerSet
 from .constants import DEFAULT_PARTS
 from .config import OUTPUT_DIR, ensure_dirs
-from .export import LayerExporter, export_preview_image
-from .matting import AlphaRefiner, BackgroundRemover
-from .preprocess import Preprocessor
+from .exporting import LayerExporter, export_preview_image
+from .image import AlphaRefiner, BackgroundRemover, Preprocessor
+from .importing import import_layer_source
 from .session_id import validate_session_id
-from .segment import segment_image
+from .segmentation import segment_image
 from .types import LayerArtifact, ProcessResult, SegmentMethod
 
 ProgressCallback = Callable[[float, str], None]
@@ -123,10 +124,116 @@ def process_image(
             "parts": selected_parts,
         },
     )
-    Path(result.manifest_path).write_text(
-        json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    _write_manifest(result)
+    return result
+
+
+def process_layer_source(
+    layer_source: str | Path,
+    *,
+    output_dir: str | Path = OUTPUT_DIR,
+    session_id: str | None = None,
+    source: str = "see_through",
+    progress: ProgressCallback | None = None,
+) -> ProcessResult:
+    """Import external split layers and export a Live2D-ready layer session."""
+    _emit(progress, 0.05, "import_layer_source")
+    layer_set = import_layer_source(layer_source, source=source)
+    return process_layer_set(
+        layer_set,
+        output_dir=output_dir,
+        session_id=session_id,
+        progress=progress,
     )
+
+
+def process_layer_set(
+    layer_set: RawLayerSet,
+    *,
+    output_dir: str | Path = OUTPUT_DIR,
+    session_id: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> ProcessResult:
+    """Assemble an existing layer set into exported Live2D-ready assets."""
+    ensure_dirs()
+    started = time.perf_counter()
+    if session_id is None:
+        session_id = f"layer_source_{int(time.time())}"
+    session_id = validate_session_id(session_id)
+
+    base_output = Path(output_dir)
+    session_dir = (base_output / session_id).resolve()
+    if session_dir.parent != base_output.resolve():
+        raise ValueError("session_id resolves outside output_dir")
+    layers_dir = session_dir / "layers"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    layers_dir.mkdir(parents=True, exist_ok=True)
+
+    _emit(progress, 0.25, "assemble")
+    assembled = Live2DAssembler().assemble(layer_set)
+    warnings = list(layer_set.warnings)
+    if not assembled:
+        raise ValueError("Layer source did not produce any layers")
+
+    seen_names: set[str] = set()
+    export_layers: dict[str, Image.Image] = {}
+    for layer in assembled:
+        export_layers[_unique_layer_name(layer.part_name, seen=seen_names)] = layer.image
+
+    _emit(progress, 0.65, "export_layers")
+    exporter = LayerExporter(output_dir=session_dir)
+    exporter.export_pngs(export_layers, session_name="layers")
+    zip_path = exporter.export_zip(export_layers, zip_name="live2d_layers.zip")
+
+    _emit(progress, 0.85, "export_preview")
+    preview = export_preview_image(export_layers, max_dim=1024)
+    preview_path = session_dir / "preview.png"
+    preview.save(preview_path, format="PNG")
+
+    exported_names = list(export_layers.keys())
+    artifacts = [
+        LayerArtifact(
+            name=name,
+            path=str(layers_dir / f"{LayerExporter._sanitize_filename(name)}.png"),
+            width=layer.image.width,
+            height=layer.image.height,
+            area=layer.area,
+        )
+        for name, layer in zip(exported_names, assembled)
+    ]
+    elapsed = time.perf_counter() - started
+    result = ProcessResult(
+        session_id=session_id,
+        status="succeeded",
+        message=f"Imported and assembled {len(artifacts)} layer(s)",
+        output_dir=str(session_dir),
+        preview_path=str(preview_path),
+        zip_path=str(zip_path),
+        manifest_path=str(session_dir / "manifest.json"),
+        layers=artifacts,
+        warnings=warnings,
+        metrics={
+            "duration_seconds": round(elapsed, 3),
+            "method": "layer_source",
+            "source": layer_set.source,
+            "source_path": layer_set.source_path,
+            "canvas_size": list(layer_set.canvas_size or (0, 0)),
+            "assembly": [
+                {
+                    "source_name": layer.source_name,
+                    "part_name": layer.part_name,
+                    "z_index": layer.z_index,
+                    "bbox": list(layer.bbox),
+                    "area": layer.area,
+                    "source": layer.source,
+                    "confidence": layer.confidence,
+                }
+                for layer in assembled
+            ],
+        },
+    )
+    _emit(progress, 1.0, "done")
+    _write_manifest(result)
     return result
 
 
@@ -141,6 +248,26 @@ def _layer_area(image: Image.Image) -> int:
         return image.width * image.height
     alpha = image.getchannel("A")
     return sum(1 for value in alpha.getdata() if value > 10)
+
+
+def _unique_layer_name(name: str, *, seen: set[str]) -> str:
+    clean_name = name.strip() or "Layer"
+    if clean_name not in seen:
+        seen.add(clean_name)
+        return clean_name
+    index = 2
+    while f"{clean_name}_{index}" in seen:
+        index += 1
+    unique = f"{clean_name}_{index}"
+    seen.add(unique)
+    return unique
+
+
+def _write_manifest(result: ProcessResult) -> None:
+    Path(result.manifest_path).write_text(
+        json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _emit(progress: ProgressCallback | None, value: float, stage: str) -> None:

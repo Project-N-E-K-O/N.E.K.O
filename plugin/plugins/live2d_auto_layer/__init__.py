@@ -45,6 +45,8 @@ class Live2dAutoLayerPlugin(NekoPluginBase):
     def get_dashboard_ui_context(self):
         report = self.environment.check()
         sessions = self.layers.list_sessions()
+        if sessions:
+            sessions[0] = self.layers.with_inline_artifacts(sessions[0])
         return {
             "environment": report.to_dict(),
             "sessions": sessions,

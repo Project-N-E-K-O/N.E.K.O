@@ -7,12 +7,14 @@ __all__ = [
     "ProcessResult",
     "SegmentMethod",
     "process_image",
+    "process_layer_set",
+    "process_layer_source",
 ]
 
 
 def __getattr__(name: str):
-    if name == "process_image":
-        from .pipeline import process_image
+    if name in {"process_image", "process_layer_set", "process_layer_source"}:
+        from . import pipeline
 
-        return process_image
+        return getattr(pipeline, name)
     raise AttributeError(name)

@@ -147,6 +147,61 @@ class ProcessRouter(PluginRouter):
         return Ok(self.main_plugin.layers.result_to_ui_dict(result))
 
     @ui.action(
+        label=tr("actions.importLayerSource.label", default="Import layers"),
+        tone="success",
+        group="process",
+        order=25,
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="live2d_import_layer_source",
+        name=tr("entries.importLayerSource.name", default="Import external layer source"),
+        description=tr(
+            "entries.importLayerSource.description",
+            default="Import external see-through output layers from a local directory or PSD and export Live2D-ready PNG layers, preview, zip, and manifest.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "layer_source_path": {
+                    "type": "string",
+                    "description": "Local see-through output directory or PSD path",
+                },
+                "session_id": {"type": "string", "description": "Optional output session id"},
+                "source": {
+                    "type": "string",
+                    "default": "see_through",
+                    "description": "External layer source label",
+                },
+            },
+            "required": ["layer_source_path"],
+        },
+        timeout=300,
+        llm_result_fields=["message", "manifest_path", "preview_path", "zip_path", "warnings"],
+    )
+    async def import_layer_source(
+        self,
+        layer_source_path: str = "",
+        session_id: str = "",
+        source: str = "see_through",
+        **_,
+    ):
+        clean_path = str(layer_source_path or "").strip()
+        if not clean_path:
+            return Err(SdkError("layer_source_path is required"))
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.import_layer_source,
+                clean_path,
+                session_id=session_id.strip() or None,
+                source=str(source or "see_through").strip() or "see_through",
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_import_layer_source failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
+
+    @ui.action(
         label=tr("actions.exportSession.label", default="Export ZIP"),
         tone="primary",
         group="process",
@@ -178,6 +233,94 @@ class ProcessRouter(PluginRouter):
             "zip_path": result.zip_path,
             "filename": "live2d_layers.zip",
         })
+
+    @ui.action(
+        label=tr("actions.exportCubismHandoff.label", default="Export Cubism handoff"),
+        tone="primary",
+        group="process",
+        order=35,
+        refresh_context=False,
+    )
+    @plugin_entry(
+        id="live2d_export_cubism_handoff",
+        name=tr("entries.exportCubismHandoff.name", default="Export Cubism Editor handoff package"),
+        description=tr(
+            "entries.exportCubismHandoff.description",
+            default="Generate a Cubism Editor handoff ZIP with ordered PNG layers, layer CSV, metadata, and README. This is not a model3/moc3 model package.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+            },
+            "required": ["session_id"],
+        },
+        llm_result_fields=["session_id", "cubism_handoff_zip_path", "message", "warning"],
+    )
+    async def export_cubism_handoff(self, session_id: str = "", **_):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.export_cubism_handoff,
+                clean_id,
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_export_cubism_handoff failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(result)
+
+    @ui.action(
+        label=tr("actions.exportAutoRigModel.label", default="Export AutoRig model"),
+        tone="success",
+        group="process",
+        order=36,
+        refresh_context=False,
+    )
+    @plugin_entry(
+        id="live2d_export_auto_rig_model",
+        name=tr("entries.exportAutoRigModel.name", default="Export NEKO auto-rig model package"),
+        description=tr(
+            "entries.exportAutoRigModel.description",
+            default="Generate a fully automatic NEKO auto-rig ZIP with model JSON, layer textures, generated meshes, parameters, and bindings. This is not a Cubism model3/moc3 package.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "mesh_alpha_threshold": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255,
+                    "default": 10,
+                    "description": "Alpha threshold used only for AutoRig mesh/bbox generation. Textures keep their original alpha.",
+                },
+            },
+            "required": ["session_id"],
+        },
+        llm_result_fields=["session_id", "auto_rig_zip_path", "auto_rig_model_path", "mesh_alpha_threshold", "quality_summary", "message", "warning"],
+    )
+    async def export_auto_rig_model(
+        self,
+        session_id: str = "",
+        mesh_alpha_threshold: int = 10,
+        **_,
+    ):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        threshold = _clean_alpha_threshold(mesh_alpha_threshold)
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.export_auto_rig_model,
+                clean_id,
+                mesh_alpha_threshold=threshold,
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_export_auto_rig_model failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(result)
 
     @ui.action(
         label=tr("actions.listSessions.label", default="List sessions"),
@@ -268,3 +411,11 @@ def _clean_parts(parts: list[str] | None) -> list[str]:
         if str(part).strip() in _PARTS
     ]
     return cleaned or list(DEFAULT_PARTS)
+
+
+def _clean_alpha_threshold(value: object) -> int:
+    try:
+        threshold = int(value)
+    except (TypeError, ValueError):
+        threshold = 10
+    return max(0, min(255, threshold))

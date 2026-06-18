@@ -70,6 +70,13 @@ type DashboardState = {
   output_dir?: string
 }
 
+type AutoRigQualitySummary = {
+  visual_status?: string
+  rig_geometry_status?: string
+  high_risk_layer_count?: number
+  medium_risk_layer_count?: number
+}
+
 const partOptions = [
   { value: "Face_Skin", label: "Face_Skin" },
   { value: "Hair", label: "Hair" },
@@ -85,10 +92,12 @@ const partOptions = [
 const defaultForm = {
   input_path: "",
   input_data_url: "",
+  layer_source_path: "",
   session_id: "",
   method: "anime_face",
   parts: ["Face_Skin", "Eye_L", "Eye_R", "Mouth", "Eyebrow_L", "Eyebrow_R", "Hair", "Body"],
   feather_radius: 2,
+  mesh_alpha_threshold: 10,
   gpt_api_key: "",
 }
 
@@ -113,6 +122,15 @@ function artifactUrl(pluginId: string, path: string | undefined): string {
   return `/plugin/${encodeURIComponent(pluginId)}/hosted-ui/artifact?path=${encodeURIComponent(path)}`
 }
 
+function qualityStatusLabel(t: (key: string) => string, value: string | undefined): string {
+  const status = String(value || "")
+  if (status === "preserved") return t("panel.quality.status.preserved")
+  if (status === "needs_review") return t("panel.quality.status.needsReview")
+  if (status === "watch") return t("panel.quality.status.watch")
+  if (status === "ok") return t("panel.quality.status.ok")
+  return status || "-"
+}
+
 export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const pluginId = String(props.plugin?.id || props.plugin?.plugin_id || "live2d_auto_layer")
@@ -129,6 +147,11 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
   const [error, setError] = props.useLocalState("error", "")
   const [checkingEnv, setCheckingEnv] = props.useLocalState("checkingEnv", false)
   const [autoEnvCheckRequested, setAutoEnvCheckRequested] = props.useLocalState("autoEnvCheckRequested", false)
+  const [workspaceMode, setWorkspaceMode] = props.useLocalState("workspaceMode", "extract")
+  const [sourceMode, setSourceMode] = props.useLocalState("sourceMode", "split")
+  const [cubismHandoffPath, setCubismHandoffPath] = props.useLocalState("cubismHandoffPath", "")
+  const [autoRigPath, setAutoRigPath] = props.useLocalState("autoRigPath", "")
+  const [autoRigQuality, setAutoRigQuality] = props.useLocalState<AutoRigQualitySummary | null>("autoRigQuality", null)
 
   useEffect(() => {
     form.setField("method", String(safeState.default_method || "anime_face"))
@@ -178,6 +201,9 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
+      setCubismHandoffPath("")
+      setAutoRigPath("")
+      setAutoRigQuality(null)
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.splitDone"))
     } catch (exc: any) {
@@ -218,8 +244,48 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
+      setCubismHandoffPath("")
+      setAutoRigPath("")
+      setAutoRigQuality(null)
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.resegmentDone"))
+    } catch (exc: any) {
+      const message = String(exc?.message || exc)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+      setProgressText("")
+    }
+  }
+
+  async function runImportLayerSource() {
+    const layerSourcePath = form.values.layer_source_path.trim()
+    if (!layerSourcePath) {
+      toast.error(t("panel.errors.layerSourceRequired"))
+      return
+    }
+    setBusy(true)
+    setProgressText(t("panel.messages.importingLayers"))
+    setError("")
+    try {
+      const envelope = await props.api.call(
+        "live2d_import_layer_source",
+        {
+          layer_source_path: layerSourcePath,
+          session_id: form.values.session_id.trim(),
+          source: "see_through",
+        },
+        { timeoutMs: 300000 },
+      )
+      const result = unwrapActionResult(envelope) as ProcessResult
+      setLastResult(result)
+      setSelectedLayer(null)
+      setCubismHandoffPath("")
+      setAutoRigPath("")
+      setAutoRigQuality(null)
+      await props.api.refresh()
+      toast.success(result.message || t("panel.messages.importDone"))
     } catch (exc: any) {
       const message = String(exc?.message || exc)
       setError(message)
@@ -266,6 +332,9 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       if (lastResult?.session_id === sessionId) {
         setLastResult(null)
         setSelectedLayer(null)
+        setCubismHandoffPath("")
+        setAutoRigPath("")
+        setAutoRigQuality(null)
       }
       await props.api.refresh()
       toast.success(t("panel.messages.sessionDeleted"))
@@ -285,6 +354,75 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
+      setCubismHandoffPath("")
+      setAutoRigPath("")
+      setAutoRigQuality(null)
+    } catch (exc: any) {
+      const message = String(exc?.message || exc)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+      setProgressText("")
+    }
+  }
+
+  async function runExportAutoRigModel() {
+    const sessionId = String(result?.session_id || "").trim()
+    if (!sessionId) {
+      toast.error(t("panel.errors.sessionRequired"))
+      return
+    }
+    setBusy(true)
+    setProgressText(t("panel.messages.exportingAutoRig"))
+    setError("")
+    try {
+      const envelope = await props.api.call(
+        "live2d_export_auto_rig_model",
+        {
+          session_id: sessionId,
+          mesh_alpha_threshold: Number(form.values.mesh_alpha_threshold) || 0,
+        },
+        { timeoutMs: 120000 },
+      )
+      const data = unwrapActionResult(envelope)
+      const path = String(data.auto_rig_zip_path || "")
+      setAutoRigPath(path)
+      setAutoRigQuality(
+        data.quality_summary && typeof data.quality_summary === "object"
+          ? data.quality_summary as AutoRigQualitySummary
+          : null,
+      )
+      toast.success(String(data.message || t("panel.messages.autoRigExportDone")))
+    } catch (exc: any) {
+      const message = String(exc?.message || exc)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+      setProgressText("")
+    }
+  }
+
+  async function runExportCubismHandoff() {
+    const sessionId = String(result?.session_id || "").trim()
+    if (!sessionId) {
+      toast.error(t("panel.errors.sessionRequired"))
+      return
+    }
+    setBusy(true)
+    setProgressText(t("panel.messages.exportingCubism"))
+    setError("")
+    try {
+      const envelope = await props.api.call(
+        "live2d_export_cubism_handoff",
+        { session_id: sessionId },
+        { timeoutMs: 120000 },
+      )
+      const data = unwrapActionResult(envelope)
+      const path = String(data.cubism_handoff_zip_path || "")
+      setCubismHandoffPath(path)
+      toast.success(String(data.message || t("panel.messages.cubismExportDone")))
     } catch (exc: any) {
       const message = String(exc?.message || exc)
       setError(message)
@@ -311,6 +449,15 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
   const previewSrc = selectedLayer?.preview_data_url || result?.preview_data_url || ""
   const sessionCount = String(safeState.session_count || sessions.length)
   const deviceLabel = devices.cuda ? "CUDA" : devices.mps ? "MPS" : "CPU"
+  const isExtractWorkspace = workspaceMode === "extract"
+  const isAutoRigWorkspace = workspaceMode === "auto_rig"
+  const isCubismWorkspace = workspaceMode === "cubism"
+  const isImportMode = sourceMode === "import"
+  const workspaceTitle = isAutoRigWorkspace
+    ? t("panel.autoRig.title")
+    : isCubismWorkspace
+      ? t("panel.cubism.title")
+      : t("panel.process.title")
 
   useEffect(() => {
     if (environmentKnown || autoEnvCheckRequested || checkingEnv) return
@@ -345,75 +492,188 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
         {busy ? <Progress label={progressText || t("panel.messages.running")} indeterminate /> : null}
       </div>
 
+      <SegmentedControl
+        className="lal-workspace-tabs"
+        value={workspaceMode}
+        options={[
+          { value: "extract", label: t("panel.workspaces.extract") },
+          { value: "auto_rig", label: t("panel.workspaces.autoRig") },
+          { value: "cubism", label: t("panel.workspaces.cubism") },
+        ]}
+        onChange={(value) => setWorkspaceMode(String(value))}
+      />
+
       <div className="lal-workbench">
-        <Card className="lal-input-panel" title={t("panel.process.title")}>
+        <Card className="lal-input-panel" title={workspaceTitle}>
           <Stack className="lal-control-stack" gap={8}>
-            <Field className="lal-field" label={t("panel.fields.upload")} help={t("panel.help.upload")}>
-              <ImageUpload
-                className="lal-upload"
-                value={form.values.input_data_url}
-                label={t("panel.fields.upload")}
-                placeholder={t("panel.placeholders.upload")}
-                onChange={(value) => {
-                  form.setField("input_data_url", value)
-                  form.setField("input_path", "")
-                }}
-              />
-            </Field>
+            {isExtractWorkspace ? (
+              <>
+                <Field className="lal-field" label={t("panel.fields.sourceMode")}>
+                  <SegmentedControl
+                    className="lal-method-control"
+                    value={sourceMode}
+                    options={[
+                      { value: "split", label: t("panel.modes.split") },
+                      { value: "import", label: t("panel.modes.import") },
+                    ]}
+                    onChange={(value) => setSourceMode(String(value))}
+                  />
+                </Field>
 
-            <Field className="lal-field" label={t("panel.fields.inputPath")} help={t("panel.help.inputPath")}>
-              <Input
-                value={form.values.input_path}
-                placeholder="/path/to/character.png"
-                onChange={(value) => {
-                  form.setField("input_path", value)
-                  if (value.trim()) form.setField("input_data_url", "")
-                }}
-              />
-            </Field>
+                {isImportMode ? (
+                  <>
+                    <Field className="lal-field" label={t("panel.fields.layerSourcePath")} help={t("panel.help.layerSourcePath")}>
+                      <Input
+                        value={form.values.layer_source_path}
+                        placeholder="/path/to/see-through/output-or.psd"
+                        onChange={(value) => form.setField("layer_source_path", value)}
+                      />
+                    </Field>
+                    <Field className="lal-field" label={t("panel.fields.sessionId")}>
+                      <Input value={form.values.session_id} placeholder="optional-session-id" onChange={(value) => form.setField("session_id", value)} />
+                    </Field>
+                  </>
+                ) : (
+                  <>
+                    <Field className="lal-field" label={t("panel.fields.upload")} help={t("panel.help.upload")}>
+                      <ImageUpload
+                        className="lal-upload"
+                        value={form.values.input_data_url}
+                        label={t("panel.fields.upload")}
+                        placeholder={t("panel.placeholders.upload")}
+                        onChange={(value) => {
+                          form.setField("input_data_url", value)
+                          form.setField("input_path", "")
+                        }}
+                      />
+                    </Field>
 
-            <div className="lal-panel-section">
-              <div className="lal-section-title">{t("panel.sections.parts")}</div>
-              <CheckboxGroup
-                className="lal-parts-grid"
-                value={form.values.parts}
-                options={partOptions}
-                onChange={(value) => form.setField("parts", value)}
-              />
-            </div>
+                    <Field className="lal-field" label={t("panel.fields.inputPath")} help={t("panel.help.inputPath")}>
+                      <Input
+                        value={form.values.input_path}
+                        placeholder="/path/to/character.png"
+                        onChange={(value) => {
+                          form.setField("input_path", value)
+                          if (value.trim()) form.setField("input_data_url", "")
+                        }}
+                      />
+                    </Field>
 
-            <Accordion id="advanced" title={t("panel.sections.advanced")} open={false}>
-              <Field className="lal-field" label={t("panel.fields.method")}>
-                <SegmentedControl
-                  className="lal-method-control"
-                  value={form.values.method}
-                  options={[
-                    { value: "anime_face", label: t("panel.methods.animeFace") },
-                    { value: "grounded_sam", label: t("panel.methods.groundedSam") },
-                    { value: "color", label: t("panel.methods.color") },
+                    <div className="lal-panel-section">
+                      <div className="lal-section-title">{t("panel.sections.parts")}</div>
+                      <CheckboxGroup
+                        className="lal-parts-grid"
+                        value={form.values.parts}
+                        options={partOptions}
+                        onChange={(value) => form.setField("parts", value)}
+                      />
+                    </div>
+
+                    <Accordion id="advanced" title={t("panel.sections.advanced")} open={false}>
+                      <Field className="lal-field" label={t("panel.fields.method")}>
+                        <SegmentedControl
+                          className="lal-method-control"
+                          value={form.values.method}
+                          options={[
+                            { value: "anime_face", label: t("panel.methods.animeFace") },
+                            { value: "grounded_sam", label: t("panel.methods.groundedSam") },
+                            { value: "color", label: t("panel.methods.color") },
+                          ]}
+                          onChange={(value) => form.setField("method", String(value))}
+                        />
+                      </Field>
+                      <Field className="lal-field" label={t("panel.fields.feather")}>
+                        <Slider value={Number(form.values.feather_radius)} min={0} max={8} step={1} onChange={(value) => form.setField("feather_radius", value)} />
+                      </Field>
+                      <Field className="lal-field" label={t("panel.fields.gptKey")} help={t("panel.help.gptKey")}>
+                        <PasswordInput value={form.values.gpt_api_key} placeholder="optional" onChange={(value) => form.setField("gpt_api_key", value)} />
+                      </Field>
+                      <Field className="lal-field" label={t("panel.fields.sessionId")}>
+                        <Input value={form.values.session_id} placeholder="optional-session-id" onChange={(value) => form.setField("session_id", value)} />
+                      </Field>
+                    </Accordion>
+                  </>
+                )}
+
+                <ButtonGroup className="lal-run-actions">
+                  {isImportMode ? (
+                    <Button tone="success" disabled={busy} onClick={runImportLayerSource}>
+                      {busy ? t("panel.actions.running") : t("panel.actions.importLayers")}
+                    </Button>
+                  ) : (
+                    <>
+                      <Button tone="success" disabled={busy} onClick={runSplit}>
+                        {busy ? t("panel.actions.running") : t("panel.actions.split")}
+                      </Button>
+                      <Button tone="primary" disabled={busy || !result?.session_id} onClick={runResegment}>
+                        {t("panel.actions.resegment")}
+                      </Button>
+                    </>
+                  )}
+                </ButtonGroup>
+              </>
+            ) : isAutoRigWorkspace ? (
+              <>
+                <KeyValue
+                  items={[
+                    { key: "session", label: t("panel.result.session"), value: result?.session_id || "-" },
+                    { key: "layers", label: t("panel.sessions.layers"), value: String(layers.length) },
                   ]}
-                  onChange={(value) => form.setField("method", String(value))}
                 />
-              </Field>
-              <Field className="lal-field" label={t("panel.fields.feather")}>
-                <Slider value={Number(form.values.feather_radius)} min={0} max={8} step={1} onChange={(value) => form.setField("feather_radius", value)} />
-              </Field>
-              <Field className="lal-field" label={t("panel.fields.gptKey")} help={t("panel.help.gptKey")}>
-                <PasswordInput value={form.values.gpt_api_key} placeholder="optional" onChange={(value) => form.setField("gpt_api_key", value)} />
-              </Field>
-              <Field className="lal-field" label={t("panel.fields.sessionId")}>
-                <Input value={form.values.session_id} placeholder="optional-session-id" onChange={(value) => form.setField("session_id", value)} />
-              </Field>
-            </Accordion>
-
-            <ButtonGroup className="lal-run-actions">
-              <Button tone="success" disabled={busy} onClick={runSplit}>
-                {busy ? t("panel.actions.running") : t("panel.actions.split")}
-              </Button>
-              <Button tone="primary" disabled={busy || !result?.session_id} onClick={runResegment}>
-                {t("panel.actions.resegment")}
-              </Button>
-            </ButtonGroup>
+                <Field className="lal-field" label={t("panel.fields.meshAlphaThreshold")} help={t("panel.help.meshAlphaThreshold")}>
+                  <Slider
+                    value={Number(form.values.mesh_alpha_threshold)}
+                    min={0}
+                    max={64}
+                    step={1}
+                    onChange={(value) => form.setField("mesh_alpha_threshold", value)}
+                  />
+                </Field>
+                {autoRigQuality ? (
+                  <KeyValue
+                    items={[
+                      { key: "visual", label: t("panel.quality.visual"), value: qualityStatusLabel(t, autoRigQuality.visual_status) },
+                      { key: "rig", label: t("panel.quality.rigGeometry"), value: qualityStatusLabel(t, autoRigQuality.rig_geometry_status) },
+                      { key: "high", label: t("panel.quality.highRiskLayers"), value: String(autoRigQuality.high_risk_layer_count || 0) },
+                      { key: "medium", label: t("panel.quality.mediumRiskLayers"), value: String(autoRigQuality.medium_risk_layer_count || 0) },
+                    ]}
+                  />
+                ) : null}
+                <ButtonGroup className="lal-run-actions">
+                  <Button tone="success" disabled={busy || !result?.session_id} onClick={runExportAutoRigModel}>
+                    {t("panel.actions.exportAutoRig")}
+                  </Button>
+                  <FileDownload
+                    href={artifactUrl(pluginId, autoRigPath)}
+                    path={autoRigPath || ""}
+                    filename="auto_rig_model.zip"
+                    label={t("panel.actions.downloadAutoRig")}
+                    copiedLabel={t("panel.messages.pathCopied")}
+                  />
+                </ButtonGroup>
+              </>
+            ) : (
+              <>
+                <KeyValue
+                  items={[
+                    { key: "session", label: t("panel.result.session"), value: result?.session_id || "-" },
+                    { key: "layers", label: t("panel.sessions.layers"), value: String(layers.length) },
+                  ]}
+                />
+                <ButtonGroup className="lal-run-actions">
+                  <Button tone="primary" disabled={busy || !result?.session_id} onClick={runExportCubismHandoff}>
+                    {t("panel.actions.exportCubism")}
+                  </Button>
+                  <FileDownload
+                    href={artifactUrl(pluginId, cubismHandoffPath)}
+                    path={cubismHandoffPath || ""}
+                    filename="cubism_handoff.zip"
+                    label={t("panel.actions.downloadCubism")}
+                    copiedLabel={t("panel.messages.pathCopied")}
+                  />
+                </ButtonGroup>
+              </>
+            )}
           </Stack>
         </Card>
 
@@ -423,13 +683,15 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
               <Alert tone={result?.status === "succeeded" ? "success" : "warning"}>
                 {result?.message || t("panel.result.empty")}
               </Alert>
-              <FileDownload
-                href={artifactUrl(pluginId, result?.zip_path)}
-                path={result?.zip_path || ""}
-                filename="live2d_layers.zip"
-                label={t("panel.actions.downloadZip")}
-                copiedLabel={t("panel.messages.pathCopied")}
-              />
+              {isExtractWorkspace ? (
+                <FileDownload
+                  href={artifactUrl(pluginId, result?.zip_path)}
+                  path={result?.zip_path || ""}
+                  filename="live2d_layers.zip"
+                  label={t("panel.actions.downloadZip")}
+                  copiedLabel={t("panel.messages.pathCopied")}
+                />
+              ) : null}
             </div>
             <div className="lal-preview-grid">
               <ImagePreview src={previewSrc} label={selectedLayer?.name || t("panel.result.preview")} emptyText={t("panel.result.noPreview")} />
