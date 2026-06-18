@@ -2557,7 +2557,13 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "maxImagePx = DEFAULT_VISION_MAX_IMAGE_PX" in source
     assert "getMaxImagePx?: () => number;" in source
     assert "getMaxImagePx: getVisionMaxImagePx," in source
-    assert "visionMaxImagePxRef.current = normalizeVisionMaxImagePx" in source
+    assert (
+        "visionMaxImagePxRef.current = normalizeVisionMaxImagePx(\n"
+        "      data.config?.llm_vision_max_image_px,\n"
+        "    );"
+        in source
+    )
+    assert "if (data.config?.llm_vision_max_image_px !== undefined)" not in source
     assert "MAX_PASTE_IMAGE_LONG_SIDE" not in source
     assert "async function compressImageForStudy(" in source
     assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
@@ -2640,6 +2646,7 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
     assert "applyVisionMaxImagePx(llm.llm_vision_max_image_px);" in source
     assert "llmVisionMaxImagePx / Math.max(sourceWidth, sourceHeight)" in source
     assert "768 / Math.max(sourceWidth, sourceHeight)" not in source
+    assert "canvas.toDataURL('image/jpeg', 0.3);\n    }\n    if (dataUrl.length > TARGET_DATA_URL_LENGTH) {\n      return null;\n    }" in source
     assert "const pasteControllers = { study: null, answer: null };" in source
     assert "async function compressImageForStudy(blob, signal)" in source
     assert "function createImagePasteHandler(options)" in source

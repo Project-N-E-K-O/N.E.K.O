@@ -317,6 +317,9 @@ async function compressImageForStudy(blob, signal) {
     if (dataUrl.length > TARGET_DATA_URL_LENGTH) {
       dataUrl = canvas.toDataURL('image/jpeg', 0.3);
     }
+    if (dataUrl.length > TARGET_DATA_URL_LENGTH) {
+      return null;
+    }
     return dataUrl;
   } catch (error) {
     console.warn('study static image paste failed', error);

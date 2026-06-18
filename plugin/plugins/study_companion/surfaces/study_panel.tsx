@@ -737,9 +737,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (signal?.aborted) {
       return;
     }
-    if (data.config?.llm_vision_max_image_px !== undefined) {
-      visionMaxImagePxRef.current = normalizeVisionMaxImagePx(data.config.llm_vision_max_image_px);
-    }
+    visionMaxImagePxRef.current = normalizeVisionMaxImagePx(
+      data.config?.llm_vision_max_image_px,
+    );
     setStatusLine(data);
   }
 
