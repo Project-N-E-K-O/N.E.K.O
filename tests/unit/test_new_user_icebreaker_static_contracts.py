@@ -283,6 +283,11 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in game_router
     assert "append_icebreaker_context_async(role, text, request_id)" in game_router
     assert '@router.post("/{game_type}/context")' in game_router
+    assert "startIcebreakerRoute(nextSession).then(function (started) {" in runtime
+    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + path" in runtime
+    assert "postIcebreakerRoute('/route/start', session" in runtime
+    assert "postIcebreakerRoute('/route/end', session" in runtime
+    assert "postgameProactive: { enabled: false }" in runtime
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
 
@@ -533,6 +538,12 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "appendIcebreakerChatMessage(data.message)" in interpage
     assert "setIcebreakerChoicePromptFromBroadcast(data.prompt)" in interpage
     assert "clearIcebreakerChoicePromptFromBroadcast(data.sessionId)" in interpage
+    icebreaker_flush_block = interpage.split("function flushPendingIcebreakerBridgeActions()", 1)[1].split(
+        "function appendIcebreakerChatMessage",
+        1,
+    )[0]
+    assert "shouldOpenHost = true" in icebreaker_flush_block
+    assert "host.openWindow()" in icebreaker_flush_block
     assert "case 'icebreaker_choice_selected'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_choice_selected'" in interpage
     assert "case 'icebreaker_free_text_submitted'" in interpage
@@ -568,10 +579,33 @@ def test_yui_guide_chat_bridge_has_storage_queue_fallback():
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in interpage
     assert "drainPendingYuiGuideChatBridgeQueue" in interpage
+    assert "bindStandaloneChatIdleActivityRelay();\n    drainPendingYuiGuideChatBridgeQueue();" in interpage
     assert "handleYuiGuideChatBridgeStorageEvent" in interpage
     assert "yuiGuideInterpageResources.addEventListener(window, 'storage', handleYuiGuideChatBridgeStorageEvent)" in interpage
     assert "clearYuiGuideChatMessages" in interpage
     assert "case 'yui_guide_clear_chat_messages':" in interpage
+
+
+def test_yui_guide_native_relay_uses_defined_chat_helpers():
+    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    relay_block = interpage.split("function handleYuiGuideRelayedMessage(message)", 1)[1].split(
+        "yuiGuideInterpageResources.addEventListener(window, 'neko:tutorial-overlay-relay'",
+        1,
+    )[0]
+
+    assert "function ensureYuiGuideExternalChatExpanded()" in interpage
+    assert "applyYuiGuideChatInputLocked(message.locked === true, message.reason || '')" in relay_block
+    assert "applyYuiGuideAvatarToolMenuOpen(message.open === true, message.reason || '')" in relay_block
+    assert "applyYuiGuideCompactHistoryOpen(message.open === true, message.reason || '')" in relay_block
+    assert "applyYuiGuideCompactToolFanOpen(message.open === true, message.reason || '')" in relay_block
+    assert "applyYuiGuideCompactToolWheelRotate(message)" in relay_block
+    assert "applyYuiGuideCompactToolWheelIndex(message)" in relay_block
+    assert "setYuiGuideChatInputLocked(" not in relay_block
+    assert "setYuiGuideAvatarToolMenuOpen(" not in relay_block
+    assert "setYuiGuideCompactHistoryOpen(" not in relay_block
+    assert "setYuiGuideCompactToolFanOpen(" not in relay_block
+    assert "rotateYuiGuideCompactToolWheel(" not in relay_block
+    assert "setYuiGuideCompactToolWheelIndex(" not in relay_block
 
 
 def test_icebreaker_free_text_uses_fallback_instead_of_llm():

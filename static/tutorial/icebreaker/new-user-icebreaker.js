@@ -112,6 +112,49 @@
         return getLocalMutationHeaders();
     }
 
+    function postIcebreakerRoute(path, session, extraBody) {
+        if (!session || !session.sessionId) return Promise.resolve(false);
+        var body = Object.assign({
+            lanlan_name: resolveLanlanName(),
+            session_id: String(session.sessionId || ''),
+            i18n_language: currentLocale()
+        }, extraBody || {});
+
+        function parseRouteResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + path, {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            }).then(parseRouteResponse);
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] route lifecycle request failed:', path, error);
+            return false;
+        });
+    }
+
+    function startIcebreakerRoute(session) {
+        return postIcebreakerRoute('/route/start', session, {
+            source: SOURCE
+        });
+    }
+
+    function endIcebreakerRoute(session, reason) {
+        if (!session || session.routeEnded) return Promise.resolve(false);
+        session.routeEnded = true;
+        return postIcebreakerRoute('/route/end', session, {
+            reason: reason || 'icebreaker_complete',
+            postgameProactive: { enabled: false }
+        });
+    }
+
     function loadScripts() {
         if (!scriptPromise) {
             scriptPromise = fetchJson(SCRIPT_URL);
@@ -598,6 +641,7 @@
             sessionId: activeSession.sessionId,
             nodeId: activeSession.nodeId
         });
+        endIcebreakerRoute(activeSession, 'icebreaker_handoff');
         activeSession = null;
     }
 
@@ -698,6 +742,7 @@
                         nodeId: nodeId,
                         releasedByFreeText: true
                     });
+                    endIcebreakerRoute(session, 'icebreaker_free_text_release');
                     if (activeSession === session) {
                         activeSession = null;
                     }
@@ -781,7 +826,7 @@
             var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
             if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
             if (!force && isDayCompleted(dayKey)) return false;
-            activeSession = {
+            var nextSession = {
                 day: dayKey,
                 dayConfig: dayConfig,
                 localeData: localeData || {},
@@ -789,15 +834,20 @@
                 offTopicCount: 0,
                 sessionId: 'icebreaker-day' + dayKey + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
             };
-            markDay(dayKey, {
-                started: true,
-                completed: false,
-                triggeredAt: Date.now(),
-                sessionId: activeSession.sessionId,
-                nodeId: dayConfig.root
+            return startIcebreakerRoute(nextSession).then(function (started) {
+                if (!started) return false;
+                activeSession = nextSession;
+                markDay(dayKey, {
+                    started: true,
+                    completed: false,
+                    triggeredAt: Date.now(),
+                    sessionId: activeSession.sessionId,
+                    nodeId: dayConfig.root
+                });
+                return deliverNode(dayConfig.root).then(function () {
+                    return true;
+                });
             });
-            deliverNode(dayConfig.root);
-            return true;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] start failed:', error);
             return false;

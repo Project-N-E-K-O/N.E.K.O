@@ -2291,12 +2291,15 @@
 
         _icebreakerBridgeFlushAttempts = 0;
         var batch = _pendingIcebreakerBridgeActions.splice(0);
+        var shouldOpenHost = false;
         batch.forEach(function (action) {
             try {
                 if (action.type === 'append' && action.message) {
                     host.appendMessage(action.message);
+                    shouldOpenHost = true;
                 } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
                     host.setIcebreakerChoicePrompt(action.prompt);
+                    shouldOpenHost = true;
                 } else if (action.type === 'clear_prompt' && action.sessionId && typeof host.clearIcebreakerChoicePrompt === 'function') {
                     host.clearIcebreakerChoicePrompt(action.sessionId);
                 }
@@ -2304,6 +2307,13 @@
                 console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
             }
         });
+        if (shouldOpenHost && typeof host.openWindow === 'function') {
+            try {
+                host.openWindow();
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] Failed to open chat host for bridge action:', error);
+            }
+        }
     }
 
     function appendIcebreakerChatMessage(message) {
@@ -2560,7 +2570,7 @@
             }
             case 'yui_guide_set_chat_input_locked': {
                 if (!isStandaloneChatPage()) return true;
-                setYuiGuideChatInputLocked(message.locked === true, message.reason || '');
+                applyYuiGuideChatInputLocked(message.locked === true, message.reason || '');
                 return true;
             }
             case 'yui_guide_set_chat_spotlight': {
@@ -2634,7 +2644,7 @@
             case 'yui_guide_set_avatar_tool_menu_open': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
-                setYuiGuideAvatarToolMenuOpen(message.open === true, message.reason || '');
+                applyYuiGuideAvatarToolMenuOpen(message.open === true, message.reason || '');
                 return true;
             }
             case 'yui_guide_click_avatar_tool_button': {
@@ -2646,25 +2656,25 @@
             case 'yui_guide_set_compact_history_open': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
-                setYuiGuideCompactHistoryOpen(message.open === true, message.reason || '');
+                applyYuiGuideCompactHistoryOpen(message.open === true, message.reason || '');
                 return true;
             }
             case 'yui_guide_set_compact_tool_fan_open': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
-                setYuiGuideCompactToolFanOpen(message.open === true, message.reason || '');
+                applyYuiGuideCompactToolFanOpen(message.open === true, message.reason || '');
                 return true;
             }
             case 'yui_guide_rotate_compact_tool_wheel': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
-                rotateYuiGuideCompactToolWheel(message.direction, message.stepCount, message.reason || '');
+                applyYuiGuideCompactToolWheelRotate(message);
                 return true;
             }
             case 'yui_guide_set_compact_tool_wheel_index': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
-                setYuiGuideCompactToolWheelIndex(message.index, message.reason || '');
+                applyYuiGuideCompactToolWheelIndex(message);
                 return true;
             }
             case 'yui_guide_drag_chat_cursor': {
@@ -3087,6 +3097,7 @@
     }
 
     bindStandaloneChatIdleActivityRelay();
+    drainPendingYuiGuideChatBridgeQueue();
 
     function applyYuiGuideChatLockState(disabled) {
         if (!document.body) {
@@ -3166,6 +3177,20 @@
 
     function getReactChatWindowHost() {
         return window.reactChatWindowHost || null;
+    }
+
+    function ensureYuiGuideExternalChatExpanded() {
+        var host = getReactChatWindowHost();
+        if (!host || typeof host.openWindow !== 'function') {
+            return false;
+        }
+        try {
+            host.openWindow();
+            return true;
+        } catch (error) {
+            console.warn('[YuiGuide] Failed to open external chat host:', error);
+            return false;
+        }
     }
 
     function relayYuiGuideChatCommand(data) {
