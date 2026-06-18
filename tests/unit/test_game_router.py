@@ -2752,6 +2752,36 @@ def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
 
 
 @pytest.mark.unit
+def test_game_route_helper_llm_info_allows_no_auth_summary_tier(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "game_summary"
+            return {
+                "model": "local-summary-model",
+                "base_url": "http://localhost:8081/v1",
+                "api_key": "",
+                "api_type": "local",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["model"] == "local-summary-model"
+    assert info["base_url"] == "http://localhost:8081/v1"
+    assert info["api_key"] == ""
+    assert info["api_type"] == "local"
+
+
+@pytest.mark.unit
 def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):

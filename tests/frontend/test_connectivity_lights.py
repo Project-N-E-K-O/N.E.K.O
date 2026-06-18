@@ -176,7 +176,16 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
         const gameContent = document.getElementById('game-model-content');
         const gameMainContent = document.getElementById('game-main-model-content');
         const gameSummaryContent = document.getElementById('game-summary-model-content');
+        const gameHeader = document.querySelector('[aria-controls="game-model-content"]');
+        const gameMainHeader = document.querySelector('[aria-controls="game-main-model-content"]');
+        const gameSummaryHeader = document.querySelector('[aria-controls="game-summary-model-content"]');
         return {
+            gameHeaderTag: gameHeader?.tagName,
+            gameHeaderExpanded: gameHeader?.getAttribute('aria-expanded'),
+            gameMainHeaderTag: gameMainHeader?.tagName,
+            gameMainHeaderExpanded: gameMainHeader?.getAttribute('aria-expanded'),
+            gameSummaryHeaderTag: gameSummaryHeader?.tagName,
+            gameSummaryHeaderExpanded: gameSummaryHeader?.getAttribute('aria-expanded'),
             gameExpanded: gameContent?.classList.contains('expanded') || false,
             gameMainCollapsed: !gameMainContent?.classList.contains('expanded'),
             gameSummaryCollapsed: !gameSummaryContent?.classList.contains('expanded'),
@@ -185,6 +194,12 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
         };
     }""")
     assert game_fold_state == {
+        "gameHeaderTag": "BUTTON",
+        "gameHeaderExpanded": "true",
+        "gameMainHeaderTag": "BUTTON",
+        "gameMainHeaderExpanded": "false",
+        "gameSummaryHeaderTag": "BUTTON",
+        "gameSummaryHeaderExpanded": "false",
         "gameExpanded": True,
         "gameMainCollapsed": True,
         "gameSummaryCollapsed": True,

@@ -4223,6 +4223,11 @@ function initConnectivityLights() {
         reRegisterModelSlot(followerType);
     }
 
+    function refreshFollowModelSlot(modelType) {
+        onCustomModelProviderChange(modelType);
+        reRegisterModelSlot(modelType);
+    }
+
     CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
         const keyInput = document.getElementById(`${mt}ModelApiKey`);
         if (!keyInput) return;
@@ -4290,7 +4295,7 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_core' && lightRefs.custom[mt]) {
-                    reRegisterModelSlot(mt);
+                    refreshFollowModelSlot(mt);
                 }
             });
             syncModelFollowers('conversation');
@@ -4317,7 +4322,7 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
-                    reRegisterModelSlot(mt);
+                    refreshFollowModelSlot(mt);
                 }
             });
             syncModelFollowers('conversation');
@@ -4400,7 +4405,7 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && (providerSel.value === 'follow_core' || providerSel.value === 'follow_assist') && lightRefs.custom[mt]) {
-                    reRegisterModelSlot(mt);
+                    refreshFollowModelSlot(mt);
                 }
             });
             syncModelFollowers('conversation');
@@ -4421,7 +4426,7 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
-                    reRegisterModelSlot(mt);
+                    refreshFollowModelSlot(mt);
                 }
             });
             syncModelFollowers('conversation');
@@ -4444,7 +4449,7 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
-                    reRegisterModelSlot(mt);
+                    refreshFollowModelSlot(mt);
                 }
             });
             syncModelFollowers('conversation');

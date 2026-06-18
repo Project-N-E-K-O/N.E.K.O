@@ -1818,7 +1818,7 @@ def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str
     model = str(summary_config.get("model") or "").strip()
     base_url = str(summary_config.get("base_url") or "").strip()
     api_key = str(summary_config.get("api_key") or "").strip()
-    if not (model and base_url and api_key):
+    if not (model and base_url):
         return info
     info.update({
         "model": model,

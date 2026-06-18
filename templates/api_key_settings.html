@@ -372,7 +372,7 @@
 
                                 <!-- 小游戏模型配置 -->
                                 <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('game')">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('game')" aria-expanded="false" aria-controls="game-model-content">
                                         <span class="model-title">
                                             <img src="/static/icons/correction_model_icon.png"
                                                 data-i18n-alt="api.gameModelsConfig"
@@ -380,15 +380,15 @@
                                             <span data-i18n="api.gameModelsConfig">小游戏模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
-                                    </div>
+                                    </button>
                                     <div id="game-model-content" class="model-content">
                                         <div class="nested-model-config-container">
-                                            <div class="model-header nested-model-header" onclick="toggleModelConfig('game-main')">
+                                            <button type="button" class="model-header nested-model-header" onclick="toggleModelConfig('game-main')" aria-expanded="false" aria-controls="game-main-model-content">
                                                 <span class="model-title">
                                                     <span data-i18n="api.gameMainModelConfig">小游戏主模型配置</span>
                                                 </span>
                                                 <span class="toggle-icon">▼</span>
-                                            </div>
+                                            </button>
                                             <div id="game-main-model-content" class="model-content nested-model-content">
                                                 <div class="field-row">
                                                     <label for="gameMainModelProvider" data-i18n="api.providerLabel">服务商</label>
@@ -419,12 +419,12 @@
                                             </div>
                                         </div>
                                         <div class="nested-model-config-container">
-                                            <div class="model-header nested-model-header" onclick="toggleModelConfig('game-summary')">
+                                            <button type="button" class="model-header nested-model-header" onclick="toggleModelConfig('game-summary')" aria-expanded="false" aria-controls="game-summary-model-content">
                                                 <span class="model-title">
                                                     <span data-i18n="api.gameSummaryModelConfig">小游戏摘要模型配置</span>
                                                 </span>
                                                 <span class="toggle-icon">▼</span>
-                                            </div>
+                                            </button>
                                             <div id="game-summary-model-content" class="model-content nested-model-content">
                                                 <div class="field-row">
                                                     <label for="gameSummaryModelProvider" data-i18n="api.providerLabel">服务商</label>

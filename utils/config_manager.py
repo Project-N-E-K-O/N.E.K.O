@@ -4269,9 +4269,9 @@ class ConfigManager:
                     if not skip_key_for_follow_gsv:
                         config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
                 elif provider == 'follow_conversation':
-                    config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '') or config.get('OPENROUTER_API_KEY', '')
+                    config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '')
                 elif provider == 'follow_summary':
-                    config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '') or config.get('OPENROUTER_API_KEY', '')
+                    config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
                 else:
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     if cfg_key is not None:
