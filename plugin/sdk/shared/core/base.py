@@ -84,6 +84,14 @@ class NekoPluginBase:
         self.state = PluginStatePersistence(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, backend=state_backend)
         self._state_persistence = self.state
 
+    def refresh_runtime_config(self, effective_config: dict[str, object] | None = None) -> None:
+        """Refresh SDK runtime helpers after the host effective config changes."""
+        cfg = effective_config if isinstance(effective_config, dict) else resolve_effective_config(self.ctx)
+        self.store.enabled = resolve_store_enabled(cfg)
+        db_enabled, _db_name = resolve_db_config(cfg)
+        self.db.enabled = db_enabled
+        self.state.backend = resolve_state_backend(cfg)
+
     def get_input_schema(self) -> InputSchema:
         schema = getattr(self, "input_schema", None)
         if isinstance(schema, dict):

@@ -255,6 +255,45 @@ class PluginContext:
         except Exception:
             pass
 
+    def _refresh_instance_runtime_config(self, effective_config: Dict[str, Any]) -> None:
+        instance = getattr(self, "_instance", None)
+        refresh = getattr(instance, "refresh_runtime_config", None)
+        if not callable(refresh):
+            return
+        try:
+            refresh(effective_config)
+        except Exception as exc:
+            try:
+                self.logger.warning(
+                    "[PluginContext] Failed to refresh runtime config: plugin_id={}, err_type={}, err={}",
+                    self.plugin_id,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            except Exception:
+                pass
+
+    def _set_effective_config_cache(self, config_obj: object) -> Dict[str, Any] | None:
+        if not isinstance(config_obj, dict):
+            self._effective_config = None
+            return None
+        config_copy = copy.deepcopy(config_obj)
+        self._effective_config = config_copy
+        self._refresh_instance_runtime_config(config_copy)
+        return config_copy
+
+    @staticmethod
+    def _merge_config_copy(base: object, updates: Dict[str, Any]) -> Dict[str, Any]:
+        merged = copy.deepcopy(base) if isinstance(base, dict) else {}
+        for key, value in updates.items():
+            if isinstance(merged.get(key), dict) and isinstance(value, dict):
+                current = merged[key]
+                if isinstance(current, dict):
+                    merged[key] = PluginContext._merge_config_copy(current, value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+
     def _get_sync_call_in_handler_policy(self) -> str:
         """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
 
@@ -1597,7 +1636,7 @@ class PluginContext:
                 )
                 config_obj = payload.get("config")
                 if isinstance(config_obj, dict):
-                    self._effective_config = copy.deepcopy(config_obj)
+                    self._set_effective_config_cache(config_obj)
                 return payload
             if payload_type == "base":
                 return await asyncio.wait_for(
@@ -1738,7 +1777,7 @@ class PluginContext:
         if isinstance(local_payload, dict):
             effective_obj = local_payload.get("config")
             if isinstance(effective_obj, dict) and profile_name is None:
-                self._effective_config = copy.deepcopy(effective_obj)
+                self._set_effective_config_cache(effective_obj)
             return local_payload
 
         try:
@@ -1813,6 +1852,9 @@ class PluginContext:
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
+        optimistic_config = self._merge_config_copy(getattr(self, "_effective_config", None), updates)
+        self._set_effective_config_cache(optimistic_config)
+        request_timeout = min(float(timeout), 4.5)
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="update_own_config",
@@ -1821,12 +1863,25 @@ class PluginContext:
                     "plugin_id": self.plugin_id,
                     "updates": updates,
                 },
-                timeout=timeout,
+                timeout=request_timeout,
                 wrap_result=True,
                 error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
-            self._effective_config = copy.deepcopy(config_obj) if isinstance(config_obj, dict) else None
+            if isinstance(config_obj, dict):
+                if payload.get("persisted") is False:
+                    self._set_effective_config_cache(optimistic_config)
+                    payload = dict(payload)
+                    payload["config"] = copy.deepcopy(optimistic_config)
+                else:
+                    self._set_effective_config_cache(config_obj)
             return payload
         except TimeoutError as e:
-            raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e
+            return {
+                "success": False,
+                "plugin_id": self.plugin_id,
+                "config": copy.deepcopy(optimistic_config),
+                "requires_reload": False,
+                "persisted": False,
+                "message": "Config persistence timed out; update is applied in plugin memory only",
+            }

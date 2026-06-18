@@ -177,6 +177,19 @@ def test_neko_plugin_base_init_wires_ctx_config_plugins() -> None:
     assert base.plugins is not None
 
 
+def test_neko_plugin_base_refreshes_store_enabled_after_effective_config_arrives() -> None:
+    ctx = _Ctx()
+    ctx._effective_config = {}
+    base = _DemoPlugin(ctx=ctx)
+
+    assert base.store.enabled is False
+
+    ctx._effective_config = {"plugin": {"store": {"enabled": True}}}
+    base.refresh_runtime_config()
+
+    assert base.store.enabled is True
+
+
 def test_neko_plugin_base_i18n_uses_plugin_toml_config(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "demo"
     locale_dir = plugin_dir / "locales"

@@ -43,6 +43,7 @@ from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
 from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
 from plugin.core.bus.types import dispatch_bus_change
+from utils.storage_layout import export_storage_layout_to_env, resolve_storage_layout
 from plugin.core.zmq_transport import (
     HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
 )
@@ -58,6 +59,30 @@ def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
         digest = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:12]
         safe = f"{safe[:max_len - 13]}_{digest}"
     return safe
+
+
+def _resolve_current_storage_layout() -> dict[str, Any]:
+    from utils.config_manager import get_config_manager
+
+    return resolve_storage_layout(get_config_manager())
+
+
+def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
+    try:
+        layout = _resolve_current_storage_layout()
+        export_storage_layout_to_env(layout)
+        logger_obj.debug(
+            "Plugin child storage layout env refreshed: selected_root={}, anchor_root={}, source={}",
+            layout.get("selected_root"),
+            layout.get("anchor_root"),
+            layout.get("source"),
+        )
+    except Exception as exc:
+        logger_obj.warning(
+            "Failed to refresh plugin child storage layout env; plugin data root may use fallback: err_type={}, err={}",
+            type(exc).__name__,
+            str(exc),
+        )
 
 
 _TIMEOUT_UNSET = object()
@@ -578,6 +603,10 @@ async def _handle_config_update_command(
             logger.debug("[Plugin Process] Config cache updated")
         else:
             ctx._effective_config = new_config
+
+        refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
+        if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
+            refresh_runtime_config(ctx._effective_config)
         
         # 触发 config_change 生命周期事件（如果存在）
         lifecycle_events = events_by_type.get("lifecycle", {})
@@ -1761,6 +1790,7 @@ class PluginHost:
             return
 
         try:
+            _refresh_child_storage_layout_env(self.logger)
             await asyncio.to_thread(self.process.start)
         except Exception:
             self.logger.error(
