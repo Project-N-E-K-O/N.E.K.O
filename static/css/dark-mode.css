@@ -1039,6 +1039,21 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   background: #2d2d2d;
 }
 
+[data-theme="dark"] .nested-model-config-container {
+  background: rgba(42, 123, 196, 0.12);
+  border-color: #365a72;
+}
+
+[data-theme="dark"] .nested-model-header {
+  background: rgba(42, 123, 196, 0.22);
+  border-bottom-color: #365a72;
+}
+
+[data-theme="dark"] .nested-model-header .model-title,
+[data-theme="dark"] .nested-model-header .toggle-icon {
+  color: #8ac7ff;
+}
+
 [data-theme="dark"] .model-content .field-row {
   border-bottom-color: #333;
 }

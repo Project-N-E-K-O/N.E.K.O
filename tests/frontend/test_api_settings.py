@@ -26,6 +26,15 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     
     # Fill in a fake key
     test_key = "sk-test-1234567890"
+    mock_page.evaluate("""
+        () => {
+            const input = document.getElementById('apiKeyInput');
+            if (input) {
+                input.value = '';
+                input.removeAttribute('data-real-key');
+            }
+        }
+    """)
     mock_page.fill("#apiKeyInput", test_key)
     mock_page.evaluate("""
         () => {

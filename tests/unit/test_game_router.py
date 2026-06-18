@@ -2723,7 +2723,7 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
 def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):
-            assert tier == "summary"
+            assert tier == "game_summary"
             return {
                 "model": "summary-model",
                 "base_url": "http://summary.test/v1",
@@ -2755,7 +2755,7 @@ def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
 def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):
-            assert tier == "summary"
+            assert tier == "game_summary"
             return {
                 "model": "summary-model",
                 "base_url": "",

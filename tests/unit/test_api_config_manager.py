@@ -287,10 +287,12 @@ class TestCustomApiToggle:
 
     @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
-        """enableCustomApi=true → all 8 model types can be overridden."""
+        """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
             ('summary', 'SUMMARY_MODEL'),
+            ('gameMain', 'GAME_MAIN_MODEL'),
+            ('gameSummary', 'GAME_SUMMARY_MODEL'),
             ('correction', 'CORRECTION_MODEL'),
             ('emotion', 'EMOTION_MODEL'),
             ('vision', 'VISION_MODEL'),
@@ -321,6 +323,58 @@ class TestCustomApiToggle:
                 f'{upper_url} not applied'
             assert cfg[upper_key] == f'sk-{camel_prefix}', \
                 f'{upper_key} not applied'
+
+    @pytest.mark.unit
+    def test_game_models_follow_conversation_and_summary_by_default(self, config_manager):
+        """Mini-game model slots default to the main text and summary model configs."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'https://conversation.custom.test/v1',
+            'conversationModelId': 'conversation-custom-model',
+            'conversationModelApiKey': 'sk-conversation-custom',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'https://summary.custom.test/v1',
+            'summaryModelId': 'summary-custom-model',
+            'summaryModelApiKey': 'sk-summary-custom',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert game_main['model'] == 'conversation-custom-model'
+        assert game_main['base_url'] == 'https://conversation.custom.test/v1'
+        assert game_main['api_key'] == 'sk-conversation-custom'
+        assert game_summary['model'] == 'summary-custom-model'
+        assert game_summary['base_url'] == 'https://summary.custom.test/v1'
+        assert game_summary['api_key'] == 'sk-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_main_explicit_custom_override(self, config_manager):
+        """Mini-game main model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameMainModelUrl': 'https://game-main.custom.test/v1',
+            'gameMainModelId': 'game-main-custom-model',
+            'gameMainModelApiKey': 'sk-game-main-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_main')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-main-custom-model'
+        assert result['base_url'] == 'https://game-main.custom.test/v1'
+        assert result['api_key'] == 'sk-game-main-custom'
 
     @pytest.mark.unit
     def test_custom_api_key_empty_string_valid(self, config_manager):
@@ -1314,7 +1368,7 @@ class TestVllmOmniRawKeyPassthrough:
         assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
 
     @pytest.mark.unit
-    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager):
+    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):
         """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
         _write_core_config(config_manager, {
             'coreApi': 'gemini',
@@ -1333,8 +1387,8 @@ class TestVllmOmniRawKeyPassthrough:
             }
         }
         saved = {}
-        config_manager.load_characters = lambda: character_data
-        config_manager.save_characters = lambda data: saved.setdefault('data', data)
+        monkeypatch.setattr(config_manager, 'load_characters', lambda: character_data)
+        monkeypatch.setattr(config_manager, 'save_characters', lambda data: saved.setdefault('data', data))
 
         cleaned, legacy = config_manager.cleanup_invalid_voice_ids()
 
