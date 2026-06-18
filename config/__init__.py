@@ -1840,12 +1840,17 @@ FOCUS_CHARGE_RETENTION = 0.5
 
 # idle（proactive 主动搭话）冷却分两档——proactive 绝不抬升 charge，只衰减；进入/
 # 维持凝神只由 inline（用户自己说的话）驱动。衰减快慢取决于这一轮 proactive 到底
-# 有没有开口：开口了（消耗了这份专注）衰减快，只是安静守着（几乎没消耗）衰减慢。
-# 故凝神的持续由「她开口次数」主导而非单纯时间流逝。两者都须 > 0、< 1，且 silent > replied。
-FOCUS_IDLE_SILENT_RETENTION = 0.95
-"""proactive 本轮没开口（action != chat：被 guard/接管挡下、内容空、pass）时的电荷保留率。
-- 用途：charge = charge × 此值。0.95 ≈ 几乎不衰减——她只是安静守着，凝神留得久。
-- 调低 = 沉默等待也更快冷却。"""
+# 有没有把话说出来：开口了（消耗了这份专注）衰减快，没说出话（守着没开口，或思考
+# 超时/异常没接住）衰减略慢。故凝神的持续由「她开口次数」主导而非单纯时间流逝。
+# 两者都须 > 0、< 1，且 silent > replied。
+FOCUS_IDLE_SILENT_RETENTION = 0.7
+"""proactive 本轮没把话说出来时的电荷保留率。
+- 涵盖：action != chat（被 guard/接管挡下、内容空、[PASS]），以及 Phase 2 思考
+  超时 / 流式异常导致 aborted（最终也归 action=pass）——开了思考模式却没能在限时内
+  接住，同样按此档降温。
+- 用途：charge = charge × 此值。0.7 = 每轮明显降温——没说出话（含思考超时）就别
+  一直占着凝神，但仍比开口（replied）退得慢一点。
+- 调低 = 沉默 / 超时也更快冷却。"""
 
 FOCUS_IDLE_REPLIED_RETENTION = 0.6
 """proactive 本轮真开口了（action == chat：投递了主动搭话）时的电荷保留率。
