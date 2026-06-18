@@ -131,25 +131,23 @@ test('day1 round scenes use timeline playback while specialized behavior delegat
         .filter(scene => scene.timelinePlayback === true)
         .map(scene => scene.id);
 
-    assert.equal(timelineSceneIds.length, 9);
+    assert.equal(timelineSceneIds.length, 8);
     assert.equal(timelineSceneIds[0], 'day1_intro_activation');
-    assert.equal(timelineSceneIds[1], 'day1_intro_greeting');
-    assert.equal(timelineSceneIds[2], 'day1_capsule_drag_hint');
-    assert.equal(timelineSceneIds[3], 'day1_history_handle');
-    assert.equal(timelineSceneIds[4], 'day1_intro_basic_voice');
-    assert.equal(timelineSceneIds[5], 'day1_screen_entry');
-    assert.equal(timelineSceneIds[6], 'day1_screen_entry_invite');
-    assert.equal(timelineSceneIds[7], 'day1_takeover_capture_cursor');
-    assert.equal(timelineSceneIds[8], 'day1_takeover_return_control');
+    assert.equal(timelineSceneIds[1], 'day1_capsule_drag_hint');
+    assert.equal(timelineSceneIds[2], 'day1_history_handle');
+    assert.equal(timelineSceneIds[3], 'day1_intro_basic_voice');
+    assert.equal(timelineSceneIds[4], 'day1_screen_entry');
+    assert.equal(timelineSceneIds[5], 'day1_screen_entry_invite');
+    assert.equal(timelineSceneIds[6], 'day1_takeover_capture_cursor');
+    assert.equal(timelineSceneIds[7], 'day1_takeover_return_control');
 });
 
-test('day1 activation and greeting delegate flow-owned timing through timeline operations', () => {
+test('day1 activation delegates timing through timeline while greeting is generic', () => {
     const guides = loadGuides();
     const day1Scenes = guides[1].round.scenes;
     const activation = day1Scenes.find(scene => scene.id === 'day1_intro_activation');
     const greeting = day1Scenes.find(scene => scene.id === 'day1_intro_greeting');
     const activationOperation = activation.timeline.find(event => event.command === 'operation.run');
-    const greetingOperation = greeting.timeline.find(event => event.command === 'operation.run');
 
     assert.equal(activation.timelinePlayback, true);
     assert.equal(activation.timelineAudio, false);
@@ -157,11 +155,12 @@ test('day1 activation and greeting delegate flow-owned timing through timeline o
     assert.equal(activationOperation.operation, 'day1-intro-activation-flow');
     assert.equal(activationOperation.blocking, true);
 
-    assert.equal(greeting.timelinePlayback, true);
-    assert.equal(greeting.timelineAudio, false);
+    assert.notEqual(greeting.timelinePlayback, true);
     assert.equal(greeting.afterSceneDelayMs, 0);
-    assert.equal(greetingOperation.operation, 'day1-intro-greeting-flow');
-    assert.equal(greetingOperation.blocking, true);
+    assert.equal(greeting.target, 'chat-input');
+    assert.equal(greeting.cursorTarget, 'chat-capsule-input');
+    assert.equal(greeting.cursorAction, 'move');
+    assert.equal(greeting.operation, 'day1-intro-greeting-performance');
 });
 
 test('day1 intro basic voice starts showcase from timeline after narration starts', () => {

@@ -1864,6 +1864,13 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         : Date.now();
     this._bubbleGeometryRefreshPass = 0;
     try {
+        window.dispatchEvent(new CustomEvent('neko-live2d-model-ready', {
+            detail: { modelPath }
+        }));
+    } catch (eventError) {
+        console.warn('[Live2D Model] 模型 ready 事件派发失败:', eventError);
+    }
+    try {
         const readyModelPath = (modelPath && typeof modelPath === 'object' && typeof modelPath.url === 'string')
             ? modelPath.url
             : modelPath;

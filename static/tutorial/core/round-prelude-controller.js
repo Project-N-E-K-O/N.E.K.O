@@ -50,14 +50,17 @@
             const sceneId = 'avatar_floating_day' + day;
 
             await toPromise(() => this.beginAvatarOverride()).catch((error) => {
-                this.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，继续教程:', error);
+                this.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，中止教程:', error);
+                throw error;
             }).finally(() => {
                 return toPromise(() => this.revealPrepared());
             });
 
             await toPromise(() => this.ensureVisible(sceneId)).catch((error) => {
-                this.warn('[Tutorial] 悬浮窗教程确认 YUI 模型失败，继续教程:', error);
-                return toPromise(() => this.revealPrepared());
+                this.warn('[Tutorial] 悬浮窗教程确认 YUI 模型失败，中止教程:', error);
+                return toPromise(() => this.revealPrepared()).then(() => {
+                    throw error;
+                });
             });
 
             await toPromise(() => this.sleep(delayMs));

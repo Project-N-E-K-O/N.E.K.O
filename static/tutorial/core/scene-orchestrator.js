@@ -356,6 +356,9 @@
                 const introExternalizedCursorKind = typeof director.getAvatarFloatingIntroExternalizedSpotlightKind === 'function'
                     ? director.getAvatarFloatingIntroExternalizedSpotlightKind(scene)
                     : 'capsule-input';
+                if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
+                    director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
+                }
                 director.interactionTakeover.setExternalizedChatCursor(introExternalizedCursorKind || 'capsule-input', {
                     effect: '',
                     durationMs: 0
@@ -422,6 +425,9 @@
             let secondaryTarget = null;
             if (introExternalizedChatSpotlightKind) {
                 director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
+                    director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
+                }
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,

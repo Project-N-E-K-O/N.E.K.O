@@ -318,14 +318,16 @@
             this.beginTransientMotion();
             try {
                 await this.overlay.moveCursorTo(targetX, targetY, {
-                    durationMs: Number.isFinite(normalizedOptions.outDurationMs) ? normalizedOptions.outDurationMs : 140
+                    durationMs: Number.isFinite(normalizedOptions.outDurationMs) ? normalizedOptions.outDurationMs : 140,
+                    forcePcOverlay: normalizedOptions.forcePcOverlay === true
                 });
                 if (token !== this.reactionToken) {
                     return;
                 }
 
                 await this.overlay.moveCursorTo(returnTarget.x, returnTarget.y, {
-                    durationMs: Number.isFinite(normalizedOptions.backDurationMs) ? normalizedOptions.backDurationMs : 240
+                    durationMs: Number.isFinite(normalizedOptions.backDurationMs) ? normalizedOptions.backDurationMs : 240,
+                    forcePcOverlay: normalizedOptions.forcePcOverlay === true
                 });
                 if (token === this.reactionToken) {
                     this.resistanceRestPoint = null;
@@ -366,8 +368,14 @@
 
             this.beginTransientMotion();
             try {
-                await this.overlay.moveCursorTo(pullX, pullY, { durationMs: 180 });
-                await this.overlay.moveCursorTo(returnTarget.x, returnTarget.y, { durationMs: 260 });
+                await this.overlay.moveCursorTo(pullX, pullY, {
+                    durationMs: 180,
+                    forcePcOverlay: normalizedOptions.forcePcOverlay === true
+                });
+                await this.overlay.moveCursorTo(returnTarget.x, returnTarget.y, {
+                    durationMs: 260,
+                    forcePcOverlay: normalizedOptions.forcePcOverlay === true
+                });
                 if (token === this.resistanceToken) {
                     this.resistanceRestPoint = null;
                 }
