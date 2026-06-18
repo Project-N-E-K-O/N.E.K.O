@@ -629,6 +629,8 @@ async def _handle_config_update_command(
                 logger.exception("[Plugin Process] config_change handler failed")
                 # 回滚配置到变更前状态
                 ctx._effective_config = old_config
+                if callable(refresh_runtime_config) and isinstance(old_config, dict):
+                    refresh_runtime_config(old_config)
                 logger.debug("[Plugin Process] Config rolled back after handler failure")
                 ret_payload["error"] = f"config_change handler failed: {e}"
                 res_sender.put(ret_payload, timeout=10.0)

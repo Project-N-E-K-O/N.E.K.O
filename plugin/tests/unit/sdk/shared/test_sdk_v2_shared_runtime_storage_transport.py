@@ -294,6 +294,23 @@ async def test_shared_facade_validation_paths(tmp_path) -> None:
         state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="weird")
 
 
+def test_plugin_database_configure_database_name_updates_storage_path(tmp_path) -> None:
+    plugin_dir = tmp_path / "facade_configure"
+    plugin_dir.mkdir()
+    db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True, db_name="old.db")
+
+    assert db.db_name == "old.db"
+    assert db._db_path == plugin_dir / "old.db"
+
+    db.configure_database_name("new.db")
+
+    assert db.db_name == "new.db"
+    assert db._db_path == plugin_dir / "new.db"
+
+    with pytest.raises(ValueError, match="plain filename"):
+        db.configure_database_name("nested/new.db")
+
+
 @pytest.mark.asyncio
 async def test_shared_memory_timeout_bool_and_impl_error_normalization() -> None:
     mem = runtime_memory.MemoryClient(object())

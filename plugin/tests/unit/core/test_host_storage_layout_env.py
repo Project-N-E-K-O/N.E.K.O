@@ -36,6 +36,29 @@ class _FakeProcess:
         self.started = True
 
 
+class _FakeLogger:
+    def info(self, *_args, **_kwargs) -> None:
+        pass
+
+    def debug(self, *_args, **_kwargs) -> None:
+        pass
+
+    def warning(self, *_args, **_kwargs) -> None:
+        pass
+
+    def exception(self, *_args, **_kwargs) -> None:
+        pass
+
+
+class _FakeResponseSender:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def put(self, payload: dict[str, object], timeout: float) -> None:
+        self.payloads.append(payload)
+        self.timeout = timeout
+
+
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_plugin_process_start_refreshes_storage_layout_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -79,3 +102,41 @@ async def test_plugin_process_start_refreshes_storage_layout_env(monkeypatch: py
 
     assert calls == [{"selected_root": str(selected_root), "anchor_root": str(tmp_path / "anchor")}]
     assert host_module.os.environ["NEKO_STORAGE_SELECTED_ROOT"] == str(selected_root)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_config_update_rolls_back_runtime_helpers_when_config_change_fails() -> None:
+    class _Ctx:
+        def __init__(self) -> None:
+            self._effective_config = {"plugin": {"store": {"enabled": False}}}
+            self.refreshed: list[dict[str, object]] = []
+
+        def _refresh_instance_runtime_config(self, effective_config: dict[str, object]) -> None:
+            self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+    def _config_change(**_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    ctx = _Ctx()
+    sender = _FakeResponseSender()
+    await host_module._handle_config_update_command(
+        msg={
+            "req_id": "req-1",
+            "config": {"plugin": {"store": {"enabled": True}}},
+            "mode": "temporary",
+        },
+        ctx=ctx,
+        events_by_type={"lifecycle": {"config_change": _config_change}},
+        plugin_id="demo",
+        res_sender=sender,
+        logger=_FakeLogger(),
+    )
+
+    assert ctx._effective_config == {"plugin": {"store": {"enabled": False}}}
+    assert ctx.refreshed == [
+        {"plugin": {"store": {"enabled": True}}},
+        {"plugin": {"store": {"enabled": False}}},
+    ]
+    assert sender.payloads[-1]["success"] is False
+    assert "config_change handler failed" in str(sender.payloads[-1]["error"])

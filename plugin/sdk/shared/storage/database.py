@@ -280,13 +280,7 @@ class PluginDatabase(StorageResultTemplate):
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)
         self.enabled = enabled
-        raw_db_name = db_name or "plugin.db"
-        db_path = Path(raw_db_name)
-        if db_path.is_absolute() or any(part == ".." for part in db_path.parts):
-            raise ValueError("db_name must stay within plugin_dir")
-        safe_name = db_path.name
-        if safe_name != raw_db_name or safe_name.strip() in {"", ".", ".."}:
-            raise ValueError("db_name must be a plain filename within plugin_dir")
+        safe_name = self._normalize_db_name(db_name)
         self.db_name = safe_name
         self._db_path = self.plugin_dir / safe_name
         self._local = threading.local()
@@ -295,6 +289,26 @@ class PluginDatabase(StorageResultTemplate):
         self._conn_lock = threading.Lock()
         self._active_sessions: set[_SqliteAsyncSession] = set()
         self._session_lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_db_name(db_name: str | None) -> str:
+        raw_db_name = db_name or "plugin.db"
+        db_path = Path(raw_db_name)
+        if db_path.is_absolute() or any(part == ".." for part in db_path.parts):
+            raise ValueError("db_name must stay within plugin_dir")
+        safe_name = db_path.name
+        if safe_name != raw_db_name or safe_name.strip() in {"", ".", ".."}:
+            raise ValueError("db_name must be a plain filename within plugin_dir")
+        return safe_name
+
+    def configure_database_name(self, db_name: str | None) -> None:
+        safe_name = self._normalize_db_name(db_name)
+        if safe_name == self.db_name:
+            return
+        self._close_all_connections()
+        self._reset_kv_store()
+        self.db_name = safe_name
+        self._db_path = self.plugin_dir / safe_name
 
     def _reset_kv_store(self) -> None:
         kv_store = self._kv_store

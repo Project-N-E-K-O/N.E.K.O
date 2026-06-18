@@ -184,10 +184,19 @@ def test_neko_plugin_base_refreshes_store_enabled_after_effective_config_arrives
 
     assert base.store.enabled is False
 
-    ctx._effective_config = {"plugin": {"store": {"enabled": True}}}
+    ctx._effective_config = {
+        "plugin": {
+            "store": {"enabled": True},
+            "database": {"enabled": True, "name": "runtime.db"},
+        },
+        "plugin_state": {"backend": "file"},
+    }
     base.refresh_runtime_config()
 
     assert base.store.enabled is True
+    assert base.db.enabled is True
+    assert base.db.db_name == "runtime.db"
+    assert base.state.backend == "file"
 
 
 def test_neko_plugin_base_i18n_uses_plugin_toml_config(tmp_path: Path) -> None:
