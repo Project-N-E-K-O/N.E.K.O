@@ -1486,7 +1486,35 @@ class LLMSessionManager:
                 payload.get("_durable_cached")
                 or self._context_append_durable_cache_seen(payload)
             )
-            if durable_cache_remembered and self._context_append_durable_cache_contains(payload):
+            # 去重记账本（_context_append_durable_cache_*）与真缓存
+            # （next_session_context_messages）是两套独立结构：前者记“这条已写过”，
+            # 后者存实际内容，而后者会被 session-swap 的 _consume_next_session_context_messages
+            # 异步消费/清空。下面用 remembered（记账本）与 present（真缓存）双重核对决定是否
+            # 重写，本身能兜住失步、不丢上下文；但两者一旦失步是静默的，故在此显式自检并告警，
+            # 把“隐蔽失步”变成日志里可观测的信号（见 _consume_next_session_context_messages
+            # 不同步清记账本的设计债）。
+            durable_cache_present = self._context_append_durable_cache_contains(payload)
+            if durable_cache_remembered and not durable_cache_present:
+                # 记账本说写过、内容却没了：通常是 swap 消费了缓存而记账本（TTL 内）未清。
+                # 当前靠下方 present 核对兜底重写、不会丢；但若后续有人移除该核对、只信记账本，
+                # 这条上下文就会被误判“已写过”而静默丢失。出现此日志即代表两者已失步。
+                logger.warning(
+                    "[%s] durable context cache desync: dedup record present but content "
+                    "missing from next-session cache; re-appending (source=%s request_id=%s)",
+                    self.lanlan_name,
+                    payload.get("source"),
+                    payload.get("request_id"),
+                )
+            elif durable_cache_present and not durable_cache_remembered:
+                # 内容在、记账本却没记：这条会被当作首次写而重复入库，下个 session 可能看到两遍。
+                logger.warning(
+                    "[%s] durable context cache desync: content present but dedup record "
+                    "missing; may duplicate in next session (source=%s request_id=%s)",
+                    self.lanlan_name,
+                    payload.get("source"),
+                    payload.get("request_id"),
+                )
+            if durable_cache_remembered and durable_cache_present:
                 targets.append("new_session_cache")
             elif self._append_context_to_new_session_cache(role, content):
                 payload["_durable_cached"] = True

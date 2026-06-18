@@ -1192,3 +1192,84 @@ async def test_append_context_applies_token_budget(monkeypatch):
     assert result.appended is True
     assert truncate_calls == 1
     assert history[0].content == "__sentinel_truncated_context__"
+
+
+@pytest.mark.asyncio
+async def test_durable_cache_desync_warns_and_reappends_when_swap_consumed_cache(monkeypatch):
+    # 失步窗口：when_ready 的 durable 上下文先入 next-session 缓存并记账，session swap
+    # 期间 _consume_next_session_context_messages 把内容消费走，但去重记账本（TTL 内）未清。
+    # readiness flush 重走 _append_context_to_targets 时应：(1) 自检告警两套结构失步，
+    # (2) 靠 present 二次核对兜底重写、不丢上下文。
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    warnings_seen = []
+    monkeypatch.setattr(
+        core_module.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings_seen.append(msg % args if args else msg),
+    )
+
+    queued = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="durable setup",
+        timing="when_ready",
+        lifetime="next_session",
+        request_id="durable-request",
+    )
+    assert queued.targets == ("pending_ready",)
+    assert mgr.next_session_context_messages == [{"role": "Lan", "text": "durable setup"}]
+    assert len(mgr.pending_context_appends) == 1
+
+    # 模拟 session swap 消费缓存（记账本不动）。
+    mgr._consume_next_session_context_messages(len(mgr.next_session_context_messages))
+    assert mgr.next_session_context_messages == []
+
+    mgr.session_ready = True
+    flushed = await mgr._flush_pending_context_appends()
+
+    assert flushed == 1
+    assert any("durable context cache desync" in str(msg) for msg in warnings_seen)
+    assert "content missing from next-session cache" in " ".join(str(m) for m in warnings_seen)
+    # 兜底重写，上下文没丢。
+    assert mgr.next_session_context_messages == [{"role": "Lan", "text": "durable setup"}]
+
+
+@pytest.mark.asyncio
+async def test_durable_cache_desync_warns_when_content_present_but_record_missing(monkeypatch):
+    # 反向失步：内容已在 next-session 缓存，但去重记账本没有对应记录（例如记账被清/未写成功）。
+    # 这条会被当作首次写而重复入库，应在重写前自检告警。
+    mgr = _make_manager()
+    mgr.next_session_context_messages = [{"role": "Lan", "text": "dup line"}]
+
+    warnings_seen = []
+    monkeypatch.setattr(
+        core_module.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings_seen.append(msg % args if args else msg),
+    )
+
+    payload = {
+        "source": "game.icebreaker",
+        "role": "assistant",
+        "text": "dup line",
+        "audience": "model",
+        "timing": "now",
+        "lifetime": "next_session",
+        "request_id": "dup-request",
+        "ordering_key": "",
+        "metadata": {},
+    }
+    result = await mgr._append_context_to_targets(payload)
+
+    assert result.appended is True
+    assert "new_session_cache" in result.targets
+    assert any(
+        "content present but dedup record" in str(msg) for msg in warnings_seen
+    )
+    # 记账缺失导致重复入库。
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "dup line"},
+        {"role": "Lan", "text": "dup line"},
+    ]
