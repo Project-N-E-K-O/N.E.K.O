@@ -331,6 +331,75 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     pointer-events: none;
 }
 
+#subtitle-display[data-subtitle-danmaku-active="true"] #subtitle-scroll {
+    text-align: left;
+}
+
+#subtitle-display[data-subtitle-danmaku-active="true"] #subtitle-text {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.subtitle-danmaku-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    overflow: hidden;
+    pointer-events: none;
+    --subtitle-danmaku-edge-fade: 18px;
+    -webkit-mask: linear-gradient(
+        90deg,
+        transparent 0,
+        #000 var(--subtitle-danmaku-edge-fade),
+        #000 calc(100% - var(--subtitle-danmaku-edge-fade)),
+        transparent 100%
+    );
+    mask: linear-gradient(
+        90deg,
+        transparent 0,
+        #000 var(--subtitle-danmaku-edge-fade),
+        #000 calc(100% - var(--subtitle-danmaku-edge-fade)),
+        transparent 100%
+    );
+}
+
+.subtitle-danmaku-lane {
+    position: absolute;
+    left: 0;
+    top: var(--subtitle-danmaku-top, 50%);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--subtitle-danmaku-item-gap, 42px);
+    max-width: none;
+    white-space: nowrap;
+    transform: translate3d(var(--subtitle-panel-width, 100%), -50%, 0);
+    animation: subtitle-danmaku-scroll var(--subtitle-danmaku-duration, 9s) linear infinite;
+    animation-delay: var(--subtitle-danmaku-delay, 0s);
+    will-change: transform;
+}
+
+.subtitle-danmaku-item {
+    display: inline-block;
+    flex: 0 0 auto;
+    max-width: none;
+    white-space: nowrap;
+    color: var(--subtitle-text-fill);
+    text-shadow: var(--subtitle-panel-text-shadow);
+    -webkit-text-stroke: 0.35px var(--subtitle-text-stroke);
+    paint-order: stroke fill;
+}
+
+@keyframes subtitle-danmaku-scroll {
+    from {
+        transform: translate3d(var(--subtitle-panel-width, 100%), -50%, 0);
+    }
+
+    to {
+        transform: translate3d(calc(-100% - 24px), -50%, 0);
+    }
+}
+
 #subtitle-text:empty::before {
     content: attr(data-subtitle-placeholder);
     display: inline-block;

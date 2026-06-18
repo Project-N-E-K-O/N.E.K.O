@@ -15,6 +15,7 @@
     var DESKTOP_MIN_PANEL_WIDTH = 48;
     var DESKTOP_MIN_PANEL_HEIGHT = 28;
     var DANMAKU_MODE_HEAD_GAP = 12;
+    var DANMAKU_MODE_VERTICAL_OFFSET_RATIO = 0.5;
     var DANMAKU_MODE_SWITCH_MASK_SETTLE_MS = 140;
     var DANMAKU_MODE_SWITCH_MASK_MAX_MS = 900;
     var activeNativeResizeState = null;
@@ -99,10 +100,23 @@
         setWindowSizeOnce();
     }
 
+    function renderSubtitleDanmakuLayer(text) {
+        if (!SubtitleShared || typeof SubtitleShared.renderSubtitleDanmakuText !== 'function') return false;
+        var state = typeof SubtitleShared.getSettings === 'function' ? SubtitleShared.getSettings() : null;
+        var enabled = !!(state && state.subtitleDanmakuMode);
+        SubtitleShared.renderSubtitleDanmakuText(
+            subtitleWindowController && subtitleWindowController.refs,
+            text,
+            { enabled: enabled }
+        );
+        return enabled;
+    }
+
     function applyTranscript(text) {
         currentTranscript = String(text || '');
         if (subtitleWindowController && subtitleWindowController.refs && subtitleWindowController.refs.text) {
             subtitleWindowController.refs.text.textContent = currentTranscript;
+            renderSubtitleDanmakuLayer(currentTranscript);
         }
         resizeWindowToTranscript();
     }
@@ -381,7 +395,8 @@
         var basePanelHeight = panelWidth / 2;
         var panelHeight = Math.max(DESKTOP_MIN_PANEL_HEIGHT, Math.round(basePanelHeight * 2 / 3));
         var panelLeft = avatar.centerX - panelWidth / 2;
-        var panelTop = avatar.top - panelHeight - DANMAKU_MODE_HEAD_GAP;
+        var panelTop = avatar.top - panelHeight - DANMAKU_MODE_HEAD_GAP +
+            panelHeight * DANMAKU_MODE_VERTICAL_OFFSET_RATIO;
         var workArea = normalized.workArea;
         if (workArea) {
             var workLeft = Number(workArea.x);
@@ -1239,6 +1254,13 @@
                 var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
                 var panelStateOnly = changedKeys.length === 1 && changedKeys[0] === 'subtitlePanelState';
                 SubtitleShared.applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, { host: 'window' });
+                if (changedKeys.indexOf('subtitleDanmakuMode') !== -1 ||
+                    changedKeys.indexOf('subtitlePanelBounds') !== -1 ||
+                    changedKeys.indexOf('subtitleFontSize') !== -1 ||
+                    (detail && detail.source === 'subtitle-danmaku-avatar-layout') ||
+                    (detail && detail.source === 'subtitle-danmaku-restore')) {
+                    renderSubtitleDanmakuLayer(currentTranscript);
+                }
                 if (!panelStateOnly || !hasExternalSettingsBridge()) {
                     resizeWindowToTranscript();
                 }

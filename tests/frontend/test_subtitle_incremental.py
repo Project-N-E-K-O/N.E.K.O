@@ -56,6 +56,9 @@ def test_subtitle_danmaku_mode_switch_uses_soft_blue_when_enabled():
     assert "#subtitle-danmaku-mode-btn:checked + .subtitle-settings-track::after" in css
     assert "background-size: 40px 40px;" in css
     assert "transform: translate(20px, -50%);" in css
+    assert "--subtitle-danmaku-edge-fade: 18px;" in css
+    assert "-webkit-mask: linear-gradient(" in css
+    assert "mask: linear-gradient(" in css
 
 
 def test_web_subtitle_opacity_slider_matches_design_minimum():
@@ -326,7 +329,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
     assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
-    assert result["afterOn"]["nativeBounds"] == {"x": 794, "y": 215, "width": 212, "height": 79}
+    assert result["afterOn"]["nativeBounds"] == {"x": 794, "y": 249, "width": 212, "height": 79}
     assert result["afterOn"]["panelState"] == "clean"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["closeCount"] == 1
@@ -757,12 +760,12 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
     assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
     assert result["afterOn"]["settings"]["subtitlePanelPosition"] == {
         "left": 800,
-        "top": 221,
+        "top": 254.5,
         "coordinateSpace": "viewport",
     }
     assert result["afterOn"]["style"] == {
         "left": "800px",
-        "top": "221px",
+        "top": "254.5px",
         "width": "200px",
         "height": "67px",
     }
@@ -912,6 +915,136 @@ def _open_subtitle_harness(
         ),
     )
     mock_page.goto(f"http://neko.test{path}")
+
+
+@pytest.mark.frontend
+def test_subtitle_danmaku_renderer_groups_every_two_punctuation_marks(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/subtitle-danmaku-renderer-harness",
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const shared = window.nekoSubtitleShared;
+            const controller = shared.initSubtitleUI({ host: 'web' });
+            const refs = controller.refs;
+            const text = '第一段，第二段，第三段。第四段！第五段？';
+            refs.text.textContent = text;
+            const segments = shared.renderSubtitleDanmakuText(refs, text, { enabled: true });
+            const items = Array.from(document.querySelectorAll('.subtitle-danmaku-item'))
+                .map((item) => ({
+                    index: Number(item.dataset.subtitleDanmakuIndex),
+                    text: item.textContent,
+                    lane: item.dataset.subtitleDanmakuLane,
+                    itemAnimationName: getComputedStyle(item).animationName,
+                    laneAnimationName: getComputedStyle(item.parentElement).animationName,
+                    laneDisplay: getComputedStyle(item.parentElement).display,
+                    laneGap: getComputedStyle(item.parentElement).gap,
+                }))
+                .sort((a, b) => a.index - b.index);
+            const active = {
+                segments,
+                items,
+                layerExists: !!document.querySelector('.subtitle-danmaku-layer'),
+                scrollClass: refs.scroll.classList.contains('subtitle-danmaku-scroll'),
+                activeFlag: refs.display.dataset.subtitleDanmakuActive || '',
+                count: refs.display.dataset.subtitleDanmakuCount || '',
+                textVisibility: getComputedStyle(refs.text).visibility,
+            };
+            shared.renderSubtitleDanmakuText(refs, text, { enabled: false });
+            const cleared = {
+                layerExists: !!document.querySelector('.subtitle-danmaku-layer'),
+                scrollClass: refs.scroll.classList.contains('subtitle-danmaku-scroll'),
+                activeFlag: refs.display.dataset.subtitleDanmakuActive || '',
+                count: refs.display.dataset.subtitleDanmakuCount || '',
+            };
+            return { active, cleared };
+        }
+        """
+    )
+
+    expected_segments = ["第一段，第二段，", "第三段。第四段！", "第五段？"]
+    assert result["active"]["segments"] == expected_segments
+    assert [item["text"] for item in result["active"]["items"]] == expected_segments
+    assert [item["lane"] for item in result["active"]["items"]] == ["0", "1", "0"]
+    assert {item["laneAnimationName"] for item in result["active"]["items"]} == {
+        "subtitle-danmaku-scroll"
+    }
+    assert {item["itemAnimationName"] for item in result["active"]["items"]} == {"none"}
+    assert {item["laneDisplay"] for item in result["active"]["items"]} == {"flex"}
+    assert {item["laneGap"] for item in result["active"]["items"]} == {"42px"}
+    assert result["active"]["layerExists"] is True
+    assert result["active"]["scrollClass"] is True
+    assert result["active"]["activeFlag"] == "true"
+    assert result["active"]["count"] == "3"
+    assert result["active"]["textVisibility"] == "hidden"
+    assert result["cleared"] == {
+        "layerExists": False,
+        "scrollClass": False,
+        "activeFlag": "",
+        "count": "",
+    }
+
+
+@pytest.mark.frontend
+def test_web_subtitle_write_text_uses_danmaku_renderer_when_mode_enabled(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/subtitle-web-danmaku-write-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleDanmakuMode', 'true');
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            window.writeSubtitleText('第一段，第二段，第三段。第四段！第五段？');
+            return {
+                text: document.getElementById('subtitle-text').textContent,
+                active: document.getElementById('subtitle-display').dataset.subtitleDanmakuActive || '',
+                items: Array.from(document.querySelectorAll('.subtitle-danmaku-item'))
+                    .map((item) => ({
+                        index: Number(item.dataset.subtitleDanmakuIndex),
+                        text: item.textContent,
+                    }))
+                    .sort((a, b) => a.index - b.index)
+                    .map((item) => item.text),
+            };
+        }
+        """
+    )
+
+    assert result["text"] == "第一段，第二段，第三段。第四段！第五段？"
+    assert result["active"] == "true"
+    assert result["items"] == ["第一段，第二段，", "第三段。第四段！", "第五段？"]
 
 
 @pytest.mark.frontend
@@ -6467,6 +6600,72 @@ def test_subtitle_window_ignores_raw_transcript_after_translated_render_state(
     assert result["afterTranslated"] == "Translated subtitle text."
     assert result["afterRawTranscript"] == "Translated subtitle text."
     assert result["afterTranslatedClear"] == ""
+
+
+@pytest.mark.frontend
+def test_subtitle_window_danmaku_mode_renders_translated_text_as_scrolling_items(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-window-danmaku-render-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleDanmakuMode', 'true');
+            window.nekoSubtitle = {
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: {
+                    transcript: '第一段，第二段，第三段。第四段！第五段？',
+                    translated: true,
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            return {
+                text: document.getElementById('subtitle-text').textContent,
+                active: document.getElementById('subtitle-display').dataset.subtitleDanmakuActive || '',
+                items: Array.from(document.querySelectorAll('.subtitle-danmaku-item'))
+                    .map((item) => ({
+                        index: Number(item.dataset.subtitleDanmakuIndex),
+                        text: item.textContent,
+                    }))
+                    .sort((a, b) => a.index - b.index)
+                    .map((item) => item.text),
+            };
+        }
+        """
+    )
+
+    assert result["text"] == "第一段，第二段，第三段。第四段！第五段？"
+    assert result["active"] == "true"
+    assert result["items"] == ["第一段，第二段，", "第三段。第四段！", "第五段？"]
 
 
 @pytest.mark.frontend

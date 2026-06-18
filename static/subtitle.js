@@ -16,6 +16,7 @@ var SubtitleShared = window.nekoSubtitleShared || null;
 var subtitleUiController = null;
 var webDanmakuModeSettingsCleanup = null;
 var WEB_DANMAKU_AVATAR_GAP = 12;
+var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
 var WEB_DANMAKU_STATE_SYNC_MS = 120;
 var WEB_DANMAKU_MIN_PANEL_WIDTH = 48;
 var WEB_DANMAKU_MIN_PANEL_HEIGHT = 28;
@@ -232,7 +233,8 @@ function computeWebDanmakuLayout(avatarBounds) {
         maxLeft
     );
     var top = clampWebDanmakuNumber(
-        avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP,
+        avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP +
+            panelHeight * WEB_DANMAKU_VERTICAL_OFFSET_RATIO,
         0,
         maxTop
     );
@@ -663,6 +665,7 @@ function hideSubtitle() {
     if (!display) return;
     const subtitleText = document.getElementById('subtitle-text');
     if (subtitleText) subtitleText.textContent = '';
+    clearSubtitleDanmakuLayer();
     display.classList.remove('show');
     display.classList.add('hidden');
     display.style.opacity = '0';
@@ -674,11 +677,36 @@ function hideSubtitle() {
  * 长文本自动缩小字号以保持在可视范围内。
  */
 var _subtitleFontResizeTimer = null;
+function getSubtitleDanmakuRefs() {
+    if (subtitleUiController && subtitleUiController.refs) {
+        return subtitleUiController.refs;
+    }
+    return {
+        display: document.getElementById('subtitle-display'),
+        scroll: document.getElementById('subtitle-scroll'),
+        text: document.getElementById('subtitle-text')
+    };
+}
+
+function renderSubtitleDanmakuLayer(text) {
+    if (!SubtitleShared || typeof SubtitleShared.renderSubtitleDanmakuText !== 'function') return false;
+    var state = typeof SubtitleShared.getSettings === 'function' ? SubtitleShared.getSettings() : null;
+    var enabled = !!(state && state.subtitleDanmakuMode);
+    SubtitleShared.renderSubtitleDanmakuText(getSubtitleDanmakuRefs(), text, { enabled: enabled });
+    return enabled;
+}
+
+function clearSubtitleDanmakuLayer() {
+    if (!SubtitleShared || typeof SubtitleShared.clearSubtitleDanmakuText !== 'function') return;
+    SubtitleShared.clearSubtitleDanmakuText(getSubtitleDanmakuRefs());
+}
+
 function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
     subtitleText.style.fontSize = '';
+    var danmakuRendering = renderSubtitleDanmakuLayer(subtitleText.textContent);
     syncSubtitleRenderState('subtitle-text-write');
 
     // 自适应字号：防抖测量，避免流式高频触发
@@ -687,6 +715,7 @@ function writeSubtitleText(text) {
         syncSubtitleRenderState('subtitle-text-clear');
         return;
     }
+    if (danmakuRendering) return;
     _subtitleFontResizeTimer = setTimeout(function() {
         var display = document.getElementById('subtitle-display');
         if (!display) return;
@@ -1098,6 +1127,7 @@ function initSubtitleHostUi() {
                 detail.source === 'subtitle-ui-font-size' ||
                 detail.source === 'subtitle-web-danmaku-layout' ||
                 detail.source === 'subtitle-web-danmaku-restore' ||
+                changedKeys.indexOf('subtitleDanmakuMode') !== -1 ||
                 changedKeys.indexOf('subtitleFontSize') !== -1
             );
             if (shouldRemeasureText && refs && refs.text && refs.text.textContent) {

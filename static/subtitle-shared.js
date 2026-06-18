@@ -985,6 +985,132 @@
         return resolved;
     }
 
+    function isDanmakuBoundaryPunctuation(ch) {
+        return ',，.。!！?？;；:：、…'.indexOf(ch) !== -1;
+    }
+
+    function isDanmakuClosingPunctuation(ch) {
+        return '"\'”’）)]}》」』】'.indexOf(ch) !== -1;
+    }
+
+    function splitSubtitleDanmakuSegments(text) {
+        var normalized = String(text || '').replace(/\s+/g, ' ').trim();
+        var segments = [];
+        var start = 0;
+        var punctuationCount = 0;
+        var i;
+        var end;
+        var segment;
+
+        if (!normalized) return segments;
+
+        for (i = 0; i < normalized.length; i += 1) {
+            if (!isDanmakuBoundaryPunctuation(normalized.charAt(i))) continue;
+            punctuationCount += 1;
+            if (punctuationCount < 2) continue;
+
+            end = i + 1;
+            while (end < normalized.length && isDanmakuClosingPunctuation(normalized.charAt(end))) {
+                end += 1;
+            }
+            segment = normalized.slice(start, end).trim();
+            if (segment) segments.push(segment);
+            start = end;
+            i = end - 1;
+            punctuationCount = 0;
+        }
+
+        segment = normalized.slice(start).trim();
+        if (segment) segments.push(segment);
+        return segments;
+    }
+
+    function clearSubtitleDanmakuText(refs) {
+        var display = refs && refs.display;
+        var scroll = refs && refs.scroll;
+        var layer = scroll && scroll.querySelector ? scroll.querySelector('.subtitle-danmaku-layer') : null;
+        if (layer && layer.parentNode) {
+            layer.parentNode.removeChild(layer);
+        }
+        if (scroll && scroll.classList) {
+            scroll.classList.remove('subtitle-danmaku-scroll');
+        }
+        if (display && display.dataset) {
+            delete display.dataset.subtitleDanmakuActive;
+            delete display.dataset.subtitleDanmakuCount;
+        }
+    }
+
+    function renderSubtitleDanmakuText(refs, text, options) {
+        var display = refs && refs.display;
+        var scroll = refs && refs.scroll;
+        var enabled = !!(options && options.enabled);
+        var segments = enabled ? splitSubtitleDanmakuSegments(text) : [];
+        var layer;
+        var laneCount;
+        var lanes;
+        var i;
+        var segment;
+        var item;
+        var lane;
+        var duration;
+        var delay;
+
+        if (!display || !scroll || !enabled || !segments.length) {
+            clearSubtitleDanmakuText(refs);
+            return segments;
+        }
+
+        layer = scroll.querySelector ? scroll.querySelector('.subtitle-danmaku-layer') : null;
+        if (!layer) {
+            layer = document.createElement('div');
+            layer.className = 'subtitle-danmaku-layer';
+            layer.setAttribute('aria-hidden', 'true');
+            scroll.appendChild(layer);
+        }
+        layer.textContent = '';
+        laneCount = Math.min(2, Math.max(1, segments.length));
+        lanes = [];
+
+        for (i = 0; i < laneCount; i += 1) {
+            lane = document.createElement('div');
+            lane.className = 'subtitle-danmaku-lane';
+            lane.dataset.subtitleDanmakuLane = String(i);
+            lane.style.setProperty('--subtitle-danmaku-top', ((i + 0.5) * 100 / laneCount) + '%');
+            layer.appendChild(lane);
+            lanes.push({
+                element: lane,
+                textLength: 0,
+                itemCount: 0
+            });
+        }
+
+        for (i = 0; i < segments.length; i += 1) {
+            segment = segments[i];
+            lane = i % laneCount;
+            item = document.createElement('span');
+            item.className = 'subtitle-danmaku-item';
+            item.textContent = segment;
+            item.dataset.subtitleDanmakuIndex = String(i);
+            item.dataset.subtitleDanmakuLane = String(lane);
+            lanes[lane].element.appendChild(item);
+            lanes[lane].textLength += segment.length;
+            lanes[lane].itemCount += 1;
+        }
+
+        for (i = 0; i < lanes.length; i += 1) {
+            duration = Math.max(8, Math.min(20, 8 + lanes[i].textLength * 0.12 + lanes[i].itemCount * 0.8));
+            delay = i * 1.4;
+            lanes[i].element.style.setProperty('--subtitle-danmaku-duration', duration.toFixed(2) + 's');
+            lanes[i].element.style.setProperty('--subtitle-danmaku-delay', '-' + (delay % duration).toFixed(2) + 's');
+        }
+
+        scroll.classList.add('subtitle-danmaku-scroll');
+        display.dataset.subtitleDanmakuActive = 'true';
+        display.dataset.subtitleDanmakuCount = String(segments.length);
+        return segments;
+    }
+
     function applySettingsToUi(refs, state, options) {
         if (!refs || !refs.display) return;
         var host = options && options.host ? options.host : 'web';
@@ -2240,6 +2366,9 @@
         measureSubtitleLayout: measureSubtitleLayout,
         getPanelBounds: getPanelBounds,
         applySubtitlePanelBounds: applySubtitlePanelBounds,
+        splitSubtitleDanmakuSegments: splitSubtitleDanmakuSegments,
+        renderSubtitleDanmakuText: renderSubtitleDanmakuText,
+        clearSubtitleDanmakuText: clearSubtitleDanmakuText,
         initSubtitleUI: initSubtitleUI
     };
 })();
