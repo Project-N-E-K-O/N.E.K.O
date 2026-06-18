@@ -89,8 +89,8 @@ class FocusScorer:
         signals = {"keyword": kw, "cadence": cadence}
         score = _weighted_average(signals, config.FOCUS_SIGNAL_WEIGHTS)
 
-        # Update the cadence baseline only for real inline messages.
-        if user_text is not None and user_text.strip():
+        # Update the cadence baseline for this inline message.
+        if user_text.strip():
             self._recent_lengths.append(len(user_text.strip()))
 
         return FocusScore(score=score, signals=signals)
@@ -99,17 +99,13 @@ class FocusScorer:
         """Drop the cadence baseline (call on session teardown / hot-swap)."""
         self._recent_lengths.clear()
 
-    # ── sub-signals (each → [0, 1] or None when not applicable) ──────
-    def _signal_keyword(self, user_text: Optional[str]) -> Optional[float]:
-        if user_text is None:
-            return None
+    # ── sub-signals (keyword → [0, 1]; cadence → [0, 1] or None) ─────
+    def _signal_keyword(self, user_text: str) -> float:
         count = scan_vulnerability_keywords(user_text)
         sat = max(1, int(config.FOCUS_KEYWORD_SATURATION))
         return min(count / sat, 1.0)
 
-    def _signal_cadence(self, user_text: Optional[str]) -> Optional[float]:
-        if user_text is None:
-            return None
+    def _signal_cadence(self, user_text: str) -> Optional[float]:
         text = user_text.strip()
         if not text:
             return None
