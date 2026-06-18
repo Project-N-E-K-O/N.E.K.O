@@ -54,6 +54,11 @@
         } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleInteractionPassthrough')) {
             patch.subtitleInteractionPassthrough = data.subtitleInteractionPassthrough !== false;
         }
+        if (Object.prototype.hasOwnProperty.call(data, 'danmakuMode')) {
+            patch.subtitleDanmakuMode = !!data.danmakuMode;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleDanmakuMode')) {
+            patch.subtitleDanmakuMode = !!data.subtitleDanmakuMode;
+        }
         if (Object.prototype.hasOwnProperty.call(data, 'userLanguage')) {
             patch.userLanguage = data.userLanguage;
         }

@@ -7,11 +7,11 @@
 
     var SETTINGS_EVENT = 'neko-subtitle-settings-change';
     var RENDER_EVENT = 'neko-subtitle-render-state';
-    var DEFAULT_BACKGROUND_OPACITY = 95;
-    var DEFAULT_PANEL_BOUNDS = { width: 600, height: 68 };
+    var DEFAULT_BACKGROUND_OPACITY = 25;
+    var DEFAULT_PANEL_BOUNDS = { width: 655, height: 109 };
     var PANEL_SIZE_PRESETS = {
         small: { width: 420, height: 52 },
-        medium: { width: 600, height: 68 },
+        medium: { width: 655, height: 109 },
         large: { width: 760, height: 92 }
     };
     var DEFAULT_SUBTITLE_FONT_SIZE = 26;
@@ -32,6 +32,7 @@
         subtitlePanelPosition: 'subtitlePanelPosition',
         subtitlePanelLocked: 'subtitlePanelLocked',
         subtitleInteractionPassthrough: 'subtitleInteractionPassthrough',
+        subtitleDanmakuMode: 'subtitleDanmakuMode',
         subtitleFontSize: 'subtitleFontSize',
         subtitleColorScheme: 'subtitleColorScheme'
     };
@@ -91,7 +92,7 @@
             colorSchemeBlue: '蓝',
             colorSchemeIndigo: '靛',
             colorSchemeViolet: '紫',
-            danmakuMode: '弹幕',
+            danmakuMode: '弹幕模式',
             passthroughInteraction: '透明区域穿透',
             emptyHint: '暂无翻译内容'
         },
@@ -117,7 +118,7 @@
             colorSchemeBlue: '藍',
             colorSchemeIndigo: '靛',
             colorSchemeViolet: '紫',
-            danmakuMode: '彈幕',
+            danmakuMode: '彈幕模式',
             passthroughInteraction: '透明區域穿透',
             emptyHint: '暫無翻譯內容'
         },
@@ -143,7 +144,7 @@
             colorSchemeBlue: 'Blue',
             colorSchemeIndigo: 'Indigo',
             colorSchemeViolet: 'Violet',
-            danmakuMode: 'Danmaku',
+            danmakuMode: 'Danmaku mode',
             passthroughInteraction: 'Transparent area passthrough',
             emptyHint: 'No translation yet'
         },
@@ -169,7 +170,7 @@
             colorSchemeBlue: 'Azul',
             colorSchemeIndigo: 'Índigo',
             colorSchemeViolet: 'Violeta',
-            danmakuMode: 'Danmaku',
+            danmakuMode: 'Modo Danmaku',
             passthroughInteraction: 'Clics en área transparente',
             emptyHint: 'Sin traducción todavía'
         },
@@ -195,7 +196,7 @@
             colorSchemeBlue: 'Azul',
             colorSchemeIndigo: 'Índigo',
             colorSchemeViolet: 'Violeta',
-            danmakuMode: 'Danmaku',
+            danmakuMode: 'Modo Danmaku',
             passthroughInteraction: 'Clique através da área transparente',
             emptyHint: 'Sem tradução ainda'
         },
@@ -221,7 +222,7 @@
             colorSchemeBlue: '青',
             colorSchemeIndigo: '藍',
             colorSchemeViolet: '紫',
-            danmakuMode: '弾幕',
+            danmakuMode: '弾幕モード',
             passthroughInteraction: '透明領域をクリック透過',
             emptyHint: '翻訳はまだありません'
         },
@@ -247,7 +248,7 @@
             colorSchemeBlue: '파랑',
             colorSchemeIndigo: '남색',
             colorSchemeViolet: '보라',
-            danmakuMode: '탄막',
+            danmakuMode: '탄막 모드',
             passthroughInteraction: '투명 영역 클릭 통과',
             emptyHint: '아직 번역이 없습니다'
         },
@@ -273,7 +274,7 @@
             colorSchemeBlue: 'Синий',
             colorSchemeIndigo: 'Индиго',
             colorSchemeViolet: 'Фиолетовый',
-            danmakuMode: 'Данмаку',
+            danmakuMode: 'Режим данмаку',
             passthroughInteraction: 'Пропуск кликов в прозрачных областях',
             emptyHint: 'Перевода пока нет'
         }
@@ -490,6 +491,7 @@
             subtitlePanelPosition: null,
             subtitlePanelLocked: false,
             subtitleInteractionPassthrough: false,
+            subtitleDanmakuMode: false,
             subtitleFontSize: DEFAULT_SUBTITLE_FONT_SIZE,
             subtitleColorScheme: DEFAULT_SUBTITLE_COLOR_SCHEME,
             uiLocale: getCurrentUiLocale()
@@ -508,6 +510,7 @@
                 settingsState.subtitlePanelLocked = storedPassthrough !== 'false';
             }
             settingsState.subtitleInteractionPassthrough = settingsState.subtitlePanelLocked;
+            settingsState.subtitleDanmakuMode = localStorage.getItem(SETTINGS_KEYS.subtitleDanmakuMode) === 'true';
             settingsState.subtitleFontSize = normalizeSubtitleFontSize(localStorage.getItem(SETTINGS_KEYS.subtitleFontSize));
             settingsState.subtitleColorScheme = normalizeSubtitleColorScheme(localStorage.getItem(SETTINGS_KEYS.subtitleColorScheme));
         } catch (_) {}
@@ -530,6 +533,7 @@
             subtitlePanelPosition: clonePanelPosition(current.subtitlePanelPosition),
             subtitlePanelLocked: current.subtitlePanelLocked,
             subtitleInteractionPassthrough: current.subtitleInteractionPassthrough,
+            subtitleDanmakuMode: current.subtitleDanmakuMode,
             subtitleFontSize: current.subtitleFontSize,
             subtitleColorScheme: current.subtitleColorScheme,
             subtitlePanelState: 'clean'
@@ -563,6 +567,9 @@
             }
             if (changedKeys.indexOf('subtitleInteractionPassthrough') !== -1) {
                 localStorage.setItem(SETTINGS_KEYS.subtitleInteractionPassthrough, String(nextState.subtitleInteractionPassthrough));
+            }
+            if (changedKeys.indexOf('subtitleDanmakuMode') !== -1) {
+                localStorage.setItem(SETTINGS_KEYS.subtitleDanmakuMode, String(nextState.subtitleDanmakuMode));
             }
             if (changedKeys.indexOf('subtitleFontSize') !== -1) {
                 localStorage.setItem(SETTINGS_KEYS.subtitleFontSize, String(nextState.subtitleFontSize));
@@ -601,7 +608,7 @@
             'text', 'visible', 'subtitleEnabled', 'userLanguage', 'uiLocale',
             'subtitleOpacity', 'subtitlePanelBounds',
             'subtitlePanelPosition', 'subtitlePanelLocked',
-            'subtitleInteractionPassthrough', 'subtitleFontSize',
+            'subtitleInteractionPassthrough', 'subtitleDanmakuMode', 'subtitleFontSize',
             'subtitleColorScheme', 'subtitlePanelState'
         ];
         var i;
@@ -620,6 +627,7 @@
             if (key === 'subtitlePanelPosition') value = normalizePanelPosition(value);
             if (key === 'subtitlePanelLocked') value = !!value;
             if (key === 'subtitleInteractionPassthrough') value = value !== false;
+            if (key === 'subtitleDanmakuMode') value = !!value;
             if (key === 'subtitleFontSize') value = normalizeSubtitleFontSize(value);
             if (key === 'subtitleColorScheme') value = normalizeSubtitleColorScheme(value);
             if (key === 'subtitlePanelState') value = normalizePanelState(value);
@@ -677,6 +685,9 @@
             next.subtitlePanelLocked = boundLocked;
             next.subtitleInteractionPassthrough = boundLocked;
         }
+        if (hasOwn(patch, 'subtitleDanmakuMode')) {
+            next.subtitleDanmakuMode = !!patch.subtitleDanmakuMode;
+        }
         if (hasOwn(patch, 'subtitleFontSize')) {
             next.subtitleFontSize = normalizeSubtitleFontSize(patch.subtitleFontSize);
         }
@@ -689,7 +700,7 @@
             'subtitleEnabled', 'userLanguage', 'subtitleOpacity',
             'subtitlePanelBounds', 'subtitlePanelPosition',
             'subtitlePanelLocked', 'subtitleInteractionPassthrough',
-            'subtitleFontSize', 'subtitleColorScheme', 'uiLocale'
+            'subtitleDanmakuMode', 'subtitleFontSize', 'subtitleColorScheme', 'uiLocale'
         ];
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
@@ -719,6 +730,7 @@
             subtitlePanelPosition: next.subtitlePanelPosition,
             subtitlePanelLocked: next.subtitlePanelLocked,
             subtitleInteractionPassthrough: next.subtitleInteractionPassthrough,
+            subtitleDanmakuMode: next.subtitleDanmakuMode,
             subtitleFontSize: next.subtitleFontSize,
             subtitleColorScheme: next.subtitleColorScheme
         }, { source: options && options.source ? options.source : 'subtitle-settings' });
@@ -747,6 +759,8 @@
             patch.subtitlePanelLocked = value === 'true';
         } else if (key === SETTINGS_KEYS.subtitleInteractionPassthrough) {
             patch.subtitleInteractionPassthrough = value !== 'false';
+        } else if (key === SETTINGS_KEYS.subtitleDanmakuMode) {
+            patch.subtitleDanmakuMode = value === 'true';
         } else if (key === SETTINGS_KEYS.subtitleFontSize) {
             patch.subtitleFontSize = normalizeSubtitleFontSize(value);
         } else if (key === SETTINGS_KEYS.subtitleColorScheme) {
@@ -1021,6 +1035,9 @@
         }
         if (refs.colorSchemeSelect) {
             refs.colorSchemeSelect.value = normalizeSubtitleColorScheme(state.subtitleColorScheme);
+        }
+        if (refs.danmakuModeBtn) {
+            refs.danmakuModeBtn.checked = !!state.subtitleDanmakuMode;
         }
         if (refs.passthroughToggle) {
             refs.passthroughToggle.checked = passthroughEnabled;
@@ -2285,6 +2302,25 @@
             refs.colorSchemeSelect.addEventListener('change', onColorSchemeSelect);
             cleanupFns.push(function() {
                 refs.colorSchemeSelect.removeEventListener('change', onColorSchemeSelect);
+            });
+        }
+
+        if (refs.danmakuModeBtn) {
+            var onDanmakuModeChange = function() {
+                var nextDanmakuMode = !!refs.danmakuModeBtn.checked;
+                var nextState = updateSettings({ subtitleDanmakuMode: nextDanmakuMode }, { source: 'subtitle-ui-danmaku-mode' });
+                if (typeof options.propagateSetting === 'function') {
+                    options.propagateSetting({
+                        type: 'danmakuMode',
+                        value: nextDanmakuMode,
+                        patch: { subtitleDanmakuMode: nextDanmakuMode },
+                        state: nextState
+                    });
+                }
+            };
+            refs.danmakuModeBtn.addEventListener('change', onDanmakuModeChange);
+            cleanupFns.push(function() {
+                refs.danmakuModeBtn.removeEventListener('change', onDanmakuModeChange);
             });
         }
 

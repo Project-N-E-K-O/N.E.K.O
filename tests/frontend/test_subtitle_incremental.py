@@ -7,6 +7,272 @@ from playwright.sync_api import Page
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_subtitle_panel_uses_two_thicker_corner_lines_without_texture():
+    css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
+
+    assert "--subtitle-corner-line" in css
+    assert "--subtitle-corner-line: rgba(30, 165, 255, 0.7);" in css
+    assert "--subtitle-corner-line: rgba(96, 205, 255, 0.7);" in css
+    assert "#subtitle-display::before" in css
+    assert "#subtitle-display::after" in css
+    assert "border-top: 3px solid var(--subtitle-corner-line);" in css
+    assert "border-left: 3px solid var(--subtitle-corner-line);" in css
+    assert "border-right: 3px solid var(--subtitle-corner-line);" in css
+    assert "border-bottom: 3px solid var(--subtitle-corner-line);" in css
+    assert "body.subtitle-settings-window-host #subtitle-display::before" in css
+    assert "body.subtitle-settings-window-host #subtitle-display::after" in css
+    assert "paw_ui.png" not in css
+    assert "background-repeat: repeat;" not in css
+    assert "mask-image:" not in css
+    assert "#subtitle-scroll {\n    position: relative;\n    z-index: 1;" in css
+
+
+def test_subtitle_danmaku_mode_switch_uses_deep_blue_when_enabled():
+    css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
+
+    assert "#subtitle-danmaku-mode-btn:checked + .subtitle-settings-track" in css
+    assert "background: rgba(30, 64, 175, 0.82);" in css
+
+
+@pytest.mark.frontend
+def test_subtitle_danmaku_mode_switch_persists_and_propagates(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel">
+                <label class="subtitle-settings-switch">
+                    <input type="checkbox" id="subtitle-danmaku-mode-btn" title="弹幕模式" aria-label="弹幕模式">
+                    <span class="subtitle-settings-track" aria-hidden="true"></span>
+                </label>
+            </div>
+        </div>
+        """,
+        path="/subtitle-danmaku-mode-switch-harness",
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const propagated = [];
+            const shared = window.nekoSubtitleShared;
+            shared.initSubtitleUI({
+                host: 'window',
+                propagateSetting: (change) => propagated.push({
+                    type: change.type,
+                    value: change.value,
+                    stateValue: change.state && change.state.subtitleDanmakuMode,
+                }),
+            });
+            const button = document.getElementById('subtitle-danmaku-mode-btn');
+            const before = {
+                checked: button.checked,
+                disabled: button.disabled,
+                setting: shared.getSettings().subtitleDanmakuMode,
+                render: shared.getRenderState().subtitleDanmakuMode,
+                stored: window.localStorage.getItem('subtitleDanmakuMode'),
+            };
+            button.checked = true;
+            button.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterOn = {
+                checked: button.checked,
+                disabled: button.disabled,
+                setting: shared.getSettings().subtitleDanmakuMode,
+                render: shared.getRenderState().subtitleDanmakuMode,
+                stored: window.localStorage.getItem('subtitleDanmakuMode'),
+                propagated: propagated.slice(),
+            };
+            button.checked = false;
+            button.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterOff = {
+                checked: button.checked,
+                setting: shared.getSettings().subtitleDanmakuMode,
+                render: shared.getRenderState().subtitleDanmakuMode,
+                stored: window.localStorage.getItem('subtitleDanmakuMode'),
+                propagated: propagated.slice(),
+            };
+            return { before, afterOn, afterOff };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "checked": False,
+        "disabled": False,
+        "setting": False,
+        "render": False,
+        "stored": None,
+    }
+    assert result["afterOn"]["checked"] is True
+    assert result["afterOn"]["setting"] is True
+    assert result["afterOn"]["render"] is True
+    assert result["afterOn"]["stored"] == "true"
+    assert result["afterOn"]["propagated"] == [
+        {"type": "danmakuMode", "value": True, "stateValue": True}
+    ]
+    assert result["afterOff"]["checked"] is False
+    assert result["afterOff"]["setting"] is False
+    assert result["afterOff"]["render"] is False
+    assert result["afterOff"]["stored"] == "false"
+    assert result["afterOff"]["propagated"] == [
+        {"type": "danmakuMode", "value": True, "stateValue": True},
+        {"type": "danmakuMode", "value": False, "stateValue": False},
+    ]
+
+
+@pytest.mark.frontend
+def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-lock-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden">
+                <label class="subtitle-settings-switch">
+                    <input type="checkbox" id="subtitle-danmaku-mode-btn">
+                    <span class="subtitle-settings-track" aria-hidden="true"></span>
+                </label>
+            </div>
+            <div id="subtitle-resize-handles" aria-hidden="true">
+                <span class="subtitle-resize-edge" data-resize-dir="se"></span>
+            </div>
+        </div>
+        """,
+        path="/subtitle-window-danmaku-layout-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({ width: 655, height: 109 }));
+            window.localStorage.setItem('subtitlePanelLocked', 'false');
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'false');
+            window.__subtitleNativeBounds = { x: 100, y: 300, width: 667, height: 121 };
+            window.__subtitleSetBoundsCalls = [];
+            window.__subtitleSettingsChanges = [];
+            window.__subtitleSettingsCloseCount = 0;
+            window.__avatarBoundsSubscriptions = [];
+            window.__avatarBoundsHandler = null;
+            window.nekoSubtitle = {
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+                getCursorPoint: () => Promise.resolve({ screenX: 0, screenY: 0 }),
+                getBounds: () => Promise.resolve({ ...window.__subtitleNativeBounds }),
+                setBounds: (x, y, w, h) => {
+                    const next = { x, y, width: w, height: h };
+                    window.__subtitleSetBoundsCalls.push(next);
+                    window.__subtitleNativeBounds = next;
+                },
+                setSize: () => {},
+                changeSettings: (change) => window.__subtitleSettingsChanges.push(change),
+                updateSettingsWindow: () => {},
+                openSettings: () => {},
+                closeSettings: () => { window.__subtitleSettingsCloseCount += 1; },
+                subscribeAvatarBounds: (active) => window.__avatarBoundsSubscriptions.push(!!active),
+                onAvatarBounds: (handler) => {
+                    window.__avatarBoundsHandler = handler;
+                    return () => { window.__avatarBoundsHandler = null; };
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const panel = document.getElementById('subtitle-settings-panel');
+            document.getElementById('subtitle-settings-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            shared.updateSettings({ subtitleDanmakuMode: true }, { source: 'test-enable-danmaku' });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.__avatarBoundsHandler({
+                bounds: {
+                    left: 800,
+                    top: 300,
+                    right: 1000,
+                    bottom: 700,
+                    width: 200,
+                    height: 400,
+                    centerX: 900,
+                    centerY: 500,
+                },
+                display: {
+                    workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+                },
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterOn = {
+                subscriptions: window.__avatarBoundsSubscriptions.slice(),
+                settings: shared.getSettings(),
+                nativeBounds: window.__subtitleNativeBounds,
+                calls: window.__subtitleSetBoundsCalls.slice(),
+                changes: window.__subtitleSettingsChanges.slice(),
+                panelState: display.dataset.subtitlePanelState || '',
+                panelHidden: panel.classList.contains('hidden'),
+                closeCount: window.__subtitleSettingsCloseCount,
+            };
+            document.getElementById('subtitle-settings-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            shared.updateSettings({ subtitleDanmakuMode: false }, { source: 'test-disable-danmaku' });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterOff = {
+                subscriptions: window.__avatarBoundsSubscriptions.slice(),
+                settings: shared.getSettings(),
+                nativeBounds: window.__subtitleNativeBounds,
+                calls: window.__subtitleSetBoundsCalls.slice(),
+                changes: window.__subtitleSettingsChanges.slice(),
+                panelState: display.dataset.subtitlePanelState || '',
+                panelHidden: panel.classList.contains('hidden'),
+                closeCount: window.__subtitleSettingsCloseCount,
+            };
+            return { afterOn, afterOff };
+        }
+        """
+    )
+
+    assert result["afterOn"]["subscriptions"] == [True]
+    assert result["afterOn"]["settings"]["subtitleDanmakuMode"] is True
+    assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
+    assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
+    assert result["afterOn"]["nativeBounds"] == {"x": 794, "y": 215, "width": 212, "height": 79}
+    assert result["afterOn"]["panelState"] == "clean"
+    assert result["afterOn"]["panelHidden"] is True
+    assert result["afterOn"]["closeCount"] == 1
+    assert {"type": "lock", "value": True} in result["afterOn"]["changes"]
+    assert {"type": "bounds", "value": {"width": 200, "height": 67}} in result["afterOn"]["changes"]
+
+    assert result["afterOff"]["subscriptions"] == [True, False]
+    assert result["afterOff"]["settings"]["subtitleDanmakuMode"] is False
+    assert result["afterOff"]["settings"]["subtitlePanelLocked"] is False
+    assert result["afterOff"]["settings"]["subtitleInteractionPassthrough"] is False
+    assert result["afterOff"]["settings"]["subtitlePanelBounds"] == {"width": 655, "height": 109}
+    assert result["afterOff"]["nativeBounds"] == {"x": 100, "y": 300, "width": 667, "height": 121}
+    assert result["afterOff"]["panelState"] == "clean"
+    assert result["afterOff"]["panelHidden"] is True
+    assert result["afterOff"]["closeCount"] == 2
+    assert {"type": "lock", "value": False} in result["afterOff"]["changes"]
+    assert {"type": "bounds", "value": {"width": 655, "height": 109}} in result["afterOff"]["changes"]
+
+
 def _open_subtitle_harness(
     mock_page: Page,
     body_class: str,
@@ -433,6 +699,8 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
                 selectValue: select.value,
                 dataset: display.dataset.subtitleColorScheme,
                 textColor: getComputedStyle(text).color,
+                cornerTopColor: getComputedStyle(display, '::before').borderTopColor,
+                cornerBottomColor: getComputedStyle(display, '::after').borderBottomColor,
                 title: select.title,
                 optionLabels: Array.from(select.options).map((option) => option.textContent),
                 danmakuDisabled: danmakuButton.disabled,
@@ -450,6 +718,8 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
                 selectValue: select.value,
                 dataset: display.dataset.subtitleColorScheme,
                 textColor: getComputedStyle(text).color,
+                cornerTopColor: getComputedStyle(display, '::before').borderTopColor,
+                cornerBottomColor: getComputedStyle(display, '::after').borderBottomColor,
                 stored: window.localStorage.getItem('subtitleColorScheme'),
                 propagated,
             };
@@ -465,6 +735,8 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
         "selectValue": "green",
         "dataset": "green",
         "textColor": "rgb(22, 163, 74)",
+        "cornerTopColor": "rgb(22, 163, 74)",
+        "cornerBottomColor": "rgb(22, 163, 74)",
         "title": "Color",
         "optionLabels": ["Default", "Red", "Orange", "Yellow", "Green", "Blue", "Indigo", "Violet"],
         "danmakuDisabled": True,
@@ -479,6 +751,8 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
         "selectValue": "violet",
         "dataset": "violet",
         "textColor": "rgb(147, 51, 234)",
+        "cornerTopColor": "rgb(147, 51, 234)",
+        "cornerBottomColor": "rgb(147, 51, 234)",
         "stored": "violet",
         "propagated": [
             {
@@ -2877,7 +3151,7 @@ def test_subtitle_window_template_keeps_legacy_panel_control_scaffold():
         assert f'data-subtitle-font-size-label="{label_key}"' in template
         assert f'>{fallback}</option>' in template
     assert 'data-subtitle-label="colorScheme"><span class="subtitle-settings-label-text">配色</span></span>' in template
-    assert 'data-subtitle-label="danmakuMode"><span class="subtitle-settings-label-text">弹幕</span></span>' in template
+    assert 'data-subtitle-label="danmakuMode"><span class="subtitle-settings-label-text">弹幕模式</span></span>' in template
     assert 'id="subtitle-color-scheme-select"' in template
     for scheme, label_key, fallback in [
         ("default", "colorSchemeDefault", "默认"),
@@ -2894,9 +3168,9 @@ def test_subtitle_window_template_keeps_legacy_panel_control_scaffold():
         assert f'>{fallback}</option>' in template
     assert 'id="subtitle-danmaku-mode-btn"' in template
     assert 'type="checkbox" id="subtitle-danmaku-mode-btn"' in template
-    assert 'subtitle-settings-switch-placeholder' in template
-    assert 'data-subtitle-danmaku-placeholder="true"' in template
-    assert 'disabled' in template
+    assert 'subtitle-settings-switch-placeholder' not in template
+    assert 'data-subtitle-danmaku-placeholder="true"' not in template
+    assert 'type="checkbox" id="subtitle-danmaku-mode-btn" title="弹幕模式" aria-label="弹幕模式"' in template
     assert 'subtitle-settings-track' in template
     assert 'data-subtitle-label="lockPosition"' not in template
     assert 'id="subtitle-lock-toggle"' not in template
@@ -2959,7 +3233,7 @@ def test_subtitle_window_settings_hides_passthrough_toggle_and_allows_small_boun
 
 
 @pytest.mark.frontend
-def test_subtitle_settings_window_includes_color_and_danmaku_placeholders():
+def test_subtitle_settings_window_includes_color_and_danmaku_switch():
     template = (PROJECT_ROOT / "static" / "subtitle-settings.html").read_text(encoding="utf-8")
 
     assert 'id="subtitle-color-scheme-select"' in template
@@ -2967,8 +3241,8 @@ def test_subtitle_settings_window_includes_color_and_danmaku_placeholders():
     assert 'data-subtitle-color-scheme-label="colorSchemeViolet"' in template
     assert 'id="subtitle-danmaku-mode-btn"' in template
     assert 'type="checkbox" id="subtitle-danmaku-mode-btn"' in template
-    assert 'subtitle-settings-switch-placeholder' in template
-    assert 'data-subtitle-danmaku-placeholder="true"' in template
+    assert 'subtitle-settings-switch-placeholder' not in template
+    assert 'data-subtitle-danmaku-placeholder="true"' not in template
     assert 'subtitle-settings-track' in template
 
 
@@ -4929,14 +5203,14 @@ def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_exte
     assert result["opened"]["expanded"] == "true"
     assert result["opened"]["externalDataset"] == ""
     assert result["opened"]["sizeBeforeOpen"] == {
-        "width": 612,
-        "height": 80,
-        "panelBounds": {"width": 600, "height": 68},
+        "width": 667,
+        "height": 121,
+        "panelBounds": {"width": 655, "height": 109},
     }
     assert result["opened"]["panelHeight"] > 0
-    assert result["opened"]["sizeAfterOpen"]["width"] == 612
-    assert result["opened"]["sizeAfterOpen"]["height"] == 80 + result["opened"]["panelHeight"] + 8
-    assert result["opened"]["sizeAfterOpen"]["panelBounds"] == {"width": 600, "height": 68}
+    assert result["opened"]["sizeAfterOpen"]["width"] == 667
+    assert result["opened"]["sizeAfterOpen"]["height"] == 121 + result["opened"]["panelHeight"] + 8
+    assert result["opened"]["sizeAfterOpen"]["panelBounds"] == {"width": 655, "height": 109}
     assert result["closed"]["panelState"] == "controls"
     assert result["closed"]["panelHidden"] is True
     assert result["closed"]["expanded"] == "false"
@@ -5001,12 +5275,12 @@ def test_subtitle_external_settings_button_works_without_inline_panel(mock_page:
     assert result["opened"]["panelState"] == "settings"
     assert result["opened"]["expanded"] == "true"
     assert result["opened"]["calls"] == [
-        {
-            "type": "open",
-            "source": "subtitle-ui-panel",
-            "bounds": {"width": 600, "height": 68},
-        }
-    ]
+            {
+                "type": "open",
+                "source": "subtitle-ui-panel",
+                "bounds": {"width": 655, "height": 109},
+            }
+        ]
     assert result["closed"]["panelState"] == "controls"
     assert result["closed"]["expanded"] == "false"
     assert result["closed"]["calls"] == [
@@ -5258,10 +5532,10 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
         """
     )
 
-    assert result["emptySize"]["height"] == 80
-    assert result["longSize"]["height"] == 80
-    assert result["displayHeight"] == 68
-    assert result["panelOpenSize"]["panelBounds"] == {"width": 600, "height": 68}
+    assert result["emptySize"]["height"] == 121
+    assert result["longSize"]["height"] == 121
+    assert result["displayHeight"] == 109
+    assert result["panelOpenSize"]["panelBounds"] == {"width": 655, "height": 109}
     assert result["panelOpenSize"]["height"] == result["displayHeight"] + 12
     assert result["externalSettingsOpened"] == 1
     assert result["panelHidden"] is True
@@ -5276,7 +5550,7 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     assert result["scrollBarGutter"] == "auto"
     assert result["webkitScrollBarWidth"] == "0px"
     assert result["scrollTrackBackground"] == "rgba(0, 0, 0, 0)"
-    assert result["scrollHeight"] <= 86
+    assert result["scrollHeight"] <= result["displayHeight"] - 12
     assert result["scrollThumbBackground"] == "rgba(0, 0, 0, 0)"
     assert result["textMarginRight"] == "0px"
 

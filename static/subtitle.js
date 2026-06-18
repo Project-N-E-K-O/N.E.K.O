@@ -88,6 +88,7 @@ function syncSubtitleRenderState(source) {
         subtitlePanelPosition: currentSettings ? currentSettings.subtitlePanelPosition : null,
         subtitlePanelLocked: currentSettings ? !!currentSettings.subtitlePanelLocked : false,
         subtitleInteractionPassthrough: currentSettings ? currentSettings.subtitleInteractionPassthrough !== false : true,
+        subtitleDanmakuMode: currentSettings ? !!currentSettings.subtitleDanmakuMode : false,
         subtitleFontSize: currentSettings ? currentSettings.subtitleFontSize : 26,
         subtitleColorScheme: currentSettings ? currentSettings.subtitleColorScheme : 'default'
     }, { source: source || 'subtitle-core' });

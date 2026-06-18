@@ -28,6 +28,7 @@ body.subtitle-window-host {
     --subtitle-control-hover-bg: rgba(255, 255, 255, 0.92);
     --subtitle-control-border: rgba(36, 43, 49, 0.14);
     --subtitle-control-fg: #6bbdf7;
+    --subtitle-corner-line: rgba(30, 165, 255, 0.7);
     --subtitle-settings-bg: rgba(252, 252, 250, 0.96);
     --subtitle-settings-text: #6bbdf7;
     --subtitle-settings-muted: rgba(107, 189, 247, 0.72);
@@ -57,6 +58,39 @@ body.subtitle-window-host {
     display: flex;
     align-items: center;
     justify-content: center;
+    isolation: isolate;
+}
+
+#subtitle-display::before,
+#subtitle-display::after {
+    content: "";
+    position: absolute;
+    z-index: 0;
+    width: 46px;
+    height: 22px;
+    pointer-events: none;
+    opacity: calc(var(--subtitle-panel-soft-edge-alpha) * 0.78);
+}
+
+#subtitle-display::before {
+    top: 7px;
+    left: 9px;
+    border-top: 3px solid var(--subtitle-corner-line);
+    border-left: 3px solid var(--subtitle-corner-line);
+    border-top-left-radius: 10px;
+}
+
+#subtitle-display::after {
+    right: 9px;
+    bottom: 7px;
+    border-right: 3px solid var(--subtitle-corner-line);
+    border-bottom: 3px solid var(--subtitle-corner-line);
+    border-bottom-right-radius: 10px;
+}
+
+body.subtitle-settings-window-host #subtitle-display::before,
+body.subtitle-settings-window-host #subtitle-display::after {
+    content: none;
 }
 
 html[data-theme="dark"] #subtitle-display,
@@ -74,6 +108,7 @@ html.dark #subtitle-display {
     --subtitle-control-hover-bg: rgba(44, 49, 55, 0.92);
     --subtitle-control-border: rgba(255, 255, 255, 0.14);
     --subtitle-control-fg: #9bd8ff;
+    --subtitle-corner-line: rgba(96, 205, 255, 0.7);
     --subtitle-settings-bg: rgba(26, 29, 33, 0.96);
     --subtitle-settings-text: #9bd8ff;
     --subtitle-settings-muted: rgba(155, 216, 255, 0.74);
@@ -93,42 +128,49 @@ html.dark #subtitle-display {
     --subtitle-panel-text: #ef4444;
     --subtitle-text-fill: #ef4444;
     --subtitle-placeholder-fill: rgba(239, 68, 68, 0.62);
+    --subtitle-corner-line: #ef4444;
 }
 
 #subtitle-display[data-subtitle-color-scheme="orange"] {
     --subtitle-panel-text: #f97316;
     --subtitle-text-fill: #f97316;
     --subtitle-placeholder-fill: rgba(249, 115, 22, 0.62);
+    --subtitle-corner-line: #f97316;
 }
 
 #subtitle-display[data-subtitle-color-scheme="yellow"] {
     --subtitle-panel-text: #ca8a04;
     --subtitle-text-fill: #ca8a04;
     --subtitle-placeholder-fill: rgba(202, 138, 4, 0.62);
+    --subtitle-corner-line: #ca8a04;
 }
 
 #subtitle-display[data-subtitle-color-scheme="green"] {
     --subtitle-panel-text: #16a34a;
     --subtitle-text-fill: #16a34a;
     --subtitle-placeholder-fill: rgba(22, 163, 74, 0.62);
+    --subtitle-corner-line: #16a34a;
 }
 
 #subtitle-display[data-subtitle-color-scheme="blue"] {
     --subtitle-panel-text: #2563eb;
     --subtitle-text-fill: #2563eb;
     --subtitle-placeholder-fill: rgba(37, 99, 235, 0.62);
+    --subtitle-corner-line: #2563eb;
 }
 
 #subtitle-display[data-subtitle-color-scheme="indigo"] {
     --subtitle-panel-text: #4f46e5;
     --subtitle-text-fill: #4f46e5;
     --subtitle-placeholder-fill: rgba(79, 70, 229, 0.62);
+    --subtitle-corner-line: #4f46e5;
 }
 
 #subtitle-display[data-subtitle-color-scheme="violet"] {
     --subtitle-panel-text: #9333ea;
     --subtitle-text-fill: #9333ea;
     --subtitle-placeholder-fill: rgba(147, 51, 234, 0.62);
+    --subtitle-corner-line: #9333ea;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="red"],
@@ -136,6 +178,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="red"] {
     --subtitle-panel-text: #fca5a5;
     --subtitle-text-fill: #fca5a5;
     --subtitle-placeholder-fill: rgba(252, 165, 165, 0.7);
+    --subtitle-corner-line: #fca5a5;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="orange"],
@@ -143,6 +186,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="orange"] {
     --subtitle-panel-text: #fdba74;
     --subtitle-text-fill: #fdba74;
     --subtitle-placeholder-fill: rgba(253, 186, 116, 0.7);
+    --subtitle-corner-line: #fdba74;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="yellow"],
@@ -150,6 +194,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="yellow"] {
     --subtitle-panel-text: #fde047;
     --subtitle-text-fill: #fde047;
     --subtitle-placeholder-fill: rgba(253, 224, 71, 0.72);
+    --subtitle-corner-line: #fde047;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="green"],
@@ -157,6 +202,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="green"] {
     --subtitle-panel-text: #86efac;
     --subtitle-text-fill: #86efac;
     --subtitle-placeholder-fill: rgba(134, 239, 172, 0.7);
+    --subtitle-corner-line: #86efac;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="blue"],
@@ -164,6 +210,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="blue"] {
     --subtitle-panel-text: #93c5fd;
     --subtitle-text-fill: #93c5fd;
     --subtitle-placeholder-fill: rgba(147, 197, 253, 0.7);
+    --subtitle-corner-line: #93c5fd;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="indigo"],
@@ -171,6 +218,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="indigo"] {
     --subtitle-panel-text: #a5b4fc;
     --subtitle-text-fill: #a5b4fc;
     --subtitle-placeholder-fill: rgba(165, 180, 252, 0.7);
+    --subtitle-corner-line: #a5b4fc;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="violet"],
@@ -178,6 +226,7 @@ html.dark #subtitle-display[data-subtitle-color-scheme="violet"] {
     --subtitle-panel-text: #d8b4fe;
     --subtitle-text-fill: #d8b4fe;
     --subtitle-placeholder-fill: rgba(216, 180, 254, 0.72);
+    --subtitle-corner-line: #d8b4fe;
 }
 
 html.subtitle-window-host,
@@ -223,6 +272,8 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
 }
 
 #subtitle-scroll {
+    position: relative;
+    z-index: 1;
     width: 100%;
     min-width: 0;
     max-height: var(--subtitle-content-max-height, 120px);
@@ -647,6 +698,10 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 
 .subtitle-settings-switch input:checked + .subtitle-settings-track {
     background: rgba(76, 175, 116, 0.7);
+}
+
+#subtitle-danmaku-mode-btn:checked + .subtitle-settings-track {
+    background: rgba(30, 64, 175, 0.82);
 }
 
 .subtitle-settings-switch input:checked + .subtitle-settings-track::before {

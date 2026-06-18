@@ -14,7 +14,11 @@
     var DESKTOP_RESIZE_HIT_ZONE = 10;
     var DESKTOP_MIN_PANEL_WIDTH = 48;
     var DESKTOP_MIN_PANEL_HEIGHT = 28;
+    var DANMAKU_MODE_HEAD_GAP = 12;
     var activeNativeResizeState = null;
+    var danmakuModeRestoreSnapshot = null;
+    var danmakuModeNativeBoundsToken = 0;
+    var lastDanmakuModePanelBounds = null;
 
     if (!SubtitleShared) {
         console.error('[SubtitleWindow] subtitle-shared.js 未加载');
@@ -312,6 +316,250 @@
             value: change.value
         });
         syncExternalSettingsWindow();
+    }
+
+    function samePanelBounds(a, b) {
+        return !!(a && b && a.width === b.width && a.height === b.height);
+    }
+
+    function cloneNativeBounds(bounds) {
+        if (!bounds || typeof bounds !== 'object') return null;
+        var x = Number(bounds.x);
+        var y = Number(bounds.y);
+        var width = Number(bounds.width);
+        var height = Number(bounds.height);
+        if (!isFinite(x) || !isFinite(y) || !isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return {
+            x: Math.round(x),
+            y: Math.round(y),
+            width: Math.round(width),
+            height: Math.round(height)
+        };
+    }
+
+    function normalizeAvatarBoundsPayload(payload) {
+        var bounds = payload && payload.bounds ? payload.bounds : payload;
+        if (!bounds || typeof bounds !== 'object') return null;
+        var left = Number(bounds.left);
+        var top = Number(bounds.top);
+        var width = Number(bounds.width);
+        var height = Number(bounds.height);
+        if (!isFinite(left) || !isFinite(top) || !isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return {
+            bounds: {
+                left: left,
+                top: top,
+                width: width,
+                height: height,
+                centerX: isFinite(Number(bounds.centerX)) ? Number(bounds.centerX) : left + width / 2,
+                centerY: isFinite(Number(bounds.centerY)) ? Number(bounds.centerY) : top + height / 2
+            },
+            workArea: payload && payload.display && payload.display.workArea ? payload.display.workArea : null
+        };
+    }
+
+    function clampToRange(value, min, max) {
+        if (!isFinite(min) || !isFinite(max) || max < min) return Math.round(value);
+        return Math.round(Math.max(min, Math.min(max, value)));
+    }
+
+    function calculateDanmakuModeLayout(payload) {
+        var normalized = normalizeAvatarBoundsPayload(payload);
+        if (!normalized) return null;
+        var avatar = normalized.bounds;
+        var panelWidth = Math.max(DESKTOP_MIN_PANEL_WIDTH, Math.round(avatar.width));
+        var basePanelHeight = panelWidth / 2;
+        var panelHeight = Math.max(DESKTOP_MIN_PANEL_HEIGHT, Math.round(basePanelHeight * 2 / 3));
+        var panelLeft = avatar.centerX - panelWidth / 2;
+        var panelTop = avatar.top - panelHeight - DANMAKU_MODE_HEAD_GAP;
+        var workArea = normalized.workArea;
+        if (workArea) {
+            var workLeft = Number(workArea.x);
+            var workTop = Number(workArea.y);
+            var workWidth = Number(workArea.width);
+            var workHeight = Number(workArea.height);
+            if (isFinite(workLeft) && isFinite(workTop) && isFinite(workWidth) && isFinite(workHeight)) {
+                panelLeft = clampToRange(panelLeft, workLeft, workLeft + workWidth - panelWidth);
+                panelTop = clampToRange(panelTop, workTop, workTop + workHeight - panelHeight);
+            }
+        }
+        return {
+            panelBounds: { width: panelWidth, height: panelHeight },
+            nativeBounds: {
+                x: Math.round(panelLeft - DESKTOP_WINDOW_EDGE_INSET),
+                y: Math.round(panelTop - DESKTOP_WINDOW_EDGE_INSET),
+                width: panelWidth + DESKTOP_WINDOW_EDGE_INSET * 2,
+                height: panelHeight + DESKTOP_WINDOW_EDGE_INSET * 2
+            }
+        };
+    }
+
+    function captureDanmakuModeRestoreSnapshot() {
+        var api = window.nekoSubtitle;
+        var settings = SubtitleShared.getSettings();
+        var token = ++danmakuModeNativeBoundsToken;
+        danmakuModeRestoreSnapshot = {
+            panelBounds: SubtitleShared.getPanelBounds(settings.subtitlePanelBounds),
+            locked: !!settings.subtitlePanelLocked,
+            interactionPassthrough: settings.subtitleInteractionPassthrough !== false,
+            nativeBounds: null
+        };
+        if (api && typeof api.getBounds === 'function') {
+            Promise.resolve(api.getBounds()).then(function(bounds) {
+                if (token !== danmakuModeNativeBoundsToken || !danmakuModeRestoreSnapshot) return;
+                danmakuModeRestoreSnapshot.nativeBounds = cloneNativeBounds(bounds);
+            }).catch(function() {});
+        }
+    }
+
+    function applyDanmakuModeLock(locked) {
+        var nextState = SubtitleShared.updateSettings({
+            subtitlePanelLocked: !!locked,
+            subtitleInteractionPassthrough: !!locked
+        }, {
+            persist: false,
+            source: locked ? 'subtitle-danmaku-lock' : 'subtitle-danmaku-unlock'
+        });
+        propagateSubtitleSetting({
+            type: 'lock',
+            value: !!locked,
+            patch: {
+                subtitlePanelLocked: !!locked,
+                subtitleInteractionPassthrough: !!locked
+            },
+            state: nextState
+        });
+        updateNativeInteractionPassthrough();
+    }
+
+    function applyDanmakuModeAvatarBounds(payload) {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.setBounds !== 'function') return;
+        if (!SubtitleShared.getSettings().subtitleDanmakuMode) return;
+        var layout = calculateDanmakuModeLayout(payload);
+        if (!layout) return;
+        api.setBounds(
+            layout.nativeBounds.x,
+            layout.nativeBounds.y,
+            layout.nativeBounds.width,
+            layout.nativeBounds.height
+        );
+        SubtitleShared.applySubtitlePanelBounds(
+            subtitleWindowController.refs.display,
+            layout.panelBounds,
+            { host: 'window' }
+        );
+        var nextState = SubtitleShared.updateSettings({
+            subtitlePanelBounds: layout.panelBounds,
+            subtitlePanelLocked: true,
+            subtitleInteractionPassthrough: true
+        }, {
+            persist: false,
+            source: 'subtitle-danmaku-avatar-layout'
+        });
+        if (!samePanelBounds(lastDanmakuModePanelBounds, layout.panelBounds)) {
+            lastDanmakuModePanelBounds = layout.panelBounds;
+            propagateSubtitleSetting({
+                type: 'bounds',
+                value: layout.panelBounds,
+                patch: { subtitlePanelBounds: layout.panelBounds },
+                state: nextState
+            });
+        }
+        syncExternalSettingsWindow();
+        updateNativeInteractionPassthrough();
+    }
+
+    function restoreDanmakuModeLayout() {
+        var api = window.nekoSubtitle;
+        var snapshot = danmakuModeRestoreSnapshot;
+        danmakuModeRestoreSnapshot = null;
+        danmakuModeNativeBoundsToken += 1;
+        lastDanmakuModePanelBounds = null;
+        if (!snapshot) return;
+        if (snapshot.nativeBounds && api && typeof api.setBounds === 'function') {
+            api.setBounds(
+                snapshot.nativeBounds.x,
+                snapshot.nativeBounds.y,
+                snapshot.nativeBounds.width,
+                snapshot.nativeBounds.height
+            );
+        }
+        var nextState = SubtitleShared.updateSettings({
+            subtitlePanelBounds: snapshot.panelBounds,
+            subtitlePanelLocked: snapshot.locked,
+            subtitleInteractionPassthrough: snapshot.interactionPassthrough
+        }, {
+            persist: false,
+            source: 'subtitle-danmaku-restore'
+        });
+        propagateSubtitleSetting({
+            type: 'bounds',
+            value: snapshot.panelBounds,
+            patch: { subtitlePanelBounds: snapshot.panelBounds },
+            state: nextState
+        });
+        propagateSubtitleSetting({
+            type: 'lock',
+            value: snapshot.locked,
+            patch: {
+                subtitlePanelLocked: snapshot.locked,
+                subtitleInteractionPassthrough: snapshot.interactionPassthrough
+            },
+            state: nextState
+        });
+        syncExternalSettingsWindow();
+        updateNativeInteractionPassthrough();
+    }
+
+    function attachDanmakuModeLayout() {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.subscribeAvatarBounds !== 'function' || typeof api.onAvatarBounds !== 'function') {
+            return function() {};
+        }
+        var avatarBoundsCleanup = null;
+        var active = false;
+
+        function setActive(nextActive) {
+            nextActive = !!nextActive;
+            if (active === nextActive) return;
+            active = nextActive;
+            if (subtitleWindowController && typeof subtitleWindowController.closeSettingsForExternalInteraction === 'function') {
+                subtitleWindowController.closeSettingsForExternalInteraction('clean');
+            }
+            if (nextActive) {
+                captureDanmakuModeRestoreSnapshot();
+                applyDanmakuModeLock(true);
+                avatarBoundsCleanup = api.onAvatarBounds(applyDanmakuModeAvatarBounds);
+                api.subscribeAvatarBounds(true);
+            } else {
+                api.subscribeAvatarBounds(false);
+                if (avatarBoundsCleanup) {
+                    avatarBoundsCleanup();
+                    avatarBoundsCleanup = null;
+                }
+                restoreDanmakuModeLayout();
+            }
+        }
+
+        var unsubscribe = SubtitleShared.subscribeSettings(function(state) {
+            setActive(!!(state && state.subtitleDanmakuMode));
+        });
+
+        return function detachDanmakuModeLayout() {
+            unsubscribe();
+            if (active) {
+                api.subscribeAvatarBounds(false);
+            }
+            if (avatarBoundsCleanup) {
+                avatarBoundsCleanup();
+                avatarBoundsCleanup = null;
+            }
+        };
     }
 
     function syncExternalSettingsWindow() {
@@ -815,6 +1063,11 @@
         } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleInteractionPassthrough')) {
             patch.subtitleInteractionPassthrough = data.subtitleInteractionPassthrough !== false;
         }
+        if (Object.prototype.hasOwnProperty.call(data, 'danmakuMode')) {
+            patch.subtitleDanmakuMode = !!data.danmakuMode;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleDanmakuMode')) {
+            patch.subtitleDanmakuMode = !!data.subtitleDanmakuMode;
+        }
 
         if (Object.keys(patch).length) {
             SubtitleShared.updateSettings(patch, {
@@ -869,6 +1122,7 @@
         if (uiOptions.windowInteractions === 'external') {
             desktopWindowInteractionsCleanup = attachDesktopWindowInteractions(subtitleWindowController);
         }
+        attachDanmakuModeLayout();
 
         window.addEventListener('neko-subtitle-state-sync', function(e) {
             applyStateSync(e.detail || {});

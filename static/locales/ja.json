@@ -2625,7 +2625,7 @@
             "colorSchemeBlue": "青",
             "colorSchemeIndigo": "藍",
             "colorSchemeViolet": "紫",
-            "danmakuMode": "弾幕",
+            "danmakuMode": "弾幕モード",
             "passthroughInteraction": "透明領域をクリック透過",
             "settingsBtn": "字幕設定",
             "lockPosition": "位置をロック",
