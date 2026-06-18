@@ -92,7 +92,25 @@ async def test_append_context_primes_realtime_for_model_only_context():
 
     assert result.appended is True
     assert result.targets == ("realtime_prime",)
-    assert session.calls == [("user: score snapshot", True)]
+    assert session.calls == [("score snapshot", True)]
+
+
+@pytest.mark.asyncio
+async def test_append_context_keeps_role_prefix_for_generic_realtime_context():
+    mgr = _make_manager()
+    session = _FakePrimeSession()
+    mgr.session = session
+
+    result = await mgr.append_context(
+        source="proactive.context",
+        role="system",
+        text="background note",
+        audience="model",
+    )
+
+    assert result.appended is True
+    assert result.targets == ("realtime_prime",)
+    assert session.calls == [("system: background note", True)]
 
 
 @pytest.mark.asyncio
@@ -697,8 +715,8 @@ async def test_current_session_request_id_can_replay_after_session_replaced():
     assert duplicate.appended is False
     assert duplicate.deduped is True
     assert replay.appended is True
-    assert first_session.calls == [("user: same request in first session", True)]
-    assert second_session.calls == [("user: same request in replacement session", True)]
+    assert first_session.calls == [("same request in first session", True)]
+    assert second_session.calls == [("same request in replacement session", True)]
 
 
 @pytest.mark.asyncio
@@ -775,7 +793,7 @@ async def test_append_context_reserves_request_id_before_awaiting_prime():
     assert duplicate.appended is False
     assert duplicate.deduped is True
     assert duplicate.reason == "duplicate_request_id"
-    assert session.calls == [("user: same context", True)]
+    assert session.calls == [("same context", True)]
 
 
 @pytest.mark.asyncio

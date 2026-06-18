@@ -284,6 +284,8 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "_icebreaker_context_seen_request_ids" not in game_router
     assert "append_context(" in game_router
     assert "source=\"game.icebreaker\"" in game_router
+    assert "MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000" in game_router
+    assert "invalid_text_length" in game_router
     assert "append_icebreaker_context_async" not in game_router
     assert '@router.post("/{game_type}/context")' in game_router
     assert "startIcebreakerRoute(nextSession).then(function (started) {" in runtime
@@ -326,7 +328,8 @@ def test_icebreaker_context_reuses_existing_session_context_paths():
     assert "_append_scripted_context_to_new_session_cache" not in core
     assert "_conversation_history" in core
     assert "message_cache_for_new_session" in core
-    assert 'await prime_context(f"{role}: {content}", skipped=(audience == "model"))' in core
+    assert "_CONTEXT_APPEND_BARE_PRIME_SOURCES" in core
+    assert 'prime_text = content if source in _CONTEXT_APPEND_BARE_PRIME_SOURCES else f"{role}: {content}"' in core
 
 
 def test_icebreaker_context_appends_are_serialized_before_chat_progression():

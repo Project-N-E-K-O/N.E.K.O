@@ -202,6 +202,28 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_oversized_text(monkeypatch):
+    mgr = _FakeAppendContextManager(error=AssertionError("oversized icebreaker context must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "x" * (game_router.MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH + 1),
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result == {"ok": False, "reason": "invalid_text_length"}
+    assert mgr.calls == []
+
+
+@pytest.mark.asyncio
 async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
     mgr = _FakeAppendContextManager(error=AssertionError("stale icebreaker context must not append"))
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -3341,7 +3363,11 @@ class _FakeRealtimeManager:
         self.append_context_calls.append(kwargs)
         if self.append_context_result is not None:
             return self.append_context_result
-        await self.session.prime_context(f"{kwargs['role']}: {kwargs['text']}", skipped=True)
+        source = str(kwargs.get("source") or "")
+        text = kwargs["text"]
+        if source not in {"game.realtime_context", "game.postgame"}:
+            text = f"{kwargs['role']}: {text}"
+        await self.session.prime_context(text, skipped=True)
         return SimpleNamespace(appended=True, deduped=False, targets=("realtime_prime",), reason=None)
 
     async def trigger_voice_proactive_nudge(self, **kwargs):
@@ -4747,6 +4773,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     assert mgr.append_context_calls[0]["audience"] == "model"
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
+    assert not context_text.startswith("system: ")
     assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
 

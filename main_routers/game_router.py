@@ -113,6 +113,7 @@ _game_sessions: Dict[str, dict] = {}
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
+MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
 _BASKETBALL_SCORING_MODES = {"shooter", "duel"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
@@ -7025,6 +7026,8 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_role"}
     if not text:
         return {"ok": False, "reason": "missing_text"}
+    if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
+        return {"ok": False, "reason": "invalid_text_length"}
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
 

@@ -127,6 +127,10 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "topic.material": 1000,
     "realtime.prime": 1000,
 }
+_CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
+    "game.realtime_context",
+    "game.postgame",
+})
 
 # recall 占位语音用的合成 worker-sid 后缀。仅用于在 TTS worker 层把 filler 切成
 # 一段独立 utterance（见 _emit_recall_filler_tts）；``send_speech`` 在发往前端前会
@@ -1413,7 +1417,9 @@ class LLMSessionManager:
             prime_context = getattr(session, "prime_context", None)
             if callable(prime_context):
                 try:
-                    await prime_context(f"{role}: {content}", skipped=(audience == "model"))
+                    source = str(payload.get("source") or "")
+                    prime_text = content if source in _CONTEXT_APPEND_BARE_PRIME_SOURCES else f"{role}: {content}"
+                    await prime_context(prime_text, skipped=(audience == "model"))
                     targets.append("realtime_prime")
                     current_session_delivered = True
                 except Exception as exc:
