@@ -40,7 +40,7 @@ Convention (mirrors prompts_directives)
   falls back to ``zh`` for unknown codes.
 - Substring match, case-insensitive. Bias toward false positives is fine
   here — over-triggering Focus just spends some extra thinking tokens on a
-  turn that turned out light; the *score threshold* (``FOCUS_SCORE_T_IN``)
+  turn that turned out light; the *accumulator knobs* (``FOCUS_CHARGE_*``)
   and the keyword *weight* (``FOCUS_SIGNAL_WEIGHTS``) are where rollout
   tuning lives, not this lexicon.
 - Locale keys match the short-code scheme of ``NEGATIVE_KEYWORDS_I18N``

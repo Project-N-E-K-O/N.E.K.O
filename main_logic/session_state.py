@@ -123,7 +123,7 @@ class SessionStateMachine:
     _focus_episode_id: Optional[str] = None
     _focus_episode_started_at: float = 0.0
     _focus_turn_count: int = 0
-    _focus_low_streak: int = 0
+    _focus_charge: float = 0.0  # leaky accumulator: charge*retention + score each scored turn
     _subscribers: "dict[Union[SessionEvent, str], list[Subscriber]]" = field(
         default_factory=lambda: defaultdict(list)
     )
@@ -311,7 +311,7 @@ class SessionStateMachine:
             decision = _focus_decide(
                 mode=self.mode,
                 focus_turn_count=self._focus_turn_count,
-                low_streak=self._focus_low_streak,
+                charge=self._focus_charge,
                 score=score,
                 topic_changed=topic_changed,
                 th=th,
@@ -321,9 +321,10 @@ class SessionStateMachine:
                 self._focus_episode_id = f"{self.lanlan_name}-{int(time.time() * 1000)}"
                 self._focus_episode_started_at = time.time()
                 self._focus_turn_count = decision.turn_count
-                self._focus_low_streak = decision.low_streak
+                self._focus_charge = decision.charge
                 emit_event = SessionEvent.FOCUS_ENTER
-                emit_payload = {"episode_id": self._focus_episode_id, "score": score}
+                emit_payload = {"episode_id": self._focus_episode_id, "score": score,
+                                "charge": decision.charge}
             elif decision.action is _FocusAction.EXIT:
                 emit_event = SessionEvent.FOCUS_EXIT
                 emit_payload = {
@@ -333,9 +334,9 @@ class SessionStateMachine:
                     "turns": self._focus_turn_count,
                 }
                 self._clear_focus_state()
-            else:  # STAY — update counters only, no transition event
+            else:  # STAY — update accumulator only, no transition event
                 self._focus_turn_count = decision.turn_count
-                self._focus_low_streak = decision.low_streak
+                self._focus_charge = decision.charge
 
             if emit_event is not None:
                 snap_subs = list(self._subscribers.get(emit_event, ())) + list(
@@ -353,7 +354,7 @@ class SessionStateMachine:
         self._focus_episode_id = None
         self._focus_episode_started_at = 0.0
         self._focus_turn_count = 0
-        self._focus_low_streak = 0
+        self._focus_charge = 0.0
 
     def snapshot(self) -> dict:
         """Consistent snapshot for logging / diagnostics."""
@@ -367,7 +368,7 @@ class SessionStateMachine:
             "last_user_activity": self.last_user_activity,
             "mode": self.mode.value,
             "focus_turn_count": self._focus_turn_count,
-            "focus_low_streak": self._focus_low_streak,
+            "focus_charge": round(self._focus_charge, 3),
         }
 
     # ── 写路径 ──────────────────────────────────────────────────────
@@ -507,9 +508,9 @@ class FocusThresholds:
     """Snapshot of the Focus tuning knobs for one decision (from ``config.FOCUS_*``)."""
 
     enabled: bool
-    t_in: float
-    t_out: float
-    exit_low_streak: int
+    retention: float       # leaky-accumulator retention per turn (0..1)
+    enter: float           # charge >= enter ⇒ REGULAR → FOCUS
+    exit: float            # charge < exit (while FOCUS) ⇒ FOCUS → REGULAR
     hard_cap_turns: int
 
 
@@ -517,57 +518,57 @@ class FocusThresholds:
 class _FocusDecision:
     action: _FocusAction
     turn_count: int        # focus_turn_count to store if this decision is applied
-    low_streak: int        # low_streak to store if this decision is applied
-    reason: str = ""       # exit cause: "score" / "topic_switch" / "hard_cap" / "low_streak"
+    charge: float          # post-tick charge to store if this decision is applied
+    reason: str = ""       # exit cause: "charge"/"topic_switch"/"hard_cap"/"decayed"
 
 
 def _focus_decide(
     *,
     mode: CognitionMode,
     focus_turn_count: int,
-    low_streak: int,
+    charge: float,
     score: float,
     topic_changed: bool,
     th: FocusThresholds,
 ) -> _FocusDecision:
-    """Pure Schmitt-trigger transition for one scored turn.
+    """Pure leaky-accumulator transition for one scored turn.
 
-    Entry: ``REGULAR`` + ``score > t_in`` ⇒ ENTER (this turn becomes focus
-    turn #1). Exit while ``FOCUS``: an explicit topic switch, the hard turn
-    cap, or ``score < t_out`` sustained for ``exit_low_streak`` consecutive
-    turns. Otherwise STAY (counters advance). ``TRUE_NAME`` (v2) is inert
-    here — the v1 focus machine never drives it.
+    Each turn integrates the score into a leaky charge:
+    ``new_charge = charge * retention + score`` (capped at ``enter`` so a long
+    heavy episode can't build an over-long decay tail). Entry: ``REGULAR`` +
+    ``new_charge >= enter`` ⇒ ENTER — so scattered mild cues accumulate to the
+    bar over several turns, while one strong message (score ≈ enter) enters at
+    once. Exit while ``FOCUS``: an explicit topic switch, the hard turn cap, or
+    ``new_charge < exit`` (the charge has leaked away as the signal faded).
+    Otherwise STAY. ``TRUE_NAME`` (v2) is inert here.
 
-    Hard-cap semantics: ENTER sets ``turn_count=1``; each STAY increments.
-    When a FOCUS turn arrives with ``focus_turn_count >= hard_cap_turns``
-    it exits, yielding exactly ``hard_cap_turns`` thinking-on turns.
+    The leak replaces the old "K consecutive low turns" streak, which a single
+    noisy mid-score turn could reset and thereby stick focus on indefinitely.
     """
+    if topic_changed:
+        # explicit subject switch clears the emotional thread
+        if mode is CognitionMode.FOCUS:
+            return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="topic_switch")
+        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=0.0)
+
+    new_charge = min(charge * th.retention + score, th.enter)
+
     if mode is CognitionMode.REGULAR:
-        if score > th.t_in:
-            return _FocusDecision(_FocusAction.ENTER, turn_count=1, low_streak=0, reason="score")
-        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, low_streak=low_streak)
+        if new_charge >= th.enter:
+            return _FocusDecision(_FocusAction.ENTER, turn_count=1, charge=new_charge, reason="charge")
+        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=new_charge)
 
     if mode is CognitionMode.FOCUS:
-        if topic_changed:
-            return _FocusDecision(_FocusAction.EXIT, turn_count=0, low_streak=0, reason="topic_switch")
         if focus_turn_count >= th.hard_cap_turns:
-            # Cap bounds ONE episode's length, not total focus time: if the
-            # next turn still scores > t_in (user genuinely still pouring out),
-            # the REGULAR branch re-enters immediately as a NEW episode. The
-            # cap's value is forcing an episode boundary (→ memory-maintenance
-            # checkpoint) rather than cutting someone off mid-moment to go
-            # dumb. Whether a post-cap cooldown should block re-entry is an
-            # open product knob (see docs/design/focus-truename-mode.md).
-            return _FocusDecision(_FocusAction.EXIT, turn_count=0, low_streak=0, reason="hard_cap")
-        next_low = low_streak + 1 if score < th.t_out else 0
-        if next_low >= th.exit_low_streak:
-            return _FocusDecision(_FocusAction.EXIT, turn_count=0, low_streak=0, reason="low_streak")
+            return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="hard_cap")
+        if new_charge < th.exit:
+            return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="decayed")
         return _FocusDecision(
-            _FocusAction.STAY, turn_count=focus_turn_count + 1, low_streak=next_low,
+            _FocusAction.STAY, turn_count=focus_turn_count + 1, charge=new_charge,
         )
 
     # TRUE_NAME (v2) or any future mode — focus machine does not act.
-    return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, low_streak=low_streak)
+    return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=charge)
 
 
 def _focus_thresholds_from_config() -> FocusThresholds:
@@ -575,9 +576,9 @@ def _focus_thresholds_from_config() -> FocusThresholds:
     import config
     return FocusThresholds(
         enabled=bool(config.FOCUS_MODE_ENABLED),
-        t_in=float(config.FOCUS_SCORE_T_IN),
-        t_out=float(config.FOCUS_SCORE_T_OUT),
-        exit_low_streak=int(config.FOCUS_EXIT_LOW_STREAK),
+        retention=float(config.FOCUS_CHARGE_RETENTION),
+        enter=float(config.FOCUS_CHARGE_ENTER),
+        exit=float(config.FOCUS_CHARGE_EXIT),
         hard_cap_turns=int(config.FOCUS_HARD_CAP_TURNS),
     )
 

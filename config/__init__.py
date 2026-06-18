@@ -1758,43 +1758,53 @@ FOCUS_MODE_ENABLED = False
   落地，验证 + 调参后再按 provider opt-in 打开。详见 docs/design/focus-truename-mode.md。
 - 上游：FocusScorer / SessionStateMachine 入口的早退判定。"""
 
-FOCUS_SCORE_T_IN = 0.6
-"""进入凝神的评分阈值（迟滞高门）。
-- 用途：FocusScorer 输出的综合分 > 此值 → SM 翻 REGULAR→FOCUS。
-- 上游：归一化到 [0,1] 的加权信号分（见 FOCUS_SIGNAL_WEIGHTS）。
-- 设计依据：先紧（约「一周 1-2 次」水位）后松——上线收紧留底数据，再按漏触发
-  情况回放。魔法稀释 vs 魔法埋没是调参曲线，不是一次性决策。"""
+# ── 累积进入模型（leaky 累加器）─────────────────────────────────────
+# 进入不是「单轮分数越线」而是「逐轮累加的电荷值越线」：每轮
+#   charge = charge × FOCUS_CHARGE_RETENTION + 本轮score
+# charge ≥ ENTER 进入、< EXIT 退出（迟滞带）。这样零散漏出的脆弱信号能攒够进入，
+# 而转中性后 charge 每轮按 retention 漏掉、自然退出（替代旧的「连续 K 轮低分」
+# streak——streak 会被噪音单轮顶回而卡死，见 PR 实测）。
+FOCUS_CHARGE_RETENTION = 0.5
+"""电荷每轮的保留率（0~1）。
+- 用途：charge = charge × 此值 + 本轮score。0.5 = 每轮留 50%、漏 50%。
+- 调高（如 0.7/0.8）= 记性更长、零散信号更易累积进入、进去后更黏；
+  调低（如 0.3）= 漏得快、难累积、退得利落。
+- 稳态：持续每轮 score=s 时 charge → s/(1-retention)（如 retention=0.5、s=0.5 → 趋近 1.0）。
+- 这是「敏感度」主旋钮。"""
 
-FOCUS_SCORE_T_OUT = 0.2
-"""退出凝神的评分阈值（迟滞低门）。
-- 用途：综合分 < 此值且连续 FOCUS_EXIT_LOW_STREAK 轮，SM 才翻 FOCUS→REGULAR。
-- 设计依据：≈ 0.3 × T_in。进出阈值不对称（Schmitt trigger）避免在阈值附近抖动
-  导致 AI 一句重一句轻的体验断崖。"""
+FOCUS_CHARGE_ENTER = 1.0
+"""进入凝神的电荷阈值。
+- 用途：charge ≥ 此值 → REGULAR→FOCUS。
+- 一句重话（score≈1.0）即可秒进；零散脆弱靠累积逼近此值后进入。
+- 调低 = 更易进。charge 进入后被 cap 在此值（避免长重情节拖出过长尾巴）。"""
 
-FOCUS_EXIT_LOW_STREAK = 3
-"""退出凝神需要的连续低分轮数 K。
-- 用途：分数掉到 T_out 以下必须连续 K 轮才真正退出，单轮回弹不退。
-- 上游：SM 的 low_streak 计数器。"""
+FOCUS_CHARGE_EXIT = 0.3
+"""退出凝神的电荷阈值（迟滞低门，须 < ENTER）。
+- 用途：FOCUS 期间 charge < 此值 → 退出。
+- 转中性后从 cap 处按 retention 漏：retention=0.5/cap=1.0 时约 2 轮漏到 0.25<0.3 退出
+  （即「她降临后追一两轮才放下」）。调低 = 更黏、追更久。"""
 
 FOCUS_HARD_CAP_TURNS = 8
-"""单次凝神最多持续轮数 M（硬顶）。
-- 用途：即使分数一直在 T_out 以上，满 M 轮也强制退出，防 stuck-on 把降临拖成
-  日常、稀释稀缺感。
+"""单次凝神最多持续轮数 M（硬顶 backstop）。
+- 用途：即使 charge 一直在 EXIT 以上（用户持续重话），满 M 轮也强制退出收个尾，
+  防单个情节无限拖长。
 - 上游：SM 的 focus_turn_count 计数器。"""
 
 FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
     "keyword": 0.45,      # 用户消息命中脆弱情绪词（inline 路径专属）
     "cadence": 0.20,      # 回复字数相对基线骤跌（inline 路径专属）
     "silence": 0.20,      # 静默时长（idle 路径专属）
-    "open_thread": 0.15,  # 存在未收尾话题 / 到点的 followup（两条路径共用）
+    "open_thread": 0.15,  # 存在未收尾话题 / 到点的 followup（idle 路径专属）
 }
 """FocusScorer 各信号的相对权重。
 - 用途：scorer 按当前路径取「适用」信号子集，对子集内权重重新归一后加权平均
-  → 综合分。inline（有新消息）适用 keyword+cadence+open_thread；idle（无新消息）
-  适用 silence+open_thread。不适用的信号不进归一化分母，不会拉低均值。
+  → 该轮 score（再喂给累加器）。inline（有新消息）适用 keyword+cadence；idle
+  （无新消息）适用 silence+open_thread。不适用的信号返回 None、不进归一化分母。
+- ⚠️ open_thread 仅 idle 适用：inline 路径上 on_user_message 已先清掉 unfinished_thread，
+  再读只会得结构性 0 拉低均值；用户脆弱回复由 keyword 捕获。故 inline 实际分母是
+  keyword+cadence（0.45+0.20），不含 open_thread。
 - 上游：各子信号各自归一化到 [0,1]。
-- 设计依据：keyword 是 inline 最强单信号故权重最高；open_thread 跨路径共用是凝神
-  「她惦记着上次没聊完的事」闭环的锚。改这里直接改触发性格，慎调。"""
+- 设计依据：keyword 是 inline 最强单信号故权重最高。改这里直接改触发性格，慎调。"""
 
 FOCUS_KEYWORD_SATURATION = 3
 """脆弱情绪关键词命中数的饱和点。

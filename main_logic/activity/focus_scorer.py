@@ -56,11 +56,12 @@ class FocusScore:
 
     ``signals`` holds each sub-signal's value in [0, 1], or ``None`` when
     it didn't apply to this path — kept for diagnostics / logging so a
-    tuner can see *why* a turn did or didn't cross ``FOCUS_SCORE_T_IN``.
+    tuner can see *why* a turn fed the accumulator a high or low score
+    (the score is integrated into the leaky charge; see ``FOCUS_CHARGE_*``).
     """
 
     score: float
-    signals: dict = field(default_factory=dict)
+    signals: dict[str, float | None] = field(default_factory=dict)
 
 
 class FocusScorer:

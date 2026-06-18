@@ -1778,6 +1778,13 @@ class OmniOfflineClient:
 
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
+        # Focus vision guard: once images are sent this session, self.model stays
+        # the vision model permanently (image data persists in history), so later
+        # text-only turns must keep thinking off too. Track a sticky flag rather
+        # than comparing model names — vision_model == conversation_model in the
+        # default qwen/openai profiles, which would falsely flag every text turn
+        # and disable Focus thinking-on entirely.
+        self._focus_images_seen = getattr(self, "_focus_images_seen", False) or has_images
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -1984,13 +1991,12 @@ class OmniOfflineClient:
                         # instance's thinking-off extra_body applies. Routed
                         # through the visible (tool-leak-filtered) variant,
                         # which forwards **overrides to ``_astream_with_tools``.
-                        # uses_vision covers both this turn's images AND a prior
-                        # permanent switch to the vision model (self.model stays
-                        # vision once image data is in history).
-                        _uses_vision = has_images or bool(
-                            self.vision_model and self.model == self.vision_model
+                        # uses_vision = images sent this turn or earlier this
+                        # session (sticky flag, not model-name equality — see the
+                        # _focus_images_seen note where has_images is computed).
+                        _focus_overrides = self._focus_stream_overrides(
+                            thinking_on, self._focus_images_seen,
                         )
-                        _focus_overrides = self._focus_stream_overrides(thinking_on, _uses_vision)
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
                         ):

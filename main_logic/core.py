@@ -1613,6 +1613,10 @@ class LLMSessionManager:
         """
         from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
         if not FOCUS_MODE_ENABLED:
+            # Flag flipped off mid-episode → drop any stale FOCUS (update_focus
+            # self-clears when the master switch is off).
+            if self.state.mode is CognitionMode.FOCUS:
+                await self.state.update_focus(0.0)
             return False
         if not (user_text and user_text.strip()):
             return False
@@ -1641,11 +1645,13 @@ class LLMSessionManager:
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
             )
-            if mode is CognitionMode.FOCUS:
-                logger.info(
-                    "[%s] 凝神 inline: score=%.2f signals=%s → thinking-on",
-                    self.lanlan_name, scored.score, scored.signals,
-                )
+            # Log every turn (incl. REGULAR) so tuning can watch the charge
+            # accumulate toward FOCUS_CHARGE_ENTER, not just the entry moment.
+            logger.info(
+                "[%s] 凝神 inline: score=%.2f charge=%s mode=%s signals=%s",
+                self.lanlan_name, scored.score,
+                self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
+            )
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
@@ -1677,6 +1683,8 @@ class LLMSessionManager:
         """
         from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
         if not FOCUS_MODE_ENABLED:
+            if self.state.mode is CognitionMode.FOCUS:
+                await self.state.update_focus(0.0)  # self-clears when switch off
             return False
         if snapshot is None:
             # Privacy mode / tracker unavailable: don't score, but cleanly exit
@@ -1693,15 +1701,22 @@ class LLMSessionManager:
         try:
             scored = self._focus_scorer.score(snapshot, user_text=None)
             mode = await self.state.update_focus(scored.score)
-            if mode is CognitionMode.FOCUS:
-                logger.info(
-                    "[%s] 凝神 idle: score=%.2f signals=%s → thinking-on proactive",
-                    self.lanlan_name, scored.score, scored.signals,
-                )
+            logger.info(
+                "[%s] 凝神 idle: score=%.2f charge=%s mode=%s signals=%s",
+                self.lanlan_name, scored.score,
+                self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
+            )
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus idle decision failed (degrading to regular): %s",
                            self.lanlan_name, e)
+            # Mirror the inline path: don't leave a stale FOCUS episode on failure.
+            try:
+                if self.state.mode is CognitionMode.FOCUS:
+                    await self.state.update_focus(0.0, topic_changed=True)
+            except Exception as _exit_err:
+                logger.debug("[%s] focus idle fail-exit also failed: %s",
+                             self.lanlan_name, _exit_err)
             return False
 
     async def handle_text_data(

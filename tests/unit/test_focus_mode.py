@@ -1,8 +1,9 @@
 """Focus mode v1 unit tests: hysteresis state machine + signal scorer + lexicon scans.
 
 Coverage:
-1. ``_focus_decide`` pure hysteresis: enter / stay / low-streak exit /
-   hard-cap exit / topic-switch exit / asymmetric (Schmitt) thresholds.
+1. ``_focus_decide`` pure leaky-accumulator transition: strong-single enter /
+   scattered-cue accumulation / charge cap / decayed exit / noise-doesn't-stick /
+   hard-cap exit / topic-switch exit-and-clear.
 2. ``FocusScorer``: keyword/cadence/silence/open_thread sub-signals, inline
    vs idle path applicability + weight renormalisation, cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
@@ -33,10 +34,10 @@ from main_logic.session_state import (
 
 
 # ── helpers ─────────────────────────────────────────────────────────
-def _th(t_in=0.6, t_out=0.2, exit_low_streak=3, hard_cap_turns=8, enabled=True):
+def _th(retention=0.5, enter=1.0, exit=0.3, hard_cap_turns=8, enabled=True):
     return FocusThresholds(
-        enabled=enabled, t_in=t_in, t_out=t_out,
-        exit_low_streak=exit_low_streak, hard_cap_turns=hard_cap_turns,
+        enabled=enabled, retention=retention, enter=enter, exit=exit,
+        hard_cap_turns=hard_cap_turns,
     )
 
 
@@ -50,82 +51,107 @@ class _Snap:
         self.open_threads = open_threads or []
 
 
-# ── 1. pure hysteresis ──────────────────────────────────────────────
-def test_decide_enter_on_high_score():
-    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, low_streak=0,
-                      score=0.7, topic_changed=False, th=_th())
+# ── 1. pure leaky-accumulator transition ───────────────────────────
+def test_decide_enter_on_strong_single_score():
+    # One strong message (score == enter) crosses immediately: 0*0.5 + 1.0 = 1.0.
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.0,
+                      score=1.0, topic_changed=False, th=_th())
     assert d.action is _FocusAction.ENTER
-    assert d.turn_count == 1 and d.low_streak == 0
+    assert d.turn_count == 1 and d.charge == 1.0
 
 
-def test_decide_stay_regular_below_t_in():
-    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, low_streak=0,
-                      score=0.6, topic_changed=False, th=_th())  # not strictly >
-    assert d.action is _FocusAction.STAY
-    assert d.turn_count == 0
-
-
-def test_decide_focus_stays_above_t_out():
-    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, low_streak=0,
-                      score=0.3, topic_changed=False, th=_th())
-    assert d.action is _FocusAction.STAY
-    assert d.turn_count == 2 and d.low_streak == 0
-
-
-def test_decide_hysteresis_band_does_not_exit():
-    # score between t_out and t_in keeps focus alive (no flip-flop).
-    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=2, low_streak=2,
+def test_decide_stay_regular_below_enter():
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.0,
                       score=0.4, topic_changed=False, th=_th())
     assert d.action is _FocusAction.STAY
-    assert d.low_streak == 0  # reset because score >= t_out
+    assert d.charge == 0.4  # accumulating, not yet at enter
 
 
-def test_decide_low_streak_exit():
-    # 3rd consecutive sub-t_out turn exits (exit_low_streak=3).
-    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=4, low_streak=2,
-                      score=0.1, topic_changed=False, th=_th())
-    assert d.action is _FocusAction.EXIT
-    assert d.reason == "low_streak"
+def test_decide_scattered_cues_accumulate_to_enter():
+    # Two moderate turns add up past the bar (prior charge 0.67 + new 0.67):
+    # 0.67*0.5 + 0.67 = 1.005 → capped to enter=1.0 → ENTER.
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.67,
+                      score=0.67, topic_changed=False, th=_th())
+    assert d.action is _FocusAction.ENTER
+    assert d.charge == 1.0  # capped at enter
 
 
-def test_decide_low_streak_not_yet():
-    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=4, low_streak=1,
-                      score=0.1, topic_changed=False, th=_th())
+def test_decide_charge_capped_at_enter():
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.9,
+                      score=0.9, topic_changed=False, th=_th())
+    # 0.9*0.5 + 0.9 = 1.35 → cap 1.0
+    assert d.action is _FocusAction.ENTER and d.charge == 1.0
+
+
+def test_decide_focus_stays_while_charge_above_exit():
+    # charge 1.0, neutral turn: 1.0*0.5 + 0 = 0.5 >= exit 0.3 → STAY.
+    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, charge=1.0,
+                      score=0.0, topic_changed=False, th=_th())
     assert d.action is _FocusAction.STAY
-    assert d.low_streak == 2
+    assert d.turn_count == 2 and d.charge == 0.5
+
+
+def test_decide_focus_exits_when_charge_decays():
+    # charge 0.5, neutral: 0.25 < exit 0.3 → EXIT (leaked away).
+    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=3, charge=0.5,
+                      score=0.0, topic_changed=False, th=_th())
+    assert d.action is _FocusAction.EXIT
+    assert d.reason == "decayed"
+
+
+def test_decide_noisy_midscore_does_not_stick_forever():
+    # The old streak bug: a mid-score blip kept resetting the exit counter.
+    # With the leak, a 0.26 blip only slows decay; it still drains out.
+    th = _th()
+    charge = 1.0
+    seq = [0.0, 0.26, 0.0, 0.26, 0.0]  # the PR-observed cadence-noise pattern
+    exited = False
+    for i, s in enumerate(seq):
+        d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=i + 1,
+                          charge=charge, score=s, topic_changed=False, th=th)
+        if d.action is _FocusAction.EXIT:
+            exited = True
+            break
+        charge = d.charge
+    assert exited  # never gets stuck on
 
 
 def test_decide_hard_cap_exit():
-    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=8, low_streak=0,
+    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=8, charge=1.0,
                       score=0.9, topic_changed=False, th=_th(hard_cap_turns=8))
     assert d.action is _FocusAction.EXIT
     assert d.reason == "hard_cap"
 
 
-def test_decide_topic_switch_exit_overrides_high_score():
-    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, low_streak=0,
+def test_decide_topic_switch_exits_focus_and_clears_regular():
+    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, charge=1.0,
                       score=0.95, topic_changed=True, th=_th())
-    assert d.action is _FocusAction.EXIT
-    assert d.reason == "topic_switch"
+    assert d.action is _FocusAction.EXIT and d.reason == "topic_switch"
+    # in REGULAR a topic switch clears the accumulator (stay, charge=0)
+    d2 = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.8,
+                       score=0.0, topic_changed=True, th=_th())
+    assert d2.action is _FocusAction.STAY and d2.charge == 0.0
 
 
 def test_decide_hard_cap_yields_exactly_n_focus_turns():
-    # Simulate a run that never drops below t_out: should produce exactly
-    # hard_cap_turns thinking-on turns then exit.
+    # Sustained strong signal keeps charge at the cap, so only the hard cap
+    # ends it — exactly hard_cap_turns thinking-on turns.
     th = _th(hard_cap_turns=4)
     mode = CognitionMode.REGULAR
-    count, low = 0, 0
+    count, charge = 0, 0.0
     focus_turns = 0
     for _ in range(10):
-        d = _focus_decide(mode=mode, focus_turn_count=count, low_streak=low,
-                          score=0.9, topic_changed=False, th=th)
+        d = _focus_decide(mode=mode, focus_turn_count=count, charge=charge,
+                          score=1.0, topic_changed=False, th=th)
         if d.action is _FocusAction.ENTER:
             mode = CognitionMode.FOCUS
-            count, low = d.turn_count, d.low_streak
+            count, charge = d.turn_count, d.charge
             focus_turns += 1
         elif d.action is _FocusAction.STAY and mode is CognitionMode.FOCUS:
-            count, low = d.turn_count, d.low_streak
+            count, charge = d.turn_count, d.charge
             focus_turns += 1
+        elif d.action is _FocusAction.STAY:
+            charge = d.charge  # regular accumulating (none here, enters turn 1)
         elif d.action is _FocusAction.EXIT:
             break
     assert focus_turns == 4
@@ -195,68 +221,64 @@ def test_scorer_open_thread_idle_only():
 
 
 # ── 3. SessionStateMachine.update_focus (async) ─────────────────────
-async def test_sm_enter_and_exit_cycle(monkeypatch):
+def _patch_charge(monkeypatch, *, retention=0.5, enter=1.0, exit=0.3, hard_cap=99):
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_IN", 0.6)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_OUT", 0.2)
-    monkeypatch.setattr(config, "FOCUS_EXIT_LOW_STREAK", 2)
-    monkeypatch.setattr(config, "FOCUS_HARD_CAP_TURNS", 99)
+    monkeypatch.setattr(config, "FOCUS_CHARGE_RETENTION", retention)
+    monkeypatch.setattr(config, "FOCUS_CHARGE_ENTER", enter)
+    monkeypatch.setattr(config, "FOCUS_CHARGE_EXIT", exit)
+    monkeypatch.setattr(config, "FOCUS_HARD_CAP_TURNS", hard_cap)
+
+
+async def test_sm_enter_and_exit_cycle(monkeypatch):
+    _patch_charge(monkeypatch)  # retention 0.5, enter 1.0, exit 0.3
     sm = SessionStateMachine(lanlan_name="x")
     events = []
     sm.subscribe(None, lambda ev, pl: events.append((ev, pl)))
 
-    assert await sm.update_focus(0.9) is CognitionMode.FOCUS
+    assert await sm.update_focus(1.0) is CognitionMode.FOCUS  # charge 1.0 → enter
     assert sm.mode is CognitionMode.FOCUS
     assert events[0][0] is SessionEvent.FOCUS_ENTER
     ep_id = events[0][1]["episode_id"]
     assert ep_id and ep_id.startswith("x-")
 
-    # one low turn — not yet exit
-    assert await sm.update_focus(0.05) is CognitionMode.FOCUS
-    # second consecutive low turn — exit
-    assert await sm.update_focus(0.05) is CognitionMode.REGULAR
+    # neutral turn: charge 1.0*0.5 = 0.5 ≥ exit 0.3 → still FOCUS
+    assert await sm.update_focus(0.0) is CognitionMode.FOCUS
+    # neutral again: 0.5*0.5 = 0.25 < 0.3 → leaked out, exit
+    assert await sm.update_focus(0.0) is CognitionMode.REGULAR
     assert sm.mode is CognitionMode.REGULAR
     exit_evt = [e for e in events if e[0] is SessionEvent.FOCUS_EXIT]
     assert exit_evt and exit_evt[0][1]["episode_id"] == ep_id
-    assert exit_evt[0][1]["reason"] == "low_streak"
+    assert exit_evt[0][1]["reason"] == "decayed"
     assert "episode_started_at" in exit_evt[0][1]
 
 
-async def test_sm_hard_cap_exit(monkeypatch):
-    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_IN", 0.6)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_OUT", 0.2)
-    monkeypatch.setattr(config, "FOCUS_EXIT_LOW_STREAK", 99)
-    monkeypatch.setattr(config, "FOCUS_HARD_CAP_TURNS", 3)
+async def test_sm_scattered_cues_accumulate_to_enter(monkeypatch):
+    # The product ask: gradual vulnerability across turns adds up to enter,
+    # without any single message crossing the bar alone.
+    _patch_charge(monkeypatch, retention=0.5, enter=1.0)
     sm = SessionStateMachine(lanlan_name="x")
-    modes = [await sm.update_focus(0.9) for _ in range(5)]
-    # Cap=3: exactly 3 focus turns then a forced REGULAR exit at turn 4,
-    # even though the score never dropped. Turn 5 re-enters as a NEW
-    # episode (sustained high score) — the cap bounds episode length, not
-    # total focus time (see _focus_decide hard_cap comment).
+    assert await sm.update_focus(0.6) is CognitionMode.REGULAR  # charge 0.6
+    assert await sm.update_focus(0.6) is CognitionMode.REGULAR  # 0.6*0.5+0.6=0.9
+    assert await sm.update_focus(0.6) is CognitionMode.FOCUS    # 0.9*0.5+0.6=1.05→cap, enter
+
+
+async def test_sm_hard_cap_exit(monkeypatch):
+    _patch_charge(monkeypatch, hard_cap=3)
+    sm = SessionStateMachine(lanlan_name="x")
+    modes = [await sm.update_focus(1.0) for _ in range(5)]
+    # Cap=3: 3 focus turns then forced REGULAR exit at turn 4, even though
+    # charge stays at the cap. Turn 5 re-enters (sustained strong signal) —
+    # the cap bounds episode length, not total focus time.
     assert [m is CognitionMode.FOCUS for m in modes[:4]] == [True, True, True, False]
     assert modes[4] is CognitionMode.FOCUS  # re-entry allowed
 
 
-async def test_sm_hard_cap_no_reentry_when_score_drops(monkeypatch):
-    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_IN", 0.6)
-    monkeypatch.setattr(config, "FOCUS_HARD_CAP_TURNS", 3)
-    sm = SessionStateMachine(lanlan_name="x")
-    for _ in range(3):
-        await sm.update_focus(0.9)
-    # cap fires; this turn scores low → exits and stays regular
-    assert await sm.update_focus(0.1) is CognitionMode.REGULAR
-    assert await sm.update_focus(0.1) is CognitionMode.REGULAR
-
-
 async def test_sm_topic_switch_immediate_exit(monkeypatch):
-    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_IN", 0.6)
+    _patch_charge(monkeypatch)
     sm = SessionStateMachine(lanlan_name="x")
-    await sm.update_focus(0.9)
+    await sm.update_focus(1.0)
     assert sm.mode is CognitionMode.FOCUS
-    assert await sm.update_focus(0.9, topic_changed=True) is CognitionMode.REGULAR
+    assert await sm.update_focus(1.0, topic_changed=True) is CognitionMode.REGULAR
 
 
 async def test_sm_master_switch_off_is_noop(monkeypatch):
@@ -266,11 +288,22 @@ async def test_sm_master_switch_off_is_noop(monkeypatch):
     assert sm.mode is CognitionMode.REGULAR
 
 
-async def test_sm_reset_clears_focus(monkeypatch):
-    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
-    monkeypatch.setattr(config, "FOCUS_SCORE_T_IN", 0.6)
+async def test_sm_disable_mid_episode_clears_stale_focus(monkeypatch):
+    # Enter focus, then flip the master switch off: the next update_focus
+    # must drop the stale FOCUS rather than leaving it active.
+    _patch_charge(monkeypatch)
     sm = SessionStateMachine(lanlan_name="x")
-    await sm.update_focus(0.9)
+    await sm.update_focus(1.0)
+    assert sm.mode is CognitionMode.FOCUS
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
+    assert await sm.update_focus(0.0) is CognitionMode.REGULAR
+    assert sm.mode is CognitionMode.REGULAR
+
+
+async def test_sm_reset_clears_focus(monkeypatch):
+    _patch_charge(monkeypatch)
+    sm = SessionStateMachine(lanlan_name="x")
+    await sm.update_focus(1.0)
     assert sm.mode is CognitionMode.FOCUS
     await sm.reset(force=True)
     assert sm.mode is CognitionMode.REGULAR
