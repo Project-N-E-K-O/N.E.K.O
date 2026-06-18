@@ -400,10 +400,12 @@ class ModeManager:
         now_ts = float(time.time() if now is None else now)
         current_mode = normalize_mode(self.current_mode)
         checkpoint_before = self.snapshot()
+        normalized_reason = str(reason or "").strip().lower()
+        ui_switch = normalized_reason == "ui"
         explicit_switch = _is_explicit_mode_switch_reason(reason)
 
         if current_mode == requested_mode:
-            if explicit_switch and self.mode_lock_until:
+            if ui_switch and self.mode_lock_until:
                 self.mode_lock_until = 0.0
                 checkpoint_before = self.snapshot()
             return {
@@ -415,6 +417,24 @@ class ModeManager:
                 "locked": False,
                 "lock_reason": "",
                 "lock_until": float(self.mode_lock_until or 0.0),
+                "checkpoint": checkpoint_before,
+            }
+
+        if self.mode_lock_until and now_ts < self.mode_lock_until and not ui_switch:
+            return {
+                "changed": False,
+                "old_mode": current_mode,
+                "new_mode": current_mode,
+                "transition_phrase": build_transition_phrase(
+                    current_mode,
+                    language=language,
+                    outcome="locked",
+                    lock_until=self.mode_lock_until,
+                ),
+                "reason": reason,
+                "locked": True,
+                "lock_reason": "mode_lock",
+                "lock_until": float(self.mode_lock_until),
                 "checkpoint": checkpoint_before,
             }
 
@@ -449,24 +469,6 @@ class ModeManager:
                 "lock_reason": "",
                 "lock_until": 0.0,
                 "checkpoint": checkpoint_after,
-            }
-
-        if self.mode_lock_until and now_ts < self.mode_lock_until:
-            return {
-                "changed": False,
-                "old_mode": current_mode,
-                "new_mode": current_mode,
-                "transition_phrase": build_transition_phrase(
-                    current_mode,
-                    language=language,
-                    outcome="locked",
-                    lock_until=self.mode_lock_until,
-                ),
-                "reason": reason,
-                "locked": True,
-                "lock_reason": "mode_lock",
-                "lock_until": float(self.mode_lock_until),
-                "checkpoint": checkpoint_before,
             }
 
         self._record_mode_switch_attempt(mode=requested_mode, reason=reason, at=now_ts)
