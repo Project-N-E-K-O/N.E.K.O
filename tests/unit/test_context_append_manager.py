@@ -263,6 +263,71 @@ async def test_append_context_reserves_request_id_before_awaiting_prime():
 
 
 @pytest.mark.asyncio
+async def test_append_context_keeps_partial_targets_when_realtime_prime_fails():
+    mgr = _make_manager()
+
+    class _FailingPrimeSession:
+        async def prime_context(self, text, *, skipped=False):
+            raise RuntimeError("prime unavailable")
+
+    mgr.session = _FailingPrimeSession()
+
+    result = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="cached for next session",
+        lifetime="session_family",
+        request_id="ctx-partial",
+    )
+    duplicate = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="cached for next session again",
+        lifetime="session_family",
+        request_id="ctx-partial",
+    )
+
+    assert result.appended is True
+    assert result.targets == ("new_session_cache",)
+    assert duplicate.appended is False
+    assert duplicate.deduped is True
+    assert mgr.message_cache_for_new_session == [
+        {"role": "Lan", "text": "cached for next session"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_context_retries_when_all_targets_fail():
+    mgr = _make_manager()
+    mgr.session_ready = False
+    await mgr.append_context(
+        source="game.realtime_context",
+        role="system",
+        text="retry later",
+        timing="when_ready",
+        request_id="ctx-retry",
+    )
+
+    class _FailingPrimeSession:
+        async def prime_context(self, text, *, skipped=False):
+            raise RuntimeError("prime unavailable")
+
+    mgr.session = _FailingPrimeSession()
+    await mgr._flush_pending_context_appends()
+
+    assert len(mgr.pending_context_appends) == 1
+    duplicate = await mgr.append_context(
+        source="game.realtime_context",
+        role="system",
+        text="retry duplicate",
+        timing="when_ready",
+        request_id="ctx-retry",
+    )
+    assert duplicate.appended is False
+    assert duplicate.deduped is True
+
+
+@pytest.mark.asyncio
 async def test_append_context_applies_token_budget(monkeypatch):
     mgr = _make_manager()
     history = []

@@ -147,8 +147,10 @@ def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
     })
 
     assert mgr.pending_agent_callbacks[0]["summary"] == "2:topic summary"
+    assert mgr.pending_agent_callbacks[0]["detail"] == "2:topic detail"
     assert mgr.pending_extra_replies[0]["context_source"] == "topic.hook"
     assert mgr.pending_agent_callbacks[1]["summary"] == "4:proactive summary"
+    assert mgr.pending_agent_callbacks[1]["detail"] == "4:proactive detail"
     assert mgr.pending_extra_replies[1]["context_source"] == "proactive.callback"
 
 

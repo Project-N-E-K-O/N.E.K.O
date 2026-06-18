@@ -1273,8 +1273,11 @@ class LLMSessionManager:
         if lifetime in {"current_session", "session_family"} and not wrote_active_history:
             prime_context = getattr(session, "prime_context", None)
             if callable(prime_context):
-                await prime_context(f"{role}: {content}", skipped=(audience == "model"))
-                targets.append("realtime_prime")
+                try:
+                    await prime_context(f"{role}: {content}", skipped=(audience == "model"))
+                    targets.append("realtime_prime")
+                except Exception as exc:
+                    print(f"[{self.lanlan_name}] context append realtime_prime failed: {exc}")
 
         if not targets:
             return ContextAppendResult(appended=False, reason="no_context_target")
@@ -1349,11 +1352,17 @@ class LLMSessionManager:
             payload.get("ordering_key") or f"~{int(payload.get('_sequence', 0)):020d}",
             int(payload.get("_sequence", 0)),
         ))
+        retry: list[dict] = []
         for payload in pending:
             try:
-                await self._append_context_to_targets(payload)
+                result = await self._append_context_to_targets(payload)
+                if not result.appended:
+                    retry.append(payload)
             except Exception as exc:
+                retry.append(payload)
                 print(f"[{self.lanlan_name}] context append flush failed: {exc}")
+        if retry:
+            self.pending_context_appends = retry + self.pending_context_appends
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
