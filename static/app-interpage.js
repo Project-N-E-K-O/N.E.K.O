@@ -478,6 +478,7 @@
             : null;
         var suppressToast = !!reloadOptions.suppressToast;
         var skipIdleRestore = !!reloadOptions.skipIdleRestore;
+        var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
         var throwOnError = !!reloadOptions.throwOnError;
         var reloadKey = JSON.stringify({
             lanlan_name: targetLanlanName,
@@ -544,6 +545,53 @@
         let mmdRequestSessionId = '';
         let activeMmdLoadingSessionId = '';
         var reloadSucceeded = false;
+
+        function ensureLive2DRenderActive(reason) {
+            try {
+                var manager = window.live2dManager || null;
+                var app = manager && manager.pixi_app;
+                var ticker = app && app.ticker;
+                var currentModel = manager && typeof manager.getCurrentModel === 'function'
+                    ? manager.getCurrentModel()
+                    : manager && manager.currentModel;
+
+                if (currentModel) {
+                    currentModel.visible = true;
+                    currentModel.alpha = 1;
+                    if (currentModel.renderable !== undefined) {
+                        currentModel.renderable = true;
+                    }
+                }
+                if (app && app.stage) {
+                    app.stage.visible = true;
+                    app.stage.alpha = 1;
+                    if (app.stage.renderable !== undefined) {
+                        app.stage.renderable = true;
+                    }
+                }
+                if (ticker) {
+                    if (!ticker.started && typeof ticker.start === 'function') {
+                        ticker.start();
+                    }
+                    if (typeof ticker.update === 'function') {
+                        ticker.update();
+                    }
+                }
+                if (app && app.renderer && typeof app.renderer.render === 'function' && app.stage) {
+                    app.renderer.render(app.stage);
+                }
+            } catch (error) {
+                console.warn('[Model] Live2D render activation failed:', reason || 'unknown', error);
+            }
+        }
+
+        function scheduleLive2DRenderActivation(reason) {
+            [80, 300].forEach(function (delayMs) {
+                window.setTimeout(function () {
+                    ensureLive2DRenderActive((reason || 'model-reload-live2d') + ':delay-' + delayMs);
+                }, delayMs);
+            });
+        }
 
         try {
             // 1. Re-fetch page config, or use a caller-provided temporary runtime config.
@@ -1073,8 +1121,30 @@
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
                                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
-                                suppressInitialIdle: skipIdleRestore
+                                suppressInitialIdle: skipIdleRestore,
+                                suppressPersistentExpressions: skipPersistentExpressions
                             });
+                            if (live2dContainer2) {
+                                live2dContainer2.classList.remove('hidden');
+                                live2dContainer2.style.display = 'block';
+                                live2dContainer2.style.visibility = 'visible';
+                                live2dContainer2.style.removeProperty('opacity');
+                                live2dContainer2.style.removeProperty('pointer-events');
+                            }
+                            if (live2dCanvas2) {
+                                live2dCanvas2.style.display = 'block';
+                                live2dCanvas2.style.visibility = 'visible';
+                                live2dCanvas2.style.removeProperty('opacity');
+                                live2dCanvas2.style.pointerEvents = 'auto';
+                            }
+                            if (typeof window.showLive2d === 'function') {
+                                window.showLive2d();
+                            }
+                            if (window.live2dManager && typeof window.live2dManager.resumeRendering === 'function') {
+                                window.live2dManager.resumeRendering();
+                            }
+                            ensureLive2DRenderActive('model-reload-live2d');
+                            scheduleLive2DRenderActivation('model-reload-live2d');
 
                             // Sync legacy global references
                             if (window.LanLan1) {

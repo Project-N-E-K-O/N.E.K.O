@@ -824,14 +824,11 @@
             });
             director.cancelActiveNarration();
             director.resumeCurrentSceneAfterResistance();
+            if (director.tutorialManager && typeof director.tutorialManager.requestTutorialEnd === 'function') {
+                return director.tutorialManager.requestTutorialEnd(finalReason);
+            }
             if (director.tutorialManager && typeof director.tutorialManager.requestTutorialDestroy === 'function') {
-                if (
-                    typeof director.tutorialManager.requestAvatarFloatingGuideCooperativeEnd === 'function'
-                    && director.tutorialManager.requestAvatarFloatingGuideCooperativeEnd(finalReason)
-                ) {
-                    return;
-                }
-                director.tutorialManager.requestTutorialDestroy(finalReason);
+                return director.tutorialManager.requestTutorialDestroy(finalReason);
             } else {
                 director.destroy();
             }
@@ -863,7 +860,7 @@
             if (director.tutorialManager && typeof director.tutorialManager.handleTutorialSkipRequest === 'function') {
                 await director.tutorialManager.handleTutorialSkipRequest();
             } else {
-                await director.skip('skip', 'skip');
+                await director.requestTermination('skip', 'skip');
             }
         }
     }

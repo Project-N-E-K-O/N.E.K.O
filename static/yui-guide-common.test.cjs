@@ -1863,6 +1863,10 @@ test('director routes termination requests through TutorialTerminationRouter', (
         '        destroy() {',
         1
     )[0];
+    const pageHideBlock = directorSource.split('        onPageHide() {')[1].split(
+        '        get mobileTouchInteractionPassthrough() {',
+        1
+    )[0];
     const pluginSkipBlock = directorSource.split('        async handlePluginDashboardSkipRequest(data) {')[1].split(
         '        onWindowMessage(event) {',
         1
@@ -1876,12 +1880,17 @@ test('director routes termination requests through TutorialTerminationRouter', (
     assert.match(routerBlock, /skip\(reason,\s*tutorialReason\) \{/);
     assert.match(routerBlock, /async handlePluginDashboardSkipRequest\(data\) \{/);
     assert.doesNotMatch(routerBlock, /director\.beginTerminationVisualCleanup\(\);/);
-    assert.match(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
-    assert.match(routerBlock, /director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
+    assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
+    assert.match(routerBlock, /typeof director\.tutorialManager\.requestTutorialEnd === 'function'/);
+    assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
+    assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
     assert.match(routerBlock, /director\.tutorialManager\.handleTutorialSkipRequest\(\)/);
+    assert.doesNotMatch(routerBlock, /director\.skip\('skip', 'skip'\)/);
     assert.match(routerBlock, /director\.forwardPluginDashboardSkipRequestToButton\(detail\)/);
     assert.match(requestTerminationBlock, /return this\.terminationRouter\.requestTermination\(reason,\s*tutorialReason\);/);
     assert.match(skipBlock, /return this\.terminationRouter\.skip\(reason,\s*tutorialReason\);/);
+    assert.match(pageHideBlock, /this\.tutorialManager\.requestTutorialEnd\('pagehide'\)/);
+    assert.match(pageHideBlock, /this\.destroy\(\);/);
     assert.match(pluginSkipBlock, /return this\.terminationRouter\.handlePluginDashboardSkipRequest\(data\);/);
     assert.doesNotMatch(requestTerminationBlock, /beginTerminationVisualCleanup/);
     assert.doesNotMatch(skipBlock, /recordExperienceMetric\('skip'/);
@@ -1895,19 +1904,88 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
         '    /**\n     * 移除「跳过」按钮',
         1
     )[0];
+    const cooperativeEndBlock = managerSource.split('    requestAvatarFloatingGuideCooperativeEnd(reason = ')[1].split(
+        '    handleDesktopYuiGuideSkipRequest(event) {',
+        1
+    )[0];
+    const ensureDirectorBlock = managerSource.split('    ensureYuiGuideDirector() {')[1].split(
+        '        if (!this.isYuiGuideEnabledForPage()) {',
+        1
+    )[0];
+    const avatarInteractionRestoreBlock = managerSource.split(
+        "    restoreAvatarFloatingModelInteractionState(reason = 'tutorial-ended') {"
+    )[1].split(
+        '    applyTutorialChatIdentityOverride(detail) {',
+        1
+    )[0];
+    const teardownBlock = managerSource.split('    _teardownTutorialUI() {')[1].split(
+        '    /**\n     * 恢复所有在引导中修改过的元素',
+        1
+    )[0];
     const routerBlock = resistanceControllerSource.split('    class TutorialTerminationRouter {')[1].split(
         '    class TutorialResetInterruptController {',
         1
     )[0];
 
-    assert.match(skipBlock, /director\.skip\('skip', 'skip'\)/);
+    assert.doesNotMatch(skipBlock, /director\.skip\('skip', 'skip'\)/);
+    assert.doesNotMatch(skipBlock, /const director = this\.yuiGuideDirector;/);
     assert.doesNotMatch(skipBlock, /\.then\(\(\) => \{\s*this\.requestTutorialDestroy\('skip'\);/);
-    assert.match(skipBlock, /return Promise\.resolve\(this\.requestTutorialDestroy\('skip'\)\);/);
-    assert.match(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
-    assert.match(routerBlock, /director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
+    assert.doesNotMatch(skipBlock, /this\.clearAllTutorialLifecycles\('skip'\);/);
+    assert.match(skipBlock, /return Promise\.resolve\(this\.requestTutorialEnd\('skip'\)\);/);
+    assert.match(ensureDirectorBlock, /this\.yuiGuideDirector\.destroyed \|\| this\.yuiGuideDirector\.terminationRequested/);
+    assert.match(ensureDirectorBlock, /this\.yuiGuideDirector\.destroy\(\);/);
+    assert.match(ensureDirectorBlock, /this\.yuiGuideDirector = null;/);
+    assert.doesNotMatch(cooperativeEndBlock, /this\.setTutorialEndReason\(reason\);/);
+    assert.doesNotMatch(cooperativeEndBlock, /this\.clearPcTutorialGlobalOverlay\(reason\);/);
+    assert.doesNotMatch(cooperativeEndBlock, /this\.invalidateTutorialInteractionApply\(reason\);/);
+    assert.match(cooperativeEndBlock, /return this\.requestTutorialEnd\(reason\);/);
+    assert.doesNotMatch(cooperativeEndBlock, /return this\.onTutorialEnd\(\);/);
+    assert.match(avatarInteractionRestoreBlock, /window\.live2dManager\.setLocked\(false,\s*\{\s*updateFloatingButtons:\s*false\s*\}\);/);
+    assert.match(avatarInteractionRestoreBlock, /window\.vrmManager\.core\.setLocked\(false\);/);
+    assert.match(avatarInteractionRestoreBlock, /window\.mmdManager\.core\.setLocked\(false\);/);
+    assert.match(avatarInteractionRestoreBlock, /window\.pngtuberManager\.setLocked\(false,\s*\{\s*updateFloatingButtons:\s*false\s*\}\);/);
+    assert.match(teardownBlock, /this\.restoreAvatarFloatingModelInteractionState\('teardown-early'\);/);
+    assert.match(teardownBlock, /\.then\(\(\) => this\.restoreAvatarFloatingModelInteractionState\('tutorial-avatar-restored'\)\)/);
+    assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
+    assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
+    assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
+    assert.doesNotMatch(routerBlock, /director\.skip\('skip', 'skip'\)/);
     assert.doesNotMatch(routerBlock, /director\.beginTerminationVisualCleanup\(\);/);
     assert.match(resistanceControllerSource, /director\.requestTermination\(source \|\| 'angry_exit', 'angry_exit'\);/);
     assert.match(resistanceControllerSource, /minDurationMs:\s*Number\.isFinite\(angryExitNarrationDurationMs\)/);
+});
+
+test('return petal transition cancels immediately when tutorial is skipped', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/petal-transition-controller.js'), 'utf8');
+    const cancelBlock = source.split('        isCancelled() {')[1].split(
+        '        waitForNarrationEnd(durationMs) {',
+        1
+    )[0];
+    const waitBlock = source.split('        waitForNarrationEnd(durationMs) {')[1].split(
+        '        async finishTransition(transition) {',
+        1
+    )[0];
+    const finishBlock = source.split('        async finishTransition(transition) {')[1].split(
+        '        async executeReturnTransition(options) {',
+        1
+    )[0];
+    const cancelledFinishBlock = finishBlock.split('            if (this.isCancelled()) {')[1].split(
+        '            if (typeof transition.done',
+        1
+    )[0];
+    const executeBlock = source.split('        async executeReturnTransition(options) {')[1].split(
+        '        fadeReturnModelOut(durationMs) {',
+        1
+    )[0];
+
+    assert.match(cancelBlock, /typeof director\.isStopping === 'function'/);
+    assert.match(cancelBlock, /director\.isStopping\(\)/);
+    assert.match(waitBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*?resolve\(false\);/);
+    assert.match(cancelledFinishBlock, /transition\.finish\(\);/);
+    assert.match(cancelledFinishBlock, /return;/);
+    assert.doesNotMatch(cancelledFinishBlock, /transition\.done\(\)/);
+    assert.match(executeBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*?return;/);
+    assert.match(executeBlock, /await this\.finishTransition\(transition\);/);
 });
 
 test('avatar floating auto-start rechecks pending state before delayed launch', () => {
@@ -1932,11 +2010,15 @@ test('avatar floating auto-start rechecks pending state before delayed launch', 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const clearOverlayBlock = managerSource.split('    clearPcTutorialGlobalOverlay(reason = ')[1].split(
+        '    requestTutorialEnd(reason = ',
+        1
+    )[0];
+    const endRequestBlock = managerSource.split('    requestTutorialEnd(reason = ')[1].split(
         '    requestTutorialDestroy(reason = ',
         1
     )[0];
     const destroyRequestBlock = managerSource.split('    requestTutorialDestroy(reason = ')[1].split(
-        '    handleDesktopYuiGuideSkipRequest(event) {',
+        '    requestAvatarFloatingGuideCooperativeEnd(reason = ',
         1
     )[0];
     const lifecycleCleanupBlock = managerSource.split('    clearAllTutorialLifecycles(reason = ')[1].split(
@@ -1949,14 +2031,15 @@ test('tutorial destroy requests share the PC global overlay cleanup path', () =>
     assert.match(clearOverlayBlock, /reason:\s*rawReason/);
     assert.match(clearOverlayBlock, /tutorialRunId:\s*tutorialRunId/);
     assert.match(clearOverlayBlock, /yuiGuidePcOverlayRunId/);
-    assert.match(destroyRequestBlock, /this\.setTutorialEndReason\(reason\);[\s\S]*this\.clearPcTutorialGlobalOverlay\(reason\);/);
+    assert.match(endRequestBlock, /this\.setTutorialEndReason\(reason\);[\s\S]*this\.clearAllTutorialLifecycles\(reason\);[\s\S]*this\.clearPcTutorialGlobalOverlay\(reason\);/);
+    assert.match(destroyRequestBlock, /return this\.requestTutorialEnd\(reason\);/);
     assert.match(lifecycleCleanupBlock, /this\.clearPcTutorialGlobalOverlay\(rawReason\);/);
 });
 
 test('PC global overlay cleanup clears the stored run id before the next tutorial run', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const clearOverlayBlock = managerSource.split('    clearPcTutorialGlobalOverlay(reason = ')[1].split(
-        '    requestTutorialDestroy(reason = ',
+        '    requestTutorialEnd(reason = ',
         1
     )[0];
 
@@ -1967,7 +2050,7 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
     const clearOverlayBlock = managerSource.split('    clearPcTutorialGlobalOverlay(reason = ')[1].split(
-        '    requestTutorialDestroy(reason = ',
+        '    requestTutorialEnd(reason = ',
         1
     )[0];
     const externalCleanupBlock = appInterpageSource.split('    function clearYuiGuidePcOverlayBridgeState(reason, tutorialRunId) {')[1].split(
@@ -1975,7 +2058,10 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
         1
     )[0];
 
-    assert.match(clearOverlayBlock, /window\.nekoTutorialOverlay\.relayToChat\(\{/);
+    assert.match(clearOverlayBlock, /const lifecycleEndedMessage = \{/);
+    assert.match(clearOverlayBlock, /window\.nekoTutorialOverlay\.relayToChat\(lifecycleEndedMessage\)/);
+    assert.match(clearOverlayBlock, /window\.nekoTutorialOverlay\.relayToPet\(lifecycleEndedMessage\)/);
+    assert.match(clearOverlayBlock, /window\.appInterpage\.nekoBroadcastChannel\.postMessage\(lifecycleEndedMessage\)/);
     assert.match(clearOverlayBlock, /action:\s*'yui_guide_tutorial_lifecycle_ended'/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);

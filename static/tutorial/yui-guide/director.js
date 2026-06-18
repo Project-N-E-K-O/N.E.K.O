@@ -12971,6 +12971,10 @@
         }
 
         onPageHide() {
+            if (this.tutorialManager && typeof this.tutorialManager.requestTutorialEnd === 'function') {
+                void this.tutorialManager.requestTutorialEnd('pagehide');
+                return;
+            }
             this.destroy();
         }
 

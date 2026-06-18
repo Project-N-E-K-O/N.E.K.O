@@ -15,7 +15,6 @@
             this.reloadModel = normalizedOptions.reloadModel || noop;
             this.setPreparing = normalizedOptions.setPreparing || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
-            this.fadeOutBeforeRestore = normalizedOptions.fadeOutBeforeRestore || noop;
             this.applyIdentityOverride = normalizedOptions.applyIdentityOverride || noop;
             this.clearViewportWatcher = normalizedOptions.clearViewportWatcher || noop;
             this.override = null;
@@ -166,7 +165,7 @@
             const restorePromise = Promise.resolve().then(async () => {
                 try {
                     this.clearViewportWatcher();
-                    await Promise.resolve(this.fadeOutBeforeRestore());
+                    this.revealPrepared();
                     this.applyIdentityOverride({ active: false });
                     if (!currentName) {
                         return;

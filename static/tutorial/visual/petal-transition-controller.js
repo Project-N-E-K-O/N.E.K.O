@@ -196,21 +196,66 @@
             }
         }
 
+        isCancelled() {
+            const director = this.director || {};
+            return !!(
+                director.destroyed
+                || (
+                    typeof director.isStopping === 'function'
+                    && director.isStopping()
+                )
+            );
+        }
+
         waitForNarrationEnd(durationMs) {
             const win = getBrowserWindow();
+            const totalMs = Math.max(0, Number(durationMs) || 0);
+            if (totalMs <= 0 || this.isCancelled()) {
+                return Promise.resolve(!this.isCancelled());
+            }
             return new Promise((resolve) => {
-                if (win && typeof win.setTimeout === 'function') {
-                    win.setTimeout(resolve, Math.max(0, Number(durationMs) || 0));
-                    return;
-                }
-                setTimeout(resolve, Math.max(0, Number(durationMs) || 0));
+                const startedAt = Date.now();
+                const schedule = win && typeof win.setTimeout === 'function'
+                    ? win.setTimeout.bind(win)
+                    : setTimeout;
+                const tick = () => {
+                    if (this.isCancelled()) {
+                        resolve(false);
+                        return;
+                    }
+                    if (Date.now() - startedAt >= totalMs) {
+                        resolve(true);
+                        return;
+                    }
+                    schedule(tick, Math.min(80, totalMs));
+                };
+                schedule(tick, Math.min(80, totalMs));
             });
+        }
+
+        async finishTransition(transition) {
+            if (!transition || transition.__yuiGuideFinished) {
+                return;
+            }
+            transition.__yuiGuideFinished = true;
+            if (this.isCancelled()) {
+                if (typeof transition.finish === 'function') {
+                    await transition.finish();
+                }
+                return;
+            }
+            if (typeof transition.done === 'function') {
+                await transition.done();
+            }
+            if (typeof transition.finish === 'function') {
+                await transition.finish();
+            }
         }
 
         async executeReturnTransition(options) {
             const normalizedOptions = options || {};
             const director = this.director || {};
-            if (director.destroyed) {
+            if (this.isCancelled()) {
                 return;
             }
 
@@ -248,7 +293,7 @@
                     this.notifyTransitionStart(normalizedOptions);
                     fadePromise = fadeModelOut(baseTransitionDurationMs);
                     const loadedPetalSequence = await petalSequencePromise;
-                    if (director.destroyed) {
+                    if (this.isCancelled()) {
                         return;
                     }
                     if (loadedPetalSequence) {
@@ -261,7 +306,7 @@
                     }
                 } else {
                     const loadedPetalSequence = await petalSequencePromise;
-                    if (director.destroyed) {
+                    if (this.isCancelled()) {
                         return;
                     }
                     transition = createReturnPetalTransition(origin, {
@@ -279,24 +324,16 @@
                     this.waitForNarrationEnd(baseTransitionDurationMs),
                     fadePromise
                 ]);
-                if (director.destroyed) {
+                if (this.isCancelled()) {
                     return;
                 }
                 await restoreTutorialAvatar();
-                if (director.destroyed) {
+                if (this.isCancelled()) {
                     return;
                 }
                 restoreOpacityTargets();
             } finally {
-                if (transition && !transition.__yuiGuideFinished) {
-                    transition.__yuiGuideFinished = true;
-                    if (typeof transition.done === 'function') {
-                        await transition.done();
-                    }
-                    if (typeof transition.finish === 'function') {
-                        await transition.finish();
-                    }
-                }
+                await this.finishTransition(transition);
                 restoreOpacityTargets();
             }
         }
