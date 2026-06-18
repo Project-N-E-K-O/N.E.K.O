@@ -280,6 +280,56 @@ async def test_clear_pending_context_appends_drops_stale_ready_queue():
 
 
 @pytest.mark.asyncio
+async def test_clear_pending_context_appends_releases_only_stale_request_ids():
+    mgr = _make_manager()
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+
+    active = await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="already written",
+        request_id="active-request",
+    )
+    mgr.session = None
+    mgr.session_ready = False
+    queued = await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="queued for old session",
+        timing="when_ready",
+        request_id="queued-request",
+    )
+
+    assert active.appended is True
+    assert queued.appended is True
+
+    mgr._clear_pending_context_appends()
+    mgr.session = SimpleNamespace(_conversation_history=history)
+    mgr.session_ready = True
+    retry_stale = await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="queued retry in new session",
+        request_id="queued-request",
+    )
+    retry_active = await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="already written duplicate",
+        request_id="active-request",
+    )
+
+    assert retry_stale.appended is True
+    assert retry_active.appended is False
+    assert retry_active.deduped is True
+    assert [message.content for message in history] == [
+        "system: already written",
+        "system: queued retry in new session",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_append_context_dedups_request_id_inside_manager():
     mgr = _make_manager()
     history = []

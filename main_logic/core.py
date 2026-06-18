@@ -1389,9 +1389,17 @@ class LLMSessionManager:
     def _clear_pending_context_appends(self) -> None:
         pending = getattr(self, "pending_context_appends", None)
         if isinstance(pending, list):
+            stale_payloads = list(pending)
             pending.clear()
         else:
+            stale_payloads = []
             self.pending_context_appends = []
+        for payload in stale_payloads:
+            if isinstance(payload, dict) and payload.get("request_id"):
+                self._forget_context_append_request_id(
+                    payload.get("source", ""),
+                    payload.get("request_id", ""),
+                )
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
