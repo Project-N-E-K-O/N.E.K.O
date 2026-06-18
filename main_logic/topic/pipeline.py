@@ -788,8 +788,6 @@ class TopicHookPool:
                 )
             )
         except TypeError:
-            if not include_manager_release:
-                return True
             try:
                 return bool(self._delivery_available(name))
             except Exception as exc:

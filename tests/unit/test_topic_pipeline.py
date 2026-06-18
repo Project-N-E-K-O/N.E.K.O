@@ -834,6 +834,41 @@ async def test_topic_pool_release_predicate_skips_manager_release_after_claim():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_release_predicate_reruns_legacy_delivery_gate():
+    calls = []
+    release_checks = []
+    gate = {"open": True}
+
+    async def fake_analyzer(*, lang, **kwargs):
+        return [{"interest": "legacy delivery gate 关闭后不能放行", "relevance": 90}]
+
+    def delivery_available(name):
+        calls.append(name)
+        return gate["open"]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        gate["open"] = False
+        release_checks.append(material["_topic_release_available"]())
+        return False
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        delivery_available=delivery_available,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_retry_delay_seconds=60,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "这个话题先通过 submit 前检查，但 release 前 legacy gate 会关闭", lang="zh-CN")
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.03)
+
+    assert calls == ["妮可", "妮可", "妮可"]
+    assert release_checks == [False]
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_process_ready_ignores_legacy_candidate_quiet_window():
     calls = []
 

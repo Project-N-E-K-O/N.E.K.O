@@ -223,10 +223,10 @@ def _topic_manager_release_gate_open(mgr: Any, lanlan_name: str) -> bool:
 def _topic_proactive_switch_open(lanlan_name: str) -> bool:
     try:
         from utils.preferences import load_global_conversation_settings
-        enabled = bool(load_global_conversation_settings().get("proactiveChatEnabled", True))
+        enabled = bool(load_global_conversation_settings().get("proactiveChatEnabled", False))
     except Exception as exc:
-        logger.debug("[%s] topic hook proactive switch check failed open: %s", lanlan_name, exc)
-        return True
+        logger.debug("[%s] topic hook proactive switch check failed closed: %s", lanlan_name, exc)
+        return False
     if not enabled:
         logger.info("[%s] topic hook delivery skipped: proactive chat is disabled", lanlan_name)
     return enabled
