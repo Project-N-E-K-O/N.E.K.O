@@ -1051,7 +1051,7 @@
         "customModelProviderFollowAssist": "跟随辅助API",
         "customModelProviderFollowConversation": "跟随文本对话模型",
         "customModelProviderFollowSummary": "跟随摘要模型",
-        "customModelProviderCustom": "自定义",
+        "customModelProviderCustom": "自定义 API",
         "keyAutoFilledFromModel": "Key 跟随已选择的模型配置",
         "keyBook": {
             "qwen": "阿里百炼（Qwen）",

@@ -1051,7 +1051,7 @@
         "customModelProviderFollowAssist": "보조 API 따르기",
         "customModelProviderFollowConversation": "텍스트 대화 모델 따르기",
         "customModelProviderFollowSummary": "요약 모델 따르기",
-        "customModelProviderCustom": "사용자 정의",
+        "customModelProviderCustom": "사용자 지정 API",
         "keyAutoFilledFromModel": "Key는 선택한 모델 구성을 따릅니다",
         "keyBook": {
             "qwen": "Alibaba 백련(Qwen)",

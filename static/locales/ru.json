@@ -1051,7 +1051,7 @@
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
         "customModelProviderFollowConversation": "Следовать текстовой диалоговой модели",
         "customModelProviderFollowSummary": "Следовать модели сводки",
-        "customModelProviderCustom": "Пользовательский",
+        "customModelProviderCustom": "Пользовательский API",
         "keyAutoFilledFromModel": "Key следует выбранной конфигурации модели",
         "keyBook": {
             "qwen": "Alibaba Bailian (Qwen)",
