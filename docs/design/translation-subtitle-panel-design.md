@@ -11,6 +11,7 @@ NEKO Web / 共享显示层：
 3. `static/css/subtitle.css`：字幕面板、controls、设置层、resize handle、Web host、desktop host、settings window host 的样式。
 4. `static/subtitle-settings.html`：桌面端独立设置窗口页面。
 5. `static/subtitle-settings-window.js`：桌面端独立设置窗口状态同步和设置变更传播。
+6. `static/app-react-chat-window.js`：React 对话框工具按钮，包括展开状态里的翻译按钮开关、按钮高亮同步和桌面字幕窗口桥接。
 
 NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 
@@ -18,7 +19,8 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 2. `src/main.js`：字幕窗口显示/隐藏、设置窗口 IPC、字幕设置变更转发。
 3. `src/window-manager.js`：字幕窗口和字幕设置窗口的 BrowserWindow 创建、定位、销毁。
 4. `src/main/window-control-ipc.js`：通用窗口移动、尺寸、拖拽、缩放 IPC；字幕窗口使用其中的 bounds 和 resize 逻辑。
-5. `src/preload-common.js`、`src/preload-chat-react.js`、`src/preload-chat-full.js`：字幕窗口关闭后的聊天入口开关同步。
+5. `src/preload-common.js`：字幕窗口关闭后的聊天入口开关同步。
+6. `src/preload-chat-react.js`、`src/preload-chat-full.js`：独立对话窗口向页面注入 `window.nekoSubtitleWindow`，让展开对话框里的翻译按钮通过桌面 IPC 切换真实字幕功能。
 
 ## 功能定位
 
@@ -34,14 +36,15 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 
 1. `subtitleEnabled`：翻译字幕显示开关，默认 `false`。
 2. `userLanguage`：目标语言，默认 `zh`。
-3. `subtitleOpacity`：背景不透明度，默认 `95`。
-4. `subtitlePanelBounds`：面板尺寸，默认 `{ width: 600, height: 68 }`。
+3. `subtitleOpacity`：背景不透明度，默认 `25`。
+4. `subtitlePanelBounds`：面板尺寸，默认 `{ width: 655, height: 109 }`。
 5. `subtitlePanelPosition`：Web host 面板位置，默认 `null`。
 6. `subtitlePanelLocked`：位置锁定状态，默认 `false`。
 7. `subtitleInteractionPassthrough`：透明区域穿透，默认 `false`，当前实际和 `subtitlePanelLocked` 绑定。
-8. `subtitleFontSize`：字幕字号，默认 `26`，有效值为 `16`、`21`、`26`、`34`、`44`。
-9. `subtitleColorScheme`：字幕配色，默认 `default`，有效值为 `default`、`red`、`orange`、`yellow`、`green`、`blue`、`indigo`、`violet`。
-10. `uiLocale`：UI 文案语言，默认来自当前页面语言，兜底 `zh-CN`。
+8. `subtitleDanmakuMode`：弹幕模式开关，默认 `false`。
+9. `subtitleFontSize`：字幕字号，默认 `26`，有效值为 `16`、`21`、`26`、`34`、`44`。
+10. `subtitleColorScheme`：字幕配色，默认 `default`，有效值为 `default`、`red`、`orange`、`yellow`、`green`、`blue`、`indigo`、`violet`。
+11. `uiLocale`：UI 文案语言，默认来自当前页面语言，兜底 `zh-CN`。
 
 设置状态持久化到 `localStorage`：
 
@@ -52,8 +55,9 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 5. `subtitlePanelPosition`
 6. `subtitlePanelLocked`
 7. `subtitleInteractionPassthrough`
-8. `subtitleFontSize`
-9. `subtitleColorScheme`
+8. `subtitleDanmakuMode`
+9. `subtitleFontSize`
+10. `subtitleColorScheme`
 
 渲染状态字段：
 
@@ -67,9 +71,10 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 8. `subtitlePanelPosition`
 9. `subtitlePanelLocked`
 10. `subtitleInteractionPassthrough`
-11. `subtitleFontSize`
-12. `subtitleColorScheme`
-13. `subtitlePanelState`
+11. `subtitleDanmakuMode`
+12. `subtitleFontSize`
+13. `subtitleColorScheme`
+14. `subtitlePanelState`
 
 `subtitlePanelState` 的有效值为 `clean`、`controls`、`settings`。
 
@@ -92,9 +97,8 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 12. `#subtitle-opacity-value`：不透明度数值显示。
 13. `#subtitle-font-size-select`：字体选择。
 14. `#subtitle-color-scheme-select`：字幕配色选择。
-15. `#subtitle-danmaku-mode-btn`：弹幕占位开关，当前是禁用的 checkbox switch，不启动弹幕播放。
-16. `#subtitle-passthrough-toggle`：透明区域穿透开关的兼容引用；当前实际模板不展示该控件。
-17. `.subtitle-resize-edge`：面板 resize handle。
+15. `#subtitle-danmaku-mode-btn`：弹幕模式开关，写入并传播 `subtitleDanmakuMode`。
+16. `.subtitle-resize-edge`：面板 resize handle。
 
 `static/subtitle-settings.html` 当前包含五个设置项 / 入口：
 
@@ -102,7 +106,7 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 2. 不透明度：`#subtitle-opacity-slider`，范围 `0` 到 `100`，实际控制字幕背景透明度。
 3. 字体：`#subtitle-font-size-select`，选项为 `16`、`21`、`26`、`34`、`44`。
 4. 配色：`#subtitle-color-scheme-select`，选项为默认和红、橙、黄、绿、蓝、靛、紫。
-5. 弹幕：`#subtitle-danmaku-mode-btn`，当前只是禁用占位开关，后续再接入指定位置滚动播放。
+5. 弹幕：`#subtitle-danmaku-mode-btn`，用于开启 / 关闭弹幕模式。
 
 当前实际模板不包含独立的 `#subtitle-passthrough-toggle`。透明区域穿透由锁定状态间接控制。
 
@@ -121,11 +125,13 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 
 当前面板基础字号由 `subtitleFontSize` 决定，默认 `26px`。`applySubtitlePanelBounds()` 会写入 `style.fontSize`、`data-subtitle-font-size` 和 `--subtitle-font-size`。`#subtitle-text` 继承面板字号；Web host 在长文本溢出时可能给 `#subtitle-text.style.fontSize` 写入临时缩小值；独立字幕窗口收到译文后会清空 `#subtitle-text.style.fontSize`，避免文本节点保留独立 inline 字号。
 
-默认配色沿用现有浅色表现；暗色主题下默认文字调整为更浅的白色。彩虹七色当前通过 `data-subtitle-color-scheme` 切换字幕文字和占位文字颜色。设置写入 `localStorage.subtitleColorScheme` 后，共享层会通过 `storage` 事件同步其它窗口，因此无需刷新即可让独立字幕窗口、独立设置窗口和 Web host 看到变化。
+面板右上角三个 controls 按钮使用 `--subtitle-control-scale` 做整体等比缩放。缩放基准为默认面板 `{ width: 655, height: 109 }`，最小不低于 `1`，最大不超过 `2`。因此面板缩小时按钮不继续变小；面板放大时按钮跟随放大，最高到默认大小的 200%。
+
+默认配色沿用浅色黑字 / 暗色白字表现。红、橙、黄、绿、蓝、靛、紫通过 `data-subtitle-color-scheme` 切换字幕文字、占位文字和角标线颜色；浅色模式使用经典基础色，暗色模式使用同色相的高亮版本。设置写入 `localStorage.subtitleColorScheme` 后，共享层会通过 `storage` 事件同步其它窗口，因此无需刷新即可让独立字幕窗口、独立设置窗口和 Web host 看到变化。
 
 独立设置窗口页面使用 `body.subtitle-settings-window-host`。当前内容按固定五行设置项排布，CSS 侧要求最小内容尺寸为 `300px x 188px`；这个尺寸只描述页面内容承载空间，不负责创建桌面窗口。
 
-弹幕占位开关复用 `.subtitle-settings-switch` / `.subtitle-settings-track`。它保留 `data-subtitle-danmaku-placeholder="true"` 和 `disabled`，视觉上是左右开关，业务上不写设置、不传播事件。
+弹幕模式开关复用 `.subtitle-settings-switch` / `.subtitle-settings-track`。它是可交互 checkbox，业务上写入并传播 `subtitleDanmakuMode`。
 
 背景透明度由 `applyBackgroundOpacity()` 写入 CSS 变量：
 
@@ -218,16 +224,17 @@ Escape 行为：
 
 弹幕：
 
-1. 当前只提供 `#subtitle-danmaku-mode-btn` 占位开关。
-2. 控件是 disabled checkbox，外层使用 `.subtitle-settings-switch subtitle-settings-switch-placeholder`，轨道使用 `.subtitle-settings-track`。
-3. 控件带 `data-subtitle-danmaku-placeholder="true"` 且 `disabled`。
-4. 当前不改变状态、不传播设置、不启动滚动播放。
+1. 当前通过 `#subtitle-danmaku-mode-btn` 提供弹幕模式开关。
+2. 控件是可交互 checkbox，外层使用 `.subtitle-settings-switch`，轨道使用 `.subtitle-settings-track`。
+3. 切换后写入 `subtitleDanmakuMode` 并传播 `{ type: 'danmakuMode', value }`。
+4. 桌面独立字幕窗口开启弹幕模式时会进入临时布局：锁定面板、开启穿透、背景透明度临时设为 `0`，并订阅头像 bounds，把字幕窗口移动到头像附近的弹幕布局。
+5. 关闭弹幕模式时恢复进入前的面板 bounds、锁定状态、穿透状态、不透明度和 native window bounds。
 
 透明区域穿透：
 
 1. 当前实际没有独立可见设置项。
 2. 锁定按钮会同时写入 `subtitlePanelLocked` 和 `subtitleInteractionPassthrough`。
-3. 共享逻辑仍保留 `#subtitle-passthrough-toggle` 兼容分支；如果未来模板重新提供该控件，变更会传播 `type: 'interactionPassthrough'`。
+3. 共享逻辑不再保留旧版 `#subtitle-passthrough-toggle` 兼容分支；穿透只能由当前锁定链路间接控制。
 
 ## Web host 行为
 
@@ -241,6 +248,32 @@ Web 面板 resize 使用 DOM resize handle。resize 完成后更新：
 2. `subtitlePanelPosition`
 3. `localStorage`
 4. render state
+
+## React 对话框翻译按钮
+
+React 对话框的翻译按钮由 `static/app-react-chat-window.js` 控制。普通右侧工具区和展开后的 overflow 菜单复用同一个 `translateEnabled` prop 和 `onTranslateToggle` 回调，因此它们必须表现一致。
+
+按钮状态来源：
+
+1. 初始 `translateEnabled` 优先读取 `window.appState.subtitleEnabled`。
+2. 没有 appState 时读取 `localStorage.subtitleEnabled`。
+3. 初始化后订阅 `window.nekoSubtitleShared.subscribeSettings()`；当 `subtitleEnabled` 变化时，更新 React props 并重新渲染按钮高亮。
+4. 没有共享 store 时兜底监听 `neko-subtitle-settings-change`。
+
+按钮点击行为：
+
+1. 优先调用 `window.subtitleBridge.toggle()`，让当前页面执行完整的字幕开关副作用。
+2. 如果 `subtitleBridge.toggle()` 不存在或抛错，兜底翻转 `appState` / `nekoSubtitleShared` / `localStorage`。
+3. 得到 next enabled 后，React host 更新 `translateEnabled` 并重新渲染。
+4. 如果宿主提供 `window.nekoSubtitleWindow.setEnabled(enabled)`，调用它把开关交给桌面主链路。
+5. 只有没有 `setEnabled` 时，才兜底调用 `window.nekoSubtitleWindow.show()` / `hide()`。
+
+展开状态下的关键语义：
+
+1. `/chat` 独立对话窗口在多窗口模式下不是字幕翻译 owner，不应该自己发翻译请求。
+2. 展开对话框里的翻译按钮不能只改本页按钮高亮，也不能只 show / hide 一个空字幕窗口。
+3. 正确链路是把 `subtitleEnabled` toggle 交给 Pet 主窗口，由 Pet 的 `subtitleBridge` 更新真实翻译状态、render state 和独立 Subtitle 窗口可见性。
+4. 因此按钮代表“翻译字幕功能开关”，不是临时 BrowserWindow 可见性。截图、热键、迁移等系统临时 hide 窗口不应单独改变按钮高亮。
 
 ## 独立字幕窗口行为
 
@@ -260,6 +293,13 @@ Web 面板 resize 使用 DOM resize handle。resize 完成后更新：
 2. preload 写入 `window.__nekoSubtitleLatestState`。
 3. preload 派发 `neko-subtitle-state-sync`。
 4. `subtitle-window.js` 将 incoming data 映射为共享设置 patch。
+
+实际可见性：
+
+1. 独立字幕窗口的 BrowserWindow 由 NEKO-PC 按需创建 / 显示 / 隐藏。
+2. Subtitle 页面内部的 `#subtitle-display.hidden` 由 state sync 或本地 UI 状态控制。
+3. Pet preload 监听 `neko-subtitle-render-state`，根据 `subtitleEnabled && visible` 决定调用 `window.nekoSubtitleWindow.show()` 或 `hide()`。
+4. 因此“功能开启但当前没有可显示译文”可能短暂表现为空面板或未显示窗口；这不等于用户关闭了翻译功能。
 
 窗口尺寸：
 
@@ -380,6 +420,16 @@ preload 暴露：
 6. 没有 subtitleBridge 时，写入 `window.nekoSubtitleShared.updateSettings({ subtitleEnabled })`。
 7. 再兜底写入 `window.appState.subtitleEnabled` 和 `localStorage.subtitleEnabled`，并派发 `react-chat-window:set-view-props`。
 
+展开对话框翻译按钮主动切换时的桌面端链路：
+
+1. `app-react-chat-window.js` 点击翻译按钮后得到 next enabled。
+2. `preload-chat-react.js` / `preload-chat-full.js` 暴露 `window.nekoSubtitleWindow.setEnabled(enabled)`。
+3. `setEnabled()` 发送 `SUBTITLE_CHANNELS.SETTINGS_CHANGE`，payload 为 `{ type: 'toggle', value: enabled }`。
+4. main 按同一条 `SETTINGS_CHANGE` 转发链路交给 Pet。
+5. Pet 调用真实 owner 的 `subtitleBridge.setSubtitleEnabled(enabled)`。
+6. Pet 的 render state 再决定独立 Subtitle BrowserWindow 的 show / hide。
+7. chat / fullChat 收到 main 回传的 toggle 后也会刷新本地按钮状态，避免多个展开窗口状态分叉。
+
 ## 字幕设置变更类型
 
 共享 UI 当前会传播以下变更类型：
@@ -391,7 +441,8 @@ preload 暴露：
 5. `lock`：`subtitlePanelLocked`
 6. `fontSize`：`subtitleFontSize`
 7. `colorScheme`：`subtitleColorScheme`
-8. `interactionPassthrough`：`subtitleInteractionPassthrough`，当前只在兼容分支存在；实际可见模板不提供独立控件。
+8. `danmakuMode`：`subtitleDanmakuMode`
+9. `interactionPassthrough`：`subtitleInteractionPassthrough`，当前实际可见模板不提供独立控件。
 
 设置窗口向宿主传播时只发送 `{ type, value }`。完整状态由各窗口各自通过共享设置维护，并通过 state sync 刷新。
 
@@ -404,7 +455,7 @@ preload 暴露：
 5. 鼠标离开后 controls 延迟隐藏。
 6. 锁按钮能切换锁住 / 解锁图标和 `aria-pressed`。
 7. 设置按钮能打开设置层。
-8. 设置层包含语言、不透明度、字体、配色四个控件，以及弹幕禁用占位开关。
+8. 设置层包含语言、不透明度、字体、配色和弹幕模式五个控件。
 9. 设置层修改会更新共享设置并传播对应 `{ type, value }`。
 10. 面板拖拽后位置持久化。
 11. 面板缩放后 `subtitlePanelBounds` 持久化。
@@ -414,5 +465,8 @@ preload 暴露：
 15. 字幕基础字号默认为 `26px`，译文文本继承面板字号；Web host 长文本可临时缩小文本节点字号。
 16. 字体修改后，Web host、独立字幕窗口和独立设置窗口状态保持同步。
 17. 配色修改后，Web host、独立字幕窗口和独立设置窗口状态保持同步；跨窗口变化不需要刷新。
-18. 弹幕开关当前仅占位且禁用，不产生播放、副作用或设置传播。
-19. NEKO 和 NEKO-PC 的状态同步不影响 compact 聊天框消息、历史和输入。
+18. 弹幕模式开关可交互，开启后会临时切换为头像附近弹幕布局，关闭后恢复进入前布局。
+19. 展开对话框里的翻译按钮开启 / 关闭时，按钮高亮、`subtitleEnabled`、Pet 主翻译状态和真实独立字幕窗口开关保持一致。
+20. 字幕面板右上角关闭按钮关闭翻译时，展开对话框里的翻译按钮同步熄灭。
+21. 系统临时隐藏 Subtitle BrowserWindow 不应被误当成用户关闭翻译功能。
+22. NEKO 和 NEKO-PC 的状态同步不影响 compact 聊天框消息、历史和输入。

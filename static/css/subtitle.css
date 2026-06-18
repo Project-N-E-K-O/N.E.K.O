@@ -15,15 +15,15 @@ body.subtitle-window-host {
     --subtitle-panel-soft-alpha: 0.95;
     --subtitle-panel-soft-mid-alpha: 0.95;
     --subtitle-panel-soft-edge-alpha: 0.95;
-    --subtitle-panel-bg-rgb: 250, 250, 247;
-    --subtitle-panel-text: #202428;
-    --subtitle-text-fill: #1f2429;
-    --subtitle-text-stroke: rgba(255, 255, 255, 0.62);
-    --subtitle-placeholder-fill: rgba(31, 36, 41, 0.58);
-    --subtitle-placeholder-stroke: rgba(255, 255, 255, 0.5);
+    --subtitle-panel-bg-rgb: 255, 255, 255;
+    --subtitle-panel-text: #080a0d;
+    --subtitle-text-fill: #05070a;
+    --subtitle-text-stroke: rgba(255, 255, 255, 0.78);
+    --subtitle-placeholder-fill: rgba(5, 7, 10, 0.68);
+    --subtitle-placeholder-stroke: rgba(255, 255, 255, 0.72);
     --subtitle-panel-shadow: none;
-    --subtitle-panel-text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8),
-        0 0 7px rgba(255, 255, 255, 0.55);
+    --subtitle-panel-text-shadow: 0 1px 2px rgba(255, 255, 255, 0.95),
+        0 0 8px rgba(255, 255, 255, 0.78);
     --subtitle-control-bg: rgba(255, 255, 255, 0.68);
     --subtitle-control-hover-bg: rgba(255, 255, 255, 0.92);
     --subtitle-control-border: rgba(36, 43, 49, 0.14);
@@ -73,16 +73,16 @@ body.subtitle-window-host {
 }
 
 #subtitle-display::before {
-    top: 7px;
-    left: 9px;
+    top: 5px;
+    left: 5px;
     border-top: 3px solid var(--subtitle-corner-line);
     border-left: 3px solid var(--subtitle-corner-line);
     border-top-left-radius: 10px;
 }
 
 #subtitle-display::after {
-    right: 9px;
-    bottom: 7px;
+    right: 5px;
+    bottom: 5px;
     border-right: 3px solid var(--subtitle-corner-line);
     border-bottom: 3px solid var(--subtitle-corner-line);
     border-bottom-right-radius: 10px;
@@ -98,12 +98,12 @@ html.dark #subtitle-display {
     --subtitle-panel-bg-rgb: 18, 20, 23;
     --subtitle-panel-text: #ffffff;
     --subtitle-text-fill: #ffffff;
-    --subtitle-text-stroke: rgba(0, 0, 0, 0.62);
-    --subtitle-placeholder-fill: rgba(255, 255, 255, 0.72);
+    --subtitle-text-stroke: rgba(0, 0, 0, 0.46);
+    --subtitle-placeholder-fill: rgba(255, 255, 255, 0.82);
     --subtitle-placeholder-stroke: rgba(0, 0, 0, 0.5);
     --subtitle-panel-shadow: none;
-    --subtitle-panel-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.68),
-        0 0 8px rgba(0, 0, 0, 0.42);
+    --subtitle-panel-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.52),
+        0 0 8px rgba(0, 0, 0, 0.3);
     --subtitle-control-bg: rgba(25, 28, 32, 0.72);
     --subtitle-control-hover-bg: rgba(44, 49, 55, 0.92);
     --subtitle-control-border: rgba(255, 255, 255, 0.14);
@@ -125,108 +125,108 @@ html.dark #subtitle-display {
 }
 
 #subtitle-display[data-subtitle-color-scheme="red"] {
-    --subtitle-panel-text: #ef4444;
-    --subtitle-text-fill: #ef4444;
-    --subtitle-placeholder-fill: rgba(239, 68, 68, 0.62);
-    --subtitle-corner-line: #ef4444;
+    --subtitle-panel-text: #ff0000;
+    --subtitle-text-fill: #ff0000;
+    --subtitle-placeholder-fill: rgba(255, 0, 0, 0.62);
+    --subtitle-corner-line: #ff0000;
 }
 
 #subtitle-display[data-subtitle-color-scheme="orange"] {
-    --subtitle-panel-text: #f97316;
-    --subtitle-text-fill: #f97316;
-    --subtitle-placeholder-fill: rgba(249, 115, 22, 0.62);
-    --subtitle-corner-line: #f97316;
+    --subtitle-panel-text: #ff8c00;
+    --subtitle-text-fill: #ff8c00;
+    --subtitle-placeholder-fill: rgba(255, 140, 0, 0.62);
+    --subtitle-corner-line: #ff8c00;
 }
 
 #subtitle-display[data-subtitle-color-scheme="yellow"] {
-    --subtitle-panel-text: #ca8a04;
-    --subtitle-text-fill: #ca8a04;
-    --subtitle-placeholder-fill: rgba(202, 138, 4, 0.62);
-    --subtitle-corner-line: #ca8a04;
+    --subtitle-panel-text: #ffd400;
+    --subtitle-text-fill: #ffd400;
+    --subtitle-placeholder-fill: rgba(255, 212, 0, 0.62);
+    --subtitle-corner-line: #ffd400;
 }
 
 #subtitle-display[data-subtitle-color-scheme="green"] {
-    --subtitle-panel-text: #16a34a;
-    --subtitle-text-fill: #16a34a;
-    --subtitle-placeholder-fill: rgba(22, 163, 74, 0.62);
-    --subtitle-corner-line: #16a34a;
+    --subtitle-panel-text: #00a651;
+    --subtitle-text-fill: #00a651;
+    --subtitle-placeholder-fill: rgba(0, 166, 81, 0.62);
+    --subtitle-corner-line: #00a651;
 }
 
 #subtitle-display[data-subtitle-color-scheme="blue"] {
-    --subtitle-panel-text: #2563eb;
-    --subtitle-text-fill: #2563eb;
-    --subtitle-placeholder-fill: rgba(37, 99, 235, 0.62);
-    --subtitle-corner-line: #2563eb;
+    --subtitle-panel-text: #0066ff;
+    --subtitle-text-fill: #0066ff;
+    --subtitle-placeholder-fill: rgba(0, 102, 255, 0.62);
+    --subtitle-corner-line: #0066ff;
 }
 
 #subtitle-display[data-subtitle-color-scheme="indigo"] {
-    --subtitle-panel-text: #4f46e5;
-    --subtitle-text-fill: #4f46e5;
-    --subtitle-placeholder-fill: rgba(79, 70, 229, 0.62);
-    --subtitle-corner-line: #4f46e5;
+    --subtitle-panel-text: #4b0082;
+    --subtitle-text-fill: #4b0082;
+    --subtitle-placeholder-fill: rgba(75, 0, 130, 0.62);
+    --subtitle-corner-line: #4b0082;
 }
 
 #subtitle-display[data-subtitle-color-scheme="violet"] {
-    --subtitle-panel-text: #9333ea;
-    --subtitle-text-fill: #9333ea;
-    --subtitle-placeholder-fill: rgba(147, 51, 234, 0.62);
-    --subtitle-corner-line: #9333ea;
+    --subtitle-panel-text: #8a2be2;
+    --subtitle-text-fill: #8a2be2;
+    --subtitle-placeholder-fill: rgba(138, 43, 226, 0.62);
+    --subtitle-corner-line: #8a2be2;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="red"],
 html.dark #subtitle-display[data-subtitle-color-scheme="red"] {
-    --subtitle-panel-text: #fca5a5;
-    --subtitle-text-fill: #fca5a5;
-    --subtitle-placeholder-fill: rgba(252, 165, 165, 0.7);
-    --subtitle-corner-line: #fca5a5;
+    --subtitle-panel-text: #ff4d4d;
+    --subtitle-text-fill: #ff4d4d;
+    --subtitle-placeholder-fill: rgba(255, 77, 77, 0.72);
+    --subtitle-corner-line: #ff4d4d;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="orange"],
 html.dark #subtitle-display[data-subtitle-color-scheme="orange"] {
-    --subtitle-panel-text: #fdba74;
-    --subtitle-text-fill: #fdba74;
-    --subtitle-placeholder-fill: rgba(253, 186, 116, 0.7);
-    --subtitle-corner-line: #fdba74;
+    --subtitle-panel-text: #ffb347;
+    --subtitle-text-fill: #ffb347;
+    --subtitle-placeholder-fill: rgba(255, 179, 71, 0.72);
+    --subtitle-corner-line: #ffb347;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="yellow"],
 html.dark #subtitle-display[data-subtitle-color-scheme="yellow"] {
-    --subtitle-panel-text: #fde047;
-    --subtitle-text-fill: #fde047;
-    --subtitle-placeholder-fill: rgba(253, 224, 71, 0.72);
-    --subtitle-corner-line: #fde047;
+    --subtitle-panel-text: #ffe066;
+    --subtitle-text-fill: #ffe066;
+    --subtitle-placeholder-fill: rgba(255, 224, 102, 0.72);
+    --subtitle-corner-line: #ffe066;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="green"],
 html.dark #subtitle-display[data-subtitle-color-scheme="green"] {
-    --subtitle-panel-text: #86efac;
-    --subtitle-text-fill: #86efac;
-    --subtitle-placeholder-fill: rgba(134, 239, 172, 0.7);
-    --subtitle-corner-line: #86efac;
+    --subtitle-panel-text: #39d98a;
+    --subtitle-text-fill: #39d98a;
+    --subtitle-placeholder-fill: rgba(57, 217, 138, 0.72);
+    --subtitle-corner-line: #39d98a;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="blue"],
 html.dark #subtitle-display[data-subtitle-color-scheme="blue"] {
-    --subtitle-panel-text: #93c5fd;
-    --subtitle-text-fill: #93c5fd;
-    --subtitle-placeholder-fill: rgba(147, 197, 253, 0.7);
-    --subtitle-corner-line: #93c5fd;
+    --subtitle-panel-text: #66a3ff;
+    --subtitle-text-fill: #66a3ff;
+    --subtitle-placeholder-fill: rgba(102, 163, 255, 0.72);
+    --subtitle-corner-line: #66a3ff;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="indigo"],
 html.dark #subtitle-display[data-subtitle-color-scheme="indigo"] {
-    --subtitle-panel-text: #a5b4fc;
-    --subtitle-text-fill: #a5b4fc;
-    --subtitle-placeholder-fill: rgba(165, 180, 252, 0.7);
-    --subtitle-corner-line: #a5b4fc;
+    --subtitle-panel-text: #8a7cff;
+    --subtitle-text-fill: #8a7cff;
+    --subtitle-placeholder-fill: rgba(138, 124, 255, 0.72);
+    --subtitle-corner-line: #8a7cff;
 }
 
 html[data-theme="dark"] #subtitle-display[data-subtitle-color-scheme="violet"],
 html.dark #subtitle-display[data-subtitle-color-scheme="violet"] {
-    --subtitle-panel-text: #d8b4fe;
-    --subtitle-text-fill: #d8b4fe;
-    --subtitle-placeholder-fill: rgba(216, 180, 254, 0.72);
-    --subtitle-corner-line: #d8b4fe;
+    --subtitle-panel-text: #c084fc;
+    --subtitle-text-fill: #c084fc;
+    --subtitle-placeholder-fill: rgba(192, 132, 252, 0.72);
+    --subtitle-corner-line: #c084fc;
 }
 
 html.subtitle-window-host,
@@ -265,6 +265,13 @@ body.subtitle-window-host #subtitle-display {
     bottom: var(--subtitle-window-edge-inset, 0px);
     left: var(--subtitle-window-edge-inset, 0px);
     transition: width 0.2s ease, height 0.2s ease, font-size 0.2s ease;
+}
+
+body.subtitle-window-host #subtitle-display[data-subtitle-danmaku-switching="true"] {
+    opacity: 0 !important;
+    visibility: hidden;
+    pointer-events: none;
+    transition: none !important;
 }
 
 body.subtitle-window-host.subtitle-linux-host #subtitle-display {
@@ -349,7 +356,9 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transition: opacity 0.2s ease;
+    transform: scale(var(--subtitle-control-scale, 1));
+    transform-origin: top right;
+    transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 #subtitle-display[data-subtitle-panel-state="controls"] #subtitle-panel-controls,
@@ -363,6 +372,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
 .subtitle-panel-control-btn {
     width: 22px;
     height: 22px;
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -383,12 +393,18 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     position: absolute;
     top: 4px;
     right: 4px;
+    transform: scale(var(--subtitle-control-scale, 1));
+    transform-origin: top right;
 }
 
 #subtitle-panel-controls #subtitle-settings-btn,
 #subtitle-panel-controls .subtitle-panel-control-btn {
     position: static;
     opacity: 1;
+}
+
+#subtitle-panel-controls #subtitle-settings-btn {
+    transform: none;
 }
 
 #subtitle-settings-btn svg,
@@ -701,11 +717,60 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 }
 
 #subtitle-danmaku-mode-btn:checked + .subtitle-settings-track {
-    background: rgba(30, 64, 175, 0.82);
+    background: rgba(59, 130, 246, 0.9);
 }
 
 .subtitle-settings-switch input:checked + .subtitle-settings-track::before {
     transform: translateX(16px);
+}
+
+.subtitle-settings-switch.subtitle-danmaku-switch {
+    width: 42px;
+    height: 22px;
+}
+
+#subtitle-danmaku-mode-btn + .subtitle-settings-track {
+    border-radius: 999px;
+}
+
+#subtitle-danmaku-mode-btn + .subtitle-settings-track::before {
+    left: 0;
+    top: 0;
+    width: 22px;
+    height: 22px;
+    background-color: transparent;
+    background-image: none;
+    background-position: center;
+    background-size: 25px 25px;
+    background-repeat: no-repeat;
+    border-radius: 0;
+}
+
+#subtitle-danmaku-mode-btn:checked + .subtitle-settings-track::before {
+    transform: translateX(20px);
+}
+
+#subtitle-danmaku-mode-btn + .subtitle-settings-track::after {
+    content: '';
+    position: absolute;
+    left: -11px;
+    top: 50%;
+    width: 44px;
+    height: 44px;
+    background-image: url('/static/icons/emotion_model_icon.png');
+    background-position: center;
+    background-size: 44px 44px;
+    background-repeat: no-repeat;
+    filter: drop-shadow(0 1px 1px rgba(5, 12, 24, 0.18));
+    pointer-events: none;
+    transform: translateY(-50%);
+    transition: 0.25s;
+}
+
+#subtitle-danmaku-mode-btn:checked + .subtitle-settings-track::after {
+    background-image: url('/static/icons/exclamation.png');
+    background-size: 40px 40px;
+    transform: translate(20px, -50%);
 }
 
 .subtitle-settings-switch input:disabled + .subtitle-settings-track {

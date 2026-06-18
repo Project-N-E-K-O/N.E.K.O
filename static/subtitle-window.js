@@ -15,10 +15,12 @@
     var DESKTOP_MIN_PANEL_WIDTH = 48;
     var DESKTOP_MIN_PANEL_HEIGHT = 28;
     var DANMAKU_MODE_HEAD_GAP = 12;
+    var DANMAKU_MODE_SWITCH_MASK_SETTLE_MS = 140;
+    var DANMAKU_MODE_SWITCH_MASK_MAX_MS = 900;
     var activeNativeResizeState = null;
-    var danmakuModeRestoreSnapshot = null;
-    var danmakuModeNativeBoundsToken = 0;
-    var lastDanmakuModePanelBounds = null;
+    var danmakuModeSession = null;
+    var danmakuModeSessionSerial = 0;
+    var danmakuModeSwitchMaskSerial = 0;
 
     if (!SubtitleShared) {
         console.error('[SubtitleWindow] subtitle-shared.js 未加载');
@@ -311,10 +313,14 @@
 
     function propagateSubtitleSetting(change) {
         if (!change || !window.nekoSubtitle || typeof window.nekoSubtitle.changeSettings !== 'function') return;
-        window.nekoSubtitle.changeSettings({
+        var payload = {
             type: change.type,
             value: change.value
-        });
+        };
+        if (change.transient === true) {
+            payload.transient = true;
+        }
+        window.nekoSubtitle.changeSettings(payload);
         syncExternalSettingsWindow();
     }
 
@@ -398,32 +404,112 @@
         };
     }
 
-    function captureDanmakuModeRestoreSnapshot() {
-        var api = window.nekoSubtitle;
+    function createDanmakuModeSnapshot() {
         var settings = SubtitleShared.getSettings();
-        var token = ++danmakuModeNativeBoundsToken;
-        danmakuModeRestoreSnapshot = {
+        return {
             panelBounds: SubtitleShared.getPanelBounds(settings.subtitlePanelBounds),
             locked: !!settings.subtitlePanelLocked,
             interactionPassthrough: settings.subtitleInteractionPassthrough !== false,
-            nativeBounds: null
+            opacity: settings.subtitleOpacity,
+            nativeBounds: null,
+            nativeBoundsResolved: false
         };
-        if (api && typeof api.getBounds === 'function') {
-            Promise.resolve(api.getBounds()).then(function(bounds) {
-                if (token !== danmakuModeNativeBoundsToken || !danmakuModeRestoreSnapshot) return;
-                danmakuModeRestoreSnapshot.nativeBounds = cloneNativeBounds(bounds);
-            }).catch(function() {});
-        }
     }
 
-    function applyDanmakuModeLock(locked) {
-        var nextState = SubtitleShared.updateSettings({
-            subtitlePanelLocked: !!locked,
-            subtitleInteractionPassthrough: !!locked
-        }, {
-            persist: false,
-            source: locked ? 'subtitle-danmaku-lock' : 'subtitle-danmaku-unlock'
-        });
+    function createDanmakuModeSession() {
+        var api = window.nekoSubtitle;
+        var session = {
+            id: ++danmakuModeSessionSerial,
+            active: true,
+            ended: false,
+            switchMaskId: 0,
+            switchMaskTimer: null,
+            nativeBoundsRestored: false,
+            restoreNativeWhenReady: false,
+            avatarBoundsCleanup: null,
+            lastPanelBounds: null,
+            pendingAvatarBoundsPayload: null,
+            snapshot: createDanmakuModeSnapshot()
+        };
+        danmakuModeSession = session;
+        if (api && typeof api.getBounds === 'function') {
+            Promise.resolve(api.getBounds()).then(function(bounds) {
+                if (session.id !== danmakuModeSessionSerial) return;
+                session.snapshot.nativeBoundsResolved = true;
+                session.snapshot.nativeBounds = cloneNativeBounds(bounds);
+                if (session.pendingAvatarBoundsPayload && session.active && danmakuModeSession === session) {
+                    var pendingPayload = session.pendingAvatarBoundsPayload;
+                    session.pendingAvatarBoundsPayload = null;
+                    applyDanmakuModeAvatarBounds(session, pendingPayload);
+                }
+                if (session.ended && session.restoreNativeWhenReady && !danmakuModeSession) {
+                    restoreDanmakuModeNativeBounds(session);
+                    releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+                }
+            }).catch(function() {
+                if (session.id !== danmakuModeSessionSerial) return;
+                session.snapshot.nativeBoundsResolved = true;
+                session.pendingAvatarBoundsPayload = null;
+                if (session.ended && session.restoreNativeWhenReady && !danmakuModeSession) {
+                    releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+                } else if (session.active && danmakuModeSession === session) {
+                    releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+                }
+            });
+        }
+        return session;
+    }
+
+    function getSubtitleDisplayElement() {
+        return subtitleWindowController && subtitleWindowController.refs
+            ? subtitleWindowController.refs.display
+            : null;
+    }
+
+    function beginDanmakuModeSwitchMask(session) {
+        var display = getSubtitleDisplayElement();
+        if (!session || !display) return;
+        session.switchMaskId = ++danmakuModeSwitchMaskSerial;
+        display.dataset.subtitleDanmakuSwitching = 'true';
+        if (session.switchMaskTimer) {
+            clearTimeout(session.switchMaskTimer);
+        }
+        session.switchMaskTimer = setTimeout(function() {
+            releaseDanmakuModeSwitchMask(session, 0);
+        }, DANMAKU_MODE_SWITCH_MASK_MAX_MS);
+    }
+
+    function releaseDanmakuModeSwitchMask(session, delayMs) {
+        var display = getSubtitleDisplayElement();
+        if (!session || !display) return;
+        if (session.switchMaskId !== danmakuModeSwitchMaskSerial) return;
+        if (session.switchMaskTimer) {
+            clearTimeout(session.switchMaskTimer);
+            session.switchMaskTimer = null;
+        }
+        var maskId = session.switchMaskId;
+        var delay = Number.isFinite(Number(delayMs))
+            ? Math.max(0, Number(delayMs))
+            : DANMAKU_MODE_SWITCH_MASK_SETTLE_MS;
+        session.switchMaskTimer = setTimeout(function() {
+            session.switchMaskTimer = null;
+            if (maskId !== danmakuModeSwitchMaskSerial) return;
+            if (display.dataset.subtitleDanmakuSwitching === 'true') {
+                delete display.dataset.subtitleDanmakuSwitching;
+            }
+        }, delay);
+    }
+
+    function restoreDanmakuModeNativeBounds(session) {
+        var api = window.nekoSubtitle;
+        if (!session || session.nativeBoundsRestored) return;
+        var bounds = session.snapshot && session.snapshot.nativeBounds;
+        if (!bounds || !api || typeof api.setBounds !== 'function') return;
+        session.nativeBoundsRestored = true;
+        api.setBounds(bounds.x, bounds.y, bounds.width, bounds.height);
+    }
+
+    function propagateDanmakuModeLock(locked, state) {
         propagateSubtitleSetting({
             type: 'lock',
             value: !!locked,
@@ -431,15 +517,50 @@
                 subtitlePanelLocked: !!locked,
                 subtitleInteractionPassthrough: !!locked
             },
-            state: nextState
+            transient: true,
+            state: state
         });
+    }
+
+    function propagateDanmakuModeOpacity(opacity, state) {
+        var nextOpacity = Math.max(0, Math.min(100, Math.round(Number(opacity) || 0)));
+        propagateSubtitleSetting({
+            type: 'opacity',
+            value: nextOpacity,
+            patch: { subtitleOpacity: nextOpacity },
+            transient: true,
+            state: state
+        });
+    }
+
+    function applyDanmakuModeTemporaryState(session) {
+        if (!session || !session.active) return;
+        var nextState = SubtitleShared.updateSettings({
+            subtitlePanelLocked: true,
+            subtitleInteractionPassthrough: true,
+            subtitleOpacity: 0
+        }, {
+            persist: false,
+            source: 'subtitle-danmaku-enter'
+        });
+        propagateDanmakuModeLock(true, nextState);
+        propagateDanmakuModeOpacity(0, nextState);
         updateNativeInteractionPassthrough();
     }
 
-    function applyDanmakuModeAvatarBounds(payload) {
+    function applyDanmakuModeAvatarBounds(session, payload) {
         var api = window.nekoSubtitle;
         if (!api || typeof api.setBounds !== 'function') return;
+        if (!session || !session.active || danmakuModeSession !== session) return;
         if (!SubtitleShared.getSettings().subtitleDanmakuMode) return;
+        if (!session.snapshot.nativeBoundsResolved) {
+            session.pendingAvatarBoundsPayload = payload;
+            return;
+        }
+        if (!session.snapshot.nativeBounds) {
+            releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+            return;
+        }
         var layout = calculateDanmakuModeLayout(payload);
         if (!layout) return;
         api.setBounds(
@@ -461,38 +582,29 @@
             persist: false,
             source: 'subtitle-danmaku-avatar-layout'
         });
-        if (!samePanelBounds(lastDanmakuModePanelBounds, layout.panelBounds)) {
-            lastDanmakuModePanelBounds = layout.panelBounds;
+        if (!samePanelBounds(session.lastPanelBounds, layout.panelBounds)) {
+            session.lastPanelBounds = layout.panelBounds;
             propagateSubtitleSetting({
                 type: 'bounds',
                 value: layout.panelBounds,
                 patch: { subtitlePanelBounds: layout.panelBounds },
+                transient: true,
                 state: nextState
             });
         }
         syncExternalSettingsWindow();
         updateNativeInteractionPassthrough();
+        releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
     }
 
-    function restoreDanmakuModeLayout() {
-        var api = window.nekoSubtitle;
-        var snapshot = danmakuModeRestoreSnapshot;
-        danmakuModeRestoreSnapshot = null;
-        danmakuModeNativeBoundsToken += 1;
-        lastDanmakuModePanelBounds = null;
+    function restoreDanmakuModeSettings(session) {
+        var snapshot = session && session.snapshot;
         if (!snapshot) return;
-        if (snapshot.nativeBounds && api && typeof api.setBounds === 'function') {
-            api.setBounds(
-                snapshot.nativeBounds.x,
-                snapshot.nativeBounds.y,
-                snapshot.nativeBounds.width,
-                snapshot.nativeBounds.height
-            );
-        }
         var nextState = SubtitleShared.updateSettings({
             subtitlePanelBounds: snapshot.panelBounds,
             subtitlePanelLocked: snapshot.locked,
-            subtitleInteractionPassthrough: snapshot.interactionPassthrough
+            subtitleInteractionPassthrough: snapshot.interactionPassthrough,
+            subtitleOpacity: snapshot.opacity
         }, {
             persist: false,
             source: 'subtitle-danmaku-restore'
@@ -501,19 +613,62 @@
             type: 'bounds',
             value: snapshot.panelBounds,
             patch: { subtitlePanelBounds: snapshot.panelBounds },
+            transient: true,
             state: nextState
         });
-        propagateSubtitleSetting({
-            type: 'lock',
-            value: snapshot.locked,
-            patch: {
-                subtitlePanelLocked: snapshot.locked,
-                subtitleInteractionPassthrough: snapshot.interactionPassthrough
-            },
-            state: nextState
-        });
+        propagateDanmakuModeLock(snapshot.locked, nextState);
+        propagateDanmakuModeOpacity(snapshot.opacity, nextState);
+    }
+
+    function stopDanmakuModeSession(session) {
+        var api = window.nekoSubtitle;
+        if (!session || session.ended) return;
+        beginDanmakuModeSwitchMask(session);
+        if (subtitleWindowController && typeof subtitleWindowController.closeSettingsForExternalInteraction === 'function') {
+            subtitleWindowController.closeSettingsForExternalInteraction('clean');
+        }
+        session.active = false;
+        session.ended = true;
+        if (api && typeof api.subscribeAvatarBounds === 'function') {
+            api.subscribeAvatarBounds(false);
+        }
+        if (session.avatarBoundsCleanup) {
+            session.avatarBoundsCleanup();
+            session.avatarBoundsCleanup = null;
+        }
+        restoreDanmakuModeSettings(session);
+        if (session.snapshot.nativeBounds) {
+            restoreDanmakuModeNativeBounds(session);
+            releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+        } else {
+            session.restoreNativeWhenReady = !session.snapshot.nativeBoundsResolved;
+        }
+        if (danmakuModeSession === session) {
+            danmakuModeSession = null;
+        }
+        if (!session.restoreNativeWhenReady && !session.snapshot.nativeBounds) {
+            releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+        }
         syncExternalSettingsWindow();
         updateNativeInteractionPassthrough();
+    }
+
+    function startDanmakuModeSession() {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.subscribeAvatarBounds !== 'function' || typeof api.onAvatarBounds !== 'function') {
+            return null;
+        }
+        var session = createDanmakuModeSession();
+        beginDanmakuModeSwitchMask(session);
+        if (subtitleWindowController && typeof subtitleWindowController.closeSettingsForExternalInteraction === 'function') {
+            subtitleWindowController.closeSettingsForExternalInteraction('clean');
+        }
+        applyDanmakuModeTemporaryState(session);
+        session.avatarBoundsCleanup = api.onAvatarBounds(function(payload) {
+            applyDanmakuModeAvatarBounds(session, payload);
+        });
+        api.subscribeAvatarBounds(true);
+        return session;
     }
 
     function attachDanmakuModeLayout() {
@@ -521,28 +676,15 @@
         if (!api || typeof api.subscribeAvatarBounds !== 'function' || typeof api.onAvatarBounds !== 'function') {
             return function() {};
         }
-        var avatarBoundsCleanup = null;
-        var active = false;
 
         function setActive(nextActive) {
             nextActive = !!nextActive;
+            var active = !!(danmakuModeSession && danmakuModeSession.active);
             if (active === nextActive) return;
-            active = nextActive;
-            if (subtitleWindowController && typeof subtitleWindowController.closeSettingsForExternalInteraction === 'function') {
-                subtitleWindowController.closeSettingsForExternalInteraction('clean');
-            }
             if (nextActive) {
-                captureDanmakuModeRestoreSnapshot();
-                applyDanmakuModeLock(true);
-                avatarBoundsCleanup = api.onAvatarBounds(applyDanmakuModeAvatarBounds);
-                api.subscribeAvatarBounds(true);
+                startDanmakuModeSession();
             } else {
-                api.subscribeAvatarBounds(false);
-                if (avatarBoundsCleanup) {
-                    avatarBoundsCleanup();
-                    avatarBoundsCleanup = null;
-                }
-                restoreDanmakuModeLayout();
+                stopDanmakuModeSession(danmakuModeSession);
             }
         }
 
@@ -552,13 +694,7 @@
 
         return function detachDanmakuModeLayout() {
             unsubscribe();
-            if (active) {
-                api.subscribeAvatarBounds(false);
-            }
-            if (avatarBoundsCleanup) {
-                avatarBoundsCleanup();
-                avatarBoundsCleanup = null;
-            }
+            stopDanmakuModeSession(danmakuModeSession);
         };
     }
 
@@ -695,6 +831,9 @@
             refs.display.style.setProperty('--subtitle-native-resize-height', bounds.height + 'px');
             refs.display.style.setProperty('--subtitle-panel-width', bounds.width + 'px');
             refs.display.style.setProperty('--subtitle-panel-height', bounds.height + 'px');
+            if (typeof SubtitleShared.applySubtitleControlScale === 'function') {
+                SubtitleShared.applySubtitleControlScale(refs.display, bounds);
+            }
             refs.display.style.setProperty('--subtitle-content-max-height', Math.max(24, bounds.height - 24) + 'px');
             return bounds;
         }

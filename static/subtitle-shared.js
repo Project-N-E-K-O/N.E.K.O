@@ -9,11 +9,8 @@
     var RENDER_EVENT = 'neko-subtitle-render-state';
     var DEFAULT_BACKGROUND_OPACITY = 25;
     var DEFAULT_PANEL_BOUNDS = { width: 655, height: 109 };
-    var PANEL_SIZE_PRESETS = {
-        small: { width: 420, height: 52 },
-        medium: { width: 655, height: 109 },
-        large: { width: 760, height: 92 }
-    };
+    var MIN_SUBTITLE_CONTROL_SCALE = 1;
+    var MAX_SUBTITLE_CONTROL_SCALE = 2;
     var DEFAULT_SUBTITLE_FONT_SIZE = 26;
     var SUBTITLE_FONT_SIZE_OPTIONS = [16, 21, 26, 34, 44];
     var DEFAULT_SUBTITLE_COLOR_SCHEME = 'default';
@@ -43,11 +40,6 @@
         closePanel: 'subtitle.settings.closePanel',
         targetLang: 'subtitle.settings.targetLang',
         opacity: 'subtitle.settings.opacity',
-        dragAnywhere: 'subtitle.settings.dragAnywhere',
-        size: 'subtitle.settings.size',
-        sizeSmall: 'subtitle.settings.sizeSmall',
-        sizeMedium: 'subtitle.settings.sizeMedium',
-        sizeLarge: 'subtitle.settings.sizeLarge',
         fontSize: 'subtitle.settings.fontSize',
         fontSizeSmall: 'subtitle.settings.fontSizeSmall',
         fontSizeSmaller: 'subtitle.settings.fontSizeSmaller',
@@ -64,7 +56,6 @@
         colorSchemeIndigo: 'subtitle.settings.colorSchemeIndigo',
         colorSchemeViolet: 'subtitle.settings.colorSchemeViolet',
         danmakuMode: 'subtitle.settings.danmakuMode',
-        passthroughInteraction: 'subtitle.settings.passthroughInteraction',
         emptyHint: 'subtitle.display.emptyHint'
     };
     var LOCK_ICON_PATH = 'M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v9a1 1 0 01-1 1H6a1 1 0 01-1-1v-9a1 1 0 011-1h1zm2 0h6V7a3 3 0 00-6 0v3z';
@@ -93,7 +84,6 @@
             colorSchemeIndigo: '靛',
             colorSchemeViolet: '紫',
             danmakuMode: '弹幕模式',
-            passthroughInteraction: '透明区域穿透',
             emptyHint: '暂无翻译内容'
         },
         'zh-TW': {
@@ -119,7 +109,6 @@
             colorSchemeIndigo: '靛',
             colorSchemeViolet: '紫',
             danmakuMode: '彈幕模式',
-            passthroughInteraction: '透明區域穿透',
             emptyHint: '暫無翻譯內容'
         },
         en: {
@@ -145,7 +134,6 @@
             colorSchemeIndigo: 'Indigo',
             colorSchemeViolet: 'Violet',
             danmakuMode: 'Danmaku mode',
-            passthroughInteraction: 'Transparent area passthrough',
             emptyHint: 'No translation yet'
         },
         es: {
@@ -171,7 +159,6 @@
             colorSchemeIndigo: 'Índigo',
             colorSchemeViolet: 'Violeta',
             danmakuMode: 'Modo Danmaku',
-            passthroughInteraction: 'Clics en área transparente',
             emptyHint: 'Sin traducción todavía'
         },
         pt: {
@@ -197,7 +184,6 @@
             colorSchemeIndigo: 'Índigo',
             colorSchemeViolet: 'Violeta',
             danmakuMode: 'Modo Danmaku',
-            passthroughInteraction: 'Clique através da área transparente',
             emptyHint: 'Sem tradução ainda'
         },
         ja: {
@@ -223,7 +209,6 @@
             colorSchemeIndigo: '藍',
             colorSchemeViolet: '紫',
             danmakuMode: '弾幕モード',
-            passthroughInteraction: '透明領域をクリック透過',
             emptyHint: '翻訳はまだありません'
         },
         ko: {
@@ -249,7 +234,6 @@
             colorSchemeIndigo: '남색',
             colorSchemeViolet: '보라',
             danmakuMode: '탄막 모드',
-            passthroughInteraction: '투명 영역 클릭 통과',
             emptyHint: '아직 번역이 없습니다'
         },
         ru: {
@@ -275,7 +259,6 @@
             colorSchemeIndigo: 'Индиго',
             colorSchemeViolet: 'Фиолетовый',
             danmakuMode: 'Режим данмаку',
-            passthroughInteraction: 'Пропуск кликов в прозрачных областях',
             emptyHint: 'Перевода пока нет'
         }
     };
@@ -438,21 +421,6 @@
         if (!a && !b) return true;
         if (!a || !b) return false;
         return a.width === b.width && a.height === b.height;
-    }
-
-    function getPanelSizePresetName(bounds) {
-        var resolved = getPanelBounds(bounds);
-        var closestName = 'medium';
-        var closestDistance = Infinity;
-        Object.keys(PANEL_SIZE_PRESETS).forEach(function(name) {
-            var preset = PANEL_SIZE_PRESETS[name];
-            var distance = Math.abs(resolved.width - preset.width) + Math.abs(resolved.height - preset.height);
-            if (distance < closestDistance) {
-                closestDistance = distance;
-                closestName = name;
-            }
-        });
-        return closestName;
     }
 
     function normalizePanelState(state) {
@@ -952,10 +920,6 @@
             fontSizeSelect: query(root, '#subtitle-font-size-select'),
             colorSchemeSelect: query(root, '#subtitle-color-scheme-select'),
             danmakuModeBtn: query(root, '#subtitle-danmaku-mode-btn'),
-            passthroughToggle: query(root, '#subtitle-passthrough-toggle'),
-            dragModeToggle: query(root, '#subtitle-drag-mode-toggle'),
-            sizeButtons: queryAll(root, '.subtitle-size-btn'),
-            dragHandle: query(root, '#subtitle-drag-handle'),
             resizeHandles: queryAll(root, '.subtitle-resize-edge')
         };
     }
@@ -979,6 +943,23 @@
         display.dataset.subtitleBackgroundOpacity = String(opacityValue);
     }
 
+    function getSubtitleControlScale(bounds) {
+        var resolved = getPanelBounds(bounds);
+        var widthRatio = resolved.width / DEFAULT_PANEL_BOUNDS.width;
+        var heightRatio = resolved.height / DEFAULT_PANEL_BOUNDS.height;
+        var scale = Math.max(widthRatio, heightRatio);
+        scale = Math.max(MIN_SUBTITLE_CONTROL_SCALE, Math.min(MAX_SUBTITLE_CONTROL_SCALE, scale));
+        return formatAlpha(scale);
+    }
+
+    function applySubtitleControlScale(display, bounds) {
+        var controlScale = getSubtitleControlScale(bounds);
+        if (!display) return controlScale;
+        display.dataset.subtitleControlScale = controlScale;
+        display.style.setProperty('--subtitle-control-scale', controlScale);
+        return controlScale;
+    }
+
     function applySubtitlePanelBounds(display, bounds, options) {
         var resolved = getPanelBounds(bounds);
         var fontSize = normalizeSubtitleFontSize(options && hasOwn(options, 'fontSize')
@@ -996,6 +977,7 @@
         display.style.setProperty('--subtitle-font-size', fontSize + 'px');
         display.style.setProperty('--subtitle-panel-width', resolved.width + 'px');
         display.style.setProperty('--subtitle-panel-height', resolved.height + 'px');
+        applySubtitleControlScale(display, resolved);
         display.style.setProperty('--subtitle-content-max-height', Math.max(24, resolved.height - 24) + 'px');
         if (!options || options.host !== 'window') {
             display.style.setProperty('--subtitle-max-width', resolved.width + 'px');
@@ -1038,21 +1020,6 @@
         }
         if (refs.danmakuModeBtn) {
             refs.danmakuModeBtn.checked = !!state.subtitleDanmakuMode;
-        }
-        if (refs.passthroughToggle) {
-            refs.passthroughToggle.checked = passthroughEnabled;
-        }
-        if (refs.dragModeToggle) {
-            refs.dragModeToggle.checked = !state.subtitlePanelLocked;
-            refs.dragModeToggle.setAttribute('aria-checked', refs.dragModeToggle.checked ? 'true' : 'false');
-        }
-        if (refs.sizeButtons && refs.sizeButtons.length) {
-            var activeSize = getPanelSizePresetName(state.subtitlePanelBounds);
-            refs.sizeButtons.forEach(function(button) {
-                var isActive = button && button.dataset && button.dataset.size === activeSize;
-                button.classList.toggle('active', !!isActive);
-                button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-            });
         }
     }
 
@@ -1112,23 +1079,6 @@
             refs.danmakuModeBtn.textContent = danmakuText;
             refs.danmakuModeBtn.title = danmakuText;
             refs.danmakuModeBtn.setAttribute('aria-label', danmakuText);
-        }
-        if (refs.passthroughToggle) {
-            refs.passthroughToggle.title = getUiText('passthroughInteraction', locale);
-        }
-        if (refs.dragModeToggle) {
-            refs.dragModeToggle.title = getUiText('dragAnywhere', locale);
-            refs.dragModeToggle.setAttribute('aria-label', getUiText('dragAnywhere', locale));
-        }
-        if (refs.sizeButtons && refs.sizeButtons.length) {
-            refs.sizeButtons.forEach(function(button) {
-                var key = 'size' + String(button.dataset && button.dataset.size || '').replace(/^\w/, function(first) {
-                    return first.toUpperCase();
-                });
-                var label = getUiText(key, locale);
-                button.title = label;
-                button.setAttribute('aria-label', label);
-            });
         }
         if (refs.text) {
             var placeholderLocale = normalizeUiLocale(state && state.userLanguage ? state.userLanguage : locale);
@@ -1397,23 +1347,9 @@
             beginTouchDrag(e);
         }
 
-        function onDragHandleMouseDown(e) {
-            if (e.stopPropagation) e.stopPropagation();
-            beginDrag(e);
-        }
-
-        function onDragHandleTouchStart(e) {
-            if (e.stopPropagation) e.stopPropagation();
-            beginTouchDrag(e);
-        }
-
         clampManualPosition();
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
-        if (refs.dragHandle) {
-            refs.dragHandle.addEventListener('mousedown', onDragHandleMouseDown);
-            refs.dragHandle.addEventListener('touchstart', onDragHandleTouchStart, { passive: false });
-        }
         document.addEventListener('touchmove', handleTouchMove, { passive: false });
         document.addEventListener('touchend', handleMouseUp);
         document.addEventListener('touchcancel', handleMouseUp);
@@ -1424,10 +1360,6 @@
             handleMouseUp();
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
-            if (refs.dragHandle) {
-                refs.dragHandle.removeEventListener('mousedown', onDragHandleMouseDown);
-                refs.dragHandle.removeEventListener('touchstart', onDragHandleTouchStart, { passive: false });
-            }
             document.removeEventListener('touchmove', handleTouchMove, { passive: false });
             document.removeEventListener('touchend', handleMouseUp);
             document.removeEventListener('touchcancel', handleMouseUp);
@@ -1513,22 +1445,8 @@
             startDrag(e);
         }
 
-        function onDragHandleMouseDown(e) {
-            if (e.stopPropagation) e.stopPropagation();
-            startDrag(e);
-        }
-
-        function onDragHandleTouchStart(e) {
-            if (e.stopPropagation) e.stopPropagation();
-            startDrag(e);
-        }
-
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
-        if (refs.dragHandle) {
-            refs.dragHandle.addEventListener('mousedown', onDragHandleMouseDown);
-            refs.dragHandle.addEventListener('touchstart', onDragHandleTouchStart, { passive: false });
-        }
         document.addEventListener('mouseup', stopDrag);
         document.addEventListener('touchend', stopDrag);
         document.addEventListener('touchcancel', stopDrag);
@@ -1540,10 +1458,6 @@
             refs.display.classList.remove('dragging');
             refs.display.removeEventListener('mousedown', onDisplayMouseDown);
             refs.display.removeEventListener('touchstart', onDisplayTouchStart, { passive: false });
-            if (refs.dragHandle) {
-                refs.dragHandle.removeEventListener('mousedown', onDragHandleMouseDown);
-                refs.dragHandle.removeEventListener('touchstart', onDragHandleTouchStart, { passive: false });
-            }
             document.removeEventListener('mouseup', stopDrag);
             document.removeEventListener('touchend', stopDrag);
             document.removeEventListener('touchcancel', stopDrag);
@@ -1994,23 +1908,6 @@
             return nextState;
         }
 
-        function setPanelSizePreset(sizeName, source) {
-            var preset = PANEL_SIZE_PRESETS[sizeName] || PANEL_SIZE_PRESETS.medium;
-            var nextBounds = getPanelBounds(preset);
-            var nextState = updateSettings({ subtitlePanelBounds: nextBounds }, {
-                source: source || 'subtitle-ui-size'
-            });
-            if (typeof options.propagateSetting === 'function') {
-                options.propagateSetting({
-                    type: 'bounds',
-                    value: nextBounds,
-                    patch: { subtitlePanelBounds: nextBounds },
-                    state: nextState
-                });
-            }
-            return nextState;
-        }
-
         var observedThemeDark = isDarkThemeActive();
         var applyThemeStateIfChanged = function(source) {
             var nextThemeDark = isDarkThemeActive();
@@ -2135,40 +2032,6 @@
             refs.lockBtn.addEventListener('click', onLockClick);
             cleanupFns.push(function() {
                 refs.lockBtn.removeEventListener('click', onLockClick);
-            });
-        }
-
-        if (refs.dragModeToggle) {
-            var onDragModeChange = function(e) {
-                e.stopPropagation();
-                showControls('subtitle-ui-drag-mode');
-                setPanelLocked(!refs.dragModeToggle.checked, 'subtitle-ui-drag-mode');
-            };
-            refs.dragModeToggle.addEventListener('change', onDragModeChange);
-            cleanupFns.push(function() {
-                refs.dragModeToggle.removeEventListener('change', onDragModeChange);
-            });
-        }
-
-        if (refs.sizeButtons && refs.sizeButtons.length) {
-            refs.sizeButtons.forEach(function(button) {
-                var onSizeClick = function(e) {
-                    e.stopPropagation();
-                    showControls('subtitle-ui-size');
-                    setPanelSizePreset(button.dataset && button.dataset.size, 'subtitle-ui-size');
-                };
-                button.addEventListener('click', onSizeClick);
-                button._nekoSubtitleSizeCleanup = function() {
-                    button.removeEventListener('click', onSizeClick);
-                };
-            });
-            cleanupFns.push(function() {
-                refs.sizeButtons.forEach(function(button) {
-                    if (typeof button._nekoSubtitleSizeCleanup === 'function') {
-                        button._nekoSubtitleSizeCleanup();
-                        delete button._nekoSubtitleSizeCleanup;
-                    }
-                });
             });
         }
 
@@ -2324,31 +2187,6 @@
             });
         }
 
-        if (refs.passthroughToggle) {
-            var onPassthroughChange = function() {
-                var nextPassthrough = !!refs.passthroughToggle.checked;
-                var nextState = updateSettings({
-                    subtitlePanelLocked: nextPassthrough,
-                    subtitleInteractionPassthrough: nextPassthrough
-                }, { source: 'subtitle-ui-passthrough' });
-                if (typeof options.propagateSetting === 'function') {
-                    options.propagateSetting({
-                        type: 'interactionPassthrough',
-                        value: nextPassthrough,
-                        patch: {
-                            subtitlePanelLocked: nextPassthrough,
-                            subtitleInteractionPassthrough: nextPassthrough
-                        },
-                        state: nextState
-                    });
-                }
-            };
-            refs.passthroughToggle.addEventListener('change', onPassthroughChange);
-            cleanupFns.push(function() {
-                refs.passthroughToggle.removeEventListener('change', onPassthroughChange);
-            });
-        }
-
         if (options.windowInteractions === 'external') {
             refs.display.dataset.subtitleWindowInteractions = 'external';
         } else {
@@ -2393,6 +2231,7 @@
         getCurrentUiLocale: getCurrentUiLocale,
         getUiText: getUiText,
         applyBackgroundOpacity: applyBackgroundOpacity,
+        applySubtitleControlScale: applySubtitleControlScale,
         measureSubtitleLayout: measureSubtitleLayout,
         getPanelBounds: getPanelBounds,
         applySubtitlePanelBounds: applySubtitlePanelBounds,
