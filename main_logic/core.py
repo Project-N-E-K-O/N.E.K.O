@@ -1250,6 +1250,19 @@ class LLMSessionManager:
         cache.append({"role": speaker, "text": text})
         return True
 
+    def _snapshot_next_session_context_messages(self) -> list[dict]:
+        cache = getattr(self, "next_session_context_messages", None)
+        if not isinstance(cache, list) or not cache:
+            return []
+        return list(cache)
+
+    def _consume_next_session_context_messages(self, count: int) -> None:
+        if count <= 0:
+            return
+        cache = getattr(self, "next_session_context_messages", None)
+        if isinstance(cache, list):
+            del cache[:count]
+
     async def _append_context_to_targets(self, payload: dict) -> ContextAppendResult:
         role = payload["role"]
         content = payload["text"]
@@ -5069,11 +5082,16 @@ class LLMSessionManager:
                 guard_max_length = self._get_text_guard_max_length()
                 _lang = normalize_language_code(self.user_language, format='short')
                 initial_prompt = await self._build_initial_prompt()
+                next_session_context_messages = self._snapshot_next_session_context_messages()
 
                 # 等待上面预先发出的 /new_dialog 完成
                 try:
                     _nd_text = await _new_dialog_task
-                    initial_prompt += _nd_text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    initial_prompt += (
+                        _nd_text
+                        + self._convert_cache_to_str(next_session_context_messages)
+                        + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    )
                     logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
                 except ConnectionError:
                     raise
@@ -5183,6 +5201,7 @@ class LLMSessionManager:
                         self.session = new_session
                         if not self.current_speech_id:
                             self.current_speech_id = str(uuid4())
+                        self._consume_next_session_context_messages(len(next_session_context_messages))
                     else:
                         concurrent_winner = True
 

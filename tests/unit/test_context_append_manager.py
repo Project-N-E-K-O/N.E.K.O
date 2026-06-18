@@ -134,6 +134,32 @@ async def test_append_context_next_session_context_survives_preparation_cache_re
 
 
 @pytest.mark.asyncio
+async def test_next_session_context_snapshot_consumes_only_rendered_prefix():
+    mgr = _make_manager()
+
+    await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="rendered in this start",
+        lifetime="next_session",
+    )
+    snapshot = mgr._snapshot_next_session_context_messages()
+    await mgr.append_context(
+        source="game.icebreaker",
+        role="user",
+        text="queued during connect",
+        lifetime="next_session",
+    )
+
+    mgr._consume_next_session_context_messages(len(snapshot))
+
+    assert snapshot == [{"role": "Lan", "text": "rendered in this start"}]
+    assert mgr.next_session_context_messages == [
+        {"role": "Master", "text": "queued during connect"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_append_context_when_ready_flushes_before_user_input():
     mgr = _make_manager()
     mgr.session_ready = False
