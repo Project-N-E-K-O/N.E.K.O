@@ -19,11 +19,13 @@ Provides:
     the old langchain interface
   - ChatOpenAI wrapper with streaming, invoke, and resource management
   - ``create_chat_llm()`` factory that auto-resolves provider-specific config
+  - ``create_chat_llm_async()`` async factory for offloaded client construction
   - Serialization helpers (messages_to_dict, messages_from_dict, convert_to_messages)
   - OpenAIEmbeddings / SQLChatMessageHistory for memory subsystem
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json as _json
 import re
@@ -776,6 +778,11 @@ def create_chat_llm(
         **cache_kw,
         **kw,
     )
+
+
+async def create_chat_llm_async(*args: Any, **kwargs: Any) -> ChatOpenAI:
+    """Create a ChatOpenAI without blocking the running event loop."""
+    return await asyncio.to_thread(create_chat_llm, *args, **kwargs)
 
 
 # ────────────────────────────────────────────────────────────────

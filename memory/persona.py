@@ -1685,7 +1685,7 @@ class PersonaManager:
             # ── LLM (锁外) ──
             try:
                 from utils.token_tracker import set_call_type
-                from utils.llm_client import create_chat_llm
+                from utils.llm_client import create_chat_llm_async
                 set_call_type("memory_correction")
                 api_config = self._config_manager.get_model_api_config('correction')
                 # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发
@@ -1697,7 +1697,7 @@ class PersonaManager:
                 # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
                 # extra_body=None: 显式开 thinking。
                 from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
-                llm = create_chat_llm(
+                llm = await create_chat_llm_async(
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
                     timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,

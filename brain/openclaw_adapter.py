@@ -34,7 +34,7 @@ import httpx
 
 from config import OPENCLAW_MAGIC_INTENT_MAX_TOKENS
 from utils.file_utils import robust_json_loads
-from utils.llm_client import create_chat_llm, strip_thinking_segments
+from utils.llm_client import create_chat_llm_async, strip_thinking_segments
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -366,7 +366,7 @@ class OpenClawAdapter:
 
         llm = None
         try:
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 model=model,
                 base_url=base_url,
                 api_key=api_key or None,

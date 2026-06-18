@@ -621,7 +621,7 @@ class MemoryRecallReranker:
         """
         from utils.file_utils import robust_json_loads
         from utils.token_tracker import set_call_type
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
@@ -663,7 +663,7 @@ class MemoryRecallReranker:
         # APITimeoutError，外层 try/except 已会降级到 coarse rank。
         # max_retries=0: 禁 SDK 自动重试，超时直接降级。
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
             timeout=8, max_retries=0,

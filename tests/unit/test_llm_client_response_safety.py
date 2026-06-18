@@ -8,10 +8,12 @@ choices[0].message 是 None 的合法响应。原来 ainvoke/invoke 直接
 """
 from __future__ import annotations
 
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import utils.llm_client as llm_client_module
 from utils.llm_client import ChatOpenAI
 
 
@@ -91,3 +93,34 @@ class TestInvokeDefensiveRead:
         client = _make_client_with_response(_resp_with_none_content())
         out = client.invoke([{"role": "user", "content": "hi"}])
         assert out.content == ""
+
+
+@pytest.mark.asyncio
+async def test_create_chat_llm_async_offloads_factory(monkeypatch):
+    event_loop_thread_id = threading.get_ident()
+    calls = []
+    sentinel = object()
+
+    def fake_create_chat_llm(*args, **kwargs):
+        calls.append((threading.get_ident(), args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(llm_client_module, "create_chat_llm", fake_create_chat_llm)
+
+    result = await llm_client_module.create_chat_llm_async(
+        "model-a",
+        "https://example.com/v1",
+        "sk-test",
+        timeout=3,
+        max_retries=0,
+    )
+
+    assert result is sentinel
+    assert calls == [
+        (
+            calls[0][0],
+            ("model-a", "https://example.com/v1", "sk-test"),
+            {"timeout": 3, "max_retries": 0},
+        )
+    ]
+    assert calls[0][0] != event_loop_thread_id

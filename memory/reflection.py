@@ -791,7 +791,7 @@ class ReflectionEngine:
         """
         from config.prompts.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
@@ -884,7 +884,7 @@ class ReflectionEngine:
             # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
             # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
             from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
@@ -2190,7 +2190,7 @@ class ReflectionEngine:
     async def _check_feedback_locked(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         from config.prompts.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         surfaced = await self.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
@@ -2213,7 +2213,7 @@ class ReflectionEngine:
             # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
             # max_retries=0: 禁 SDK 自动重试。
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
@@ -2258,7 +2258,7 @@ class ReflectionEngine:
         """
         from config.prompts.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         if not confirmed or not user_messages:
             return []
@@ -2283,7 +2283,7 @@ class ReflectionEngine:
             # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
             # extra_body=None: 显式开 thinking。
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=90, max_retries=0,
@@ -2814,11 +2814,11 @@ class ReflectionEngine:
         new_scope: str | None = None
         event_when_raw: dict | None = None
         try:
-            from utils.llm_client import create_chat_llm
+            from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
@@ -3218,7 +3218,7 @@ class ReflectionEngine:
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
         # Build the impression pool block with stable ordering — protected
@@ -3263,7 +3263,7 @@ class ReflectionEngine:
         # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
         # extra_body=None: 显式开 thinking。
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
             timeout=90, max_retries=0,

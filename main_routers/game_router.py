@@ -1869,11 +1869,11 @@ async def _run_pregame_context_ai(
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_pregame_context")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -2512,11 +2512,11 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_context_organizer")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -3317,11 +3317,11 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
         source = truncate_head_tail_tokens(source, 2000, 2000)
         user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_memory_archive")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -7861,11 +7861,11 @@ async def game_quick_lines(game_type: str, request: Request):
         )
 
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_quick_lines")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info['model'],
             char_info['base_url'],
             char_info['api_key'],
