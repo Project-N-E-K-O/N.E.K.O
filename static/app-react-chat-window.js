@@ -24,7 +24,6 @@
     // instead of the active compact yarn ball. Strictly gated on the restorable
     // surface being full so the compact minimize path is untouched.
     var CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC = '/static/icons/expand_icon_off_ball.png';
-    var tutorialChatRequestSeq = 0;
 
     var loadedPromise = null;
     var mounted = false;

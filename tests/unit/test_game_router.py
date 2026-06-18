@@ -276,6 +276,32 @@ async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_error(monkeypatch):
+    class FakeManager:
+        def append_icebreaker_context(self, role, text, request_id=""):
+            raise TypeError("internal append bug")
+
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello",
+                "request_id": "icebreaker-context-1",
+            }),
+        )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert "internal append bug" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf(monkeypatch):
     class FakeManager:
         def append_icebreaker_context(self, role, text):
