@@ -27,11 +27,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # SM 的契约做黑盒回归 —— 让一个 minimal mgr 模拟真实 LLMSessionManager 的
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 import main_logic.core as core_module
-from main_logic.core import (
-    LLMSessionManager,
-    _VOICE_PROACTIVE_ACK_GRACE_S,
-    _proactive_expected_sid,
-)
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETRACTED_KEY
 from main_logic.session_state import (
@@ -69,8 +64,8 @@ class _FakeOmniOffline(OmniOfflineClient):
         pass
 
 
-def _make_mgr(session=None) -> LLMSessionManager:
-    mgr = LLMSessionManager.__new__(LLMSessionManager)
+def _make_mgr(session=None) -> core_module.LLMSessionManager:
+    mgr = core_module.LLMSessionManager.__new__(core_module.LLMSessionManager)
     mgr.lanlan_name = "Test"
     mgr.master_name = "Master"
     mgr.user_language = "en"
@@ -133,7 +128,7 @@ def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
 
     monkeypatch.setattr("utils.tokenize.truncate_to_tokens", fake_truncate)
 
-    LLMSessionManager.enqueue_agent_callback(mgr, {
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, {
         "channel": "topic_hook",
         "status": "completed",
         "summary": "topic summary",
@@ -142,7 +137,7 @@ def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
         "source_kind": "topic",
         "source_name": "deep_topic_hook",
     })
-    LLMSessionManager.enqueue_agent_callback(mgr, {
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, {
         "status": "completed",
         "summary": "proactive summary",
         "detail": "proactive detail",
@@ -218,7 +213,7 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     events: list[SessionEvent] = []
     mgr.state.subscribe(None, lambda ev, p: events.append(ev))
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
@@ -254,7 +249,7 @@ async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
     mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
     mgr.pending_extra_replies = [passive_extra, proactive_extra]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
@@ -269,7 +264,7 @@ async def test_voice_mode_busy_defers_cbs_for_retry():
     original = [{"status": "completed", "summary": "deferred"}]
     mgr.pending_agent_callbacks = list(original)
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert sess.injected == []  # 没 inject
@@ -294,7 +289,7 @@ async def test_voice_mode_drop_uses_id_match_not_length_alignment():
     mgr.pending_agent_callbacks = [new_cb]
     mgr.pending_extra_replies = [stale_extra_a, stale_extra_b, new_extra]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
@@ -326,7 +321,7 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     # 乐观剔除：两条队列都空
@@ -374,11 +369,11 @@ async def test_voice_mode_late_rejection_keeps_delivery_ack_pending():
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     assert not future.done()
 
     captured_rejection[0]("response_already_active")
-    await asyncio.sleep(_VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
+    await asyncio.sleep(core_module._VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
 
     assert not future.done()
     assert mgr.pending_agent_callbacks == [cb]
@@ -399,10 +394,10 @@ async def test_voice_mode_success_resolves_delivery_ack_after_rejection_window()
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     assert not future.done()
 
-    await asyncio.sleep(_VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
+    await asyncio.sleep(core_module._VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
 
     assert future.done()
     assert future.result() is True
@@ -422,7 +417,7 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
         return True
     mgr._stream_cb_media = _stream_then_retract
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is False
     assert sess.injected == []
@@ -455,7 +450,7 @@ async def test_text_mode_acks_only_callbacks_that_reach_prompt():
         return True
     mgr._deliver_agent_callbacks_text = _deliver
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is True
     assert not dropped_future.done()
@@ -485,7 +480,7 @@ async def test_text_mode_resolves_delivery_ack_after_committed_output_before_com
     }
     mgr.pending_agent_callbacks = [cb]
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is True
     assert future.done()
@@ -504,7 +499,7 @@ async def test_text_mode_resolves_delivery_ack_false_when_prompt_has_no_committe
     }
     mgr.pending_agent_callbacks = [cb]
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is False
     assert future.done()
@@ -517,7 +512,7 @@ async def test_text_mode_requeues_callbacks_when_no_session_or_websocket_after_c
     cb = {"_callback_delivery_id": "id-no-session", "status": "completed", "summary": "keep queued"}
     mgr.pending_agent_callbacks = [cb]
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is False
     assert mgr.pending_agent_callbacks == [cb]
@@ -537,7 +532,7 @@ async def test_text_mode_retraction_after_claim_purges_paired_extra():
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is False
     assert sess.called_with == []
@@ -564,7 +559,7 @@ async def test_text_mode_committed_then_flush_exception_does_not_requeue_callbac
     }
     mgr.pending_agent_callbacks = [cb]
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is True
     assert future.done()
@@ -592,7 +587,7 @@ async def test_text_mode_success_keeps_late_extra_replies():
     mgr.pending_agent_callbacks = [initial_cb]
     mgr.pending_extra_replies = [initial_extra]
 
-    delivered = await LLMSessionManager.trigger_agent_callbacks(mgr)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is True
     assert mgr.pending_agent_callbacks == [late_cb]
@@ -617,7 +612,7 @@ def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
     mgr.pending_agent_callbacks = [retracted_cb, active_cb]
     mgr.pending_extra_replies = [retracted_extra, active_extra]
 
-    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
     assert "shown" in rendered
     assert "cancelled" not in rendered
@@ -636,7 +631,7 @@ async def test_drain_agent_callbacks_resolves_delivery_ack():
     }
     mgr.pending_agent_callbacks = [cb]
 
-    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
     assert "shown" in rendered
     assert future.done()
@@ -677,7 +672,7 @@ async def test_drain_agent_callbacks_rechecks_topic_release_gate():
     mgr.pending_agent_callbacks = [topic_cb, normal_cb]
     mgr.pending_extra_replies = [topic_extra, normal_extra]
 
-    rendered = LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
     assert "regular callback" in rendered
     assert "stale deep topic" not in rendered
@@ -713,7 +708,7 @@ async def test_voice_mode_reject_during_await_not_pruned():
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     # 关键：cb 没被 prune 掉，两队列都还在，等下次 retry
@@ -749,8 +744,8 @@ async def test_voice_mode_concurrent_triggers_inject_once():
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
-    t1 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
-    t2 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
+    t1 = asyncio.create_task(core_module.LLMSessionManager.trigger_agent_callbacks(mgr))
+    t2 = asyncio.create_task(core_module.LLMSessionManager.trigger_agent_callbacks(mgr))
     # 等第一个 inject 真的进入持锁段，再给第二个 task 一个调度点去阻塞在锁上，
     # 然后才放行——确保「两个 task 竞争同一 snapshot」这个场景真的发生。
     await asyncio.wait_for(entered_inject.wait(), timeout=5)
@@ -784,7 +779,7 @@ async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
     original_extras = [{"summary": "hot-swap fallback"}]
     mgr.pending_extra_replies = list(original_extras)
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert mgr.pending_agent_callbacks == []  # proactive cb dropped
@@ -948,7 +943,7 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     original = [{"status": "completed", "summary": "retry on ws err"}]
     mgr.pending_agent_callbacks = list(original)
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     # inject 确实被调用过一次（证明走的是 inject-异常分支，而非更早的 guard 早退）
@@ -969,7 +964,7 @@ async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
     # 这里 extras 用空，因为没走 enqueue → 没配对 entries 是合理状态
     mgr.pending_extra_replies = []
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
@@ -1023,7 +1018,7 @@ async def test_text_mode_sm_denied_when_phase_active():
     await mgr.state.fire(SessionEvent.PROACTIVE_START)
     assert mgr.state.phase is ProactivePhase.PHASE1
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     # SM 拒绝 → prompt_ephemeral 未调用，callbacks 保留
     assert sess.called_with == []
@@ -1037,7 +1032,7 @@ async def test_text_mode_sm_denied_when_session_responding():
     mgr = _make_mgr(session=sess)
     mgr.pending_agent_callbacks = [{"status": "completed", "summary": "queued"}]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert sess.called_with == []
     # callbacks 保留以便下轮重试
@@ -1053,7 +1048,7 @@ async def test_goodbye_silent_defers_agent_callbacks_and_keeps_queue():
     cb = {"status": "completed", "summary": "queued"}
     mgr.pending_agent_callbacks = [cb]
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert sess.called_with == []
     assert mgr.pending_agent_callbacks == [cb]
@@ -1065,7 +1060,7 @@ def test_goodbye_silent_blocks_manager_release():
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     mgr.goodbye_silent = True
 
-    assert LLMSessionManager._can_release_proactive(mgr) is False
+    assert core_module.LLMSessionManager._can_release_proactive(mgr) is False
 
 
 def test_submit_proactive_callback_persists_when_goodbye_silent():
@@ -1074,7 +1069,7 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
     mgr.goodbye_silent = True
     cb = {"status": "completed", "summary": "queued"}
 
-    LLMSessionManager.submit_proactive_callback(
+    core_module.LLMSessionManager.submit_proactive_callback(
         mgr,
         cb,
         priority=7,
@@ -1140,7 +1135,7 @@ async def test_submit_proactive_callback_does_not_fail_ack_when_goodbye_silent()
     future = asyncio.get_running_loop().create_future()
     cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
 
-    LLMSessionManager.submit_proactive_callback(mgr, cb)
+    core_module.LLMSessionManager.submit_proactive_callback(mgr, cb)
 
     assert mgr.pending_agent_callbacks == [cb]
     assert not future.done()
@@ -1152,7 +1147,7 @@ async def test_deliver_proactive_batch_does_not_fail_ack_when_inner_trigger_defe
     cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
     mgr.trigger_agent_callbacks = AsyncMock(return_value=False)
 
-    await LLMSessionManager._deliver_proactive_batch(mgr, [cb])
+    await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [cb])
 
     assert mgr.pending_agent_callbacks == [cb]
     assert not future.done()
@@ -1164,7 +1159,7 @@ async def test_deliver_proactive_batch_leaves_ack_to_delivery_path():
     cb = {"status": "completed", "summary": "queued", DELIVERY_ACK_FUTURE_KEY: future}
     mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
 
-    await LLMSessionManager._deliver_proactive_batch(mgr, [cb])
+    await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [cb])
 
     assert not future.done()
 
@@ -1176,7 +1171,7 @@ def test_topic_hook_delivery_blocked_in_active_voice_session():
     mgr = _make_mgr(session=_make_voice_sess())
     mgr.is_active = True
     mgr.input_mode = 'audio'
-    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+    assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
 def test_topic_hook_delivery_blocked_during_audio_startup_window():
@@ -1188,7 +1183,7 @@ def test_topic_hook_delivery_blocked_during_audio_startup_window():
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     mgr._starting_session_count = 1
     mgr._starting_input_mode = 'audio'
-    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+    assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
 def test_topic_hook_delivery_blocked_during_audio_to_text_teardown():
@@ -1203,15 +1198,15 @@ def test_topic_hook_delivery_blocked_during_audio_to_text_teardown():
     mgr.is_active = True
     # _is_voice_session_active_or_starting() is False here, but the live session
     # is still realtime → the union predicate must still block.
-    assert LLMSessionManager._is_voice_session_active_or_starting(mgr) is False
-    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+    assert core_module.LLMSessionManager._is_voice_session_active_or_starting(mgr) is False
+    assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
 def test_topic_hook_delivery_allowed_in_text_session():
     """Non-regression: a text session still allows topic-hook delivery
     (fail-open when no activity snapshot is available)."""
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
-    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
+    assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
 def test_topic_hook_delivery_blocked_when_unfinished_thread_open():
@@ -1222,7 +1217,7 @@ def test_topic_hook_delivery_blocked_when_unfinished_thread_open():
         unfinished_thread=object(),
     )
 
-    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
+    assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is False
 
 
 def test_topic_hook_delivery_does_not_recheck_privacy_preference(monkeypatch):
@@ -1237,7 +1232,7 @@ def test_topic_hook_delivery_does_not_recheck_privacy_preference(monkeypatch):
         raising=False,
     )
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
-    assert LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
+    assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
 async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
@@ -1256,7 +1251,7 @@ async def test_deliver_proactive_batch_drops_topic_hook_in_voice():
     mgr.enqueue_agent_callback = MagicMock()
     mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
 
-    await LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
+    await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
 
     # topic hook held at the gate: ack resolved False so TopicHookPool retries.
     assert hook_future.done() and hook_future.result() is False
@@ -1278,7 +1273,7 @@ async def test_deliver_proactive_batch_drops_topic_hook_when_release_predicate_c
     mgr.enqueue_agent_callback = MagicMock()
     mgr.trigger_agent_callbacks = AsyncMock(return_value=True)
 
-    await LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
+    await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [topic_cb, other_cb])
 
     assert hook_future.done() and hook_future.result() is False
     mgr.enqueue_agent_callback.assert_called_once_with(other_cb)
@@ -1300,7 +1295,7 @@ async def test_drop_pending_topic_hooks_for_voice_sweeps_both_queues():
     mgr.pending_agent_callbacks = [topic_cb, other_cb]
     mgr.pending_extra_replies = [topic_extra, other_extra]
 
-    LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
+    core_module.LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
 
     assert mgr.pending_agent_callbacks == [other_cb]
     assert mgr.pending_extra_replies == [other_extra]
@@ -1319,7 +1314,7 @@ async def test_drop_pending_topic_hooks_for_voice_sweeps_extras_only():
     mgr.pending_agent_callbacks = []  # callback already drained + delivered in text
     mgr.pending_extra_replies = [topic_extra, other_extra]
 
-    LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
+    core_module.LLMSessionManager._drop_pending_topic_hooks_for_voice(mgr)
 
     assert mgr.pending_extra_replies == [other_extra]
 
@@ -1341,7 +1336,7 @@ async def test_reset_proactive_gate_sweeps_already_pending_topic_hook_on_voice_s
     mgr.proactive_manager.drain_pending = MagicMock(return_value=[])
     mgr.proactive_manager.reset_gate = MagicMock()
 
-    LLMSessionManager._reset_proactive_gate(mgr)
+    core_module.LLMSessionManager._reset_proactive_gate(mgr)
 
     assert mgr.pending_agent_callbacks == []
     assert fut.done() and fut.result() is False
@@ -1356,7 +1351,7 @@ def test_reset_proactive_gate_keeps_topic_hook_on_text_start():
     mgr.proactive_manager.drain_pending = MagicMock(return_value=[])
     mgr.proactive_manager.reset_gate = MagicMock()
 
-    LLMSessionManager._reset_proactive_gate(mgr)
+    core_module.LLMSessionManager._reset_proactive_gate(mgr)
 
     assert mgr.pending_agent_callbacks == [topic_cb]
 
@@ -1379,7 +1374,7 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_took_ove
     }
     snapshot = [topic_cb]
 
-    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, snapshot)
+    delivered = await core_module.LLMSessionManager._deliver_agent_callbacks_text(mgr, snapshot)
 
     assert delivered is False
     assert fut.done() and fut.result() is False
@@ -1402,7 +1397,7 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_ov
         "status": "completed", "summary": "deep topic", DELIVERY_ACK_FUTURE_KEY: fut,
     }
 
-    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
+    delivered = await core_module.LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
 
     assert delivered is False
     assert fut.done() and fut.result() is False
@@ -1430,7 +1425,7 @@ async def test_deliver_agent_callbacks_text_requeues_when_preempted_before_promp
 
     mgr.state.fire = _fire_and_rotate_sid
 
-    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [cb])
+    delivered = await core_module.LLMSessionManager._deliver_agent_callbacks_text(mgr, [cb])
 
     assert delivered is False
     assert sess.called_with == []
@@ -1448,7 +1443,7 @@ async def test_deliver_agent_callbacks_text_keeps_topic_hook_in_plain_text_sessi
         "status": "completed", "summary": "deep topic",
     }
 
-    delivered = await LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
+    delivered = await core_module.LLMSessionManager._deliver_agent_callbacks_text(mgr, [topic_cb])
 
     assert delivered is True
     assert len(sess.called_with) == 1
@@ -1463,7 +1458,7 @@ async def test_text_mode_successful_delivery_fires_full_event_sequence():
     seen: list[tuple[SessionEvent, dict]] = []
     mgr.state.subscribe(None, lambda ev, p: seen.append((ev, dict(p))))
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     # 异步派发订阅回调
     for _ in range(3):
         await asyncio.sleep(0)
@@ -1499,7 +1494,7 @@ async def test_text_mode_exception_still_fires_done():
     seen_events: list[SessionEvent] = []
     mgr.state.subscribe(None, lambda ev, p: seen_events.append(ev))
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     for _ in range(3):
         await asyncio.sleep(0)
 
@@ -1515,9 +1510,9 @@ async def test_contextvar_reset_after_delivery():
     mgr = _make_mgr(session=sess)
     mgr.pending_agent_callbacks = [{"status": "completed", "summary": "ctx"}]
 
-    assert _proactive_expected_sid.get() is None
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
-    assert _proactive_expected_sid.get() is None
+    assert core_module._proactive_expected_sid.get() is None
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    assert core_module._proactive_expected_sid.get() is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1533,7 +1528,7 @@ async def test_already_claimed_denies_agent_callback():
     router_won = await mgr.state.try_start_proactive(session=sess)
     assert router_won is True
 
-    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert mgr.state.phase is ProactivePhase.PHASE1
     assert sess.called_with == []
@@ -1556,7 +1551,7 @@ async def test_concurrent_claim_only_one_winner():
 
     async def agent_contender():
         await barrier.wait()
-        await LLMSessionManager.trigger_agent_callbacks(mgr)
+        await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     t1 = asyncio.create_task(router_contender())
     t2 = asyncio.create_task(agent_contender())
@@ -1615,7 +1610,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
     # 现在直接调 _deliver_agent_callbacks_text（绕过 trigger_agent_callbacks
     # 的 claim，因为我们已经手动模拟了 claim + user 抢占）
     callbacks_snapshot = [{"status": "completed", "summary": "slow"}]
-    await LLMSessionManager._deliver_agent_callbacks_text(mgr, callbacks_snapshot)
+    await core_module.LLMSessionManager._deliver_agent_callbacks_text(mgr, callbacks_snapshot)
 
     # 关键断言：current_speech_id 保留为用户的 sid，没被 proactive 覆盖
     assert mgr.current_speech_id == pre_user_sid
@@ -1653,7 +1648,7 @@ async def test_user_input_during_agent_delivery_sets_preempted():
     mgr.pending_agent_callbacks = [{"status": "completed", "summary": "slow"}]
 
     # 同时跑 agent callback delivery + 异步注入 USER_INPUT
-    task = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
+    task = asyncio.create_task(core_module.LLMSessionManager.trigger_agent_callbacks(mgr))
 
     # 等 state 进入 phase1
     for _ in range(20):
