@@ -72,7 +72,7 @@ class _TutorExplainEntriesMixin:
             },
             "required": ["image_base64"],
         },
-        timeout=300.0,
+        timeout=310.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_submit_image(self, image_base64: str, text: str = "", **_):
@@ -109,7 +109,7 @@ class _TutorExplainEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=300.0,
+        timeout=310.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_explain_text(

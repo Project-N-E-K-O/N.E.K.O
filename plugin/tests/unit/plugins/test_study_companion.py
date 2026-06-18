@@ -2219,7 +2219,7 @@ let configPayload = {
     plugin: { id: 'study_companion', entry: 'plugin.plugins.study_companion:StudyCompanionPlugin' },
     study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
     ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
-    llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false },
+    llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false, llm_vision_max_image_px: 1024 },
   },
 };
 let statusPayload = {
@@ -2386,6 +2386,7 @@ if (
   || savedConfig.ocr_reader.languages !== 'chi_sim+eng'
   || savedConfig.llm.llm_call_timeout_seconds !== 90
   || savedConfig.llm.llm_vision_enabled !== true
+  || savedConfig.llm.llm_vision_max_image_px !== 1024
   || savedConfig.plugin.id !== 'study_companion'
 ) {
   throw new Error(`settings save payload mismatch: ${JSON.stringify(savedConfig)}`);
@@ -2477,9 +2478,9 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
 
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
-    assert "study_explain_text: 300000" in source
-    assert "study_generate_question: 300000" in source
-    assert "study_evaluate_answer: 300000" in source
+    assert "study_explain_text: 310000" in source
+    assert "study_generate_question: 310000" in source
+    assert "study_evaluate_answer: 310000" in source
     assert "callPlugin as callHostedPlugin" in source
     assert (
         "return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });"
@@ -2551,7 +2552,14 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
     css_source = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
 
-    assert "async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null>" in source
+    assert "DEFAULT_VISION_MAX_IMAGE_PX = 768" in source
+    assert "function normalizeVisionMaxImagePx(value: unknown)" in source
+    assert "maxImagePx = DEFAULT_VISION_MAX_IMAGE_PX" in source
+    assert "getMaxImagePx?: () => number;" in source
+    assert "getMaxImagePx: getVisionMaxImagePx," in source
+    assert "visionMaxImagePxRef.current = normalizeVisionMaxImagePx" in source
+    assert "MAX_PASTE_IMAGE_LONG_SIDE" not in source
+    assert "async function compressImageForStudy(" in source
     assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
     assert "const TARGET_DATA_URL_LENGTH = 1_000_000;" in source
     assert "Promise.race" in source
@@ -2625,6 +2633,13 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
     assert "const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);" in source
     assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
     assert "const TARGET_DATA_URL_LENGTH = 1000000;" in source
+    assert "const DEFAULT_VISION_MAX_IMAGE_PX = 768;" in source
+    assert "let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;" in source
+    assert "function normalizeVisionMaxImagePx(value)" in source
+    assert "function applyRuntimeConfig(data)" in source
+    assert "applyVisionMaxImagePx(llm.llm_vision_max_image_px);" in source
+    assert "llmVisionMaxImagePx / Math.max(sourceWidth, sourceHeight)" in source
+    assert "768 / Math.max(sourceWidth, sourceHeight)" not in source
     assert "const pasteControllers = { study: null, answer: null };" in source
     assert "async function compressImageForStudy(blob, signal)" in source
     assert "function createImagePasteHandler(options)" in source
@@ -2669,21 +2684,31 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
     meta = getattr(StudyCompanionPlugin.study_explain_text, EVENT_META_ATTR)
     question_meta = getattr(StudyCompanionPlugin.study_generate_question, EVENT_META_ATTR)
     answer_meta = getattr(StudyCompanionPlugin.study_evaluate_answer, EVENT_META_ATTR)
+    with (plugin_dir / "plugin.toml").open("rb") as handle:
+        plugin_config = tomllib.load(handle)
+    llm_timeout = float(plugin_config["llm"]["llm_call_timeout_seconds"])
 
-    assert "study_explain_text: 300000" in static_source
-    assert "study_generate_question: 300000" in static_source
-    assert "study_evaluate_answer: 300000" in static_source
-    assert "study_explain_text: 300000" in hosted_source
-    assert "study_generate_question: 300000" in hosted_source
-    assert "study_evaluate_answer: 300000" in hosted_source
-    assert "timeout=300.0" in explain_source
-    assert "timeout=300.0" in question_source
-    assert "timeout=300.0" in answer_source
-    assert submit_meta.timeout == 300.0
-    assert meta.timeout == 300.0
-    assert question_meta.timeout == 300.0
-    assert answer_meta.timeout == 300.0
+    assert "study_explain_text: 310000" in static_source
+    assert "study_generate_question: 310000" in static_source
+    assert "study_evaluate_answer: 310000" in static_source
+    assert "study_explain_text: 310000" in hosted_source
+    assert "study_generate_question: 310000" in hosted_source
+    assert "study_evaluate_answer: 310000" in hosted_source
+    assert "timeout=310.0" in explain_source
+    assert "timeout=310.0" in question_source
+    assert "timeout=310.0" in answer_source
+    assert submit_meta.timeout == 310.0
+    assert meta.timeout == 310.0
+    assert question_meta.timeout == 310.0
+    assert answer_meta.timeout == 310.0
     assert "llm_call_timeout_seconds = 300" in plugin_toml
+    for entry_timeout in (
+        submit_meta.timeout,
+        meta.timeout,
+        question_meta.timeout,
+        answer_meta.timeout,
+    ):
+        assert entry_timeout > llm_timeout + 0.5
 
 
 def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:

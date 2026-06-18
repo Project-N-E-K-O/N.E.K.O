@@ -32,7 +32,7 @@ class _TutorAnswerEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=300.0,
+        timeout=310.0,
         llm_result_fields=[
             "summary",
             "verdict",

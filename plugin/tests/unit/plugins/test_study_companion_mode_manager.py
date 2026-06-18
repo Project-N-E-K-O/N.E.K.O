@@ -117,6 +117,25 @@ def test_explicit_ui_mode_switch_bypasses_stale_mode_lock() -> None:
     assert manager.mode_lock_until == 0.0
 
 
+def test_ui_prefix_reason_does_not_bypass_minimum_dwell() -> None:
+    mode_manager = _load_mode_manager()
+    manager = mode_manager.ModeManager(
+        current_mode=mode_manager.MODE_COMPANION,
+        mode_started_at=1000.0,
+    )
+
+    result = manager.switch_to(
+        mode_manager.MODE_TEACHING,
+        "uid_refresh",
+        now=1010.0,
+    )
+
+    assert result["changed"] is False
+    assert result["locked"] is True
+    assert result["lock_reason"] == "minimum_dwell"
+    assert manager.current_mode == mode_manager.MODE_COMPANION
+
+
 def test_explicit_intent_mode_switch_bypasses_minimum_dwell() -> None:
     mode_manager = _load_mode_manager()
     manager = mode_manager.ModeManager(

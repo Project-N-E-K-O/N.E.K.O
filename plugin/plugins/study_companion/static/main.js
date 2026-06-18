@@ -5,14 +5,15 @@ const RUN_EXPORT_RETRY_COUNT = 3;
 const RUN_EXPORT_RETRY_DELAY_MS = 400;
 const LOAD_IMAGE_TIMEOUT_MS = 30000;
 const TARGET_DATA_URL_LENGTH = 1000000;
+const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 300000,
-  study_generate_question: 300000,
-  study_evaluate_answer: 300000,
+  study_explain_text: 310000,
+  study_generate_question: 310000,
+  study_evaluate_answer: 310000,
   study_summarize_session: 90000,
   study_memory_card_upsert: 30000,
   study_memory_deck: 30000,
@@ -105,6 +106,7 @@ let lastReplyValue = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
+let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
 const pasteControllers = { study: null, answer: null };
 
 function t(key, fallback) {
@@ -224,6 +226,25 @@ function setImagePreview(kind, dataUrl) {
   }
 }
 
+function normalizeVisionMaxImagePx(value) {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_VISION_MAX_IMAGE_PX;
+  }
+  return Math.max(64, Math.min(4096, parsed));
+}
+
+function applyVisionMaxImagePx(value) {
+  llmVisionMaxImagePx = normalizeVisionMaxImagePx(value);
+}
+
+function applyRuntimeConfig(data) {
+  const config = data && typeof data.config === 'object' ? data.config : null;
+  if (config && Object.prototype.hasOwnProperty.call(config, 'llm_vision_max_image_px')) {
+    applyVisionMaxImagePx(config.llm_vision_max_image_px);
+  }
+}
+
 function loadImageFromBlob(blob, signal) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
@@ -276,7 +297,7 @@ async function compressImageForStudy(blob, signal) {
     if (!sourceWidth || !sourceHeight) {
       return null;
     }
-    const scale = Math.min(1, 768 / Math.max(sourceWidth, sourceHeight));
+    const scale = Math.min(1, llmVisionMaxImagePx / Math.max(sourceWidth, sourceHeight));
     const width = Math.max(1, Math.round(sourceWidth * scale));
     const height = Math.max(1, Math.round(sourceHeight * scale));
     const canvas = document.createElement('canvas');
@@ -913,6 +934,9 @@ function applySettingsConfig(config) {
   if (settingsLlmVisionEnabled) {
     settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
   }
+  if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) {
+    applyVisionMaxImagePx(llm.llm_vision_max_image_px);
+  }
 }
 
 async function loadSettingsConfig(options = {}) {
@@ -940,6 +964,7 @@ function collectSettingsConfig() {
   ocr.languages = settingsOcrLanguages ? settingsOcrLanguages.value.trim() || 'chi_sim+jpn+eng' : 'chi_sim+jpn+eng';
   llm.llm_call_timeout_seconds = Math.max(1, Math.min(3600, Math.round(Number(settingsLlmTimeout?.value) || 30)));
   llm.llm_vision_enabled = settingsLlmVisionEnabled ? settingsLlmVisionEnabled.checked : false;
+  llm.llm_vision_max_image_px = normalizeVisionMaxImagePx(llm.llm_vision_max_image_px);
   return next;
 }
 
@@ -1038,6 +1063,7 @@ async function callPlugin(entryId, args = {}) {
 async function refreshStatus(_options = {}) {
   setStatus(t('ui.status.refreshing', 'Refreshing...'));
   const data = await callPlugin('study_status');
+  applyRuntimeConfig(data);
   setStatusLine(data);
 }
 

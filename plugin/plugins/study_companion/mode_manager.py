@@ -331,10 +331,7 @@ def _coerce_timestamp(value: Any, default: float = 0.0) -> float:
 
 def _is_explicit_mode_switch_reason(reason: str | None) -> bool:
     normalized = str(reason or "").strip().lower()
-    return any(
-        normalized == prefix or normalized.startswith(prefix)
-        for prefix in EXPLICIT_MODE_SWITCH_REASONS
-    )
+    return normalized == "ui" or normalized.startswith("intent:")
 
 
 @dataclass(slots=True)
