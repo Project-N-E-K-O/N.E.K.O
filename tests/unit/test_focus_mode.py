@@ -416,3 +416,60 @@ async def test_focus_override_threads_through_visible_stream():
     c2 = _make_client()
     await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, False, c2.model)))
     assert "extra_body" not in captured[-1]
+
+
+# ── 6. caller-level Focus gates clear residual charge (core.py) ─────
+# These lock the caller-vs-SM interaction Codex flagged: the SM's update_focus
+# self-clears when disabled / on topic-switch, but the gates that decide whether
+# to call it must do so even in REGULAR — otherwise a charge frozen just under
+# the enter bar survives a disabled / privacy window and enters on stale evidence.
+def _bare_mgr():
+    from main_logic.core import LLMSessionManager
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.state = SessionStateMachine(lanlan_name="x")
+    mgr.lanlan_name = "x"
+    return mgr
+
+
+async def test_inline_gate_disabled_clears_regular_charge(monkeypatch):
+    _patch_charge(monkeypatch, enter=1.0)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)  # REGULAR, charge building (~0.6)
+    assert mgr.state.snapshot()["focus_charge"] > 0
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
+    assert await mgr._focus_inline_decision("anything") is False
+    assert mgr.state.snapshot()["focus_charge"] == 0.0
+
+
+async def test_inline_gate_privacy_clears_regular_charge(monkeypatch):
+    import utils.preferences as _prefs
+    _patch_charge(monkeypatch, enter=1.0)  # leaves FOCUS_MODE_ENABLED True
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)
+    assert mgr.state.snapshot()["focus_charge"] > 0
+
+    async def _privacy_on():
+        return True
+    monkeypatch.setattr(_prefs, "ais_privacy_mode_enabled", _privacy_on)
+    assert await mgr._focus_inline_decision("anything") is False
+    assert mgr.state.snapshot()["focus_charge"] == 0.0
+
+
+async def test_idle_gate_snapshot_none_clears_regular_charge(monkeypatch):
+    _patch_charge(monkeypatch, enter=1.0)  # leaves FOCUS_MODE_ENABLED True
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)
+    assert mgr.state.snapshot()["focus_charge"] > 0
+    # snapshot None = privacy / tracker unavailable on the idle path
+    assert await mgr._focus_idle_decision(None) is False
+    assert mgr.state.snapshot()["focus_charge"] == 0.0
+
+
+async def test_idle_gate_disabled_clears_regular_charge(monkeypatch):
+    _patch_charge(monkeypatch, enter=1.0)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)
+    assert mgr.state.snapshot()["focus_charge"] > 0
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
+    assert await mgr._focus_idle_decision(_Snap(seconds_since_user_msg=300)) is False
+    assert mgr.state.snapshot()["focus_charge"] == 0.0

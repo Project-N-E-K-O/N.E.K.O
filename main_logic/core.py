@@ -1699,10 +1699,13 @@ class LLMSessionManager:
         """
         from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
         if not FOCUS_MODE_ENABLED:
-            # Flag flipped off mid-episode → drop any stale FOCUS (update_focus
-            # self-clears when the master switch is off).
-            if self.state.mode is CognitionMode.FOCUS:
-                await self.state.update_focus(0.0)
+            # Flag flipped off → clear ALL focus residue unconditionally, not
+            # just when mode==FOCUS. The leaky accumulator can sit in REGULAR
+            # with charge just under the enter bar; if we only cleared on FOCUS,
+            # that frozen charge would survive the disabled window and let an
+            # unrelated mild cue enter on stale evidence once re-enabled.
+            # update_focus self-clears when the switch is off (idempotent).
+            await self.state.update_focus(0.0)
             return False
         if not (user_text and user_text.strip()):
             return False
@@ -1719,11 +1722,12 @@ class LLMSessionManager:
                 # fail-closed: unreadable privacy state → treat as private
                 _privacy = True
             if _privacy:
-                # If privacy turns on mid-episode, cleanly exit any active Focus
-                # rather than leaving the SM stuck in FOCUS (we won't score this
-                # turn, so the hysteresis wouldn't otherwise tick). Then skip.
-                if self.state.mode is CognitionMode.FOCUS:
-                    await self.state.update_focus(0.0, topic_changed=True)
+                # Privacy turned on: we won't score this turn, so the
+                # accumulator wouldn't otherwise tick. Clear unconditionally
+                # (topic_changed exits FOCUS and zeroes a REGULAR charge alike)
+                # so a charge frozen just under the bar can't survive the
+                # privacy window and enter on stale evidence afterwards.
+                await self.state.update_focus(0.0, topic_changed=True)
                 return False
             snapshot = await self._activity_tracker.get_snapshot()
             scored = self._focus_scorer.score(snapshot, user_text=user_text)
@@ -1769,16 +1773,19 @@ class LLMSessionManager:
         """
         from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
         if not FOCUS_MODE_ENABLED:
-            if self.state.mode is CognitionMode.FOCUS:
-                await self.state.update_focus(0.0)  # self-clears when switch off
+            # Clear unconditionally (not just on FOCUS) so a REGULAR charge
+            # frozen under the enter bar can't survive a disabled window —
+            # mirrors the inline disabled gate. update_focus self-clears when
+            # the switch is off.
+            await self.state.update_focus(0.0)
             return False
         if snapshot is None:
-            # Privacy mode / tracker unavailable: don't score, but cleanly exit
-            # any active Focus so an episode can't stay stuck in FOCUS across a
-            # privacy window (mirrors the inline privacy path).
+            # Privacy mode / tracker unavailable: don't score, but clear Focus
+            # state unconditionally so an episode can't stay stuck in FOCUS and
+            # a REGULAR charge can't freeze across the window (mirrors the
+            # inline privacy path).
             try:
-                if self.state.mode is CognitionMode.FOCUS:
-                    await self.state.update_focus(0.0, topic_changed=True)
+                await self.state.update_focus(0.0, topic_changed=True)
             except Exception as _exit_err:
                 # best-effort cleanup; never block the proactive path
                 logger.debug("[%s] focus idle privacy-exit failed: %s",

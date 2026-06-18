@@ -3067,12 +3067,15 @@ class OmniOfflineClient:
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
         if images:
-            # Focus vision guard: proactive media permanently moves the session
-            # onto the vision model too, so mark it like stream_text does —
-            # otherwise a later text-only Focus turn would run thinking-on on the
-            # vision model and hit the vision+thinking timeout.
-            self._focus_images_seen = True
+            # Focus vision guard: these proactive images are EPHEMERAL (not
+            # persisted to _conversation_history), so the only lasting effect is
+            # the model switch — which is irreversible once it happens. Mark the
+            # sticky guard ONLY when we actually switch to a separate persistent
+            # vision model. In shared-model profiles (vision_model ==
+            # conversation_model) nothing persists, so setting the flag would
+            # falsely suppress thinking on every later text-only Focus turn.
             if self.vision_model and self.vision_model != self.model:
+                self._focus_images_seen = True
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
