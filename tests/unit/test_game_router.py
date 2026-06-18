@@ -132,8 +132,8 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
         def __init__(self):
             self.calls = []
 
-        async def append_icebreaker_context_async(self, role, text, request_id=""):
-            self.calls.append((role, text, request_id))
+        async def append_icebreaker_context_async(self, role, text):
+            self.calls.append((role, text))
             return True
 
     mgr = FakeManager()
@@ -154,7 +154,7 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
 
         assert result["ok"] is True
         assert result["method"] == "project_session_history"
-        assert mgr.calls == [("assistant", "教程看完啦？", "")]
+        assert mgr.calls == [("assistant", "教程看完啦？")]
 
 
 @pytest.mark.asyncio
@@ -163,8 +163,8 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
         def __init__(self):
             self.calls = []
 
-        async def append_icebreaker_context_async(self, role, text, request_id=""):
-            self.calls.append((role, text, request_id))
+        async def append_icebreaker_context_async(self, role, text):
+            self.calls.append((role, text))
             return True
 
     mgr = FakeManager()
@@ -185,7 +185,7 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
         assert result["ok"] is True
         assert result["method"] == "project_session_history"
-        assert mgr.calls == [("user", "icebreaker choice", "")]
+        assert mgr.calls == [("user", "icebreaker choice")]
 
 
 @pytest.mark.asyncio
@@ -246,13 +246,13 @@ async def test_new_user_icebreaker_context_rejects_inactive_route(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatch):
+async def test_new_user_icebreaker_context_endpoint_dedups_request_id_in_route_state(monkeypatch):
     class FakeManager:
         def __init__(self):
             self.calls = []
 
-        async def append_icebreaker_context_async(self, role, text, request_id=""):
-            self.calls.append((role, text, request_id))
+        async def append_icebreaker_context_async(self, role, text):
+            self.calls.append((role, text))
             return True
 
     mgr = FakeManager()
@@ -260,7 +260,7 @@ async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatc
 
     with reset_game_route_state():
         _allow_icebreaker_route("Lan", "icebreaker-day1-test")
-        result = await game_router.game_project_context(
+        first = await game_router.game_project_context(
             "new_user_icebreaker",
             _FakeRequest({
                 "lanlan_name": "Lan",
@@ -270,9 +270,30 @@ async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatc
                 "event": {"request_id": "fallback-id"},
             }),
         )
+        duplicate = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello",
+                "request_id": "icebreaker-context-1",
+            }),
+        )
+        next_request = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello again",
+                "event": {"request_id": "icebreaker-context-2"},
+            }),
+        )
 
-    assert result["ok"] is True
-    assert mgr.calls == [("assistant", "hello", "icebreaker-context-1")]
+    assert first["ok"] is True
+    assert duplicate["ok"] is True
+    assert duplicate["deduped"] is True
+    assert next_request["ok"] is True
+    assert mgr.calls == [("assistant", "hello"), ("assistant", "hello again")]
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,8 @@ from urllib.parse import urlparse
 
 _EXTERNAL_VOICE_DEDUP_TTL_SECONDS = 30.0
 _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
+_ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS = 30.0
+_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES = 64
 _SSML_TAG_PATTERN = re.compile(
     r"</?(?:[a-z][\w-]*:)?(?:"
     r"speak|p|s|break|say-as|phoneme|sub|prosody|emphasis|voice|audio|mark|lang|w|token|express-as|effect"
@@ -7017,6 +7019,29 @@ async def game_project_context(game_type: str, request: Request):
     if stale_response:
         return stale_response
 
+    seen_context_ids = state.get("_icebreaker_context_seen_request_ids")
+    if not isinstance(seen_context_ids, OrderedDict):
+        seen_context_ids = OrderedDict()
+        state["_icebreaker_context_seen_request_ids"] = seen_context_ids
+    now = time.time()
+    ttl_cutoff = now - _ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS
+    while seen_context_ids:
+        oldest_id = next(iter(seen_context_ids))
+        if seen_context_ids[oldest_id] < ttl_cutoff:
+            seen_context_ids.pop(oldest_id, None)
+            continue
+        break
+    if request_id and request_id in seen_context_ids:
+        seen_context_ids.move_to_end(request_id)
+        return {
+            "ok": True,
+            "deduped": True,
+            "method": "project_session_history",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
+
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
@@ -7024,7 +7049,7 @@ async def game_project_context(game_type: str, request: Request):
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
     try:
         if callable(append_icebreaker_context_async):
-            ok = await append_icebreaker_context_async(role, text, request_id)
+            ok = await append_icebreaker_context_async(role, text)
         else:
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
     except Exception as exc:
@@ -7050,6 +7075,11 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": session_id,
         }
+    if request_id:
+        while len(seen_context_ids) >= _ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES:
+            seen_context_ids.popitem(last=False)
+        seen_context_ids[request_id] = now
+        seen_context_ids.move_to_end(request_id)
 
     return {
         "ok": bool(ok),

@@ -1121,7 +1121,7 @@ class LLMSessionManager:
         )
         cache.append({"role": speaker, "text": text})
 
-    async def append_icebreaker_context_async(self, role: str, text: str, request_id: str | None = "") -> bool:
+    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
         """Append icebreaker turns through the existing conversation/cache path."""
         normalized_role = str(role or "").strip().lower()
         content = str(text or "").strip()
