@@ -352,6 +352,20 @@ class SessionStateMachine:
             _dispatch_subscribers(snap_subs, emit_event, emit_payload)
         return result_mode
 
+    async def clear_focus(self) -> None:
+        """Drop all Focus state to the REGULAR baseline WITHOUT emitting FOCUS_EXIT.
+
+        For lifecycle resets where the conversation context itself is wiped
+        (e.g. repetition recovery clears ``_conversation_history``): the
+        emotional episode's evidence is gone, so charge / mode / turn count must
+        not carry into the emptied conversation. No ``FOCUS_EXIT`` is fired
+        because there is no coherent episode to hand to memory synthesis — this
+        mirrors ``reset``, which also clears Focus silently. (The disabled /
+        privacy gates use ``update_focus`` instead, which self-clears too.)
+        """
+        async with self._write_lock:
+            self._clear_focus_state()
+
     def _clear_focus_state(self) -> None:
         """Reset all Focus fields to the REGULAR baseline. Caller holds ``_write_lock``."""
         self.mode = CognitionMode.REGULAR

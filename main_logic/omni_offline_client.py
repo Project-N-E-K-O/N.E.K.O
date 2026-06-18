@@ -1795,13 +1795,20 @@ class OmniOfflineClient:
 
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
-        # Focus vision guard: once images are sent this session, self.model stays
-        # the vision model permanently (image data persists in history), so later
-        # text-only turns must keep thinking off too. Track a sticky flag rather
-        # than comparing model names — vision_model == conversation_model in the
-        # default qwen/openai profiles, which would falsely flag every text turn
-        # and disable Focus thinking-on entirely.
-        self._focus_images_seen = getattr(self, "_focus_images_seen", False) or has_images
+        # Focus vision guard (sticky): mark the session vision-unsafe-for-thinking
+        # ONLY when this turn leaves a PERSISTENT vision state — either a separate
+        # vision-model switch (vision_model != model, irreversible once it
+        # happens), or an image that actually stays in _conversation_history.
+        # When history_replacement_text is set the image-bearing message is
+        # evicted to text-only in the finally block, so in shared-model profiles
+        # (vision_model == conversation_model) nothing persists; flagging there
+        # would falsely freeze thinking off on every later text-only Focus turn.
+        # Sticky (never cleared here) so a real earlier image still counts.
+        _persistent_vision_switch = bool(self.vision_model and self.vision_model != self.model)
+        _image_will_persist = not (history_replacement_text and str(history_replacement_text).strip())
+        self._focus_images_seen = getattr(self, "_focus_images_seen", False) or (
+            has_images and (_persistent_vision_switch or _image_will_persist)
+        )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。

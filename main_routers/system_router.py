@@ -6509,15 +6509,24 @@ async def proactive_chat(request: Request):
             from main_logic.activity import format_activity_state_section
             try:
                 fresh_enrich = await mgr._activity_tracker.get_snapshot()
-                _focus_idle_snapshot = fresh_enrich
+                # restricted_screen_only deliberately strips semantic open_threads
+                # so gaming / focused-work prompts stay screen-only. The idle Focus
+                # decision must see the SAME filtered threads the prompt does —
+                # otherwise _signal_open_thread could charge / enter Focus from a
+                # text follow-up signal this workflow just suppressed. Keep
+                # fresh_enrich's silence duration (freshest), only swap open_threads.
+                _filtered_open_threads = _open_threads_for_activity_state(
+                    activity_snapshot,
+                    fresh_enrich.open_threads,
+                )
+                _focus_idle_snapshot = _dc_replace(
+                    fresh_enrich, open_threads=_filtered_open_threads,
+                )
                 display_snap = _dc_replace(
                     activity_snapshot,
                     activity_scores=fresh_enrich.activity_scores,
                     activity_guess=fresh_enrich.activity_guess,
-                    open_threads=_open_threads_for_activity_state(
-                        activity_snapshot,
-                        fresh_enrich.open_threads,
-                    ),
+                    open_threads=_filtered_open_threads,
                 )
             except Exception as _enrich_err:
                 logger.debug(f"[{lanlan_name}] fresh enrichment fetch failed: {_enrich_err}")

@@ -316,6 +316,28 @@ async def test_sm_disable_clears_charge_even_in_regular(monkeypatch):
     assert await sm.update_focus(0.6) is CognitionMode.REGULAR
 
 
+async def test_sm_clear_focus_silent_no_exit_event(monkeypatch):
+    # clear_focus drops FOCUS→REGULAR + zeroes charge but fires NO FOCUS_EXIT
+    # (repetition recovery wipes the conversation; a degenerate loop is not a
+    # coherent episode to synthesize). Mirrors reset's silent focus clear.
+    _patch_charge(monkeypatch)
+    sm = SessionStateMachine(lanlan_name="x")
+    events = []
+    sm.subscribe(None, lambda ev, pl: events.append(ev))
+    await sm.update_focus(1.0)
+    assert sm.mode is CognitionMode.FOCUS
+    events.clear()
+    await sm.clear_focus()
+    assert sm.mode is CognitionMode.REGULAR
+    assert sm.snapshot()["focus_charge"] == 0.0
+    assert SessionEvent.FOCUS_EXIT not in events
+    # also zeroes a REGULAR charge sitting under the bar
+    await sm.update_focus(0.6)
+    assert sm.snapshot()["focus_charge"] > 0
+    await sm.clear_focus()
+    assert sm.snapshot()["focus_charge"] == 0.0
+
+
 async def test_sm_reset_clears_focus(monkeypatch):
     _patch_charge(monkeypatch)
     sm = SessionStateMachine(lanlan_name="x")

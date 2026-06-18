@@ -3348,10 +3348,22 @@ class LLMSessionManager:
         await self.disconnected_by_server(expected_session=expected_session)
     
     async def handle_repetition_detected(self):
-        """Handle the repetition-detection callback: notify the frontend"""
+        """Handle the repetition-detection callback: reset Focus state, notify the frontend"""
         try:
             logger.warning(f"[{self.lanlan_name}] 检测到高重复度对话")
-            
+
+            # Repetition recovery wiped _conversation_history — the Focus
+            # accumulator charge / mode and the cadence baseline are evidence
+            # from the now-erased conversation, so clear them too (对偶
+            # _init_renew_status 的会话级清场). clear_focus emits no FOCUS_EXIT:
+            # a degenerate looping episode is not a coherent episode to
+            # synthesize. Best-effort — never block the frontend notice.
+            try:
+                await self.state.clear_focus()
+                self._focus_scorer.reset()
+            except Exception as _focus_err:
+                logger.debug(f"[{self.lanlan_name}] focus reset on repetition failed: {_focus_err}")
+
             # 向前端发送重复警告消息（使用 i18n key）
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({
@@ -8295,9 +8307,14 @@ class LLMSessionManager:
 
                     self._active_text_request_id = message.get("request_id")
                     # Path A (inline) Focus 凝神：score this user message and, if
-                    # over the bar, run THIS reply thinking-on. Scored on the
-                    # raw user text (``data``), not the agent-callback prefix.
-                    _focus_thinking = await self._focus_inline_decision(data)
+                    # over the bar, run THIS reply thinking-on. Scored on
+                    # ``record_data`` (= memory_text or data) — the user-VISIBLE
+                    # text that also feeds the activity tracker / cadence baseline
+                    # and history replacement. Scoring raw ``data`` instead would
+                    # read a hidden scaffold prompt (e.g. avatar-drop file
+                    # contents) the user never typed, mismatching the cadence
+                    # signal and entering Focus on evidence the user didn't author.
+                    _focus_thinking = await self._focus_inline_decision(record_data)
                     input_transcript_callback = None
                     if memory_text:
                         async def input_transcript_callback(_transcript: str, *, _memory_text: str = memory_text) -> None:
