@@ -65,6 +65,23 @@ def test_day7_icebreaker_script_has_voice_keys_for_every_spoken_line():
     assert_icebreaker_script_has_voice_keys_for_every_spoken_line("7")
 
 
+def test_icebreaker_internal_branches_follow_binary_tree_targets():
+    scripts = json.loads(SCRIPTS_PATH.read_text(encoding="utf-8"))
+
+    for day_key, day in scripts["days"].items():
+        nodes = day["nodes"]
+        for node_id, node in nodes.items():
+            options = node.get("options", [])
+            if node.get("complete") or any("handoffKey" in option for option in options):
+                continue
+
+            assert [option.get("id") for option in options] == ["A", "B"], f"day{day_key}.{node_id}"
+            assert options[0].get("next") == f"{node_id}A", f"day{day_key}.{node_id}.A"
+            assert options[1].get("next") == f"{node_id}B", f"day{day_key}.{node_id}.B"
+            assert options[0]["next"] in nodes, f"day{day_key}.{node_id}.A"
+            assert options[1]["next"] in nodes, f"day{day_key}.{node_id}.B"
+
+
 def test_day1_icebreaker_locales_exist_and_have_aligned_keys():
     expected_locales = ["en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"]
     zh_cn = json.loads((LOCALES_DIR / "zh-CN.json").read_text(encoding="utf-8"))
