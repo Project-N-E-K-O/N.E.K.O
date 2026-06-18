@@ -25,7 +25,7 @@ IMAGE_ONLY_EXPLAIN_PROMPT_EN = (
     "the result, and clearly state the final answer or option. When solving a "
     "problem, your response must include four headings: \"Problem Analysis\", "
     "\"Solution Process\", \"Answer\", and \"Transfer Practice\". Do not give "
-    "only a brief \"analysis\". Do not only summarize the problem statement; "
+    "only a brief analysis. Do not only summarize the problem statement; "
     "if the image is not a problem, explain the image contents instead. If it "
     "is a choice question or item-by-item judgment question, do not assume it "
     "is single-choice; verify each item independently. If there are multiple "

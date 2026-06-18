@@ -18,6 +18,7 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     index = (PLUGIN_DIR / "static" / "index.html").read_text(encoding="utf-8")
     renderer = (PLUGIN_DIR / "static" / "katex-render.js").read_text(encoding="utf-8")
     main_js = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    css = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     assert (PLUGIN_DIR / "static" / "katex.min.js").is_file()
     assert (PLUGIN_DIR / "static" / "katex.min.css").is_file()
