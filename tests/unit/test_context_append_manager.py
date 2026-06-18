@@ -880,6 +880,64 @@ async def test_append_context_duplicate_waits_for_failed_original_before_reporti
 
 
 @pytest.mark.asyncio
+async def test_append_context_cancellation_releases_duplicate_waiter_and_request_id():
+    mgr = _make_manager()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _CancelledPrimeSession:
+        def __init__(self):
+            self.calls = []
+
+        async def prime_context(self, text, *, skipped=False):
+            self.calls.append((text, skipped))
+            entered.set()
+            await release.wait()
+
+    session = _CancelledPrimeSession()
+    mgr.session = session
+
+    first = asyncio.create_task(mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context",
+        request_id="ctx-1",
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    duplicate_task = asyncio.create_task(mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context replay",
+        request_id="ctx-1",
+    ))
+    await asyncio.sleep(0)
+    assert duplicate_task.done() is False
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    duplicate = await asyncio.wait_for(duplicate_task, timeout=1)
+
+    retry_session = _FakePrimeSession()
+    mgr.session = retry_session
+    retry = await mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context retry after cancellation",
+        request_id="ctx-1",
+    )
+
+    release.set()
+    assert duplicate.appended is False
+    assert duplicate.deduped is False
+    assert duplicate.reason == "context_inject_cancelled"
+    assert retry.appended is True
+    assert session.calls == [("same context", True)]
+    assert retry_session.calls == [("same context retry after cancellation", True)]
+
+
+@pytest.mark.asyncio
 async def test_append_context_requires_current_delivery_when_ready_session_family_prime_fails():
     mgr = _make_manager()
 

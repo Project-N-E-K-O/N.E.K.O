@@ -1573,6 +1573,15 @@ class LLMSessionManager:
 
         try:
             result = await self._append_context_to_targets(payload)
+        except asyncio.CancelledError:
+            if reserved_request_id:
+                self._forget_context_append_request_id(payload)
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(ContextAppendResult(
+                    appended=False,
+                    reason="context_inject_cancelled",
+                ))
+            raise
         except Exception:
             if reserved_request_id:
                 self._forget_context_append_request_id(payload)
@@ -1581,19 +1590,17 @@ class LLMSessionManager:
                     appended=False,
                     reason="context_inject_failed",
                 ))
+            raise
+        else:
+            if not result.appended and reserved_request_id:
+                self._forget_context_append_request_id(payload)
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(result)
+        finally:
             if request_key is not None:
                 inflight = getattr(self, "_context_append_inflight_results", None)
                 if isinstance(inflight, dict):
                     inflight.pop(request_key, None)
-            raise
-        if not result.appended and reserved_request_id:
-            self._forget_context_append_request_id(payload)
-        if inflight_result is not None and not inflight_result.done():
-            inflight_result.set_result(result)
-        if request_key is not None:
-            inflight = getattr(self, "_context_append_inflight_results", None)
-            if isinstance(inflight, dict):
-                inflight.pop(request_key, None)
         return result
 
     async def _flush_pending_context_appends(self) -> int:
