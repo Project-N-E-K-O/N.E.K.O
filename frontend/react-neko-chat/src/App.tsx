@@ -4182,14 +4182,13 @@ function CompactChatApp({
     const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
     if (maxScrollTop <= 0) return false;
 
+    const nextScrollTop = clamp(scrollNode.scrollTop + normalizedDelta, 0, maxScrollTop);
+    if (nextScrollTop === scrollNode.scrollTop) return false;
+
     event.preventDefault();
     event.stopPropagation();
 
-    const nextScrollTop = clamp(scrollNode.scrollTop + normalizedDelta, 0, maxScrollTop);
-    if (nextScrollTop !== scrollNode.scrollTop) {
-      scrollNode.scrollTop = nextScrollTop;
-      scrollNode.dispatchEvent(new Event('scroll', { bubbles: true }));
-    }
+    scrollNode.scrollTop = nextScrollTop;
     scrollNode.dispatchEvent(new CustomEvent(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, { bubbles: true }));
     return true;
   }, [compactExportHistoryOpen]);

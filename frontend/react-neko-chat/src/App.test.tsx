@@ -5471,6 +5471,7 @@ describe('App', () => {
   });
 
   it('routes compact tool wheel background scrolling to the open inline history', () => {
+    const previousHistoryOpen = window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     const scrollTopByElement = new WeakMap<HTMLElement, number>();
     const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
     const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
@@ -5551,7 +5552,20 @@ describe('App', () => {
       expect(scroll.scrollTop).toBe(200);
       expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+      scroll.scrollTop = 0;
+      act(() => {
+        fireEvent.wheel(fanHitRegion, { deltaY: -80, clientX: 160, clientY: 160 });
+      });
+
+      expect(scroll.scrollTop).toBe(0);
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
     } finally {
+      if (previousHistoryOpen === null) {
+        window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, previousHistoryOpen);
+      }
       if (scrollHeightDescriptor) {
         Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
       } else {

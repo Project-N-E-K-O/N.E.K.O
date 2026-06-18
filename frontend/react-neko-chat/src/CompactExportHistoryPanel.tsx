@@ -249,6 +249,7 @@ export default function CompactExportHistoryPanel({
   const previewObjectUrlRef = useRef<string | null>(null);
   const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
   const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
+  const routedWheelHandlerRef = useRef<() => void>(() => {});
   // 记录上一次几何刷新时的可视窗口高度，用于判断 resize 方向（缩小 vs 增高）。
   const lastGeometryClientHeightRef = useRef<number | null>(null);
   const [exportFormat, setExportFormat] = useState<CompactExportFormat>('image');
@@ -587,21 +588,21 @@ export default function CompactExportHistoryPanel({
     updateScrollbarThumbState();
   }
 
+  routedWheelHandlerRef.current = () => {
+    if (!historyInteractive) return;
+    handleScroll();
+    revealScrollbarForWheel();
+  };
+
   useEffect(() => {
     const scrollNode = scrollRef.current;
     if (!scrollNode) return undefined;
-
-    const handleRoutedWheel = () => {
-      if (!historyInteractive) return;
-      handleScroll();
-      revealScrollbarForWheel();
-    };
-
+    const handleRoutedWheel = () => routedWheelHandlerRef.current();
     scrollNode.addEventListener(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, handleRoutedWheel);
     return () => {
       scrollNode.removeEventListener(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, handleRoutedWheel);
     };
-  });
+  }, [historyInteractive, previewOpen, visibilityState]);
 
   function handleClick(event: ReactMouseEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;
