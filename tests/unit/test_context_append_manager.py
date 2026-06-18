@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -229,6 +230,14 @@ async def test_final_swap_primes_late_next_session_context_before_consuming():
         ("Master | late during prime\n", True),
     ]
     assert mgr.next_session_context_messages == []
+
+
+def test_final_swap_primes_late_context_before_flushing_cached_audio():
+    source = inspect.getsource(core_module.LLMSessionManager._perform_final_swap_sequence)
+
+    assert source.index("_prime_late_next_session_context_after_swap") < source.index(
+        "_flush_hot_swap_audio_cache"
+    )
 
 
 @pytest.mark.asyncio

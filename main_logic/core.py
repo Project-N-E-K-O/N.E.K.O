@@ -8121,15 +8121,6 @@ class LLMSessionManager:
                 # 旧session已关闭无法回滚，抛出异常让 except 块走重建流程
                 raise RuntimeError("新session的WebSocket在swap后已失效，热切换失败")
 
-            # ── 步骤 4：启动新 listener ───────────────────────────────────────────
-            if self.session and hasattr(self.session, 'handle_messages'):
-                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
-
-            # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────
-            # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
-            # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
-            await self._flush_hot_swap_audio_cache()
-
             transferred_next_context_count = (
                 self.initial_next_session_context_snapshot_len
                 + len(incremental_next_session_context)
@@ -8138,6 +8129,15 @@ class LLMSessionManager:
                 transferred_next_context_count
             )
             self._consume_next_session_context_messages(consumed_next_context_count)
+
+            # ── 步骤 4：启动新 listener ───────────────────────────────────────────
+            if self.session and hasattr(self.session, 'handle_messages'):
+                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+
+            # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────
+            # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
+            # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
+            await self._flush_hot_swap_audio_cache()
 
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
