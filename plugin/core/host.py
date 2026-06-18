@@ -43,7 +43,6 @@ from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
 from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
 from plugin.core.bus.types import dispatch_bus_change
-from utils.storage_layout import export_storage_layout_to_env, resolve_storage_layout
 from plugin.core.zmq_transport import (
     HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
 )
@@ -63,12 +62,15 @@ def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
     from utils.config_manager import get_config_manager
+    from utils.storage_layout import resolve_storage_layout
 
     return resolve_storage_layout(get_config_manager())
 
 
 def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
     try:
+        from utils.storage_layout import export_storage_layout_to_env
+
         layout = _resolve_current_storage_layout()
         export_storage_layout_to_env(layout)
         logger_obj.debug(

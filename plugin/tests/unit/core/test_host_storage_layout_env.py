@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from plugin.core import host as host_module
+from utils import storage_layout as storage_layout_module
 
 
 class _FakeCommManager:
@@ -66,7 +67,7 @@ async def test_plugin_process_start_refreshes_storage_layout_env(monkeypatch: py
         calls.append(layout)
         host_module.os.environ["NEKO_STORAGE_SELECTED_ROOT"] = str(layout["selected_root"])
 
-    monkeypatch.setattr(host_module, "export_storage_layout_to_env", _export)
+    monkeypatch.setattr(storage_layout_module, "export_storage_layout_to_env", _export)
 
     plugin_host = host_module.PluginProcessHost(
         plugin_id="demo",
