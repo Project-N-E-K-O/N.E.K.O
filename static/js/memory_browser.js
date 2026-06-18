@@ -420,6 +420,17 @@
             return;
         }
         if (selection.type === 'page' && typeof window.resetTutorialForPage === 'function') {
+            if (selection.pageKey === 'all') {
+                if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAllAvatarFloatingGuideDays === 'function') {
+                    await window.AvatarFloatingGuideReset.resetAllAvatarFloatingGuideDays({
+                        source: 'memory_browser_reset_all',
+                    });
+                } else if (typeof window.resetAllAvatarFloatingGuideDays === 'function') {
+                    await window.resetAllAvatarFloatingGuideDays({
+                        source: 'memory_browser_reset_all',
+                    });
+                }
+            }
             await window.resetTutorialForPage(selection.pageKey);
         }
     }

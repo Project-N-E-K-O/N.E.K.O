@@ -24,7 +24,7 @@ from utils.token_tracker import set_call_type
 import asyncio
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
-from utils.llm_client import create_chat_llm
+from utils.llm_client import create_chat_llm_async
 
 logger = get_module_logger(__name__)
 
@@ -209,7 +209,7 @@ async def analyze_image_with_vision_model(
             user_text = _loc(VISION_USER_NO_TITLE, lang)
 
         set_call_type("vision")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model=vision_model,
             base_url=vision_base_url or None,
             api_key=vision_api_key,

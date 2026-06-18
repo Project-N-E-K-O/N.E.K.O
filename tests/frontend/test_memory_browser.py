@@ -232,6 +232,44 @@ def test_memory_browser_current_personality_reset_requests_home_reselect(
 
 
 @pytest.mark.frontend
+def test_memory_browser_all_tutorial_reset_includes_avatar_guide_state(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialResetCalls = [];
+            window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
+                resetAllAvatarFloatingGuideDays: async (options) => {
+                    window.__tutorialResetCalls.push({ type: 'avatar', options });
+                }
+            });
+            window.resetTutorialForPage = async (pageKey) => {
+                window.__tutorialResetCalls.push({ type: 'legacy', pageKey });
+            };
+        }
+        """
+    )
+
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='all']").click()
+    expect(mock_page.locator(".tutorial-reset-value")).to_have_text("全部页面")
+    expect(mock_page.locator("#tutorial-reset-btn")).to_be_enabled()
+    mock_page.locator("#tutorial-reset-btn").click()
+    mock_page.wait_for_function("window.__tutorialResetCalls.length === 2")
+
+    assert mock_page.evaluate("window.__tutorialResetCalls") == [
+        {"type": "avatar", "options": {"source": "memory_browser_reset_all"}},
+        {"type": "legacy", "pageKey": "all"},
+    ]
+
+
+@pytest.mark.frontend
 def test_memory_browser_tutorial_cascader_localizes_home_day_labels_for_english(
     mock_page: Page,
     running_server: str,

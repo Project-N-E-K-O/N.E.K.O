@@ -426,7 +426,7 @@ class MemoryRefineEngine:
 
         from config.prompts.prompts_memory import get_memory_refine_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         template = get_memory_refine_prompt(get_global_language())
         prompt = (
@@ -442,7 +442,7 @@ class MemoryRefineEngine:
         set_call_type("memory_refine")
         api_config = self._cm.get_model_api_config('correction')
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'],
             api_config['api_key'],

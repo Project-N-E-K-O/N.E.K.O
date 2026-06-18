@@ -5,7 +5,7 @@ import re
 import time
 from typing import Optional
 
-from utils.llm_client import create_chat_llm, strip_thinking_segments
+from utils.llm_client import create_chat_llm_async, strip_thinking_segments
 from utils.token_tracker import set_call_type
 
 
@@ -213,7 +213,7 @@ class QQAutoReplyPromptingMixin:
             if not base_url or not model:
                 self.logger.warning("Fallback 生成跳过：agent 模型未配置")
                 return None
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 model=model,
                 base_url=base_url,
                 api_key=api_key,

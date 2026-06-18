@@ -40,6 +40,8 @@ from urllib.parse import urlparse
 
 _EXTERNAL_VOICE_DEDUP_TTL_SECONDS = 30.0
 _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
+_ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS = 30.0
+_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES = 64
 _SSML_TAG_PATTERN = re.compile(
     r"</?(?:[a-z][\w-]*:)?(?:"
     r"speak|p|s|break|say-as|phoneme|sub|prosody|emphasis|voice|audio|mark|lang|w|token|express-as|effect"
@@ -104,6 +106,7 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Game")
 
 router = APIRouter(tags=["game"], prefix="/api/game")
+MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 
 # ── Session 池 ─────────────────────────────────────────────────────
 # key = f"{lanlan_name}:{game_type}:{session_id}"
@@ -1869,11 +1872,11 @@ async def _run_pregame_context_ai(
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_pregame_context")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -2512,11 +2515,11 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_context_organizer")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -3317,11 +3320,11 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
         source = truncate_head_tail_tokens(source, 2000, 2000)
         user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_memory_archive")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -6582,6 +6585,8 @@ async def game_route_start(game_type: str, request: Request):
             if game_type == "basketball":
                 state["mode"] = _normalize_basketball_mode(data.get("mode"))
             _update_route_start_state_from_payload(state, data)
+            if game_type == "new_user_icebreaker":
+                state["heartbeat_enabled"] = False
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
@@ -6596,7 +6601,11 @@ async def game_route_start(game_type: str, request: Request):
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
     mgr_for_ws = get_session_manager().get(lanlan_name)
-    if state.get("game_route_active") and str(state.get("session_id") or "") == session_id:
+    if (
+        game_type != "new_user_icebreaker"
+        and state.get("game_route_active")
+        and str(state.get("session_id") or "") == session_id
+    ):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
@@ -6968,6 +6977,10 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_role"}
     if not text:
         return {"ok": False, "reason": "missing_text"}
+    if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
+        return {"ok": False, "reason": "invalid_text_length"}
+    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
 
     if "lanlan_name" not in data:
         return {"ok": False, "reason": "missing_lanlan_name"}
@@ -7006,17 +7019,36 @@ async def game_project_context(game_type: str, request: Request):
     if stale_response:
         return stale_response
 
+    seen_context_ids = state.get("_icebreaker_context_seen_request_ids")
+    if not isinstance(seen_context_ids, OrderedDict):
+        seen_context_ids = OrderedDict()
+        state["_icebreaker_context_seen_request_ids"] = seen_context_ids
+    now = time.time()
+    ttl_cutoff = now - _ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS
+    while seen_context_ids:
+        oldest_id = next(iter(seen_context_ids))
+        if seen_context_ids[oldest_id] < ttl_cutoff:
+            seen_context_ids.pop(oldest_id, None)
+            continue
+        break
+    if request_id and request_id in seen_context_ids:
+        return {
+            "ok": True,
+            "deduped": True,
+            "method": "project_session_history",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
+
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
-    append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
     try:
         if callable(append_icebreaker_context_async):
             ok = await append_icebreaker_context_async(role, text)
-        elif callable(append_icebreaker_context):
-            ok = append_icebreaker_context(role, text)
         else:
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
     except Exception as exc:
@@ -7042,6 +7074,11 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": session_id,
         }
+    if request_id:
+        while len(seen_context_ids) >= _ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES:
+            seen_context_ids.popitem(last=False)
+        seen_context_ids[request_id] = now
+        seen_context_ids.move_to_end(request_id)
 
     return {
         "ok": bool(ok),
@@ -7861,11 +7898,11 @@ async def game_quick_lines(game_type: str, request: Request):
         )
 
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_quick_lines")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info['model'],
             char_info['base_url'],
             char_info['api_key'],

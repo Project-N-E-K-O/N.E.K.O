@@ -55,7 +55,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -2837,13 +2837,13 @@ async def _deliver_break_reminder_via_llm(
 
     try:
         async with asyncio.timeout(timeout_seconds):
-            async with create_chat_llm(
+            async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
                 timeout=timeout_seconds,  # mirror the asyncio.timeout() wrapping this stream
-            ) as llm:
+            )) as llm:
                 async for chunk in llm.astream(messages):
                     if mgr.state.is_proactive_preempted(proactive_sid):
                         aborted = True
@@ -3395,7 +3395,7 @@ async def emotion_analysis(request: Request):
         set_call_type("emotion")
 
         # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model,
             emotion_base_url,
             api_key,
@@ -5773,9 +5773,9 @@ async def proactive_chat(request: Request):
                 "detail": str(e)
             }, status_code=500))
 
-        def _make_llm(temperature: float = 1.0,
-                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                      use_vision: bool = False, disable_thinking: bool = True):
+        async def _make_llm(temperature: float = 1.0,
+                            max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                            use_vision: bool = False, disable_thinking: bool = True):
             """
             Create an LLM instance. use_vision=True uses the vision model; when disable_thinking=False, extra_body is not injected.
             """
@@ -5792,7 +5792,7 @@ async def proactive_chat(request: Request):
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
-            return create_chat_llm(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
+            return await create_chat_llm_async(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
 
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
@@ -5825,10 +5825,10 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature,
-                                        max_completion_tokens=max_completion_tokens,
-                                        use_vision=use_vision,
-                                        disable_thinking=disable_thinking) as llm:
+                    async with (await _make_llm(temperature=temperature,
+                                                max_completion_tokens=max_completion_tokens,
+                                                use_vision=use_vision,
+                                                disable_thinking=disable_thinking)) as llm:
                         response = await asyncio.wait_for(
                             llm.ainvoke(messages),
                             timeout=timeout
@@ -6651,9 +6651,9 @@ async def proactive_chat(request: Request):
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with _make_llm(temperature=1.0,
-                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                                    use_vision=phase2_use_vision, disable_thinking=True) as llm:
+                async with (await _make_llm(temperature=1.0,
+                                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                                            use_vision=phase2_use_vision, disable_thinking=True)) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
@@ -6780,12 +6780,12 @@ async def proactive_chat(request: Request):
                 _fix_text = ""
                 try:
                     async with asyncio.timeout(20.0):
-                        async with _make_llm(
+                        async with (await _make_llm(
                             temperature=1.0,
                             max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                             use_vision=phase2_use_vision,
                             disable_thinking=True,
-                        ) as _fix_llm:
+                        )) as _fix_llm:
                             _fix_resp = await _fix_llm.ainvoke(
                                 [messages[0], HumanMessage(content=_fix_human_content)]
                             )
@@ -6942,12 +6942,12 @@ async def proactive_chat(request: Request):
                 }))
             try:
                 async with asyncio.timeout(20.0):
-                    async with _make_llm(
+                    async with (await _make_llm(
                         temperature=1.0,
                         max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                         use_vision=phase2_use_vision,
                         disable_thinking=True,
-                    ) as _regen_llm:
+                    )) as _regen_llm:
                         _regen_resp = await _regen_llm.ainvoke(regen_messages)
                         regen_text = (
                             _regen_resp.content if hasattr(_regen_resp, "content") else ""

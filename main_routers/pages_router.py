@@ -38,11 +38,11 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_TUTORIAL_RUNTIME_ASSET_PATHS = tuple(
-    sorted((_PROJECT_ROOT / "static/tutorial").glob("**/*.js"))
-) + tuple(
-    sorted((_PROJECT_ROOT / "static/tutorial").glob("**/*.json"))
-)
+_TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
+    path
+    for pattern in ("**/*.js", "**/*.json")
+    for path in (_PROJECT_ROOT / "static/tutorial").glob(pattern)
+))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/index.css",
@@ -62,13 +62,9 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/core/round-prelude-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/universal-manager.js",
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
-    _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
-    _PROJECT_ROOT / "static/tutorial/yui-guide/wakeup.js",
-    _PROJECT_ROOT / "static/tutorial/yui-guide/director.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app-ui.js",
-    _PROJECT_ROOT / "static/app-interpage.js",
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
@@ -121,6 +117,7 @@ _static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
+    _PROJECT_ROOT / "static/app-interpage.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app-buttons.js",

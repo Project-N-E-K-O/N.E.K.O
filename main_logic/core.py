@@ -1107,22 +1107,41 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    def append_icebreaker_context(self, role: str, text: str) -> bool:
-        """Append guide icebreaker context to the active project session history."""
-        content = str(text or "").strip()
-        if not content:
-            return False
-        if not self.session or not hasattr(self.session, "_conversation_history"):
-            return False
+    def _append_icebreaker_context_to_new_session_cache(self, role: str, text: str) -> None:
+        if not getattr(self, "is_preparing_new_session", False):
+            return
+        cache = getattr(self, "message_cache_for_new_session", None)
+        if not isinstance(cache, list):
+            cache = []
+            self.message_cache_for_new_session = cache
+        speaker = (
+            getattr(self, "master_name", "user")
+            if role == "user"
+            else getattr(self, "lanlan_name", "assistant")
+        )
+        cache.append({"role": speaker, "text": text})
 
+    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
+        """Append icebreaker turns through the existing conversation/cache path."""
         normalized_role = str(role or "").strip().lower()
-        if normalized_role in {"assistant", "ai", "model"}:
-            message = AIMessage(content=content)
-        else:
-            message = HumanMessage(content=content)
+        content = str(text or "").strip()
+        if normalized_role not in {"assistant", "user"} or not content:
+            return False
+        self._append_icebreaker_context_to_new_session_cache(normalized_role, content)
 
-        self.session._conversation_history.append(message)
-        return True
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if isinstance(history, list):
+            message = AIMessage(content=content) if normalized_role == "assistant" else HumanMessage(content=content)
+            history.append(message)
+            return True
+
+        prime_context = getattr(session, "prime_context", None)
+        if callable(prime_context):
+            await prime_context(f"{normalized_role}: {content}", skipped=True)
+            return True
+
+        return bool(getattr(self, "is_preparing_new_session", False))
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""

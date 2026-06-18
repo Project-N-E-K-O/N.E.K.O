@@ -14,6 +14,7 @@ catch contract regressions in the tool plumbing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -649,6 +650,56 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
     # base_url / api_key 必须同步到 vision 配置
     assert client.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert client.api_key == "fake-gemini-key"
+
+
+@pytest.mark.asyncio
+async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gpt-4o-mini"
+    client.base_url = "https://api.openai.com/v1"
+    client.api_key = "sk-fake"
+    client.vision_model = "vision-model"
+    client.vision_base_url = "https://vision.example/v1"
+    client.vision_api_key = "vision-key"
+    client.max_response_length = 300
+    client._genai_client = None
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    class _FakeLLM:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.closed = 0
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    old_llm = _FakeLLM("old")
+    client.llm = old_llm
+    created: list[_FakeLLM] = []
+
+    async def fake_create_chat_llm_async(*_args, **_kwargs):
+        await asyncio.sleep(0)
+        llm = _FakeLLM("vision")
+        created.append(llm)
+        return llm
+
+    monkeypatch.setattr(_ofc, "create_chat_llm_async", fake_create_chat_llm_async)
+
+    await asyncio.gather(
+        client.switch_model("vision-model", use_vision_config=True),
+        client.switch_model("vision-model", use_vision_config=True),
+    )
+
+    assert len(created) == 1
+    assert client.llm is created[0]
+    assert client.model == "vision-model"
+    assert client.base_url == "https://vision.example/v1"
+    assert client.api_key == "vision-key"
+    assert old_llm.closed == 1
 
 
 @pytest.mark.asyncio

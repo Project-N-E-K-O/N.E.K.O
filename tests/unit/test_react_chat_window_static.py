@@ -14,6 +14,7 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_FULL_SURFACE_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "FullChatSurface.tsx"
 REACT_CHAT_MESSAGE_SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 )
@@ -65,6 +66,19 @@ def inline_z_index(block: str) -> int:
     if not match:
         raise AssertionError(f"missing inline zIndex in block: {block[:240]!r}")
     return int(match.group(1))
+
+
+def test_choice_prompt_sources_have_distinct_accessibility_labels():
+    for path in (REACT_CHAT_APP_PATH, REACT_CHAT_FULL_SURFACE_PATH):
+        source = path.read_text(encoding="utf-8")
+        choice_prompt_block = source.split("data-choice-source={choicePrompt.source}", 1)[1].split(
+            "{choicePrompt.options.slice",
+            1,
+        )[0]
+        assert "choicePrompt.source === 'mini_game_invite'" in choice_prompt_block
+        assert "chat.miniGameInviteOptionsAriaLabel" in choice_prompt_block
+        assert "choicePrompt.source === 'new_user_icebreaker'" in choice_prompt_block
+        assert "chat.newUserIcebreakerOptionsAriaLabel" in choice_prompt_block
 
 
 def test_react_chat_host_can_clear_only_yui_guide_messages():
@@ -165,7 +179,9 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
-    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "state.homeTutorialInteractionLocked" in submit_block
+    assert "state.homeTutorialInputLocked" in submit_block
+    assert "getEffectiveComposerHidden()" in submit_block
     assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
     assert "requestGoodbyeComposerHiddenState('chat-surface-mode-change');" in set_mode_block
     assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
@@ -494,7 +510,7 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
 
 
-def test_day7_home_template_loads_delivered_daily_guide_scripts():
+def test_icebreaker_home_template_loads_delivered_daily_guide_scripts():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     for guide_script in [
@@ -509,10 +525,7 @@ def test_day7_home_template_loads_delivered_daily_guide_scripts():
         assert f'<script src="/static/{guide_script}' in source
         assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
 
-    for future_script in [
-        "tutorial/icebreaker/new-user-icebreaker.js",
-    ]:
-        assert f'<script src="/static/{future_script}' not in source
+    assert '<script src="/static/tutorial/icebreaker/new-user-icebreaker.js' in source
 
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
@@ -1115,6 +1128,7 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
+    assert "!shouldBypassYuiGuideMessageDedup(message.action, message)" in script
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
     assert "case 'yui_guide_set_chat_cursor':" in script
     assert "case 'yui_guide_drag_chat_cursor':" in script

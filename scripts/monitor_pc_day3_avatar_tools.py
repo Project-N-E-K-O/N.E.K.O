@@ -559,6 +559,7 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
         if isinstance(event.get("detail"), dict) and "toolCount" in (event.get("detail") or {})
     ]
     snapshots = [event.get("detail") or {} for event in snapshot_events]
+
     def visible_count(snapshot: dict[str, Any]) -> int:
         value = snapshot.get("visibleToolCount")
         if value is None:

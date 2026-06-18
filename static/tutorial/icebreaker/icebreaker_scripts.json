@@ -1873,7 +1873,7 @@
             {
               "id": "B",
               "labelKey": "day4.1BAB.options.B",
-              "next": "1BABA"
+              "next": "1BABB"
             }
           ]
         },
@@ -1884,12 +1884,12 @@
             {
               "id": "A",
               "labelKey": "day4.1BBA.options.A",
-              "next": "1BABB"
+              "next": "1BBAA"
             },
             {
               "id": "B",
               "labelKey": "day4.1BBA.options.B",
-              "next": "1BBAA"
+              "next": "1BBAB"
             }
           ]
         },
@@ -1900,12 +1900,12 @@
             {
               "id": "A",
               "labelKey": "day4.1BBB.options.A",
-              "next": "1BBAB"
+              "next": "1BBBA"
             },
             {
               "id": "B",
               "labelKey": "day4.1BBB.options.B",
-              "next": "1BBBA"
+              "next": "1BBBB"
             }
           ]
         },
@@ -3522,7 +3522,7 @@
             {
               "id": "B",
               "labelKey": "day7.1BAA.options.B",
-              "next": "1BABB"
+              "next": "1BAAB"
             }
           ]
         },
@@ -3533,12 +3533,12 @@
             {
               "id": "A",
               "labelKey": "day7.1BAB.options.A",
-              "next": "1BAAB"
+              "next": "1BABA"
             },
             {
               "id": "B",
               "labelKey": "day7.1BAB.options.B",
-              "next": "1BABA"
+              "next": "1BABB"
             }
           ]
         },

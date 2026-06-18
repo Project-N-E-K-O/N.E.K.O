@@ -16,6 +16,29 @@ from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMod
 DUMMY_AUDIO_CHUNK = b'\x00' * 1024
 
 
+@pytest.mark.unit
+async def test_prime_context_skipped_accumulates_cached_instructions():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    client._model_lower = "gpt-4o-realtime"
+    client.instructions = "base instructions"
+    updates = []
+
+    async def fake_update_session(config):
+        updates.append(dict(config))
+
+    client.update_session = fake_update_session
+
+    await OmniRealtimeClient.prime_context(client, "assistant: hello", skipped=True)
+    await OmniRealtimeClient.prime_context(client, "user: choice", skipped=True)
+
+    assert updates == [
+        {"instructions": "base instructions\nassistant: hello"},
+        {"instructions": "base instructions\nassistant: hello\nuser: choice"},
+    ]
+    assert client.instructions == "base instructions\nassistant: hello\nuser: choice"
+
+
 @pytest.fixture
 def mock_websocket():
     """Returns a mock websocket object."""
