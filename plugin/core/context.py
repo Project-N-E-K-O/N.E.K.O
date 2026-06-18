@@ -1884,6 +1884,7 @@ class PluginContext:
         old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
         optimistic_config = self._merge_config_copy(old_effective_config, updates)
         self._set_effective_config_cache(optimistic_config)
+        # Keep config writes from blocking plugin actions; timeouts fall back to the optimistic in-memory config.
         request_timeout = min(float(timeout), 4.5)
         try:
             payload = await self._send_request_and_wait_async(

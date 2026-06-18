@@ -313,6 +313,31 @@ def test_plugin_database_configure_database_name_updates_storage_path(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_plugin_database_configure_database_name_preserves_active_sessions(tmp_path) -> None:
+    plugin_dir = tmp_path / "facade_configure_active"
+    plugin_dir.mkdir()
+    db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True, db_name="old.db")
+    old_session = (await db.session()).unwrap()
+
+    await old_session.execute("CREATE TABLE marker (value TEXT)")
+    await old_session.execute("INSERT INTO marker (value) VALUES (?)", ("old",))
+    await old_session.commit()
+
+    db.configure_database_name("new.db")
+
+    cursor = await old_session.execute("SELECT value FROM marker")
+    assert cursor.fetchone()[0] == "old"
+    await old_session.close()
+
+    assert db.db_name == "new.db"
+    assert db._db_path == plugin_dir / "new.db"
+    assert db._snapshot_active_sessions() == []
+    assert (await db.kv.set("k", "new")).is_ok()
+    assert (await db.kv.get("k")).unwrap() == "new"
+    assert (plugin_dir / "new.db").exists()
+
+
+@pytest.mark.asyncio
 async def test_shared_memory_timeout_bool_and_impl_error_normalization() -> None:
     mem = runtime_memory.MemoryClient(object())
     timeout_error = await mem.query("bucket", "q", timeout=True)  # type: ignore[arg-type]

@@ -307,7 +307,8 @@ class PluginDatabase(StorageResultTemplate):
         safe_name = self._normalize_db_name(db_name)
         if safe_name == self.db_name:
             return
-        self._close_all_connections()
+        active_conn_ids = {id(session._conn) for session in self._snapshot_active_sessions()}
+        self._close_all_connections(exclude_conn_ids=active_conn_ids)
         self._reset_kv_store()
         self.db_name = safe_name
         self._db_path = self.plugin_dir / safe_name
@@ -359,11 +360,12 @@ class PluginDatabase(StorageResultTemplate):
         if getattr(self._local, "conn", None) is conn:
             self._local.conn = None
 
-    def _close_all_connections(self) -> None:
+    def _close_all_connections(self, *, exclude_conn_ids: set[int] | None = None) -> None:
         first_error: Exception | None = None
         closed_ids: set[int] = set()
+        excluded = exclude_conn_ids or set()
         local_conn = getattr(self._local, "conn", None)
-        if local_conn is not None:
+        if local_conn is not None and id(local_conn) not in excluded:
             try:
                 self._close_one_conn(local_conn)
             except Exception as error:
@@ -371,7 +373,7 @@ class PluginDatabase(StorageResultTemplate):
                     first_error = error
             closed_ids.add(id(local_conn))
         for conn in self._snapshot_conns():
-            if id(conn) in closed_ids:
+            if id(conn) in closed_ids or id(conn) in excluded:
                 continue
             try:
                 self._close_one_conn(conn)
