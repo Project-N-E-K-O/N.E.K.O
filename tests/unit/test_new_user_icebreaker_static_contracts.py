@@ -797,4 +797,4 @@ def test_react_chat_assets_use_react_chat_cache_version():
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in index_html
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in chat_html
 
-    assert '_PROJECT_ROOT / "static/app-interpage.js"' in pages_router
+    assert pages_router.count('_PROJECT_ROOT / "static/app-interpage.js"') == 1

@@ -7032,7 +7032,6 @@ async def game_project_context(game_type: str, request: Request):
             continue
         break
     if request_id and request_id in seen_context_ids:
-        seen_context_ids.move_to_end(request_id)
         return {
             "ok": True,
             "deduped": True,

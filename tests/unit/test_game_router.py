@@ -297,6 +297,53 @@ async def test_new_user_icebreaker_context_endpoint_dedups_request_id_in_route_s
 
 
 @pytest.mark.asyncio
+async def test_new_user_icebreaker_context_dedup_duplicate_does_not_refresh_fifo(monkeypatch):
+    class FakeManager:
+        def __init__(self):
+            self.calls = []
+
+        async def append_icebreaker_context_async(self, role, text):
+            self.calls.append((role, text))
+            return True
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES", 2)
+
+    async def post(request_id, text):
+        return await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": text,
+                "request_id": request_id,
+            }),
+        )
+
+    with reset_game_route_state():
+        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
+        first = await post("icebreaker-context-1", "one")
+        second = await post("icebreaker-context-2", "two")
+        duplicate_first = await post("icebreaker-context-1", "one duplicate")
+        third = await post("icebreaker-context-3", "three")
+        replay_first_after_capacity_evict = await post("icebreaker-context-1", "one replay")
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert duplicate_first["deduped"] is True
+    assert third["ok"] is True
+    assert replay_first_after_capacity_evict["ok"] is True
+    assert "deduped" not in replay_first_after_capacity_evict
+    assert mgr.calls == [
+        ("assistant", "one"),
+        ("assistant", "two"),
+        ("assistant", "three"),
+        ("assistant", "one replay"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_error(monkeypatch):
     class FakeManager:
         async def append_icebreaker_context_async(self, role, text):
