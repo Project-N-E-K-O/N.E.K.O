@@ -8,10 +8,11 @@ Coverage:
    renormalisation, cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
    retention override, reset clearing, master-switch-off degradation.
-6. Idle cooldown: proactive ticks decay charge (slow retention), never enter.
 4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
    language) scanning, topic-switch anchoring.
 5. ``stream_text`` thinking-on threading (Path A wiring).
+6. Idle cooldown: proactive ticks decay charge (two-tier retention by whether
+   the turn spoke), never enter; thinking read is mode-only.
 """
 import os
 import sys
@@ -197,13 +198,14 @@ def test_scorer_cadence_none_without_baseline():
 
 # ── 3. SessionStateMachine.update_focus (async) ─────────────────────
 def _patch_charge(monkeypatch, *, retention=0.5, enter=1.0, exit=0.3, hard_cap=99,
-                  idle_retention=0.9):
+                  idle_silent=0.95, idle_replied=0.6):
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
     monkeypatch.setattr(config, "FOCUS_CHARGE_RETENTION", retention)
     monkeypatch.setattr(config, "FOCUS_CHARGE_ENTER", enter)
     monkeypatch.setattr(config, "FOCUS_CHARGE_EXIT", exit)
     monkeypatch.setattr(config, "FOCUS_HARD_CAP_TURNS", hard_cap)
-    monkeypatch.setattr(config, "FOCUS_IDLE_CHARGE_RETENTION", idle_retention)
+    monkeypatch.setattr(config, "FOCUS_IDLE_SILENT_RETENTION", idle_silent)
+    monkeypatch.setattr(config, "FOCUS_IDLE_REPLIED_RETENTION", idle_replied)
 
 
 async def test_sm_enter_and_exit_cycle(monkeypatch):
@@ -485,44 +487,59 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     assert mgr.state.mode is CognitionMode.FOCUS
 
 
-async def test_idle_cooldown_decays_charge_slowly_never_enters(monkeypatch):
-    # A proactive (idle) tick NEVER raises the charge: it applies score=0 with
-    # the slower idle retention, so it can only cool an active episode down —
-    # never enter Focus from REGULAR.
-    _patch_charge(monkeypatch, retention=0.5, enter=1.0, idle_retention=0.9)
+async def test_idle_thinking_is_read_only(monkeypatch):
+    # _focus_idle_thinking reports whether we're in Focus WITHOUT mutating the
+    # charge — the decay is deferred to the post-turn cooldown.
+    _patch_charge(monkeypatch, enter=1.0)
     mgr = _bare_mgr()
-    await mgr.state.update_focus(0.8)  # REGULAR, charge ~0.8 (just under enter)
-    assert mgr.state.mode is CognitionMode.REGULAR
-    # idle tick decays by the slow idle retention (0.8 * 0.9 = 0.72), no enter
-    assert await mgr._focus_idle_decision() is False
-    assert mgr.state.mode is CognitionMode.REGULAR
-    assert abs(mgr.state.snapshot()["focus_charge"] - 0.72) < 1e-9
+    await mgr.state.update_focus(1.0)  # FOCUS
+    charge_before = mgr.state.snapshot()["focus_charge"]
+    assert mgr._focus_idle_thinking() is True
+    assert mgr.state.snapshot()["focus_charge"] == charge_before  # unchanged
+    # disabled → False (and no mutation here either)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
+    assert mgr._focus_idle_thinking() is False
 
 
-async def test_idle_cooldown_eventually_exits_focus(monkeypatch):
-    # Inline drives entry; repeated idle cooldown ticks decay the charge until
-    # it falls below the exit bar and Focus ends.
-    _patch_charge(monkeypatch, retention=0.5, enter=1.0, exit=0.3, idle_retention=0.9)
+async def test_idle_cooldown_silent_decays_slower_than_replied(monkeypatch):
+    # A proactive turn never raises the charge. Staying silent (replied=False)
+    # decays slower than actually speaking (replied=True), and neither enters.
+    _patch_charge(monkeypatch, enter=1.0, idle_silent=0.95, idle_replied=0.6)
+    silent = _bare_mgr()
+    await silent.state.update_focus(0.8)  # REGULAR, charge 0.8
+    await silent._focus_idle_cooldown(replied=False)
+    assert silent.state.mode is CognitionMode.REGULAR
+    assert abs(silent.state.snapshot()["focus_charge"] - 0.8 * 0.95) < 1e-9
+
+    replied = _bare_mgr()
+    await replied.state.update_focus(0.8)
+    await replied._focus_idle_cooldown(replied=True)
+    assert replied.state.mode is CognitionMode.REGULAR
+    assert abs(replied.state.snapshot()["focus_charge"] - 0.8 * 0.6) < 1e-9
+
+
+async def test_idle_cooldown_replied_exits_focus_faster(monkeypatch):
+    # Inline drives entry; speaking proactive turns (replied=True) cool the
+    # episode down to the exit bar in a few ticks.
+    _patch_charge(monkeypatch, enter=1.0, exit=0.3, idle_replied=0.6)
     mgr = _bare_mgr()
-    await mgr.state.update_focus(1.0)  # inline enter
+    await mgr.state.update_focus(1.0)  # inline enter, charge cap 1.0
     assert mgr.state.mode is CognitionMode.FOCUS
-    # charge starts at cap 1.0; *0.9 per idle tick → crosses 0.3 after ~12 ticks
-    exited = False
-    for _ in range(20):
-        still = await mgr._focus_idle_decision()
-        if not still:
-            exited = True
-            break
-    assert exited and mgr.state.mode is CognitionMode.REGULAR
+    # 1.0 → 0.6 → 0.36 → 0.216 (<0.3) ⇒ exits on the 3rd replied tick
+    for _ in range(2):
+        await mgr._focus_idle_cooldown(replied=True)
+        assert mgr.state.mode is CognitionMode.FOCUS
+    await mgr._focus_idle_cooldown(replied=True)
+    assert mgr.state.mode is CognitionMode.REGULAR
 
 
-async def test_idle_gate_disabled_clears_regular_charge(monkeypatch):
+async def test_idle_cooldown_disabled_clears_regular_charge(monkeypatch):
     _patch_charge(monkeypatch, enter=1.0)
     mgr = _bare_mgr()
     await mgr.state.update_focus(0.6)
     assert mgr.state.snapshot()["focus_charge"] > 0
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
-    assert await mgr._focus_idle_decision() is False
+    await mgr._focus_idle_cooldown(replied=False)
     assert mgr.state.snapshot()["focus_charge"] == 0.0
 
 

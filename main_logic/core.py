@@ -1746,55 +1746,72 @@ class LLMSessionManager:
                              self.lanlan_name, _exit_err)
             return False
 
-    async def _focus_idle_decision(self) -> bool:
-        """Path B (idle) Focus COOLDOWN: a proactive turn fired with no fresh
-        user message. Returns whether THIS proactive reply runs thinking-on.
+    def _focus_idle_thinking(self) -> bool:
+        """Path B (idle) — does THIS proactive reply run thinking-on?
 
-        A proactive turn NEVER raises the Focus charge — entering and sustaining
-        Focus is driven solely by the inline path (the user's own messages).
-        This tick only lets an active episode cool down, decaying the charge by
-        the slower idle retention (``config.FOCUS_IDLE_CHARGE_RETENTION`` >
-        the inline retention) so Focus fades gradually across proactive turns
-        instead of being propped up. It is a pure time/charge cooldown:
-        privacy-independent, no snapshot, no screen signals.
-
-        Best-effort; degrades to regular on failure or when the master switch
-        is off (which self-clears the accumulator).
-
-        Note (tuning): proactive fires on a schedule, so a long silence runs
-        several cooldown ticks — the effective decay rate is coupled to the
-        proactive cadence, and each tick also consumes one
-        ``FOCUS_HARD_CAP_TURNS`` slot (see docs/design/focus-truename-mode.md).
+        Read-only: returns whether the session is currently in Focus. A
+        proactive turn never raises the charge, so there is nothing to score
+        here. The charge decay happens AFTER the turn, in
+        ``_focus_idle_cooldown`` (it needs to know whether the turn actually
+        spoke). Returns False when the master switch is off. Privacy-independent
+        (no snapshot, no screen signals).
         """
-        from config import FOCUS_MODE_ENABLED, FOCUS_IDLE_CHARGE_RETENTION  # live read
+        from config import FOCUS_MODE_ENABLED  # live read
         if not FOCUS_MODE_ENABLED:
-            # Master switch off → update_focus self-clears any residue.
-            await self.state.update_focus(0.0)
             return False
+        return self.state.mode is CognitionMode.FOCUS
+
+    async def _focus_idle_cooldown(self, *, replied: bool) -> None:
+        """Path B (idle) Focus COOLDOWN: decay the charge once, after a proactive
+        turn finishes. A proactive turn NEVER raises the charge — entering and
+        sustaining Focus is driven solely by the inline path (the user's own
+        messages). This only lets an active episode cool down.
+
+        Two-tier decay by whether the turn actually spoke:
+          * ``replied=True`` (action == "chat", a proactive reply was delivered)
+            → faster ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of
+            the episode.
+          * ``replied=False`` (guarded / preempted / empty / pass — she stayed
+            silent) → slower ``FOCUS_IDLE_SILENT_RETENTION``: just waiting barely
+            spends it.
+        So Focus persistence is driven by how often she speaks, not raw time.
+
+        Pure charge cooldown: privacy-independent, no snapshot. Best-effort;
+        never blocks the proactive exit. Called from the proactive unified exit
+        (``_end_proactive``) so every path ticks exactly once.
+        """
+        from config import (  # live read
+            FOCUS_MODE_ENABLED,
+            FOCUS_IDLE_REPLIED_RETENTION,
+            FOCUS_IDLE_SILENT_RETENTION,
+        )
         try:
-            # score=0 + slower idle retention ⇒ charge can only decay (never
-            # cross the enter bar from REGULAR), so this tick can't ENTER Focus,
-            # only let an inline-driven episode cool toward the exit bar.
-            mode = await self.state.update_focus(
-                0.0, retention_override=FOCUS_IDLE_CHARGE_RETENTION,
+            if not FOCUS_MODE_ENABLED:
+                # Master switch off → update_focus self-clears any residue.
+                await self.state.update_focus(0.0)
+                return
+            retention = (
+                FOCUS_IDLE_REPLIED_RETENTION if replied
+                else FOCUS_IDLE_SILENT_RETENTION
             )
+            # score=0 + retention<1 ⇒ charge can only decay (never cross the
+            # enter bar from REGULAR), so this can't ENTER Focus — only cool an
+            # inline-driven episode toward the exit bar.
+            mode = await self.state.update_focus(0.0, retention_override=retention)
             logger.info(
-                "[%s] 凝神 idle(cooldown): charge=%s mode=%s",
-                self.lanlan_name,
+                "[%s] 凝神 idle(cooldown replied=%s): charge=%s mode=%s",
+                self.lanlan_name, replied,
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
-            return mode is CognitionMode.FOCUS
         except Exception as e:
-            logger.warning("[%s] focus idle decision failed (degrading to regular): %s",
+            logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
                            self.lanlan_name, e)
-            # Mirror the inline path: don't leave a stale FOCUS episode on failure.
             try:
                 if self.state.mode is CognitionMode.FOCUS:
                     await self.state.update_focus(0.0, topic_changed=True)
             except Exception as _exit_err:
                 logger.debug("[%s] focus idle fail-exit also failed: %s",
                              self.lanlan_name, _exit_err)
-            return False
 
     async def handle_text_data(
         self,

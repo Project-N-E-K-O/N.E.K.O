@@ -21,30 +21,34 @@ inert until `FOCUS_MODE_ENABLED` is turned on):
 * `main_logic/activity/focus_scorer.py` — `FocusScorer` (**inline-only**:
   keyword + cadence; idle silence/open-thread signals were removed).
 * `main_logic/core.py` — `FocusScorer` instance + `_focus_inline_decision`
-  (Path A) and `_focus_idle_decision` (Path B) helpers. The inline path
-  scores each user message and passes `thinking_on` into `stream_text`. The
-  idle path does **not** score — a proactive turn never raises the charge;
-  it only cools an active episode down via `FOCUS_IDLE_CHARGE_RETENTION`
-  (slower than the inline retention). Entry/sustain is inline-only.
+  (Path A), and the split idle helpers `_focus_idle_thinking` (read-only:
+  is the session in Focus → thinking_on) + `_focus_idle_cooldown(replied)`
+  (post-turn charge decay). The inline path scores each user message and
+  passes `thinking_on` into `stream_text`. The idle path does **not** score —
+  a proactive turn never raises the charge; it only cools an active episode
+  down, faster when it spoke (`FOCUS_IDLE_REPLIED_RETENTION`) than when it
+  stayed silent (`FOCUS_IDLE_SILENT_RETENTION`). Entry/sustain is inline-only.
 * `main_logic/omni_offline_client.py` — `stream_text(..., thinking_on=...)`
   threads `extra_body=None` (per-call thinking-on override) into `astream`;
   no LLM rebuild.
 * `main_routers/system_router.py` — proactive Phase-2 generate sites (main
   stream / format-fix / BM25 regen) take `disable_thinking=not
-  _focus_phase2_thinking`, driven by the idle-path focus decision.
-* `tests/unit/test_focus_mode.py` — 26 tests (hysteresis / scorer / SM /
-  lexicon / `thinking_on` threading); + 86 proactive/SM regression green.
+  _focus_idle_thinking()`; the cooldown decay runs once at the unified exit
+  `_end_proactive`, keyed on whether the turn delivered (`action=="chat"`).
+* `tests/unit/test_focus_mode.py` — focus unit tests (hysteresis / scorer /
+  SM / lexicon / `thinking_on` threading / idle cooldown) + SM regression.
 
 Pending: the `FOCUS_EXIT` memory subscriber (cross-process: a new
 `memory_server` endpoint POSTed from a main-process `FOCUS_EXIT`
 subscriber) and the frontend focus indicator.
 
 Known tuning interaction: both paths tick the SAME leaky accumulator, but
-only the inline path adds charge. Idle (proactive) ticks only decay it by
-`FOCUS_IDLE_CHARGE_RETENTION`. Because proactive fires on a schedule, a
-long silence runs several cooldown ticks — so the effective decay rate is
-coupled to the proactive cadence (and each idle tick also consumes one
-`FOCUS_HARD_CAP_TURNS` slot). Watch this when tuning the retentions.
+only the inline path adds charge. Idle (proactive) ticks only decay it —
+faster when the turn spoke (`FOCUS_IDLE_REPLIED_RETENTION`) than when it
+stayed silent (`FOCUS_IDLE_SILENT_RETENTION`), so persistence is driven by
+how often she speaks, not raw time. Because proactive fires on a schedule
+and a turn that *speaks* also consumes one `FOCUS_HARD_CAP_TURNS` slot,
+watch the cadence × retention interaction when tuning.
 
 Naming: the user-facing fantasy terms are **凝神 (Focus)** and **真名
 (True-Name)**. Internal identifiers use the English `focus` / `true_name`
@@ -191,14 +195,17 @@ where the user opens up** — which flows through `stream_text`, *not*
 | Path | Scenario | Entry point | Mounting site |
 |---|---|---|---|
 | **A: Inline focus** | user sends a message → score it → if over the bar, upgrade *this* reply | lightweight scorer before `stream_text` generation | `main_logic/core.py` `stream_text` entry (near the `last_user_activity_time` / USER_INPUT fire) |
-| **B: Idle cooldown** | a proactive turn fires while in focus → keep it thinking-on, but decay the charge a notch (never raise it) | `proactive_chat` Phase-2 generate (after PHASE2 fired) | `main_routers/system_router.py` — the three Phase-2 generate sites take `disable_thinking = not _focus_idle_decision()`, suppressed under vision |
+| **B: Idle cooldown** | a proactive turn fires while in focus → keep it thinking-on, but decay the charge afterwards (never raise it) | thinking read before Phase-2 generate; decay at the proactive unified exit | `main_routers/system_router.py` — three Phase-2 sites take `disable_thinking = not _focus_idle_thinking()` (suppressed under vision); `_end_proactive` calls `_focus_idle_cooldown(replied=action=="chat")` |
 
 ### Path coupling — this is the key to "she lingers"
 
 A focus episode is entered and re-charged ONLY by the inline path (the
 user's own messages). A proactive turn that fires mid-episode does not
 re-score or prop the charge up — it runs thinking-on (she's still in it)
-and decays the charge by the slower `FOCUS_IDLE_CHARGE_RETENTION`.
+and, once the turn finishes, decays the charge: faster if she actually
+spoke (`FOCUS_IDLE_REPLIED_RETENTION`), slower if she stayed silent
+(`FOCUS_IDLE_SILENT_RETENTION`). So how long she lingers is driven by how
+often she *speaks*, not raw elapsed time.
 
 This produces the loop *"after she arrives once, she follows up a turn or
 two before letting go"* via the **decay rate**, not a more-sensitive idle
@@ -343,8 +350,9 @@ later, not a reason to build an inverse table up front.
 5. `main_routers/system_router.py` — Path B: replace the hard-coded
    `disable_thinking=True` at the proactive **Phase-2** generate sites
    (main stream / format-fix regen / BM25 regen) with `not
-   _focus_idle_decision()` (a cooldown tick, suppressed under a vision
-   model). The idle path never raises the charge.
+   _focus_idle_thinking()` (read-only, suppressed under a vision model), and
+   decay the charge once at `_end_proactive` via `_focus_idle_cooldown`. The
+   idle path never raises the charge.
 6. `app/memory_server.py` (+ memory stations) — subscribe to
    `EmotionalEpisodeFinished`; route the episode slice into
    `synthesize_reflections` / `resolve_corrections` / facts / ban-list
@@ -361,9 +369,10 @@ later, not a reason to build an inverse table up front.
   collect data, loosen later for under-triggered users. Magic-dilution vs
   magic-burial is a tuning curve, not a one-shot choice.
 * `T_out`, `M` — exit hysteresis (`FOCUS_CHARGE_EXIT` `0.3`, hard cap `8`).
-* `FOCUS_CHARGE_RETENTION` (inline `0.5`) + `FOCUS_IDLE_CHARGE_RETENTION`
-  (idle cooldown `0.9`, slower) — the latter sets how many proactive turns
-  Focus lingers before fading.
+* `FOCUS_CHARGE_RETENTION` (inline `0.5`) + idle cooldown retentions
+  `FOCUS_IDLE_SILENT_RETENTION` (`0.95`, she just waited) and
+  `FOCUS_IDLE_REPLIED_RETENTION` (`0.6`, she spoke) — these set how many
+  proactive turns Focus lingers, weighted by how often she actually speaks.
 * **Topic-boundary detection** (gates hard-exit + inline ban-list): cheap
   per-turn classifier model vs keyword/syntax heuristic. *Recommendation:
   heuristic for v1 (zero-cost), upgrade to classifier if false exits hurt.*

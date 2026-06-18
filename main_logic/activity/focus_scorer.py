@@ -22,9 +22,9 @@ signals are keyword + cadence — both need a real user message.
 The idle (``proactive_chat``) path does NOT score: a proactive turn never
 raises the Focus charge. Entering and sustaining Focus is driven solely by
 the user's own messages here; proactive turns only let an active episode
-cool down via ``FOCUS_IDLE_CHARGE_RETENTION`` (see
+cool down (faster when she spoke, slower when she stayed silent — see
 ``docs/design/focus-truename-mode.md`` and ``LLMSessionManager.
-_focus_idle_decision``).
+_focus_idle_cooldown``).
 
 The score is a weighted average over the *applicable* signals
 (``FOCUS_SIGNAL_WEIGHTS`` renormalised to the present subset), so an

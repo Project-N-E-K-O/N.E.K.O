@@ -4935,12 +4935,22 @@ async def proactive_chat(request: Request):
             # 散落各分支无需各自记；排查"她这轮为什么没主动说话"看这条即可。
             # 占坑前的早退（游戏路由 / voice 与 text 的 409 并发拒绝）不经过
             # 本出口，各自就地补了同前缀（"主动搭话本轮未发起："）的 info。
-            if body.get("action") != "chat":
+            _replied = body.get("action") == "chat"
+            if not _replied:
                 logger.info(
                     "[%s] 主动搭话本轮未发起：%s",
                     lanlan_name,
                     body.get("message") or body.get("error") or "(无原因说明)",
                 )
+            # Idle Focus cooldown: a proactive turn never raises the charge, it
+            # only decays it — faster when she actually spoke (action=="chat":
+            # a reply spends more of the episode) than when she stayed silent
+            # (guard / preempted / empty: barely spent). Entry/sustain stay
+            # inline-only. Runs at this unified exit so every path ticks once.
+            try:
+                await mgr._focus_idle_cooldown(replied=_replied)
+            except Exception as _focus_err:
+                logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
@@ -6607,11 +6617,13 @@ async def proactive_chat(request: Request):
         await mgr.state.fire(_SE.PROACTIVE_PHASE2)
 
         # Path B (idle) Focus 凝神：this round is now committed to speaking
-        # (PHASE2 fired), so tick the shared hysteresis on the idle-path score
-        # (silence + open-thread) and decide whether Phase-2 generation runs
-        # thinking-on. Dominates all three Phase-2 generate sites below
-        # (main stream / format-fix regen / BM25 anti-repeat regen).
-        _focus_phase2_thinking = await mgr._focus_idle_decision()
+        # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?
+        # (= the session is already in Focus, inline-driven). A proactive turn
+        # never raises the charge; the charge cooldown happens after the turn in
+        # _end_proactive (it needs to know whether we actually spoke). Dominates
+        # all three Phase-2 generate sites below (main stream / format-fix regen
+        # / BM25 anti-repeat regen).
+        _focus_phase2_thinking = mgr._focus_idle_thinking()
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
