@@ -53,7 +53,7 @@ max-height: 100dvh;
 min-height: 0;
 width: 100%;
 display: flex;
-flex: 0 0 100vh;
+flex: 1 0 100vh;
 flex-basis: 100dvh;
 flex-direction: column;
 background: #fff;

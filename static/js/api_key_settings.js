@@ -243,7 +243,9 @@ function getEffectiveAssistUrl(providerKey, profile, { useTokenPlan = true } = {
 
 function isApiSettingsScrolledToBottom(container, tolerance = 4) {
     if (!container) return false;
-    return container.scrollHeight - container.clientHeight - container.scrollTop <= tolerance;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (maxScrollTop <= tolerance) return false; // 展开前无有效滚动区，不应触发吸底
+    return maxScrollTop - container.scrollTop <= tolerance;
 }
 
 function keepApiSettingsBottomIfNeeded(shouldStickToBottom) {
