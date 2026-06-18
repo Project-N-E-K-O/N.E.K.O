@@ -524,10 +524,13 @@ async def test_append_context_applies_token_budget(monkeypatch):
     mgr = _make_manager()
     history = []
     mgr.session = SimpleNamespace(_conversation_history=history)
+    truncate_calls = 0
 
     def fake_truncate(text, max_tokens, *args, **kwargs):
+        nonlocal truncate_calls
+        truncate_calls += 1
         assert max_tokens == 3
-        return "one two three"
+        return "__sentinel_truncated_context__"
 
     monkeypatch.setattr(core_module, "_CONTEXT_APPEND_DEFAULT_MAX_TOKENS", 3)
     monkeypatch.setattr("utils.tokenize.truncate_to_tokens", fake_truncate)
@@ -539,4 +542,5 @@ async def test_append_context_applies_token_budget(monkeypatch):
     )
 
     assert result.appended is True
-    assert history[0].content == "one two three"
+    assert truncate_calls == 1
+    assert history[0].content == "__sentinel_truncated_context__"
