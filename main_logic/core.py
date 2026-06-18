@@ -1386,6 +1386,13 @@ class LLMSessionManager:
         if isinstance(pending, list) and pending:
             print(f"[{self.lanlan_name}] context append ready drain left {len(pending)} pending item(s)")
 
+    def _clear_pending_context_appends(self) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if isinstance(pending, list):
+            pending.clear()
+        else:
+            self.pending_context_appends = []
+
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
         return bool(getattr(self, "goodbye_silent", False))
@@ -5209,6 +5216,7 @@ class LLMSessionManager:
                 # 清空输入缓存（新对话时不需要保留旧的输入）
                 async with self.input_cache_lock:
                     self.pending_input_data.clear()
+                    self._clear_pending_context_appends()
 
             # 并行启动 TTS 和 LLM Session
             logger.info("🚀 并行启动 TTS 和 LLM Session...")
@@ -8684,6 +8692,7 @@ class LLMSessionManager:
                 async with self.input_cache_lock:
                     self.session_ready = False
                     self.pending_input_data.clear()
+                    self._clear_pending_context_appends()
                 async with self.lock:
                     if expected_session is None or expected_session is self.session:
                         self._starting_session_count = 0
@@ -8780,6 +8789,7 @@ class LLMSessionManager:
         async with self.input_cache_lock:
             self.session_ready = False
             self.pending_input_data.clear()
+            self._clear_pending_context_appends()
 
         self.last_time = None
         if not by_server:

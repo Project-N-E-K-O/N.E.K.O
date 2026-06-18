@@ -256,6 +256,30 @@ async def test_pending_context_drain_includes_items_queued_during_flush():
 
 
 @pytest.mark.asyncio
+async def test_clear_pending_context_appends_drops_stale_ready_queue():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="old session only",
+        timing="when_ready",
+        lifetime="current_session",
+    )
+
+    assert len(mgr.pending_context_appends) == 1
+
+    mgr._clear_pending_context_appends()
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+    await mgr._drain_pending_context_appends_before_ready()
+
+    assert mgr.pending_context_appends == []
+    assert history == []
+
+
+@pytest.mark.asyncio
 async def test_append_context_dedups_request_id_inside_manager():
     mgr = _make_manager()
     history = []
