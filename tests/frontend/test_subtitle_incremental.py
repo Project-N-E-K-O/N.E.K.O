@@ -400,7 +400,7 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
                 'subtitle.settings.colorSchemeBlue': 'Blue',
                 'subtitle.settings.colorSchemeIndigo': 'Indigo',
                 'subtitle.settings.colorSchemeViolet': 'Violet',
-                'subtitle.settings.danmakuMode': 'Danmaku mode',
+                'subtitle.settings.danmakuMode': 'Danmaku',
             };
             window.t = (key) => labels[key] || key;
             window.localStorage.setItem('subtitleColorScheme', 'green');
@@ -469,8 +469,8 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
         "optionLabels": ["Default", "Red", "Orange", "Yellow", "Green", "Blue", "Indigo", "Violet"],
         "danmakuDisabled": True,
         "danmakuPlaceholder": "true",
-        "danmakuTitle": "Danmaku mode",
-        "danmakuAria": "Danmaku mode",
+        "danmakuTitle": "Danmaku",
+        "danmakuAria": "Danmaku",
         "danmakuType": "checkbox",
     }
     assert result["after"] == {
@@ -560,8 +560,8 @@ def test_subtitle_font_size_select_persists_and_updates_panel(
             <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
             <div id="subtitle-settings-panel">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="fontSize">字体大小</span>
-                    <select id="subtitle-font-size-select" title="字体大小">
+                    <span class="subtitle-settings-label" data-subtitle-label="fontSize"><span class="subtitle-settings-label-text">字体</span></span>
+                    <select id="subtitle-font-size-select" title="字体">
                         <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
                         <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
                         <option value="26" data-subtitle-font-size-label="fontSizeDefault" selected>默认</option>
@@ -671,7 +671,7 @@ def test_subtitle_font_size_change_reflows_existing_inline_text(
                 <span id="subtitle-text" style="font-size: 12px;">Translated text.</span>
             </div>
             <div id="subtitle-settings-panel">
-                <select id="subtitle-font-size-select" title="字体大小">
+                <select id="subtitle-font-size-select" title="字体">
                     <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
                     <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
                     <option value="26" data-subtitle-font-size-label="fontSizeDefault" selected>默认</option>
@@ -2862,9 +2862,9 @@ def test_subtitle_window_template_keeps_legacy_panel_control_scaffold():
     assert 'id="subtitle-drag-handle"' not in template
     assert 'id="subtitle-drag-arrows"' not in template
     assert 'data-subtitle-placeholder="暂无翻译内容"' in template
-    assert 'data-subtitle-label="opacity">背景不透明度</span>' in template
+    assert 'data-subtitle-label="opacity"><span class="subtitle-settings-label-text">不透明度</span></span>' in template
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in template
-    assert 'data-subtitle-label="fontSize">字体大小</span>' in template
+    assert 'data-subtitle-label="fontSize"><span class="subtitle-settings-label-text">字体</span></span>' in template
     assert 'id="subtitle-font-size-select"' in template
     for size, label_key, fallback in [
         ("16", "fontSizeSmall", "小号"),
@@ -2876,7 +2876,8 @@ def test_subtitle_window_template_keeps_legacy_panel_control_scaffold():
         assert f'<option value="{size}"' in template
         assert f'data-subtitle-font-size-label="{label_key}"' in template
         assert f'>{fallback}</option>' in template
-    assert 'data-subtitle-label="colorScheme">配色</span>' in template
+    assert 'data-subtitle-label="colorScheme"><span class="subtitle-settings-label-text">配色</span></span>' in template
+    assert 'data-subtitle-label="danmakuMode"><span class="subtitle-settings-label-text">弹幕</span></span>' in template
     assert 'id="subtitle-color-scheme-select"' in template
     for scheme, label_key, fallback in [
         ("default", "colorSchemeDefault", "默认"),
@@ -2922,15 +2923,15 @@ def test_chat_template_wires_day6_subtitle_controls():
     assert 'id="subtitle-text"' in template
     assert 'id="subtitle-settings-btn"' in template
     assert 'id="subtitle-settings-panel"' in template
-    assert 'data-subtitle-label="dragAnywhere"' in template
-    assert 'id="subtitle-drag-mode-toggle"' in template
-    assert 'data-subtitle-label="size"' in template
-    assert 'class="subtitle-size-btn"' in template
-    assert 'data-size="small"' in template
-    assert 'data-size="medium"' in template
-    assert 'data-size="large"' in template
-    assert 'id="subtitle-drag-handle"' in template
-    assert 'id="subtitle-drag-arrows"' in template
+    assert 'data-subtitle-label="dragAnywhere"' not in template
+    assert 'id="subtitle-drag-mode-toggle"' not in template
+    assert 'data-subtitle-label="size"' not in template
+    assert 'class="subtitle-size-btn"' not in template
+    assert 'data-size="small"' not in template
+    assert 'data-size="medium"' not in template
+    assert 'data-size="large"' not in template
+    assert 'id="subtitle-drag-handle"' not in template
+    assert 'id="subtitle-drag-arrows"' not in template
     assert 'id="subtitle-passthrough-toggle"' not in template
     assert 'id="subtitle-lock-btn"' not in template
     assert 'id="subtitle-close-btn"' not in template
@@ -2977,7 +2978,7 @@ def test_subtitle_settings_window_panel_size_matches_added_rows():
 
     assert "body.subtitle-settings-window-host {\n    margin: 0;\n    width: 100vw;\n    min-width: 300px;" in css
     assert "body.subtitle-settings-window-host #subtitle-display" in css
-    assert "min-height: 164px" in css
+    assert "min-height: 188px" in css
 
 
 @pytest.mark.frontend
@@ -3337,11 +3338,11 @@ def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_
             <div id="subtitle-panel-controls" aria-hidden="false"></div>
             <div id="subtitle-settings-panel">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">目标语言</span>
+                    <span class="subtitle-settings-label">语言</span>
                     <select id="subtitle-lang-select"><option value="zh">中文</option></select>
                 </div>
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">背景不透明度</span>
+                    <span class="subtitle-settings-label">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>
@@ -3455,7 +3456,7 @@ def test_subtitle_window_left_and_top_resize_use_native_bridge_without_carrier_b
             </div>
             <div id="subtitle-settings-panel">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">背景不透明度</span>
+                    <span class="subtitle-settings-label">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>
@@ -4692,11 +4693,11 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
             <button type="button" id="subtitle-settings-btn" aria-expanded="false"></button>
             <div id="subtitle-settings-panel" class="hidden">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">目标语言</span>
+                    <span class="subtitle-settings-label">语言</span>
                     <select id="subtitle-lang-select"><option value="zh">中文</option></select>
                 </div>
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">背景不透明度</span>
+                    <span class="subtitle-settings-label">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>
@@ -4849,11 +4850,11 @@ def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_exte
             <button type="button" id="subtitle-settings-btn" aria-expanded="false"></button>
             <div id="subtitle-settings-panel" class="hidden">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">目标语言</span>
+                    <span class="subtitle-settings-label">语言</span>
                     <select id="subtitle-lang-select"><option value="zh">中文</option></select>
                 </div>
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label">背景不透明度</span>
+                    <span class="subtitle-settings-label">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>
@@ -5161,11 +5162,11 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             <button type="button" id="subtitle-settings-btn"></button>
             <div id="subtitle-settings-panel" class="hidden">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">语言</span>
                     <select id="subtitle-lang-select"><option value="zh">中文</option><option value="en">English</option></select>
                 </div>
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="opacity">背景不透明度</span>
+                    <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>
@@ -5293,11 +5294,11 @@ def test_subtitle_window_ignores_raw_transcript_after_translated_render_state(
             <button type="button" id="subtitle-settings-btn"></button>
             <div id="subtitle-settings-panel" class="hidden">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">语言</span>
                     <select id="subtitle-lang-select"><option value="zh">中文</option><option value="en">English</option></select>
                 </div>
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="opacity">背景不透明度</span>
+                    <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>
@@ -5504,11 +5505,11 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
             <button type="button" id="subtitle-settings-btn"></button>
             <div id="subtitle-settings-panel" class="hidden">
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                    <span class="subtitle-settings-label" data-subtitle-label="targetLang">语言</span>
                     <select id="subtitle-lang-select"><option value="zh">中文</option><option value="en">English</option></select>
                 </div>
                 <div class="subtitle-settings-row">
-                    <span class="subtitle-settings-label" data-subtitle-label="opacity">背景不透明度</span>
+                    <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
                     <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95">
                     <span id="subtitle-opacity-value">95%</span>
                 </div>

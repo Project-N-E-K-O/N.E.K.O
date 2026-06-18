@@ -2608,9 +2608,9 @@
             "emptyHint": "暂无翻译内容"
         },
         "settings": {
-            "targetLang": "目标语言",
-            "opacity": "背景不透明度",
-            "fontSize": "字体大小",
+            "targetLang": "语言",
+            "opacity": "不透明度",
+            "fontSize": "字体",
             "fontSizeSmall": "小号",
             "fontSizeSmaller": "较小",
             "fontSizeDefault": "默认",
@@ -2625,7 +2625,7 @@
             "colorSchemeBlue": "蓝",
             "colorSchemeIndigo": "靛",
             "colorSchemeViolet": "紫",
-            "danmakuMode": "弹幕模式",
+            "danmakuMode": "弹幕",
             "passthroughInteraction": "透明区域穿透",
             "settingsBtn": "字幕设置",
             "lockPosition": "锁定位置",

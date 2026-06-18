@@ -74,9 +74,9 @@
             lockPosition: '锁定位置',
             unlockPosition: '解锁位置',
             closePanel: '关闭翻译面板',
-            targetLang: '目标语言',
-            opacity: '背景不透明度',
-            fontSize: '字体大小',
+            targetLang: '语言',
+            opacity: '不透明度',
+            fontSize: '字体',
             fontSizeSmall: '小号',
             fontSizeSmaller: '较小',
             fontSizeDefault: '默认',
@@ -91,7 +91,7 @@
             colorSchemeBlue: '蓝',
             colorSchemeIndigo: '靛',
             colorSchemeViolet: '紫',
-            danmakuMode: '弹幕模式',
+            danmakuMode: '弹幕',
             passthroughInteraction: '透明区域穿透',
             emptyHint: '暂无翻译内容'
         },
@@ -100,9 +100,9 @@
             lockPosition: '鎖定位置',
             unlockPosition: '解鎖位置',
             closePanel: '關閉翻譯面板',
-            targetLang: '目標語言',
-            opacity: '背景不透明度',
-            fontSize: '字體大小',
+            targetLang: '語言',
+            opacity: '不透明度',
+            fontSize: '字體',
             fontSizeSmall: '小號',
             fontSizeSmaller: '較小',
             fontSizeDefault: '預設',
@@ -117,7 +117,7 @@
             colorSchemeBlue: '藍',
             colorSchemeIndigo: '靛',
             colorSchemeViolet: '紫',
-            danmakuMode: '彈幕模式',
+            danmakuMode: '彈幕',
             passthroughInteraction: '透明區域穿透',
             emptyHint: '暫無翻譯內容'
         },
@@ -126,9 +126,9 @@
             lockPosition: 'Lock position',
             unlockPosition: 'Unlock position',
             closePanel: 'Close translation panel',
-            targetLang: 'Target Language',
-            opacity: 'Background opacity',
-            fontSize: 'Font size',
+            targetLang: 'Language',
+            opacity: 'Opacity',
+            fontSize: 'Font',
             fontSizeSmall: 'Small',
             fontSizeSmaller: 'Smaller',
             fontSizeDefault: 'Default',
@@ -143,7 +143,7 @@
             colorSchemeBlue: 'Blue',
             colorSchemeIndigo: 'Indigo',
             colorSchemeViolet: 'Violet',
-            danmakuMode: 'Danmaku mode',
+            danmakuMode: 'Danmaku',
             passthroughInteraction: 'Transparent area passthrough',
             emptyHint: 'No translation yet'
         },
@@ -152,9 +152,9 @@
             lockPosition: 'Bloquear posición',
             unlockPosition: 'Desbloquear posición',
             closePanel: 'Cerrar panel de traducción',
-            targetLang: 'Idioma de destino',
-            opacity: 'Opacidad del fondo',
-            fontSize: 'Tamaño de fuente',
+            targetLang: 'Idioma',
+            opacity: 'Opacidad',
+            fontSize: 'Fuente',
             fontSizeSmall: 'Pequeño',
             fontSizeSmaller: 'Más pequeño',
             fontSizeDefault: 'Predeterminado',
@@ -169,7 +169,7 @@
             colorSchemeBlue: 'Azul',
             colorSchemeIndigo: 'Índigo',
             colorSchemeViolet: 'Violeta',
-            danmakuMode: 'Modo danmaku',
+            danmakuMode: 'Danmaku',
             passthroughInteraction: 'Clics en área transparente',
             emptyHint: 'Sin traducción todavía'
         },
@@ -178,9 +178,9 @@
             lockPosition: 'Bloquear posição',
             unlockPosition: 'Desbloquear posição',
             closePanel: 'Fechar painel de tradução',
-            targetLang: 'Idioma de destino',
-            opacity: 'Opacidade do fundo',
-            fontSize: 'Tamanho da fonte',
+            targetLang: 'Idioma',
+            opacity: 'Opacidade',
+            fontSize: 'Fonte',
             fontSizeSmall: 'Pequeno',
             fontSizeSmaller: 'Menor',
             fontSizeDefault: 'Padrão',
@@ -195,7 +195,7 @@
             colorSchemeBlue: 'Azul',
             colorSchemeIndigo: 'Índigo',
             colorSchemeViolet: 'Violeta',
-            danmakuMode: 'Modo danmaku',
+            danmakuMode: 'Danmaku',
             passthroughInteraction: 'Clique através da área transparente',
             emptyHint: 'Sem tradução ainda'
         },
@@ -204,9 +204,9 @@
             lockPosition: '位置をロック',
             unlockPosition: '位置ロックを解除',
             closePanel: '翻訳パネルを閉じる',
-            targetLang: '翻訳先の言語',
-            opacity: '背景の不透明度',
-            fontSize: '文字サイズ',
+            targetLang: '言語',
+            opacity: '不透明度',
+            fontSize: '文字',
             fontSizeSmall: '小さめ',
             fontSizeSmaller: 'やや小さめ',
             fontSizeDefault: '標準',
@@ -221,7 +221,7 @@
             colorSchemeBlue: '青',
             colorSchemeIndigo: '藍',
             colorSchemeViolet: '紫',
-            danmakuMode: '弾幕モード',
+            danmakuMode: '弾幕',
             passthroughInteraction: '透明領域をクリック透過',
             emptyHint: '翻訳はまだありません'
         },
@@ -230,9 +230,9 @@
             lockPosition: '위치 잠금',
             unlockPosition: '위치 잠금 해제',
             closePanel: '번역 패널 닫기',
-            targetLang: '대상 언어',
-            opacity: '배경 불투명도',
-            fontSize: '글자 크기',
+            targetLang: '언어',
+            opacity: '불투명도',
+            fontSize: '글자',
             fontSizeSmall: '작게',
             fontSizeSmaller: '조금 작게',
             fontSizeDefault: '기본',
@@ -247,7 +247,7 @@
             colorSchemeBlue: '파랑',
             colorSchemeIndigo: '남색',
             colorSchemeViolet: '보라',
-            danmakuMode: '탄막 모드',
+            danmakuMode: '탄막',
             passthroughInteraction: '투명 영역 클릭 통과',
             emptyHint: '아직 번역이 없습니다'
         },
@@ -256,9 +256,9 @@
             lockPosition: 'Заблокировать положение',
             unlockPosition: 'Разблокировать положение',
             closePanel: 'Закрыть панель перевода',
-            targetLang: 'Целевой язык',
-            opacity: 'Непрозрачность фона',
-            fontSize: 'Размер шрифта',
+            targetLang: 'Язык',
+            opacity: 'Непрозрачность',
+            fontSize: 'Шрифт',
             fontSizeSmall: 'Малый',
             fontSizeSmaller: 'Меньше',
             fontSizeDefault: 'По умолчанию',
@@ -273,7 +273,7 @@
             colorSchemeBlue: 'Синий',
             colorSchemeIndigo: 'Индиго',
             colorSchemeViolet: 'Фиолетовый',
-            danmakuMode: 'Режим данмаку',
+            danmakuMode: 'Данмаку',
             passthroughInteraction: 'Пропуск кликов в прозрачных областях',
             emptyHint: 'Перевода пока нет'
         }
@@ -826,6 +826,79 @@
         return dictionary[key] || UI_FALLBACK[DEFAULT_UI_LOCALE][key] || key;
     }
 
+    function getSettingsLabelSvgWidth(text, fontSize) {
+        var width = 0;
+        var source = typeof text === 'string' ? text : String(text || '');
+        for (var i = 0; i < source.length; i += 1) {
+            width += /[\u1100-\uFFFF]/.test(source.charAt(i)) ? fontSize : fontSize * 0.58;
+        }
+        return Math.max(1, Math.ceil(width));
+    }
+
+    function renderSettingsLabelText(container, text) {
+        if (!container) return;
+        if (typeof document === 'undefined' || !document.createElementNS) {
+            container.textContent = text;
+            return;
+        }
+
+        var source = typeof text === 'string' ? text : String(text || '');
+        var computed = typeof window !== 'undefined' && window.getComputedStyle ? window.getComputedStyle(container) : null;
+        var fontSize = computed ? parseFloat(computed.fontSize) : 13;
+        if (!Number.isFinite(fontSize) || fontSize <= 0) {
+            fontSize = 13;
+        }
+        var lineHeight = computed ? parseFloat(computed.lineHeight) : NaN;
+        if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+            lineHeight = fontSize * 1.25;
+        }
+        var width = getSettingsLabelSvgWidth(source, fontSize);
+        var height = Math.ceil(lineHeight);
+        var gradientId = container.dataset.subtitleGradientId;
+        if (!gradientId) {
+            gradientId = 'subtitle-settings-label-gradient-' + Math.random().toString(36).slice(2);
+            container.dataset.subtitleGradientId = gradientId;
+        }
+
+        container.textContent = '';
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'subtitle-settings-label-svg');
+        svg.setAttribute('width', String(width));
+        svg.setAttribute('height', String(height));
+        svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+        svg.setAttribute('aria-label', source);
+
+        var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        var gradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+        gradient.setAttribute('id', gradientId);
+        gradient.setAttribute('x1', '0');
+        gradient.setAttribute('y1', '0');
+        gradient.setAttribute('x2', String(width));
+        gradient.setAttribute('y2', '0');
+        gradient.setAttribute('gradientUnits', 'userSpaceOnUse');
+
+        var start = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        start.setAttribute('offset', '0');
+        start.setAttribute('stop-color', '#4fa9ee');
+        var end = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        end.setAttribute('offset', '1');
+        end.setAttribute('stop-color', '#82caff');
+        gradient.appendChild(start);
+        gradient.appendChild(end);
+        defs.appendChild(gradient);
+        svg.appendChild(defs);
+
+        var svgText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        svgText.setAttribute('class', 'subtitle-settings-label-svg-text');
+        svgText.setAttribute('x', '0');
+        svgText.setAttribute('y', String(height / 2));
+        svgText.setAttribute('dominant-baseline', 'central');
+        svgText.setAttribute('fill', 'url(#' + gradientId + ')');
+        svgText.textContent = source;
+        svg.appendChild(svgText);
+        container.appendChild(svg);
+    }
+
     function query(root, selector) {
         if (!root) return null;
         if (typeof root.querySelector === 'function') {
@@ -973,7 +1046,13 @@
             refs.labels.forEach(function(label) {
                 var key = label && label.dataset ? label.dataset.subtitleLabel : '';
                 if (!key) return;
-                label.textContent = getUiText(key, locale);
+                var text = getUiText(key, locale);
+                var textNode = label.querySelector ? label.querySelector('.subtitle-settings-label-text') : null;
+                if (textNode) {
+                    renderSettingsLabelText(textNode, text);
+                } else {
+                    label.textContent = text;
+                }
             });
         }
         if (refs.settingsBtn) {

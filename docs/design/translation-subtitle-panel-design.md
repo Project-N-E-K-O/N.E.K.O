@@ -86,22 +86,23 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 7. `#subtitle-close-btn`：关闭字幕面板按钮。
 8. `#subtitle-settings-panel`：页面内设置 panel 或独立设置窗口中的设置主体。
 9. `.subtitle-settings-label`：设置项标签。
-10. `#subtitle-lang-select`：目标语言选择。
-11. `#subtitle-opacity-slider`：背景不透明度 slider。
-12. `#subtitle-opacity-value`：背景不透明度数值显示。
-13. `#subtitle-font-size-select`：字幕字号选择。
+   当前标签结构为 `.subtitle-settings-label::before` 承载图标，`.subtitle-settings-label-text` 承载文字；文字颜色或渐变只能作用在内层文字节点，不能挂在整个 label 父级上。
+10. `#subtitle-lang-select`：语言选择。
+11. `#subtitle-opacity-slider`：不透明度 slider，实际控制字幕背景透明度。
+12. `#subtitle-opacity-value`：不透明度数值显示。
+13. `#subtitle-font-size-select`：字体选择。
 14. `#subtitle-color-scheme-select`：字幕配色选择。
-15. `#subtitle-danmaku-mode-btn`：弹幕模式占位开关，当前是禁用的 checkbox switch，不启动弹幕播放。
+15. `#subtitle-danmaku-mode-btn`：弹幕占位开关，当前是禁用的 checkbox switch，不启动弹幕播放。
 16. `#subtitle-passthrough-toggle`：透明区域穿透开关的兼容引用；当前实际模板不展示该控件。
 17. `.subtitle-resize-edge`：面板 resize handle。
 
 `static/subtitle-settings.html` 当前包含五个设置项 / 入口：
 
-1. 目标语言：`#subtitle-lang-select`，选项为 `zh`、`en`、`ja`、`ko`、`ru`、`es`、`pt`。
-2. 背景不透明度：`#subtitle-opacity-slider`，范围 `0` 到 `100`。
-3. 字体大小：`#subtitle-font-size-select`，选项为 `16`、`21`、`26`、`34`、`44`。
+1. 语言：`#subtitle-lang-select`，选项为 `zh`、`en`、`ja`、`ko`、`ru`、`es`、`pt`。
+2. 不透明度：`#subtitle-opacity-slider`，范围 `0` 到 `100`，实际控制字幕背景透明度。
+3. 字体：`#subtitle-font-size-select`，选项为 `16`、`21`、`26`、`34`、`44`。
 4. 配色：`#subtitle-color-scheme-select`，选项为默认和红、橙、黄、绿、蓝、靛、紫。
-5. 弹幕模式：`#subtitle-danmaku-mode-btn`，当前只是禁用占位开关，后续再接入指定位置滚动播放。
+5. 弹幕：`#subtitle-danmaku-mode-btn`，当前只是禁用占位开关，后续再接入指定位置滚动播放。
 
 当前实际模板不包含独立的 `#subtitle-passthrough-toggle`。透明区域穿透由锁定状态间接控制。
 
@@ -122,9 +123,9 @@ NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
 
 默认配色沿用现有浅色表现；暗色主题下默认文字调整为更浅的白色。彩虹七色当前通过 `data-subtitle-color-scheme` 切换字幕文字和占位文字颜色。设置写入 `localStorage.subtitleColorScheme` 后，共享层会通过 `storage` 事件同步其它窗口，因此无需刷新即可让独立字幕窗口、独立设置窗口和 Web host 看到变化。
 
-独立设置窗口页面使用 `body.subtitle-settings-window-host`。当前内容按固定五行设置项排布，CSS 侧要求最小内容尺寸为 `300px x 164px`；这个尺寸只描述页面内容承载空间，不负责创建桌面窗口。
+独立设置窗口页面使用 `body.subtitle-settings-window-host`。当前内容按固定五行设置项排布，CSS 侧要求最小内容尺寸为 `300px x 188px`；这个尺寸只描述页面内容承载空间，不负责创建桌面窗口。
 
-弹幕模式占位开关复用 `.subtitle-settings-switch` / `.subtitle-settings-track`。它保留 `data-subtitle-danmaku-placeholder="true"` 和 `disabled`，视觉上是左右开关，业务上不写设置、不传播事件。
+弹幕占位开关复用 `.subtitle-settings-switch` / `.subtitle-settings-track`。它保留 `data-subtitle-danmaku-placeholder="true"` 和 `disabled`，视觉上是左右开关，业务上不写设置、不传播事件。
 
 背景透明度由 `applyBackgroundOpacity()` 写入 CSS 变量：
 
@@ -188,19 +189,19 @@ Escape 行为：
 
 ## 设置项行为
 
-目标语言：
+语言：
 
 1. 读取和写入 `userLanguage`。
 2. 变更后传播 `type: 'language'`。
 3. 可触发 `options.onLanguageChange(nextLanguage, nextState)`。
 
-背景不透明度：
+不透明度：
 
 1. 读取和写入 `subtitleOpacity`。
 2. 变更后传播 `type: 'opacity'`。
 3. UI 数值显示为百分比。
 
-字体大小：
+字体：
 
 1. 读取和写入 `subtitleFontSize`。
 2. 变更后传播 `type: 'fontSize'`。
@@ -215,7 +216,7 @@ Escape 行为：
 4. 独立字幕窗口和独立设置窗口通过 state sync 实时更新配色选择。
 5. 其它同源窗口通过 `localStorage` 的 `storage` 事件接收 `subtitleColorScheme` 变化，避免必须刷新后才变色。
 
-弹幕模式：
+弹幕：
 
 1. 当前只提供 `#subtitle-danmaku-mode-btn` 占位开关。
 2. 控件是 disabled checkbox，外层使用 `.subtitle-settings-switch subtitle-settings-switch-placeholder`，轨道使用 `.subtitle-settings-track`。
@@ -290,7 +291,7 @@ Web 面板 resize 使用 DOM resize handle。resize 完成后更新：
 
 1. BrowserWindow 加载 `/static/subtitle-settings.html`。
 2. 默认宽高由 NEKO-PC `SUBTITLE_SETTINGS_WINDOW_WIDTH`、`SUBTITLE_SETTINGS_WINDOW_HEIGHT` 控制。
-3. 当前桌面壳固定值为 `SUBTITLE_SETTINGS_WINDOW_WIDTH = 300`、`SUBTITLE_SETTINGS_WINDOW_HEIGHT = 164`，与主仓 `static/css/subtitle.css` 中 settings window host 的最小内容尺寸一致。
+3. 当前桌面壳固定值为 `SUBTITLE_SETTINGS_WINDOW_WIDTH = 300`、`SUBTITLE_SETTINGS_WINDOW_HEIGHT = 188`，与主仓 `static/css/subtitle.css` 中 settings window host 的最小内容尺寸一致。
 4. 位置由 `getSubtitleSettingsBounds(anchor)` 计算，优先放在字幕面板上方。
 5. `sendSubtitleSettingsState(state)` 通过 `SUBTITLE_CHANNELS.STATE_SYNC` 同步设置状态。
 
@@ -403,7 +404,7 @@ preload 暴露：
 5. 鼠标离开后 controls 延迟隐藏。
 6. 锁按钮能切换锁住 / 解锁图标和 `aria-pressed`。
 7. 设置按钮能打开设置层。
-8. 设置层包含目标语言、背景不透明度、字体大小、配色四个控件，以及弹幕模式禁用占位开关。
+8. 设置层包含语言、不透明度、字体、配色四个控件，以及弹幕禁用占位开关。
 9. 设置层修改会更新共享设置并传播对应 `{ type, value }`。
 10. 面板拖拽后位置持久化。
 11. 面板缩放后 `subtitlePanelBounds` 持久化。
@@ -411,7 +412,7 @@ preload 暴露：
 13. 桌面缩放期间字幕窗口 bounds 实时变化，结束后面板 bounds 写回。
 14. 桌面穿透开启时，透明区域不阻塞底层点击，controls 和 resize handle 仍可交互；当前穿透开启由锁定状态绑定触发。
 15. 字幕基础字号默认为 `26px`，译文文本继承面板字号；Web host 长文本可临时缩小文本节点字号。
-16. 字体大小修改后，Web host、独立字幕窗口和独立设置窗口状态保持同步。
+16. 字体修改后，Web host、独立字幕窗口和独立设置窗口状态保持同步。
 17. 配色修改后，Web host、独立字幕窗口和独立设置窗口状态保持同步；跨窗口变化不需要刷新。
-18. 弹幕模式开关当前仅占位且禁用，不产生播放、副作用或设置传播。
+18. 弹幕开关当前仅占位且禁用，不产生播放、副作用或设置传播。
 19. NEKO 和 NEKO-PC 的状态同步不影响 compact 聊天框消息、历史和输入。

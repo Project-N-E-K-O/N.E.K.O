@@ -2608,9 +2608,9 @@
             "emptyHint": "Sin traducción todavía"
         },
         "settings": {
-            "targetLang": "Lengua de llegada",
-            "opacity": "Opacidad del fondo",
-            "fontSize": "Tamaño de fuente",
+            "targetLang": "Idioma",
+            "opacity": "Opacidad",
+            "fontSize": "Fuente",
             "fontSizeSmall": "Pequeño",
             "fontSizeSmaller": "Más pequeño",
             "fontSizeDefault": "Predeterminado",
@@ -2625,7 +2625,7 @@
             "colorSchemeBlue": "Azul",
             "colorSchemeIndigo": "Índigo",
             "colorSchemeViolet": "Violeta",
-            "danmakuMode": "Modo danmaku",
+            "danmakuMode": "Danmaku",
             "passthroughInteraction": "Clics en el área transparente",
             "settingsBtn": "Configuración de subtítulos",
             "lockPosition": "Bloquear posición",

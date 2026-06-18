@@ -2608,9 +2608,9 @@
             "emptyHint": "Sem tradução ainda"
         },
         "settings": {
-            "targetLang": "Idioma alvo",
-            "opacity": "Opacidade do fundo",
-            "fontSize": "Tamanho da fonte",
+            "targetLang": "Idioma",
+            "opacity": "Opacidade",
+            "fontSize": "Fonte",
             "fontSizeSmall": "Pequeno",
             "fontSizeSmaller": "Menor",
             "fontSizeDefault": "Padrão",
@@ -2625,7 +2625,7 @@
             "colorSchemeBlue": "Azul",
             "colorSchemeIndigo": "Índigo",
             "colorSchemeViolet": "Violeta",
-            "danmakuMode": "Modo danmaku",
+            "danmakuMode": "Danmaku",
             "passthroughInteraction": "Clique através da área transparente",
             "settingsBtn": "Configurações de legenda",
             "lockPosition": "Bloquear posição",

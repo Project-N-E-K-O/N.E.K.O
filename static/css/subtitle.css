@@ -27,10 +27,10 @@ body.subtitle-window-host {
     --subtitle-control-bg: rgba(255, 255, 255, 0.68);
     --subtitle-control-hover-bg: rgba(255, 255, 255, 0.92);
     --subtitle-control-border: rgba(36, 43, 49, 0.14);
-    --subtitle-control-fg: #2f363d;
+    --subtitle-control-fg: #6bbdf7;
     --subtitle-settings-bg: rgba(252, 252, 250, 0.96);
-    --subtitle-settings-text: #202428;
-    --subtitle-settings-muted: rgba(32, 36, 40, 0.68);
+    --subtitle-settings-text: #6bbdf7;
+    --subtitle-settings-muted: rgba(107, 189, 247, 0.72);
     --subtitle-settings-border: rgba(36, 43, 49, 0.14);
     --subtitle-settings-input-bg: rgba(255, 255, 255, 0.9);
     --subtitle-scroll-thumb: rgba(32, 38, 45, 0.28);
@@ -73,10 +73,10 @@ html.dark #subtitle-display {
     --subtitle-control-bg: rgba(25, 28, 32, 0.72);
     --subtitle-control-hover-bg: rgba(44, 49, 55, 0.92);
     --subtitle-control-border: rgba(255, 255, 255, 0.14);
-    --subtitle-control-fg: #f4f6f8;
+    --subtitle-control-fg: #9bd8ff;
     --subtitle-settings-bg: rgba(26, 29, 33, 0.96);
-    --subtitle-settings-text: #f4f6f8;
-    --subtitle-settings-muted: rgba(244, 246, 248, 0.72);
+    --subtitle-settings-text: #9bd8ff;
+    --subtitle-settings-muted: rgba(155, 216, 255, 0.74);
     --subtitle-settings-border: rgba(255, 255, 255, 0.14);
     --subtitle-settings-input-bg: rgba(255, 255, 255, 0.1);
     --subtitle-scroll-thumb: rgba(244, 246, 248, 0.32);
@@ -402,7 +402,7 @@ body.subtitle-settings-window-host #subtitle-display {
     width: auto !important;
     height: auto !important;
     min-width: 300px;
-    min-height: 164px;
+    min-height: 188px;
     padding: 0;
     background: transparent;
     box-shadow: none;
@@ -413,7 +413,7 @@ body.subtitle-settings-window-host #subtitle-settings-panel {
     position: fixed;
     inset: 0;
     min-width: 0;
-    min-height: 164px;
+    min-height: 188px;
     width: auto;
     border-radius: 8px;
     box-sizing: border-box;
@@ -437,6 +437,57 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
     color: var(--subtitle-settings-text);
     font-size: 13px;
     white-space: nowrap;
+}
+
+.subtitle-settings-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.subtitle-settings-label-text {
+    display: inline-block;
+    color: #6bbdf7;
+}
+
+.subtitle-settings-label-svg {
+    display: block;
+    overflow: visible;
+}
+
+.subtitle-settings-label-svg-text {
+    font: inherit;
+}
+
+.subtitle-settings-label::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    flex: 0 0 14px;
+    background: linear-gradient(135deg, #9bd8ff 0%, #6bbdf7 48%, #409ce2 100%);
+    filter: drop-shadow(0 0 4px rgba(107, 189, 247, 0.36));
+    -webkit-mask: var(--subtitle-settings-label-icon) center / contain no-repeat;
+    mask: var(--subtitle-settings-label-icon) center / contain no-repeat;
+}
+
+.subtitle-settings-label[data-subtitle-label="targetLang"] {
+    --subtitle-settings-label-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18'/%3E%3C/svg%3E");
+}
+
+.subtitle-settings-label[data-subtitle-label="opacity"] {
+    --subtitle-settings-label-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Cpath d='M12 2C8.2 6.4 6 10.1 6 13.4A6 6 0 0 0 18 13.4C18 10.1 15.8 6.4 12 2Zm-2.8 11.9c0 1.8 1.2 3.2 3 3.5.5.1.8.5.7 1-.1.4-.5.7-.9.7h-.2a5.2 5.2 0 0 1-4.5-5.2c0-.5.4-.9.9-.9s1 .4 1 .9Z'/%3E%3C/svg%3E");
+}
+
+.subtitle-settings-label[data-subtitle-label="fontSize"] {
+    --subtitle-settings-label-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Cpath d='M4 20 10.2 4h3.6L20 20h-3.2l-1.2-3.4H8.4L7.2 20H4Zm5.3-6h5.4L12 6.5 9.3 14Z'/%3E%3C/svg%3E");
+}
+
+.subtitle-settings-label[data-subtitle-label="colorScheme"] {
+    --subtitle-settings-label-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Cpath d='M12 3a9 9 0 0 0 0 18h1.5a2.2 2.2 0 0 0 1.1-4.1c-.7-.4-.5-1.5.3-1.5H16a5 5 0 0 0 0-10.1A8.9 8.9 0 0 0 12 3Zm-4 9.2a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Zm2.6-4a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Zm3.8 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Zm2.6 4a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Z'/%3E%3C/svg%3E");
+}
+
+.subtitle-settings-label[data-subtitle-label="danmakuMode"] {
+    --subtitle-settings-label-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Cpath d='M4 6.5A1.5 1.5 0 0 1 5.5 5h8a1.5 1.5 0 0 1 0 3h-8A1.5 1.5 0 0 1 4 6.5Zm0 5.5a1.5 1.5 0 0 1 1.5-1.5h5a1.5 1.5 0 0 1 0 3h-5A1.5 1.5 0 0 1 4 12Zm0 5.5A1.5 1.5 0 0 1 5.5 16h8a1.5 1.5 0 0 1 0 3h-8A1.5 1.5 0 0 1 4 17.5ZM16 10l4 2-4 2v-4Z'/%3E%3C/svg%3E");
 }
 
 #subtitle-lang-select,
@@ -468,14 +519,34 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 }
 
 #subtitle-opacity-slider {
-    width: 70px;
-    height: 4px;
+    width: 144px;
+    height: 30px;
+    margin-left: 18px;
     -webkit-appearance: none;
     appearance: none;
-    background: var(--subtitle-settings-muted);
-    border-radius: 2px;
+    --subtitle-opacity-track: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none' viewBox='0 0 144 4'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='144' y2='0' gradientUnits='userSpaceOnUse'%3E%3Cstop offset='0' stop-color='%239bd8ff' stop-opacity='0'/%3E%3Cstop offset='0.06' stop-color='%239bd8ff' stop-opacity='0.78'/%3E%3Cstop offset='0.30' stop-color='%2384ceff' stop-opacity='0.98'/%3E%3Cstop offset='0.58' stop-color='%234ca8ed' stop-opacity='1'/%3E%3Cstop offset='0.78' stop-color='%236bbdf7' stop-opacity='0.96'/%3E%3Cstop offset='0.94' stop-color='%23409ce2' stop-opacity='0.94'/%3E%3Cstop offset='1' stop-color='%23409ce2' stop-opacity='0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpolygon points='0,2 8,0 136,0 144,2 136,4 8,4' fill='url(%23g)'/%3E%3C/svg%3E");
+    background: var(--subtitle-opacity-track) center / 100% 4px no-repeat;
     outline: none;
     cursor: pointer;
+}
+
+#subtitle-opacity-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+}
+
+#subtitle-opacity-slider::-moz-range-track {
+    height: 4px;
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+}
+
+#subtitle-opacity-slider::-moz-range-progress {
+    height: 4px;
+    background: transparent;
 }
 
 #subtitle-opacity-slider:focus-visible {
@@ -486,26 +557,46 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
 
 #subtitle-opacity-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    background: var(--subtitle-control-fg);
-    border-radius: 50%;
+    width: 30px;
+    height: 30px;
+    margin-top: -13px;
+    background-color: transparent;
+    background-image: url('/static/icons/emotion_model_icon.png');
+    background-position: center;
+    background-size: 30px 30px;
+    background-repeat: no-repeat;
+    border: 0;
     cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+    position: relative;
+    z-index: 1;
 }
 
 #subtitle-opacity-slider::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
-    background: var(--subtitle-control-fg);
+    width: 30px;
+    height: 30px;
+    background-color: transparent;
+    background-image: url('/static/icons/emotion_model_icon.png');
+    background-position: center;
+    background-size: 30px 30px;
+    background-repeat: no-repeat;
     border: 0;
-    border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+    position: relative;
+    z-index: 1;
+}
+
+#subtitle-opacity-slider:active::-webkit-slider-thumb {
+    background-image: url('/static/icons/exclamation.png');
+    background-size: 24px 24px;
+}
+
+#subtitle-opacity-slider:active::-moz-range-thumb {
+    background-image: url('/static/icons/exclamation.png');
+    background-size: 24px 24px;
 }
 
 #subtitle-opacity-slider:focus-visible::-webkit-slider-thumb {
-    box-shadow: 0 0 0 2px var(--subtitle-settings-bg), 0 0 0 5px var(--subtitle-focus-ring);
+    filter: drop-shadow(0 0 4px var(--subtitle-focus-ring));
 }
 
 #subtitle-opacity-value {

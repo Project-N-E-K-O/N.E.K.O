@@ -2608,9 +2608,9 @@
             "emptyHint": "아직 번역이 없습니다"
         },
         "settings": {
-            "targetLang": "대상 언어",
-            "opacity": "배경 불투명도",
-            "fontSize": "글자 크기",
+            "targetLang": "언어",
+            "opacity": "불투명도",
+            "fontSize": "글자",
             "fontSizeSmall": "작게",
             "fontSizeSmaller": "조금 작게",
             "fontSizeDefault": "기본",
@@ -2625,7 +2625,7 @@
             "colorSchemeBlue": "파랑",
             "colorSchemeIndigo": "남색",
             "colorSchemeViolet": "보라",
-            "danmakuMode": "탄막 모드",
+            "danmakuMode": "탄막",
             "passthroughInteraction": "투명 영역 클릭 통과",
             "settingsBtn": "자막 설정",
             "lockPosition": "위치 잠금",

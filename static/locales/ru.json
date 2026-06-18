@@ -2608,9 +2608,9 @@
             "emptyHint": "Перевода пока нет"
         },
         "settings": {
-            "targetLang": "Целевой язык",
-            "opacity": "Непрозрачность фона",
-            "fontSize": "Размер шрифта",
+            "targetLang": "Язык",
+            "opacity": "Непрозрачность",
+            "fontSize": "Шрифт",
             "fontSizeSmall": "Малый",
             "fontSizeSmaller": "Меньше",
             "fontSizeDefault": "По умолчанию",
@@ -2625,7 +2625,7 @@
             "colorSchemeBlue": "Синий",
             "colorSchemeIndigo": "Индиго",
             "colorSchemeViolet": "Фиолетовый",
-            "danmakuMode": "Режим данмаку",
+            "danmakuMode": "Данмаку",
             "passthroughInteraction": "Пропуск кликов в прозрачных областях",
             "settingsBtn": "Настройки субтитров",
             "lockPosition": "Заблокировать положение",
