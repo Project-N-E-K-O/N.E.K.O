@@ -928,7 +928,6 @@ async def test_append_context_cancellation_releases_duplicate_waiter_and_request
         request_id="ctx-1",
     )
 
-    release.set()
     assert duplicate.appended is False
     assert duplicate.deduped is False
     assert duplicate.reason == "context_inject_cancelled"
