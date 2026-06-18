@@ -16,6 +16,7 @@ def _make_manager():
     mgr.session = None
     mgr.session_ready = True
     mgr.is_preparing_new_session = False
+    mgr._require_context_append_current_delivery = False
     mgr.message_cache_for_new_session = []
     mgr.next_session_context_messages = []
     mgr.initial_next_session_context_snapshot_len = 0
@@ -131,6 +132,34 @@ async def test_append_context_seeds_next_session_cache_when_preparing():
     assert result.targets == ("new_session_cache",)
     assert mgr.next_session_context_messages == [{"role": "Master", "text": "choice A"}]
     assert mgr.message_cache_for_new_session == []
+
+
+@pytest.mark.asyncio
+async def test_append_context_requires_current_delivery_after_swap_promotion():
+    mgr = _make_manager()
+    mgr.is_preparing_new_session = True
+    mgr._require_context_append_current_delivery = True
+
+    class _FailingPrimeSession:
+        async def prime_context(self, text, *, skipped=False):
+            raise RuntimeError("prime unavailable")
+
+    mgr.session = _FailingPrimeSession()
+
+    result = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="post promote setup",
+        audience="model",
+        lifetime="session_family",
+    )
+
+    assert result.appended is False
+    assert result.targets == ("new_session_cache",)
+    assert result.reason == "realtime_prime_failed"
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "post promote setup"},
+    ]
 
 
 @pytest.mark.asyncio

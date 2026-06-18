@@ -1010,6 +1010,7 @@ class LLMSessionManager:
         self._context_append_sequence = 0
         self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()
         self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
+        self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -1515,7 +1516,10 @@ class LLMSessionManager:
 
         current_session_delivery_required = (
             current_session_required
-            and not bool(getattr(self, "is_preparing_new_session", False))
+            and (
+                not bool(getattr(self, "is_preparing_new_session", False))
+                or bool(getattr(self, "_require_context_append_current_delivery", False))
+            )
         )
         if current_session_delivery_required and not current_session_delivered:
             return ContextAppendResult(
@@ -4248,6 +4252,7 @@ class LLMSessionManager:
         before clearing references — prevents >2 concurrent OmniRealtimeClient.
         """
         self.is_preparing_new_session = False
+        self._require_context_append_current_delivery = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
         
@@ -8390,6 +8395,7 @@ class LLMSessionManager:
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
             self.session = new_session
+            self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
             self.current_speech_id = str(uuid4())
