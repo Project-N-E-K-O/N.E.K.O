@@ -494,6 +494,43 @@ async def test_when_ready_durable_context_is_cached_before_readiness_flush():
 
 
 @pytest.mark.asyncio
+async def test_full_new_session_reset_releases_abandoned_durable_pending_dedup():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    queued = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="abandoned durable setup",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-request",
+    )
+
+    assert queued.appended is True
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "abandoned durable setup"},
+    ]
+
+    mgr.next_session_context_messages = []
+    mgr._clear_pending_context_appends(release_durable_cached=True)
+    retry = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="requeued durable setup",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-request",
+    )
+
+    assert retry.appended is True
+    assert retry.deduped is False
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "requeued durable setup"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_when_ready_durable_context_retries_if_realtime_prime_fails():
     mgr = _make_manager()
     mgr.session_ready = False
