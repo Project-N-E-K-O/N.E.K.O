@@ -7114,8 +7114,8 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": session_id,
         }
-    ok = bool(getattr(append_result, "appended", False))
-    if ok is False:
+    ok = getattr(append_result, "appended", False)
+    if not ok:
         return {
             "ok": False,
             "reason": getattr(append_result, "reason", None) or "context_write_failed",
@@ -7125,7 +7125,7 @@ async def game_project_context(game_type: str, request: Request):
         }
 
     return {
-        "ok": bool(ok),
+        "ok": True,
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "game_type": game_type,

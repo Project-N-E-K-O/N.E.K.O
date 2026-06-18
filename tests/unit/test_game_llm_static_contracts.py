@@ -62,15 +62,19 @@ def test_soccer_quick_lines_and_pregame_prompts_are_localized():
 @pytest.mark.unit
 def test_soccer_realtime_context_posts_local_mutation_headers():
     html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    headers_block = html.split("function _getLocalMutationHeaders()", 1)[1].split(
+        "function _refreshLocalMutationHeaders()",
+        1,
+    )[0]
     context_block = html.split("async function _sendRealtimeGameContext(source, items = [])", 1)[1].split(
         "async function _mirrorGameAssistantText",
         1,
     )[0]
 
-    assert "function _getLocalMutationHeaders()" in html
-    assert "window.nekoLocalMutationSecurity" in html
-    assert "getMutationHeaders" in html
-    assert "'X-CSRF-Token'" in html
+    assert "window.nekoLocalMutationSecurity" in headers_block
+    assert "getMutationHeaders" in headers_block
+    assert "headers['X-CSRF-Token'] = config.autostart_csrf_token;" in headers_block
+    assert "cache: 'no-store'" in headers_block
     assert "credentials: 'same-origin'" in context_block
     assert "headers,\n        body: bodyJson" in context_block
     assert "await postWithHeaders(await _getLocalMutationHeaders())" in context_block
