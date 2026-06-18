@@ -1403,7 +1403,7 @@ class LLMSessionManager:
                     await prime_context(f"{role}: {content}", skipped=(audience == "model"))
                     targets.append("realtime_prime")
                 except Exception as exc:
-                    print(f"[{self.lanlan_name}] context append realtime_prime failed: {exc}")
+                    logger.warning("[%s] context append realtime_prime failed: %s", self.lanlan_name, exc)
 
         if not targets:
             return ContextAppendResult(appended=False, reason="no_context_target")
@@ -1497,7 +1497,7 @@ class LLMSessionManager:
                     flushed += 1
             except Exception as exc:
                 retry.append(payload)
-                print(f"[{self.lanlan_name}] context append flush failed: {exc}")
+                logger.warning("[%s] context append flush failed: %s", self.lanlan_name, exc)
         if retry:
             self.pending_context_appends = retry + self.pending_context_appends
         return flushed
@@ -1517,7 +1517,11 @@ class LLMSessionManager:
                 return
         pending = getattr(self, "pending_context_appends", None)
         if isinstance(pending, list) and pending:
-            print(f"[{self.lanlan_name}] context append ready drain left {len(pending)} pending item(s)")
+            logger.warning(
+                "[%s] context append ready drain left %d pending item(s)",
+                self.lanlan_name,
+                len(pending),
+            )
 
     def _clear_pending_context_appends(self) -> None:
         pending = getattr(self, "pending_context_appends", None)
