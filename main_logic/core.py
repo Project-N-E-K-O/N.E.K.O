@@ -1004,7 +1004,7 @@ class LLMSessionManager:
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
         self.pending_context_appends: list[dict] = []
         self._context_append_sequence = 0
-        self._context_append_request_ids: OrderedDict[tuple[str, str], float] = OrderedDict()
+        self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -1135,9 +1135,45 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    def _remember_context_append_request_id(self, source: str, request_id: str) -> None:
-        request_id = str(request_id or "").strip()
+    def _context_append_request_key(self, payload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+        request_id = str(payload.get("request_id") or "").strip()
         if not request_id:
+            return None
+        source = str(payload.get("source") or "").strip()
+        lifetime = str(payload.get("lifetime") or "current_session").strip().lower()
+        if lifetime == "current_session":
+            if payload.get("_dedup_pending_ready"):
+                return (source, request_id, lifetime, "pending_ready")
+            session_id = payload.get("_dedup_session_id")
+            if session_id is None:
+                session_id = id(getattr(self, "session", None))
+            return (source, request_id, lifetime, session_id)
+        return (source, request_id, lifetime)
+
+    def _promote_context_append_request_id_to_current_session(self, payload: dict) -> None:
+        if (
+            str(payload.get("lifetime") or "").strip().lower() != "current_session"
+            or not payload.get("_dedup_pending_ready")
+            or not payload.get("request_id")
+        ):
+            return
+        seen = getattr(self, "_context_append_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            return
+        old_key = self._context_append_request_key(payload)
+        if old_key is None:
+            return
+        timestamp = seen.pop(old_key, None)
+        payload.pop("_dedup_pending_ready", None)
+        payload["_dedup_session_id"] = id(getattr(self, "session", None))
+        new_key = self._context_append_request_key(payload)
+        if timestamp is not None and new_key is not None:
+            seen[new_key] = timestamp
+            seen.move_to_end(new_key)
+
+    def _remember_context_append_request_id(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_request_key(payload)
+        if key is None:
             return
         seen = getattr(self, "_context_append_request_ids", None)
         if not isinstance(seen, OrderedDict):
@@ -1150,23 +1186,22 @@ class LLMSessionManager:
             if seen[oldest_key] >= cutoff:
                 break
             seen.pop(oldest_key, None)
-        key = (source, request_id)
         seen[key] = now
         seen.move_to_end(key)
         while len(seen) > _CONTEXT_APPEND_DEDUP_MAX_ENTRIES:
             seen.popitem(last=False)
 
-    def _forget_context_append_request_id(self, source: str, request_id: str | None) -> None:
-        request_id = str(request_id or "").strip()
-        if not request_id:
+    def _forget_context_append_request_id(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_request_key(payload)
+        if key is None:
             return
         seen = getattr(self, "_context_append_request_ids", None)
         if isinstance(seen, OrderedDict):
-            seen.pop((source, request_id), None)
+            seen.pop(key, None)
 
-    def _context_append_request_seen(self, source: str, request_id: str | None) -> bool:
-        request_id = str(request_id or "").strip()
-        if not request_id:
+    def _context_append_request_seen(self, payload: Mapping[str, Any]) -> bool:
+        key = self._context_append_request_key(payload)
+        if key is None:
             return False
         seen = getattr(self, "_context_append_request_ids", None)
         if not isinstance(seen, OrderedDict):
@@ -1178,7 +1213,7 @@ class LLMSessionManager:
             if seen[oldest_key] >= cutoff:
                 break
             seen.pop(oldest_key, None)
-        return (source, request_id) in seen
+        return key in seen
 
     def _normalize_context_append(
         self,
@@ -1263,28 +1298,32 @@ class LLMSessionManager:
         if isinstance(cache, list):
             del cache[:count]
 
-    async def _prime_late_next_session_context_after_swap(self, start_index: int) -> int:
+    async def _prime_late_next_session_context_after_swap(
+        self,
+        start_index: int,
+        end_index: int | None = None,
+    ) -> int:
         consumed_count = max(0, start_index)
         session = getattr(self, "session", None)
         prime_context = getattr(session, "prime_context", None)
         if not callable(prime_context):
             return consumed_count
 
-        for _ in range(_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES):
-            snapshot = self._snapshot_next_session_context_messages()
-            late_context = snapshot[consumed_count:]
-            if not late_context:
-                break
-            try:
-                await prime_context(self._convert_cache_to_str(late_context), skipped=True)
-            except (web_exceptions.ConnectionClosed, AttributeError) as exc:
-                logger.warning(
-                    "[%s] final-swap late next-session context prime failed: %s",
-                    self.lanlan_name,
-                    exc,
-                )
-                break
-            consumed_count += len(late_context)
+        snapshot = self._snapshot_next_session_context_messages()
+        stop_index = len(snapshot) if end_index is None else max(consumed_count, min(end_index, len(snapshot)))
+        late_context = snapshot[consumed_count:stop_index]
+        if not late_context:
+            return consumed_count
+        try:
+            await prime_context(self._convert_cache_to_str(late_context), skipped=True)
+        except (web_exceptions.ConnectionClosed, AttributeError) as exc:
+            logger.warning(
+                "[%s] final-swap late next-session context prime failed: %s",
+                self.lanlan_name,
+                exc,
+            )
+            return consumed_count
+        consumed_count += len(late_context)
 
         return consumed_count
 
@@ -1295,7 +1334,9 @@ class LLMSessionManager:
         lifetime = payload["lifetime"]
         targets: list[str] = []
         if lifetime in {"next_session", "session_family"}:
-            if self._append_context_to_new_session_cache(role, content):
+            if payload.get("_durable_cached"):
+                targets.append("new_session_cache")
+            elif self._append_context_to_new_session_cache(role, content):
                 targets.append("new_session_cache")
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
@@ -1350,12 +1391,6 @@ class LLMSessionManager:
         )
         if payload is None:
             return ContextAppendResult(appended=False, reason="invalid_context")
-        if self._context_append_request_seen(payload["source"], payload["request_id"]):
-            return ContextAppendResult(appended=False, deduped=True, reason="duplicate_request_id")
-        reserved_request_id = bool(payload["request_id"])
-        if reserved_request_id:
-            self._remember_context_append_request_id(payload["source"], payload["request_id"])
-
         pending_needed = (
             payload["timing"] == "when_ready"
             and (
@@ -1363,7 +1398,20 @@ class LLMSessionManager:
                 or getattr(self, "session", None) is None
             )
         )
+        if pending_needed and payload["lifetime"] == "current_session":
+            payload["_dedup_pending_ready"] = True
+        if self._context_append_request_seen(payload):
+            return ContextAppendResult(appended=False, deduped=True, reason="duplicate_request_id")
+        reserved_request_id = bool(payload["request_id"])
+        if reserved_request_id:
+            self._remember_context_append_request_id(payload)
+
         if pending_needed:
+            if payload["lifetime"] in {"next_session", "session_family"}:
+                payload["_durable_cached"] = self._append_context_to_new_session_cache(
+                    payload["role"],
+                    payload["text"],
+                )
             pending = getattr(self, "pending_context_appends", None)
             if not isinstance(pending, list):
                 pending = []
@@ -1378,10 +1426,10 @@ class LLMSessionManager:
             result = await self._append_context_to_targets(payload)
         except Exception:
             if reserved_request_id:
-                self._forget_context_append_request_id(payload["source"], payload["request_id"])
+                self._forget_context_append_request_id(payload)
             raise
         if not result.appended and reserved_request_id:
-            self._forget_context_append_request_id(payload["source"], payload["request_id"])
+            self._forget_context_append_request_id(payload)
         return result
 
     async def _flush_pending_context_appends(self) -> int:
@@ -1401,6 +1449,7 @@ class LLMSessionManager:
                 if not result.appended:
                     retry.append(payload)
                 else:
+                    self._promote_context_append_request_id_to_current_session(payload)
                     flushed += 1
             except Exception as exc:
                 retry.append(payload)
@@ -1414,11 +1463,13 @@ class LLMSessionManager:
             pending = getattr(self, "pending_context_appends", None)
             if not isinstance(pending, list) or not pending:
                 return
+            before_ids = {id(payload) for payload in pending}
             flushed = await self._flush_pending_context_appends()
             pending = getattr(self, "pending_context_appends", None)
             if not isinstance(pending, list) or not pending:
                 return
-            if flushed <= 0:
+            after_ids = {id(payload) for payload in pending}
+            if flushed <= 0 and after_ids <= before_ids:
                 return
         pending = getattr(self, "pending_context_appends", None)
         if isinstance(pending, list) and pending:
@@ -1433,11 +1484,12 @@ class LLMSessionManager:
             stale_payloads = []
             self.pending_context_appends = []
         for payload in stale_payloads:
-            if isinstance(payload, dict) and payload.get("request_id"):
-                self._forget_context_append_request_id(
-                    payload.get("source", ""),
-                    payload.get("request_id", ""),
-                )
+            if (
+                isinstance(payload, dict)
+                and payload.get("request_id")
+                and not payload.get("_durable_cached")
+            ):
+                self._forget_context_append_request_id(payload)
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
@@ -8095,6 +8147,8 @@ class LLMSessionManager:
                 except Exception as e:
                     logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
+            next_context_count_before_promote = len(self._snapshot_next_session_context_messages())
+
             # ── 步骤 3：promote 新 session ────────────────────────────────────────
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
@@ -8126,7 +8180,8 @@ class LLMSessionManager:
                 + len(incremental_next_session_context)
             )
             consumed_next_context_count = await self._prime_late_next_session_context_after_swap(
-                transferred_next_context_count
+                transferred_next_context_count,
+                next_context_count_before_promote,
             )
             self._consume_next_session_context_messages(consumed_next_context_count)
 

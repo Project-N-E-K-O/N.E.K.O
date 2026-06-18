@@ -39,7 +39,8 @@ class _FakeHybridTextSession(_FakePrimeSession):
 async def test_append_context_adds_active_history_message():
     mgr = _make_manager()
     history = []
-    mgr.session = SimpleNamespace(_conversation_history=history)
+    active_session = SimpleNamespace(_conversation_history=history)
+    mgr.session = active_session
 
     result = await mgr.append_context(
         source="game.icebreaker",
@@ -221,15 +222,16 @@ async def test_final_swap_primes_late_next_session_context_before_consuming():
     session = _AppendingPrimeSession()
     mgr.session = session
 
-    consumed = await mgr._prime_late_next_session_context_after_swap(1)
+    consumed = await mgr._prime_late_next_session_context_after_swap(1, 2)
     mgr._consume_next_session_context_messages(consumed)
 
-    assert consumed == 3
+    assert consumed == 2
     assert session.calls == [
         ("system | late before promote\n", True),
-        ("Master | late during prime\n", True),
     ]
-    assert mgr.next_session_context_messages == []
+    assert mgr.next_session_context_messages == [
+        {"role": "Master", "text": "late during prime"},
+    ]
 
 
 def test_final_swap_primes_late_context_before_flushing_cached_audio():
@@ -363,6 +365,47 @@ async def test_pending_context_drain_includes_items_queued_during_flush():
 
 
 @pytest.mark.asyncio
+async def test_pending_context_drain_keeps_going_when_failed_pass_queues_new_item():
+    mgr = _make_manager()
+    mgr.session_ready = False
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+
+    await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="stuck context",
+        timing="when_ready",
+        ordering_key="001",
+    )
+
+    original_append = mgr._append_context_to_targets
+    queued_late = False
+
+    async def fail_first_and_queue(payload):
+        nonlocal queued_late
+        if payload["text"] == "stuck context":
+            if not queued_late:
+                queued_late = True
+                await mgr.append_context(
+                    source="topic.hook",
+                    role="system",
+                    text="fresh context",
+                    timing="when_ready",
+                    ordering_key="002",
+                )
+            return core_module.ContextAppendResult(appended=False, reason="no_context_target")
+        return await original_append(payload)
+
+    mgr._append_context_to_targets = fail_first_and_queue
+    await mgr._drain_pending_context_appends_before_ready()
+
+    assert len(mgr.pending_context_appends) == 1
+    assert mgr.pending_context_appends[0]["text"] == "stuck context"
+    assert [message.content for message in history] == ["system: fresh context"]
+
+
+@pytest.mark.asyncio
 async def test_clear_pending_context_appends_drops_stale_ready_queue():
     mgr = _make_manager()
     mgr.session_ready = False
@@ -387,10 +430,48 @@ async def test_clear_pending_context_appends_drops_stale_ready_queue():
 
 
 @pytest.mark.asyncio
+async def test_when_ready_durable_context_is_cached_before_readiness_flush():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    queued = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="durable setup",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-request",
+    )
+
+    assert queued.appended is True
+    assert queued.targets == ("pending_ready",)
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "durable setup"},
+    ]
+
+    mgr._clear_pending_context_appends()
+    duplicate = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="durable setup replay",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-request",
+    )
+
+    assert duplicate.appended is False
+    assert duplicate.deduped is True
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "durable setup"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_clear_pending_context_appends_releases_only_stale_request_ids():
     mgr = _make_manager()
     history = []
-    mgr.session = SimpleNamespace(_conversation_history=history)
+    active_session = SimpleNamespace(_conversation_history=history)
+    mgr.session = active_session
 
     active = await mgr.append_context(
         source="topic.hook",
@@ -412,7 +493,7 @@ async def test_clear_pending_context_appends_releases_only_stale_request_ids():
     assert queued.appended is True
 
     mgr._clear_pending_context_appends()
-    mgr.session = SimpleNamespace(_conversation_history=history)
+    mgr.session = active_session
     mgr.session_ready = True
     retry_stale = await mgr.append_context(
         source="topic.hook",
@@ -434,6 +515,42 @@ async def test_clear_pending_context_appends_releases_only_stale_request_ids():
         "system: already written",
         "system: queued retry in new session",
     ]
+
+
+@pytest.mark.asyncio
+async def test_current_session_request_id_can_replay_after_session_replaced():
+    mgr = _make_manager()
+    first_session = _FakePrimeSession()
+    mgr.session = first_session
+
+    first = await mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same request in first session",
+        request_id="ctx-current",
+    )
+    duplicate = await mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same request duplicate",
+        request_id="ctx-current",
+    )
+
+    second_session = _FakePrimeSession()
+    mgr.session = second_session
+    replay = await mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same request in replacement session",
+        request_id="ctx-current",
+    )
+
+    assert first.appended is True
+    assert duplicate.appended is False
+    assert duplicate.deduped is True
+    assert replay.appended is True
+    assert first_session.calls == [("user: same request in first session", True)]
+    assert second_session.calls == [("user: same request in replacement session", True)]
 
 
 @pytest.mark.asyncio
