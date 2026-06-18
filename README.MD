@@ -52,7 +52,7 @@
 <img width="422.4" height="278.4" alt="Image" src="https://github.com/user-attachments/assets/71e9ed4c-f332-4db5-bc13-ca0d05049142" />
 <img width="363.6" height="278.4" alt="6 15-主动搭话" src="https://github.com/user-attachments/assets/50f61732-996b-41cb-9dba-d85f17734d8c" />
 
-_当你需要专注的空间时，她真的会变成一只小猫咪安静地陪着你哦~ 就像这样→_<img width="115.5" height="86.1" alt="Image" src="https://github.com/user-attachments/assets/40379c53-398e-43ab-b027-70b31837f01d" />
+当你需要学习工作等专注的空间时，她还会真的变成一只小猫咪安静地陪着你哦~ 就像这样→ <img width="115.5" height="86.1" alt="Image" src="https://github.com/user-attachments/assets/40379c53-398e-43ab-b027-70b31837f01d" />
 
 ---
 
