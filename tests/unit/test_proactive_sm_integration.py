@@ -26,6 +26,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # _loc、normalize_language_code、httpx 等），测试不直接跑整段函数，而是对
 # SM 的契约做黑盒回归 —— 让一个 minimal mgr 模拟真实 LLMSessionManager 的
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
+import main_logic.core as core_module
 from main_logic.core import (
     LLMSessionManager,
     _VOICE_PROACTIVE_ACK_GRACE_S,
@@ -120,6 +121,40 @@ def _make_mgr(session=None) -> LLMSessionManager:
     # 在测试里我们只关心 OmniOfflineClient 分支，其他分支显式构造。
     mgr.start_session = AsyncMock()
     return mgr
+
+
+def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
+    mgr = _make_mgr()
+    monkeypatch.setitem(core_module._CONTEXT_APPEND_SOURCE_MAX_TOKENS, "topic.hook", 2)
+    monkeypatch.setitem(core_module._CONTEXT_APPEND_SOURCE_MAX_TOKENS, "proactive.callback", 4)
+
+    def fake_truncate(text, max_tokens, *args, **kwargs):
+        return f"{max_tokens}:{text}"
+
+    monkeypatch.setattr("utils.tokenize.truncate_to_tokens", fake_truncate)
+
+    LLMSessionManager.enqueue_agent_callback(mgr, {
+        "channel": "topic_hook",
+        "status": "completed",
+        "summary": "topic summary",
+        "detail": "topic detail",
+        "origin": "event",
+        "source_kind": "topic",
+        "source_name": "deep_topic_hook",
+    })
+    LLMSessionManager.enqueue_agent_callback(mgr, {
+        "status": "completed",
+        "summary": "proactive summary",
+        "detail": "proactive detail",
+        "origin": "event",
+        "source_kind": "unknown",
+        "source_name": "push",
+    })
+
+    assert mgr.pending_agent_callbacks[0]["summary"] == "2:topic summary"
+    assert mgr.pending_extra_replies[0]["context_source"] == "topic.hook"
+    assert mgr.pending_agent_callbacks[1]["summary"] == "4:proactive summary"
+    assert mgr.pending_extra_replies[1]["context_source"] == "proactive.callback"
 
 
 def _make_voice_sess(*, is_responding=False, inject=None):
@@ -1056,6 +1091,7 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
             "summary": "queued",
             "detail": "",
             "status": "completed",
+            "context_source": "proactive.callback",
             "source_kind": "unknown",
             "source_name": "",
             "error_message": "",

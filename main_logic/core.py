@@ -24,11 +24,12 @@ import os
 import struct  # For packing audio data
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Mapping, Optional
 
 
 # Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
@@ -41,6 +42,20 @@ _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+_CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
+_CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
+_CONTEXT_APPEND_DEFAULT_MAX_TOKENS = 1000
+_CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
+    "game.icebreaker": 500,
+    "game.scripted": 1000,
+    "game.realtime_context": 1000,
+    "game.postgame": 1500,
+    "proactive.context": 1000,
+    "proactive.callback": 1000,
+    "topic.hook": 1000,
+    "topic.material": 1000,
+    "realtime.prime": 1000,
+}
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -761,6 +776,14 @@ def enqueue_voice_migration_notice(legacy_names: list) -> None:
 _START_LLM_CONCURRENT_ABORTED = object()
 
 
+@dataclass(frozen=True)
+class ContextAppendResult:
+    appended: bool
+    deduped: bool = False
+    targets: tuple[str, ...] = ()
+    reason: str | None = None
+
+
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
@@ -977,6 +1000,9 @@ class LLMSessionManager:
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
+        self.pending_context_appends: list[dict] = []
+        self._context_append_sequence = 0
+        self._context_append_request_ids: OrderedDict[tuple[str, str], float] = OrderedDict()
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -1107,9 +1133,100 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    def _append_icebreaker_context_to_new_session_cache(self, role: str, text: str) -> None:
-        if not getattr(self, "is_preparing_new_session", False):
+    def _remember_context_append_request_id(self, source: str, request_id: str) -> None:
+        request_id = str(request_id or "").strip()
+        if not request_id:
             return
+        seen = getattr(self, "_context_append_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            seen = OrderedDict()
+            self._context_append_request_ids = seen
+        now = time.time()
+        cutoff = now - _CONTEXT_APPEND_DEDUP_TTL_SECONDS
+        while seen:
+            oldest_key = next(iter(seen))
+            if seen[oldest_key] >= cutoff:
+                break
+            seen.pop(oldest_key, None)
+        key = (source, request_id)
+        seen[key] = now
+        seen.move_to_end(key)
+        while len(seen) > _CONTEXT_APPEND_DEDUP_MAX_ENTRIES:
+            seen.popitem(last=False)
+
+    def _context_append_request_seen(self, source: str, request_id: str | None) -> bool:
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return False
+        seen = getattr(self, "_context_append_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            return False
+        now = time.time()
+        cutoff = now - _CONTEXT_APPEND_DEDUP_TTL_SECONDS
+        while seen:
+            oldest_key = next(iter(seen))
+            if seen[oldest_key] >= cutoff:
+                break
+            seen.pop(oldest_key, None)
+        return (source, request_id) in seen
+
+    def _normalize_context_append(
+        self,
+        *,
+        source: str,
+        role: str,
+        text: str,
+        audience: str,
+        timing: str,
+        lifetime: str,
+        request_id: str | None,
+        ordering_key: str | None,
+        metadata: Mapping[str, Any] | None,
+    ) -> dict | None:
+        normalized_source = str(source or "").strip()
+        normalized_role = str(role or "").strip().lower()
+        normalized_audience = str(audience or "").strip().lower()
+        normalized_timing = str(timing or "").strip().lower()
+        normalized_lifetime = str(lifetime or "").strip().lower()
+        if (
+            not normalized_source
+            or normalized_role not in {"assistant", "user", "system"}
+            or normalized_audience not in {"model", "user_and_model"}
+            or normalized_timing not in {"now", "when_ready"}
+            or normalized_lifetime not in {"current_session", "next_session", "session_family"}
+        ):
+            return None
+        content = self._normalize_context_text_for_source(normalized_source, text)
+        if not content:
+            return None
+        safe_metadata = dict(metadata or {}) if isinstance(metadata, Mapping) else {}
+        return {
+            "source": normalized_source,
+            "role": normalized_role,
+            "text": content,
+            "audience": normalized_audience,
+            "timing": normalized_timing,
+            "lifetime": normalized_lifetime,
+            "request_id": str(request_id or "").strip(),
+            "ordering_key": str(ordering_key or "").strip(),
+            "metadata": safe_metadata,
+        }
+
+    def _normalize_context_text_for_source(self, source: str, text: Any) -> str:
+        content = str(text or "").strip()
+        if not content:
+            return ""
+        max_tokens = _CONTEXT_APPEND_SOURCE_MAX_TOKENS.get(
+            str(source or "").strip(),
+            _CONTEXT_APPEND_DEFAULT_MAX_TOKENS,
+        )
+        try:
+            from utils.tokenize import truncate_to_tokens
+            return truncate_to_tokens(content[: max(max_tokens * 8, max_tokens)], max_tokens).strip()
+        except Exception:
+            return content[: max(max_tokens * 8, max_tokens)].strip()
+
+    def _append_context_to_new_session_cache(self, role: str, text: str) -> bool:
         cache = getattr(self, "message_cache_for_new_session", None)
         if not isinstance(cache, list):
             cache = []
@@ -1120,28 +1237,106 @@ class LLMSessionManager:
             else getattr(self, "lanlan_name", "assistant")
         )
         cache.append({"role": speaker, "text": text})
+        return True
 
-    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
-        """Append icebreaker turns through the existing conversation/cache path."""
-        normalized_role = str(role or "").strip().lower()
-        content = str(text or "").strip()
-        if normalized_role not in {"assistant", "user"} or not content:
-            return False
-        self._append_icebreaker_context_to_new_session_cache(normalized_role, content)
-
+    async def _append_context_to_targets(self, payload: dict) -> ContextAppendResult:
+        role = payload["role"]
+        content = payload["text"]
+        audience = payload["audience"]
+        lifetime = payload["lifetime"]
+        targets: list[str] = []
+        if lifetime in {"next_session", "session_family"}:
+            if self._append_context_to_new_session_cache(role, content):
+                targets.append("new_session_cache")
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
-        if isinstance(history, list):
-            message = AIMessage(content=content) if normalized_role == "assistant" else HumanMessage(content=content)
+        if lifetime in {"current_session", "session_family"} and isinstance(history, list):
+            if role == "assistant":
+                message = AIMessage(content=content)
+            elif role == "user":
+                message = HumanMessage(content=content)
+            else:
+                message = HumanMessage(content=f"system: {content}")
             history.append(message)
-            return True
+            targets.append("active_history")
 
-        prime_context = getattr(session, "prime_context", None)
-        if callable(prime_context):
-            await prime_context(f"{normalized_role}: {content}", skipped=True)
-            return True
+        if lifetime in {"current_session", "session_family"}:
+            prime_context = getattr(session, "prime_context", None)
+            if callable(prime_context):
+                await prime_context(f"{role}: {content}", skipped=(audience == "model"))
+                targets.append("realtime_prime")
 
-        return bool(getattr(self, "is_preparing_new_session", False))
+        if not targets:
+            return ContextAppendResult(appended=False, reason="no_context_target")
+        return ContextAppendResult(appended=True, targets=tuple(targets))
+
+    async def append_context(
+        self,
+        *,
+        source: str,
+        role: str,
+        text: str,
+        audience: str = "model",
+        timing: str = "now",
+        lifetime: str = "current_session",
+        request_id: str | None = None,
+        ordering_key: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ContextAppendResult:
+        payload = self._normalize_context_append(
+            source=source,
+            role=role,
+            text=text,
+            audience=audience,
+            timing=timing,
+            lifetime=lifetime,
+            request_id=request_id,
+            ordering_key=ordering_key,
+            metadata=metadata,
+        )
+        if payload is None:
+            return ContextAppendResult(appended=False, reason="invalid_context")
+        if self._context_append_request_seen(payload["source"], payload["request_id"]):
+            return ContextAppendResult(appended=False, deduped=True, reason="duplicate_request_id")
+
+        pending_needed = (
+            payload["timing"] == "when_ready"
+            and (
+                not bool(getattr(self, "session_ready", False))
+                or getattr(self, "session", None) is None
+            )
+        )
+        if pending_needed:
+            pending = getattr(self, "pending_context_appends", None)
+            if not isinstance(pending, list):
+                pending = []
+                self.pending_context_appends = pending
+            sequence = int(getattr(self, "_context_append_sequence", 0))
+            self._context_append_sequence = sequence + 1
+            payload["_sequence"] = sequence
+            pending.append(payload)
+            self._remember_context_append_request_id(payload["source"], payload["request_id"])
+            return ContextAppendResult(appended=True, targets=("pending_ready",))
+
+        result = await self._append_context_to_targets(payload)
+        if result.appended:
+            self._remember_context_append_request_id(payload["source"], payload["request_id"])
+        return result
+
+    async def _flush_pending_context_appends(self) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if not isinstance(pending, list) or not pending:
+            return
+        self.pending_context_appends = []
+        pending.sort(key=lambda payload: (
+            payload.get("ordering_key") or f"~{int(payload.get('_sequence', 0)):020d}",
+            int(payload.get("_sequence", 0)),
+        ))
+        for payload in pending:
+            try:
+                await self._append_context_to_targets(payload)
+            except Exception as exc:
+                print(f"[{self.lanlan_name}] context append flush failed: {exc}")
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
@@ -5021,6 +5216,8 @@ class LLMSessionManager:
                 async with self.input_cache_lock:
                     self.session_ready = True
 
+                await self._flush_pending_context_appends()
+
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
 
@@ -7494,31 +7691,22 @@ class LLMSessionManager:
         hot-swap fire at different lifecycle points).
         """
         try:
-            from utils.tokenize import truncate_to_tokens
             from config import (
-                AGENT_CALLBACK_TEXT_MAX_TOKENS,
                 AGENT_CALLBACK_QUEUE_MAX_ITEMS,
             )
-            # Per-item input budget: summary/detail flow into the LLM verbatim
-            # (text-mode drain + voice hot-swap). task_result callbacks are
-            # already TASK_*-capped upstream, but push_message/proactive_message
-            # text is aggregated uncapped by proactive_bridge — cap it here, the
-            # single chokepoint both queues pass through.
-            #
-            # Cheap CHAR pre-cap BEFORE tokenizing: a malformed/huge plugin
-            # message must not make tiktoken encode megabytes synchronously on
-            # the event loop. 8x headroom over the token budget is safe for any
-            # language (English ~4 char/token, CJK <1), so the char cut never
-            # removes content the token cap would have kept.
-            _char_precap = AGENT_CALLBACK_TEXT_MAX_TOKENS * 8
-            summary_raw = str(callback.get("summary") or "").strip()[:_char_precap]
-            detail_raw = str(callback.get("detail") or "").strip()[:_char_precap]
-            summary = truncate_to_tokens(summary_raw, AGENT_CALLBACK_TEXT_MAX_TOKENS)
+            context_source = "topic.hook" if callback.get("channel") == "topic_hook" else "proactive.callback"
+            # Per-item input budget: summary/detail flow into the LLM verbatim.
+            # Reuse the same source-policy normalizer as append_context() so
+            # proactive/topic callbacks do not grow a parallel budget path.
+            summary_raw = str(callback.get("summary") or "").strip()
+            detail_raw = str(callback.get("detail") or "").strip()
+            summary = self._normalize_context_text_for_source(context_source, summary_raw)
             # summary/detail frequently carry the SAME body (proactive_bridge
             # sets both to the aggregated text) — reuse the encode, don't do it
             # twice.
-            detail = summary if detail_raw == summary_raw else truncate_to_tokens(
-                detail_raw, AGENT_CALLBACK_TEXT_MAX_TOKENS
+            detail = summary if detail_raw == summary_raw else self._normalize_context_text_for_source(
+                context_source,
+                detail_raw,
             )
             # Write the capped text back so the text-mode drain (which reads the
             # callback dict directly) injects the truncated body too.
@@ -7561,6 +7749,7 @@ class LLMSessionManager:
                 "summary": summary,
                 "detail": detail,
                 "status": status,
+                "context_source": context_source,
                 "source_kind": callback.get("source_kind") or "unknown",
                 "source_name": source_name,
                 "error_message": error_message,

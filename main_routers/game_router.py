@@ -40,8 +40,6 @@ from urllib.parse import urlparse
 
 _EXTERNAL_VOICE_DEDUP_TTL_SECONDS = 30.0
 _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
-_ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS = 30.0
-_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES = 64
 _SSML_TAG_PATTERN = re.compile(
     r"</?(?:[a-z][\w-]*:)?(?:"
     r"speak|p|s|break|say-as|phoneme|sub|prosody|emphasis|voice|audio|mark|lang|w|token|express-as|effect"
@@ -106,7 +104,6 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Game")
 
 router = APIRouter(tags=["game"], prefix="/api/game")
-MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 
 # ── Session 池 ─────────────────────────────────────────────────────
 # key = f"{lanlan_name}:{game_type}:{session_id}"
@@ -3915,8 +3912,25 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             "reason": "gemini_direct_response",
         }
 
+    append_context = getattr(mgr, "append_context", None)
+    if not callable(append_context):
+        return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_method_unavailable"}
     try:
-        await session.prime_context(text, skipped=True)
+        append_result = await append_context(
+            source="game.postgame",
+            role="system",
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="current_session",
+            request_id=str(archive.get("session_id") or "") or None,
+            ordering_key=str(archive.get("session_id") or "") or None,
+            metadata={
+                "game_type": archive.get("game_type"),
+                "lanlan_name": archive.get("lanlan_name"),
+                "kind": "postgame",
+            },
+        )
     except Exception as exc:
         logger.warning(
             "🎮 赛后 Realtime 上下文注入失败: game=%s session=%s lanlan=%s err=%s",
@@ -3926,6 +3940,13 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             exc,
         )
         return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_inject_failed"}
+    if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        return {
+            "ok": False,
+            "mode": "realtime",
+            "action": "skip",
+            "reason": getattr(append_result, "reason", None) or "context_inject_failed",
+        }
 
     logger.info(
         "🎮 赛后 Realtime 上下文已注入: game=%s session=%s lanlan=%s bytes=%d",
@@ -6977,8 +6998,6 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_role"}
     if not text:
         return {"ok": False, "reason": "missing_text"}
-    if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
-        return {"ok": False, "reason": "invalid_text_length"}
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
 
@@ -7019,38 +7038,28 @@ async def game_project_context(game_type: str, request: Request):
     if stale_response:
         return stale_response
 
-    seen_context_ids = state.get("_icebreaker_context_seen_request_ids")
-    if not isinstance(seen_context_ids, OrderedDict):
-        seen_context_ids = OrderedDict()
-        state["_icebreaker_context_seen_request_ids"] = seen_context_ids
-    now = time.time()
-    ttl_cutoff = now - _ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS
-    while seen_context_ids:
-        oldest_id = next(iter(seen_context_ids))
-        if seen_context_ids[oldest_id] < ttl_cutoff:
-            seen_context_ids.pop(oldest_id, None)
-            continue
-        break
-    if request_id and request_id in seen_context_ids:
-        return {
-            "ok": True,
-            "deduped": True,
-            "method": "project_session_history",
-            "lanlan_name": lanlan_name,
-            "game_type": game_type,
-            "session_id": session_id,
-        }
-
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
-    append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
+    append_context = getattr(mgr, "append_context", None)
     try:
-        if callable(append_icebreaker_context_async):
-            ok = await append_icebreaker_context_async(role, text)
-        else:
+        if not callable(append_context):
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+        append_result = await append_context(
+            source="game.icebreaker",
+            role=role,
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="session_family",
+            request_id=request_id or None,
+            ordering_key=session_id or None,
+            metadata={
+                "game_type": game_type,
+                "session_id": session_id,
+            },
+        )
     except Exception as exc:
         logger.warning(
             "new_user_icebreaker context append failed for %s: %s",
@@ -7066,19 +7075,24 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
         }
-    if ok is False:
+    if getattr(append_result, "deduped", False):
         return {
-            "ok": False,
-            "reason": "context_write_failed",
+            "ok": True,
+            "deduped": True,
+            "method": "project_session_history",
             "lanlan_name": lanlan_name,
             "game_type": game_type,
             "session_id": session_id,
         }
-    if request_id:
-        while len(seen_context_ids) >= _ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES:
-            seen_context_ids.popitem(last=False)
-        seen_context_ids[request_id] = now
-        seen_context_ids.move_to_end(request_id)
+    ok = bool(getattr(append_result, "appended", False))
+    if ok is False:
+        return {
+            "ok": False,
+            "reason": getattr(append_result, "reason", None) or "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
 
     return {
         "ok": bool(ok),
@@ -7699,11 +7713,34 @@ async def game_realtime_context(game_type: str, request: Request):
             "items": len(data.get("pendingItems") or []),
         }
 
+    append_context = getattr(mgr, "append_context", None)
+    if not callable(append_context):
+        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
     try:
-        await session.prime_context(text, skipped=True)
+        append_result = await append_context(
+            source="game.realtime_context",
+            role="system",
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="current_session",
+            request_id=str(data.get("request_id") or "") or None,
+            ordering_key=str((data.get("state") or {}).get("sessionId") or data.get("session_id") or "") or None,
+            metadata={
+                "game_type": game_type,
+                "lanlan_name": lanlan_name,
+                "items": len(data.get("pendingItems") or []),
+            },
+        )
     except Exception as e:
         logger.warning("🎮 Realtime 上下文注入失败: game=%s lanlan=%s err=%s", game_type, lanlan_name, e)
         return {"ok": False, "reason": f"inject_failed: {e}", "lanlan_name": lanlan_name}
+    if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        return {
+            "ok": False,
+            "reason": getattr(append_result, "reason", None) or "inject_failed",
+            "lanlan_name": lanlan_name,
+        }
 
     logger.info("🎮 Realtime 上下文已注入: game=%s lanlan=%s bytes=%d", game_type, lanlan_name, len(text))
     return {
