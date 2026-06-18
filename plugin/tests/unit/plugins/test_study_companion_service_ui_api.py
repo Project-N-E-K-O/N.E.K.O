@@ -55,6 +55,7 @@ def test_service_payload_builders_preserve_nested_state_and_reply_payloads() -> 
     assert status["is_first_run"] is True
     assert status["history"] == [{"role": "user"}]
     assert status["weak_topics"] == [{"topic_id": "t"}]
+    assert "current_question" not in status
     assert build_tutor_payload(reply)["summary"] == "structured"
     assert build_explain_payload(reply)["extra"] == {"nested": True}
     assert build_ocr_payload(snapshot)["summary"] == "ocr text"

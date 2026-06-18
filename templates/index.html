@@ -386,7 +386,17 @@
     <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-activity-signal.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-interpage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scoped-resources.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/bridge-command-bus.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/target-geometry-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/chat-window-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/command-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/script-normalizer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-interpage.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
@@ -399,7 +409,8 @@
     <script src="/static/avatar-drop-intake.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-tutorial-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/app-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-context-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
@@ -413,18 +424,39 @@
 
     <link rel="stylesheet" href="/static/css/touch-config.css?v={{ static_asset_version }}">
     <script src="/static/touch-config.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-steps.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-overlay.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day1-home-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day2-screen-voice-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day3-interaction-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day4-companion-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day5-personalization-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day6-agent-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day7-graduation-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar-performance-stage.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-avatar-stage.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-wakeup.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial-interaction-takeover.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-director.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial-skip-controller.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial-avatar-reload-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/yui-stage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/wakeup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/standin-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/spotlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/ghost-cursor-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/petal-transition-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/highlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/resistance-controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器（支持所有页面） -->
-    <script src="/static/universal-tutorial-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/icebreaker/new-user-icebreaker.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function () {

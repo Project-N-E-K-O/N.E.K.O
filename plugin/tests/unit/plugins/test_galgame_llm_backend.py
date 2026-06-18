@@ -250,7 +250,7 @@ async def test_llm_backend_create_chat_llm_does_not_receive_temperature(
 
     backend = GalgameLLMBackend(_Logger())
     monkeypatch.setattr(galgame_llm_backend, "get_config_manager", lambda: _Config())
-    monkeypatch.setattr(galgame_llm_backend, "create_chat_llm", _fake_create_chat_llm)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", _fake_create_chat_llm)
 
     assert await backend._call_model(
         operation="explain_line",

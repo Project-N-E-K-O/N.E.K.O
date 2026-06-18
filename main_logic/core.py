@@ -63,7 +63,7 @@ from main_logic.tool_calling import (
     ToolRegistry,
     ToolResult,
 )
-from utils.llm_client import AIMessage
+from utils.llm_client import AIMessage, HumanMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase, CognitionMode
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import (
@@ -378,7 +378,11 @@ def _build_callback_instruction(
             # tells the AI that something happened. Strip trailing newline so
             # the joined output is clean.
             parts.append(header.rstrip())
-    return "\n\n".join(parts)
+    rendered = "\n\n".join(parts)
+    # Total input budget: many callbacks accumulating must not blow up the turn.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
 
 
 def _format_voice_swap_item(
@@ -517,7 +521,53 @@ def _render_pending_extra_replies_by_origin(
                 + "\n".join(items)
                 + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
             )
-    return "".join(blocks)
+    rendered = "".join(blocks)
+    # Total input budget for the voice hot-swap injection (mirror of the
+    # text-mode cap in _build_callback_instruction). Backstop only — callers
+    # should pre-select within budget via _select_callbacks_within_token_budget
+    # so whole callbacks are never silently dropped after a successful ack.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
+
+
+def _select_callbacks_within_token_budget(callbacks, total_budget):
+    """Greedily take the oldest prefix of ``callbacks`` whose cumulative
+    summary/detail token count stays within ``total_budget``.
+
+    Returns ``(selected, deferred)``. Always selects at least one item so the
+    queue makes forward progress (each item is already per-item capped at
+    enqueue). The point: a caller that acks + clears must ack/clear only the
+    *selected* items and re-queue ``deferred`` for the next turn — otherwise
+    callbacks beyond the cap would be acked as delivered but never reach the
+    model (see PR review)."""
+    from utils.tokenize import count_tokens
+    # Per-item overhead for the emoji/bullet, the per-group outer header, and the
+    # template wrapper that the renderer adds around the body. Over-counting is
+    # the SAFE direction: we select fewer, so the rendered instruction stays
+    # under budget and the builder's backstop truncation never cuts an already
+    # selected (and acked) callback.
+    _ITEM_OVERHEAD_TOKENS = 48
+    selected: list = []
+    used = 0
+    for i, cb in enumerate(callbacks):
+        if isinstance(cb, dict):
+            # Count every field the renderer may emit — body line (summary or
+            # detail) plus the error/source fallback line — not just summary.
+            t = (
+                count_tokens(cb.get("summary") or "")
+                + count_tokens(cb.get("detail") or "")
+                + count_tokens(cb.get("error_message") or "")
+                + count_tokens(cb.get("source_name") or "")
+                + _ITEM_OVERHEAD_TOKENS
+            )
+        else:
+            t = count_tokens(str(cb)) + _ITEM_OVERHEAD_TOKENS
+        if selected and used + t > total_budget:
+            return selected, list(callbacks[i:])
+        selected.append(cb)
+        used += t
+    return selected, []
 
 
 from config.prompts.prompts_avatar_interaction import (
@@ -1067,6 +1117,42 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def _append_icebreaker_context_to_new_session_cache(self, role: str, text: str) -> None:
+        if not getattr(self, "is_preparing_new_session", False):
+            return
+        cache = getattr(self, "message_cache_for_new_session", None)
+        if not isinstance(cache, list):
+            cache = []
+            self.message_cache_for_new_session = cache
+        speaker = (
+            getattr(self, "master_name", "user")
+            if role == "user"
+            else getattr(self, "lanlan_name", "assistant")
+        )
+        cache.append({"role": speaker, "text": text})
+
+    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
+        """Append icebreaker turns through the existing conversation/cache path."""
+        normalized_role = str(role or "").strip().lower()
+        content = str(text or "").strip()
+        if normalized_role not in {"assistant", "user"} or not content:
+            return False
+        self._append_icebreaker_context_to_new_session_cache(normalized_role, content)
+
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if isinstance(history, list):
+            message = AIMessage(content=content) if normalized_role == "assistant" else HumanMessage(content=content)
+            history.append(message)
+            return True
+
+        prime_context = getattr(session, "prime_context", None)
+        if callable(prime_context):
+            await prime_context(f"{normalized_role}: {content}", skipped=True)
+            return True
+
+        return bool(getattr(self, "is_preparing_new_session", False))
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
@@ -4460,7 +4546,7 @@ class LLMSessionManager:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
     async def _maybe_kick_activity_loop_for_context_prompt(self) -> None:
-        """Start the activity tracker's background heartbeat so the context prompt can fire.
+        """Start the activity tracker's background heartbeat.
 
         Context-prompt detection (entering gaming/entertainment / entering focused
         work) hangs off the tracker's 20s heartbeat, and the heartbeat lazy-starts
@@ -4468,15 +4554,16 @@ class LLMSessionManager:
         paths where proactive chat is on. Proactive chat defaults to off at first
         start, so without an explicit kick a user who hasn't enabled proactive chat
         would never detect entering a game and the prompt would never show. Here we
-        kick once when the session comes up (get_snapshot is idempotent and won't
-        start the loop twice).
+        kick once when the session comes up.
 
         The context prompt used to be gated to the vision_chat_default_off A/B group;
-        it's now merged into main and open to everyone, so the kick is no longer
-        branch-gated. It is still gated on the user having *explicitly* allowed
-        autonomous vision (privacy mode off) — see the persisted-pref check below.
+        it's now merged into main and open to everyone. OS signal collection is still
+        gated on the user having *explicitly* allowed autonomous vision (privacy mode
+        off), but the topic candidate heartbeat is privacy-independent and should
+        run even when vision is disabled.
         """
         try:
+            self._activity_tracker.ensure_activity_guess_loop_started()
             # 只有当 proactiveVisionEnabled 已被显式落盘为 True 才 kick：get_snapshot 会起
             # SystemSignalCollector 采集窗口/进程信号，且绕过隐私模式（loop 只跳过 LLM、
             # collector 仍在采）。不能用 is_privacy_mode_active()——它在 proactiveVisionEnabled
@@ -6445,20 +6532,20 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
-                # Delivery-point voice re-gate (1/2 — cheap early-out before the
+                # Delivery-point topic re-gate (1/2 — cheap early-out before the
                 # sid claim). A topic hook can pass the release gate, get copied
                 # into callbacks_snapshot + removed from pending_agent_callbacks,
                 # then this trigger parks on try_start_proactive /
-                # _proactive_write_lock while the user starts an audio session.
-                # That in-flight snapshot is in neither queue, so the voice-start
-                # sweep can't reach it and the release gate's check has gone
-                # stale. Drop topic hooks if voice has since taken over (ack False
-                # so TopicHookPool retries on a text session); the retracted
-                # filter below removes them + their extras. A SECOND identical
-                # re-gate runs right before prompt_ephemeral to catch a takeover
-                # that lands during the CLAIM/PHASE2 awaits in between.
-                if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(callbacks_snapshot):
-                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — voice took over mid-delivery", self.lanlan_name)
+                # _proactive_write_lock while the user starts a new turn, opens a
+                # voice session, or otherwise closes the callback-specific gate.
+                # That in-flight snapshot is in neither queue, so queue sweeps
+                # cannot reach it and the release gate's check has gone stale.
+                # Drop topic hooks with ack False so TopicHookPool retries later;
+                # the retracted filter below removes them + their extras. A SECOND
+                # identical re-gate runs right before prompt_ephemeral to catch a
+                # gate closure that lands during the CLAIM/PHASE2 awaits in between.
+                if self._retract_unavailable_topic_hook_snapshots(callbacks_snapshot):
+                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — delivery gate closed mid-delivery", self.lanlan_name)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -6509,13 +6596,13 @@ class LLMSessionManager:
             # and re-passes it (preserve-until-success). NOTE: we do NOT call
             # _stream_cb_media for text mode (that's the voice path, which uses
             # the realtime session's persistent conversation.item).
-            # Delivery-point voice re-gate (2/2 — authoritative, immediately
+            # Delivery-point topic re-gate (2/2 — authoritative, immediately
             # before prompt_ephemeral). CLAIM/PHASE2 were just awaited above, so
-            # the user may have switched to audio since the pre-claim check;
-            # re-drop topic hooks here so a takeover during those awaits can't
+            # the user may have switched to audio or sent a fresh turn since the
+            # pre-claim check; re-drop topic hooks here so a stale hook cannot
             # still prompt the old text session.
-            if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(active_callbacks):
-                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — voice took over mid-delivery", self.lanlan_name)
+            if self._retract_unavailable_topic_hook_snapshots(active_callbacks):
+                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — delivery gate closed mid-delivery", self.lanlan_name)
             self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
@@ -6525,6 +6612,17 @@ class LLMSessionManager:
             if not active_callbacks:
                 logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
                 # Free the inflight slot — text_start/text_end below won't run.
+                self.proactive_manager.release_inflight_noop()
+                return False
+            async with self.lock:
+                preempted_before_prompt = (
+                    self.state.is_proactive_preempted()
+                    or self.current_speech_id != proactive_sid
+                )
+            if preempted_before_prompt:
+                logger.info("[%s] trigger_agent_callbacks: preempted before prompt, re-queueing", self.lanlan_name)
+                self.pending_agent_callbacks.extend(active_callbacks)
+                callbacks_snapshot[:] = []
                 self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []
@@ -7024,13 +7122,13 @@ class LLMSessionManager:
         """Whether a background deep-topic hook may interrupt right now.
 
         Deep topic hooks are brand-new text openers — the most intrusive,
-        "better none than forced" kind of proactive content. They must honour the same
-        activity gate as ``/api/proactive_chat``: never surface while the
-        user's propensity is ``closed`` (privacy blacklist) or
+        "better none than forced" kind of proactive content. They must honour
+        the same activity gate as ``/api/proactive_chat``: delivery never
+        surfaces when the user's propensity is ``closed`` or
         ``restricted_screen_only`` (gaming / focused_work). Unlike the
         proactive reminiscence path there is NO open-thread exception — a
-        fresh deep topic is not a follow-up to something already on the
-        table, so it shouldn't borrow that escape hatch.
+        fresh deep topic is not a follow-up to something already on the table,
+        so it shouldn't borrow that escape hatch.
 
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
@@ -7050,11 +7148,13 @@ class LLMSessionManager:
         already-pending / extras-only paths are closed separately in
         ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
 
-        Fail-open (return True) when no snapshot is available, mirroring the
-        proactive path's "snapshot None ⇒ open propensity" default. Privacy
-        mode is deliberately NOT re-checked here: it gates *accumulation* (the
-        pool is wiped the moment privacy turns on, see enrich_topic_pool), not
-        delivery of a hook that was already built from a pre-privacy snapshot.
+        Privacy mode is deliberately NOT checked here and no longer gates the
+        deep-topic chain upstream either. Store/candidate/prepare/delivery all
+        proceed independently from that toggle; this method only answers
+        whether a prepared hook may interrupt the current activity context.
+        Activity snapshot lookup remains fail-open when no snapshot is
+        available, mirroring the proactive path's "snapshot None ⇒ open
+        propensity" default.
         """
         if self._voice_delivery_blocked():
             return False
@@ -7066,17 +7166,25 @@ class LLMSessionManager:
         except Exception:
             return True
         propensity = getattr(snap, 'propensity', None)
-        return propensity not in ('closed', 'restricted_screen_only')
+        if propensity in ('closed', 'restricted_screen_only'):
+            return False
+        if getattr(snap, 'unfinished_thread', None) is not None:
+            logger.info(
+                "[%s] topic hook delivery skipped: unfinished thread is still open",
+                self.lanlan_name,
+            )
+            return False
+        return True
 
     def current_topic_language(self) -> Optional[str]:
         """Live full-locale topic language, for re-resolving at delivery time.
 
         A topic hook captures its language when it is scheduled; if the
-        session language changes during the quiet window (``set_user_language``
-        with no new chat turn to reschedule the trigger), that captured value
-        goes stale. Topic delivery re-resolves from here so the hook renders in
-        the current locale (preserving zh-TW etc.). Returns None when no
-        dispatcher is available so the caller keeps the captured language.
+        session language changes while the material is pending delivery, that
+        captured value goes stale. Topic delivery re-resolves from here so the
+        hook renders in the current locale (preserving zh-TW etc.). Returns
+        None when no dispatcher is available so the caller keeps the captured
+        language.
         """
         dispatcher = getattr(self, '_turn_dispatcher', None)
         getter = getattr(dispatcher, 'current_language', None)
@@ -7127,13 +7235,13 @@ class LLMSessionManager:
         # topic_hook_delivery_allowed), drop the topic hook (ack=False) so
         # TopicHookPool retries later instead of opening a fresh deep topic at
         # the wrong moment. Other channels are unaffected.
-        if callbacks and not self.topic_hook_delivery_allowed():
+        if callbacks:
             kept = []
             for cb in callbacks:
-                if cb.get("channel") == "topic_hook":
+                if cb.get("channel") == "topic_hook" and not self._topic_hook_release_allowed(cb):
                     resolve_callback_delivery_ack(cb, False)
                     logger.info(
-                        "[%s] topic hook held at release: activity propensity restricts interruption",
+                        "[%s] topic hook held at release: delivery gate restricts interruption",
                         self.lanlan_name,
                     )
                 else:
@@ -7442,12 +7550,46 @@ class LLMSessionManager:
                 self.lanlan_name, len(hooks), dropped_extras,
             )
 
+    def _topic_hook_release_allowed(self, callback: dict) -> bool:
+        if callback.get("channel") != "topic_hook":
+            return True
+        if not self.topic_hook_delivery_allowed():
+            return False
+        release_available = callback.get("_topic_release_available")
+        if not callable(release_available):
+            return True
+        try:
+            return bool(release_available())
+        except Exception as exc:
+            logger.warning(
+                "[%s] topic hook release predicate failed closed: %s",
+                self.lanlan_name,
+                exc,
+            )
+            return False
+
+    def _retract_unavailable_topic_hook_snapshots(self, callbacks: list) -> int:
+        """Retract in-flight topic hooks whose release-time gate closed."""
+        n = 0
+        for cb in callbacks:
+            if (
+                isinstance(cb, dict)
+                and cb.get("channel") == "topic_hook"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                and not self._topic_hook_release_allowed(cb)
+            ):
+                resolve_callback_delivery_ack(cb, False)
+                cb[DELIVERY_RETRACTED_KEY] = True
+                n += 1
+        return n
+
     def _retract_topic_hook_snapshots(self, callbacks: list) -> int:
         """Mark in-flight topic-hook snapshot entries retracted + ack False so the
         text delivery path drops them and ``TopicHookPool`` retries on a text
-        session. The delivery-point voice re-gate: a snapshot held by an
-        in-flight ``trigger_agent_callbacks`` is in neither pending queue, so the
-        voice-start sweep can't reach it. Returns the number retracted."""
+        session. This is the voice-specific subset of the broader topic release
+        gate: a snapshot held by an in-flight ``trigger_agent_callbacks`` is in
+        neither pending queue, so the voice-start sweep can't reach it. Returns
+        the number retracted."""
         n = 0
         for cb in callbacks:
             if (
@@ -7485,8 +7627,36 @@ class LLMSessionManager:
         hot-swap fire at different lifecycle points).
         """
         try:
-            summary = str(callback.get("summary") or "").strip()
-            detail = str(callback.get("detail") or "").strip()
+            from utils.tokenize import truncate_to_tokens
+            from config import (
+                AGENT_CALLBACK_TEXT_MAX_TOKENS,
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS,
+            )
+            # Per-item input budget: summary/detail flow into the LLM verbatim
+            # (text-mode drain + voice hot-swap). task_result callbacks are
+            # already TASK_*-capped upstream, but push_message/proactive_message
+            # text is aggregated uncapped by proactive_bridge — cap it here, the
+            # single chokepoint both queues pass through.
+            #
+            # Cheap CHAR pre-cap BEFORE tokenizing: a malformed/huge plugin
+            # message must not make tiktoken encode megabytes synchronously on
+            # the event loop. 8x headroom over the token budget is safe for any
+            # language (English ~4 char/token, CJK <1), so the char cut never
+            # removes content the token cap would have kept.
+            _char_precap = AGENT_CALLBACK_TEXT_MAX_TOKENS * 8
+            summary_raw = str(callback.get("summary") or "").strip()[:_char_precap]
+            detail_raw = str(callback.get("detail") or "").strip()[:_char_precap]
+            summary = truncate_to_tokens(summary_raw, AGENT_CALLBACK_TEXT_MAX_TOKENS)
+            # summary/detail frequently carry the SAME body (proactive_bridge
+            # sets both to the aggregated text) — reuse the encode, don't do it
+            # twice.
+            detail = summary if detail_raw == summary_raw else truncate_to_tokens(
+                detail_raw, AGENT_CALLBACK_TEXT_MAX_TOKENS
+            )
+            # Write the capped text back so the text-mode drain (which reads the
+            # callback dict directly) injects the truncated body too.
+            callback["summary"] = summary
+            callback["detail"] = detail
             error_message = str(callback.get("error_message") or "").strip()
             source_name = str(callback.get("source_name") or "").strip()
             status = callback.get("status") or "completed"
@@ -7528,6 +7698,33 @@ class LLMSessionManager:
                 "source_name": source_name,
                 "error_message": error_message,
             })
+            # Flood guard: a runaway plugin event stream must not grow either
+            # queue without bound. Keep the most recent N (newest = most
+            # relevant); drop-oldest.
+            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
+                dropped = self.pending_agent_callbacks[:overflow]
+                dropped_ids = {
+                    _cb.get("_callback_delivery_id")
+                    for _cb in dropped
+                    if isinstance(_cb, dict) and _cb.get("_callback_delivery_id")
+                }
+                self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
+                # Resolve any delivery-ack future on a dropped callback NOW, so a
+                # waiter (e.g. topic-hook delivery) unblocks immediately instead
+                # of stalling until its timeout.
+                for _cb in dropped:
+                    resolve_callback_delivery_ack(_cb, False)
+                # Drop the matching voice-queue mirrors by delivery_id (the two
+                # queues drift, so positional trimming is unreliable) — otherwise
+                # a callback acked False here could still be injected via hot-swap.
+                if dropped_ids:
+                    self.pending_extra_replies = [
+                        _extra for _extra in self.pending_extra_replies
+                        if _extra.get("_callback_delivery_id") not in dropped_ids
+                    ]
+            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
             pass
 
@@ -7548,7 +7745,27 @@ class LLMSessionManager:
         self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
             return ""
-        callbacks_snapshot = list(self.pending_agent_callbacks)
+        candidate_callbacks = list(self.pending_agent_callbacks)
+        if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):
+            logger.info(
+                "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",
+                self.lanlan_name,
+            )
+        self._purge_retracted_agent_callback_extras(candidate_callbacks)
+        self._purge_retracted_agent_callbacks()
+        active_callbacks = [
+            cb for cb in candidate_callbacks
+            if not cb.get(DELIVERY_RETRACTED_KEY)
+        ]
+        if not active_callbacks:
+            return ""
+        from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        # Budget-aware selection: render (and ack) only the callbacks that fit
+        # the total budget this turn; defer the rest to the next drain instead
+        # of acking them as delivered while their text falls off the cap.
+        callbacks_snapshot, deferred = _select_callbacks_within_token_budget(
+            active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        )
         delivered_to_prompt = False
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
@@ -7565,7 +7782,9 @@ class LLMSessionManager:
             if delivered_to_prompt:
                 for cb in callbacks_snapshot:
                     resolve_callback_delivery_ack(cb, True)
-            self.pending_agent_callbacks.clear()
+            # Keep deferred (over-budget) callbacks for the next turn; only the
+            # rendered+acked ones leave the queue.
+            self.pending_agent_callbacks = deferred
 
     async def _perform_final_swap_sequence(self):
         """[Hot-swap related] Perform the final swap sequence"""
@@ -7607,14 +7826,19 @@ class LLMSessionManager:
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
                 _lang = normalize_language_code(self.user_language, format='short')
+                from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+                # Budget-aware selection (mirror of the text-mode drain): render
+                # only what fits, keep the rest for the next hot-swap rather than
+                # dropping it after clearing the queue.
+                _selected, _deferred = _select_callbacks_within_token_budget(
+                    list(self.pending_extra_replies), AGENT_CALLBACK_TOTAL_MAX_TOKENS
+                )
                 final_prime_text += _render_pending_extra_replies_by_origin(
-                    self.pending_extra_replies,
+                    _selected,
                     lang=_lang,
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
-                # 清空队列，避免重复注入
-                self.pending_extra_replies.clear()
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -7624,6 +7848,9 @@ class LLMSessionManager:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
+                # 仅在成功注入后才移除已选条目；失败时保留整队列等下一轮 hot-swap
+                # （否则 _selected 既没进模型又丢了）。over-budget 的 _deferred 留到下一轮。
+                self.pending_extra_replies = _deferred
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)

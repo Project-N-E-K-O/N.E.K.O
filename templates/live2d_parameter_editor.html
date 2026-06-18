@@ -105,9 +105,10 @@
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial-skip-controller.js"></script>
-    <script src="/static/tutorial-avatar-reload-controller.js"></script>
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/skip-controller.js"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/tutorial/core/universal-manager.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             if (typeof initUniversalTutorialManager === 'function') {

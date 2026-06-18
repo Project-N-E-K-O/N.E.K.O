@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 CredentialProvider = Callable[[], Awaitable[Optional[object]]]
@@ -76,7 +77,6 @@ class BiliAuthService:
         QrCodeLogin, _ = self._require_login_sdk()
         self._login_session = QrCodeLogin()
         await self._login_session.generate_qrcode()
-        import time
         self._login_generated_at = time.time()
         pic = self._login_session.get_qrcode_picture()
         png_bytes = pic.content
@@ -104,20 +104,29 @@ class BiliAuthService:
 
         _, QrCodeLoginEvents = self._require_login_sdk()
         state = await self._login_session.check_state()
-        # 防误报：刚生成二维码时 check_state() 可能立刻返回 SCAN
-        #（bilibili_api 某些版本中 SCAN 枚举值为 0，与"无事件"混淆）
-        import time
-        if state == QrCodeLoginEvents.SCAN and time.time() - self._login_generated_at < 1.0:
+        # 防误报：check_state() 可能返回 SCAN（枚举值 0）作为"无事件"默认值
+        # bilibili_api >= 16.x 新增了 NONE 枚举用于区分"无事件"与"已扫码"
+        none_event = getattr(QrCodeLoginEvents, "NONE", None)
+        if none_event is not None and state == none_event:
             return {
                 "status": "waiting",
                 "message": "等待扫码...",
                 "next_step": "请用B站App扫描二维码",
             }
         if state == QrCodeLoginEvents.SCAN:
+            # 新 SDK（有 NONE 枚举）: SCAN 是真正的扫码事件
+            if none_event is not None:
+                return {
+                    "status": "scanning",
+                    "message": "已扫码，等待用户在手机上确认...",
+                    "next_step": "请等待3秒后再次调用 bili_login_check",
+                }
+            # 旧 SDK 无 NONE: SCAN=0 无法区分"无事件"与"已扫码"
+            # 保守处理为 waiting，等待 CONF/DONE/TIMEOUT 事件
             return {
-                "status": "scanning",
-                "message": "已扫码，等待用户在手机上确认...",
-                "next_step": "请等待3秒后再次调用 bili_login_check",
+                "status": "waiting",
+                "message": "等待扫码...",
+                "next_step": "请用B站App扫描二维码",
             }
         if state == QrCodeLoginEvents.CONF:
             return {

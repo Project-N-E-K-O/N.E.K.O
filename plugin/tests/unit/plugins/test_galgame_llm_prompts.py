@@ -16,7 +16,7 @@ from plugin.plugins.galgame_plugin.llm_prompts import (
 
 def _cfg(**overrides):
     values = {
-        "context_counting_mode": "char",
+        "context_counting_mode": "token",
         "context_max_tokens": 6000,
         "context_semantic_compression": False,
     }
@@ -28,18 +28,18 @@ def _rendered_context(result) -> str:
     return result.messages[1]["content"].split("context:\n", 1)[1]
 
 
-def test_prompt_context_keeps_default_char_mode_behavior() -> None:
-    context = {"text": "x" * 13000}
+def test_prompt_context_uses_default_token_budget() -> None:
+    context = {"text": "日" * 5000}
 
     default_rendered = _rendered_context(build_prompt_messages_with_metadata("agent_reply", context))
     configured_rendered = _rendered_context(build_prompt_messages_with_metadata(
         "agent_reply",
         context,
-        _cfg(context_counting_mode="char", context_max_tokens=1),
+        _cfg(context_counting_mode="char", context_max_tokens=6000),
     ))
 
     assert default_rendered == configured_rendered
-    assert len(default_rendered) <= 12000
+    assert llm_prompts.estimate_context_tokens(json.loads(default_rendered)) <= 6000
     assert json.loads(default_rendered)["_prompt_truncated"] is True
 
 
@@ -86,7 +86,7 @@ def test_token_mode_hard_fallback_reports_level_four() -> None:
 def test_prompt_truncation_notice_only_when_compacted() -> None:
     compacted = build_prompt_messages_with_metadata(
         "agent_reply",
-        {"text": "x" * 13000},
+        {"text": "日" * 5000},
     )
     uncompressed = build_prompt_messages_with_metadata(
         "agent_reply",
@@ -124,13 +124,13 @@ def test_prompt_compaction_uses_importance_before_stripping_metadata() -> None:
         "recent_lines": [
             {
                 "line_id": "important",
-                "text": "important " + ("x" * 900),
+                "text": "important " + ("日" * 900),
                 "_importance_score": 999,
             },
             *[
                 {
                     "line_id": f"filler-{index}",
-                    "text": "filler " + ("x" * 900),
+                    "text": "filler " + ("日" * 900),
                     "_importance_score": 1,
                 }
                 for index in range(19)

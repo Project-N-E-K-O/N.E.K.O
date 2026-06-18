@@ -125,7 +125,7 @@ def count_tokens(text: str, encoding: str = PERSONA_RENDER_ENCODING) -> int:
     enc = _get_encoder(encoding)
     if enc is None:
         return _count_tokens_heuristic(text)
-    return len(enc.encode(text))
+    return len(enc.encode(text, disallowed_special=()))
 
 
 async def acount_tokens(
@@ -165,7 +165,7 @@ def truncate_to_tokens(
     enc = _get_encoder(encoding)
     if enc is None:
         return _truncate_to_tokens_heuristic(text, max_tokens)
-    tokens = enc.encode(text)
+    tokens = enc.encode(text, disallowed_special=())
     if len(tokens) <= max_tokens:
         return text
     return enc.decode(tokens[:max_tokens])
@@ -289,7 +289,7 @@ def truncate_head_tail_tokens(
         if not head_str and not tail_str:
             return ""
         return f"{head_str}{separator}{tail_str}"
-    tokens = enc.encode(text)
+    tokens = enc.encode(text, disallowed_special=())
     head_tok = tokens[:head_alloc] if head_alloc else []
     tail_tok = tokens[-tail_alloc:] if tail_alloc > 0 else []
     head_str = enc.decode(head_tok) if head_tok else ""

@@ -53,7 +53,6 @@ class StudyStatusPayload(TypedDict, total=False):
     current_question: dict[str, Any]
     last_answer_evaluation: dict[str, Any]
     screen_classification: dict[str, Any]
-    last_reply: str
     last_error: str
     history: list[dict[str, Any]]
 
@@ -452,8 +451,6 @@ class StudyState:
     last_answer_evaluated_at: str = ""
     last_session_summary: str = ""
     last_session_summary_at: str = ""
-    last_reply: str = ""
-    last_reply_at: str = ""
     checkpoint: dict[str, Any] = field(default_factory=dict)
     dependency_status: dict[str, Any] = field(default_factory=dict)
 

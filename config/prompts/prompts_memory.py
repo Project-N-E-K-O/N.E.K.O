@@ -1193,20 +1193,6 @@ def render_profile_rename_event_context(
         ),
     )
 
-# ---------- Proactive chat followup header ----------
-# 文案故意"鼓励性"而非"可选性"——之前的"可以选择性地回顾"语气太弱，配合
-# Phase 2 prompt 的反复读警告，会让模型把回忆当成"高重复风险"绕开。新表述
-# 强调这些是"久远的旧话题"，与"最近 1h 内复读"明确区分。
-PROACTIVE_FOLLOWUP_HEADER = {
-    "zh": "\n[回忆线索] 以下旧话题距今较久，适合自然回忆与跟进：\n",
-    "en": "\n[Memory cues] Older topics from prior conversations — well-suited for natural reminiscence:\n",
-    "ja": "\n[記憶の手がかり] 以前の会話で出た古い話題——自然に回想して持ち出すのに向いている：\n",
-    "ko": "\n[기억 단서] 이전 대화에서 나온 오래된 화제——자연스럽게 회상하여 꺼내기 좋음:\n",
-    "ru": "\n[Подсказки памяти] Старые темы из прошлых разговоров — удачные для естественного возврата:\n",
-    "es": "\n[Pistas de memoria] Temas antiguos de conversaciones previas, adecuados para recordar y dar seguimiento con naturalidad:\n",
-    "pt": "\n[Pistas de memória] Temas antigos de conversas anteriores, adequados para recordar e acompanhar com naturalidade:\n",
-}
-
 # =====================================================================
 # ======= Long-term memory prompt templates ===========================
 # =====================================================================

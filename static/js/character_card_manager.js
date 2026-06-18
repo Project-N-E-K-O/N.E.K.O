@@ -10931,7 +10931,7 @@ function _cardAssistCollectCurrentFormData(form) {
 // → 没有 window.nekoLocalMutationSecurity，所以这里自包含地拿 X-CSRF-Token：
 //   1) 主 app 上下文里若已有统一安全助手就直接用（带刷新逻辑）；
 //   2) 独立页兜底：从 /api/config/page_config 取 autostart_csrf_token（与本页已加载的
-//      universal-tutorial-manager.js 同一套来源），缓存一次即可（per-instance 常量）。
+//      tutorial/core/universal-manager.js 同一套来源），缓存一次即可（per-instance 常量）。
 // 取不到就返回空头——后端会 403，_cardAssistFetch 下面的错误通路照常当失败处理，不会
 // 静默成功。Origin 头由浏览器对同源 POST 自动带上，与本页 tutorial 上报走的是同一条路。
 let _cardAssistCsrfToken = null;

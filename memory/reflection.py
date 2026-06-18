@@ -791,7 +791,7 @@ class ReflectionEngine:
         """
         from config.prompts.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
@@ -883,15 +883,16 @@ class ReflectionEngine:
             # try/except 兜底返回 []）。
             # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
             # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
-            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
-            llm = create_chat_llm(
+            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -2020,6 +2021,20 @@ class ReflectionEngine:
         )
 
     @staticmethod
+    def _followup_render_key(value) -> str:
+        """Return the text key used when deciding whether a followup can render.
+
+        Keep this local instead of importing main_logic.topic.common.clean_text:
+        memory is a lower layer and should not depend on prompt-rendering code.
+        """
+        text = " ".join(str(value or "").strip().split())
+        if not text:
+            return ""
+        if len(text) > 120:
+            return text[:120].rstrip() + "..."
+        return text
+
+    @staticmethod
     def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
         """Filter pending reflections for proactive chat candidacy.
 
@@ -2047,6 +2062,7 @@ class ReflectionEngine:
             return []
         now = datetime.now()
         eligible = []
+        seen_text_keys: set[str] = set()
         for r in pending:
             next_eligible = r.get('next_eligible_at')
             if next_eligible:
@@ -2057,6 +2073,12 @@ class ReflectionEngine:
                     pass
             if evidence_score(r, now) < 0:
                 continue
+            text_key = ReflectionEngine._followup_render_key(r.get('text'))
+            if not text_key:
+                continue
+            if text_key in seen_text_keys:
+                continue
+            seen_text_keys.add(text_key)
             eligible.append(r)
         from config import (
             REFLECTION_SURFACE_TOP_K,
@@ -2168,7 +2190,7 @@ class ReflectionEngine:
     async def _check_feedback_locked(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         from config.prompts.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         surfaced = await self.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
@@ -2190,13 +2212,15 @@ class ReflectionEngine:
             api_config = self._config_manager.get_model_api_config('summary')
             # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
             # max_retries=0: 禁 SDK 自动重试。
-            llm = create_chat_llm(
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON isn't truncated
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -2234,7 +2258,7 @@ class ReflectionEngine:
         """
         from config.prompts.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         if not confirmed or not user_messages:
             return []
@@ -2258,14 +2282,16 @@ class ReflectionEngine:
             # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
             # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
             # extra_body=None: 显式开 thinking。
-            llm = create_chat_llm(
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=90, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -2788,17 +2814,19 @@ class ReflectionEngine:
         new_scope: str | None = None
         event_when_raw: dict | None = None
         try:
-            from utils.llm_client import create_chat_llm
+            from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
-            llm = create_chat_llm(
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -3190,7 +3218,7 @@ class ReflectionEngine:
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
         # Build the impression pool block with stable ordering — protected
@@ -3234,10 +3262,12 @@ class ReflectionEngine:
         # reflection 锁做 stamp 和 CAS），所以 90s 不阻塞同角色其他 reflection 写。
         # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
         # extra_body=None: 显式开 thinking。
-        llm = create_chat_llm(
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+        llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
             timeout=90, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,
         )
         try:

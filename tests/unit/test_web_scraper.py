@@ -29,6 +29,12 @@ async def test_generate_diverse_queries_sends_user_message(monkeypatch):
         def __init__(self, **kwargs):
             captured["kwargs"] = kwargs
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
         async def ainvoke(self, messages):
             captured["messages"] = messages
             return AIMessage(content="关键词A\n关键词B\n关键词C")
@@ -37,7 +43,7 @@ async def test_generate_diverse_queries_sends_user_message(monkeypatch):
         return FakeLLM(**kwargs)
 
     monkeypatch.setattr(config_manager_module, "ConfigManager", FakeConfigManager)
-    monkeypatch.setattr(web_scraper, "create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
     monkeypatch.setattr(web_scraper, "is_china_region", lambda: True)
 
     result = await web_scraper.generate_diverse_queries("Project N.E.K.O.")

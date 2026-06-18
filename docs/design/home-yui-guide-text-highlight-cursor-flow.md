@@ -2,10 +2,12 @@
 
 本文按首页新手教程期间文本输出的先后顺序，记录当前高亮和 ghost cursor 的流程情况。它只描述首页教程的文本、spotlight/highlight、ghost cursor、真实 UI 点击和流程交接；YUI 模型动作演出看 `home-tutorial-yui-guide-performance-owner-stage-breakdown.md`，通用动作运行时维护规则看 `avatar-performance-module-maintenance.md`。
 
+通用生命周期模块和页面专属适配层的边界看 `home-yui-guide-lifecycle-modularization.md`。本文里的 scene 顺序、目标 DOM、ghost cursor 路径和真实 UI 点击属于首页 Yui 教程专属适配；圆形/矩形高亮生命周期、轻微打断、生气退出、跳过按钮、临时切模等通用生命周期不得在本文对应代码里重新复制实现。
+
 若本文与当前代码冲突，以当前代码为准。主要代码入口：
 
-1. `static/yui-guide-steps.js`：scene 顺序、台词 key、默认 cursor target。
-2. `static/yui-guide-director.js`：文本输出、高亮、ghost cursor 移动、真实 UI 点击。
+1. `static/tutorial/yui-guide/steps.js`：scene 顺序、台词 key、默认 cursor target。
+2. `static/tutorial/yui-guide/director.js`：文本输出、高亮、ghost cursor 移动、真实 UI 点击。
 3. `static/locales/zh-CN.json`：中文台词文案。
 
 ## 当前首页顺序
@@ -29,19 +31,20 @@ takeover_return_control
 1. 网页端先显示激活提示：`tutorial.yuiGuide.lines.introActivationHint`
    - 中文：“点一下这里，我就能开始说话啦～”
 2. 桌面 Pet 外置聊天窗模式跳过首页输入框点击激活，不显示这一步输入框激活气泡。
+3. PC 全局 overlay 启用时，外置聊天窗只回传聊天输入区 screen 锚点；首页 Director 收到锚点后显示全局 Ghost Cursor，外置聊天窗不直接渲染或推送 PC cursor。
 
 高亮流程：
 
 1. `runWakeupPrelude()` 完成苏醒后进入聊天 intro。
-2. 普通首页模式调用 `ensureChatVisible()`，再用 `focusAndHighlightChatInput()` 把 persistent spotlight 放到 React compact 胶囊对话输入框。
-3. 气泡锚定 compact 胶囊输入框，手动定位到胶囊正上方。
-4. 外置聊天窗模式不高亮首页胶囊输入框，改为 `setExternalizedChatSpotlight('input')`，由独立 `/chat` 页高亮自己的 compact 胶囊输入框。
+2. 普通首页模式调用 `ensureChatVisible()`，再用 `focusAndHighlightChatInput()` 把 persistent spotlight 放到聊天输入区。
+3. 气泡锚定输入区，手动定位到输入框正上方。
+4. 外置聊天窗模式不高亮首页输入区，改为 `setExternalizedChatSpotlight('window')`。
 
 ghost cursor 流程：
 
-1. 普通首页模式读取 compact 胶囊输入框 rect。
-2. cursor 出现在胶囊输入框中心。
-3. cursor 先 wobble，等待用户点击胶囊输入框完成激活。
+1. 普通首页模式读取输入区 rect。
+2. cursor 出现在输入区中心。
+3. cursor 先 wobble，等待用户点击输入区完成激活。
 4. 用户激活后隐藏提示气泡，overlay 进入 taking-over 状态，cursor 再 wobble 一次。
 
 注意：
@@ -55,41 +58,43 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.introGreetingReply`
    - 中文：“微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡……”
-2. 文本追加到 React chat 教程消息流，语音 key 为 `intro_greeting_reply`。
+2. 文本进入聊天窗口，语音 key 为 `intro_greeting_reply`。
 
 高亮流程：
 
-1. 这一段延续上一阶段 compact 胶囊输入框的 spotlight 状态。
-2. 不打开新的业务面板。
-3. 不执行真实 UI 点击。
+1. 这一段延续上一阶段输入区/聊天区的 spotlight 状态。
+2. 旁白、拥抱和爱心演出全部结束后，`clearIntroGreetingChatHighlight()` 会设置 `introGreetingChatHighlightCleared = true` 并清掉聊天 persistent spotlight；外置聊天窗模式同步清掉外置窗口 spotlight。
+3. 不打开新的业务面板。
+4. 不执行真实 UI 点击。
 
 ghost cursor 流程：
 
-1. 激活后 cursor 保持在 compact 胶囊输入框附近。
+1. 激活后 cursor 保持在输入区附近；外置聊天窗模式下 cursor 由首页 Director 接住外置聊天窗锚点后显示在 PC 全局 overlay，不由聊天窗本地 cursor 持续驱动。
 2. 这一段主要由 YUI 模型演出承接，ghost cursor 不负责展示新 UI。
 
 时间 cue：
 
 1. `intro_greeting_reply` 有 `showIntroGiftHeart` cue。
 2. cue 只驱动头像演出，不改变高亮或 cursor 目标。
+3. 这一段结束后，后续 `highlightChatWindow()` 在首页会因为 `introGreetingChatHighlightCleared` 直接返回；台词仍进入聊天窗口，但 spotlight 不再回到聊天窗。
 
 ## 2. 语音入口介绍
 
 文本输出：
 
 1. `tutorial.yuiGuide.lines.introBasic`
-   - 中文：“这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！……”
-2. 文本追加到 React chat 教程消息流，语音 key 为 `intro_basic`。
+   - 中文：“这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！……”
+2. 文本进入聊天窗口，语音 key 为 `intro_basic`。
 
 高亮流程：
 
-1. `runIntroVoiceControlButtonShowcase()` 先调用 `highlightChatWindow()`。
-2. 普通首页模式下，persistent spotlight 放到 React compact 胶囊对话输入框；如果是外置聊天窗，则同步独立 `/chat` 页的 compact 胶囊输入框 spotlight。
-3. action spotlight 放到语音控制按钮，也就是 `#${p}-btn-mic` 的圆形按钮 shell。
+1. `runIntroVoiceControlButtonShowcase()` 不再恢复聊天窗口 persistent spotlight。
+2. action spotlight 放到语音控制按钮，也就是 `#${p}-btn-mic` 的圆形按钮 shell。
+3. 语音按钮会写入圆形 spotlight geometry hint，聊天窗口只负责承载文本，不再作为本段视觉焦点。
 
 ghost cursor 流程：
 
-1. 如果 cursor 还没有位置，先从 compact 胶囊输入框或默认原点出现。
+1. 如果 cursor 还没有位置，先从输入区或默认原点出现。
 2. cursor 在旁白前段移动到语音控制按钮中心。
 3. 移动时长按语音时长约 16% 估算，限制在 900-2200ms。
 4. 当前流程只展示按钮，不点击语音按钮。
@@ -98,7 +103,7 @@ ghost cursor 流程：
 
 1. 进入语音入口展示时，director 调用 `YuiGuideAvatarStage.startIntroVoiceCursorLookAt()` 建立短 session，只锁 `lookAt`，不接管 `motion` 或 `expression`。
 2. 该 session 期间打开 `window.nekoYuiGuideIntroVoiceLookAtActive`，只让第 2 段绕过新手教程正脸锁的视线归零逻辑。
-3. cursor 从 compact 胶囊输入框移动到语音控制按钮期间，模型面部和视线跟随 ghost cursor 当前坐标；实现上由 director 提供 `overlay.getCursorPosition()`，adapter 每帧把该点喂给 Live2D 的 `model.focus(x, y)`，并以 Live2D 头部/气泡锚点作为 LookAt 原点，在 Yui 专用 temporary pose 中直接写入 `ParamAngleX/Y/Z`、`ParamEyeBallX/Y`、`ParamBodyAngleX/Y/Z`。
+3. cursor 从输入区移动到语音控制按钮期间，模型面部和视线跟随 ghost cursor 当前坐标；实现上由 director 提供 `overlay.getCursorPosition()`，adapter 每帧把该点喂给 Live2D 的 `model.focus(x, y)`，并以 Live2D 头部/气泡锚点作为 LookAt 原点，在 Yui 专用 temporary pose 中直接写入 `ParamAngleX/Y/Z`、`ParamEyeBallX/Y`、`ParamBodyAngleX/Y/Z`。
 4. cursor 到达语音控制按钮并短暂停留时，模型面部和视线也停在按钮方向，强化“她在看这个按钮”的因果关系。
 5. Live2D 的 temporary pose override 会在原始 `coreModel.update()` 后再应用一次，确保本段 ghost cursor LookAt 不被正脸锁、SDK 原始 update、motion 或 focusController 在同一帧覆盖掉。
 6. 语音入口展示结束后，director 在 `finally` 中停止 handle；adapter 清理本段 temporary pose、恢复捕获到的参数、清零 Live2D `focusController`，并关闭 `nekoYuiGuideIntroVoiceLookAtActive`，让教程正脸锁继续接管后续阶段。
@@ -114,13 +119,13 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.takeoverCaptureCursor`
    - 中文：“超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！……”
-2. 文本追加到 React chat 教程消息流，语音 key 为 `takeover_capture_cursor`。
+2. 文本进入聊天窗口，语音 key 为 `takeover_capture_cursor`。
 3. 旁白和 UI 自动操作并行执行。
 
 高亮流程：
 
 1. 场景开始时 overlay 进入 taking-over。
-2. persistent spotlight 先回到 compact 胶囊对话输入框，表示台词仍属于聊天上下文。
+2. 由于 intro 问候结束后已清掉聊天 spotlight，本段台词仍写入聊天窗口，但 persistent spotlight 不再回到聊天窗。
 3. 猫爪按钮 `#${p}-btn-agent` 被作为 retained extra spotlight 保留。
 4. 点击猫爪后打开猫爪/Agent 面板。
 5. 猫爪总开关 `agent-master` 用虚拟 spotlight `takeover-agent-master-toggle` 扩大高亮范围。
@@ -155,11 +160,11 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.takeoverPluginPreviewHome`
    - 中文：“还没完呢！你快看快看，这里还有超多好玩的插件呢！”
-2. 文本追加到 React chat 教程消息流，语音 key 为 `takeover_plugin_preview_home`。
+2. 文本进入聊天窗口，语音 key 为 `takeover_plugin_preview_home`。
 
 高亮流程一：
 
-1. 场景开始调用 `highlightChatWindow()`。
+1. 场景开始会调用 `highlightChatWindow()`，但首页在 intro 问候结束后已设置 `introGreetingChatHighlightCleared`，所以这里不会重新显示聊天 persistent spotlight。
 2. 打开或保持猫爪/Agent 面板。
 3. 用户插件开关 `agent-user-plugin` 被高亮并打开。
 4. hover 用户插件开关，露出侧面板里的“管理面板”入口。
@@ -177,22 +182,34 @@ ghost cursor 流程一：
 
 1. `tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard`
    - 中文：“有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调……”
-2. 插件 dashboard 打开后，文本仍追加到 React chat 教程消息流。
+2. 插件 dashboard 打开后，文本仍追加到聊天窗口。
 3. 语音 key 为 `takeover_plugin_preview_dashboard`。
 
 高亮流程二：
 
 1. dashboard handoff 成功后，首页 overlay 清掉 action spotlight 和 persistent spotlight。
 2. 首页不再继续强调猫爪面板，插件 dashboard 自己负责内部演示。
-3. dashboard 旁白完成后，通知插件 dashboard narration finished。
-4. 回到首页后关闭或收起临时打开的猫爪面板、用户插件侧面板和插件 dashboard 窗口。
-5. 恢复猫爪总开关和用户插件开关到接管前状态。
+3. 插件 dashboard 内部高亮 `main` 区域，并由 `frontend/plugin-manager/src/yui-guide-runtime.ts` 驱动页面内 ghost cursor。
+4. dashboard 旁白完成后，通知插件 dashboard narration finished。
+5. 回到首页后关闭或收起临时打开的猫爪面板、用户插件侧面板和插件 dashboard 窗口。
+6. 恢复猫爪总开关和用户插件开关到接管前状态。
 
 ghost cursor 流程二：
 
 1. 进入 dashboard 讲解时保存首页 cursor 位置。
 2. 首页 ghost cursor 隐藏。
-3. dashboard 完成并回到首页后，如果有保存位置，cursor 在原位置恢复显示。
+3. 插件 dashboard 页面内的 ghost cursor 由插件页 runtime 独立创建、移动、暂停和清理。
+4. 插件页 runtime 会用 `skipButtonScreenRect` 判断真实用户是否点在首页跳过按钮的屏幕区域内；命中时发送带 `screenX/screenY` 的 skip request，让首页把点击转发给 `#neko-tutorial-skip-btn`。
+5. dashboard 完成并回到首页后，如果有保存位置，cursor 在原位置恢复显示。
+
+打断分支补充：
+
+1. 轻微打断时，插件 dashboard 页面内的 `main` 高亮和 ghost cursor 应暂停当前动画，等待轻微抵抗语音结束后恢复原 dashboard 预览。
+2. 生气退出时，插件 dashboard 页面内的 `main` 高亮和 ghost cursor 必须在触发瞬间消失，不能等语音结束。
+3. 生气退出语音完整播放后，插件 dashboard 发送 `source: 'plugin_dashboard_angry_exit'` 的 skip request；首页把它当成明确跳过请求，直接进入 `tutorialManager.handleTutorialSkipRequest()`，不得发送 `plugin-dashboard:done`。
+4. 插件页右上角桌面 skip 按钮发送 `source: 'plugin_dashboard_button'`，同样作为明确跳过请求处理，不要求携带屏幕坐标。
+5. 插件页 skip 按钮和本地教程 tooltip skip 按钮都标记 `data-yui-plugin-dashboard-skip-control="true"`，并在 pointer/mouse/touch/click 链路上阻止事件继续传播，避免点击穿透到后面的插件页面。
+6. 以上插件 dashboard 页面内行为是 `frontend/plugin-manager/src/yui-guide-runtime.ts` 的专属适配，不是新的通用生命周期模块。
 
 弹窗受阻文本：
 
@@ -205,13 +222,13 @@ ghost cursor 流程二：
 
 1. `tutorial.yuiGuide.lines.takeoverSettingsPeekIntro`
    - 中文：“当然啦，如果你想让本喵多和你聊聊天，也不是不行啦……设置都在这个齿轮里。”
-2. 文本追加到 React chat 教程消息流，语音 key 为 `takeover_settings_peek_intro`。
+2. 文本进入聊天窗口，语音 key 为 `takeover_settings_peek_intro`。
 
 高亮流程一：
 
 1. 场景开始先关闭猫爪/Agent 面板。
 2. settings 按钮 `#${p}-btn-settings` 被设置为圆形 spotlight，并作为 retained extra spotlight 保留。
-3. persistent spotlight 仍放在 compact 胶囊对话输入框。
+3. `highlightChatWindow()` 会被调用，但首页在 intro 问候结束后不会再恢复聊天 persistent spotlight。
 4. 到 `openSettingsPanel` 语音 cue 时，action spotlight 放到 settings 按钮。
 
 ghost cursor 流程一：
@@ -227,7 +244,7 @@ ghost cursor 流程一：
 2. `tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2`
    - 中文：“等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！”
 3. 语音 key 统一为 `takeover_settings_peek_detail`。
-4. 第一段先以流式消息追加到 React chat 教程消息流，第二段在 `showSecondLine` cue 到达时追加。
+4. 第一段先以流式消息进入聊天窗口，第二段在 `showSecondLine` cue 到达时追加。
 
 高亮流程二：
 
@@ -267,7 +284,7 @@ ghost cursor 流程二：
 
 1. `tutorial.yuiGuide.lines.takeoverReturnControl`
    - 中文：“好啦好啦，不霸占你的电脑啦！控制权还给你了喵！……”
-2. 文本追加到 React chat 教程消息流，语音 key 为 `takeover_return_control`。
+2. 文本进入聊天窗口，语音 key 为 `takeover_return_control`。
 3. 语音播放到 70% 时触发 `returnPetalTransition` cue。
 
 高亮流程：
@@ -302,8 +319,9 @@ ghost cursor 流程：
 
 触发条件：
 
-1. 用户在 takeover 或 interruptible 场景中移动真实鼠标、试图抢回控制，且达到当前阻力判断条件。
+1. 用户在 takeover 或 interruptible 场景中移动真实鼠标、试图抢回控制，且单次位移或加速度任一项达到有效打断判断条件。
 2. 未达到 angry exit 阈值时进入轻微抵抗。
+3. 未达到有效打断阈值时，只播放 Ghost Cursor 常驻轻微反方向回弹，不暂停当前 scene 旁白。
 
 文本输出：
 
@@ -311,7 +329,7 @@ ghost cursor 流程：
    - 中文：“喂！不要拽我啦，现在还没轮到你的回合呢！”
 2. 后续可能使用 `tutorial.yuiGuide.lines.interruptResistLight3`
    - 中文：“等一下啦！还没结束呢，不要这么随便打断我啦！”
-3. 文本追加到 React chat 教程消息流，不等待当前 scene 的流式暂停。
+3. 文本进入聊天窗口，不等待当前 scene 的流式暂停。
 
 高亮流程：
 
@@ -322,9 +340,10 @@ ghost cursor 流程：
 
 1. 当前 cursor 动画取消或暂停。
 2. cursor 根据用户真实鼠标位置执行 `resistTo(x, y)`：
-   - 先被真实鼠标方向拉近一小段；
-   - wobble；
-   - 再回到上一个目标点。
+   - 先记录 Ghost Cursor 当前可见停止位置；
+   - 朝真实鼠标移动方向的反方向拉扯一段；
+   - 再回到记录的停止位置；
+   - 连续触发时仍回到同一个停止位置，不能把动画中途坐标当成新原点导致 cursor 越来越偏。
 3. 抵抗语音结束后恢复原 scene。
 
 ## 8. 生气退出分支
@@ -338,24 +357,35 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.interruptAngryExit`
    - 中文：“人类！你真的很没礼貌喵！既然你这么想自己操作……”
-2. 文本追加到 React chat 教程消息流，允许 angry exit 期间继续流式输出。
+2. 文本进入聊天窗口，允许 angry exit 期间继续流式输出。
 
 高亮流程：
 
 1. 清理当前 scene timers。
 2. 禁用 interrupts。
-3. overlay 保持 taking-over，并设置 angry 状态。
-4. 隐藏插件 preview 和普通气泡。
-5. 语音结束后请求教程终止。
+3. 触发瞬间清理当前高亮和插件 preview，隐藏普通气泡。
+4. overlay 保持 taking-over，并设置 angry 状态。
+5. 如果插件 dashboard 已打开，插件页本地 `main` spotlight 也必须立即清掉。
+6. 生气退出台词语音完整播放后，走和跳过按钮一致的 skip / destroy 路径。
+7. 该分支不是正常完成分支，不能发送或等价处理为 `plugin-dashboard:done`。
 
 ghost cursor 流程：
 
-1. 当前 scene 的 cursor 动画不再继续。
-2. angry exit 当前不新增独立 cursor 轨迹；重点是停止教程并恢复页面。
+1. 触发瞬间停止当前 scene 的 cursor 动画，并隐藏 ghost cursor。
+2. angry exit 当前不新增独立 cursor 轨迹。
+3. 如果插件 dashboard 已打开，插件页 runtime 调用 `stopGhostCursorAnimation()` 移除 cursor 的可见状态、点击星星和轨迹粒子。
+4. 生气退出语音播放期间不恢复主线 cursor；语音结束后执行 skip 清理。
+
+模型动作流程：
+
+1. `interrupt_angry_exit.performance.emotion` 必须为 `angry`，触发时允许在打断期间立即应用。
+2. `YuiGuideAvatarStage.playAngryExit()` 启动前必须停止仍在播放的首页教程专属动作 session，包括苏醒/问候、语音或接管 LookAt、设置慌乱、轻微抵抗、插件角落预览、归还控制权挥手和常驻 idle sway。
+3. 停止旧 session 时不得播放长释放动画；angry exit 动作需要成为当前唯一写入模型 frame/params 的教程动作，避免旧动作继续覆盖眉眼、手臂、身体或位置参数。
+4. 如果 Live2D angry exit 演出不可用或启动失败，Director 仍必须把教程表情兜底切到 `angry`，不能退回普通情绪或 Idle。
 
 ## 高亮类型速查
 
-1. persistent spotlight：持续高亮当前讲解上下文，例如 compact 胶囊对话输入框或当前业务面板。
+1. persistent spotlight：持续高亮当前讲解上下文，例如聊天窗口、输入区。
 2. action spotlight：当前 cursor 要移动/点击的主要目标，例如猫爪按钮、开关、设置按钮。
 3. secondary spotlight：辅助目标，主要由 `applyGuideHighlights()` 支持。
 4. retained extra spotlight：跨多个动作保留的目标，例如猫爪按钮、settings 按钮。
@@ -365,11 +395,13 @@ ghost cursor 流程：
 
 ## 维护规则
 
-1. 新增教程台词时，先确认文本输出位置：React chat 教程消息流、overlay 气泡，还是外部页面 handoff。聊天上下文高亮优先落到 compact 胶囊对话输入框；外置 `/chat` 模式也应同步 `input` spotlight，不要回退到旧整窗高亮。
+1. 新增教程台词时，先确认文本输出位置：聊天窗口、overlay 气泡，还是外部页面 handoff。
 2. 每段台词最多有一个主 persistent spotlight；多个 UI 目标应使用 action/secondary/extra，而不是反复重设 persistent。
-3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动，再 click，再调用真实打开/开关 API。
-4. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
-5. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。
-6. 打断分支要暂停并恢复当前 scene，不能把抵抗文本当成新的主线 step。
-7. 如果某个目标找不到，当前流程应安全跳过或走 fallback，不能卡死教程。
-8. 外置聊天窗模式没有首页 compact 胶囊输入框激活，但后续台词、高亮和 takeover 主线仍继续。
+3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动；需要模拟点击的场景到达目标后 click，真实打开/开关 API 必须在 click 动画开始的同一刻启动，不得等点击动画结束后才调用。Day 2 屏幕分享按钮是例外：Ghost Cursor 只移动并停留，不播放模拟点击动画，也不触发真实按钮 click。
+4. 所有可见 ghost cursor 位置变化都必须平滑过渡；每日主流程只记录可见锚点，首次出现后只使用当前可见位置、上一 scene 可见锚点或真实目标中心作为移动起点。
+5. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
+6. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。
+7. 打断分支要暂停并恢复当前 scene，不能把抵抗文本当成新的主线 step。
+8. 生气退出分支语义等同“语音后跳过”：触发时立即清视觉，语音结束后走 skip，不能走 done。
+9. 如果某个目标找不到，当前流程应安全跳过或走 fallback，不能卡死教程。
+10. 外置聊天窗模式没有首页输入框激活，但后续台词、高亮和 takeover 主线仍继续。

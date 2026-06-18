@@ -14,12 +14,20 @@ from typing import Any
 
 from main_logic.topic.common import ZH_LINK_STOP_CHARS, clean_text, is_zh_lang, topic_units
 from utils.source_locale import source_region_from_locale
+from utils.tokenize import truncate_to_tokens
 
 
 logger = logging.getLogger("N.E.K.O.Main.topic.materials")
 
 
 Fetcher = Callable[[str, int], Awaitable[Mapping[str, Any]]]
+_DEFAULT_ONLINE_INTENTS = ("video", "meme")
+_TOKEN_PRECAP_CHARS_PER_TOKEN = 8
+
+
+def _clean_text(value: Any, *, token_limit: int) -> str:
+    precap = max(token_limit, token_limit * _TOKEN_PRECAP_CHARS_PER_TOKEN)
+    return truncate_to_tokens(clean_text(value, limit=precap), token_limit)
 
 
 def _source_locale_for_lang(lang: str | None) -> str | None:
@@ -123,24 +131,24 @@ def _query_for_material(material: Mapping[str, Any]) -> str:
     # when present. Otherwise: the small candidate model no longer authors a
     # search string, so the cheap background pre-fetch query is just the
     # keywords joined; interest/hook stay as fallbacks when none survived.
-    deep_query = clean_text(material.get("deep_query"), limit=80)
+    deep_query = _clean_text(material.get("deep_query"), token_limit=80)
     if deep_query:
         return deep_query
-    keywords = [clean_text(kw, limit=30) for kw in (material.get("keywords") or [])]
-    query = " ".join(kw for kw in keywords if kw)[:80]
+    keywords = [_clean_text(kw, token_limit=30) for kw in (material.get("keywords") or [])]
+    query = truncate_to_tokens(" ".join(kw for kw in keywords if kw), 80)
     if query:
         return query
-    interest = clean_text(material.get("interest"), limit=32)
+    interest = _clean_text(material.get("interest"), token_limit=32)
     if interest:
         return interest
-    return clean_text(material.get("hook"), limit=32)
+    return _clean_text(material.get("hook"), token_limit=32)
 
 
 def _items_from_result(kind: str, result: Mapping[str, Any]) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
 
     def add(title: Any, url: Any = "") -> None:
-        title_text = clean_text(title, limit=80)
+        title_text = _clean_text(title, token_limit=80)
         if not title_text:
             return
         items.append({
@@ -262,12 +270,9 @@ async def enrich_topic_materials_online(
         query = _query_for_material(material)
         if not query:
             continue
-        intents = [
-            intent for intent in material.get("media_intent", [])
-            if intent in available_fetchers
-        ][:2]
+        intents = [kind for kind in _DEFAULT_ONLINE_INTENTS if kind in available_fetchers]
         if not intents:
-            intents = [kind for kind in ("video", "meme") if kind in available_fetchers]
+            intents = list(available_fetchers)[:2]
 
         results = await asyncio.gather(*[
             _safe_fetch(kind, available_fetchers[kind], query, fetch_limit, timeout_s)

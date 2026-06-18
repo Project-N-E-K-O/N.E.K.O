@@ -167,8 +167,6 @@ class _TutorContextSupportMixin:
                 self._state.recent_learning_events + [event]
             )[-16:]
             if operation != LLM_OPERATION_KNOWLEDGE_TRACK:
-                self._state.last_reply = summary
-                self._state.last_reply_at = reply.created_at or utc_now_iso()
                 if operation == LLM_OPERATION_QUESTION_GENERATE:
                     if str(payload.get("question") or "").strip():
                         self._state.current_question = dict(payload)

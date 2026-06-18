@@ -123,14 +123,14 @@ DEFAULT_VECTORS_MAX_LENGTH = 1024
 # 推理峰值上限。激活内存近似 ``batch × seq × hidden × layers``;固定
 # batch + pad-to-longest 让一条长文本就能把激活顶到上百 GB(实测:
 # 用户粘贴一段长 recent 进记忆,凛天上线那个 sweep 把 RSS 从 1.1 GB
-# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_TOKEN_BUDGET``,
+# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_BATCH_MAX_TOKENS``,
 # 长文本时 batch 自动缩到 1~2 条,峰值有硬上界。
 #
 # 选 16384:在新 max_length=1024 下,一桶能放下 16 条满长(等同
 # worker BATCH_SIZE=16 的原行为),正常路径吞吐零损失;当历史数据 /
 # 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
 # 一桶,峰值仍可控。"""
-_INFER_TOKEN_BUDGET = 16384
+_INFER_BATCH_MAX_TOKENS = 16384
 
 # Matryoshka discrete steps supported by the default local profile.
 _DIM_STEPS = (32, 64, 128, 256, 512, 768)
@@ -1414,7 +1414,7 @@ class EmbeddingService:
         sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
-        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_TOKEN_BUDGET
+        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_BATCH_MAX_TOKENS
         # 兜底,峰值已可控;关掉 arena 让分配器跟实际需求走,RSS 能跌回,
         # 也避免冷路径偶发长批次永久污染基线。代价:每次 run 重新 malloc,
         # CPU 推理本来就 100ms+ 级,malloc 几 μs 可忽略。
@@ -1449,7 +1449,7 @@ class EmbeddingService:
         long entry can blow up activation memory for the whole batch
         (a long blob pasted into recent → entire 16-batch padded to
         thousands of tokens → multi-GB activations). We re-bucket here
-        by token budget ``batch × max_len ≤ _INFER_TOKEN_BUDGET``: short
+        by token budget ``batch × max_len ≤ _INFER_BATCH_MAX_TOKENS``: short
         rows still pack densely (same throughput as before for the
         normal case), and long rows fall into smaller buckets — capping
         the per-run activation footprint regardless of input shape.
@@ -1472,7 +1472,7 @@ class EmbeddingService:
             new_max = max(bucket_max_len, n)
             # 空桶必接受(哪怕单条 > budget),否则极端 max_length 配置会死锁;
             # 非空桶按预算 flush。
-            if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_TOKEN_BUDGET:
+            if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_BATCH_MAX_TOKENS:
                 self._run_bucket(bucket_idx, encoded, input_names, out, np)
                 bucket_idx = [orig_i]
                 bucket_max_len = n

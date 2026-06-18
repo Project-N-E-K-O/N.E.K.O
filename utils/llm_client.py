@@ -19,18 +19,24 @@ Provides:
     the old langchain interface
   - ChatOpenAI wrapper with streaming, invoke, and resource management
   - ``create_chat_llm()`` factory that auto-resolves provider-specific config
+  - ``create_chat_llm_async()`` async factory for offloaded client construction
   - Serialization helpers (messages_to_dict, messages_from_dict, convert_to_messages)
   - OpenAIEmbeddings / SQLChatMessageHistory for memory subsystem
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json as _json
+import os
 import re
+import ssl
+import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
 
 # ────────────────────────────────────────────────────────────────
@@ -88,6 +94,83 @@ def strip_thinking_segments(text: str | None) -> str:
 _active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvars.ContextVar(
     "_neko_active_character_master_lanlan", default=None
 )
+
+_DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
+_DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
+_PENDING_CLIENT_CLOSE_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _create_httpx_default_ssl_context() -> ssl.SSLContext:
+    """Create the same default verify context httpx uses without its deprecated helper."""
+    import certifi
+
+    if os.environ.get("SSL_CERT_FILE"):
+        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    if os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context(capath=os.environ["SSL_CERT_DIR"])
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def _get_default_ssl_context() -> ssl.SSLContext:
+    """Return the process-wide default TLS context for short-lived LLM clients."""
+    global _DEFAULT_SSL_CONTEXT
+    if _DEFAULT_SSL_CONTEXT is not None:
+        return _DEFAULT_SSL_CONTEXT
+
+    with _DEFAULT_SSL_CONTEXT_LOCK:
+        if _DEFAULT_SSL_CONTEXT is None:
+            _DEFAULT_SSL_CONTEXT = _create_httpx_default_ssl_context()
+        return _DEFAULT_SSL_CONTEXT
+
+
+async def _close_async_openai_client_best_effort(aclient: AsyncOpenAI) -> None:
+    try:
+        await aclient.close()
+    except Exception:
+        # Finalizer-triggered cleanup must never surface async close failures.
+        pass
+
+
+def _schedule_async_openai_client_close_best_effort(
+    aclient: AsyncOpenAI,
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+    close_coro = _close_async_openai_client_best_effort(aclient)
+    try:
+        task = loop.create_task(close_coro)
+    except Exception:
+        close_coro.close()
+        # The loop may be closing; explicit aclose() remains the deterministic path.
+    else:
+        _PENDING_CLIENT_CLOSE_TASKS.add(task)
+        task.add_done_callback(_PENDING_CLIENT_CLOSE_TASKS.discard)
+
+
+def _close_async_openai_client_from_sync_best_effort(aclient: AsyncOpenAI) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_close_async_openai_client_best_effort(aclient))
+        except Exception:
+            pass
+        return
+    _schedule_async_openai_client_close_best_effort(aclient, loop=loop)
+
+
+def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
+    try:
+        client.close()
+    except Exception:
+        # Destructors/finalizers must never raise during GC or interpreter shutdown.
+        pass
+    _schedule_async_openai_client_close_best_effort(aclient)
 
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
@@ -407,8 +490,17 @@ class ChatOpenAI:
             client_kw["timeout"] = _timeout
         if default_headers:
             client_kw["default_headers"] = default_headers
+        ssl_context = _get_default_ssl_context()
+        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
         self._aclient = AsyncOpenAI(**client_kw)
+        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
         self._client = OpenAI(**client_kw)
+        self._client_finalizer = weakref.finalize(
+            self,
+            _close_chat_openai_clients_best_effort,
+            self._client,
+            self._aclient,
+        )
 
     def _is_anthropic(self) -> bool:
         return bool(self.base_url) and "api.anthropic.com" in str(self.base_url)
@@ -683,10 +775,13 @@ class ChatOpenAI:
         """Close underlying httpx clients (async path)."""
         await self._aclient.close()
         self._client.close()
+        self._client_finalizer.detach()
 
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""
         self._client.close()
+        _close_async_openai_client_from_sync_best_effort(self._aclient)
+        self._client_finalizer.detach()
 
     async def __aenter__(self):
         return self
@@ -776,6 +871,30 @@ def create_chat_llm(
         **cache_kw,
         **kw,
     )
+
+
+async def create_chat_llm_async(*args: Any, **kwargs: Any) -> ChatOpenAI:
+    """Create a ChatOpenAI without blocking the running event loop."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(asyncio.to_thread(create_chat_llm, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(
+            lambda done: loop.create_task(_close_cancelled_chat_llm_result(done))
+        )
+        raise
+
+
+async def _close_cancelled_chat_llm_result(task: asyncio.Task[ChatOpenAI]) -> None:
+    try:
+        llm = task.result()
+    except Exception:
+        return
+    try:
+        await llm.aclose()
+    except Exception:
+        return
 
 
 # ────────────────────────────────────────────────────────────────

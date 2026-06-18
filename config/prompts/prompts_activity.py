@@ -40,6 +40,10 @@ Flat ``{lang_code: str}`` maps (resolved via ``_loc(MAP, lang)``):
   conversation snippets into 1-2 summarized deep-topic hooks. Consumed by
   ``main_logic/activity/llm_enrichment.py:call_topic_candidates``.
 
+* ``TOPIC_MEMORY_CUE_INTROS`` / ``TOPIC_MEMORY_CUE_LABELS`` — quiet
+  memory-context labels for old reflection follow-up topics. Consumed by
+  ``main_logic/topic/hooks.py:build_topic_hook_prompt``.
+
 * ``OS_DEGRADED_MARKER`` — short bracketed text appended to the
   state-section header when the backend can't read the user's OS
   signals. Consumed by
@@ -61,6 +65,36 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 """
 
 from __future__ import annotations
+
+
+# ── Old reflection follow-up memory cues ────────────────────────────
+
+# These strings intentionally stay quieter than the major "======" prompt
+# sections. The cue should be available near long-term conversation history
+# without competing with recent-chat dedup or activity-state decision blocks.
+TOPIC_MEMORY_CUE_INTROS: dict[str, str] = {
+    "zh": "回忆线索：以下旧话题距今较久，可顺手接、但没必要主动提出。",
+    "zh-CN": "回忆线索：以下旧话题距今较久，可顺手接、但没必要主动提出。",
+    "zh-TW": "回憶線索：以下舊話題距今較久，可順手接、但沒必要主動提出。",
+    "en": "Memory cues: older topics from prior conversations; okay to pick up naturally, but no need to raise proactively.",
+    "ja": "記憶の手がかり：以前の古い話題です。自然に拾ってもよいですが、無理に持ち出す必要はありません。",
+    "ko": "기억 단서: 이전 대화의 오래된 화제입니다. 자연스럽게 이어도 되지만, 먼저 꺼낼 필요는 없습니다.",
+    "es": "Pistas de memoria: temas antiguos de conversaciones previas; puedes retomarlos con naturalidad, pero no hace falta sacarlos activamente.",
+    "pt": "Pistas de memória: temas antigos de conversas anteriores; pode retomá-los naturalmente, mas não precisa puxá-los ativamente.",
+    "ru": "Подсказки памяти: старые темы из прошлых разговоров; можно естественно вернуться к ним, но не нужно поднимать их специально.",
+}
+
+TOPIC_MEMORY_CUE_LABELS: dict[str, str] = {
+    "zh": "较久前的回忆线索",
+    "zh-CN": "较久前的回忆线索",
+    "zh-TW": "較久前的回憶線索",
+    "en": "Older memory cue",
+    "ja": "古い記憶の手がかり",
+    "ko": "오래된 기억 단서",
+    "es": "Pista de memoria antigua",
+    "pt": "Pista de memória antiga",
+    "ru": "Давняя подсказка памяти",
+}
 
 
 # ── Activity guess + soft scores (emotion-tier) ─────────────────────
@@ -247,17 +281,17 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 ======以上为最近对话(按时间顺序)======
 
 要求：
-- 不要复述用户原话，不要暴露“我分析了你的聊天记录”
-- 只保留和用户近期兴趣、计划、纠结、情绪、选择强相关，而且在对话里明显反复出现、看得出是稳定在意的点
-- 不要把两个只是相邻出现的名词硬拼成一个话题；如果关联不自然，宁可不要输出
-- 寒暄、语气词、很薄的短句、问卷式问题，一律给低优先级或不要输出
-- 每个话题要像给角色的一张小抄：知道怎么自然开口，但最终开口仍交给角色生成
-- 重点是关系深度，不是触发频率；宁可少，不要硬凑
+- 不要复述用户原话，也不要暴露“我在分析聊天记录”
+- 只挑用户近期反复出现、明显稳定在意的兴趣 / 计划 / 纠结 / 情绪 / 选择
+- 寒暄、语气词、单薄短句、问卷式提问一律忽略
+- 不要因为两个词凑巧相邻就硬拼成一个话题；关联不自然就不输出
+- 宁缺毋滥：没把握就少出，甚至直接输出空列表
+- 每个话题只是给角色的开口素材，不是最终台词
 输出严格 JSON（不带 markdown 代码块）：
 {{"topics": [
   {{
     "interest": "用户最近在意、纠结、计划或反复提到的一件具体事，整理成一句，不超过30字",
-    "keywords": ["3-6个关键词，用于去重、筛选联网结果，并直接作为联网查询词；围绕用户反复在意的稳定点，不要用偶然冒出的词"],
+    "keywords": ["3-6个关键词，用于去重、筛选联网结果和投递前 research seed；围绕用户反复在意的稳定点，不要用偶然冒出的词"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -270,23 +304,23 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 如果没有值得以后接的话题，输出 {{"topics": []}}。""",
     "zh-TW": """你是陪伴產品的話題篩選助手。你的任務不是總結最近一句話，而是從下面這段最近對話裡挑 1-2 個真的值得以後低頻開口的深話題機會。
 
-======以下為最近對話(按時間順序)======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======以上為最近對話(按時間順序)======
+======以上为最近对话(按时间顺序)======
 
 要求：
 - 所有文字欄位必須使用繁體中文；不要輸出英文話題
-- 不要復述用戶原話，不要暴露「我分析了你的聊天記錄」
-- 只保留和用戶近期興趣、計畫、糾結、情緒、選擇強相關，而且在對話裡明顯反覆出現、看得出是穩定在意的點
-- 不要把兩個只是相鄰出現的名詞硬拼成一個話題；如果關聯不自然，寧可不要輸出
-- 寒暄、語氣詞、很薄的短句、問卷式問題，一律給低優先級或不要輸出
-- 每個話題要像給角色的一張小抄：知道怎麼自然開口，但最終開口仍交給角色生成
-- 重點是關係深度，不是觸發頻率；寧可少，不要硬湊
+- 不要復述用戶原話，也不要暴露「我在分析聊天記錄」
+- 只挑用戶近期反覆出現、明顯穩定在意的興趣 / 計畫 / 糾結 / 情緒 / 選擇
+- 寒暄、語氣詞、單薄短句、問卷式提問一律忽略
+- 不要因為兩個詞湊巧相鄰就硬拼成一個話題；關聯不自然就不輸出
+- 寧缺毋濫：沒把握就少出，甚至直接輸出空列表
+- 每個話題只是給角色的開口素材，不是最終台詞
 輸出嚴格 JSON（不帶 markdown 代碼塊）：
 {{"topics": [
   {{
     "interest": "用戶最近在意、糾結、計劃或反覆提到的一件具體事，整理成一句，不超過30字",
-    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果，並直接作為聯網查詢詞；圍繞用戶反覆在意的穩定點，不要用偶然冒出的詞"],
+    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果和投遞前 research seed；圍繞用戶反覆在意的穩定點，不要用偶然冒出的詞"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -305,16 +339,16 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 
 Rules:
 - Do not repeat the user's raw wording or reveal that chat logs were analyzed
-- Keep only topics strongly tied to recent interests, plans, dilemmas, emotions, or choices, that clearly recur in the conversation
-- Do not glue together two nouns just because they appeared near each other; if the association is not natural, output nothing
-- Greetings, filler, thin short replies, and survey-like prompts should be low priority or omitted
-- Each topic is a small note for the character: how to open naturally, not final copy
-- Relationship depth matters more than trigger frequency; fewer is better than forced
+- Pick only recent interests / plans / dilemmas / emotions / choices that clearly recur and the user plainly keeps caring about
+- Ignore greetings, filler, thin short replies, and survey-like prompts entirely
+- Do not glue two words into a topic just because they happened to appear next to each other; if the link is not natural, leave it out
+- When in doubt, output less — an empty list is fine
+- Each topic is only opening material for the character, not the final line
 Output strict JSON, no markdown fences:
 {{"topics": [
   {{
     "interest": "a single concrete thing the user recently cares about, worries over, plans, or keeps bringing up, max 30 words",
-    "keywords": ["3-6 short keywords used for dedup, filtering online results, and as the online search query; anchor on the user's stable recurring interest, not an accidental recent word"],
+    "keywords": ["3-6 short keywords used for dedup, filtering online results, and delivery-time research seeds; anchor on the user's stable recurring interest, not an accidental recent word"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -334,16 +368,16 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 ルール：
 - すべての文字フィールドはユーザーの言語で、日本語ユーザーなら自然な日本語で書くこと
 - ユーザーの原文をそのまま繰り返さない。「チャット履歴を分析した」と明かさない
-- 最近の興味、予定、迷い、感情、選択に強く結びつき、会話の中で明らかに繰り返し出てくる点だけ残す
-- 近くに出ただけの名詞を無理につなげない。関連が自然でなければ出力しない
-- あいさつ、相づち、薄い短文、アンケート風の問いは低優先度または除外
-- 各話題はキャラクター用の短いメモ。最終的な口調はキャラクター側に任せる
-- 大事なのは関係の深さで、頻度ではない。無理に埋めるより少なくする
+- 最近繰り返し出てきて、ユーザーが明らかに気にし続けている興味・予定・迷い・感情・選択だけを選ぶ
+- たまたま近くに出ただけの語を無理に話題にしない。関連が自然でなければ出力しない
+- あいさつ、相づち、薄い短文、アンケート風の問いはすべて無視する
+- 迷ったら少なめに。空リストでも構わない
+- 各話題はキャラクターの切り出し素材にすぎず、最終的なセリフではない
 厳密な JSON だけを出力（markdown コードブロックなし）：
 {{"topics": [
   {{
     "interest": "ユーザーが最近気にしている、悩んでいる、計画している、または繰り返し口にしている具体的な一件を一文にまとめたもの、30字以内",
-    "keywords": ["重複排除・検索結果の絞り込み・そのまま検索語として使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
+    "keywords": ["重複排除・検索結果の絞り込み・配信前のresearch seedとして使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -363,16 +397,16 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 규칙:
 - 모든 텍스트 필드는 사용자 언어로 작성하세요. 한국어 사용자라면 자연스러운 한국어로 출력하세요
 - 사용자의 원문을 그대로 반복하지 말고, "대화 기록을 분석했다"고 드러내지 마세요
-- 최근 관심사, 계획, 고민, 감정, 선택과 강하게 관련되고 대화에서 분명히 반복해서 나오는 점만 남기세요
-- 가까이 나온 명사 두 개를 억지로 붙이지 마세요. 연결이 자연스럽지 않으면 출력하지 마세요
-- 인사, 추임새, 얇은 짧은 답, 설문 같은 질문은 낮은 우선순위로 두거나 제외하세요
-- 각 화제는 캐릭터를 위한 짧은 메모입니다. 최종 말투는 캐릭터 생성 단계에 맡깁니다
-- 중요한 것은 관계의 깊이이지 빈도가 아닙니다. 억지로 채우기보다 적게 출력하세요
+- 최근 반복해서 나오고 사용자가 분명히 계속 신경 쓰는 관심사 / 계획 / 고민 / 감정 / 선택만 고르세요
+- 우연히 가까이 나온 단어 두 개를 억지로 화제로 묶지 마세요. 연결이 자연스럽지 않으면 출력하지 마세요
+- 인사, 추임새, 얇은 짧은 답, 설문 같은 질문은 모두 무시하세요
+- 애매하면 적게 출력하세요. 빈 리스트도 괜찮습니다
+- 각 화제는 캐릭터의 말 꺼내기 재료일 뿐, 최종 대사가 아닙니다
 엄격한 JSON만 출력하세요（markdown 코드 블록 금지）:
 {{"topics": [
   {{
     "interest": "사용자가 최근 신경 쓰거나 고민하거나 계획하거나 반복해서 언급하는 구체적인 한 가지를 한 문장으로 정리한 것, 30자 이내",
-    "keywords": ["중복 제거, 검색 결과 선별, 그리고 검색어로도 사용할 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
+    "keywords": ["중복 제거, 검색 결과 선별, 그리고 전달 전 research seed로 쓸 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -392,16 +426,16 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 Reglas:
 - Todos los campos de texto deben estar en el idioma del usuario; para usuarios en español, escribe en español natural
 - No repitas literalmente lo que dijo el usuario ni reveles que analizaste su historial
-- Conserva solo temas muy ligados a intereses, planes, dilemas, emociones o elecciones recientes, que se repiten claramente en la conversación
-- No unas dos sustantivos solo porque aparecieron cerca; si la conexión no es natural, no outputes nada
-- Saludos, muletillas, respuestas muy finas o preguntas tipo encuesta deben tener baja prioridad o omitirse
-- Cada tema es una nota breve para el personaje: cómo abrir naturalmente, no el texto final
-- Importa más la profundidad de la relación que la frecuencia; mejor pocos que forzados
+- Elige solo intereses / planes / dilemas / emociones / elecciones recientes que se repiten claramente y que al usuario sigue importándole
+- No unas dos palabras en un tema solo porque aparecieron cerca; si la conexión no es natural, déjalo fuera
+- Ignora por completo saludos, muletillas, respuestas muy finas y preguntas tipo encuesta
+- Ante la duda, devuelve menos; una lista vacía está bien
+- Cada tema es solo material para abrir conversación, no la frase final
 Devuelve JSON estricto, sin bloques markdown:
 {{"topics": [
   {{
     "interest": "una sola cosa concreta que el usuario tiene en mente, le preocupa, planea o menciona repetidamente, resumida en una frase, máximo 30 palabras",
-    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como la consulta de búsqueda; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
+    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como semillas de research antes de entregar; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -421,16 +455,16 @@ Si no hay nada que valga la pena, devuelve {{"topics": []}}.""",
 Regras:
 - Todos os campos de texto devem estar no idioma do usuario; para usuarios em portugues, escreva em portugues natural
 - Nao repita literalmente a fala do usuario nem revele que voce analisou historico de conversa
-- Mantenha apenas temas muito ligados a interesses, planos, dilemas, emocoes ou escolhas recentes, que se repetem claramente na conversa
-- Nao junte dois substantivos so porque apareceram perto; se a ligacao nao for natural, nao outpute nada
-- Cumprimentos, muletas, respostas muito finas ou perguntas com cara de questionario devem ter baixa prioridade ou ser omitidos
-- Cada tema e uma nota curta para o personagem: como abrir naturalmente, nao o texto final
-- O foco e profundidade de relacao, nao frequencia; melhor pouco do que forcado
+- Escolha apenas interesses / planos / dilemas / emocoes / escolhas recentes que se repetem claramente e que o usuario continua a se importar
+- Nao junte duas palavras num tema so porque apareceram perto; se a ligacao nao for natural, deixe de fora
+- Ignore por completo cumprimentos, muletas, respostas muito finas e perguntas com cara de questionario
+- Na duvida, retorne menos; uma lista vazia esta ok
+- Cada tema e so material para abrir conversa, nao a frase final
 Retorne JSON estrito, sem blocos markdown:
 {{"topics": [
   {{
     "interest": "uma unica coisa concreta que o usuario tem em mente, preocupa, planeja ou menciona repetidamente, resumida em uma frase, maximo 30 palavras",
-    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como a consulta de busca; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
+    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como seeds de research antes da entrega; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -450,16 +484,16 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 Правила:
 - Все текстовые поля должны быть на языке пользователя; для русскоязычного пользователя пиши естественно на русском
 - Не повторяй слова пользователя дословно и не раскрывай, что анализировал историю чата
-- Оставляй только темы, тесно связанные с недавними интересами, планами, сомнениями, эмоциями или выборами пользователя, если они явно повторяются в переписке
-- Не склеивай два существительных только потому, что они оказались рядом; если связь неестественная, ничего не выводи
-- Приветствия, междометия, тонкие короткие ответы и вопросы в стиле анкеты пропускай или давай низкий приоритет
-- Каждая тема — короткая заметка для персонажа: как естественно начать, а не финальная реплика
-- Важна глубина отношений, а не частота; лучше меньше, чем натянуто
+- Бери только недавние интересы / планы / сомнения / эмоции / выборы, которые явно повторяются и о которых пользователь явно продолжает думать
+- Не склеивай два слова в тему только потому, что они оказались рядом; если связь неестественная, не выводи её
+- Полностью игнорируй приветствия, междометия, тонкие короткие ответы и вопросы в стиле анкеты
+- Сомневаешься — выводи меньше; пустой список это нормально
+- Каждая тема — лишь материал для начала разговора, а не финальная реплика
 Выводи строго JSON, без markdown-блоков:
 {{"topics": [
   {{
     "interest": "одна конкретная вещь, о которой пользователь недавно думает, переживает, планирует или постоянно упоминает, сформулированная в одном предложении, до 30 слов",
-    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и в качестве поискового запроса; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
+    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и как seed для research перед доставкой; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -1359,7 +1393,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
 #   hours_ago_fmt                — >= 3600s
 #   time_fmt                     — "{hour:02d}:00 {period}"
 #   period_morning / _afternoon / _evening / _night
-#   unfinished_thread_fmt        — {tail, age, used, cap}
+#   unfinished_thread_fmt        — {tail, age}
 #   activity_scores_label
 #   activity_guess_label
 #   open_threads_label
@@ -1380,7 +1414,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "下午",
         "period_evening": "傍晚",
         "period_night": "夜里",
-        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age},已跟进 {used}/{cap})",
+        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age})",
         "activity_scores_label": "评估",
         "activity_guess_label": "叙述",
         "open_threads_label": "开放话题",
@@ -1402,7 +1436,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "afternoon",
         "period_evening": "evening",
         "period_night": "night",
-        "unfinished_thread_fmt": 'unfinished: "…{tail}" ({age} ago, followed up {used}/{cap})',
+        "unfinished_thread_fmt": 'unfinished thread: "…{tail}" ({age} ago)',
         "activity_scores_label": "scores",
         "activity_guess_label": "narrative",
         "open_threads_label": "open threads",
@@ -1424,7 +1458,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "午後",
         "period_evening": "夕方",
         "period_night": "夜",
-        "unfinished_thread_fmt": "未完話題:「…{tail}」({age}, フォロー {used}/{cap})",
+        "unfinished_thread_fmt": "未完話題:「…{tail}」({age})",
         "activity_scores_label": "評価",
         "activity_guess_label": "叙述",
         "open_threads_label": "保留話題",
@@ -1446,7 +1480,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "오후",
         "period_evening": "저녁",
         "period_night": "밤",
-        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age}, 후속 {used}/{cap})',
+        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age})',
         "activity_scores_label": "평가",
         "activity_guess_label": "서술",
         "open_threads_label": "보류 화제",
@@ -1468,7 +1502,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "день",
         "period_evening": "вечер",
         "period_night": "ночь",
-        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад, {used}/{cap})",
+        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад)",
         "activity_scores_label": "оценки",
         "activity_guess_label": "описание",
         "open_threads_label": "открытые нити",
@@ -1490,7 +1524,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "tarde",
         "period_evening": "atardecer",
         "period_night": "noche",
-        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age}, seguimiento {used}/{cap})',
+        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age})',
         "activity_scores_label": "puntuaciones",
         "activity_guess_label": "narrativa",
         "open_threads_label": "hilos abiertos",
@@ -1512,7 +1546,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "tarde",
         "period_evening": "fim de tarde",
         "period_night": "noite",
-        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás, seguido {used}/{cap})',
+        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás)',
         "activity_scores_label": "pontuações",
         "activity_guess_label": "narrativa",
         "open_threads_label": "tópicos abertos",

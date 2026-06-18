@@ -46,7 +46,7 @@ from config.prompts.prompts_galgame import (
 from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from utils.language_utils import detect_language, normalize_language_code
-from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -313,14 +313,14 @@ async def generate_galgame_options(request: Request):
     ))
 
     set_call_type("galgame_options")
-    llm = create_chat_llm(
-        model,
-        base_url,
-        api_key,
-        max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
-        timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
-    )
     try:
+        llm = await create_chat_llm_async(
+            model,
+            base_url,
+            api_key,
+            max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
+            timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
+        )
         async with llm:
             result = await asyncio.wait_for(
                 llm.ainvoke([

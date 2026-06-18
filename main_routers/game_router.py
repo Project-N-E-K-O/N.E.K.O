@@ -40,6 +40,8 @@ from urllib.parse import urlparse
 
 _EXTERNAL_VOICE_DEDUP_TTL_SECONDS = 30.0
 _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
+_ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS = 30.0
+_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES = 64
 _SSML_TAG_PATTERN = re.compile(
     r"</?(?:[a-z][\w-]*:)?(?:"
     r"speak|p|s|break|say-as|phoneme|sub|prosody|emphasis|voice|audio|mark|lang|w|token|express-as|effect"
@@ -47,7 +49,7 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
     get_basketball_pregame_context_formatter_labels,
@@ -68,6 +70,7 @@ from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
+    get_game_archive_fallback_highlight_labels,
     get_game_archive_highlight_source_labels,
     get_game_archive_memory_highlighter_system_prompt,
     get_game_archive_memory_highlighter_user_prompt,
@@ -76,9 +79,11 @@ from config.prompts.prompts_game_route import (
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
     get_game_context_organizer_user_prompt,
+    get_game_dialog_memory_line_labels,
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
+    get_game_recent_history_message_labels,
 )
 from .shared_state import get_config_manager, get_session_manager
 from main_logic.mirror_meta import (
@@ -101,6 +106,7 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Game")
 
 router = APIRouter(tags=["game"], prefix="/api/game")
+MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 
 # ── Session 池 ─────────────────────────────────────────────────────
 # key = f"{lanlan_name}:{game_type}:{session_id}"
@@ -234,7 +240,9 @@ _BASKETBALL_GAME_MEMORY_POLICY_FIELDS = (
 )
 _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
-_GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
+_GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT = _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT
+_GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT = 64
+_GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT = 8
 _GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
 _GAME_CONTEXT_SIGNAL_GROUPS = GAME_CONTEXT_SIGNAL_GROUP_KEYS
 _LEGACY_SIGNAL_GROUP_ALIASES = {
@@ -1291,7 +1299,7 @@ def _dialog_id_index(dialog: list[dict], dialog_id: str) -> int:
     return -1
 
 
-def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_RECENT_KEEP_COUNT) -> list[dict]:
+def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT) -> list[dict]:
     dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
     if not dialog:
         return []
@@ -1308,13 +1316,18 @@ def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_
     return dialog[-keep_count:]
 
 
-def _game_context_dialog_lines(dialogues: list[dict], *, max_items: int = 12) -> list[str]:
+def _game_context_dialog_lines(
+    dialogues: list[dict],
+    *,
+    max_items: int = 12,
+    language: str | None = None,
+) -> list[str]:
     lines: list[str] = []
     for item in dialogues[-max_items:]:
         if not isinstance(item, dict):
             continue
         dialog_id = str(item.get("id") or "").strip()
-        line = _dialog_memory_line(item)
+        line = _dialog_memory_line(item, language)
         if dialog_id and line:
             lines.append(f"{dialog_id}: {line}")
         elif line:
@@ -1356,7 +1369,11 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
         return ""
     labels = get_game_context_formatter_labels(language)
     degraded = context.get("degraded") is True
-    recent_lines = _game_context_dialog_lines(context.get("recent_dialogues") or [], max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT)
+    recent_lines = _game_context_dialog_lines(
+        context.get("recent_dialogues") or [],
+        max_items=_GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT,
+        language=language,
+    )
     if degraded:
         parts = [
             labels["degraded_status"],
@@ -1385,17 +1402,228 @@ def _format_game_context_for_prompt(context: Any, language: str | None = None) -
     return "\n".join(parts) + "\n"
 
 
-def _build_game_context_prompt_payload(state: dict | None) -> dict | None:
+def _build_game_context_prompt_payload(state: dict | None, *, include_recent: bool = True) -> dict | None:
     if not isinstance(state, dict):
         return None
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     return {
         "summary": str(state.get("game_context_summary") or ""),
         "signals": _normalize_game_context_signals(state.get("game_context_signals")),
-        "recent_dialogues": _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT),
+        "recent_dialogues": (
+            _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT)
+            if include_recent else []
+        ),
         "degraded": organizer.get("degraded") is True,
         "organizer": organizer,
     }
+
+
+_GAME_INTERNAL_LOG_PREFIX_RE = re.compile(r"^\s*glog_\d+\s*[:：]\s*", re.IGNORECASE)
+_GAME_CONTROL_PAREN_TRAIL_RE = re.compile(
+    r"\s*[\(（][^()（）]*(?:mood|difficulty|reason|expression|intensity|balanceHint|balance_hint)\s*[:=][^()（）]*[\)）]\s*$",
+    re.IGNORECASE,
+)
+_GAME_CONTROL_JSON_TRAIL_RE = re.compile(
+    r"\s*\{[^{}]*(?:\"?(?:mood|difficulty|reason|expression|intensity|balanceHint|balance_hint)\"?\s*[:=])[^{}]*\}\s*$",
+    re.IGNORECASE,
+)
+_GAME_INTERNAL_CONTROL_LINE_RE = re.compile(
+    r"^\s*(?:reason|mood|difficulty|expression|intensity|balanceHint|balance_hint)\s*[:=]",
+    re.IGNORECASE,
+)
+_GAME_INTERNAL_ADVICE_RE = re.compile(
+    r"(?:balanceHint|balance_hint|system advice|system suggestion|系统建议|平衡建议|控制建议)",
+    re.IGNORECASE,
+)
+_GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS = frozenset({
+    "basketballGameMemoryEnabled",
+    "basketball_game_memory_enabled",
+    "basketballGameMemoryPlayerInteractionEnabled",
+    "basketball_game_memory_player_interaction_enabled",
+    "basketballGameMemoryEventReplyEnabled",
+    "basketball_game_memory_event_reply_enabled",
+    "basketballGameMemoryArchiveEnabled",
+    "basketball_game_memory_archive_enabled",
+    "basketballGameMemoryPostgameContextEnabled",
+    "basketball_game_memory_postgame_context_enabled",
+    "soccerGameMemoryEnabled",
+    "soccer_game_memory_enabled",
+    "soccerGameMemoryPlayerInteractionEnabled",
+    "soccer_game_memory_player_interaction_enabled",
+    "soccerGameMemoryEventReplyEnabled",
+    "soccer_game_memory_event_reply_enabled",
+    "soccerGameMemoryArchiveEnabled",
+    "soccer_game_memory_archive_enabled",
+    "soccerGameMemoryPostgameContextEnabled",
+    "soccer_game_memory_postgame_context_enabled",
+    "gameMemoryEnabled",
+    "game_memory_enabled",
+    "gameMemoryPlayerInteractionEnabled",
+    "game_memory_player_interaction_enabled",
+    "gameMemoryEventReplyEnabled",
+    "game_memory_event_reply_enabled",
+    "gameMemoryArchiveEnabled",
+    "game_memory_archive_enabled",
+    "gameMemoryPostgameContextEnabled",
+    "game_memory_postgame_context_enabled",
+    "lanlan_name",
+})
+_SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS = frozenset({
+    "aiFreezeSec",
+    "playerKickStartleWindowSec",
+    "playerKickWallBounceForStartle",
+    "startle",
+    "startleDirectCdSec",
+    "startleGrazeCdSec",
+    "startleMutualLockSec",
+    "zoneoutCooldownSec",
+    "ballGhost",
+})
+
+
+def _sanitize_game_visible_line(text: Any) -> str:
+    """Keep only natural player-visible speech; strip game route metadata leaks."""
+    lines: list[str] = []
+    for raw_line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = _GAME_INTERNAL_LOG_PREFIX_RE.sub("", line).strip()
+        if not line:
+            continue
+        if _GAME_INTERNAL_CONTROL_LINE_RE.search(line) or _GAME_INTERNAL_ADVICE_RE.search(line):
+            continue
+        previous = None
+        while previous != line:
+            previous = line
+            line = _GAME_CONTROL_JSON_TRAIL_RE.sub("", line).strip()
+            line = _GAME_CONTROL_PAREN_TRAIL_RE.sub("", line).strip()
+        if not line:
+            continue
+        if _GAME_INTERNAL_CONTROL_LINE_RE.search(line) or _GAME_INTERNAL_ADVICE_RE.search(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _sanitize_soccer_llm_visible_snapshot(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_soccer_llm_visible_snapshot(item)
+            for key, item in value.items()
+            if key not in _SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_soccer_llm_visible_snapshot(item) for item in value]
+    return value
+
+
+def _build_game_llm_visible_event(game_type: str, event: Any) -> Any:
+    """Build the event copy sent to the main game LLM without internal route fields."""
+    if not isinstance(event, dict):
+        return event
+
+    visible_event = {
+        key: value
+        for key, value in event.items()
+        if key not in _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS
+    }
+    if _normalize_game_memory_type(game_type) != "soccer":
+        return visible_event
+
+    if "currentState" in visible_event:
+        visible_event["currentState"] = _sanitize_soccer_llm_visible_snapshot(
+            visible_event.get("currentState")
+        )
+
+    pending_items = visible_event.get("pendingItems")
+    if isinstance(pending_items, list):
+        sanitized_items: list[Any] = []
+        for item in pending_items:
+            if not isinstance(item, dict):
+                sanitized_items.append(item)
+                continue
+            sanitized_item = dict(item)
+            if "snapshot" in sanitized_item:
+                sanitized_item["snapshot"] = _sanitize_soccer_llm_visible_snapshot(
+                    sanitized_item.get("snapshot")
+                )
+            sanitized_items.append(sanitized_item)
+        visible_event["pendingItems"] = sanitized_items
+
+    return visible_event
+
+
+def _game_dialog_history_user_text(item: dict, labels: dict[str, str]) -> str:
+    item_type = item.get("type")
+    if item_type == "user":
+        text = str(item.get("text") or "").strip()
+        return labels["player_line"].format(text=text) if text else ""
+    if item_type == "game_event":
+        kind = str(item.get("kind") or "event")
+        text = str(item.get("text") or "").strip()
+        if text:
+            return labels["game_event_text"].format(kind=kind, text=text)
+        return labels["game_event"].format(kind=kind)
+    return ""
+
+
+def _game_dialog_history_assistant_text(item: dict) -> str:
+    item_type = item.get("type")
+    if item_type == "assistant":
+        line = str(item.get("line") or "").strip()
+    elif item_type == "game_event":
+        line = str(item.get("result_line") or "").strip()
+    else:
+        return ""
+    return _sanitize_game_visible_line(line)
+
+
+def _build_game_recent_history_messages(state: dict | None, language: str | None = None) -> list:
+    if not isinstance(state, dict):
+        return []
+    from utils.llm_client import AIMessage, HumanMessage
+
+    labels = get_game_recent_history_message_labels(language)
+    messages = []
+    last_role = "system"
+    dialogues = _game_context_recent_dialogues(state, _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT)
+    if dialogues and isinstance(dialogues[-1], dict) and dialogues[-1].get("type") == "user":
+        dialogues = dialogues[:-1]
+    for item in dialogues:
+        if not isinstance(item, dict):
+            continue
+        user_text = _game_dialog_history_user_text(item, labels)
+        assistant_text = _game_dialog_history_assistant_text(item)
+        if user_text:
+            if last_role == "human" and messages:
+                previous_content = str(getattr(messages[-1], "content", "")).rstrip()
+                messages[-1].content = f"{previous_content}\n{user_text}" if previous_content else user_text
+            else:
+                messages.append(HumanMessage(content=user_text))
+            last_role = "human"
+        if assistant_text:
+            if last_role == "human":
+                messages.append(AIMessage(content=assistant_text))
+                last_role = "ai"
+            else:
+                messages.append(HumanMessage(content=labels["previous_character_output"].format(text=assistant_text)))
+                last_role = "human"
+    return messages
+
+
+def _reset_game_session_text_history_for_turn(entry: dict, route_state: dict | None) -> None:
+    session = entry.get("session") if isinstance(entry, dict) else None
+    if session is None:
+        return
+    from utils.llm_client import SystemMessage
+
+    instructions = str(entry.get("instructions") or getattr(session, "_instructions", "") or "")
+    language = entry.get("user_language") if isinstance(entry, dict) else None
+    history = [SystemMessage(content=instructions)] if instructions else []
+    history.extend(_build_game_recent_history_messages(route_state, language))
+    session._instructions = instructions
+    session._conversation_history = history
 
 
 def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> Dict[str, list[str]]:
@@ -1644,11 +1872,11 @@ async def _run_pregame_context_ai(
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_pregame_context")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -1656,7 +1884,7 @@ async def _run_pregame_context_ai(
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=prompt_template),
                 HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
             ])
@@ -2113,10 +2341,65 @@ def _game_context_pending_dialogues(state: dict) -> list[dict]:
     return dialog[last_idx + 1:]
 
 
+def _game_context_recent_id_limit(state: dict, pending_count: int) -> int:
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    if (
+        pending_count > _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT
+        or organizer.get("running")
+        or int(organizer.get("failure_count") or 0) > 0
+    ):
+        return _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT
+    return _GAME_CONTEXT_RECENT_WINDOW_MAX_COUNT
+
+
+def _apply_game_context_failure_fallback(
+    state: dict,
+    pending: list[dict],
+    *,
+    reason: str,
+) -> bool:
+    if len(pending) < _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+        return False
+    keep_count = _GAME_CONTEXT_FAILURE_FALLBACK_KEEP_COUNT
+    discarded = pending[:-keep_count]
+    kept = pending[-keep_count:]
+    if not discarded:
+        return False
+    last_discarded_id = str(discarded[-1].get("id") or "")
+    if not last_discarded_id:
+        return False
+
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer["last_organized_id"] = last_discarded_id
+    organizer["degraded"] = False
+    organizer["error"] = f"fallback_{reason}_after_{len(pending)}_pending_items"
+    state["game_context_organizer"] = organizer
+    state["game_context_recent_ids"] = [
+        str(item.get("id") or "")
+        for item in kept
+        if isinstance(item, dict) and item.get("id")
+    ]
+    logger.warning(
+        "🎮 局内上下文整理失败兜底丢弃: game=%s session=%s reason=%s discarded=%s kept=%s last=%s",
+        state.get("game_type"),
+        state.get("session_id"),
+        reason,
+        len(discarded),
+        len(kept),
+        last_discarded_id,
+    )
+    return True
+
+
 def _set_game_context_recent_ids(state: dict, dialogues: list[dict] | None = None) -> None:
-    source = dialogues if dialogues is not None else state.get("game_dialog_log") or []
+    source = dialogues if dialogues is not None else _game_context_pending_dialogues(state)
+    if dialogues is None and len(source) >= _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT:
+        if _apply_game_context_failure_fallback(state, source, reason="overflow"):
+            return
+        source = _game_context_pending_dialogues(state)
     ids = [str(item.get("id") or "") for item in source if isinstance(item, dict) and item.get("id")]
-    state["game_context_recent_ids"] = ids[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
+    limit = _game_context_recent_id_limit(state, len(ids))
+    state["game_context_recent_ids"] = ids[-limit:]
 
 
 def _should_schedule_game_context_organizer(state: dict) -> bool:
@@ -2192,7 +2475,11 @@ def _append_game_output(state: dict, output: dict) -> None:
     state["last_activity"] = time.time()
 
 
-def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> dict:
+def _build_game_context_organizer_payload(
+    state: dict,
+    snapshot: list[dict],
+    language: str | None = None,
+) -> dict:
     organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     keep_dialogues = snapshot[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
     return {
@@ -2204,12 +2491,12 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
         "existingRollingSummary": str(state.get("game_context_summary") or ""),
         "existingSignals": _normalize_game_context_signals(state.get("game_context_signals")),
         "organizeDialogues": [
-            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            {"id": item.get("id"), "line": _dialog_memory_line(item, language)}
             for item in organize_dialogues
             if isinstance(item, dict)
         ],
         "keptRecentDialogues": [
-            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            {"id": item.get("id"), "line": _dialog_memory_line(item, language)}
             for item in keep_dialogues
             if isinstance(item, dict)
         ],
@@ -2219,19 +2506,20 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
 async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
     """Summarize older in-game context and extract observable signals."""
     char_info = _get_game_route_summary_llm_info(str(state.get("lanlan_name") or ""))
-    payload = _build_game_context_organizer_payload(state, snapshot)
-    system_prompt = get_game_context_organizer_system_prompt(char_info.get("user_language"))
-    user_prompt = get_game_context_organizer_user_prompt(char_info.get("user_language")).format(
+    language = char_info.get("user_language")
+    payload = _build_game_context_organizer_payload(state, snapshot, language)
+    system_prompt = get_game_context_organizer_system_prompt(language)
+    user_prompt = get_game_context_organizer_user_prompt(language).format(
         payload=json.dumps(payload, ensure_ascii=False)
     )
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_context_organizer")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -2239,7 +2527,7 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
@@ -2268,6 +2556,19 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
     organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     if not organize_dialogues:
         return
+    target_last_id = str(organize_dialogues[-1].get("id") or "")
+    dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    current_last_id = str(organizer.get("last_organized_id") or "")
+    current_idx = _dialog_id_index(dialog, current_last_id)
+    target_idx = _dialog_id_index(dialog, target_last_id)
+    if current_idx > target_idx >= 0:
+        organizer["running"] = False
+        organizer["error"] = "stale_organizer_result_ignored"
+        state["game_context_organizer"] = organizer
+        _set_game_context_recent_ids(state)
+        return
+
     summary = _normalize_short_text(
         result.get("rollingSummary") or result.get("rolling_summary") or result.get("summary"),
         max_chars=900,
@@ -2278,12 +2579,11 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
         state.get("game_context_signals"),
         result.get("signals") if isinstance(result.get("signals"), dict) else {},
     )
-    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     organizer.update({
         "running": False,
         "degraded": False,
         "failure_count": 0,
-        "last_organized_id": str(organize_dialogues[-1].get("id") or ""),
+        "last_organized_id": target_last_id,
         "source": result.get("source") if isinstance(result.get("source"), dict) else result.get("source"),
         "error": "",
     })
@@ -2292,21 +2592,29 @@ def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], res
 
 
 def _apply_game_context_organizer_failure(state: dict, snapshot: list[dict], error: Exception) -> None:
+    organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    if organize_dialogues:
+        target_last_id = str(organize_dialogues[-1].get("id") or "")
+        dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+        current_last_id = str(organizer.get("last_organized_id") or "")
+        current_idx = _dialog_id_index(dialog, current_last_id)
+        target_idx = _dialog_id_index(dialog, target_last_id)
+        if current_idx > target_idx >= 0:
+            organizer["running"] = False
+            organizer["error"] = organizer.get("error") or "stale_organizer_failure_ignored"
+            state["game_context_organizer"] = organizer
+            _set_game_context_recent_ids(state)
+            return
     organizer["running"] = False
     organizer["failure_count"] = int(organizer.get("failure_count") or 0) + 1
     organizer["error"] = type(error).__name__
-    pending_count = len(_game_context_pending_dialogues(state))
-    if pending_count >= _GAME_CONTEXT_DEGRADE_PENDING_COUNT:
-        organizer["degraded"] = True
-        organizer["error"] = f"degraded_after_{pending_count}_pending_items"
-        logger.warning(
-            "🎮 局内上下文整理达到硬上限，降级为纯游戏模式: game=%s session=%s pending=%s",
-            state.get("game_type"),
-            state.get("session_id"),
-            pending_count,
-        )
     state["game_context_organizer"] = organizer
+    pending = _game_context_pending_dialogues(state)
+    fallback_reason = f"organizer_failure_{type(error).__name__}"
+    if _apply_game_context_failure_fallback(state, pending, reason=fallback_reason):
+        return
+    _set_game_context_recent_ids(state)
 
 
 async def _run_game_context_organizer_task(state: dict, snapshot: list[dict]) -> None:
@@ -2615,24 +2923,28 @@ def _extract_score_text(state: dict) -> str:
     return f"玩家 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
 
 
-_GAME_EVENT_MEMORY_LABELS = {
-    "goal-scored": "猫娘进球",
-    "goal-conceded": "玩家进球 / 猫娘丢球",
-    "own-goal-by-ai": "猫娘乌龙",
-    "own-goal-by-player": "玩家乌龙",
-    "steal": "猫娘抢到球",
-    "stolen": "猫娘被抢断",
-    "mailbox-batch": "累积上下文",
+_GAME_EVENT_MEMORY_LABEL_KEYS = {
+    "goal-scored": "event_goal_scored",
+    "goal-conceded": "event_goal_conceded",
+    "own-goal-by-ai": "event_own_goal_by_ai",
+    "own-goal-by-player": "event_own_goal_by_player",
+    "steal": "event_steal",
+    "stolen": "event_stolen",
+    "mailbox-batch": "event_mailbox_batch",
 }
 
 
-def _dialog_memory_line(item: dict) -> str:
+def _dialog_memory_line(item: dict, language: str | None = None) -> str:
+    labels = get_game_dialog_memory_line_labels(language)
     item_type = item.get("type")
     ts_text = _format_ts(item.get("ts"))
     prefix = f"[{ts_text}] " if ts_text else ""
     if item_type == "user":
         text = str(item.get("text") or "").strip()
-        return f"{prefix}玩家：{text}" if text else f"{prefix}玩家发来了一条游戏期间输入"
+        return (
+            f"{prefix}{labels['player_line'].format(text=text)}"
+            if text else f"{prefix}{labels['player_fallback']}"
+        )
     if item_type == "assistant":
         line = str(item.get("line") or "").strip()
         control = item.get("control") if isinstance(item.get("control"), dict) else {}
@@ -2642,19 +2954,23 @@ def _dialog_memory_line(item: dict) -> str:
         if control.get("difficulty"):
             control_bits.append(f"difficulty={control['difficulty']}")
         suffix = f" ({', '.join(control_bits)})" if control_bits else ""
-        return f"{prefix}{item.get('source') or 'game_llm'}：{line}{suffix}" if line else f"{prefix}游戏 LLM 返回为空"
+        return (
+            f"{prefix}{labels['assistant_line'].format(source=item.get('source') or 'game_llm', line=line, suffix=suffix)}"
+            if line else f"{prefix}{labels['assistant_empty']}"
+        )
     if item_type == "game_event":
         kind = str(item.get("kind") or "event")
-        label = _GAME_EVENT_MEMORY_LABELS.get(kind, "游戏事件")
+        label_key = _GAME_EVENT_MEMORY_LABEL_KEYS.get(kind, "event_default")
+        label = labels.get(label_key, labels["event_default"])
         text = str(item.get("text") or "").strip()
         line = str(item.get("result_line") or "").strip()
         if text and line:
-            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」；猫娘回应「{line}」"
+            return f"{prefix}{labels['game_event_text_and_reply'].format(kind=kind, label=label, text=text, line=line)}"
         if line:
-            return f"{prefix}游戏事件 {kind}（{label}）：猫娘回应「{line}」"
+            return f"{prefix}{labels['game_event_reply'].format(kind=kind, label=label, line=line)}"
         if text:
-            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」"
-        return f"{prefix}游戏事件 {kind}（{label}）"
+            return f"{prefix}{labels['game_event_text'].format(kind=kind, label=label, text=text)}"
+        return f"{prefix}{labels['game_event'].format(kind=kind, label=label)}"
     return f"{prefix}{json.dumps(item, ensure_ascii=False)}"
 
 
@@ -2749,7 +3065,8 @@ def _archive_prompt_language(archive: dict) -> str:
 
 
 def _build_game_archive_memory_text(archive: dict) -> str:
-    labels = get_game_archive_memory_text_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_memory_text_labels(language)
     degraded = _archive_game_context_degraded(archive)
     lines = [
         labels["record_header"],
@@ -2778,7 +3095,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     ]
     if key_events:
         lines.append(labels["key_events"])
-        lines.extend(f"- {_dialog_memory_line(item)}" for item in key_events[-8:] if isinstance(item, dict))
+        lines.extend(f"- {_dialog_memory_line(item, language)}" for item in key_events[-8:] if isinstance(item, dict))
 
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
@@ -2800,7 +3117,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     ]
     if last_dialogues:
         lines.append(labels["recent_dialogues"])
-        lines.extend(f"- {_dialog_memory_line(item)}" for item in last_dialogues if isinstance(item, dict))
+        lines.extend(f"- {_dialog_memory_line(item, language)}" for item in last_dialogues if isinstance(item, dict))
 
     return "\n".join(line for line in lines if line is not None)
 
@@ -2903,15 +3220,20 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
 
 
 def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_fallback_highlight_labels(language)
     records: list[str] = []
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     if last_user and last_assistant:
-        records.append(f"玩家最后说「{last_user}」，你回应「{last_assistant}」。")
+        records.append(labels["user_and_assistant"].format(
+            last_user=last_user,
+            last_assistant=last_assistant,
+        ))
     elif last_user:
-        records.append(f"玩家最后在这局游戏里说「{last_user}」。")
+        records.append(labels["user_only"].format(last_user=last_user))
     elif last_assistant:
-        records.append(f"你最后在这局游戏里说「{last_assistant}」。")
+        records.append(labels["assistant_only"].format(last_assistant=last_assistant))
 
     event_records: list[str] = []
     key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
@@ -2920,7 +3242,7 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
             continue
         if not _game_dialog_item_allowed_for_memory(item, archive):
             continue
-        line = _dialog_memory_line(item)
+        line = _dialog_memory_line(item, language)
         if line:
             event_records.append(line)
         if len(event_records) >= 3:
@@ -2937,7 +3259,8 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
 
 
 def _build_game_archive_memory_highlight_source(archive: dict) -> str:
-    labels = get_game_archive_highlight_source_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_archive_highlight_source_labels(language)
     dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
     if not dialogues:
         dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
@@ -2974,7 +3297,7 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
             lines.append(labels["selection_priority"])
     lines.append(labels["full_dialogues"])
     lines.extend(
-        f"- {_dialog_memory_line(item)}"
+        f"- {_dialog_memory_line(item, language)}"
         for item in dialogues
         if isinstance(item, dict) and _game_dialog_item_allowed_for_memory(item, archive)
     )
@@ -2987,15 +3310,21 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
     source = _build_game_archive_memory_highlight_source(archive)
     language = _archive_prompt_language(archive)
     system_prompt = get_game_archive_memory_highlighter_system_prompt(language)
-    user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
 
     try:
+        # Bound a long game_dialog_log: _build_game_archive stores the whole dialog
+        # in full_dialogues and the source builder appends every line. Head+tail
+        # keeps the early framing + late outcome within a real token budget. Inside
+        # the try so any failure falls back to _fallback_game_archive_memory_highlights.
+        from utils.tokenize import truncate_head_tail_tokens
+        source = truncate_head_tail_tokens(source, 2000, 2000)
+        user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_memory_archive")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -3003,7 +3332,7 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # source bounded above via truncate_head_tail_tokens
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
@@ -3155,7 +3484,7 @@ def _build_game_archive_memory_messages(archive: dict, tail_count: int | None = 
 _POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup", "manual_return_to_start"}
 _POSTGAME_REALTIME_NUDGE_DELAYS = (1.5, 5.0, 9.0)
 _POSTGAME_REALTIME_UNORGANIZED_LIMIT = 12
-_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS = 2400
+_POSTGAME_REALTIME_UNORGANIZED_MAX_TOKENS = 1500
 
 
 def _normalize_postgame_options(raw: Any, *, reason: str) -> dict:
@@ -3255,18 +3584,30 @@ def _archive_unorganized_dialogues(archive: dict, *, limit: int = _POSTGAME_REAL
     return pending[-max(1, limit):]
 
 
-def _append_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_chars: int) -> None:
+def _append_token_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_tokens: int) -> None:
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    if max_tokens <= 0:
+        return
+
     kept: list[str] = []
-    total = 0
+    total_tokens = 0
     for raw in reversed(raw_lines):
         line = str(raw or "").strip()
         if not line:
             continue
-        next_total = total + len(line) + 2
-        if kept and next_total > max_chars:
+        line_tokens = count_tokens(line)
+        next_total = total_tokens + line_tokens
+        if next_total > max_tokens:
+            # Even the first (newest) line must respect the budget — a single
+            # pasted/long dialogue entry would otherwise bypass the cap.
+            if not kept:
+                clipped = truncate_to_tokens(line, max_tokens)
+                if clipped:
+                    kept.insert(0, clipped)
             break
         kept.insert(0, line)
-        total = next_total
+        total_tokens = next_total
     if kept:
         lines.append(header)
         lines.extend(kept)
@@ -3278,7 +3619,8 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     Reuse already-built game archive material only. Do not trigger another LLM
     pass here; the Realtime session only needs compact postgame continuity.
     """
-    labels = get_game_postgame_context_labels(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    labels = get_game_postgame_context_labels(language)
     degraded = _archive_game_context_degraded(archive)
     score_text = _archive_score_text(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
@@ -3333,15 +3675,15 @@ def _build_game_postgame_context_text(archive: dict) -> str:
             lines.append(signals_text)
 
     unorganized_lines = [
-        f"- {_dialog_memory_line(item)}"
+        f"- {_dialog_memory_line(item, language)}"
         for item in _archive_unorganized_dialogues(archive)
         if isinstance(item, dict)
     ]
-    _append_limited_lines(
+    _append_token_limited_lines(
         lines,
         labels["unorganized_window"],
         unorganized_lines,
-        max_chars=_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS,
+        max_tokens=_POSTGAME_REALTIME_UNORGANIZED_MAX_TOKENS,
     )
 
     last_user = _archive_last_user_text(archive)
@@ -3388,11 +3730,12 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
 
 
 def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> dict:
-    texts = get_game_postgame_event_texts(_archive_prompt_language(archive))
+    language = _archive_prompt_language(archive)
+    texts = get_game_postgame_event_texts(language)
     dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
     include_count = int(options.get("include_last_dialogues") or _DEFAULT_LAST_FULL_DIALOGUE_COUNT)
     formatted_dialogues = [
-        _dialog_memory_line(item)
+        _dialog_memory_line(item, language)
         for item in dialogues[-include_count:]
         if isinstance(item, dict)
     ]
@@ -3953,7 +4296,7 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
     pre_game_context = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else None
     return {
         "pre_game_context": pre_game_context,
-        "game_context": _build_game_context_prompt_payload(state),
+        "game_context": _build_game_context_prompt_payload(state, include_recent=False),
         "mode": _normalize_basketball_mode(state.get("mode")),
     }
 
@@ -4190,7 +4533,7 @@ async def _build_and_register_game_session(
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), lanlan_name)
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-        game_context = _build_game_context_prompt_payload(route_state)
+        game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
         route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
@@ -4282,7 +4625,7 @@ async def _refresh_game_session_instructions(
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), char_info["lanlan_name"])
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-        game_context = _build_game_context_prompt_payload(route_state)
+        game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
         route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
@@ -4369,7 +4712,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
                 pass
 
     return {
-        'line': line_text,
+        'line': _sanitize_game_visible_line(line_text),
         'control': control,
     }
 
@@ -5922,6 +6265,10 @@ async def _run_game_chat(
                     err_result["_postgame_cache_session_id"] = chat_session_id
                 return err_result
 
+            if not allow_postgame:
+                history_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+                _reset_game_session_text_history_for_turn(entry, history_state)
+
             # 清空上一次的回复
             reply_chunks.clear()
 
@@ -5967,10 +6314,11 @@ async def _run_game_chat(
 
             # 格式化事件为文本发送给 LLM
             import json as _json
-            if isinstance(event, dict):
-                event_payload = _json.dumps(event, ensure_ascii=False)
+            llm_visible_event = _build_game_llm_visible_event(game_type, event)
+            if isinstance(llm_visible_event, dict):
+                event_payload = _json.dumps(llm_visible_event, ensure_ascii=False)
             else:
-                event_payload = str(event)
+                event_payload = str(llm_visible_event)
             event_text = get_game_chat_event_user_prompt(entry.get("user_language")).format(event=event_payload)
 
             llm_started_at = time.perf_counter()
@@ -6237,6 +6585,8 @@ async def game_route_start(game_type: str, request: Request):
             if game_type == "basketball":
                 state["mode"] = _normalize_basketball_mode(data.get("mode"))
             _update_route_start_state_from_payload(state, data)
+            if game_type == "new_user_icebreaker":
+                state["heartbeat_enabled"] = False
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
@@ -6251,7 +6601,11 @@ async def game_route_start(game_type: str, request: Request):
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
     mgr_for_ws = get_session_manager().get(lanlan_name)
-    if state.get("game_route_active") and str(state.get("session_id") or "") == session_id:
+    if (
+        game_type != "new_user_icebreaker"
+        and state.get("game_route_active")
+        and str(state.get("session_id") or "") == session_id
+    ):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
@@ -6589,6 +6943,150 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_text_mirror")
     return result
+
+
+@router.post("/{game_type}/context")
+async def game_project_context(game_type: str, request: Request):
+    """Append game-scoped UI dialogue into the active project session history."""
+    if str(game_type or "") != "new_user_icebreaker":
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "unsupported_game_type", "game_type": game_type},
+        )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+
+    role = str(data.get("role") or "").strip()
+    text = str(data.get("text") or "").strip()
+    if role not in {"assistant", "user"}:
+        return {"ok": False, "reason": "invalid_role"}
+    if not text:
+        return {"ok": False, "reason": "missing_text"}
+    if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
+        return {"ok": False, "reason": "invalid_text_length"}
+    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
+
+    if "lanlan_name" not in data:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    raw_lanlan_name = data.get("lanlan_name")
+    if raw_lanlan_name is None or str(raw_lanlan_name).strip() == "":
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    lanlan_name = _resolve_lanlan_name(raw_lanlan_name)
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    _absorb_request_language(data, lanlan_name)
+
+    session_id = str(data.get("session_id") or "")
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state:
+        closed_response = _game_route_closed_session_response(
+            data,
+            session_id=session_id,
+            lanlan_name=lanlan_name,
+            method="project_session_history",
+        )
+        if closed_response:
+            return closed_response
+        return {
+            "ok": False,
+            "reason": "route_not_active",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "method": "project_session_history",
+        }
+    stale_response = _game_route_stale_session_response(
+        state,
+        session_id,
+        lanlan_name=lanlan_name,
+        method="project_session_history",
+    )
+    if stale_response:
+        return stale_response
+
+    seen_context_ids = state.get("_icebreaker_context_seen_request_ids")
+    if not isinstance(seen_context_ids, OrderedDict):
+        seen_context_ids = OrderedDict()
+        state["_icebreaker_context_seen_request_ids"] = seen_context_ids
+    now = time.time()
+    ttl_cutoff = now - _ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS
+    while seen_context_ids:
+        oldest_id = next(iter(seen_context_ids))
+        if seen_context_ids[oldest_id] < ttl_cutoff:
+            seen_context_ids.pop(oldest_id, None)
+            continue
+        break
+    if request_id and request_id in seen_context_ids:
+        return {
+            "ok": True,
+            "deduped": True,
+            "method": "project_session_history",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
+
+    mgr = get_session_manager().get(lanlan_name)
+    if not mgr:
+        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
+
+    append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
+    try:
+        if callable(append_icebreaker_context_async):
+            ok = await append_icebreaker_context_async(role, text)
+        else:
+            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    except Exception as exc:
+        logger.warning(
+            "new_user_icebreaker context append failed for %s: %s",
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": str(data.get("session_id") or ""),
+        }
+    if ok is False:
+        return {
+            "ok": False,
+            "reason": "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
+    if request_id:
+        while len(seen_context_ids) >= _ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES:
+            seen_context_ids.popitem(last=False)
+        seen_context_ids[request_id] = now
+        seen_context_ids.move_to_end(request_id)
+
+    return {
+        "ok": bool(ok),
+        "method": "project_session_history",
+        "lanlan_name": lanlan_name,
+        "game_type": game_type,
+        "session_id": session_id,
+    }
 
 
 @router.post("/{game_type}/speak")
@@ -7400,11 +7898,11 @@ async def game_quick_lines(game_type: str, request: Request):
         )
 
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_quick_lines")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info['model'],
             char_info['base_url'],
             char_info['api_key'],
@@ -7412,7 +7910,7 @@ async def game_quick_lines(game_type: str, request: Request):
             timeout=20,
         )
         async with llm:
-            result = await llm.ainvoke([
+            result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=prompt),
                 HumanMessage(content=user_prompt),
             ])

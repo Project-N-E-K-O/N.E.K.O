@@ -24,6 +24,8 @@ def _settings_config_payload(config: StudyConfig) -> dict:
         },
         "llm": {
             "llm_call_timeout_seconds": config.llm_call_timeout_seconds,
+            "llm_vision_enabled": config.llm_vision_enabled,
+            "llm_vision_max_image_px": config.llm_vision_max_image_px,
         },
     }
 
@@ -41,6 +43,13 @@ def _coerce_bool(value: object, default: bool) -> bool:
             return False
         return default
     return bool(value)
+
+
+def _coerce_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
@@ -64,6 +73,14 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
     if "llm_call_timeout_seconds" in llm:
         next_values["llm_call_timeout_seconds"] = llm.get(
             "llm_call_timeout_seconds"
+        )
+    if "llm_vision_enabled" in llm:
+        next_values["llm_vision_enabled"] = _coerce_bool(
+            llm.get("llm_vision_enabled"), current.llm_vision_enabled
+        )
+    if "llm_vision_max_image_px" in llm:
+        next_values["llm_vision_max_image_px"] = _coerce_int(
+            llm.get("llm_vision_max_image_px"), current.llm_vision_max_image_px
         )
     return StudyConfig(**next_values)
 

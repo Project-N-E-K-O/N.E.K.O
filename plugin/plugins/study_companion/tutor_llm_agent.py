@@ -56,6 +56,8 @@ class _LLMClientCache:
             llm = self._cache.get(key)
             if llm is None:
                 llm = factory()
+                if inspect.isawaitable(llm):
+                    llm = await llm
                 self._cache[key] = llm
         return self._cache[key]
 
@@ -477,15 +479,15 @@ class TutorLLMAgent:
         messages: list[dict[str, Any]],
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
-    ) -> str:
+        ) -> str:
         get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
-        create_chat_llm = getattr(_llm_client_module, "create_chat_llm", None)
+        create_chat_llm_async = getattr(_llm_client_module, "create_chat_llm_async", None)
         set_call_type = getattr(_token_tracker_module, "set_call_type", None)
         missing_runtime_deps = [
             name
             for name, dep in (
                 ("utils.config_manager.get_config_manager", get_config_manager),
-                ("utils.llm_client.create_chat_llm", create_chat_llm),
+                ("utils.llm_client.create_chat_llm_async", create_chat_llm_async),
                 ("utils.token_tracker.set_call_type", set_call_type),
             )
             if not callable(dep)
@@ -538,7 +540,7 @@ class TutorLLMAgent:
         )
         llm = await self._client_cache.get_or_create(
             key,
-            lambda: create_chat_llm(
+            lambda: create_chat_llm_async(
                 model=model,
                 base_url=base_url,
                 api_key=api_key,

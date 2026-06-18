@@ -55,7 +55,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -166,6 +166,7 @@ from utils.web_scraper import (
 )
 from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
+from utils.meme_moderation import moderate_meme_image_url
 from utils.logger_config import get_module_logger
 from utils.autostart_prompt_state import (
     get_autostart_prompt_state_response,
@@ -1442,7 +1443,7 @@ async def _record_source_used(
     kind: str,
     title: str = '',
 ) -> None:
-    """Called after a source is successfully consumed: update the in-memory table → prune → persist asynchronously.
+    """Called after a source is consumed or deliberately suppressed: update memory → prune → persist.
 
     Concurrent records are serialized by an asyncio.Lock; persistence goes through
     atomic_write_json_async (fsync + os.replace in the thread pool), so the main
@@ -1932,12 +1933,25 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
         pass
 
 
-def _allow_open_threads_for_topic_hooks(activity_snapshot) -> bool:
+def _open_threads_for_activity_state(activity_snapshot, fresh_open_threads) -> list[str]:
+    """Return semantic open_threads that should render in activity state.
+
+    ``unfinished_thread`` is a stronger, rule-based continuation signal (the
+    previous AI question is still hanging and may bypass normal propensity).
+    When it exists, suppress softer LLM-enriched open_threads so Phase 2 sees a
+    single follow-up surface. Also suppress open_threads during
+    ``restricted_screen_only`` states: those rounds allow screen-derived chatter
+    only, with unfinished_thread as the explicit text-only continuation
+    exception. Otherwise keep open_threads in activity state, where they sit
+    next to live state/tone rather than old reminiscence.
+    """
     if activity_snapshot is None:
-        return True
-    if getattr(activity_snapshot, 'propensity', None) != 'restricted_screen_only':
-        return True
-    return getattr(activity_snapshot, 'unfinished_thread', None) is not None
+        return list(fresh_open_threads or [])
+    if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
+        return []
+    if getattr(activity_snapshot, 'propensity', None) == 'restricted_screen_only':
+        return []
+    return list(fresh_open_threads or [])
 
 
 def _render_followup_topic_hooks(
@@ -1950,7 +1964,9 @@ def _render_followup_topic_hooks(
     blank/duplicate filter are reported as surfaced. Otherwise a blank or
     duplicate followup inside the first three would still be recorded via
     /record_surfaced and pushed into cooldown even though the model never saw
-    it.
+    it. Semantic open_threads intentionally do not flow through this helper:
+    they render inside the activity-state section, where the live state/tone
+    and decision rules can arbitrate them separately from old reminiscence.
     """
     if not followup_topics:
         return "", []
@@ -2821,12 +2837,13 @@ async def _deliver_break_reminder_via_llm(
 
     try:
         async with asyncio.timeout(timeout_seconds):
-            async with create_chat_llm(
+            async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
-            ) as llm:
+                timeout=timeout_seconds,  # mirror the asyncio.timeout() wrapping this stream
+            )) as llm:
                 async for chunk in llm.astream(messages):
                     if mgr.state.is_proactive_preempted(proactive_sid):
                         aborted = True
@@ -3378,13 +3395,14 @@ async def emotion_analysis(request: Request):
         set_call_type("emotion")
 
         # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model,
             emotion_base_url,
             api_key,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
+            timeout=30,
         )
         async with llm:
             result = await llm.ainvoke(messages)
@@ -5755,9 +5773,9 @@ async def proactive_chat(request: Request):
                 "detail": str(e)
             }, status_code=500))
 
-        def _make_llm(temperature: float = 1.0,
-                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                      use_vision: bool = False, disable_thinking: bool = True):
+        async def _make_llm(temperature: float = 1.0,
+                            max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                            use_vision: bool = False, disable_thinking: bool = True):
             """
             Create an LLM instance. use_vision=True uses the vision model; when disable_thinking=False, extra_body is not injected.
             """
@@ -5765,14 +5783,16 @@ async def proactive_chat(request: Request):
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+            from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
+                timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
-            return create_chat_llm(m, bu, ak, **kw)
+            return await create_chat_llm_async(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
 
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
@@ -5805,10 +5825,10 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature,
-                                        max_completion_tokens=max_completion_tokens,
-                                        use_vision=use_vision,
-                                        disable_thinking=disable_thinking) as llm:
+                    async with (await _make_llm(temperature=temperature,
+                                                max_completion_tokens=max_completion_tokens,
+                                                use_vision=use_vision,
+                                                disable_thinking=disable_thinking)) as llm:
                         response = await asyncio.wait_for(
                             llm.ainvoke(messages),
                             timeout=timeout
@@ -6283,6 +6303,35 @@ async def proactive_chat(request: Request):
                     if meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_pre_meme_moderation"))
+                        )
+                    moderation = await moderate_meme_image_url(meme_url, fail_closed=False)
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_post_meme_moderation"))
+                        )
+                    if not moderation.allowed:
+                        logger.info(
+                            "[%s]- Phase 1 meme candidate moderation blocked: reason=%s cached=%s url_hash=%s title=%s",
+                            lanlan_name,
+                            moderation.reason,
+                            moderation.cached,
+                            moderation.url_hash,
+                            meme_title[:30],
+                        )
+                        await _record_source_used(
+                            url=meme_url,
+                            kind='image',
+                            title=meme_title,
+                        )
+                        logger.info(
+                            "[%s]- 已记录被 moderation 拦截的表情包 source 衰减历史: url_hash=%s",
+                            lanlan_name,
+                            meme_topic_key[:16],
+                        )
+                        continue
                     single_meme_topic = get_meme_topic_line(
                         proactive_lang,
                         keyword=meme_content.get('keyword', ''),
@@ -6301,7 +6350,7 @@ async def proactive_chat(request: Request):
                     logger.debug(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                     break
                 else:
-                    logger.debug(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+                    logger.debug(f"[{lanlan_name}]- Phase 1 未选出可用表情包候选，跳过表情包话题")
             else:
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
@@ -6465,7 +6514,10 @@ async def proactive_chat(request: Request):
                     activity_snapshot,
                     activity_scores=fresh_enrich.activity_scores,
                     activity_guess=fresh_enrich.activity_guess,
-                    open_threads=fresh_enrich.open_threads,
+                    open_threads=_open_threads_for_activity_state(
+                        activity_snapshot,
+                        fresh_enrich.open_threads,
+                    ),
                 )
             except Exception as _enrich_err:
                 logger.debug(f"[{lanlan_name}] fresh enrichment fetch failed: {_enrich_err}")
@@ -6475,27 +6527,10 @@ async def proactive_chat(request: Request):
             display_snap = None
             state_section = ''
 
-        open_threads_for_topic_hooks = (
-            getattr(display_snap, 'open_threads', None)
-            if display_snap is not None and _allow_open_threads_for_topic_hooks(activity_snapshot)
-            else None
-        )
-        if open_threads_for_topic_hooks or _followup_topics:
-            try:
-                from main_logic.topic.hooks import build_topic_hook_prompt
-                refreshed_topic_hook_prompt = build_topic_hook_prompt(
-                    topic_hook_lang,
-                    followup_topics=_followup_topics if _allow_reminiscence else [],
-                    open_threads=open_threads_for_topic_hooks,
-                )
-                if refreshed_topic_hook_prompt:
-                    followup_topics_prompt = refreshed_topic_hook_prompt
-            except Exception as _topic_hook_err:
-                logger.debug(f"[{lanlan_name}] topic hook prompt build failed: {_topic_hook_err}")
-
         # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
-        # 使用 enriched_memory_context（含回调话题 / 未完线程）而非原始 memory_context
+        # 使用 enriched_memory_context（含回忆线索）而非原始 memory_context。
+        # open_threads 保持在上方 activity state section，不混进 memory_context。
         phase2_memory_context = memory_context
         if followup_topics_prompt:
             phase2_memory_context = memory_context + "\n" + followup_topics_prompt
@@ -6634,10 +6669,10 @@ async def proactive_chat(request: Request):
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with _make_llm(temperature=1.0,
-                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                                    use_vision=phase2_use_vision,
-                                    disable_thinking=phase2_disable_thinking) as llm:
+                async with (await _make_llm(temperature=1.0,
+                                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                                            use_vision=phase2_use_vision,
+                                            disable_thinking=phase2_disable_thinking)) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
@@ -6764,12 +6799,12 @@ async def proactive_chat(request: Request):
                 _fix_text = ""
                 try:
                     async with asyncio.timeout(20.0):
-                        async with _make_llm(
+                        async with (await _make_llm(
                             temperature=1.0,
                             max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                             use_vision=phase2_use_vision,
                             disable_thinking=phase2_disable_thinking,
-                        ) as _fix_llm:
+                        )) as _fix_llm:
                             _fix_resp = await _fix_llm.ainvoke(
                                 [messages[0], HumanMessage(content=_fix_human_content)]
                             )
@@ -6926,12 +6961,12 @@ async def proactive_chat(request: Request):
                 }))
             try:
                 async with asyncio.timeout(20.0):
-                    async with _make_llm(
+                    async with (await _make_llm(
                         temperature=1.0,
                         max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                         use_vision=phase2_use_vision,
                         disable_thinking=phase2_disable_thinking,
-                    ) as _regen_llm:
+                    )) as _regen_llm:
                         _regen_resp = await _regen_llm.ainvoke(regen_messages)
                         regen_text = (
                             _regen_resp.content if hasattr(_regen_resp, "content") else ""

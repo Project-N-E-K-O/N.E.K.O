@@ -493,6 +493,53 @@ def _get_livestream_config_path() -> Path:
     return _get_app_root() / "config" / "livestream_config.json"
 
 
+def _get_meme_moderation_config_path() -> Path:
+    """Path of the standalone meme moderation config file.
+
+    Takes precedence over the meme_moderation_config field in api_providers.json,
+    matching the livestream_config override pattern. The file is covered by the
+    default config/*.json .gitignore rule and never enters git.
+    """
+    return _get_app_root() / "config" / "meme_moderation_config.json"
+
+
+def get_meme_moderation_config() -> Dict[str, Any]:
+    """Read the meme moderation config (standalone file first, api_providers.json field as fallback).
+
+    Priority:
+    1. ``config/meme_moderation_config.json`` (untracked local/private config)
+    2. the ``meme_moderation_config`` field of ``config/api_providers.json`` (compatibility path)
+
+    Returns:
+        Dict: {'api_key': str, 'base_url': str, 'model': str}
+        Falls back to defaults (empty string) when missing/unreadable/fields absent.
+    """
+    raw: Optional[Dict[str, Any]] = None
+    standalone_path = _get_meme_moderation_config_path()
+    if standalone_path.is_file():
+        try:
+            with open(standalone_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                # 兼容两种 shape：flat（顶层就是 api_key）
+                # 与 wrapped（顶层 'meme_moderation_config' 包一层，跟 api_providers.json
+                # 同构）。私有打包复用 api_providers.json 结构是常见操作，不强求扁平。
+                inner = loaded.get('meme_moderation_config')
+                raw = inner if isinstance(inner, dict) else loaded
+        except Exception as e:
+            logger.warning(
+                f"读取 {standalone_path.name} 失败，回退到 api_providers.json: {e}"
+            )
+    if raw is None:
+        fallback_raw = get_config().get('meme_moderation_config')
+        raw = fallback_raw if isinstance(fallback_raw, dict) else {}
+    return {
+        'api_key': str(raw.get('api_key', '') or '').strip(),
+        'base_url': str(raw.get('base_url', '') or raw.get('url', '') or '').strip(),
+        'model': str(raw.get('model', '') or raw.get('model_name', '') or '').strip(),
+    }
+
+
 def get_livestream_config() -> Dict[str, Any]:
     """Read the livestream config (standalone file first, api_providers.json field as fallback).
 
@@ -558,6 +605,7 @@ __all__ = [
     'get_native_tts_voice_provider_configs',
     'get_cosyvoice_clone_model',
     'cosyvoice_model_supports_language_hints',
+    'get_meme_moderation_config',
     'get_livestream_config',
     'is_livestream_active',
 ]

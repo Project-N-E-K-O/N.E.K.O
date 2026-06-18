@@ -8,6 +8,7 @@ from main_logic import tts_client  # noqa: F401
 from utils import tts_provider_registry
 from utils.mimo_tts_voices import MIMO_PRESET_CATALOG, normalize_mimo_tts_voice
 from utils.native_voice_registry import get_provider, is_native_voice, list_providers
+from utils.voice_config import read_legacy_voice_id
 
 
 class _CM:
@@ -189,3 +190,30 @@ def test_validate_voice_id_accepts_mimo_preset_when_selected(config_manager):
 def test_validate_voice_id_rejects_mimo_preset_when_not_selected(config_manager):
     _write_core_config(config_manager, {"coreApi": "qwen", "assistApi": "qwen"})
     assert config_manager.validate_voice_id("Milo") is False
+
+
+# ── normalize/storage 端到端：保存 MiMo 预制音色补全 source=preset/provider=mimo
+#    ownership 元数据（#1842 结构化 schema 缺口，#1848 遗留），并仍 round-trip 回裸 key ──
+
+
+@pytest.mark.unit
+def test_normalize_mimo_preset_marks_source_preset_provider_mimo(config_manager):
+    _write_core_config(config_manager, {"coreApi": "qwen", "assistApi": "mimo"})
+    vc = config_manager.normalize_voice_id_to_config("Milo")
+    assert (vc.source, vc.provider, vc.ref) == ("preset", "mimo", "Milo")
+    # 写入存储：迁成结构对象（非裸串），且 round-trip 回库 key 'Milo'
+    stored = config_manager.voice_id_to_storage_value("Milo")
+    assert stored == {"source": "preset", "provider": "mimo", "ref": "Milo"}
+    assert read_legacy_voice_id(stored) == "Milo"
+
+
+@pytest.mark.unit
+def test_normalize_mimo_preset_unresolved_when_not_selected(config_manager):
+    # 未选中 MiMo → 不认作预制，裸 ref 原样带过（provider/source 空），不误标
+    _write_core_config(config_manager, {"coreApi": "qwen", "assistApi": "qwen"})
+    vc = config_manager.normalize_voice_id_to_config("Milo")
+    assert (vc.source, vc.provider, vc.ref) == ("", "", "Milo")
+    # 落库侧：未解析的裸 ref 存回扁平串（不写成空壳结构对象），守住回归
+    stored = config_manager.voice_id_to_storage_value("Milo")
+    assert stored == "Milo"
+    assert read_legacy_voice_id(stored) == "Milo"
