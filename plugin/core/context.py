@@ -18,6 +18,7 @@ import threading
 import functools
 import itertools
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -286,10 +287,38 @@ class PluginContext:
     def _merge_config_copy(base: object, updates: Dict[str, Any]) -> Dict[str, Any]:
         merged = copy.deepcopy(base) if isinstance(base, dict) else {}
         for key, value in updates.items():
-            if isinstance(merged.get(key), dict) and isinstance(value, dict):
-                current = merged[key]
-                if isinstance(current, dict):
-                    merged[key] = PluginContext._merge_config_copy(current, value)
+            if not isinstance(key, str):
+                continue
+            if value == "__DELETE__":
+                merged.pop(key, None)
+                continue
+            if isinstance(value, Mapping):
+                value_mapping = {
+                    nested_key: nested_value
+                    for nested_key, nested_value in value.items()
+                    if isinstance(nested_key, str)
+                }
+                if value_mapping.get("__replace__") is True:
+                    merged[key] = {
+                        nested_key: copy.deepcopy(nested_value)
+                        for nested_key, nested_value in value_mapping.items()
+                        if nested_key != "__replace__"
+                    }
+                    continue
+                current = merged.get(key)
+                if isinstance(current, Mapping):
+                    current_mapping = {
+                        nested_key: nested_value
+                        for nested_key, nested_value in current.items()
+                        if isinstance(nested_key, str)
+                    }
+                    merged[key] = (
+                        PluginContext._merge_config_copy(current_mapping, value_mapping)
+                        if value_mapping
+                        else {}
+                    )
+                else:
+                    merged[key] = copy.deepcopy(value_mapping)
             else:
                 merged[key] = copy.deepcopy(value)
         return merged
@@ -1852,7 +1881,8 @@ class PluginContext:
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
-        optimistic_config = self._merge_config_copy(getattr(self, "_effective_config", None), updates)
+        old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        optimistic_config = self._merge_config_copy(old_effective_config, updates)
         self._set_effective_config_cache(optimistic_config)
         request_timeout = min(float(timeout), 4.5)
         try:
@@ -1885,3 +1915,10 @@ class PluginContext:
                 "persisted": False,
                 "message": "Config persistence timed out; update is applied in plugin memory only",
             }
+        except Exception:
+            if isinstance(old_effective_config, dict):
+                self._set_effective_config_cache(old_effective_config)
+            else:
+                self._effective_config = None
+                self._refresh_instance_runtime_config({})
+            raise
