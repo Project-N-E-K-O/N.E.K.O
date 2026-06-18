@@ -13,7 +13,7 @@ NEKO Web / 共享显示层：
 5. `static/subtitle-settings-window.js`：桌面端独立设置窗口状态同步和设置变更传播。
 6. `static/app-react-chat-window.js`：React 对话框工具按钮，包括展开状态里的翻译按钮开关、按钮高亮同步和桌面字幕窗口桥接。
 
-NEKO-PC 桌面壳（同级仓库 `/Users/tonnodoubt/N.E.K.O.-PC`）：
+NEKO-PC 桌面壳（同级仓库 `/N.E.K.O.-PC`）：
 
 1. `src/preload-subtitle.js`：字幕窗口 preload，转发转写文本、状态同步、窗口控制、设置窗口 IPC。
 2. `src/main.js`：字幕窗口显示/隐藏、设置窗口 IPC、字幕设置变更转发。

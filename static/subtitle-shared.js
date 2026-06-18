@@ -2082,7 +2082,8 @@
             };
             var onDocumentDown = function(e) {
                 if (!isSettingsOpen()) return;
-                if (refs.display.contains(e.target)) return;
+                if (refs.settingsPanel && refs.settingsPanel.contains(e.target)) return;
+                if (refs.settingsBtn && refs.settingsBtn.contains(e.target)) return;
                 closeSettings('subtitle-ui-panel-outside', 'clean');
             };
             refs.settingsBtn.addEventListener('click', onSettingsClick);

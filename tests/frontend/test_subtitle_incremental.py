@@ -1732,6 +1732,7 @@ def test_subtitle_panel_controls_settings_state_machine(
             const settingsBtn = document.getElementById('subtitle-settings-btn');
             const settingsPanel = document.getElementById('subtitle-settings-panel');
             const inner = document.getElementById('subtitle-settings-inner');
+            const scroll = document.getElementById('subtitle-scroll');
             const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
             const waitForControlsDelay = () => new Promise((resolve) => setTimeout(resolve, 700));
             const snap = () => ({
@@ -1761,6 +1762,12 @@ def test_subtitle_panel_controls_settings_state_machine(
             inner.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
             await tick();
             const afterSettingsInnerMouseDown = snap();
+            scroll.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            await tick();
+            const afterSettingsOutsideMouseDown = snap();
+            settingsBtn.click();
+            await tick();
+            const afterSettingsReopen = snap();
             display.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
             await tick();
             const afterFirstEscape = snap();
@@ -1777,6 +1784,8 @@ def test_subtitle_panel_controls_settings_state_machine(
                 afterSettingsOpen,
                 afterPointerLeaveWithSettingsOpen,
                 afterSettingsInnerMouseDown,
+                afterSettingsOutsideMouseDown,
+                afterSettingsReopen,
                 afterFirstEscape,
                 afterSecondEscape,
             };
@@ -1806,6 +1815,10 @@ def test_subtitle_panel_controls_settings_state_machine(
     assert result["afterPointerLeaveWithSettingsOpen"]["settingsHidden"] is False
     assert result["afterSettingsInnerMouseDown"]["dataset"] == "settings"
     assert result["afterSettingsInnerMouseDown"]["settingsHidden"] is False
+    assert result["afterSettingsOutsideMouseDown"]["dataset"] == "clean"
+    assert result["afterSettingsOutsideMouseDown"]["settingsHidden"] is True
+    assert result["afterSettingsReopen"]["dataset"] == "settings"
+    assert result["afterSettingsReopen"]["settingsHidden"] is False
     assert result["afterFirstEscape"]["dataset"] == "controls"
     assert result["afterFirstEscape"]["settingsHidden"] is True
     assert result["afterSecondEscape"]["dataset"] == "clean"
@@ -5878,7 +5891,19 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
                 setSize: window.__subtitleWindowSizes[window.__subtitleWindowSizes.length - 1],
                 sizeCount: window.__subtitleWindowSizes.length,
             };
-            return { sizeBeforeOpen, immediate, afterCleanDelay, afterPointerReturn, afterSecondClick, settled };
+            document.getElementById('subtitle-settings-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.dispatchEvent(new CustomEvent('neko-subtitle-settings-closed', {
+                detail: { reason: 'outside-blur', panelState: 'clean' },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterHostClosed = {
+                panelState: display.dataset.subtitlePanelState || '',
+                closeCount: window.__subtitleSettingsCloseCount,
+                openCount: window.__subtitleSettingsOpenPayloads.length,
+                panelHidden: panel.classList.contains('hidden'),
+            };
+            return { sizeBeforeOpen, immediate, afterCleanDelay, afterPointerReturn, afterSecondClick, settled, afterHostClosed };
         }
         """
     )
@@ -5917,6 +5942,12 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
         "panelHidden": True,
         "setSize": result["sizeBeforeOpen"],
         "sizeCount": 1,
+    }
+    assert result["afterHostClosed"] == {
+        "panelState": "clean",
+        "closeCount": 2,
+        "openCount": 2,
+        "panelHidden": True,
     }
 
 

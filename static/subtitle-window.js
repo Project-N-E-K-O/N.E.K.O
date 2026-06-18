@@ -1267,6 +1267,13 @@
             applyStateSync(e.detail || {});
         });
 
+        window.addEventListener('neko-subtitle-settings-closed', function(e) {
+            if (subtitleWindowController && typeof subtitleWindowController.closeSettingsForExternalInteraction === 'function') {
+                var detail = e && e.detail ? e.detail : {};
+                subtitleWindowController.closeSettingsForExternalInteraction(detail.panelState || 'controls');
+            }
+        });
+
         window.addEventListener('neko-ws-transcript', function(e) {
             var data = e.detail || {};
             applyTranslatedTranscript(data);
