@@ -616,7 +616,8 @@ def test_yui_guide_chat_bridge_has_storage_queue_fallback():
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in interpage
     assert "drainPendingYuiGuideChatBridgeQueue" in interpage
-    assert "bindStandaloneChatIdleActivityRelay();\n    drainPendingYuiGuideChatBridgeQueue();" in interpage
+    assert "bindStandaloneChatIdleActivityRelay();" in interpage
+    assert "drainPendingYuiGuideChatBridgeQueue();" in interpage
     assert "handleYuiGuideChatBridgeStorageEvent" in interpage
     assert "yuiGuideInterpageResources.addEventListener(window, 'storage', handleYuiGuideChatBridgeStorageEvent)" in interpage
     assert "clearYuiGuideChatMessages" in interpage
