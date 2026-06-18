@@ -1,6 +1,6 @@
 <div align="center">
 
-![Logo](assets/neko_logo_new.jpeg)
+![Logo](assets/neko_logo_new.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
 # Project N.E.K.O. :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
