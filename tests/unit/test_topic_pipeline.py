@@ -1560,8 +1560,12 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
     ]
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
+    assert pool._used_topics["妮可"][0]["interest"] == "买车像进入新生活阶段"
 
 
 @pytest.mark.asyncio
@@ -1646,8 +1650,12 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
     ]
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
+    assert pool._used_topics["妮可"][0]["interest"] == "买车像进入新生活阶段"
 
 
 @pytest.mark.asyncio
@@ -1684,8 +1692,12 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
     await pool.process_now("妮可")
     await asyncio.wait_for(triggered.wait(), timeout=1.0)
 
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
+    assert pool._used_topics["妮可"][0]["interest"] == "买车像进入新生活阶段"
 
 
 @pytest.mark.asyncio
