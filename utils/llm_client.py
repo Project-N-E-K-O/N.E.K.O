@@ -97,6 +97,26 @@ _DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
 _DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
 
 
+class _AutoClosingDefaultHttpxClient(DefaultHttpxClient):
+    def __del__(self) -> None:
+        if self.is_closed:
+            return
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _AutoClosingDefaultAsyncHttpxClient(DefaultAsyncHttpxClient):
+    def __del__(self) -> None:
+        if self.is_closed:
+            return
+        try:
+            asyncio.get_running_loop().create_task(self.aclose())
+        except Exception:
+            pass
+
+
 def _get_default_ssl_context() -> ssl.SSLContext:
     """Return the process-wide default TLS context for short-lived LLM clients."""
     global _DEFAULT_SSL_CONTEXT
@@ -427,9 +447,9 @@ class ChatOpenAI:
         if default_headers:
             client_kw["default_headers"] = default_headers
         ssl_context = _get_default_ssl_context()
-        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
+        client_kw["http_client"] = _AutoClosingDefaultAsyncHttpxClient(verify=ssl_context)
         self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
+        client_kw["http_client"] = _AutoClosingDefaultHttpxClient(verify=ssl_context)
         self._client = OpenAI(**client_kw)
 
     def _is_anthropic(self) -> bool:
