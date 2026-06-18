@@ -826,10 +826,12 @@
             if (!updateSubtitleScrollState(scroll)) return;
             var delta = getWheelScrollDelta(e, scroll);
             if (!delta) return;
+            var maxScrollTop = getSubtitleScrollMax(scroll);
+            var nextScrollTop = Math.max(0, Math.min(maxScrollTop, scroll.scrollTop + delta));
+            if (Math.abs(nextScrollTop - scroll.scrollTop) < 1) return;
             cancelSubtitleAutoScroll(scroll);
             scroll._nekoSubtitleLastUserScrollAt = Date.now();
-            var maxScrollTop = getSubtitleScrollMax(scroll);
-            scroll.scrollTop = Math.max(0, Math.min(maxScrollTop, scroll.scrollTop + delta));
+            scroll.scrollTop = nextScrollTop;
             if (e.preventDefault) e.preventDefault();
             if (e.stopPropagation) e.stopPropagation();
         };

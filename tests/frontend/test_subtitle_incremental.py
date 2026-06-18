@@ -553,6 +553,10 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
                 width: 360,
                 height: 80,
             }));
+            document.getElementById('subtitle-text').textContent = Array.from(
+                { length: 20 },
+                (_, index) => `line ${index + 1}`
+            ).join('\\n');
         }
         """
     )
@@ -567,7 +571,7 @@ def test_web_subtitle_transparent_area_passes_through_while_text_stays_interacti
             const display = document.getElementById('subtitle-display');
             const text = document.getElementById('subtitle-text');
             const displayRect = display.getBoundingClientRect();
-            const textRect = text.getBoundingClientRect();
+            const textRect = text.getClientRects()[0] || text.getBoundingClientRect();
             const transparentPoint = {
                 x: Math.round(displayRect.left + 18),
                 y: Math.round(displayRect.top + 18),
@@ -4580,7 +4584,7 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     assert result["panelHidden"] is True
     assert result["displayOverflow"] == "visible"
     assert result["scrollOverflow"] == "auto"
-    assert result["scrollPointerEvents"] == "auto"
+    assert result["scrollPointerEvents"] == "none"
     assert result["textPointerEvents"] == "auto"
     assert result["scrollRight"] <= result["settingsBtnLeft"] - 6
     assert result["hasDragHandle"] is False
@@ -4627,24 +4631,45 @@ def test_subtitle_scroll_box_accepts_mouse_wheel_for_long_translation(
             await new Promise((resolve) => setTimeout(resolve, 0));
 
             scroll.scrollTop = 0;
-            const style = getComputedStyle(scroll);
+            const scrollStyle = getComputedStyle(scroll);
+            const textStyle = getComputedStyle(text);
             const wheelDown = new WheelEvent('wheel', {
                 bubbles: true,
                 cancelable: true,
                 deltaY: 80,
             });
-            const wheelDownResult = scroll.dispatchEvent(wheelDown);
+            const wheelDownResult = text.dispatchEvent(wheelDown);
             const afterDown = scroll.scrollTop;
             const wheelUp = new WheelEvent('wheel', {
                 bubbles: true,
                 cancelable: true,
                 deltaY: -40,
             });
-            const wheelUpResult = scroll.dispatchEvent(wheelUp);
+            const wheelUpResult = text.dispatchEvent(wheelUp);
+            const afterUp = scroll.scrollTop;
+
+            scroll.scrollTop = 0;
+            const wheelPastTop = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: -80,
+            });
+            const wheelPastTopResult = text.dispatchEvent(wheelPastTop);
+            const afterPastTop = scroll.scrollTop;
+
+            scroll.scrollTop = scroll.scrollHeight - scroll.clientHeight;
+            const beforePastBottom = scroll.scrollTop;
+            const wheelPastBottom = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 80,
+            });
+            const wheelPastBottomResult = text.dispatchEvent(wheelPastBottom);
 
             return {
-                overflowY: style.overflowY,
-                pointerEvents: style.pointerEvents,
+                overflowY: scrollStyle.overflowY,
+                scrollPointerEvents: scrollStyle.pointerEvents,
+                textPointerEvents: textStyle.pointerEvents,
                 scrollHeight: scroll.scrollHeight,
                 clientHeight: scroll.clientHeight,
                 maxScrollTop: scroll.scrollHeight - scroll.clientHeight,
@@ -4653,14 +4678,22 @@ def test_subtitle_scroll_box_accepts_mouse_wheel_for_long_translation(
                 afterDown,
                 wheelUpResult,
                 wheelUpPrevented: wheelUp.defaultPrevented,
-                afterUp: scroll.scrollTop,
+                afterUp,
+                wheelPastTopResult,
+                wheelPastTopPrevented: wheelPastTop.defaultPrevented,
+                afterPastTop,
+                beforePastBottom,
+                wheelPastBottomResult,
+                wheelPastBottomPrevented: wheelPastBottom.defaultPrevented,
+                afterPastBottom: scroll.scrollTop,
             };
         }
         """
     )
 
     assert result["overflowY"] == "auto"
-    assert result["pointerEvents"] == "auto"
+    assert result["scrollPointerEvents"] == "none"
+    assert result["textPointerEvents"] == "auto"
     assert result["scrollHeight"] > result["clientHeight"]
     assert result["maxScrollTop"] > 0
     assert result["wheelDownResult"] is False
@@ -4669,6 +4702,12 @@ def test_subtitle_scroll_box_accepts_mouse_wheel_for_long_translation(
     assert result["wheelUpResult"] is False
     assert result["wheelUpPrevented"] is True
     assert result["afterUp"] < result["afterDown"]
+    assert result["wheelPastTopResult"] is True
+    assert result["wheelPastTopPrevented"] is False
+    assert result["afterPastTop"] == 0
+    assert result["wheelPastBottomResult"] is True
+    assert result["wheelPastBottomPrevented"] is False
+    assert result["afterPastBottom"] == result["beforePastBottom"]
 
 
 @pytest.mark.frontend
@@ -4728,7 +4767,7 @@ def test_subtitle_overflow_auto_scroll_is_slow_and_wheel_cancels_it(
                 cancelable: true,
                 deltaY: -999,
             });
-            const wheelResult = scroll.dispatchEvent(wheelUp);
+            const wheelResult = text.dispatchEvent(wheelUp);
             const afterWheel = scroll.scrollTop;
             shared.requestSubtitleAutoScroll(scroll, {
                 speedPixelsPerSecond: 240,
@@ -5033,6 +5072,10 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
                 width: 360,
                 height: 80,
             }));
+            document.getElementById('subtitle-text').textContent = Array.from(
+                { length: 20 },
+                (_, index) => `line ${index + 1}`
+            ).join('\\n');
         }
         """
     )
@@ -5045,7 +5088,8 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
         async () => {
             document.dispatchEvent(new Event('DOMContentLoaded'));
             await new Promise((resolve) => setTimeout(resolve, 0));
-            const textRect = document.getElementById('subtitle-text').getBoundingClientRect();
+            const text = document.getElementById('subtitle-text');
+            const textRect = text.getClientRects()[0] || text.getBoundingClientRect();
             const textPoint = {
                 x: Math.round(textRect.left + textRect.width / 2),
                 y: Math.round(textRect.top + textRect.height / 2),

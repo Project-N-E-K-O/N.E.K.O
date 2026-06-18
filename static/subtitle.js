@@ -298,7 +298,6 @@ function writeSubtitleText(text) {
     if (_subtitleFontResizeTimer) clearTimeout(_subtitleFontResizeTimer);
     if (!text || !text.trim()) {
         subtitleText.style.fontSize = '';
-        requestSubtitleContentAutoScroll();
         syncSubtitleRenderState('subtitle-text-clear');
         return;
     }

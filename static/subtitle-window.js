@@ -156,10 +156,6 @@
         return rect.width > 0 && rect.height > 0;
     }
 
-    function isScrollableElement(el) {
-        return !!(el && (el.scrollHeight || 0) - (el.clientHeight || 0) > 1);
-    }
-
     function pushElementRect(rects, el, padding) {
         if (!isVisibleElement(el)) return;
         var rect = inflateRect(el.getBoundingClientRect(), padding);
@@ -188,9 +184,6 @@
         var rects = [];
         if (!refs || !refs.display || refs.display.classList.contains('hidden')) return rects;
 
-        if (isScrollableElement(refs.scroll)) {
-            pushElementRect(rects, refs.scroll, 6);
-        }
         pushElementRect(rects, refs.text, 10);
 
         if (refs.display.dataset.subtitlePanelState === 'controls' ||
