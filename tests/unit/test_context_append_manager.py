@@ -1003,6 +1003,60 @@ async def test_pending_context_retries_when_all_targets_fail():
 
 
 @pytest.mark.asyncio
+async def test_pending_context_flush_cancellation_restores_queue_and_request_ids():
+    mgr = _make_manager()
+    mgr.session_ready = False
+    await mgr.append_context(
+        source="game.realtime_context",
+        role="system",
+        text="first pending",
+        timing="when_ready",
+        request_id="ctx-cancel-1",
+        ordering_key="001",
+    )
+    await mgr.append_context(
+        source="game.realtime_context",
+        role="system",
+        text="second pending",
+        timing="when_ready",
+        request_id="ctx-cancel-2",
+        ordering_key="002",
+    )
+
+    original_append = mgr._append_context_to_targets
+
+    async def cancelled_append(_payload):
+        raise asyncio.CancelledError
+
+    mgr._append_context_to_targets = cancelled_append
+
+    with pytest.raises(asyncio.CancelledError):
+        await mgr._flush_pending_context_appends()
+
+    assert [payload["text"] for payload in mgr.pending_context_appends] == [
+        "first pending",
+        "second pending",
+    ]
+
+    mgr._clear_pending_context_appends()
+    mgr._append_context_to_targets = original_append
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+    mgr.session_ready = True
+    retry = await mgr.append_context(
+        source="game.realtime_context",
+        role="system",
+        text="first pending retry",
+        timing="when_ready",
+        request_id="ctx-cancel-1",
+    )
+
+    assert retry.appended is True
+    assert retry.deduped is False
+    assert [message.content for message in history] == ["system: first pending retry"]
+
+
+@pytest.mark.asyncio
 async def test_append_context_applies_token_budget(monkeypatch):
     mgr = _make_manager()
     history = []

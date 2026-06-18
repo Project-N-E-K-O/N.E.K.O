@@ -1614,7 +1614,7 @@ class LLMSessionManager:
         ))
         retry: list[dict] = []
         flushed = 0
-        for payload in pending:
+        for index, payload in enumerate(pending):
             try:
                 result = await self._append_context_to_targets(payload)
                 if not result.appended:
@@ -1622,6 +1622,12 @@ class LLMSessionManager:
                 else:
                     self._promote_context_append_request_id_to_current_session(payload)
                     flushed += 1
+            except asyncio.CancelledError:
+                retry.append(payload)
+                retry.extend(pending[index + 1:])
+                if retry:
+                    self.pending_context_appends = retry + self.pending_context_appends
+                raise
             except Exception as exc:
                 retry.append(payload)
                 logger.warning("[%s] context append flush failed: %s", self.lanlan_name, exc)
