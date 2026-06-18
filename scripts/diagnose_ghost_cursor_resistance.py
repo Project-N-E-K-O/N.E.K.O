@@ -118,6 +118,22 @@ def _run_dom_diagnostic(page: Any, args: argparse.Namespace) -> dict[str, Any]:
             const startedAt = performance.now();
             const origin = window.__director.overlay.getCursorPosition();
             const samples = [sample('before', startedAt)];
+            if (!origin || !Number.isFinite(origin.x) || !Number.isFinite(origin.y)) {
+                return {
+                    mode: 'dom',
+                    passed: false,
+                    checks: {
+                        cursorOriginAvailable: false,
+                        movedAgainstX: false,
+                        movedAgainstY: false,
+                        returned: false,
+                        xDisplacementVisible: false,
+                        yDisplacementVisible: false,
+                    },
+                    reason: 'cursor-origin-unavailable',
+                    samples,
+                };
+            }
             window.__director.handleInterrupt({
                 isTrusted: true,
                 type: 'mousemove',
@@ -132,6 +148,23 @@ def _run_dom_diagnostic(page: Any, args: argparse.Namespace) -> dict[str, Any]:
             }
             const xs = samples.map((entry) => entry.x).filter((value) => Number.isFinite(value));
             const ys = samples.map((entry) => entry.y).filter((value) => Number.isFinite(value));
+            if (!xs.length || !ys.length) {
+                return {
+                    mode: 'dom',
+                    origin,
+                    passed: false,
+                    checks: {
+                        cursorSamplesAvailable: false,
+                        movedAgainstX: false,
+                        movedAgainstY: false,
+                        returned: false,
+                        xDisplacementVisible: false,
+                        yDisplacementVisible: false,
+                    },
+                    reason: 'cursor-samples-unavailable',
+                    samples,
+                };
+            }
             const minX = Math.min(...xs);
             const maxX = Math.max(...xs);
             const minY = Math.min(...ys);
@@ -390,10 +423,20 @@ def main(argv: list[str]) -> int:
         finally:
             browser.close()
 
-    for index, result in enumerate(results):
-        if index:
-            print()
-        _print_result(result, json_output=args.json)
+    if args.json:
+        print(json.dumps(
+            {
+                "ok": all(result.get("passed") for result in results),
+                "results": results,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
+    else:
+        for index, result in enumerate(results):
+            if index:
+                print()
+            _print_result(result, json_output=False)
     return 0 if all(result.get("passed") for result in results) else 1
 
 

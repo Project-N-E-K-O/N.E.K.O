@@ -406,6 +406,12 @@
     "server_prefix": "",
     "voice_id": ""
   },
+  "_comment_meme_moderation_config": "Meme image moderation local/private API key.",
+  "meme_moderation_config": {
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model": "omni-moderation-latest"
+  },
   "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
     "yui_cn": "voice-tone-RcH2svtsrw",

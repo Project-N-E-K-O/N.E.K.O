@@ -1410,6 +1410,10 @@ svg {
   cursor: not-allowed;
 }
 
+.compact-input-tool-fan .composer-tool-btn:disabled {
+  cursor: inherit;
+}
+
 .composer-tool-btn img {
   width: 24px;
   height: 24px;
@@ -3899,42 +3903,51 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: background 0.15s ease, filter 0.15s ease;
 }
 
-.compact-input-tool-fan .compact-input-tool-item:hover::after {
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):hover::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover::after {
   background: var(--compact-tool-button-hover-fill);
 }
 
 .compact-input-tool-fan .compact-input-tool-tooltip {
   position: absolute;
-  left: 50%;
-  top: calc(100% + 7px);
+  left: calc(100% + 5px);
+  top: calc(100% - 6px);
   z-index: 4;
-  max-width: 96px;
-  padding: 3px 8px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
-  color: #243244;
-  font-size: 11px;
-  line-height: 1.25;
+  max-width: 104px;
+  padding: 2px 5px;
+  border: 1px solid #6b7280;
+  border-radius: 0;
+  background: #ffffff;
+  color: #111827;
+  font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, -2px) scale(0.96);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  box-shadow: 0 5px 14px rgba(20, 36, 64, 0.14);
+  user-select: none;
+  transform: translate(0, -1px);
+  transition: opacity 0.08s ease, transform 0.08s ease;
+  transform-origin: 0 0;
+  box-shadow: none;
 }
 
-.compact-input-tool-fan .compact-input-tool-item:hover,
-.compact-input-tool-fan .compact-input-tool-item:focus-within {
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):hover,
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover,
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within {
   z-index: 12;
 }
 
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-within > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within > .compact-input-tool-tooltip {
   opacity: 1;
-  transform: translate(-50%, 0) scale(1);
+  transform: translate(0, 0);
 }
 
 .compact-input-tool-fan .compact-input-tool-item > img,
@@ -5521,6 +5534,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: transparent;
 }
 
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {
+  border-color: #8b949e;
+  background: #202124;
+  color: #f3f4f6;
+}
+
 [data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {
   border-color: rgba(176, 219, 255, 0.16);
   background:
@@ -5811,7 +5830,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
-    transform: translate(-50%, 0) scale(1);
+    transform: translate(0, 0);
   }
 
   .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {

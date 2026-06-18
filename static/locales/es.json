@@ -3297,6 +3297,10 @@
             "desc": "Para obtener la mejor experiencia del tutorial, recomendamos ingresar al modo de pantalla completa.\nEn el modo de pantalla completa, el contenido del tutorial será más claro y no quedará oscurecido por otros elementos.",
             "enterFullscreen": "Ingrese al tutorial en pantalla completa"
         },
+        "reset": {
+            "daySuccess": "Se restableció el tutorial de principiante del día {{day}}. Actualiza Neko para iniciarlo de nuevo.",
+            "dayFailed": "No se pudo restablecer el tutorial de principiante. Inténtalo de nuevo más tarde."
+        },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
             "buttons": {
@@ -3304,7 +3308,7 @@
                 "sayHello": "Hola"
             },
             "lines": {
-                "introBasic": "Aqui hay un boton magico. Solo tienes que hacer clic y podras hablar conmigo directamente. Quieres contarme algo nuevo que te haya pasado hoy? O quiza solo llamarme por mi nombre? Vamos, pruebalo. No puedo esperar a oir tu voz!",
+                "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
                 "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
                 "takeoverPluginPreviewHome": "Ademas de las funciones que te presente antes, aqui tambien hay montones de plugins superdivertidos!",
                 "takeoverPluginPreviewDashboard": "Con ellos no solo puedo leer comentarios de Bilibili, tambien puedo ayudarte a apagar las luces y encender el aire acondicionado... Esta gatita es la superdiosa felina omnipotente! Hmph!",

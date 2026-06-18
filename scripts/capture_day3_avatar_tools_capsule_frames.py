@@ -303,13 +303,22 @@ def _save_cropped_frames(frames: list[dict[str, Any]], frame_dir: Path, crop_rec
         crop_rect["y"] + crop_rect["height"],
     )
     for index, frame in enumerate(frames, start=1):
-        raw = base64.b64decode(frame["data"])
+        try:
+            raw = base64.b64decode(frame.get("data") or "", validate=True)
+        except Exception:
+            continue
+        if not raw:
+            continue
         raw_path = frame_dir / f"frame_{index:04d}_full.png"
         raw_path.write_bytes(raw)
-        with Image.open(raw_path) as image:
-            cropped = image.crop(crop_box)
-            cropped_path = frame_dir / f"frame_{index:04d}.png"
-            cropped.save(cropped_path)
+        try:
+            with Image.open(raw_path) as image:
+                cropped = image.crop(crop_box)
+                cropped_path = frame_dir / f"frame_{index:04d}.png"
+                cropped.save(cropped_path)
+        except Exception:
+            raw_path.unlink(missing_ok=True)
+            continue
         raw_path.unlink(missing_ok=True)
         saved.append({
             "index": index,
@@ -409,10 +418,12 @@ def capture_capsule_frames(output_dir: Path, duration_ms: int) -> dict[str, Any]
         frames: list[dict[str, Any]] = []
 
         def on_screencast_frame(params: dict[str, Any]) -> None:
-            frames.append({
-                "data": params.get("data") or "",
-                "metadata": params.get("metadata") or {},
-            })
+            data = params.get("data")
+            if isinstance(data, str) and data:
+                frames.append({
+                    "data": data,
+                    "metadata": params.get("metadata") or {},
+                })
             session.send("Page.screencastFrameAck", {"sessionId": params["sessionId"]})
 
         session.on("Page.screencastFrame", on_screencast_frame)

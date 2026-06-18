@@ -213,7 +213,7 @@ def run_pc_static_checks(pc_repo: Path) -> list[Check]:
     preload_path = pc_repo / "src" / "preload-common.js"
     preload_source = _read(preload_path) if preload_path.exists() else ""
 
-    return [
+    checks = [
         _check(
             pc_repo.exists(),
             "N.E.K.O.-PC repository exists for static checks",
@@ -226,13 +226,18 @@ def run_pc_static_checks(pc_repo: Path) -> list[Check]:
             f"preload-common.js found at {preload_path}.",
             f"preload-common.js was not found at {preload_path}.",
         ),
+    ]
+    if not pc_repo.exists():
+        return checks
+    checks.append(
         _check(
             "setupTutorialOverlayBridge" in preload_source,
             "N.E.K.O.-PC preload exposes the tutorial overlay bridge",
             "setupTutorialOverlayBridge is present in src/preload-common.js.",
             "setupTutorialOverlayBridge was not found in src/preload-common.js.",
-        ),
-    ]
+        )
+    )
+    return checks
 
 
 def print_report(checks: list[Check], *, raw_browser_result: dict[str, Any] | None = None) -> int:

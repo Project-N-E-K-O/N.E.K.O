@@ -29,7 +29,7 @@ from typing import Dict, List, Any, Optional, Union
 from urllib.parse import quote
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from bs4 import BeautifulSoup
 import os
 from pathlib import Path
@@ -1266,7 +1266,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         summary_config = config_manager.get_model_api_config('summary')
         
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             summary_config['model'], summary_config['base_url'],
             summary_config['api_key'],
             timeout=10.0, max_retries=0,

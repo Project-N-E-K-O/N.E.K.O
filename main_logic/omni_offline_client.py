@@ -19,7 +19,7 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, create_chat_llm, create_chat_llm_async
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -580,6 +580,7 @@ class OmniOfflineClient:
         # 视觉模型独立配置（如果未指定则回退到主配置）
         self.vision_base_url = vision_base_url if vision_base_url else base_url
         self.vision_api_key = vision_api_key if vision_api_key else api_key
+        self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
@@ -1487,7 +1488,15 @@ class OmniOfflineClient:
             new_model: The model to switch to
             use_vision_config: If True, use vision_base_url and vision_api_key
         """
-        if new_model and new_model != self.model:
+        lock = getattr(self, "_model_switch_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._model_switch_lock = lock
+
+        async with lock:
+            if not new_model or new_model == self.model:
+                return
+
             logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置
@@ -1501,7 +1510,7 @@ class OmniOfflineClient:
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
             # （和 __init__ 一致）。
-            new_llm = create_chat_llm(
+            new_llm = await create_chat_llm_async(
                 new_model, base_url, api_key,
                 streaming=True, max_retries=0,
                 # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
@@ -1659,7 +1668,7 @@ class OmniOfflineClient:
         # （scripts/check_no_temperature.py 会守门）。emotion-tier 模型自带
         # 一个合适的 temperature，不需要 caller 干预。
         try:
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 emotion_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
                 timeout=30,

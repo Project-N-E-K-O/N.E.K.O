@@ -291,7 +291,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 {{"topics": [
   {{
     "interest": "用户最近在意、纠结、计划或反复提到的一件具体事，整理成一句，不超过30字",
-    "keywords": ["3-6个关键词，用于去重、筛选联网结果，并直接作为联网查询词；围绕用户反复在意的稳定点，不要用偶然冒出的词"],
+    "keywords": ["3-6个关键词，用于去重、筛选联网结果和投递前 research seed；围绕用户反复在意的稳定点，不要用偶然冒出的词"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -320,7 +320,7 @@ TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
 {{"topics": [
   {{
     "interest": "用戶最近在意、糾結、計劃或反覆提到的一件具體事，整理成一句，不超過30字",
-    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果，並直接作為聯網查詢詞；圍繞用戶反覆在意的穩定點，不要用偶然冒出的詞"],
+    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果和投遞前 research seed；圍繞用戶反覆在意的穩定點，不要用偶然冒出的詞"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -348,7 +348,7 @@ Output strict JSON, no markdown fences:
 {{"topics": [
   {{
     "interest": "a single concrete thing the user recently cares about, worries over, plans, or keeps bringing up, max 30 words",
-    "keywords": ["3-6 short keywords used for dedup, filtering online results, and as the online search query; anchor on the user's stable recurring interest, not an accidental recent word"],
+    "keywords": ["3-6 short keywords used for dedup, filtering online results, and delivery-time research seeds; anchor on the user's stable recurring interest, not an accidental recent word"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -377,7 +377,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 {{"topics": [
   {{
     "interest": "ユーザーが最近気にしている、悩んでいる、計画している、または繰り返し口にしている具体的な一件を一文にまとめたもの、30字以内",
-    "keywords": ["重複排除・検索結果の絞り込み・そのまま検索語として使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
+    "keywords": ["重複排除・検索結果の絞り込み・配信前のresearch seedとして使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -406,7 +406,7 @@ If nothing is worth keeping, output {{"topics": []}}.""",
 {{"topics": [
   {{
     "interest": "사용자가 최근 신경 쓰거나 고민하거나 계획하거나 반복해서 언급하는 구체적인 한 가지를 한 문장으로 정리한 것, 30자 이내",
-    "keywords": ["중복 제거, 검색 결과 선별, 그리고 검색어로도 사용할 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
+    "keywords": ["중복 제거, 검색 결과 선별, 그리고 전달 전 research seed로 쓸 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -435,7 +435,7 @@ Devuelve JSON estricto, sin bloques markdown:
 {{"topics": [
   {{
     "interest": "una sola cosa concreta que el usuario tiene en mente, le preocupa, planea o menciona repetidamente, resumida en una frase, máximo 30 palabras",
-    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como la consulta de búsqueda; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
+    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como semillas de research antes de entregar; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -464,7 +464,7 @@ Retorne JSON estrito, sem blocos markdown:
 {{"topics": [
   {{
     "interest": "uma unica coisa concreta que o usuario tem em mente, preocupa, planeja ou menciona repetidamente, resumida em uma frase, maximo 30 palavras",
-    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como a consulta de busca; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
+    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como seeds de research antes da entrega; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
@@ -493,7 +493,7 @@ Se nada valer a pena, retorne {{"topics": []}}.""",
 {{"topics": [
   {{
     "interest": "одна конкретная вещь, о которой пользователь недавно думает, переживает, планирует или постоянно упоминает, сформулированная в одном предложении, до 30 слов",
-    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и в качестве поискового запроса; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
+    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и как seed для research перед доставкой; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
     "relevance": 0-100,
     "risk": 0-100
   }}

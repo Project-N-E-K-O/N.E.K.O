@@ -160,7 +160,7 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 注意这里有两套路径概念：
 
 - 场景注册表里的 `handoff_plugin_dashboard.navigation.openUrl` 仍标为 `/ui/`。
-- 当前实际插件 Dashboard 演出由专用逻辑打开，`tutorial/yui-guide/page-handoff.js` 会构造 `/api/agent/user_plugin/dashboard`，并附带 opener origin 等参数。
+- 当前实际插件 Dashboard 演出由专用逻辑打开，`static/tutorial/yui-guide/page-handoff.js` 会构造 `/api/agent/user_plugin/dashboard`，并附带 opener origin 等参数。
 - Dashboard 页面内演出由 `frontend/plugin-manager/src/yui-guide-runtime.ts` 执行。
 
 首页与 Dashboard 通过 `postMessage` 握手：

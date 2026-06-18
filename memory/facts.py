@@ -408,7 +408,7 @@ class FactStore:
         (thinking models enter thinking mode).
         Phase D: Stage-2 signal detection explicitly passes None to enable thinking."""
         from openai import APIConnectionError, InternalServerError, RateLimitError
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         retries = 0
         while retries < max_retries:
@@ -423,7 +423,7 @@ class FactStore:
                 )
                 if extra_body is not _DEFAULT_EXTRA_BODY:
                     _llm_kwargs['extra_body'] = extra_body
-                llm = create_chat_llm(  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout live in _llm_kwargs above (splat invisible to the lint); guard is generous for variable-length JSON.
+                llm = await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout live in _llm_kwargs above (splat invisible to the lint); guard is generous for variable-length JSON.
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
                     **_llm_kwargs,
@@ -1391,11 +1391,11 @@ class FactStore:
         failure_reason: str | None = None
         event_when_raw: dict | None = None
         try:
-            from utils.llm_client import create_chat_llm
+            from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_fact")
             api_config = self._config_manager.get_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
