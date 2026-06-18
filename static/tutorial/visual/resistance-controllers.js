@@ -18,6 +18,12 @@
     const DEFAULT_INTERRUPT_DISTANCE = 56;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
+    const DEFAULT_RESISTANCE_LINES = Object.freeze([
+        '喂！不要拽我啦，现在还没轮到你的回合呢！',
+        '等一下啦！还没结束呢，不要这么随便打断我啦！'
+    ]);
+    const DEFAULT_ANGRY_EXIT_TEXT = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！';
+    const DEFAULT_ANGRY_EXIT_VOICE_KEY = 'interrupt_angry_exit';
 
     function call(callbacks, name, fallbackValue, ...args) {
         const callback = callbacks && callbacks[name];
@@ -59,9 +65,10 @@
             const count = getCount(call(this.callbacks, 'getInterruptCount', 0));
             const voiceIndex = Math.max(0, Math.min(this.resistanceVoiceKeys.length - 1, count - 1));
             const defaultText = call(this.callbacks, 'resolveBubbleText', '', performance);
+            const fallbackMessage = DEFAULT_RESISTANCE_LINES[voiceIndex] || DEFAULT_RESISTANCE_LINES[0] || '';
             const message = Array.isArray(voices) && voices.length > 0
                 ? voices[(Math.max(1, count) - 1) % voices.length]
-                : defaultText || '不要拽我啦，还没结束呢！';
+                : defaultText || fallbackMessage || '不要拽我啦，还没结束呢！';
 
             return {
                 message: message,
@@ -83,10 +90,7 @@
             }
 
             const normalizedOptions = options || {};
-            const resistanceStep = call(this.callbacks, 'getStep', null, 'interrupt_resist_light');
-            if (!resistanceStep) {
-                return Promise.resolve();
-            }
+            const resistanceStep = call(this.callbacks, 'getStep', null, 'interrupt_resist_light') || {};
 
             this.lightResistanceActive = true;
             const performance = resistanceStep.performance || {};
@@ -117,7 +121,8 @@
                 this.cursor && typeof this.cursor.resistTo === 'function'
                     ? this.cursor.resistTo(x, y, {
                         motionDx: normalizedOptions.motionDx,
-                        motionDy: normalizedOptions.motionDy
+                        motionDy: normalizedOptions.motionDy,
+                        forcePcOverlay: true
                     })
                     : null
             );
@@ -194,14 +199,16 @@
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
 
-            const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit');
+            const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
             const bubbleText = call(this.callbacks, 'resolveBubbleText', '', performance);
+            const angryExitText = bubbleText || DEFAULT_ANGRY_EXIT_TEXT;
+            const angryExitVoiceKey = performance.voiceKey || DEFAULT_ANGRY_EXIT_VOICE_KEY;
             const angryExitNarrationDurationMs = call(
                 this.callbacks,
                 'getGuideVoiceDurationMs',
                 0,
-                performance.voiceKey
+                angryExitVoiceKey
             );
             const lastPointerPoint = call(this.callbacks, 'getLastPointerPoint', null);
             const pointerPoint = lastPointerPoint
@@ -221,9 +228,9 @@
                 this.overlay.hideBubble();
             }
 
-            call(this.callbacks, 'appendGuideChatMessage', null, bubbleText || '人类！你真的很没礼貌喵！', {
+            call(this.callbacks, 'appendGuideChatMessage', null, angryExitText, {
                 textKey: performance.bubbleTextKey || '',
-                voiceKey: performance.voiceKey,
+                voiceKey: angryExitVoiceKey,
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
@@ -238,12 +245,12 @@
                 {
                     x: pointerPoint ? pointerPoint.x : null,
                     y: pointerPoint ? pointerPoint.y : null,
-                    voiceKey: performance.voiceKey
+                    voiceKey: angryExitVoiceKey
                 }
             )).catch(() => null);
             await Promise.all([
-                Promise.resolve(call(this.callbacks, 'speakGuideLine', null, bubbleText || '', {
-                    voiceKey: performance.voiceKey,
+                Promise.resolve(call(this.callbacks, 'speakGuideLine', null, angryExitText, {
+                    voiceKey: angryExitVoiceKey,
                     minDurationMs: Number.isFinite(angryExitNarrationDurationMs)
                         ? angryExitNarrationDurationMs
                         : 0
@@ -293,9 +300,10 @@
             const count = this.getInterruptCount();
             const voiceIndex = Math.max(0, Math.min(this.resistanceVoiceKeys.length - 1, count - 1));
             const defaultText = director.resolvePerformanceBubbleText(performance);
+            const fallbackMessage = DEFAULT_RESISTANCE_LINES[voiceIndex] || DEFAULT_RESISTANCE_LINES[0] || '';
             const message = Array.isArray(voices) && voices.length > 0
                 ? voices[(Math.max(1, count) - 1) % voices.length]
-                : defaultText || '不要拽我啦，还没结束呢！';
+                : defaultText || fallbackMessage || '不要拽我啦，还没结束呢！';
             const voiceKey = this.resistanceVoiceKeys[voiceIndex] || '';
 
             return {
@@ -473,10 +481,7 @@
             }
 
             const normalizedOptions = options || {};
-            const resistanceStep = director.getStep('interrupt_resist_light');
-            if (!resistanceStep) {
-                return Promise.resolve();
-            }
+            const resistanceStep = director.getStep('interrupt_resist_light') || {};
 
             this.lightResistanceActive = true;
             const performance = resistanceStep.performance || {};
@@ -507,7 +512,8 @@
                 director.cursor && typeof director.cursor.resistTo === 'function'
                     ? director.cursor.resistTo(x, y, {
                         motionDx: normalizedOptions.motionDx,
-                        motionDy: normalizedOptions.motionDy
+                        motionDy: normalizedOptions.motionDy,
+                        forcePcOverlay: true
                     })
                     : null
             );
@@ -569,11 +575,13 @@
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
 
-            const angryStep = director.getStep('interrupt_angry_exit');
+            const angryStep = director.getStep('interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
             const bubbleText = director.resolvePerformanceBubbleText(performance);
+            const angryExitText = bubbleText || DEFAULT_ANGRY_EXIT_TEXT;
+            const angryExitVoiceKey = performance.voiceKey || DEFAULT_ANGRY_EXIT_VOICE_KEY;
             const angryExitNarrationDurationMs = director.getGuideVoiceDurationMs(
-                performance.voiceKey
+                angryExitVoiceKey
             );
             const lastPointerPoint = director.lastPointerPoint;
             const pointerPoint = lastPointerPoint
@@ -593,9 +601,9 @@
                 director.overlay.hideBubble();
             }
 
-            director.appendGuideChatMessage(bubbleText || '人类！你真的很没礼貌喵！', {
+            director.appendGuideChatMessage(angryExitText, {
                 textKey: performance.bubbleTextKey || '',
-                voiceKey: performance.voiceKey,
+                voiceKey: angryExitVoiceKey,
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
@@ -606,12 +614,12 @@
             const angryExitPerformancePromise = Promise.resolve(director.runAngryExitPerformance({
                 x: pointerPoint ? pointerPoint.x : null,
                 y: pointerPoint ? pointerPoint.y : null,
-                voiceKey: performance.voiceKey
+                voiceKey: angryExitVoiceKey
             })).catch(() => null);
 
             const angryExitPresentationPromise = Promise.all([
-                Promise.resolve(director.speakGuideLine(bubbleText || '', {
-                    voiceKey: performance.voiceKey,
+                Promise.resolve(director.speakGuideLine(angryExitText, {
+                    voiceKey: angryExitVoiceKey,
                     minDurationMs: Number.isFinite(angryExitNarrationDurationMs)
                         ? angryExitNarrationDurationMs
                         : 0

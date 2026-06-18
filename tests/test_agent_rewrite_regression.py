@@ -1294,8 +1294,13 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block
     assert "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });" in begin_block
+    assert "this.setPreparing(true);" in begin_block
+    assert "await Promise.resolve(this.fadeOutBeforeRestore());" in restore_block
+    assert "this.revealPrepared();" in restore_block
     assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7" in tutorial_source
+    assert "this.startAvatarFloatingGuideRound(1, { source })" in tutorial_source
     assert "suppressInitialIdle: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
     assert "temporaryConfig" in interpage_source
@@ -1303,6 +1308,18 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "suppressToast" in interpage_source
     assert "async function _waitForLive2DManagerIdle" in interpage_source
     assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_day1_round_activation_keeps_wakeup_after_step_registry_split():
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    activation_block = director_source.split("async playDay1IntroActivationRoundScene(sceneRunId)", 1)[1].split(
+        "async playDay1IntroGreetingRoundScene(sceneRunId)",
+        1,
+    )[0]
+
+    assert "await this.runWakeupPrelude();" in activation_block
+    assert "this.getStep('intro_basic')" not in activation_block
+    assert activation_block.index("await this.runWakeupPrelude();") < activation_block.index("this.introFlowStarted = true;")
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():

@@ -60,6 +60,9 @@
             this.registerOperation('day1-intro-greeting-flow', () => (
                 this.runDay1IntroGreetingFlow()
             ));
+            this.registerOperation('day1-intro-greeting-performance', () => (
+                this.runDay1IntroGreetingPerformance()
+            ));
             this.registerOperation('day1-intro-basic-voice-showcase', (context) => (
                 this.runDay1IntroBasicVoiceShowcase(
                     context.scene,
@@ -181,6 +184,22 @@
                 return false;
             }
             return await director.playDay1IntroGreetingRoundScene(director.sceneRunId);
+        }
+
+        async runDay1IntroGreetingPerformance() {
+            const director = this.director;
+            if (!director) {
+                return false;
+            }
+            await Promise.all([
+                typeof director.runIntroGreetingHugPerformance === 'function'
+                    ? director.runIntroGreetingHugPerformance().catch(() => {})
+                    : Promise.resolve(),
+                typeof director.runIntroGiftHeartPerformance === 'function'
+                    ? director.runIntroGiftHeartPerformance().catch(() => {})
+                    : Promise.resolve()
+            ]);
+            return true;
         }
 
         async runDay1IntroBasicVoiceShowcase(scene, narrationStartedAt, narrationPromise) {

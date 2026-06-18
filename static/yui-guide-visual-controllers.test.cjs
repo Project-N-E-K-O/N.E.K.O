@@ -666,7 +666,7 @@ test('GhostCursorController owns resistance and user-motion reaction movement', 
             return this.cursorPosition;
         },
         moveCursorTo(x, y, options) {
-            calls.push(['move', Math.round(x), Math.round(y), options.durationMs]);
+            calls.push(['move', Math.round(x), Math.round(y), options.durationMs, options.forcePcOverlay === true]);
             this.cursorPosition = { x, y };
             return Promise.resolve(true);
         }
@@ -684,8 +684,8 @@ test('GhostCursorController owns resistance and user-motion reaction movement', 
 
     await controller.resistTo(160, 100, { motionDx: 4, motionDy: 0 });
     assert.deepEqual(calls.splice(0), [
-        ['move', 82, 100, 180],
-        ['move', 100, 100, 260]
+        ['move', 82, 100, 180, false],
+        ['move', 100, 100, 260, false]
     ]);
 
     await controller.reactToUserMotion(160, 100, {
@@ -695,8 +695,15 @@ test('GhostCursorController owns resistance and user-motion reaction movement', 
         backDurationMs: 220
     });
     assert.deepEqual(calls, [
-        ['move', 82, 100, 120],
-        ['move', 100, 100, 220]
+        ['move', 82, 100, 120, false],
+        ['move', 100, 100, 220, false]
+    ]);
+    calls.length = 0;
+
+    await controller.resistTo(160, 100, { motionDx: 4, motionDy: 0, forcePcOverlay: true });
+    assert.deepEqual(calls, [
+        ['move', 82, 100, 180, true],
+        ['move', 100, 100, 260, true]
     ]);
 });
 

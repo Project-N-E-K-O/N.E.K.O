@@ -1443,11 +1443,19 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
     assert.match(block, /moveCursorAlongPoints\(arcPoints/);
     assert.match(
         pcOverlayMoveBlock,
-        /if \(this\.shouldForwardCursorToPcOverlay\(\)\) \{/
+        /const forcePcOverlayCursorOnly = normalizedOptions\.forcePcOverlay === true[\s\S]*typeof this\.overlayRenderer\.pcOverlayBridge\.moveCursorOnlyTo === 'function';/
+    );
+    assert.match(
+        pcOverlayMoveBlock,
+        /if \(this\.shouldForwardCursorToPcOverlay\(\) \|\| forcePcOverlayCursorOnly\) \{/
     );
     assert.match(
         pcOverlayMoveBlock,
         /this\.overlayRenderer\.moveCursorTo\(\s*x,\s*y,\s*durationMs,\s*normalizedOptions\.effect \|\| '',\s*normalizedOptions\.effectDurationMs\s*\);/
+    );
+    assert.match(
+        pcOverlayMoveBlock,
+        /this\.overlayRenderer\.pcOverlayBridge\.moveCursorOnlyTo\(\s*x,\s*y,\s*durationMs,\s*normalizedOptions\.effect \|\| '',\s*normalizedOptions\.effectDurationMs\s*\);/
     );
     assert.match(
         externalizedCursorEffectBlock,
@@ -1894,7 +1902,7 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
 
     assert.match(skipBlock, /director\.skip\('skip', 'skip'\)/);
     assert.doesNotMatch(skipBlock, /\.then\(\(\) => \{\s*this\.requestTutorialDestroy\('skip'\);/);
-    assert.match(skipBlock, /this\.requestTutorialDestroy\('skip'\);\s*return Promise\.resolve\(\);/);
+    assert.match(skipBlock, /return Promise\.resolve\(this\.requestTutorialDestroy\('skip'\)\);/);
     assert.match(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
     assert.match(routerBlock, /director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
     assert.doesNotMatch(routerBlock, /director\.beginTerminationVisualCleanup\(\);/);
@@ -1976,6 +1984,33 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(externalCleanupBlock, /yuiGuideCompactToolWheelRotateRetryToken \+= 1;/);
     assert.match(externalCleanupBlock, /window\.nekoTutorialOverlay\.clear\(\{/);
     assert.match(appInterpageSource, /case 'yui_guide_tutorial_lifecycle_ended':/);
+});
+
+test('PC overlay bridges rotate stale run ids and replay current state', () => {
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
+    const externalBridgeBlock = appInterpageSource.split('    function resetYuiGuidePcOverlayRunForRetry() {')[1].split(
+        '    function createYuiGuideTargetGeometryRegistry() {',
+        1
+    )[0];
+    const mainBridgeBlock = overlaySource.split('    function createPcOverlayBridge(doc) {')[1].split(
+        '    const OverlayRendererClass = window.TutorialOverlayRenderer;',
+        1
+    )[0];
+
+    assert.match(externalBridgeBlock, /window\.localStorage\.removeItem\('yuiGuidePcOverlayRunId'\)/);
+    assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried\)/);
+    assert.match(externalBridgeBlock, /result\.stale !== true/);
+    assert.match(externalBridgeBlock, /sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\)/);
+    assert.match(externalBridgeBlock, /function sendYuiGuidePcOverlayPatch\(patch, retried\)/);
+    assert.match(externalBridgeBlock, /result && result\.stale === true/);
+
+    assert.match(mainBridgeBlock, /const rotateRunId = \(\) => \{/);
+    assert.match(mainBridgeBlock, /const handleStaleResult = \(result, patch, force, retried, attemptedRunId\) => \{/);
+    assert.match(mainBridgeBlock, /result\.stale !== true/);
+    assert.match(mainBridgeBlock, /send\(patch, force, true\)/);
+    assert.match(mainBridgeBlock, /const send = \(patch, force, retried\) => \{/);
+    assert.match(mainBridgeBlock, /result && result\.stale === true/);
 });
 
 test('director wraps the legacy ghost cursor with GhostCursorController facade', () => {

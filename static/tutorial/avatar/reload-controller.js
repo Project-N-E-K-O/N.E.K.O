@@ -15,6 +15,7 @@
             this.reloadModel = normalizedOptions.reloadModel || noop;
             this.setPreparing = normalizedOptions.setPreparing || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
+            this.fadeOutBeforeRestore = normalizedOptions.fadeOutBeforeRestore || noop;
             this.applyIdentityOverride = normalizedOptions.applyIdentityOverride || noop;
             this.clearViewportWatcher = normalizedOptions.clearViewportWatcher || noop;
             this.override = null;
@@ -91,6 +92,7 @@
                 this.setPreparing(true);
                 await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });
                 ensureOverrideActive();
+                this.setPreparing(true);
                 this.applyIdentityOverride({
                     active: true,
                     displayName: 'YUI',
@@ -164,7 +166,7 @@
             const restorePromise = Promise.resolve().then(async () => {
                 try {
                     this.clearViewportWatcher();
-                    this.revealPrepared();
+                    await Promise.resolve(this.fadeOutBeforeRestore());
                     this.applyIdentityOverride({ active: false });
                     if (!currentName) {
                         return;
@@ -180,6 +182,7 @@
                         } catch (_) {}
                     }
                 } finally {
+                    this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {
                         this.override = null;

@@ -34,6 +34,7 @@
 7. **可见 cursor 不瞬移**：教程开始后 Ghost Cursor 保持可见直到收尾语音结束再消失；所有目标变化都必须带 `durationMs > 0` 并由 overlay 本地平滑过渡。`durationMs: 0` 只允许用于首次显示或同点 click/wobble 效果，后续跨段移动只复用可见锚点。
 8. **教程 overlay 必须压过 Pet/模型按钮**：PC 全局透明教程 overlay 在创建、复用、状态更新和 active run 期间必须保持 `setAlwaysOnTop(true, 'screen-saver') + moveTop()`；reassert 间隔不得高于 160ms，否则 Pet/模型按钮窗口后续 `moveTop()` 会在长距离 cursor 移动期间把 Ghost Cursor 和高亮整体压到下层。教程 clear、skip、angry exit 或 stop 后必须停止这条轻量 reassert。
 9. **教程期脸部跟踪 Ghost Cursor**：首页 `YuiGuideOverlay.getCursorPosition()` 是教程脸部跟踪的唯一 cursor 源。教程 look-at 性能会直接读取该点并驱动模型焦点；PC 全局 overlay 必须让这个 getter 在远端 Ghost Cursor 移动期间按 overlay 可见 cursor 的同一条 `cubic-bezier(.22,1,.36,1)` 曲线实时返回当前位置，避免模型脸部只跟踪起点/终点，或与屏幕上的 Ghost Cursor 产生缓动错位。
+10. **跨窗口 sequence 必须全局单调**：首页 bridge 和外置聊天窗 bridge 会共用一个 `tutorialRunId` 向 PC 主进程发送 `cursor`、`spotlights`、`petal`、`avatarStandIn` patch。`sequence` 不能由各窗口本地计数器独立生成，必须通过共享存储（当前为 `localStorage.yuiGuidePcOverlaySequence`）取 `max(local, stored, Date.now()*1000)+1` 后写回。否则真实鼠标对抗时首页高频 cursor 更新会让主进程拒绝外置聊天窗稍后到达的 spotlight 更新，造成胶囊输入框高亮闪烁。
 
 ## 目标架构
 
@@ -99,7 +100,7 @@ type TutorialTargetRectReport = {
 };
 ```
 
-所有发往 PC 主进程和全局 overlay 的命令都必须包在 `TutorialOverlayCommandEnvelope` 中。主进程只接受当前 active `tutorialRunId` 且 `sequence` 不小于当前已应用序号的命令；skip、destroy、页面刷新或新一轮教程启动时，旧 run 的异步 rect 回包和 cursor 命令必须被丢弃，避免旧高亮或旧 Ghost Cursor 复活。
+所有发往 PC 主进程和全局 overlay 的命令都必须包在 `TutorialOverlayCommandEnvelope` 中。主进程只接受当前 active `tutorialRunId` 且 `sequence` 大于当前已应用序号的命令；skip、destroy、页面刷新或新一轮教程启动时，旧 run 的异步 rect 回包和 cursor 命令必须被丢弃，避免旧高亮或旧 Ghost Cursor 复活。由于首页和外置聊天窗可能在同一 run 内交错发包，Web 侧所有发送器必须共享同一个 sequence 来源，不能让任一窗口用本地 sequence 覆盖另一窗口的更新。
 
 ### 坐标转换要求
 
@@ -133,6 +134,7 @@ type TutorialTargetRectReport = {
 3. 验证透明 overlay 不影响现有截图隐藏 N.E.K.O 窗口逻辑；屏幕截图/屏幕分享前需要把教程 overlay 纳入 hide/restore 列表。
 4. 验证坐标校准：至少采样 Pet 按钮、聊天输入框、设置侧边栏、Agent HUD 四类目标，overlay 高亮中心与 DOMRect 中心误差必须小于 2px。
 5. 验证命令防串：启动教程、发送延迟 rect 回包、立即 skip，再确认旧 run 的高亮和 cursor 不会重新出现。
+6. 验证跨窗口 sequence：PC overlay 可用时让首页连续发送 cursor-only 更新，同时让外置聊天窗发送胶囊输入框 spotlight 更新；主进程必须接受后者，高亮不得闪烁或消失。
 
 ### 阶段 1：PC overlay service
 
