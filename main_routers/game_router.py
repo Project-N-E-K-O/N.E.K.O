@@ -7758,6 +7758,8 @@ async def game_realtime_context(game_type: str, request: Request):
     append_context = getattr(mgr, "append_context", None)
     if not callable(append_context):
         return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    if _active_realtime_session(mgr) is not session:
+        return {"ok": False, "reason": "realtime_session_changed", "lanlan_name": lanlan_name}
     try:
         append_result = await append_context(
             source="game.realtime_context",

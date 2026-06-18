@@ -827,7 +827,6 @@ async def test_append_context_requires_current_delivery_when_ready_session_famil
     assert duplicate.deduped is False
     assert mgr.next_session_context_messages == [
         {"role": "Lan", "text": "cached for next session"},
-        {"role": "Lan", "text": "cached for next session again"},
     ]
     assert mgr.message_cache_for_new_session == []
 

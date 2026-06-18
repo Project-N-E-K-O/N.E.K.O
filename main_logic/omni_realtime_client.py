@@ -1796,6 +1796,8 @@ class OmniRealtimeClient:
         """Send text content to Gemini and trigger response."""
         if not self._gemini_session:
             logger.warning("Gemini session not available for create_response")
+            if raise_on_error:
+                raise RuntimeError("Gemini session not available for create_response")
             return
 
         # 跳过空内容的发送，避免预热时污染 Gemini 对话历史

@@ -55,6 +55,17 @@ async def test_gemini_create_response_propagates_send_failure(monkeypatch):
         await OmniRealtimeClient.create_response(client, "postgame context")
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_create_response_raises_when_live_session_missing():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._gemini_session = None
+
+    with pytest.raises(RuntimeError, match="Gemini session not available"):
+        await OmniRealtimeClient.create_response(client, "postgame context")
+
+
 @pytest.fixture
 def mock_websocket():
     """Returns a mock websocket object."""

@@ -1154,6 +1154,43 @@ class LLMSessionManager:
             return (source, request_id, lifetime, session_id)
         return (source, request_id, lifetime)
 
+    def _context_append_durable_cache_key(self, payload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+        request_id = str(payload.get("request_id") or "").strip()
+        lifetime = str(payload.get("lifetime") or "").strip().lower()
+        if not request_id or lifetime not in {"next_session", "session_family"}:
+            return None
+        source = str(payload.get("source") or "").strip()
+        return (source, request_id, lifetime)
+
+    def _context_append_durable_cache_seen(self, payload: Mapping[str, Any]) -> bool:
+        key = self._context_append_durable_cache_key(payload)
+        if key is None:
+            return False
+        seen = getattr(self, "_context_append_durable_cache_keys", None)
+        if not isinstance(seen, OrderedDict):
+            return False
+        now = time.time()
+        cutoff = now - _CONTEXT_APPEND_DEDUP_TTL_SECONDS
+        while seen:
+            oldest_key = next(iter(seen))
+            if seen[oldest_key] >= cutoff:
+                break
+            seen.pop(oldest_key, None)
+        return key in seen
+
+    def _remember_context_append_durable_cache(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_durable_cache_key(payload)
+        if key is None:
+            return
+        seen = getattr(self, "_context_append_durable_cache_keys", None)
+        if not isinstance(seen, OrderedDict):
+            seen = OrderedDict()
+            self._context_append_durable_cache_keys = seen
+        seen[key] = time.time()
+        seen.move_to_end(key)
+        while len(seen) > _CONTEXT_APPEND_DEDUP_MAX_ENTRIES:
+            seen.popitem(last=False)
+
     def _promote_context_append_request_id_to_current_session(self, payload: dict) -> None:
         if (
             str(payload.get("lifetime") or "").strip().lower() != "current_session"
@@ -1391,9 +1428,10 @@ class LLMSessionManager:
         if payload.get("_delivered_in_start_prompt") and lifetime in {"next_session", "session_family"}:
             return ContextAppendResult(appended=True, targets=("start_prompt",))
         if lifetime in {"next_session", "session_family"}:
-            if payload.get("_durable_cached"):
+            if payload.get("_durable_cached") or self._context_append_durable_cache_seen(payload):
                 targets.append("new_session_cache")
             elif self._append_context_to_new_session_cache(role, content):
+                self._remember_context_append_durable_cache(payload)
                 targets.append("new_session_cache")
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
@@ -1490,6 +1528,8 @@ class LLMSessionManager:
                     payload["role"],
                     payload["text"],
                 )
+                if payload["_durable_cached"]:
+                    self._remember_context_append_durable_cache(payload)
             pending = getattr(self, "pending_context_appends", None)
             if not isinstance(pending, list):
                 pending = []

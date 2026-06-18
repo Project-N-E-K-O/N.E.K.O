@@ -3439,6 +3439,36 @@ async def test_realtime_context_endpoint_requires_local_mutation_csrf(monkeypatc
     assert session.prime_context_calls == []
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_aborts_when_active_session_changes_before_append(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    def swap_session(_game_type, _payload, _language=None):
+        mgr.session = replacement
+        return "[Game Realtime Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_compact_realtime_context_text", swap_session)
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert result == {"ok": False, "reason": "realtime_session_changed", "lanlan_name": "Lan"}
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
+
+
 class _FakeGameRouteManager:
     def __init__(self):
         self.is_active = False
