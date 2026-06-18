@@ -3843,6 +3843,15 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
     )
 
 
+def _postgame_context_request_id(archive: dict) -> Optional[str]:
+    game_type = str(archive.get("game_type") or "game").strip() or "game"
+    session_id = str(archive.get("session_id") or "default").strip() or "default"
+    ended_at = str(archive.get("ended_at") or "").strip()
+    if not ended_at:
+        return None
+    return f"{game_type}:{session_id}:{ended_at}"
+
+
 async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) -> dict:
     session = _active_realtime_session(mgr)
     if not session:
@@ -3915,6 +3924,7 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
     append_context = getattr(mgr, "append_context", None)
     if not callable(append_context):
         return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_method_unavailable"}
+    postgame_request_id = _postgame_context_request_id(archive)
     try:
         append_result = await append_context(
             source="game.postgame",
@@ -3923,8 +3933,8 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             audience="model",
             timing="now",
             lifetime="current_session",
-            request_id=str(archive.get("session_id") or "") or None,
-            ordering_key=str(archive.get("session_id") or "") or None,
+            request_id=postgame_request_id,
+            ordering_key=postgame_request_id,
             metadata={
                 "game_type": archive.get("game_type"),
                 "lanlan_name": archive.get("lanlan_name"),

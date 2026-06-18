@@ -2840,6 +2840,25 @@ def test_postgame_context_snapshot_excludes_recent_dialogues(monkeypatch):
 
 
 @pytest.mark.unit
+def test_postgame_context_request_id_is_archive_scoped():
+    first = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 10.5,
+    }
+    second = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 11.5,
+    }
+
+    assert game_router._postgame_context_request_id(first) == "soccer:default:10.5"
+    assert game_router._postgame_context_request_id(second) == "soccer:default:11.5"
+    assert game_router._postgame_context_request_id(first) != game_router._postgame_context_request_id(second)
+    assert game_router._postgame_context_request_id({"game_type": "soccer", "session_id": "default"}) is None
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     class FakeSession:

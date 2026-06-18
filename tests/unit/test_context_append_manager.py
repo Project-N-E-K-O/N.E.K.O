@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,12 @@ class _FakePrimeSession:
         self.calls.append((text, skipped))
 
 
+class _FakeHybridTextSession(_FakePrimeSession):
+    def __init__(self):
+        super().__init__()
+        self._conversation_history = []
+
+
 @pytest.mark.asyncio
 async def test_append_context_adds_active_history_message():
     mgr = _make_manager()
@@ -43,6 +50,25 @@ async def test_append_context_adds_active_history_message():
     assert result.targets == ("active_history",)
     assert isinstance(history[0], AIMessage)
     assert history[0].content == "tutorial finished"
+
+
+@pytest.mark.asyncio
+async def test_append_context_does_not_prime_text_session_after_history_append():
+    mgr = _make_manager()
+    session = _FakeHybridTextSession()
+    mgr.session = session
+
+    result = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="tutorial finished",
+        audience="model",
+    )
+
+    assert result.appended is True
+    assert result.targets == ("active_history",)
+    assert len(session._conversation_history) == 1
+    assert session.calls == []
 
 
 @pytest.mark.asyncio
@@ -140,6 +166,27 @@ async def test_append_context_when_ready_uses_ordering_key_for_flush_order():
 
 
 @pytest.mark.asyncio
+async def test_pending_context_can_flush_before_session_ready_opens():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    await mgr.append_context(
+        source="topic.hook",
+        role="system",
+        text="queued context",
+        timing="when_ready",
+        ordering_key="ctx",
+    )
+
+    history = []
+    mgr.session = SimpleNamespace(_conversation_history=history)
+    await mgr._flush_pending_context_appends()
+
+    assert mgr.session_ready is False
+    assert [message.content for message in history] == ["system: queued context"]
+
+
+@pytest.mark.asyncio
 async def test_append_context_dedups_request_id_inside_manager():
     mgr = _make_manager()
     history = []
@@ -172,6 +219,47 @@ async def test_append_context_dedups_request_id_inside_manager():
         "same hook",
         "same id, different source",
     ]
+
+
+@pytest.mark.asyncio
+async def test_append_context_reserves_request_id_before_awaiting_prime():
+    mgr = _make_manager()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingPrimeSession:
+        def __init__(self):
+            self.calls = []
+
+        async def prime_context(self, text, *, skipped=False):
+            self.calls.append((text, skipped))
+            entered.set()
+            await release.wait()
+
+    session = _BlockingPrimeSession()
+    mgr.session = session
+
+    first = asyncio.create_task(mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context",
+        request_id="ctx-1",
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    duplicate = await mgr.append_context(
+        source="game.realtime_context",
+        role="user",
+        text="same context replay",
+        request_id="ctx-1",
+    )
+    release.set()
+    first_result = await first
+
+    assert first_result.appended is True
+    assert duplicate.appended is False
+    assert duplicate.deduped is True
+    assert session.calls == [("user: same context", True)]
 
 
 @pytest.mark.asyncio

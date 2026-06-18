@@ -1154,6 +1154,14 @@ class LLMSessionManager:
         while len(seen) > _CONTEXT_APPEND_DEDUP_MAX_ENTRIES:
             seen.popitem(last=False)
 
+    def _forget_context_append_request_id(self, source: str, request_id: str | None) -> None:
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return
+        seen = getattr(self, "_context_append_request_ids", None)
+        if isinstance(seen, OrderedDict):
+            seen.pop((source, request_id), None)
+
     def _context_append_request_seen(self, source: str, request_id: str | None) -> bool:
         request_id = str(request_id or "").strip()
         if not request_id:
@@ -1250,6 +1258,7 @@ class LLMSessionManager:
                 targets.append("new_session_cache")
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
+        wrote_active_history = False
         if lifetime in {"current_session", "session_family"} and isinstance(history, list):
             if role == "assistant":
                 message = AIMessage(content=content)
@@ -1259,8 +1268,9 @@ class LLMSessionManager:
                 message = HumanMessage(content=f"system: {content}")
             history.append(message)
             targets.append("active_history")
+            wrote_active_history = True
 
-        if lifetime in {"current_session", "session_family"}:
+        if lifetime in {"current_session", "session_family"} and not wrote_active_history:
             prime_context = getattr(session, "prime_context", None)
             if callable(prime_context):
                 await prime_context(f"{role}: {content}", skipped=(audience == "model"))
@@ -1298,6 +1308,9 @@ class LLMSessionManager:
             return ContextAppendResult(appended=False, reason="invalid_context")
         if self._context_append_request_seen(payload["source"], payload["request_id"]):
             return ContextAppendResult(appended=False, deduped=True, reason="duplicate_request_id")
+        reserved_request_id = bool(payload["request_id"])
+        if reserved_request_id:
+            self._remember_context_append_request_id(payload["source"], payload["request_id"])
 
         pending_needed = (
             payload["timing"] == "when_ready"
@@ -1315,12 +1328,16 @@ class LLMSessionManager:
             self._context_append_sequence = sequence + 1
             payload["_sequence"] = sequence
             pending.append(payload)
-            self._remember_context_append_request_id(payload["source"], payload["request_id"])
             return ContextAppendResult(appended=True, targets=("pending_ready",))
 
-        result = await self._append_context_to_targets(payload)
-        if result.appended:
-            self._remember_context_append_request_id(payload["source"], payload["request_id"])
+        try:
+            result = await self._append_context_to_targets(payload)
+        except Exception:
+            if reserved_request_id:
+                self._forget_context_append_request_id(payload["source"], payload["request_id"])
+            raise
+        if not result.appended and reserved_request_id:
+            self._forget_context_append_request_id(payload["source"], payload["request_id"])
         return result
 
     async def _flush_pending_context_appends(self) -> None:
@@ -5212,11 +5229,11 @@ class LLMSessionManager:
                 # 通知前端 session 已成功启动
                 await self.send_session_started(input_mode)
 
-                # 标记session为就绪状态并处理可能已缓存的输入数据
+                # 在 queued context 写入 session 前保持输入闸门关闭；否则第一条
+                # 缓存/并发用户输入可能抢在上下文前面进入模型。
                 async with self.input_cache_lock:
+                    await self._flush_pending_context_appends()
                     self.session_ready = True
-
-                await self._flush_pending_context_appends()
 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
