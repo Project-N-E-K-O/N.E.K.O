@@ -1,4 +1,6 @@
+import asyncio
 import concurrent.futures
+import logging
 import os
 
 
@@ -10,9 +12,13 @@ DEFAULT_EXECUTOR_THREAD_PREFIX = "neko-asyncio"
 def resolve_default_executor_max_workers(cpu_count: int | None = None) -> int:
     """Return the process-wide asyncio default executor size.
 
-    Python's default is ``min(32, os.cpu_count() + 4)``. Keep that behavior for
-    mid/high-core machines, but enforce a floor for low-end devices because this
-    app offloads many blocking IO and queue-wait operations through
+    Args:
+        cpu_count: Optional override used by tests. When omitted, this function
+            uses ``os.cpu_count()``.
+
+    Python's default is ``min(32, (os.cpu_count() or 1) + 4)``. Keep that
+    behavior for mid/high-core machines, but enforce a floor for low-end devices
+    because this app offloads many blocking IO and queue-wait operations through
     ``asyncio.to_thread`` / ``run_in_executor(None, ...)``.
     """
     if cpu_count is None:
@@ -23,7 +29,10 @@ def resolve_default_executor_max_workers(cpu_count: int | None = None) -> int:
     )
 
 
-def configure_default_executor(loop, logger=None) -> int:
+def configure_default_executor(
+    loop: asyncio.AbstractEventLoop,
+    logger: logging.Logger | None = None,
+) -> int:
     """Install a shared default executor for asyncio offload calls."""
     max_workers = resolve_default_executor_max_workers()
     loop.set_default_executor(
