@@ -475,6 +475,57 @@ async def test_when_ready_durable_context_is_cached_before_readiness_flush():
 
 
 @pytest.mark.asyncio
+async def test_when_ready_durable_context_retries_if_realtime_prime_fails():
+    mgr = _make_manager()
+    mgr.session_ready = False
+
+    queued = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="durable realtime setup",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-realtime",
+    )
+
+    class _FailingPrimeSession:
+        async def prime_context(self, text, *, skipped=False):
+            raise RuntimeError("prime unavailable")
+
+    mgr.session = _FailingPrimeSession()
+    flushed = await mgr._flush_pending_context_appends()
+
+    assert queued.appended is True
+    assert flushed == 0
+    assert len(mgr.pending_context_appends) == 1
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "durable realtime setup"},
+    ]
+
+    duplicate = await mgr.append_context(
+        source="game.icebreaker",
+        role="assistant",
+        text="durable realtime setup replay",
+        timing="when_ready",
+        lifetime="session_family",
+        request_id="durable-realtime",
+    )
+    assert duplicate.appended is False
+    assert duplicate.deduped is True
+
+    recovered_session = _FakePrimeSession()
+    mgr.session = recovered_session
+    flushed = await mgr._flush_pending_context_appends()
+
+    assert flushed == 1
+    assert mgr.pending_context_appends == []
+    assert recovered_session.calls == [("assistant: durable realtime setup", True)]
+    assert mgr.next_session_context_messages == [
+        {"role": "Lan", "text": "durable realtime setup"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_when_ready_durable_context_delivered_in_start_prompt_is_not_replayed():
     mgr = _make_manager()
     mgr.session_ready = False

@@ -3966,6 +3966,16 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         len(text),
     )
 
+    if getattr(append_result, "deduped", False):
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "context",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "reason": "context_deduped",
+        }
+
     nudge_scheduled = False
     nudge_reason = "disabled"
     if options.get("trigger_voice", True):

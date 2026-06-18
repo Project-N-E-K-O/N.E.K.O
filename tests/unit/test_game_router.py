@@ -3323,7 +3323,7 @@ class _FakeRealtimeSession:
 
 
 class _FakeRealtimeManager:
-    def __init__(self, session):
+    def __init__(self, session, append_context_result=None):
         self.session = session
         self.is_active = True
         self.user_language = "zh-CN"
@@ -3335,9 +3335,12 @@ class _FakeRealtimeManager:
         self.voice_nudge_kwargs = []
         self.voice_nudge_event = asyncio.Event()
         self.append_context_calls = []
+        self.append_context_result = append_context_result
 
     async def append_context(self, **kwargs):
         self.append_context_calls.append(kwargs)
+        if self.append_context_result is not None:
+            return self.append_context_result
         await self.session.prime_context(f"{kwargs['role']}: {kwargs['text']}", skipped=True)
         return SimpleNamespace(appended=True, deduped=False, targets=("realtime_prime",), reason=None)
 
@@ -4722,6 +4725,49 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     assert skipped is True
     assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_postgame_nudge_when_context_append_deduped(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(
+        session,
+        append_context_result=SimpleNamespace(
+            appended=False,
+            deduped=True,
+            targets=(),
+            reason="duplicate_request_id",
+        ),
+    )
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+    state["last_state"] = {"score": {"player": 1, "ai": 3}}
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "别认输嘛，再来一脚。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "realtime"
+    assert result["postgame"]["context_injected"] is True
+    assert result["postgame"]["nudge_scheduled"] is False
+    assert result["postgame"]["reason"] == "context_deduped"
+    assert mgr.voice_nudge_calls == 0
+    assert session.prime_context_calls == []
 
 
 @pytest.mark.unit

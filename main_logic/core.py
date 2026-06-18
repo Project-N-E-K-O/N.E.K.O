@@ -1385,6 +1385,9 @@ class LLMSessionManager:
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)
         wrote_active_history = False
+        current_session_required = lifetime in {"current_session", "session_family"}
+        current_session_delivered = False
+        current_session_failed_reason: str | None = None
         if lifetime in {"current_session", "session_family"} and isinstance(history, list):
             if role == "assistant":
                 message = AIMessage(content=content)
@@ -1395,6 +1398,7 @@ class LLMSessionManager:
             history.append(message)
             targets.append("active_history")
             wrote_active_history = True
+            current_session_delivered = True
 
         if lifetime in {"current_session", "session_family"} and not wrote_active_history:
             prime_context = getattr(session, "prime_context", None)
@@ -1402,8 +1406,23 @@ class LLMSessionManager:
                 try:
                     await prime_context(f"{role}: {content}", skipped=(audience == "model"))
                     targets.append("realtime_prime")
+                    current_session_delivered = True
                 except Exception as exc:
+                    current_session_failed_reason = "realtime_prime_failed"
                     logger.warning("[%s] context append realtime_prime failed: %s", self.lanlan_name, exc)
+            else:
+                current_session_failed_reason = "no_current_session_target"
+
+        if (
+            payload.get("_pending_ready")
+            and current_session_required
+            and not current_session_delivered
+        ):
+            return ContextAppendResult(
+                appended=False,
+                targets=tuple(targets),
+                reason=current_session_failed_reason or "current_session_target_unavailable",
+            )
 
         if not targets:
             return ContextAppendResult(appended=False, reason="no_context_target")
@@ -1463,6 +1482,7 @@ class LLMSessionManager:
             sequence = int(getattr(self, "_context_append_sequence", 0))
             self._context_append_sequence = sequence + 1
             payload["_sequence"] = sequence
+            payload["_pending_ready"] = True
             pending.append(payload)
             return ContextAppendResult(appended=True, targets=("pending_ready",))
 
