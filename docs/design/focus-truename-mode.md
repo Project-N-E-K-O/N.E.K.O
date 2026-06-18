@@ -81,6 +81,16 @@ dispatch sub-model tasks, gated behind explicit emotional consent.
    watermark/delimiter rules, and i18n lockstep stay enforced by the
    linters. True-Name bypasses *safety/guardrail* surfaces, not the
    project's cultural rules.
+5. **Focus is privacy-independent — it scores the user's MESSAGE, not the
+   screen.** The inline trigger reads only `user_text` (vulnerability
+   keywords) and the scorer's own reply-cadence buffer; it fetches no
+   activity snapshot. Privacy mode governs SCREEN / app-state visibility
+   only and must never gate Focus (or any other understanding-the-user
+   feature) — reading the user's emotional state from what they typed is
+   core to a companion. The idle path's silence/open-thread signals do
+   consume the activity snapshot, so they simply skip a tick when it's
+   absent (and never clear the accumulator on absence). See
+   `docs/contributing/developer-notes.md` rule 6.
 
 ## Mode model
 

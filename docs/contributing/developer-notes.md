@@ -61,6 +61,32 @@ await window.unlockAchievement('ACH_NAME');
 window.getAchievementStats();
 ```
 
+### 6. Privacy mode gates SCREEN/APP visibility only — never user understanding
+
+Privacy mode (`ais_privacy_mode_enabled()` / `is_privacy_mode_active()`) has **exactly one** job: deciding whether the AI may **see the user's screen and program/app state**. It must NOT be used to gate any feature that helps the AI *understand the user*.
+
+N.E.K.O. is an AI companion. Reading the user's emotional/conversational state from **what they type or say** is core to the product and is **always allowed**, privacy mode or not. The user's *messages* are not "screen data".
+
+```python
+# ❌ WRONG — do NOT gate companion/understanding logic on privacy mode
+if await ais_privacy_mode_enabled():
+    return  # skip emotion scoring / focus / memory reflection ...
+
+# ✅ RIGHT — only gate things that literally read the screen / app state
+if not await ais_privacy_mode_enabled():
+    screenshot = capture_screen()      # vision input
+    app_state = read_foreground_app()  # activity tracker enrichment
+```
+
+Rule of thumb: if a feature's input is the **conversation** (text/voice the user directed at the AI), it is privacy-independent. If its input is the **screen or OS/app state** the user did not explicitly send, that single source is what privacy mode governs.
+
+Concretely:
+- ✅ Focus (凝神) scores the user's *message* (vulnerability keywords, reply cadence) — privacy-independent by construction; it must not fetch a screen snapshot or check privacy on the inline path.
+- ✅ Memory reflection / persona / emotional-episode synthesis run on the conversation — privacy-independent.
+- ✅ The activity-tracker *snapshot* (screen genre, foreground app, open windows) is correctly nulled under privacy — that is the legitimate boundary. Features that consume it degrade gracefully when it is `None`, but they must not add their *own* extra privacy check on top.
+
+If you find code that disables an understanding feature based on privacy mode, it is a bug — remove the gate.
+
 ## Frontend gotchas
 
 ### i18n kills HTML icons

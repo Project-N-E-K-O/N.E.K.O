@@ -1711,26 +1711,16 @@ class LLMSessionManager:
             return False
         try:
             from config.prompts.prompts_focus import detect_topic_switch
-            # Privacy mode: skip Focus entirely — don't even fetch a snapshot.
-            # Mirrors the proactive path (which sets activity_snapshot=None under
-            # privacy); we should not run "she arrives" magic while the user is in
-            # a sensitive app, and must not touch the activity tracker there.
-            from utils.preferences import ais_privacy_mode_enabled
-            try:
-                _privacy = await ais_privacy_mode_enabled()
-            except Exception:
-                # fail-closed: unreadable privacy state → treat as private
-                _privacy = True
-            if _privacy:
-                # Privacy turned on: we won't score this turn, so the
-                # accumulator wouldn't otherwise tick. Clear unconditionally
-                # (topic_changed exits FOCUS and zeroes a REGULAR charge alike)
-                # so a charge frozen just under the bar can't survive the
-                # privacy window and enter on stale evidence afterwards.
-                await self.state.update_focus(0.0, topic_changed=True)
-                return False
-            snapshot = await self._activity_tracker.get_snapshot()
-            scored = self._focus_scorer.score(snapshot, user_text=user_text)
+            # Focus scores the user's MESSAGE, not the screen: the inline
+            # signals (vulnerability keywords + reply cadence) read user_text
+            # and the scorer's own cadence buffer — never the activity snapshot
+            # (silence / open_thread are idle-only). So Focus is
+            # privacy-independent BY CONSTRUCTION and must NOT be gated on
+            # privacy mode: understanding the user's emotional state from what
+            # they typed is core to an AI companion. Privacy mode governs only
+            # SCREEN / app-state visibility (see docs/contributing/
+            # developer-notes.md rule 6). Hence no snapshot fetch here.
+            scored = self._focus_scorer.score(None, user_text=user_text)
             topic_changed = detect_topic_switch(user_text)
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
@@ -1746,8 +1736,8 @@ class LLMSessionManager:
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
                            self.lanlan_name, e)
-            # Don't leave a stale FOCUS episode if get_snapshot/score/
-            # update_focus raised mid-episode (mirrors the privacy early-exit).
+            # Don't leave a stale FOCUS episode if score / update_focus raised
+            # mid-episode — degrade cleanly to regular.
             try:
                 if self.state.mode is CognitionMode.FOCUS:
                     await self.state.update_focus(0.0, topic_changed=True)
@@ -1764,7 +1754,11 @@ class LLMSessionManager:
         message and are N/A). Advances the SAME ``self.state`` hysteresis as
         the inline path so a focus episode is one shared state regardless of
         which path drove it. Best-effort; degrades to regular on any failure
-        or when the master switch is off / snapshot unavailable.
+        or when the master switch is off. When no snapshot is available this
+        tick (tracker unavailable / privacy nulls SCREEN data) the idle signals
+        can't be computed, so it simply skips — it does NOT clear the
+        accumulator, since the privacy-independent inline path is still driving
+        the episode and clearing here would wipe a live one.
 
         Note (tuning): because proactive fires on a schedule, idle ticks can
         accumulate toward the low-streak exit faster than conversational turns
@@ -1780,16 +1774,11 @@ class LLMSessionManager:
             await self.state.update_focus(0.0)
             return False
         if snapshot is None:
-            # Privacy mode / tracker unavailable: don't score, but clear Focus
-            # state unconditionally so an episode can't stay stuck in FOCUS and
-            # a REGULAR charge can't freeze across the window (mirrors the
-            # inline privacy path).
-            try:
-                await self.state.update_focus(0.0, topic_changed=True)
-            except Exception as _exit_err:
-                # best-effort cleanup; never block the proactive path
-                logger.debug("[%s] focus idle privacy-exit failed: %s",
-                             self.lanlan_name, _exit_err)
+            # No activity data this idle tick (tracker unavailable / privacy
+            # nulls SCREEN data). Idle signals (silence / open_thread) need it,
+            # so skip scoring — but do NOT touch the accumulator: the
+            # privacy-independent inline path keeps driving the episode, and
+            # clearing here would wipe a legitimate in-progress Focus.
             return False
         try:
             scored = self._focus_scorer.score(snapshot, user_text=None)

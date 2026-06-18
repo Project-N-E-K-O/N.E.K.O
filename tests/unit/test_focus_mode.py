@@ -440,16 +440,21 @@ async def test_focus_override_threads_through_visible_stream():
     assert "extra_body" not in captured[-1]
 
 
-# ── 6. caller-level Focus gates clear residual charge (core.py) ─────
-# These lock the caller-vs-SM interaction Codex flagged: the SM's update_focus
-# self-clears when disabled / on topic-switch, but the gates that decide whether
-# to call it must do so even in REGULAR — otherwise a charge frozen just under
-# the enter bar survives a disabled / privacy window and enters on stale evidence.
+# ── 6. caller-level Focus gates: charge hygiene + privacy-independence ─────
+# Lock two things: (a) the disabled gate clears residual REGULAR charge (the
+# caller must call update_focus even in REGULAR, else a charge frozen under the
+# enter bar survives a disabled window); (b) Focus scores the user's MESSAGE,
+# not the screen — it is privacy-independent and fetches no activity snapshot on
+# the inline path (privacy mode governs SCREEN visibility only; see
+# docs/contributing/developer-notes.md rule 6).
 def _bare_mgr():
     from main_logic.core import LLMSessionManager
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.state = SessionStateMachine(lanlan_name="x")
     mgr.lanlan_name = "x"
+    mgr._focus_scorer = FocusScorer("x")
+    # Deliberately NO _activity_tracker: the inline path must not touch it
+    # (Focus scores the message, not the screen — privacy-independent).
     return mgr
 
 
@@ -463,28 +468,30 @@ async def test_inline_gate_disabled_clears_regular_charge(monkeypatch):
     assert mgr.state.snapshot()["focus_charge"] == 0.0
 
 
-async def test_inline_gate_privacy_clears_regular_charge(monkeypatch):
-    import utils.preferences as _prefs
+async def test_inline_focus_is_privacy_independent(monkeypatch):
+    # Focus scores the user's MESSAGE (keyword + cadence), never the screen,
+    # so it must NOT be gated on privacy mode and must NOT fetch an activity
+    # snapshot. _bare_mgr has no _activity_tracker — if the inline path tried
+    # to read the screen it would AttributeError. A strongly vulnerable message
+    # still enters FOCUS regardless of any privacy state.
+    _patch_charge(monkeypatch, enter=1.0)
+    mgr = _bare_mgr()
+    assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
+    assert mgr.state.mode is CognitionMode.FOCUS
+
+
+async def test_idle_gate_snapshot_none_preserves_charge(monkeypatch):
+    # No snapshot this idle tick (tracker unavailable / privacy nulls SCREEN
+    # data): the idle path skips scoring but must NOT clear the accumulator —
+    # the privacy-independent inline path keeps driving the episode, so
+    # clearing here would wipe a legitimate in-progress Focus.
     _patch_charge(monkeypatch, enter=1.0)  # leaves FOCUS_MODE_ENABLED True
     mgr = _bare_mgr()
     await mgr.state.update_focus(0.6)
-    assert mgr.state.snapshot()["focus_charge"] > 0
-
-    async def _privacy_on():
-        return True
-    monkeypatch.setattr(_prefs, "ais_privacy_mode_enabled", _privacy_on)
-    assert await mgr._focus_inline_decision("anything") is False
-    assert mgr.state.snapshot()["focus_charge"] == 0.0
-
-
-async def test_idle_gate_snapshot_none_clears_regular_charge(monkeypatch):
-    _patch_charge(monkeypatch, enter=1.0)  # leaves FOCUS_MODE_ENABLED True
-    mgr = _bare_mgr()
-    await mgr.state.update_focus(0.6)
-    assert mgr.state.snapshot()["focus_charge"] > 0
-    # snapshot None = privacy / tracker unavailable on the idle path
+    _charge_before = mgr.state.snapshot()["focus_charge"]
+    assert _charge_before > 0
     assert await mgr._focus_idle_decision(None) is False
-    assert mgr.state.snapshot()["focus_charge"] == 0.0
+    assert mgr.state.snapshot()["focus_charge"] == _charge_before  # preserved
 
 
 async def test_idle_gate_disabled_clears_regular_charge(monkeypatch):
