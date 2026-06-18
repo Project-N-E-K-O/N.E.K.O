@@ -9,6 +9,7 @@ choices[0].message 是 None 的合法响应。原来 ainvoke/invoke 直接
 from __future__ import annotations
 
 import asyncio
+import gc
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -207,23 +208,20 @@ async def test_chat_openai_reuses_default_ssl_context(monkeypatch):
             await client.aclose()
 
 
-def test_auto_closing_sync_httpx_client_del_closes(monkeypatch):
-    client = llm_client_module._AutoClosingDefaultHttpxClient()
-    close = MagicMock()
-    monkeypatch.setattr(client, "close", close)
-
-    client.__del__()
-
-    close.assert_called_once_with()
-
-
 @pytest.mark.asyncio
-async def test_auto_closing_async_httpx_client_del_schedules_close(monkeypatch):
-    client = llm_client_module._AutoClosingDefaultAsyncHttpxClient()
+async def test_chat_openai_finalizer_closes_injected_http_clients(monkeypatch):
+    client = llm_client_module.ChatOpenAI(
+        model="model-a",
+        base_url="https://example.com/v1",
+        api_key="sk-test",
+    )
+    close = MagicMock()
     aclose = AsyncMock()
-    monkeypatch.setattr(client, "aclose", aclose)
-
-    client.__del__()
+    monkeypatch.setattr(client._client, "close", close)
+    monkeypatch.setattr(client._aclient, "close", aclose)
+    del client
+    gc.collect()
     await asyncio.sleep(0)
 
+    close.assert_called_once_with()
     aclose.assert_awaited_once_with()

@@ -28,9 +28,11 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json as _json
+import os
 import re
 import ssl
 import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
@@ -97,24 +99,15 @@ _DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
 _DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
 
 
-class _AutoClosingDefaultHttpxClient(DefaultHttpxClient):
-    def __del__(self) -> None:
-        if self.is_closed:
-            return
-        try:
-            self.close()
-        except Exception:
-            pass
+def _create_httpx_default_ssl_context() -> ssl.SSLContext:
+    """Create the same default verify context httpx uses without its deprecated helper."""
+    import certifi
 
-
-class _AutoClosingDefaultAsyncHttpxClient(DefaultAsyncHttpxClient):
-    def __del__(self) -> None:
-        if self.is_closed:
-            return
-        try:
-            asyncio.get_running_loop().create_task(self.aclose())
-        except Exception:
-            pass
+    if os.environ.get("SSL_CERT_FILE"):
+        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    if os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context(capath=os.environ["SSL_CERT_DIR"])
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _get_default_ssl_context() -> ssl.SSLContext:
@@ -125,8 +118,25 @@ def _get_default_ssl_context() -> ssl.SSLContext:
 
     with _DEFAULT_SSL_CONTEXT_LOCK:
         if _DEFAULT_SSL_CONTEXT is None:
-            _DEFAULT_SSL_CONTEXT = ssl.create_default_context()
+            _DEFAULT_SSL_CONTEXT = _create_httpx_default_ssl_context()
         return _DEFAULT_SSL_CONTEXT
+
+
+def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
+    try:
+        client.close()
+    except Exception:
+        # Destructors/finalizers must never raise during GC or interpreter shutdown.
+        pass
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        loop.create_task(aclient.close())
+    except Exception:
+        # The loop may be closing; explicit aclose() remains the deterministic path.
+        pass
 
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
@@ -447,10 +457,16 @@ class ChatOpenAI:
         if default_headers:
             client_kw["default_headers"] = default_headers
         ssl_context = _get_default_ssl_context()
-        client_kw["http_client"] = _AutoClosingDefaultAsyncHttpxClient(verify=ssl_context)
+        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
         self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = _AutoClosingDefaultHttpxClient(verify=ssl_context)
+        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
         self._client = OpenAI(**client_kw)
+        self._client_finalizer = weakref.finalize(
+            self,
+            _close_chat_openai_clients_best_effort,
+            self._client,
+            self._aclient,
+        )
 
     def _is_anthropic(self) -> bool:
         return bool(self.base_url) and "api.anthropic.com" in str(self.base_url)
@@ -725,6 +741,7 @@ class ChatOpenAI:
         """Close underlying httpx clients (async path)."""
         await self._aclient.close()
         self._client.close()
+        self._client_finalizer.detach()
 
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""
