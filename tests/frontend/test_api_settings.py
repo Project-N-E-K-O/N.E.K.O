@@ -963,21 +963,33 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
 
 
 @pytest.mark.frontend
-def test_switching_game_model_away_from_follow_clears_model_readonly(mock_page: Page, running_server: str):
+@pytest.mark.parametrize(
+    ("model_type", "follow_provider"),
+    [
+        ("gameMain", "follow_conversation"),
+        ("gameSummary", "follow_summary"),
+    ],
+)
+def test_switching_game_model_away_from_follow_clears_model_readonly(
+    mock_page: Page,
+    running_server: str,
+    model_type: str,
+    follow_provider: str,
+):
     """Game model IDs must be editable again after leaving follow-conversation/summary modes."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
-    mock_page.wait_for_selector("#gameMainModelProvider option[value='follow_conversation']", state="attached", timeout=10000)
-    mock_page.wait_for_selector("#gameMainModelProvider option[value='custom']", state="attached", timeout=10000)
-    mock_page.wait_for_selector("#gameMainModelProvider option[value='qwen']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='{follow_provider}']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='custom']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='qwen']", state="attached", timeout=10000)
 
     value = mock_page.evaluate("""
-        () => {
-            const provider = document.getElementById('gameMainModelProvider');
-            const model = document.getElementById('gameMainModelId');
+        ({ modelType, followProvider }) => {
+            const provider = document.getElementById(`${modelType}ModelProvider`);
+            const model = document.getElementById(`${modelType}ModelId`);
 
-            provider.value = 'follow_conversation';
+            provider.value = followProvider;
             provider.dispatchEvent(new Event('change', { bubbles: true }));
             const followReadonly = model.hasAttribute('readonly');
 
@@ -992,7 +1004,7 @@ def test_switching_game_model_away_from_follow_clears_model_readonly(mock_page: 
 
             return { followReadonly, customReadonly, namedReadonly };
         }
-    """)
+    """, {"modelType": model_type, "followProvider": follow_provider})
 
     assert value == {
         "followReadonly": True,
