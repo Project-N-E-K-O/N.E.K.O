@@ -34,7 +34,6 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
-import httpx
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
 
@@ -106,7 +105,7 @@ def _get_default_ssl_context() -> ssl.SSLContext:
 
     with _DEFAULT_SSL_CONTEXT_LOCK:
         if _DEFAULT_SSL_CONTEXT is None:
-            _DEFAULT_SSL_CONTEXT = httpx.create_ssl_context(verify=True)
+            _DEFAULT_SSL_CONTEXT = ssl.create_default_context()
         return _DEFAULT_SSL_CONTEXT
 
 
