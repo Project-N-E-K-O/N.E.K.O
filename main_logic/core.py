@@ -1107,15 +1107,7 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    @staticmethod
-    def _normalize_scripted_context(role: str, text: str) -> tuple[str, str] | None:
-        normalized_role = str(role or "").strip().lower()
-        content = str(text or "").strip()
-        if normalized_role not in {"assistant", "user"} or not content:
-            return None
-        return normalized_role, content
-
-    def _append_scripted_context_to_new_session_cache(self, role: str, text: str) -> None:
+    def _append_icebreaker_context_to_new_session_cache(self, role: str, text: str) -> None:
         if not getattr(self, "is_preparing_new_session", False):
             return
         cache = getattr(self, "message_cache_for_new_session", None)
@@ -1129,29 +1121,13 @@ class LLMSessionManager:
         )
         cache.append({"role": speaker, "text": text})
 
-    def append_icebreaker_context(self, role: str, text: str, request_id: str | None = "") -> bool:
-        """Append scripted guide turns through the existing conversation/cache path."""
-        normalized = self._normalize_scripted_context(role, text)
-        if normalized is None:
-            return False
-        normalized_role, content = normalized
-        self._append_scripted_context_to_new_session_cache(normalized_role, content)
-
-        session = getattr(self, "session", None)
-        if not session or not hasattr(session, "_conversation_history"):
-            return bool(getattr(self, "is_preparing_new_session", False))
-
-        message = AIMessage(content=content) if normalized_role == "assistant" else HumanMessage(content=content)
-        session._conversation_history.append(message)
-        return True
-
     async def append_icebreaker_context_async(self, role: str, text: str, request_id: str | None = "") -> bool:
-        """Async wrapper for realtime sessions; normal sessions reuse the sync path."""
-        normalized = self._normalize_scripted_context(role, text)
-        if normalized is None:
+        """Append icebreaker turns through the existing conversation/cache path."""
+        normalized_role = str(role or "").strip().lower()
+        content = str(text or "").strip()
+        if normalized_role not in {"assistant", "user"} or not content:
             return False
-        normalized_role, content = normalized
-        self._append_scripted_context_to_new_session_cache(normalized_role, content)
+        self._append_icebreaker_context_to_new_session_cache(normalized_role, content)
 
         session = getattr(self, "session", None)
         history = getattr(session, "_conversation_history", None)

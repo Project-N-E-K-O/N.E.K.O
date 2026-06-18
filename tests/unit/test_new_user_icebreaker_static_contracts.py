@@ -281,7 +281,7 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/context'" in runtime
     assert "request_id: String(extra.requestId || '')" in runtime
     assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in game_router
-    assert "append_icebreaker_context(role, text, request_id)" in game_router
+    assert "append_icebreaker_context_async(role, text, request_id)" in game_router
     assert '@router.post("/{game_type}/context")' in game_router
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
@@ -294,6 +294,9 @@ def test_icebreaker_context_reuses_existing_session_context_paths():
     assert "_icebreaker_context_request_ids" not in core
     assert "def _flush_pending_icebreaker_context" not in core
     assert "def append_icebreaker_context_async" in core
+    assert "def append_icebreaker_context(" not in core
+    assert "_normalize_scripted_context" not in core
+    assert "_append_scripted_context_to_new_session_cache" not in core
     assert "_conversation_history" in core
     assert "message_cache_for_new_session" in core
     assert 'await prime_context(f"{normalized_role}: {content}", skipped=True)' in core

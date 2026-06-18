@@ -24,7 +24,6 @@ Currently implemented: soccer. The generic route /{game_type}/chat supports exte
 """
 
 import asyncio
-import inspect
 import json
 import math
 import random
@@ -2081,26 +2080,6 @@ def _game_route_stale_session_response(
             },
         })
     return result
-
-
-def _context_appender_accepts_request_id(callback) -> bool:
-    try:
-        signature = inspect.signature(callback)
-    except (TypeError, ValueError):
-        return True
-
-    parameters = list(signature.parameters.values())
-    if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in parameters):
-        return True
-
-    positional_count = sum(
-        1 for param in parameters
-        if param.kind in {
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        }
-    )
-    return positional_count >= 3
 
 
 def _game_route_closed_session_response(
@@ -7037,18 +7016,9 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
-    append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
     try:
         if callable(append_icebreaker_context_async):
-            if _context_appender_accepts_request_id(append_icebreaker_context_async):
-                ok = await append_icebreaker_context_async(role, text, request_id)
-            else:
-                ok = await append_icebreaker_context_async(role, text)
-        elif callable(append_icebreaker_context):
-            if _context_appender_accepts_request_id(append_icebreaker_context):
-                ok = append_icebreaker_context(role, text, request_id)
-            else:
-                ok = append_icebreaker_context(role, text)
+            ok = await append_icebreaker_context_async(role, text, request_id)
         else:
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
     except Exception as exc:

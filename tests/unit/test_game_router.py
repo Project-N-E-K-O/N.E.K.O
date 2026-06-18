@@ -132,8 +132,8 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
         def __init__(self):
             self.calls = []
 
-        def append_icebreaker_context(self, role, text):
-            self.calls.append((role, text))
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
+            self.calls.append((role, text, request_id))
             return True
 
     mgr = FakeManager()
@@ -154,7 +154,7 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
 
         assert result["ok"] is True
         assert result["method"] == "project_session_history"
-        assert mgr.calls == [("assistant", "教程看完啦？")]
+        assert mgr.calls == [("assistant", "教程看完啦？", "")]
 
 
 @pytest.mark.asyncio
@@ -163,8 +163,8 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
         def __init__(self):
             self.calls = []
 
-        async def append_icebreaker_context_async(self, role, text):
-            self.calls.append((role, text))
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
+            self.calls.append((role, text, request_id))
             return True
 
     mgr = FakeManager()
@@ -185,13 +185,13 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
         assert result["ok"] is True
         assert result["method"] == "project_session_history"
-        assert mgr.calls == [("user", "icebreaker choice")]
+        assert mgr.calls == [("user", "icebreaker choice", "")]
 
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise AssertionError("stale icebreaker context must not append")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -219,7 +219,7 @@ async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_rejects_inactive_route(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise AssertionError("inactive icebreaker route must not append")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -251,7 +251,7 @@ async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatc
         def __init__(self):
             self.calls = []
 
-        def append_icebreaker_context(self, role, text, request_id=""):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             self.calls.append((role, text, request_id))
             return True
 
@@ -278,7 +278,7 @@ async def test_new_user_icebreaker_context_endpoint_passes_request_id(monkeypatc
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_error(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text, request_id=""):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise TypeError("internal append bug")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -304,7 +304,7 @@ async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise AssertionError("CSRF rejection should happen before append")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -347,7 +347,7 @@ async def test_new_user_icebreaker_context_endpoint_rejects_unsupported_game_typ
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise RuntimeError("append failed")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -372,7 +372,7 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_false_append(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             return False
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -423,8 +423,8 @@ async def test_new_user_icebreaker_context_endpoint_rejects_stale_session(monkey
         def __init__(self):
             self.calls = []
 
-        def append_icebreaker_context(self, role, text):
-            self.calls.append((role, text))
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
+            self.calls.append((role, text, request_id))
             return True
 
     mgr = FakeManager()
@@ -484,9 +484,9 @@ async def test_new_user_icebreaker_context_endpoint_requires_public_append_metho
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_handles_sync_append_error(monkeypatch):
+async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise RuntimeError("session history unavailable")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -513,9 +513,9 @@ async def test_new_user_icebreaker_context_endpoint_handles_sync_append_error(mo
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(monkeypatch):
+async def test_new_user_icebreaker_context_endpoint_handles_async_append_error_from_manager(monkeypatch):
     class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise RuntimeError("session history unavailable")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -544,7 +544,7 @@ async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(m
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_rejects_oversized_text(monkeypatch):
     class FakeManager:
-        def append_icebreaker_context(self, role, text):
+        async def append_icebreaker_context_async(self, role, text, request_id=""):
             raise AssertionError("oversized text should be rejected before append")
 
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
@@ -562,7 +562,8 @@ async def test_new_user_icebreaker_context_endpoint_rejects_oversized_text(monke
 
 
 @pytest.mark.unit
-def test_llm_session_manager_appends_icebreaker_context_to_session_history():
+@pytest.mark.asyncio
+async def test_llm_session_manager_appends_icebreaker_context_to_session_history():
     class FakeSession:
         def __init__(self):
             self._conversation_history = []
@@ -570,8 +571,8 @@ def test_llm_session_manager_appends_icebreaker_context_to_session_history():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.session = FakeSession()
 
-    assert mgr.append_icebreaker_context("assistant", " hi ") is True
-    assert mgr.append_icebreaker_context("user", " choice ") is True
+    assert await mgr.append_icebreaker_context_async("assistant", " hi ") is True
+    assert await mgr.append_icebreaker_context_async("user", " choice ") is True
     assert isinstance(mgr.session._conversation_history[0], AIMessage)
     assert mgr.session._conversation_history[0].content == "hi"
     assert isinstance(mgr.session._conversation_history[1], HumanMessage)

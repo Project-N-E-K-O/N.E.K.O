@@ -27,11 +27,12 @@ def _make_mgr(session=None):
     return mgr
 
 
-def test_icebreaker_context_appends_to_active_conversation_history():
+@pytest.mark.asyncio
+async def test_icebreaker_context_appends_to_active_conversation_history():
     mgr = _make_mgr(_FakeSession())
 
-    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "你好呀") is True
-    assert LLMSessionManager.append_icebreaker_context(mgr, "user", "继续打字") is True
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "assistant", "你好呀") is True
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "user", "继续打字") is True
 
     history = mgr.session._conversation_history
     assert isinstance(history[0], AIMessage)
@@ -55,12 +56,13 @@ async def test_icebreaker_context_primes_active_realtime_session():
     ]
 
 
-def test_icebreaker_context_reuses_hot_swap_message_cache_when_preparing():
+@pytest.mark.asyncio
+async def test_icebreaker_context_reuses_hot_swap_message_cache_when_preparing():
     mgr = _make_mgr(None)
     mgr.is_preparing_new_session = True
 
-    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "先认识一下") is True
-    assert LLMSessionManager.append_icebreaker_context(mgr, "user", "看得差不多了") is True
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "assistant", "先认识一下") is True
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "user", "看得差不多了") is True
 
     assert mgr.message_cache_for_new_session == [
         {"role": "Lan", "text": "先认识一下"},
@@ -80,9 +82,10 @@ async def test_icebreaker_realtime_context_also_reuses_hot_swap_cache_when_prepa
     assert session.prime_context_calls == [("assistant: 先认识一下", True)]
 
 
-def test_icebreaker_context_rejects_empty_or_unknown_role():
+@pytest.mark.asyncio
+async def test_icebreaker_context_rejects_empty_or_unknown_role():
     mgr = _make_mgr(_FakeSession())
 
-    assert LLMSessionManager.append_icebreaker_context(mgr, "assistant", "   ") is False
-    assert LLMSessionManager.append_icebreaker_context(mgr, "system", "不要写入") is False
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "assistant", "   ") is False
+    assert await LLMSessionManager.append_icebreaker_context_async(mgr, "system", "不要写入") is False
     assert mgr.session._conversation_history == []
