@@ -164,7 +164,7 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
             "role": "assistant",
             "text": "教程看完啦？",
             "audience": "model",
-            "timing": "now",
+            "timing": "when_ready",
             "lifetime": "session_family",
             "request_id": None,
             "ordering_key": "icebreaker-day1-test",

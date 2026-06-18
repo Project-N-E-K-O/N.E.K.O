@@ -160,6 +160,27 @@ async def test_next_session_context_snapshot_consumes_only_rendered_prefix():
 
 
 @pytest.mark.asyncio
+async def test_final_swap_reset_preserves_unconsumed_next_session_context():
+    mgr = _make_manager()
+    mgr.background_preparation_task = None
+    mgr.final_swap_task = None
+    mgr.pending_session_warmed_up_event = object()
+    mgr.pending_session_final_prime_complete_event = object()
+    mgr.pending_use_tts = True
+    mgr.next_session_context_messages = [{"role": "Lan", "text": "late context"}]
+    mgr.message_cache_for_new_session = [{"role": "Master", "text": "main cache"}]
+    mgr.initial_next_session_context_snapshot_len = 1
+
+    await mgr._reset_preparation_state(clear_main_cache=True, from_final_swap=True)
+
+    assert mgr.message_cache_for_new_session == []
+    assert mgr.next_session_context_messages == [{"role": "Lan", "text": "late context"}]
+    assert mgr.initial_next_session_context_snapshot_len == 0
+    assert mgr.pending_session_warmed_up_event is None
+    assert mgr.pending_use_tts is None
+
+
+@pytest.mark.asyncio
 async def test_append_context_when_ready_flushes_before_user_input():
     mgr = _make_manager()
     mgr.session_ready = False

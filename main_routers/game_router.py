@@ -7061,7 +7061,7 @@ async def game_project_context(game_type: str, request: Request):
             role=role,
             text=text,
             audience="model",
-            timing="now",
+            timing="when_ready",
             lifetime="session_family",
             request_id=request_id or None,
             ordering_key=session_id or None,

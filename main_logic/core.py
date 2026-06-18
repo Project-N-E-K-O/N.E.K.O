@@ -3982,8 +3982,6 @@ class LLMSessionManager:
 
         if clear_main_cache:
             self.message_cache_for_new_session = []
-            if from_final_swap:
-                self.next_session_context_messages = []
             self.initial_next_session_context_snapshot_len = 0
 
     async def _cleanup_pending_session_resources(self):
@@ -8106,7 +8104,12 @@ class LLMSessionManager:
             # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
             await self._flush_hot_swap_audio_cache()
 
-        
+            transferred_next_context_count = (
+                self.initial_next_session_context_snapshot_len
+                + len(incremental_next_session_context)
+            )
+            self._consume_next_session_context_messages(transferred_next_context_count)
+
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
             await self._reset_preparation_state(
