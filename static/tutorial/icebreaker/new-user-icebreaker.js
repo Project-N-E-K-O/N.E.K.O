@@ -12,6 +12,7 @@
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
     var activeSession = null;
+    var pendingStartDay = '';
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -144,6 +145,12 @@
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
         });
+    }
+
+    function clearPendingStartDay(dayKey) {
+        if (pendingStartDay === dayKey) {
+            pendingStartDay = '';
+        }
     }
 
     function endIcebreakerRoute(session, reason) {
@@ -622,27 +629,35 @@
     }
 
     function completeWithHandoff(option) {
-        var text = getText(activeSession.localeData, option.handoffKey);
-        var day = activeSession.day;
+        var session = activeSession;
+        if (!session) return Promise.resolve(false);
+        var text = getText(session.localeData, option.handoffKey);
+        var day = session.day;
+        var nodeId = session.nodeId;
+        var sessionId = session.sessionId;
         applyAssistantTextEmotion(text);
-        appendChatMessage('assistant', text, {
+        clearChoicePrompt();
+        return appendChatMessage('assistant', text, {
             day: day,
-            nodeId: activeSession.nodeId,
+            nodeId: nodeId,
             voiceKey: option.handoffVoiceKey || '',
             handoff: true
         }).then(function () {
             speakLine(text, option.handoffVoiceKey || '');
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                sessionId: sessionId,
+                nodeId: nodeId
+            });
+            return endIcebreakerRoute(session, 'icebreaker_handoff');
+        }).then(function () {
+            if (activeSession === session) {
+                activeSession = null;
+            }
+            return true;
         });
-        clearChoicePrompt();
-        markDay(day, {
-            started: true,
-            completed: true,
-            completedAt: Date.now(),
-            sessionId: activeSession.sessionId,
-            nodeId: activeSession.nodeId
-        });
-        endIcebreakerRoute(activeSession, 'icebreaker_handoff');
-        activeSession = null;
     }
 
     function handleChoice(detail) {
@@ -679,7 +694,7 @@
                 return deliverNode(option.next);
             }
             if (option.handoffKey) {
-                completeWithHandoff(option);
+                return completeWithHandoff(option);
             }
             return null;
         }).then(function (result) {
@@ -818,11 +833,13 @@
 
     function startForDay(day, options) {
         var force = !!(options && options.force);
+        var dayKey = String(day || '');
+        if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
+        pendingStartDay = dayKey;
         return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
             if (activeSession && !force) return false;
             var scripts = results[0];
             var localeData = results[1];
-            var dayKey = String(day || '');
             var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
             if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
             if (!force && isDayCompleted(dayKey)) return false;
@@ -848,8 +865,12 @@
                     return true;
                 });
             });
+        }).then(function (result) {
+            clearPendingStartDay(dayKey);
+            return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] start failed:', error);
+            clearPendingStartDay(dayKey);
             return false;
         });
     }

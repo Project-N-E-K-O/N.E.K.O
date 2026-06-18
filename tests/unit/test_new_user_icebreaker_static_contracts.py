@@ -292,6 +292,20 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert 'action == "icebreaker_context_append"' not in websocket_router
 
 
+def test_icebreaker_route_start_does_not_emit_game_window_or_timeout_heartbeat():
+    game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    window_open_guard = game_router.split("mgr_for_ws = get_session_manager().get(lanlan_name)", 1)[1].split(
+        "else:",
+        1,
+    )[0]
+
+    assert 'if game_type == "new_user_icebreaker":' in game_router
+    assert 'state["heartbeat_enabled"] = False' in game_router
+    assert 'game_type != "new_user_icebreaker"' in window_open_guard
+    assert 'state.get("game_route_active")' in window_open_guard
+    assert 'action="opened"' in game_router
+
+
 def test_icebreaker_context_reuses_existing_session_context_paths():
     core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
 
@@ -371,6 +385,25 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert handle_choice_block.index("if (activeSession !== session)") < handle_choice_block.index("completeWithHandoff(option);")
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
+
+
+def test_icebreaker_handoff_waits_for_context_append_before_route_end():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
+        "function handleChoice(detail)",
+        1,
+    )[0]
+
+    assert "var session = activeSession;" in handoff_block
+    assert "return appendChatMessage('assistant', text" in handoff_block
+    assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
+    assert handoff_block.index("return appendChatMessage('assistant', text") < handoff_block.index(
+        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+    )
+    assert "if (activeSession === session) {" in handoff_block
+    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+        "activeSession = null;"
+    )
 
 
 def test_icebreaker_waits_long_enough_for_react_chat_host():
@@ -649,6 +682,21 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
     assert "activeSession.day" not in continuation_block
     assert "activeSession.nodeId" not in continuation_block
     assert "activeSession.sessionId" not in continuation_block
+
+
+def test_icebreaker_start_dedupes_pending_tutorial_end_triggers():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    start_block = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState(endState)",
+        1,
+    )[0]
+
+    assert "var pendingStartDay = '';" in runtime
+    assert "if (!force && pendingStartDay === dayKey) return Promise.resolve(false);" in start_block
+    assert "pendingStartDay = dayKey;" in start_block
+    assert "clearPendingStartDay(dayKey);" in start_block
+    assert start_block.index("pendingStartDay = dayKey;") < start_block.index("return Promise.all")
+    assert start_block.index("clearPendingStartDay(dayKey);") > start_block.index("return startIcebreakerRoute(nextSession)")
 
 
 def test_home_tutorial_reset_also_resets_day1_icebreaker_state():

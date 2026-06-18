@@ -6583,6 +6583,8 @@ async def game_route_start(game_type: str, request: Request):
             if game_type == "basketball":
                 state["mode"] = _normalize_basketball_mode(data.get("mode"))
             _update_route_start_state_from_payload(state, data)
+            if game_type == "new_user_icebreaker":
+                state["heartbeat_enabled"] = False
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
@@ -6597,7 +6599,11 @@ async def game_route_start(game_type: str, request: Request):
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
     mgr_for_ws = get_session_manager().get(lanlan_name)
-    if state.get("game_route_active") and str(state.get("session_id") or "") == session_id:
+    if (
+        game_type != "new_user_icebreaker"
+        and state.get("game_route_active")
+        and str(state.get("session_id") or "") == session_id
+    ):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
