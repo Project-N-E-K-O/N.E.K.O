@@ -19,6 +19,7 @@ export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
 const COMPACT_EXPORT_BOTTOM_THRESHOLD = 30;
 const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
+export const COMPACT_HISTORY_ROUTED_WHEEL_EVENT = 'neko:compact-history-routed-wheel';
 export const COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS = 860;
 const COMPACT_HISTORY_SCROLLBAR_THUMB_MIN_HEIGHT = 24;
 export const COMPACT_HISTORY_ENTER_DELAY_STEP_MS = 42;
@@ -585,6 +586,22 @@ export default function CompactExportHistoryPanel({
     onAutoScrollToBottomChange(distanceToBottom <= COMPACT_EXPORT_BOTTOM_THRESHOLD);
     updateScrollbarThumbState();
   }
+
+  useEffect(() => {
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) return undefined;
+
+    const handleRoutedWheel = () => {
+      if (!historyInteractive) return;
+      handleScroll();
+      revealScrollbarForWheel();
+    };
+
+    scrollNode.addEventListener(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, handleRoutedWheel);
+    return () => {
+      scrollNode.removeEventListener(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, handleRoutedWheel);
+    };
+  });
 
   function handleClick(event: ReactMouseEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;
