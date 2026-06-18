@@ -2932,6 +2932,10 @@ class ConfigManager:
         ``validate_voice_id`` / ``cleanup_invalid_voice_ids`` must see every voice actually
         present in storage, otherwise the free edition would misjudge voice_ids users saved
         during a paid period as nonexistent and clear them outright during cleanup.
+
+        Provider-keyed CosyVoice clone buckets are still merged below: if a
+        clone provider API key is configured and has stored voices, the clone
+        list should show those voices even when the main cloud bucket is hidden.
         """
         voice_storage = self.load_voice_storage()
         storage_key = ''
@@ -2960,9 +2964,7 @@ class ConfigManager:
                     all_voices = voice_storage.get(storage_key, {})
                     result = dict(all_voices)
 
-        cosyvoice_storage_keys = []
-        if not is_local_tts and not hide_cloud_main:
-            cosyvoice_storage_keys = self._get_cosyvoice_storage_keys()
+        cosyvoice_storage_keys = self._get_cosyvoice_storage_keys()
 
         # 确保主分区音色有 provider 字段
         default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
