@@ -580,6 +580,7 @@ class OmniOfflineClient:
         # 视觉模型独立配置（如果未指定则回退到主配置）
         self.vision_base_url = vision_base_url if vision_base_url else base_url
         self.vision_api_key = vision_api_key if vision_api_key else api_key
+        self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
@@ -1487,7 +1488,15 @@ class OmniOfflineClient:
             new_model: The model to switch to
             use_vision_config: If True, use vision_base_url and vision_api_key
         """
-        if new_model and new_model != self.model:
+        lock = getattr(self, "_model_switch_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._model_switch_lock = lock
+
+        async with lock:
+            if not new_model or new_model == self.model:
+                return
+
             logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置

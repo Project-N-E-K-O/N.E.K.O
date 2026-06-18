@@ -782,7 +782,26 @@ def create_chat_llm(
 
 async def create_chat_llm_async(*args: Any, **kwargs: Any) -> ChatOpenAI:
     """Create a ChatOpenAI without blocking the running event loop."""
-    return await asyncio.to_thread(create_chat_llm, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(asyncio.to_thread(create_chat_llm, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(
+            lambda done: loop.create_task(_close_cancelled_chat_llm_result(done))
+        )
+        raise
+
+
+async def _close_cancelled_chat_llm_result(task: asyncio.Task[ChatOpenAI]) -> None:
+    try:
+        llm = task.result()
+    except Exception:
+        return
+    try:
+        await llm.aclose()
+    except Exception:
+        return
 
 
 # ────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ choices[0].message 是 None 的合法响应。原来 ainvoke/invoke 直接
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -127,3 +128,41 @@ async def test_create_chat_llm_async_offloads_factory(monkeypatch):
         )
     ]
     assert calls[0][0] != event_loop_thread_id
+
+
+@pytest.mark.asyncio
+async def test_create_chat_llm_async_closes_late_result_after_cancellation(
+    monkeypatch,
+):
+    started = threading.Event()
+    release = threading.Event()
+    closed = asyncio.Event()
+
+    class _LateLLM:
+        async def aclose(self) -> None:
+            closed.set()
+
+    def fake_create_chat_llm(*_args, **_kwargs):
+        started.set()
+        release.wait(timeout=5)
+        return _LateLLM()
+
+    monkeypatch.setattr(llm_client_module, "create_chat_llm", fake_create_chat_llm)
+
+    task = asyncio.create_task(
+        llm_client_module.create_chat_llm_async(
+            "model-a",
+            "https://example.com/v1",
+            "sk-test",
+            timeout=3,
+            max_completion_tokens=10,
+        )
+    )
+    await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    release.set()
+    await asyncio.wait_for(closed.wait(), timeout=2)

@@ -112,11 +112,11 @@ EXCLUDE_FILES = {
 
 # ── LLM_OUTPUT_BUDGET (construction site) ─────────────────────────────────
 
-# A construction is matched when the callee is the factory ``create_chat_llm``
+# A construction is matched when the callee is one of the chat factories
 # or any class name ending in ``ChatOpenAI`` (``ChatOpenAI`` / ``_ChatOpenAI``
 # / ``BUChatOpenAI``). Matched on a bare Name (``ChatOpenAI(...)``) or the last
 # Attribute component (``mod.ChatOpenAI(...)``).
-FACTORY_NAME = "create_chat_llm"
+FACTORY_NAMES = {"create_chat_llm", "create_chat_llm_async"}
 CHAT_CLASS_SUFFIX = "ChatOpenAI"
 
 # Token-budget kwargs (either satisfies the budget requirement) — the client
@@ -305,7 +305,7 @@ class LLMBudgetChecker(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         name = _callee_name(node)
         if name is not None:
-            if name == FACTORY_NAME or name.endswith(CHAT_CLASS_SUFFIX):
+            if name in FACTORY_NAMES or name.endswith(CHAT_CLASS_SUFFIX):
                 self._check_output_budget(node, name)
             if name in LLM_CALL_ATTRS:
                 self._check_input_budget(node, name)
