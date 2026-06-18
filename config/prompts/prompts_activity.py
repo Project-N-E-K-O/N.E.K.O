@@ -1770,8 +1770,8 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
         "========Above is Environment Notice========",
         "ja": "========以下は環境通知========\n"
         "{master}は{app}に{minutes}分間ずっと集中している。\n"
-        "少し休ませてあげたくて、ついでにバドミントンミニゲームを一緒にやろうって誘いたい気持ち。\n"
-        "自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒にバドミントンを一局やろう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+        "少し休ませてあげたくて、ついでにバドミントンのミニゲームを一緒にやろうって誘いたい気持ち。\n"
+        "自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒に一局バドミントンしよう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
         "========以上は環境通知========",
         "ko": "========아래는 환경 알림========\n"
         "{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n"
@@ -1780,7 +1780,7 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
         "========위는 환경 알림========",
         "ru": "========Ниже Уведомление========\n"
         "{master} уже {minutes} минут сосредоточенно работает в {app}.\n"
-        "Хочется дать {master} отдохнуть — и заодно позвать его сыграть один раунд в бадминтонную мини-игру, чтобы развеяться.\n"
+        "Хочется дать {master} отдохнуть — и заодно позвать его сыграть один раунд в мини-игру по бадминтону, чтобы развеяться.\n"
         "Заговори с {master} так, как тебе свойственно — пусть {master} почувствует заботу, и обязательно прозвучит приглашение сыграть разок. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
         "========Выше Уведомление========",
         "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de bádminton contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",

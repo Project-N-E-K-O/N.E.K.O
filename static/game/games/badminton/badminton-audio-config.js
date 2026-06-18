@@ -1,7 +1,16 @@
 (function () {
   'use strict';
 
-  var basketballGameAudioConfig = {
+  var racketShuttle = '/static/game/games/badminton/audio/badminton-racket-shuttlecock-0537.mp3';
+  var racketShuttleHits = [
+    '/static/game/games/badminton/audio/badminton-racket-shuttlecock-hit-1.mp3',
+    '/static/game/games/badminton/audio/badminton-racket-shuttlecock-hit-2.mp3',
+    '/static/game/games/badminton/audio/badminton-racket-shuttlecock-hit-3.mp3',
+    '/static/game/games/badminton/audio/badminton-racket-shuttlecock-hit-4.mp3',
+  ];
+  var racketSwing = '/static/game/games/badminton/audio/zapsplat_sport_badminton_racket_fast_swing_whoosh_001_76396.mp3';
+
+  var badmintonGameAudioConfig = {
     audioMix: {
       bgm: { baseVolume: 0.7, maxVolume: 1 },
       sfx: { baseVolume: 0.85, maxVolume: 1 },
@@ -11,13 +20,13 @@
       inGame: {
         variants: [
           {
-            id: 'basketball-battle-theme',
+            id: 'badminton-rally-theme',
             intro: '/static/game/games/soccer/audio/Battle_Theme_1_S.mp3',
             loop: '/static/game/games/soccer/audio/Battle_Theme_1_L.mp3',
             outro: '/static/game/games/soccer/audio/Battle_Theme_1_E.mp3',
           },
           {
-            id: 'basketball-battle',
+            id: 'badminton-rally',
             gainDb: 1.95,
             intro: '/static/game/games/soccer/audio/Battle_1_S.mp3',
             loop: '/static/game/games/soccer/audio/Battle_1_L.mp3',
@@ -38,20 +47,21 @@
     loopedBgm: {},
     sfx: {
       shot: {
-        swish: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: -4 }],
-        bank: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: -2 }],
-        rimIn: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: -1 }],
-        rimOut: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: 0 }],
-        airBall: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: -7 }],
-        whoosh: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: -8 }],
+        line_in: [{ src: racketShuttle, gainDb: -3 }],
+        net_touch: [{ src: racketShuttle, gainDb: -5 }],
+        zone_in: [{ src: racketShuttle, gainDb: -4 }],
+        net: [{ src: racketShuttle, gainDb: -8 }],
+        out: [{ src: racketShuttle, gainDb: -5 }],
+        whoosh: [{ src: racketSwing, gainDb: -5 }],
       },
-      rim: [{ src: '/static/game/games/soccer/audio/hitboll.mp3', gainDb: -1 }],
+      shuttleContact: racketShuttleHits.map(function (src) { return { src: src, gainDb: -2 }; }),
+      net: [{ src: racketShuttle, gainDb: -7 }],
       streak: [{ src: '/static/game/games/soccer/audio/Chocobos_S.mp3', gainDb: -6 }],
       record: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: -2 }],
     },
   };
 
   var gameSystem = window.NekoGameSystem || (window.NekoGameSystem = {});
-  gameSystem.basketball = gameSystem.basketball || {};
-  gameSystem.basketball.audioConfig = basketballGameAudioConfig;
+  gameSystem.badminton = gameSystem.badminton || {};
+  gameSystem.badminton.audioConfig = badmintonGameAudioConfig;
 })();

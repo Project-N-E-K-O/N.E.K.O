@@ -240,11 +240,11 @@ async def soccer_demo(request: Request):
     })
 
 
-@router.get("/basketball_demo", response_class=HTMLResponse)
-async def basketball_demo(request: Request):
-    """Basketball shooting challenge mini-game."""
+@router.get("/badminton_demo", response_class=HTMLResponse)
+async def badminton_demo(request: Request):
+    """Badminton challenge mini-game."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/basketball_demo.html", {
+    return templates.TemplateResponse("templates/badminton_demo.html", {
         "request": request,
         **_static_assets_ctx(),
     })

@@ -1297,7 +1297,7 @@ def test_maybe_apply_keyword_noop_when_no_pending():
     """Ordinary chat text must not launch games without a pending invite."""
     for text in (
         '好啊',
-        '来玩一句投篮',
+        '来玩一局羽毛球',
         '来一局足球',
         'please play badminton',
         'play badminton',
