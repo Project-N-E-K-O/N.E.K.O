@@ -147,7 +147,6 @@ def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI)
     except Exception:
         close_coro.close()
         # The loop may be closing; explicit aclose() remains the deterministic path.
-        pass
     else:
         _PENDING_CLIENT_CLOSE_TASKS.add(task)
         task.add_done_callback(_PENDING_CLIENT_CLOSE_TASKS.discard)
