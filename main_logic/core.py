@@ -30,33 +30,6 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Optional
-
-
-# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
-# "caller didn't pass it (use shared field as fallback)" from "caller
-# explicitly passed None to mean 'no request id'". A normal default of
-# None collapses both into the same code path and would let recovery /
-# proactive paths accidentally bind their messages to a newer request_id.
-_REQUEST_ID_UNSET: Any = object()
-_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
-_VOICE_PROACTIVE_ACK_GRACE_S = 0.05
-_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
-_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
-_CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
-_CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
-_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
-_CONTEXT_APPEND_DEFAULT_MAX_TOKENS = 1000
-_CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
-    "game.icebreaker": 500,
-    "game.scripted": 1000,
-    "game.realtime_context": 1000,
-    "game.postgame": 1500,
-    "proactive.context": 1000,
-    "proactive.callback": 1000,
-    "topic.hook": 1000,
-    "topic.material": 1000,
-    "realtime.prime": 1000,
-}
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -128,6 +101,32 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_FILLER,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
+
+# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
+# "caller didn't pass it (use shared field as fallback)" from "caller
+# explicitly passed None to mean 'no request id'". A normal default of
+# None collapses both into the same code path and would let recovery /
+# proactive paths accidentally bind their messages to a newer request_id.
+_REQUEST_ID_UNSET: Any = object()
+_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
+_VOICE_PROACTIVE_ACK_GRACE_S = 0.05
+_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
+_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+_CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
+_CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
+_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
+_CONTEXT_APPEND_DEFAULT_MAX_TOKENS = 1000
+_CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
+    "game.icebreaker": 500,
+    "game.scripted": 1000,
+    "game.realtime_context": 1000,
+    "game.postgame": 1500,
+    "proactive.context": 1000,
+    "proactive.callback": 1000,
+    "topic.hook": 1000,
+    "topic.material": 1000,
+    "realtime.prime": 1000,
+}
 
 # recall 占位语音用的合成 worker-sid 后缀。仅用于在 TTS worker 层把 filler 切成
 # 一段独立 utterance（见 _emit_recall_filler_tts）；``send_speech`` 在发往前端前会
