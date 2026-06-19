@@ -474,24 +474,24 @@
   </div>
 </div>
 <div id="leaderboard-panel" aria-live="polite">
-  <h3>排行榜</h3>
+  <h3 data-i18n="badminton.leaderboard.title" data-i18n-fallback="排行榜">排行榜</h3>
   <div id="leaderboard-meta"></div>
   <div id="leaderboard-tabs">
-    <button class="lb-tab active" type="button" data-tab="global">全球</button>
-    <button class="lb-tab" type="button" data-tab="local">本地</button>
-    <button class="lb-tab" type="button" data-tab="duel">对拉</button>
+    <button class="lb-tab active" type="button" data-tab="global" data-i18n="badminton.leaderboard.global" data-i18n-fallback="全球">全球</button>
+    <button class="lb-tab" type="button" data-tab="local" data-i18n="badminton.leaderboard.local" data-i18n-fallback="本地">本地</button>
+    <button class="lb-tab" type="button" data-tab="duel" data-i18n="badminton.leaderboard.duel" data-i18n-fallback="对拉">对拉</button>
   </div>
   <div id="leaderboard-table-wrap">
     <table>
       <thead>
         <tr>
-          <th>#</th><th>分数</th><th>最佳连中</th><th>最远</th><th>模式</th><th>日期</th>
+          <th>#</th><th data-i18n="badminton.table.score" data-i18n-fallback="分数">分数</th><th data-i18n="badminton.table.bestStreak" data-i18n-fallback="最佳连中">最佳连中</th><th data-i18n="badminton.table.farthest" data-i18n-fallback="最远">最远</th><th data-i18n="badminton.table.mode" data-i18n-fallback="模式">模式</th><th data-i18n="badminton.table.date" data-i18n-fallback="日期">日期</th>
         </tr>
       </thead>
       <tbody id="leaderboard-body"></tbody>
     </table>
   </div>
-  <button id="close-leaderboard" type="button">关闭</button>
+  <button id="close-leaderboard" type="button" data-i18n="badminton.close" data-i18n-fallback="关闭">关闭</button>
 </div>
 <div id="tutorial-overlay"></div>
 
@@ -2904,7 +2904,6 @@
     updateDuelShooterAvatars();
   }
   function shouldCallLLMDuel(event) {
-    return false;
     if (!event) return true;
     if (event.kind === 'game_over' || event.kind === 'shot_missed' || event.is_new_record) return true;
     if (/^streak_(5|10|15|20)$/.test(event.kind)) return true;

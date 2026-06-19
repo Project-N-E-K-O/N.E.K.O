@@ -1220,6 +1220,7 @@ def test_badminton_template_contract():
     assert "updateYuiPosition" in html
     assert "shouldCallLLMShooter" not in html
     assert "shouldCallLLMDuel" in html
+    assert "function shouldCallLLMDuel(event) {\n    return false;" not in html
     assert "YUI_PASSIVE_LINES_SHOOTER" not in html
     assert "YUI_PASSIVE_LINES_DUEL" in html
     assert "mode: currentMode" in html

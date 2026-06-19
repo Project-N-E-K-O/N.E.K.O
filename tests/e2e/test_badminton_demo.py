@@ -48,23 +48,6 @@ def _goto_badminton(page: Page, running_server: str, mode: str) -> None:
     page.wait_for_function("window.BadmintonDemo && window.BadmintonDemo.getState")
 
 
-def _goto_legacy_badminton_alias(page: Page, running_server: str, mode: str) -> None:
-    _install_badminton_test_hooks(page)
-    lanlan_name = "e2e-yui"
-    session_id = f"e2e-legacy-badminton-{mode}"
-    state = system_router._mini_game_invite_get_state(lanlan_name)
-    state["delivered_at"] = time.time() - 1
-    state["responded_at"] = time.time()
-    state["pending_session_id"] = session_id
-    state["last_game_type"] = "badminton"
-    page.goto(
-        f"{running_server}/badminton_demo"
-        f"?mode={mode}&lanlan_name={lanlan_name}&session_id={session_id}&debug=1"
-    )
-    expect(page.locator("#game")).to_be_attached(timeout=15000)
-    page.wait_for_function("window.BadmintonDemo && window.BadmintonDemo.getState")
-
-
 def _force_shot_result(page: Page, scored: bool = True) -> None:
     before_results = page.evaluate("window.BadmintonDemo.getState().attemptsResults.length")
     page.evaluate(
@@ -790,9 +773,9 @@ def test_badminton_duel_valid_landing_scores_for_shooter(mock_page: Page, runnin
 
 
 @pytest.mark.e2e
-def test_badminton_route_and_public_api_alias(mock_page: Page, running_server: str):
+def test_badminton_route_and_public_api(mock_page: Page, running_server: str):
     page = mock_page
-    _goto_legacy_badminton_alias(page, running_server, "duel")
+    _goto_badminton(page, running_server, "duel")
 
     expect(page).to_have_url(re.compile(r"/badminton_demo"))
     expect(page).to_have_title(re.compile("羽毛球挑战"))

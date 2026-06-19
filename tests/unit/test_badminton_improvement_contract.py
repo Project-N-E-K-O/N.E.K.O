@@ -476,6 +476,21 @@ def test_badminton_runtime_visible_text_uses_i18n_helpers():
     for expected in expected_i18n_references:
         assert expected in html
 
+    expected_static_hooks = (
+        'data-i18n="badminton.leaderboard.title"',
+        'data-i18n="badminton.leaderboard.global"',
+        'data-i18n="badminton.leaderboard.local"',
+        'data-i18n="badminton.leaderboard.duel"',
+        'data-i18n="badminton.table.score"',
+        'data-i18n="badminton.table.bestStreak"',
+        'data-i18n="badminton.table.farthest"',
+        'data-i18n="badminton.table.mode"',
+        'data-i18n="badminton.table.date"',
+        'data-i18n="badminton.close"',
+    )
+    for expected in expected_static_hooks:
+        assert expected in html
+
     forbidden_direct_visible_text = (
         "showAssistHint('Neko出手')",
         "showAssistHint('已重置')",
