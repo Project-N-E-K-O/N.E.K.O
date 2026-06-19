@@ -768,7 +768,6 @@
         "reactWindowMountFailed": "聊天框掛載失敗",
         "reactWindowLoadFailed": "聊天框資源加載失敗",
         "reactWindowAriaLabel": "Neko 聊天視窗",
-        "focusIndicator": "凝神中",
         "reactWindowInputHint": "Enter 發送，Shift + Enter 換行",
         "messageListAriaLabel": "聊天訊息列表",
         "composerToolsAriaLabel": "輸入工具列",
@@ -2619,24 +2618,9 @@
             "emptyHint": "暫無翻譯內容"
         },
         "settings": {
-            "targetLang": "語言",
-            "opacity": "不透明度",
-            "fontSize": "字體",
-            "fontSizeSmall": "小號",
-            "fontSizeSmaller": "較小",
-            "fontSizeDefault": "預設",
-            "fontSizeLarger": "較大",
-            "fontSizeLarge": "大號",
-            "colorScheme": "配色",
-            "colorSchemeDefault": "預設",
-            "colorSchemeRed": "紅",
-            "colorSchemeOrange": "橙",
-            "colorSchemeYellow": "黃",
-            "colorSchemeGreen": "綠",
-            "colorSchemeBlue": "藍",
-            "colorSchemeIndigo": "靛",
-            "colorSchemeViolet": "紫",
-            "danmakuMode": "彈幕模式",
+            "targetLang": "目標語言",
+            "opacity": "背景不透明度",
+            "passthroughInteraction": "透明區域穿透",
             "settingsBtn": "字幕設定",
             "lockPosition": "鎖定位置",
             "unlockPosition": "解鎖位置",
@@ -4242,396 +4226,898 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
-         "title": "羽毛球挑戰 - Badminton",
-         "modeSwitcher": "羽毛球模式",
-         "mode": {
-             "spectator": "自由練習",
-             "shooter": "羽毛球挑戰",
-             "duel": "跟 Yui 對戰",
-             "timed": "限時挑戰",
-             "horse": "HORSE"
-         },
-         "hud": {
-             "score": "得分 {{score}}",
-             "streak": "連中 {{streak}}",
-             "record": "最遠 {{distance}}",
-             "duelScore": "你 {{player}} - {{neko}} Neko",
-            "duelMisses": "失誤 你 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-             "round": "回合 {{round}}/{{max}}",
-             "timer": "{{seconds}} 秒",
-             "practice": "自由練習",
-             "yourTurn": "輪到你",
-            "nekoTurn": "Neko 揮拍",
-             "horseLetters": "你 {{player}} / Neko {{neko}}",
-             "horseChallenge": "復刻 {{distance}} {{angle}}°",
-             "horseSet": "出題回合",
-             "unlimitedAttempts": "不限次數",
-             "chances": "機會 {{count}}",
-             "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
-             "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
-             "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流打羽毛球",
-            "timedTitle": "限時挑戰：60 秒內不限揮拍次數",
-             "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
-             "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
-             "on": "開",
-             "off": "關"
-         },
-         "result": {
-             "title": "遊戲結束",
-             "leaderboard": "查看排行榜",
-             "stats": "查看統計",
-             "retry": "再來一局",
-             "rating": "操控評級：{{rating}}",
-             "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
-            "duelElimination": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 失誤：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最後距離：{{distance}}",
-             "horse": "HORSE結果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳連中：{{best}}",
-             "timed": "限時挑戰：命中 {{made}} 球，最長連中 {{best}}，總分 {{score}}",
-             "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
-             "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
-             "attemptsSummary": "羽毛球摘要：{{summary}}",
-             "personalBest": "個人最佳：{{score}}分",
-             "globalRank": "全球排名：#{{rank}} / {{total}}",
-             "outcome": {
-                 "youWin": "你贏了",
-                 "nekoWin": "Neko贏了",
-                 "tie": "平手",
-                 "undecided": "未分勝負"
-             }
-         },
-         "leaderboard": {
-             "title": "排行榜",
-             "global": "全球",
-             "local": "本地",
-             "shooter": "操控",
-             "duel": "對戰",
-             "empty": "暫無記錄",
-             "totalPlayers": "總玩家 {{count}}",
-             "yourBest": "你的最佳 #{{rank}} / {{score}}分",
-             "recent": "最近 {{count}} 局",
-             "loading": "載入中...",
-             "mode": {
-                 "shooter": "操控",
-                 "duel": "對戰",
-                 "timed": "限時",
-                 "horse": "HORSE",
-                 "spectator": "觀戰"
-             }
-         },
-         "debug": {
-             "title": "除錯面板",
-             "collapse": "收起",
-             "hide": "隱藏",
-             "distance": "距離:",
-             "power": "力度:",
-             "event": "事件:",
-             "streak": "連中:",
-             "reset": "重置",
-             "guide": "引導線",
-             "sweet": "甜區",
-             "markers": "距離刻度",
-             "readout": {
-                 "modeState": "模式={{mode}}  狀態={{state}}",
-                 "distance": "距離={{px}}px ({{meters}})",
-                 "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
-                 "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
-                 "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
-                 "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
-             }
-         },
-         "stats": {
-             "title": "個人統計",
-             "close": "關閉",
-             "totalShots": "總羽毛球={{total}}  命中={{made}}",
-             "farRate": "300px+ 命中率={{rate}}",
-             "trend": "最近趨勢={{trend}}",
-             "none": "暫無"
-         },
-         "theme": {
-             "next": "切換主題",
-             "current": "主題：{{theme}}",
-             "changed": "主題 {{theme}}",
-             "labels": {
-                 "default": "羽毛球場",
-                 "miami": "邁阿密落日"
-             }
-         },
-         "court": {
-             "netFront": "網前",
-             "serviceLine": "發球線",
-             "backCourt": "後場",
-             "baseline": "底線"
-         },
-         "close": "關閉",
-         "audio": {
-             "controls": "遊戲音訊"
-         },
-         "memoryOption": {
-             "label": "本局對話進入記憶（預設不開啟）",
-             "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
-         },
-         "table": {
-             "score": "分數",
-             "bestStreak": "最佳連中",
-             "farthest": "最遠",
-             "mode": "模式",
-             "date": "日期"
-         },
-         "state": {
-             "ready": "準備",
-             "in_flight": "飛行中",
-             "game_over": "結束",
-             "neko_thinking": "Neko思考中"
-         },
-         "toast": {
-             "difficulty": "難度 {{difficulty}}",
-            "nekoShoot": "Neko揮拍",
-             "nekoThinking": "Neko思考中",
-             "nekoTurn": "Neko回合",
-             "copyNeko": "復刻Neko",
-             "nekoFailed": "Neko出題失敗",
-             "yourSet": "你來出題",
-             "yourTurn": "輪到你",
-             "reset": "已重置",
-             "featureToggled": "{{feature}}已{{state}}",
-             "feature": {
-                 "guide": "引導線",
-                 "sweet": "力度甜區",
-                 "bgm": "BGM",
-                 "markers": "距離刻度"
-             },
-             "state": {
-                 "on": "開啟",
-                 "off": "關閉"
-             }
-         },
-         "tutorial": {
-             "aim": "上下移動滑鼠調整羽毛球角度",
-             "charge": "按住左鍵蓄力",
-             "release": "放開羽毛球！"
-         },
-         "shot": {
-             "unknown": "未知",
-             "attempt": "第{{index}}次 {{distance}} {{type}}",
-             "line_in": "壓線",
-             "net_touch": "擦網",
-             "zone_in": "進區",
-             "out": "出界",
-             "net": "掛網"
-         },
-         "lines": {
-             "default": {
-                 "shot_missed": [
-                     "還有機會喵",
-                     "穩一點再來"
-                 ],
-                 "game_over": [
-                     "再來一局？",
-                     "這次先記著"
-                 ],
-                 "long_aim": [
-                    "快揮拍呀喵",
-                     "還在瞄準？"
-                 ],
-                 "close_to_record": [
-                     "快摸到紀錄了",
-                     "差一點點喵"
-                 ],
-                 "new_record": [
-                     "破紀錄了喵！",
-                     "這也太遠了"
-                 ],
-                 "streak_5": [
-                     "五連中喵！",
-                     "手感來了"
-                 ],
-                 "streak_10": [
-                     "十連中？！",
-                     "你是怪物喵"
-                 ],
-                 "streak_15": [
-                     "十五連也太誇張",
-                     "這次真穩"
-                 ],
-                 "streak_20": [
-                     "二十連？！",
-                     "這回合離譜喵"
-                 ],
-                 "line_in": [
-                     "壓線喵！",
-                     "落點漂亮"
-                 ],
-                 "net_touch": [
-                     "擦網也算喵",
-                     "角度不錯"
-                 ],
-                 "zone_in": [
-                     "剛好進區喵",
-                     "落點很刁鑽"
-                 ],
-                 "out": [
-                     "差一點喵",
-                     "這拍太長了"
-                 ],
-                 "net": [
-                     "球網在中間喵",
-                     "偏太多啦"
-                 ]
-             },
-             "shooter": {
-                 "shot_missed": [
-                     "還有機會，別亂控",
-                     "穩一點啦"
-                 ],
-                 "game_over": [
-                     "這操控我記下了",
-                    "下次別亂帶我揮拍"
-                 ],
-                 "long_aim": [
-                     "快點啦，手痠了",
-                     "還沒瞄好嗎"
-                 ],
-                 "close_to_record": [
-                     "快摸到紀錄了",
-                     "別在這兒失手"
-                 ],
-                 "new_record": [
-                     "勉強算新紀錄",
-                     "你這次還挺穩"
-                 ],
-                 "streak_5": [
-                     "五連中，別飄",
-                     "五連中，別飄"
-                 ],
-                 "streak_10": [
-                     "十連中？還行吧",
-                     "十連中？還行吧"
-                 ],
-                 "streak_15": [
-                     "十五連？別太驕傲",
-                     "這次確實穩"
-                 ],
-                 "streak_20": [
-                     "二十連？你認真的？",
-                     "這局有點誇張"
-                 ],
-                 "line_in": [
-                     "哼，控制得還行",
-                     "這次算你準"
-                 ],
-                 "net_touch": [
-                     "擦網也算你會控",
-                     "角度還湊合"
-                 ],
-                 "zone_in": [
-                     "別得意，有點運氣",
-                     "差點被你控壞了"
-                 ],
-                 "out": [
-                     "力度差一點啦",
-                     "你剛剛手抖了吧"
-                 ],
-                 "net": [
-                     "你往哪兒瞄呢",
-                     "拍面再打開一點啦"
-                 ]
-             },
-             "duel": {
-                 "shot_missed": [
-                     "下一回合補回來",
-                     "別急，繼續對戰"
-                 ],
-                 "game_over": [
-                     "這局我記下了",
-                     "下回再分高下"
-                 ],
-                 "long_aim": [
-                    "該揮拍了吧",
-                     "別讓回合拖太久"
-                 ],
-                 "close_to_record": [
-                     "快摸到紀錄了",
-                     "對戰也能衝紀錄"
-                 ],
-                 "new_record": [
-                     "這局破紀錄了",
-                     "節奏被你帶起來了"
-                 ],
-                 "streak_5": [
-                     "五連回合了",
-                     "手感開始熱了"
-                 ],
-                 "streak_10": [
-                     "十連？對戰認真了",
-                     "你這節奏真怪"
-                 ],
-                 "streak_15": [
-                     "十五連也太離譜",
-                     "這局有點壓不住"
-                 ],
-                 "streak_20": [
-                     "二十連？！",
-                     "這回合徹底瘋了"
-                 ],
-                 "clutch": "……這球必須進",
-                 "excuse": "哎，手有點痠了",
-                 "line_in": [
-                     "這回合我拿下了",
-                     "輪到我發力"
-                 ],
-                 "net_touch": [
-                     "擦網也算有數",
-                     "角度我記著"
-                 ],
-                 "zone_in": [
-                     "有點運氣吧",
-                     "差點就攔住了"
-                 ],
-                 "out": [
-                     "差一點點而已",
-                     "這球還能再來"
-                 ],
-                 "net": [
-                     "你這是飄哪兒去",
-                     "回合太急了吧"
-                 ]
-             },
-             "fallback": [
-                 "再來一次喵"
-             ],
-             "pressure": {
-                 "lastTied": "決勝球了，別眨眼",
-                 "lastAhead": "哼，還沒結束呢",
-                 "lastBehind": "這球拿下就贏了",
-                 "playerAhead": "你還挺厲害嘛...",
-                 "playerBehind": "再加把勁喵"
-             },
-             "horse": {
-                 "nekoMiss": "沒復刻上？記一個 {{letters}}",
-                 "playerMiss": "你也記一個 {{letters}}"
-             },
-             "mindGame": [
-                 "你手在抖哦",
-                 "想好再打，不急~",
-                 "這個距離可不近喵"
-             ],
-             "easterEgg": {
-                 "lateNight": "這麼晚了還在羽毛球？",
-                 "xmas": "鈴鐺都掛上了，還要打喵？",
-                 "newYear": "新年快樂喵",
-                 "lineIn3": "你是不是開掛了",
-                 "lineIn5": "……我要檢查一下邊線",
-                 "net3": "……要不你去旁邊休息一下？"
-             }
-         },
-         "mood": {
-             "happySuffix": " ♪",
-             "sadPrefix": "……",
-             "surprisedPrefix": "欸？！"
-         }
+    "drawingGuess": {
+        "title": "你畫我猜",
+        "eyebrow": "陪伴活動",
+        "subtitle": "獨立頁面、遊戲路由和 60 秒繪畫閉環已接入，先用本地 fallback 畫圖與猜圖。",
+        "status": {
+            "loadingCharacter": "正在讀取目前角色",
+            "missingCharacter": "等待角色資訊",
+            "ready": "準備好了",
+            "starting": "正在啟動遊戲路由",
+            "active": "路由已接管",
+            "ending": "正在結束",
+            "ended": "已結束",
+            "failed": "路由啟動失敗",
+            "heartbeatLost": "路由已失效"
+        },
+        "layout": {
+            "character": "角色",
+            "session": "會話",
+            "canvasTitle": "畫布",
+            "tools": "繪畫工具",
+            "canvasWaitingTitle": "畫布準備中",
+            "canvasWaiting": "點擊開始後會先由貓娘畫，你來猜；接著你有 60 秒畫圖給她猜。",
+            "actions": "遊戲操作",
+            "modelTitle": "貓娘在場",
+            "modelFallbackTitle": "模型槽位已預留",
+            "modelFallback": "後續會在這裡載入目前角色 Live2D 或 VRM；載入失敗時也會保留同位置 fallback。",
+            "chatTitle": "遊戲聊天"
+        },
+        "tools": {
+            "brush": "畫筆",
+            "eraser": "橡皮擦",
+            "undo": "復原",
+            "redo": "重做",
+            "color": "顏色",
+            "size": "粗細"
+        },
+        "tutorial": {
+            "title": "開始前",
+            "intro": "這一局會各畫一次、各猜一次。你可以邊畫邊聊天，畫滿 60 秒會自動交給她猜。",
+            "memoryTitle": "記憶選項",
+            "memoryNone": "不記錄，僅本次玩。",
+            "memorySummary": "可以記錄一句遊戲概要。",
+            "memorySaved": "僅在我主動儲存時，把有趣畫作或梗寫入記憶。"
+        },
+        "actions": {
+            "start": "開始",
+            "end": "結束",
+            "retryCharacter": "重新讀取角色",
+            "send": "送出",
+            "done": "畫好了",
+            "nextRound": "下一輪",
+            "clearCanvas": "清空畫布",
+            "downloadSvg": "下載貓娘畫作",
+            "downloadPng": "下載我的畫"
+        },
+        "memory": {
+            "noneShort": "不記錄",
+            "summaryShort": "概要",
+            "savedShort": "僅儲存時"
+        },
+        "phases": {
+            "tutorial": "教程",
+            "loading_round": "載入中",
+            "ended": "已結束",
+            "ai_drawing": "貓娘作畫中",
+            "user_guessing": "你來猜",
+            "user_drawing": "你來畫",
+            "ai_guessing": "貓娘猜圖中",
+            "ai_guess_feedback": "給她提示",
+            "summary": "結算"
+        },
+        "messages": {
+            "welcome": "準備好後，我們會先確認目前角色並接管小遊戲路由。",
+            "missingCharacter": "請帶角色開啟這個頁面，或先讀取目前角色。",
+            "startFailed": "路由啟動失敗：{{reason}}",
+            "routeActive": "{{name}} 的遊戲路由已接管。",
+            "roundStart": "新一輪開始。",
+            "aiDrawingReady": "她畫好了，輪到你猜。",
+            "roundFailed": "這一輪啟動失敗：{{reason}}",
+            "guessTimeout": "時間到，答案是 {{answer}}。",
+            "inputFailed": "這句話沒送到，再試一次。",
+            "answerReveal": "答案：{{answer}}",
+            "userDrawPrompt": "你的題目是：{{answer}}。畫給她猜吧。",
+            "blankCanvas": "先給她畫幾筆吧。",
+            "aiGuessing": "她正在看你的畫...",
+            "aiGuessLine": "她猜：{{guess}}",
+            "aiNeedsHint": "可以繼續聊天，或者給她一點提示再讓她試一次。",
+            "summaryReady": "結算頁準備好了。",
+            "canvasCleared": "畫布已清空。"
+        },
+        "input": {
+            "placeholder": "先等路由準備好",
+            "guessPlaceholder": "輸入你的猜測，或者要一個提示",
+            "drawingPlaceholder": "畫畫時也可以聊天",
+            "hintPlaceholder": "繼續聊天，或輸入「提示：...」讓她再猜"
+        },
+        "timer": {
+            "seconds": "{{seconds}} 秒"
+        },
+        "summary": {
+            "title": "本輪結算",
+            "outcome": {
+                "userWin": "你贏啦，但這局重點是一起玩。",
+                "nekoWin": "她贏啦，可以允許她小小得意一下。",
+                "tie": "平手，剛好很適合再來一輪。"
+            },
+            "score": "你 {{user}} - {{neko}} 貓娘",
+            "userDrawAnswer": "你的畫題：{{answer}}",
+            "nekoArt": "貓娘畫作",
+            "userArt": "你的畫作"
+        }
     },
-   "soccer": {
+    "basketball": {
+        "title": "投籃挑戰 - Basketball",
+        "modeSwitcher": "籃球模式",
+        "mode": {
+            "spectator": "自由練習",
+            "shooter": "投籃挑戰",
+            "duel": "跟 Yui 對戰",
+            "timed": "限時挑戰",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "得分 {{score}}",
+            "streak": "連中 {{streak}}",
+            "record": "最遠 {{distance}}",
+            "duelScore": "你 {{player}} - {{neko}} Neko",
+            "duelMisses": "投丟 你 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "回合 {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "自由練習",
+            "yourTurn": "輪到你",
+            "nekoTurn": "Neko 出手",
+            "horseLetters": "你 {{player}} / Neko {{neko}}",
+            "horseChallenge": "復刻 {{distance}} {{angle}}°",
+            "horseSet": "出題回合",
+            "unlimitedAttempts": "不限次數",
+            "chances": "機會 {{count}}",
+            "practiceTitle": "自由練習：不限投籃次數，不記錄排行榜分數",
+            "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
+            "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流投籃",
+            "timedTitle": "限時挑戰：60 秒內不限出手次數",
+            "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
+            "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
+            "on": "開",
+            "off": "關"
+        },
+        "result": {
+            "title": "遊戲結束",
+            "leaderboard": "查看排行榜",
+            "stats": "查看統計",
+            "retry": "再來一局",
+            "rating": "操控評級：{{rating}}",
+            "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "duelElimination": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 投丟：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "horse": "HORSE結果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳連中：{{best}}",
+            "timed": "限時挑戰：命中 {{made}} 球，最長連中 {{best}}，總分 {{score}}",
+            "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
+            "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
+            "attemptsSummary": "投籃摘要：{{summary}}",
+            "personalBest": "個人最佳：{{score}}分",
+            "globalRank": "全球排名：#{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "你贏了",
+                "nekoWin": "Neko贏了",
+                "tie": "平手",
+                "undecided": "未分勝負"
+            }
+        },
+        "leaderboard": {
+            "title": "排行榜",
+            "global": "全球",
+            "local": "本地",
+            "shooter": "操控",
+            "duel": "對戰",
+            "empty": "暫無記錄",
+            "totalPlayers": "總玩家 {{count}}",
+            "yourBest": "你的最佳 #{{rank}} / {{score}}分",
+            "recent": "最近 {{count}} 局",
+            "loading": "載入中...",
+            "mode": {
+                "shooter": "操控",
+                "duel": "對戰",
+                "timed": "限時",
+                "horse": "HORSE",
+                "spectator": "觀戰"
+            }
+        },
+        "debug": {
+            "title": "除錯面板",
+            "collapse": "收起",
+            "hide": "隱藏",
+            "distance": "距離:",
+            "power": "力度:",
+            "event": "事件:",
+            "streak": "連中:",
+            "reset": "重置",
+            "guide": "引導線",
+            "sweet": "甜區",
+            "markers": "距離刻度",
+            "readout": {
+                "modeState": "模式={{mode}}  狀態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
+                "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
+                "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "關閉",
+            "totalShots": "總投籃={{total}}  命中={{made}}",
+            "farRate": "300px+ 命中率={{rate}}",
+            "trend": "最近趨勢={{trend}}",
+            "none": "暫無"
+        },
+        "theme": {
+            "next": "切換主題",
+            "current": "主題：{{theme}}",
+            "changed": "主題 {{theme}}",
+            "labels": {
+                "default": "體育館",
+                "sunset": "黃昏球場",
+                "night": "夜晚燈光"
+            }
+        },
+        "court": {
+            "restrictedArc": "衝撞區",
+            "freeThrowLine": "罰球線",
+            "threePointLine": "三分線",
+            "midCourtLine": "中場線"
+        },
+        "close": "關閉",
+        "audio": {
+            "controls": "遊戲音訊"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不開啟）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
+        },
+        "table": {
+            "score": "分數",
+            "bestStreak": "最佳連中",
+            "farthest": "最遠",
+            "mode": "模式",
+            "date": "日期"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "結束",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
+            "nekoShoot": "Neko出手",
+            "nekoThinking": "Neko思考中",
+            "nekoTurn": "Neko回合",
+            "copyNeko": "復刻Neko",
+            "nekoFailed": "Neko出題失敗",
+            "yourSet": "你來出題",
+            "yourTurn": "輪到你",
+            "reset": "已重置",
+            "featureToggled": "{{feature}}已{{state}}",
+            "feature": {
+                "guide": "引導線",
+                "sweet": "力度甜區",
+                "bgm": "BGM",
+                "markers": "距離刻度"
+            },
+            "state": {
+                "on": "開啟",
+                "off": "關閉"
+            }
+        },
+        "tutorial": {
+            "aim": "上下移動滑鼠調整投籃角度",
+            "charge": "按住左鍵蓄力",
+            "release": "放開投籃！"
+        },
+        "shot": {
+            "swish": "空心",
+            "bank": "擦板",
+            "rim_in": "彈進",
+            "rim_out": "彈出",
+            "air_ball": "三不沾",
+            "unknown": "未知",
+            "attempt": "第{{index}}次 {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "空心喵！",
+                    "這球漂亮"
+                ],
+                "bank": [
+                    "擦板也算喵",
+                    "角度不錯"
+                ],
+                "rim_in": [
+                    "彈進去了喵",
+                    "心臟停一下"
+                ],
+                "rim_out": [
+                    "差一點喵",
+                    "這都彈出來？"
+                ],
+                "air_ball": [
+                    "籃框在右邊喵",
+                    "偏太多啦"
+                ],
+                "shot_missed": [
+                    "還有機會喵",
+                    "穩一點再來"
+                ],
+                "game_over": [
+                    "再來一局？",
+                    "這次先記著"
+                ],
+                "long_aim": [
+                    "快投呀喵",
+                    "還在瞄準？"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "差一點點喵"
+                ],
+                "new_record": [
+                    "破紀錄了喵！",
+                    "這也太遠了"
+                ],
+                "streak_5": [
+                    "五連中喵！",
+                    "手感來了"
+                ],
+                "streak_10": [
+                    "十連中？！",
+                    "你是怪物喵"
+                ],
+                "streak_15": [
+                    "十五連也太誇張",
+                    "這次真穩"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合離譜喵"
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "哼，控制得還行",
+                    "這次算你準"
+                ],
+                "bank": [
+                    "擦板也算你會控",
+                    "角度還湊合"
+                ],
+                "rim_in": [
+                    "別得意，有點運氣",
+                    "差點被你控壞了"
+                ],
+                "rim_out": [
+                    "力度差一點啦",
+                    "你剛剛手抖了吧"
+                ],
+                "air_ball": [
+                    "你往哪兒瞄呢",
+                    "籃框在右邊啦"
+                ],
+                "shot_missed": [
+                    "還有機會，別亂控",
+                    "穩一點啦"
+                ],
+                "game_over": [
+                    "這操控我記下了",
+                    "下次別亂帶我投"
+                ],
+                "long_aim": [
+                    "快點啦，手痠了",
+                    "還沒瞄好嗎"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "別在這兒失手"
+                ],
+                "new_record": [
+                    "勉強算新紀錄",
+                    "你這次還挺穩"
+                ],
+                "streak_5": [
+                    "五連中，別飄",
+                    "五連中，別飄"
+                ],
+                "streak_10": [
+                    "十連中？還行吧",
+                    "十連中？還行吧"
+                ],
+                "streak_15": [
+                    "十五連？別太驕傲",
+                    "這次確實穩"
+                ],
+                "streak_20": [
+                    "二十連？你認真的？",
+                    "這局有點誇張"
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "這回合我拿下了",
+                    "輪到我發力"
+                ],
+                "bank": [
+                    "擦板也算有數",
+                    "角度我記著"
+                ],
+                "rim_in": [
+                    "有點運氣吧",
+                    "差點就攔住了"
+                ],
+                "rim_out": [
+                    "差一點點而已",
+                    "這球還能再來"
+                ],
+                "air_ball": [
+                    "你這是飄哪兒去",
+                    "回合太急了吧"
+                ],
+                "shot_missed": [
+                    "下一回合補回來",
+                    "別急，繼續對戰"
+                ],
+                "game_over": [
+                    "這局我記下了",
+                    "下回再分高下"
+                ],
+                "long_aim": [
+                    "該出手了吧",
+                    "別讓回合拖太久"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "對戰也能衝紀錄"
+                ],
+                "new_record": [
+                    "這局破紀錄了",
+                    "節奏被你帶起來了"
+                ],
+                "streak_5": [
+                    "五連回合了",
+                    "手感開始熱了"
+                ],
+                "streak_10": [
+                    "十連？對戰認真了",
+                    "你這節奏真怪"
+                ],
+                "streak_15": [
+                    "十五連也太離譜",
+                    "這局有點壓不住"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合徹底瘋了"
+                ],
+                "clutch": "……這球必須進",
+                "excuse": "哎，手有點痠了"
+            },
+            "fallback": [
+                "再來一次喵"
+            ],
+            "pressure": {
+                "lastTied": "決勝球了，別眨眼",
+                "lastAhead": "哼，還沒結束呢",
+                "lastBehind": "這球拿下就贏了",
+                "playerAhead": "你還挺厲害嘛...",
+                "playerBehind": "再加把勁喵"
+            },
+            "horse": {
+                "nekoMiss": "沒復刻上？記一個 {{letters}}",
+                "playerMiss": "你也記一個 {{letters}}"
+            },
+            "mindGame": [
+                "你手在抖哦",
+                "想好再投，不急~",
+                "這個距離可不近喵"
+            ],
+            "easterEgg": {
+                "lateNight": "這麼晚了還在投籃？",
+                "xmas": "鈴鐺都掛上了，還要投喵？",
+                "newYear": "新年快樂喵",
+                "swish3": "你是不是開掛了",
+                "swish5": "……我要檢查一下籃框",
+                "airball3": "……要不你去旁邊休息一下？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "欸？！"
+        }
+    },
+    "badminton": {
+        "title": "羽毛球挑戰 - Badminton",
+        "modeSwitcher": "羽毛球模式",
+        "mode": {
+            "spectator": "自由練習",
+            "shooter": "羽毛球挑戰",
+            "duel": "跟 Yui 對戰",
+            "timed": "限時挑戰",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "得分 {{score}}",
+            "streak": "連中 {{streak}}",
+            "record": "最遠 {{distance}}",
+            "duelScore": "你 {{player}} - {{neko}} Neko",
+            "duelMisses": "失誤 你 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "回合 {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "自由練習",
+            "yourTurn": "輪到你",
+            "nekoTurn": "Neko 揮拍",
+            "horseLetters": "你 {{player}} / Neko {{neko}}",
+            "horseChallenge": "復刻 {{distance}} {{angle}}°",
+            "horseSet": "出題回合",
+            "unlimitedAttempts": "不限次數",
+            "chances": "機會 {{count}}",
+            "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
+            "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
+            "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流打羽毛球",
+            "timedTitle": "限時挑戰：60 秒內不限揮拍次數",
+            "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
+            "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
+            "on": "開",
+            "off": "關"
+        },
+        "result": {
+            "title": "遊戲結束",
+            "leaderboard": "查看排行榜",
+            "stats": "查看統計",
+            "retry": "再來一局",
+            "rating": "操控評級：{{rating}}",
+            "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "duelElimination": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 失誤：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "horse": "HORSE結果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳連中：{{best}}",
+            "timed": "限時挑戰：命中 {{made}} 球，最長連中 {{best}}，總分 {{score}}",
+            "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
+            "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
+            "attemptsSummary": "羽毛球摘要：{{summary}}",
+            "personalBest": "個人最佳：{{score}}分",
+            "globalRank": "全球排名：#{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "你贏了",
+                "nekoWin": "Neko贏了",
+                "tie": "平手",
+                "undecided": "未分勝負"
+            }
+        },
+        "leaderboard": {
+            "title": "排行榜",
+            "global": "全球",
+            "local": "本地",
+            "shooter": "操控",
+            "duel": "對戰",
+            "empty": "暫無記錄",
+            "totalPlayers": "總玩家 {{count}}",
+            "yourBest": "你的最佳 #{{rank}} / {{score}}分",
+            "recent": "最近 {{count}} 局",
+            "loading": "載入中...",
+            "mode": {
+                "shooter": "操控",
+                "duel": "對戰",
+                "timed": "限時",
+                "horse": "HORSE",
+                "spectator": "觀戰"
+            }
+        },
+        "debug": {
+            "title": "除錯面板",
+            "collapse": "收起",
+            "hide": "隱藏",
+            "distance": "距離:",
+            "power": "力度:",
+            "event": "事件:",
+            "streak": "連中:",
+            "reset": "重置",
+            "guide": "引導線",
+            "sweet": "甜區",
+            "markers": "距離刻度",
+            "readout": {
+                "modeState": "模式={{mode}}  狀態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
+                "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
+                "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "關閉",
+            "totalShots": "總羽毛球={{total}}  命中={{made}}",
+            "farRate": "300px+ 命中率={{rate}}",
+            "trend": "最近趨勢={{trend}}",
+            "none": "暫無"
+        },
+        "theme": {
+            "next": "切換主題",
+            "current": "主題：{{theme}}",
+            "changed": "主題 {{theme}}",
+            "labels": {
+                "default": "羽毛球場",
+                "miami": "邁阿密落日"
+            }
+        },
+        "court": {
+            "netFront": "網前",
+            "serviceLine": "發球線",
+            "backCourt": "後場",
+            "baseline": "底線"
+        },
+        "close": "關閉",
+        "audio": {
+            "controls": "遊戲音訊"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不開啟）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
+        },
+        "table": {
+            "score": "分數",
+            "bestStreak": "最佳連中",
+            "farthest": "最遠",
+            "mode": "模式",
+            "date": "日期"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "結束",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
+            "nekoShoot": "Neko揮拍",
+            "nekoThinking": "Neko思考中",
+            "nekoTurn": "Neko回合",
+            "copyNeko": "復刻Neko",
+            "nekoFailed": "Neko出題失敗",
+            "yourSet": "你來出題",
+            "yourTurn": "輪到你",
+            "reset": "已重置",
+            "featureToggled": "{{feature}}已{{state}}",
+            "feature": {
+                "guide": "引導線",
+                "sweet": "力度甜區",
+                "bgm": "BGM",
+                "markers": "距離刻度"
+            },
+            "state": {
+                "on": "開啟",
+                "off": "關閉"
+            }
+        },
+        "tutorial": {
+            "aim": "上下移動滑鼠調整羽毛球角度",
+            "charge": "按住左鍵蓄力",
+            "release": "放開羽毛球！"
+        },
+        "shot": {
+            "unknown": "未知",
+            "attempt": "第{{index}}次 {{distance}} {{type}}",
+            "line_in": "壓線",
+            "net_touch": "擦網",
+            "zone_in": "進區",
+            "out": "出界",
+            "net": "掛網"
+        },
+        "lines": {
+            "default": {
+                "shot_missed": [
+                    "還有機會喵",
+                    "穩一點再來"
+                ],
+                "game_over": [
+                    "再來一局？",
+                    "這次先記著"
+                ],
+                "long_aim": [
+                    "快揮拍呀喵",
+                    "還在瞄準？"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "差一點點喵"
+                ],
+                "new_record": [
+                    "破紀錄了喵！",
+                    "這也太遠了"
+                ],
+                "streak_5": [
+                    "五連中喵！",
+                    "手感來了"
+                ],
+                "streak_10": [
+                    "十連中？！",
+                    "你是怪物喵"
+                ],
+                "streak_15": [
+                    "十五連也太誇張",
+                    "這次真穩"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合離譜喵"
+                ],
+                "line_in": [
+                    "壓線喵！",
+                    "落點漂亮"
+                ],
+                "net_touch": [
+                    "擦網也算喵",
+                    "角度不錯"
+                ],
+                "zone_in": [
+                    "剛好進區喵",
+                    "落點很刁鑽"
+                ],
+                "out": [
+                    "差一點喵",
+                    "這拍太長了"
+                ],
+                "net": [
+                    "球網在中間喵",
+                    "偏太多啦"
+                ]
+            },
+            "shooter": {
+                "shot_missed": [
+                    "還有機會，別亂控",
+                    "穩一點啦"
+                ],
+                "game_over": [
+                    "這操控我記下了",
+                    "下次別亂帶我揮拍"
+                ],
+                "long_aim": [
+                    "快點啦，手痠了",
+                    "還沒瞄好嗎"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "別在這兒失手"
+                ],
+                "new_record": [
+                    "勉強算新紀錄",
+                    "你這次還挺穩"
+                ],
+                "streak_5": [
+                    "五連中，別飄",
+                    "五連中，別飄"
+                ],
+                "streak_10": [
+                    "十連中？還行吧",
+                    "十連中？還行吧"
+                ],
+                "streak_15": [
+                    "十五連？別太驕傲",
+                    "這次確實穩"
+                ],
+                "streak_20": [
+                    "二十連？你認真的？",
+                    "這局有點誇張"
+                ],
+                "line_in": [
+                    "哼，控制得還行",
+                    "這次算你準"
+                ],
+                "net_touch": [
+                    "擦網也算你會控",
+                    "角度還湊合"
+                ],
+                "zone_in": [
+                    "別得意，有點運氣",
+                    "差點被你控壞了"
+                ],
+                "out": [
+                    "力度差一點啦",
+                    "你剛剛手抖了吧"
+                ],
+                "net": [
+                    "你往哪兒瞄呢",
+                    "拍面再打開一點啦"
+                ]
+            },
+            "duel": {
+                "shot_missed": [
+                    "下一回合補回來",
+                    "別急，繼續對戰"
+                ],
+                "game_over": [
+                    "這局我記下了",
+                    "下回再分高下"
+                ],
+                "long_aim": [
+                    "該揮拍了吧",
+                    "別讓回合拖太久"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "對戰也能衝紀錄"
+                ],
+                "new_record": [
+                    "這局破紀錄了",
+                    "節奏被你帶起來了"
+                ],
+                "streak_5": [
+                    "五連回合了",
+                    "手感開始熱了"
+                ],
+                "streak_10": [
+                    "十連？對戰認真了",
+                    "你這節奏真怪"
+                ],
+                "streak_15": [
+                    "十五連也太離譜",
+                    "這局有點壓不住"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合徹底瘋了"
+                ],
+                "clutch": "……這球必須進",
+                "excuse": "哎，手有點痠了",
+                "line_in": [
+                    "這回合我拿下了",
+                    "輪到我發力"
+                ],
+                "net_touch": [
+                    "擦網也算有數",
+                    "角度我記著"
+                ],
+                "zone_in": [
+                    "有點運氣吧",
+                    "差點就攔住了"
+                ],
+                "out": [
+                    "差一點點而已",
+                    "這球還能再來"
+                ],
+                "net": [
+                    "你這是飄哪兒去",
+                    "回合太急了吧"
+                ]
+            },
+            "fallback": [
+                "再來一次喵"
+            ],
+            "pressure": {
+                "lastTied": "決勝球了，別眨眼",
+                "lastAhead": "哼，還沒結束呢",
+                "lastBehind": "這球拿下就贏了",
+                "playerAhead": "你還挺厲害嘛...",
+                "playerBehind": "再加把勁喵"
+            },
+            "horse": {
+                "nekoMiss": "沒復刻上？記一個 {{letters}}",
+                "playerMiss": "你也記一個 {{letters}}"
+            },
+            "mindGame": [
+                "你手在抖哦",
+                "想好再打，不急~",
+                "這個距離可不近喵"
+            ],
+            "easterEgg": {
+                "lateNight": "這麼晚了還在羽毛球？",
+                "xmas": "鈴鐺都掛上了，還要打喵？",
+                "newYear": "新年快樂喵",
+                "lineIn3": "你是不是開掛了",
+                "lineIn5": "……我要檢查一下邊線",
+                "net3": "……要不你去旁邊休息一下？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "欸？！"
+        }
+    },
+    "soccer": {
         "exitGame": {
             "button": "退出遊戲",
             "ending": "正在退出本局…",

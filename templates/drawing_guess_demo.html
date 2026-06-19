@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="drawingGuess.title">你画我猜</title>
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search || '');
+      var queryLanlan = params.get('lanlan_name') || '';
+      var querySession = params.get('session_id') || '';
+      window.lanlan_config = window.lanlan_config || { lanlan_name: queryLanlan || '' };
+      if (queryLanlan && !window.lanlan_config.lanlan_name) {
+        window.lanlan_config.lanlan_name = queryLanlan;
+      }
+      window.__DRAWING_GUESS_BOOT__ = {
+        lanlanName: queryLanlan,
+        sessionId: querySession
+      };
+    })();
+  </script>
+  <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --dg-bg: #f7f4ef;
+      --dg-surface: #fffdfa;
+      --dg-surface-strong: #ffffff;
+      --dg-ink: #24303a;
+      --dg-muted: #65717d;
+      --dg-line: #d9d1c5;
+      --dg-accent: #2b7a78;
+      --dg-accent-strong: #185f5d;
+      --dg-warm: #c46a35;
+      --dg-soft: #e8f2ee;
+      --dg-danger: #9b2f32;
+      --dg-shadow: 0 18px 55px rgba(39, 49, 58, 0.14);
+      font-family: "Inter", "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-width: 0;
+      min-height: 100%;
+      margin: 0;
+      background: var(--dg-bg);
+      color: var(--dg-ink);
+    }
+
+    body {
+      overflow: hidden;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      transform: none;
+    }
+
+    button:not(:disabled):active {
+      transform: translateY(1px);
+    }
+
+    .dg-page {
+      display: grid;
+      grid-template-columns: minmax(620px, 1fr) minmax(360px, 420px);
+      gap: 18px;
+      height: 100vh;
+      padding: 18px;
+    }
+
+    .dg-main,
+    .dg-side {
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .dg-main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 12px;
+    }
+
+    .dg-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .dg-kicker {
+      margin: 0 0 4px;
+      color: var(--dg-accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .dg-title {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .dg-subtitle {
+      max-width: 680px;
+      margin: 8px 0 0;
+      color: var(--dg-muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .dg-status {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      min-width: 230px;
+      color: var(--dg-muted);
+      font-size: 13px;
+    }
+
+    .dg-status-pill {
+      max-width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface);
+      color: var(--dg-ink);
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dg-board {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-height: 0;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface-strong);
+      box-shadow: var(--dg-shadow);
+      overflow: hidden;
+    }
+
+    .dg-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-bottom: 1px solid var(--dg-line);
+      background: #fbfaf7;
+    }
+
+    .dg-toolbar-title {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    .dg-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .dg-tool {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-color: var(--dg-line);
+      background: var(--dg-surface);
+      color: var(--dg-ink);
+    }
+
+    .dg-tool svg {
+      width: 19px;
+      height: 19px;
+      display: block;
+      stroke: currentColor;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
+
+    .dg-tool[aria-pressed="true"] {
+      border-color: var(--dg-accent);
+      background: var(--dg-soft);
+      color: var(--dg-accent-strong);
+    }
+
+    .dg-swatch {
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface);
+      padding: 4px;
+    }
+
+    .dg-size {
+      width: 96px;
+    }
+
+    .dg-canvas-wrap {
+      position: relative;
+      display: grid;
+      min-width: 0;
+      min-height: 0;
+      background: #fffdfa;
+    }
+
+    .dg-canvas-stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      background: #fffdfa;
+      color: var(--dg-muted);
+      text-align: center;
+      overflow: hidden;
+    }
+
+    .dg-canvas-stage strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--dg-ink);
+      font-size: 18px;
+    }
+
+    .dg-placeholder {
+      padding: 24px;
+    }
+
+    .dg-ai-drawing,
+    .dg-user-canvas,
+    .dg-summary {
+      width: 100%;
+      height: 100%;
+    }
+
+    .dg-ai-drawing {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: clamp(18px, 3vw, 36px);
+      background: #fffdfa;
+      overflow: hidden;
+    }
+
+    .dg-ai-drawing svg {
+      width: 80%;
+      height: 80%;
+      max-width: none;
+      max-height: none;
+      display: block;
+    }
+
+    .dg-user-canvas {
+      display: block;
+      background: #fffdfa;
+      cursor: crosshair;
+      touch-action: none;
+      object-fit: fill;
+    }
+
+    .dg-canvas-badge {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 2;
+      padding: 7px 10px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: rgba(255, 253, 250, 0.92);
+      color: var(--dg-ink);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .dg-summary {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 14px;
+      padding: 18px;
+      text-align: left;
+      overflow: auto;
+    }
+
+    .dg-summary h3 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .dg-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .dg-thumb {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 8px;
+      min-width: 0;
+      min-height: 0;
+      padding: 10px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface);
+    }
+
+    .dg-thumb h4 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .dg-thumb-preview {
+      min-height: 160px;
+      display: grid;
+      place-items: center;
+      border: 1px dashed var(--dg-line);
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+    }
+
+    .dg-thumb-preview img,
+    .dg-thumb-preview svg {
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    .dg-hidden {
+      display: none !important;
+    }
+
+    .dg-actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface);
+    }
+
+    .dg-action-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .dg-button {
+      min-height: 38px;
+      padding: 0 14px;
+      border-color: var(--dg-line);
+      background: var(--dg-surface-strong);
+      color: var(--dg-ink);
+      font-weight: 700;
+    }
+
+    .dg-button-primary {
+      border-color: var(--dg-accent);
+      background: var(--dg-accent);
+      color: #ffffff;
+    }
+
+    .dg-button-primary:not(:disabled):hover {
+      background: var(--dg-accent-strong);
+    }
+
+    .dg-button-danger {
+      border-color: rgba(155, 47, 50, 0.35);
+      color: var(--dg-danger);
+    }
+
+    .dg-side {
+      display: grid;
+      grid-template-rows: minmax(220px, 0.8fr) minmax(280px, 1fr);
+      gap: 12px;
+    }
+
+    .dg-panel {
+      min-width: 0;
+      min-height: 0;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface);
+      overflow: hidden;
+    }
+
+    .dg-panel-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      border-bottom: 1px solid var(--dg-line);
+      background: #fbfaf7;
+    }
+
+    .dg-panel-heading h2 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .dg-model-body {
+      height: calc(100% - 48px);
+      display: grid;
+      grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1fr);
+      gap: 14px;
+      padding: 14px;
+      align-items: center;
+    }
+
+    .dg-avatar {
+      min-width: 120px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: #fff7ed;
+      overflow: hidden;
+    }
+
+    .dg-avatar img {
+      max-width: 86%;
+      max-height: 86%;
+      object-fit: contain;
+    }
+
+    .dg-model-copy {
+      min-width: 0;
+      color: var(--dg-muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .dg-model-copy strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--dg-ink);
+    }
+
+    .dg-chat {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .dg-log {
+      min-height: 0;
+      padding: 12px;
+      overflow: auto;
+    }
+
+    .dg-message {
+      max-width: 92%;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #eef5f2;
+      color: var(--dg-ink);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .dg-message-system {
+      background: #f8eee5;
+    }
+
+    .dg-input-row {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--dg-line);
+      background: #fbfaf7;
+    }
+
+    .dg-input-row input {
+      min-width: 0;
+      flex: 1;
+      height: 38px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      padding: 0 12px;
+      color: var(--dg-ink);
+      background: #ffffff;
+    }
+
+    .dg-tutorial {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(36, 48, 58, 0.42);
+      z-index: 20;
+    }
+
+    .dg-tutorial[hidden] {
+      display: none;
+    }
+
+    .dg-dialog {
+      width: min(620px, 100%);
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: var(--dg-surface-strong);
+      box-shadow: var(--dg-shadow);
+      overflow: hidden;
+    }
+
+    .dg-dialog-body {
+      padding: 20px;
+    }
+
+    .dg-dialog h2 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .dg-dialog p {
+      margin: 0 0 12px;
+      color: var(--dg-muted);
+      line-height: 1.6;
+    }
+
+    .dg-memory {
+      display: grid;
+      gap: 8px;
+      margin: 14px 0 0;
+    }
+
+    .dg-memory label {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 10px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: #fbfaf7;
+      cursor: pointer;
+    }
+
+    .dg-memory input {
+      margin-top: 3px;
+    }
+
+    .dg-dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 14px 20px;
+      border-top: 1px solid var(--dg-line);
+      background: #fbfaf7;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        overflow: auto;
+      }
+
+      .dg-page {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      .dg-side {
+        grid-template-rows: minmax(220px, auto) minmax(280px, auto);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="dg-page">
+    <section class="dg-main" aria-labelledby="drawing-guess-title">
+      <header class="dg-header">
+        <div>
+          <p class="dg-kicker" data-i18n="drawingGuess.eyebrow">陪伴活动</p>
+          <h1 id="drawing-guess-title" class="dg-title" data-i18n="drawingGuess.title">你画我猜</h1>
+          <p class="dg-subtitle" data-i18n="drawingGuess.subtitle">先把独立页面和游戏路由接起来，后续再接绘画、猜图和猫娘模型。</p>
+        </div>
+        <div class="dg-status" aria-live="polite">
+          <span id="route-status" class="dg-status-pill" data-i18n="drawingGuess.status.loadingCharacter">正在读取当前角色</span>
+          <span><span data-i18n="drawingGuess.layout.character">角色</span>: <strong id="character-name">-</strong></span>
+          <span><span data-i18n="drawingGuess.layout.session">会话</span>: <strong id="session-id">-</strong></span>
+        </div>
+      </header>
+
+      <section class="dg-board" aria-labelledby="canvas-title">
+        <div class="dg-toolbar">
+          <h2 id="canvas-title" class="dg-toolbar-title" data-i18n="drawingGuess.layout.canvasTitle">画布</h2>
+          <div class="dg-tools" aria-label="Drawing tools" data-i18n-aria="drawingGuess.layout.tools">
+            <button id="brush-tool" class="dg-tool" type="button" aria-pressed="true" aria-label="Brush" title="Brush" data-i18n-aria="drawingGuess.tools.brush" data-i18n-title="drawingGuess.tools.brush">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M9.5 14.5 18.2 5.8a2.2 2.2 0 0 1 3.1 3.1l-8.7 8.7"/>
+                <path d="M12.4 17.6c-1.1 2.6-3.2 4-6.4 4 .3-2.9 1.8-5.2 4.4-6.7"/>
+                <path d="M7.8 18.2 5.5 15.9"/>
+              </svg>
+            </button>
+            <button id="eraser-tool" class="dg-tool" type="button" aria-pressed="false" aria-label="Eraser" title="Eraser" data-i18n-aria="drawingGuess.tools.eraser" data-i18n-title="drawingGuess.tools.eraser">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m7 21 10.8-10.8a2.8 2.8 0 0 0 0-4L15.6 4a2.8 2.8 0 0 0-4 0L2.8 12.8a2.8 2.8 0 0 0 0 4L7 21Z"/>
+                <path d="m5 11 8 8"/>
+                <path d="M12 21h9"/>
+              </svg>
+            </button>
+            <button id="undo-tool" class="dg-tool" type="button" disabled aria-label="Undo" title="Undo" data-i18n-aria="drawingGuess.tools.undo" data-i18n-title="drawingGuess.tools.undo">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M9 14 4 9l5-5"/>
+                <path d="M4 9h9a7 7 0 0 1 7 7v1"/>
+              </svg>
+            </button>
+            <button id="redo-tool" class="dg-tool" type="button" disabled aria-label="Redo" title="Redo" data-i18n-aria="drawingGuess.tools.redo" data-i18n-title="drawingGuess.tools.redo">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m15 14 5-5-5-5"/>
+                <path d="M20 9h-9a7 7 0 0 0-7 7v1"/>
+              </svg>
+            </button>
+            <input id="brush-color" class="dg-swatch" type="color" value="#24303a" title="Color" data-i18n-title="drawingGuess.tools.color">
+            <input id="brush-size" class="dg-size" type="range" min="2" max="28" value="7" title="Size" data-i18n-title="drawingGuess.tools.size">
+          </div>
+        </div>
+        <div class="dg-canvas-wrap">
+          <div id="canvas-stage" class="dg-canvas-stage">
+            <div id="canvas-badge" class="dg-canvas-badge dg-hidden"></div>
+            <div id="canvas-placeholder" class="dg-placeholder">
+              <strong data-i18n="drawingGuess.layout.canvasWaitingTitle">画布准备中</strong>
+              <span data-i18n="drawingGuess.layout.canvasWaiting">步骤 1 先建立页面和路由生命周期，玩法闭环会在下一步接入。</span>
+            </div>
+            <div id="ai-drawing" class="dg-ai-drawing dg-hidden"></div>
+            <canvas id="user-canvas" class="dg-user-canvas dg-hidden" width="800" height="600"></canvas>
+            <div id="summary-view" class="dg-summary dg-hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="dg-actions" aria-label="Game actions" data-i18n-aria="drawingGuess.layout.actions">
+        <div class="dg-action-group">
+          <button id="start-button" class="dg-button dg-button-primary" type="button" data-i18n="drawingGuess.actions.start">开始</button>
+          <button id="done-button" class="dg-button dg-button-primary" type="button" disabled data-i18n="drawingGuess.actions.done">画好了</button>
+          <button id="next-round-button" class="dg-button" type="button" disabled data-i18n="drawingGuess.actions.nextRound">下一轮</button>
+          <button id="end-button" class="dg-button dg-button-danger" type="button" disabled data-i18n="drawingGuess.actions.end">结束</button>
+        </div>
+        <div class="dg-action-group">
+          <button id="clear-canvas-button" class="dg-button" type="button" disabled data-i18n="drawingGuess.actions.clearCanvas">清空画布</button>
+          <button id="reload-character-button" class="dg-button" type="button" data-i18n="drawingGuess.actions.retryCharacter">重新读取角色</button>
+        </div>
+      </section>
+    </section>
+
+    <aside class="dg-side">
+      <section class="dg-panel">
+        <div class="dg-panel-heading">
+          <h2 data-i18n="drawingGuess.layout.modelTitle">猫娘在场</h2>
+          <span id="model-state" class="dg-status-pill" data-i18n="drawingGuess.phases.tutorial">教程</span>
+        </div>
+        <div class="dg-model-body">
+          <div class="dg-avatar" aria-hidden="true">
+            <img src="/static/assets/neko-idle/cat-idle-cat1.gif" alt="">
+          </div>
+          <p class="dg-model-copy">
+            <strong data-i18n="drawingGuess.layout.modelFallbackTitle">模型槽位已预留</strong>
+            <span data-i18n="drawingGuess.layout.modelFallback">后续会在这里加载当前角色 Live2D 或 VRM；加载失败时也会保留同位置 fallback。</span>
+          </p>
+        </div>
+      </section>
+
+      <section class="dg-panel dg-chat">
+        <div class="dg-panel-heading">
+          <h2 data-i18n="drawingGuess.layout.chatTitle">游戏聊天</h2>
+          <span id="memory-state" class="dg-status-pill" data-i18n="drawingGuess.memory.noneShort">不记录</span>
+        </div>
+        <div id="message-log" class="dg-log" aria-live="polite">
+          <div class="dg-message dg-message-system" data-i18n="drawingGuess.messages.welcome">准备好后，我们会先确认当前角色并接管小游戏路由。</div>
+        </div>
+        <form id="chat-form" class="dg-input-row">
+          <input id="chat-input" type="text" autocomplete="off" data-i18n-placeholder="drawingGuess.input.placeholder" placeholder="先等路由准备好">
+          <button class="dg-button" type="submit" disabled data-i18n="drawingGuess.actions.send">发送</button>
+        </form>
+      </section>
+    </aside>
+  </main>
+
+  <div id="tutorial-overlay" class="dg-tutorial" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
+    <section class="dg-dialog">
+      <div class="dg-dialog-body">
+        <h2 id="tutorial-title" data-i18n="drawingGuess.tutorial.title">开始前</h2>
+        <p data-i18n="drawingGuess.tutorial.intro">这一局会各画一次、各猜一次。你可以边画边聊天，画满 60 秒会自动交给她猜。</p>
+        <div class="dg-memory" role="radiogroup" aria-label="Memory options" data-i18n-aria="drawingGuess.tutorial.memoryTitle">
+          <label>
+            <input type="radio" name="memory-consent" value="none" checked>
+            <span data-i18n="drawingGuess.tutorial.memoryNone">不记录，仅本次玩。</span>
+          </label>
+          <label>
+            <input type="radio" name="memory-consent" value="summary">
+            <span data-i18n="drawingGuess.tutorial.memorySummary">可以记录一句游戏概要。</span>
+          </label>
+          <label>
+            <input type="radio" name="memory-consent" value="saved">
+            <span data-i18n="drawingGuess.tutorial.memorySaved">仅在我主动保存时，把有趣画作或梗写入记忆。</span>
+          </label>
+        </div>
+      </div>
+      <div class="dg-dialog-footer">
+        <button id="tutorial-start-button" class="dg-button dg-button-primary" type="button" data-i18n="drawingGuess.actions.start">开始</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      return;
+      var GAME_TYPE = 'drawing_guess';
+      var API_ROOT = '/api/game/' + GAME_TYPE;
+      var state = {
+        sessionId: '',
+        lanlanName: '',
+        routeActive: false,
+        heartbeatTimer: null,
+        memoryConsent: 'none',
+        phase: 'tutorial',
+        ending: false
+      };
+
+      var boot = window.__DRAWING_GUESS_BOOT__ || {};
+      var els = {
+        routeStatus: document.getElementById('route-status'),
+        characterName: document.getElementById('character-name'),
+        sessionId: document.getElementById('session-id'),
+        modelState: document.getElementById('model-state'),
+        memoryState: document.getElementById('memory-state'),
+        startButton: document.getElementById('start-button'),
+        endButton: document.getElementById('end-button'),
+        reloadCharacterButton: document.getElementById('reload-character-button'),
+        tutorialOverlay: document.getElementById('tutorial-overlay'),
+        tutorialStartButton: document.getElementById('tutorial-start-button'),
+        messageLog: document.getElementById('message-log'),
+        chatForm: document.getElementById('chat-form')
+      };
+
+      function text(key, fallback, params) {
+        if (typeof window.t === 'function') {
+          var translated = window.t(key, params || {});
+          if (translated && translated !== key) return translated;
+        }
+        return String(fallback || '').replace(/\{\{(\w+)\}\}/g, function (_, name) {
+          return params && params[name] != null ? String(params[name]) : '';
+        });
+      }
+
+      function currentLanguage() {
+        var candidates = [];
+        try { candidates.push(window.i18next && window.i18next.language); } catch (_) {}
+        try { candidates.push(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE); } catch (_) {}
+        try { candidates.push(localStorage.getItem('neko_i18n_language')); } catch (_) {}
+        for (var i = 0; i < candidates.length; i += 1) {
+          var value = String(candidates[i] || '').trim();
+          if (value) return value;
+        }
+        return document.documentElement.lang || 'zh-CN';
+      }
+
+      function makeSessionId() {
+        return 'drawing-guess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+      }
+
+      function setStatus(key, fallback) {
+        els.routeStatus.setAttribute('data-i18n', 'drawingGuess.status.' + key);
+        els.routeStatus.textContent = text('drawingGuess.status.' + key, fallback);
+      }
+
+      function setPhase(phase) {
+        state.phase = phase;
+        els.modelState.setAttribute('data-i18n', 'drawingGuess.phases.' + phase);
+        els.modelState.textContent = text('drawingGuess.phases.' + phase, phase);
+      }
+
+      function updateIdentity() {
+        els.characterName.textContent = state.lanlanName || '-';
+        els.sessionId.textContent = state.sessionId || '-';
+        els.startButton.disabled = !state.lanlanName || state.routeActive || state.ending;
+        els.endButton.disabled = !state.routeActive || state.ending;
+        els.memoryState.setAttribute('data-i18n', 'drawingGuess.memory.' + state.memoryConsent + 'Short');
+        els.memoryState.textContent = text('drawingGuess.memory.' + state.memoryConsent + 'Short', state.memoryConsent);
+      }
+
+      function addMessage(key, fallback, params) {
+        var node = document.createElement('div');
+        node.className = 'dg-message dg-message-system';
+        node.textContent = text(key, fallback, params || {});
+        els.messageLog.appendChild(node);
+        els.messageLog.scrollTop = els.messageLog.scrollHeight;
+      }
+
+      function routePayload(extra) {
+        return Object.assign({
+          session_id: state.sessionId,
+          lanlan_name: state.lanlanName,
+          source: 'drawing_guess_demo',
+          game_type: GAME_TYPE,
+          i18n_language: currentLanguage(),
+          gameStarted: false,
+          game_started: false,
+          memory_consent: state.memoryConsent,
+          currentState: {
+            game: GAME_TYPE,
+            phase: state.phase,
+            memory_consent: state.memoryConsent
+          }
+        }, extra || {});
+      }
+
+      function post(path, payload, timeoutMs) {
+        var controller = new AbortController();
+        var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 8000);
+        return fetch(API_ROOT + path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload || {}),
+          signal: controller.signal
+        }).then(function (res) {
+          return res.json().catch(function () { return { ok: res.ok }; });
+        }).finally(function () {
+          clearTimeout(timer);
+        });
+      }
+
+      function startHeartbeat() {
+        clearInterval(state.heartbeatTimer);
+        state.heartbeatTimer = setInterval(function () {
+          if (!state.routeActive) return;
+          var visible = !document.hidden;
+          post('/route/heartbeat', routePayload({
+            visible: visible,
+            pageVisible: visible,
+            visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
+          }), 5000).then(function (res) {
+            if (res && res.active === false) {
+              state.routeActive = false;
+              clearInterval(state.heartbeatTimer);
+              setStatus('heartbeatLost', 'Route inactive');
+              updateIdentity();
+            }
+          }).catch(function () {});
+        }, 2500);
+      }
+
+      function startRoute() {
+        if (!state.lanlanName) {
+          setStatus('missingCharacter', 'Missing character');
+          addMessage('drawingGuess.messages.missingCharacter', 'Open this page with a character or load the current one first.');
+          updateIdentity();
+          return;
+        }
+        state.ending = false;
+        setStatus('starting', 'Starting');
+        setPhase('tutorial');
+        updateIdentity();
+        post('/route/start', routePayload(), 12000).then(function (res) {
+          if (!res || !res.ok) {
+            setStatus('failed', 'Start failed');
+            addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: (res && res.reason) || 'unknown' });
+            return;
+          }
+          state.routeActive = true;
+          if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
+          setStatus('active', 'Active');
+          addMessage('drawingGuess.messages.routeActive', 'Game route is active for {{name}}.', { name: state.lanlanName });
+          startHeartbeat();
+        }).catch(function () {
+          setStatus('failed', 'Start failed');
+          addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: 'request_failed' });
+        }).finally(function () {
+          updateIdentity();
+        });
+      }
+
+      function endRoute(useBeacon) {
+        if (!state.routeActive && !useBeacon) return Promise.resolve({ ok: true });
+        state.ending = true;
+        setStatus('ending', 'Ending');
+        updateIdentity();
+        clearInterval(state.heartbeatTimer);
+        var payload = JSON.stringify(routePayload({
+          reason: 'drawing_guess_demo_closed',
+          roundCompleted: false,
+          round_completed: false,
+          postgameProactive: false
+        }));
+        if (useBeacon && navigator.sendBeacon) {
+          try {
+            navigator.sendBeacon(API_ROOT + '/route/end', new Blob([payload], { type: 'application/json' }));
+            return Promise.resolve({ ok: true, beacon: true });
+          } catch (_) {}
+        }
+        return fetch(API_ROOT + '/route/end', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload
+        }).then(function (res) {
+          return res.json().catch(function () { return { ok: res.ok }; });
+        }).catch(function () {
+          return { ok: false, reason: 'request_failed' };
+        }).finally(function () {
+          state.routeActive = false;
+          state.ending = false;
+          setStatus('ended', 'Ended');
+          updateIdentity();
+        });
+      }
+
+      function readMemoryConsent() {
+        var selected = document.querySelector('input[name="memory-consent"]:checked');
+        state.memoryConsent = selected ? selected.value : 'none';
+        updateIdentity();
+      }
+
+      function hideTutorialAndStart() {
+        readMemoryConsent();
+        els.tutorialOverlay.hidden = true;
+        startRoute();
+      }
+
+      function loadCurrentCharacter() {
+        if (state.lanlanName) {
+          setStatus('ready', 'Ready');
+          updateIdentity();
+          return Promise.resolve(state.lanlanName);
+        }
+        setStatus('loadingCharacter', 'Loading character');
+        return fetch('/api/characters/current_catgirl', { cache: 'no-store' }).then(function (res) {
+          return res.json();
+        }).then(function (data) {
+          var name = String((data && data.current_catgirl) || '').trim();
+          state.lanlanName = name;
+          if (name) {
+            window.lanlan_config = window.lanlan_config || {};
+            window.lanlan_config.lanlan_name = name;
+            setStatus('ready', 'Ready');
+          } else {
+            setStatus('missingCharacter', 'Missing character');
+          }
+          updateIdentity();
+          return name;
+        }).catch(function () {
+          setStatus('missingCharacter', 'Missing character');
+          updateIdentity();
+          return '';
+        });
+      }
+
+      function init() {
+        state.sessionId = String(boot.sessionId || '') || makeSessionId();
+        state.lanlanName = String(boot.lanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '').trim();
+        updateIdentity();
+        loadCurrentCharacter();
+
+        els.startButton.addEventListener('click', startRoute);
+        els.tutorialStartButton.addEventListener('click', hideTutorialAndStart);
+        els.endButton.addEventListener('click', function () { endRoute(false); });
+        els.reloadCharacterButton.addEventListener('click', function () {
+          state.lanlanName = '';
+          loadCurrentCharacter();
+        });
+        els.chatForm.addEventListener('submit', function (event) {
+          event.preventDefault();
+        });
+        document.querySelectorAll('input[name="memory-consent"]').forEach(function (input) {
+          input.addEventListener('change', readMemoryConsent);
+        });
+        window.addEventListener('beforeunload', function () {
+          if (state.routeActive) endRoute(true);
+        });
+        window.addEventListener('localechange', function () {
+          updateIdentity();
+          setPhase(state.phase);
+        });
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+      } else {
+        init();
+      }
+    })();
+  </script>
+  <script src="/static/game/games/drawing_guess/drawing-guess-demo.js?v={{ static_asset_version }}"></script>
+</body>
+</html>

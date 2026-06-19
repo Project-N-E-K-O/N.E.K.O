@@ -111,6 +111,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
     _PROJECT_ROOT / "static/js/model_manager.js",
+    _PROJECT_ROOT / "static/game/games/drawing_guess/drawing-guess-demo.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
@@ -245,6 +246,16 @@ async def badminton_demo(request: Request):
     """Badminton challenge mini-game."""
     templates = get_templates()
     return templates.TemplateResponse("templates/badminton_demo.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/drawing_guess_demo", response_class=HTMLResponse)
+async def drawing_guess_demo(request: Request):
+    """Drawing guess companion mini-game demo."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/drawing_guess_demo.html", {
         "request": request,
         **_static_assets_ctx(),
     })
