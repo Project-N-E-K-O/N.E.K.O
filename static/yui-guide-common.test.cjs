@@ -1496,7 +1496,7 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /captureDay1TakeoverAgentSwitches/);
     assert.match(operationRegistryBlock, /async runCleanup\(scene\) \{/);
     assert.match(operationRegistryBlock, /sceneId === 'day1_takeover_return_control'/);
-    assert.match(operationRegistryBlock, /restoreDay1TakeoverAgentSwitches\('day1-return-control'\)/);
+    assert.match(operationRegistryBlock, /return await this\.director\.restoreDay1TakeoverAgentSwitches\('day1-return-control'\);/);
     assert.match(operationRegistryBlock, /async runDay6PluginOpenAgentPanelFlow\(scene\) \{/);
     assert.match(operationRegistryBlock, /async runDay6PluginOpenManagementPanelFlow\(scene\) \{/);
     assert.match(operationRegistryBlock, /async runDay6PluginDashboardHandoffFlow\(scene,\s*narrationStartedAt\) \{/);

@@ -277,7 +277,7 @@
                 && this.director
                 && typeof this.director.restoreDay1TakeoverAgentSwitches === 'function'
             ) {
-                await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');
+                return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');
             }
             return true;
         }

@@ -785,6 +785,7 @@ def test_day1_takeover_restores_original_agent_switches():
     assert "await director.captureDay1TakeoverAgentSwitches();" in capture_operation
     assert "sceneId === 'day1_takeover_return_control'" in cleanup_operation
     assert "restoreDay1TakeoverAgentSwitches('day1-return-control')" in cleanup_operation
+    assert "return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');" in cleanup_operation
     assert "setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)" in restore_block
     assert "setAgentMasterEnabled(false)" in restore_block
     assert "restoreDay1TakeoverAgentSwitches('termination_cleanup')" in director
