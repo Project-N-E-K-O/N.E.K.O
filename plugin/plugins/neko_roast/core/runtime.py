@@ -245,6 +245,8 @@ class RoastRuntime:
         # 持久化再 apply，被 host 的 10s entry 超时连内存兜底都来不及跑，导致 update_config /
         # connect 直接 500。现在反过来：runtime 行为以内存为准、即时生效；持久化降级为带预算的
         # 尽力而为，超时/失败都不回滚、不阻塞。lock 串行化插件自身并发写，避免内存 apply 互踩。
+        old_room_id = int(self.config.live_room_id or 0)
+        was_listening = bool(self.bili_live_ingest.is_listening())
         async with self._get_config_lock():
             data = self.config.to_dict()
             data.update(clean)
@@ -252,7 +254,47 @@ class RoastRuntime:
             if "developer_tools_enabled" in clean:
                 await self.sync_developer_mode(announce=False)
             await self._persist_config_best_effort(clean)
-            return config
+        await self._reconcile_live_listener_after_config(clean, old_room_id=old_room_id, was_listening=was_listening)
+        return self.config
+
+    async def _reconcile_live_listener_after_config(
+        self,
+        clean: dict[str, Any],
+        *,
+        old_room_id: int,
+        was_listening: bool,
+    ) -> None:
+        if not was_listening:
+            return
+        room_changed = "live_room_id" in clean and int(self.config.live_room_id or 0) != old_room_id
+        disabled = "live_enabled" in clean and not bool(self.config.live_enabled)
+        if not room_changed and not disabled:
+            return
+        if disabled or self.config.live_room_id <= 0:
+            await self._stop_live_listener(mark_disabled=True)
+            return
+        started = await self._start_live_listener(int(self.config.live_room_id))
+        self.audit.record(
+            "live_reconnected" if started else "live_reconnect_failed",
+            "danmaku listener restarted for room change" if started else "failed to restart danmaku listener for room change",
+            level="info" if started else "warning",
+            detail={"room_id": self.config.live_room_id, "previous_room_id": old_room_id},
+        )
+
+    async def _start_live_listener(self, room_id: int) -> bool:
+        started = await self.bili_live_ingest.start_listening(room_id)
+        self.live_connection_state = "connected" if started else "disconnected"
+        self.config.live_enabled = bool(started)
+        self.safety_guard.set_connected(started)
+        return started
+
+    async def _stop_live_listener(self, *, mark_disabled: bool) -> None:
+        await self.bili_live_ingest.stop_listening()
+        self.live_events.reset()
+        if mark_disabled:
+            self.config.live_enabled = False
+        self.live_connection_state = "disconnected"
+        self.safety_guard.set_connected(False)
 
     async def _persist_config_best_effort(self, clean: dict[str, Any]) -> None:
         """尽力持久化：带预算超时；超时/失败只记 audit，绝不回滚已生效的内存配置。"""
@@ -284,7 +326,7 @@ class RoastRuntime:
         config_api = getattr(self.plugin, "config", None)
         ensure_active = getattr(config_api, "profile_ensure_active", None)
         if callable(ensure_active):
-            await ensure_active("default", {"neko_roast": self.config.to_dict()}, timeout=10.0)
+            await ensure_active("default", {"neko_roast": clean}, timeout=10.0)
         update = getattr(config_api, "update", None)
         if not callable(update):
             raise RuntimeError("plugin config update API is unavailable")
@@ -453,7 +495,7 @@ class RoastRuntime:
             raise ValueError("room_id must be positive")
         old_room_id = self.config.live_room_id
         config = await self.update_config({"live_room_id": room_id})
-        if old_room_id != room_id:
+        if old_room_id != room_id and not self.bili_live_ingest.is_listening():
             self.live_connection_state = "disconnected"
             self.safety_guard.set_connected(False)
         self.audit.record("live_room_set", "live room updated", detail={"room_id": room_id})
@@ -466,9 +508,7 @@ class RoastRuntime:
         if target_room_id != self.config.live_room_id:
             await self.set_live_room(target_room_id)
         self.config.live_enabled = True  # 内存即时生效（gate/safety 共享同一 config 对象），避免配置写竞争拖垮连接
-        started = await self.bili_live_ingest.start_listening(target_room_id)
-        self.live_connection_state = "connected" if started else "disconnected"
-        self.safety_guard.set_connected(started)
+        started = await self._start_live_listener(target_room_id)
         self.audit.record(
             "live_connected" if started else "live_connect_failed",
             "danmaku listener started" if started else "failed to start danmaku listener",
@@ -478,10 +518,6 @@ class RoastRuntime:
         return self.live_connection_snapshot()
 
     async def disconnect_live_room(self) -> dict[str, Any]:
-        await self.bili_live_ingest.stop_listening()
-        self.live_events.reset()  # 清掉中枢缓冲与待触发窗口，避免断开后迟到的择优误投
-        self.config.live_enabled = False  # 内存即时生效，避免配置写竞争拖垮断开
-        self.live_connection_state = "disconnected"
-        self.safety_guard.set_connected(False)
+        await self._stop_live_listener(mark_disabled=True)
         self.audit.record("live_disconnected", "live ingest marked disconnected", detail={"room_id": self.config.live_room_id})
         return self.live_connection_snapshot()
