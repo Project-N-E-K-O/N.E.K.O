@@ -12,7 +12,7 @@ from PIL import Image
 from ..types import LayerArtifact, ProcessResult
 from .mesh import build_grid_mesh
 from .model import AutoRigLayer, AutoRigModel
-from .template import DEFAULT_PARAMETERS, infer_bindings
+from .template import DEFAULT_PARAMETERS, classify_rig_group, infer_bindings
 
 AUTO_RIG_DIR_NAME = "auto_rig"
 AUTO_RIG_ZIP_NAME = "auto_rig_model.zip"
@@ -141,7 +141,10 @@ def _build_layers(
                     "triangles": mesh.triangles,
                 },
                 bindings=infer_bindings(layer.name),
-                metadata={"area": layer.area},
+                metadata={
+                    "area": layer.area,
+                    "rig_group": classify_rig_group(layer.name),
+                },
             )
         )
         layer_quality.append(quality)

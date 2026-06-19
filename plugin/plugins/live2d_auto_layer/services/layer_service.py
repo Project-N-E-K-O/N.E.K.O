@@ -107,6 +107,14 @@ class LayerService:
             mesh_alpha_threshold=mesh_alpha_threshold,
         )
 
+    def load_auto_rig_model(self, session_id: str) -> dict[str, object]:
+        result = self.sessions.load(session_id)
+        if result is None:
+            raise FileNotFoundError(f"Session not found: {session_id}")
+        from ..core.auto_rig import load_auto_rig_model
+
+        return load_auto_rig_model(result.output_dir)
+
     def delete_session(self, session_id: str) -> bool:
         return self.sessions.delete(session_id)
 

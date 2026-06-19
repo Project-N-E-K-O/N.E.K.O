@@ -4,14 +4,16 @@ import types
 import zipfile
 
 import json
+import pytest
 
 from PIL import Image
 
 from plugin.plugins.live2d_auto_layer.core.assembly import Live2DAssembler, classify_layer
-from plugin.plugins.live2d_auto_layer.core.auto_rig import export_auto_rig_model
+from plugin.plugins.live2d_auto_layer.core.auto_rig import export_auto_rig_model, load_auto_rig_model
 from plugin.plugins.live2d_auto_layer.core.cubism import export_cubism_handoff
 from plugin.plugins.live2d_auto_layer.core.importing import import_layer_source
 from plugin.plugins.live2d_auto_layer.core.pipeline import process_layer_source
+from plugin.plugins.live2d_auto_layer.core.auto_rig.template import classify_rig_group, infer_bindings
 
 
 def _install_optional_cv2_stub() -> None:
@@ -71,6 +73,24 @@ def test_live2d_assembler_classifies_and_orders_layers() -> None:
         "unknown_accessory",
     ]
     assert all(layer.image.size == image.size for layer in layers)
+
+
+def test_auto_rig_template_avoids_dynamic_misclassification() -> None:
+    assert classify_rig_group("Face_Detail") == "head"
+    assert classify_rig_group("Eyebrow") == "head"
+    assert classify_rig_group("Headwear") == "head"
+    assert classify_rig_group("Hair_Front") == "hair"
+    assert classify_rig_group("Topwear") == "body"
+
+    face_detail_bindings = infer_bindings("Face_Detail")
+    eyebrow_bindings = infer_bindings("Eyebrow")
+    hair_bindings = infer_bindings("Hair_Front")
+    eye_bindings = infer_bindings("Eye_White")
+
+    assert not any(binding["parameter"] == "ParamHairSway" for binding in face_detail_bindings)
+    assert not any(binding["parameter"] == "ParamEyeBlink" for binding in eyebrow_bindings)
+    assert any(binding["parameter"] == "ParamHairSway" for binding in hair_bindings)
+    assert any(binding["parameter"] == "ParamEyeBlink" for binding in eye_bindings)
 
 
 def test_import_layer_source_reads_png_folder(tmp_path) -> None:
@@ -215,6 +235,8 @@ def test_export_auto_rig_model_package(tmp_path) -> None:
     assert len(model["layers"][0]["mesh"]["vertices"]) == 9
     assert len(model["layers"][0]["mesh"]["triangles"]) == 8
     assert model["layers"][0]["bindings"]
+    assert model["layers"][0]["metadata"]["rig_group"] == "head"
+    assert model["layers"][1]["metadata"]["rig_group"] == "hair"
     assert unfiltered_model["layers"][0]["bbox"] == [0, 0, 24, 24]
     assert model["layers"][0]["bbox"] == [8, 8, 16, 16]
     face_report = model["quality"]["rig_geometry"]["layer_reports"][0]
@@ -222,3 +244,18 @@ def test_export_auto_rig_model_package(tmp_path) -> None:
     assert face_report["raw_alpha_bbox"] == [0, 0, 20, 20]
     assert face_report["threshold_alpha_bbox"] == [12, 12, 8, 8]
     assert face_report["rig_risk"] == "medium"
+
+    loaded = load_auto_rig_model(output_dir / "auto-rig-smoke")
+    assert loaded["format"] == "neko.live2d_auto_layer.auto_rig.v1"
+    assert loaded["canvas_size"] == [32, 32]
+    assert loaded["quality_summary"]["visual_status"] == "preserved"
+    assert len(loaded["layers"]) == 2
+    assert loaded["layers"][0]["name"] == "Face_Skin"
+    assert loaded["layers"][0]["texture_path"].endswith("textures/layers/00_Face_Skin.png")
+
+    model_path = output_dir / "auto-rig-smoke" / "auto_rig" / "auto_rig_model.json"
+    unsafe = json.loads(model_path.read_text(encoding="utf-8"))
+    unsafe["layers"][0]["texture"] = "../preview.png"
+    model_path.write_text(json.dumps(unsafe), encoding="utf-8")
+    with pytest.raises(ValueError, match="outside model directory"):
+        load_auto_rig_model(output_dir / "auto-rig-smoke")

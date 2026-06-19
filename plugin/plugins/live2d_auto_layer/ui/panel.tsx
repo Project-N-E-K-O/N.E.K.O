@@ -25,6 +25,7 @@ import {
   InlineError,
   Progress,
   useEffect,
+  useRef,
   useForm,
   useToast,
   useConfirm,
@@ -75,6 +76,62 @@ type AutoRigQualitySummary = {
   rig_geometry_status?: string
   high_risk_layer_count?: number
   medium_risk_layer_count?: number
+}
+
+type AutoRigParameter = {
+  id?: string
+  name?: string
+  min?: number
+  max?: number
+  default?: number
+}
+
+type AutoRigBinding = {
+  parameter?: string
+  type?: string
+  scale?: number
+}
+
+type AutoRigLayerGroup = "head" | "hair" | "body" | "accessory"
+
+type AutoRigPreviewLayer = {
+  name?: string
+  texture_path?: string
+  draw_order?: number
+  width?: number
+  height?: number
+  bbox?: number[]
+  bindings?: AutoRigBinding[]
+  metadata?: Record<string, any>
+}
+
+type AutoRigPreviewModel = {
+  session_id?: string
+  format?: string
+  canvas_size?: number[]
+  preview_path?: string
+  parameters?: AutoRigParameter[]
+  layers?: AutoRigPreviewLayer[]
+  quality_summary?: AutoRigQualitySummary
+}
+
+type AutoRigBounds = {
+  x: number
+  y: number
+  width: number
+  height: number
+  pivotX: number
+  pivotY: number
+}
+
+type AutoRigTransform = {
+  pivotX: number
+  pivotY: number
+  offsetX: number
+  offsetY: number
+  rotationDeg: number
+  scaleX: number
+  scaleY: number
 }
 
 const partOptions = [
@@ -131,6 +188,297 @@ function qualityStatusLabel(t: (key: string) => string, value: string | undefine
   return status || "-"
 }
 
+function autoRigCanvasSize(model: AutoRigPreviewModel | null): [number, number] {
+  const size = Array.isArray(model?.canvas_size) ? model?.canvas_size || [] : []
+  const width = Math.max(1, Number(size[0]) || 512)
+  const height = Math.max(1, Number(size[1]) || 512)
+  return [width, height]
+}
+
+function defaultAutoRigPose(model: AutoRigPreviewModel | null): Record<string, number> {
+  const pose: Record<string, number> = {}
+  for (const parameter of model?.parameters || []) {
+    const id = String(parameter.id || "")
+    if (!id) continue
+    pose[id] = Number(parameter.default ?? 0)
+  }
+  return pose
+}
+
+function autoRigParameterMap(model: AutoRigPreviewModel): Record<string, AutoRigParameter> {
+  const map: Record<string, AutoRigParameter> = {}
+  for (const parameter of model.parameters || []) {
+    const id = String(parameter.id || "")
+    if (id) map[id] = parameter
+  }
+  return map
+}
+
+function autoRigPoseValue(pose: Record<string, number>, parameter: AutoRigParameter | undefined, parameterId: string): number {
+  if (Object.prototype.hasOwnProperty.call(pose, parameterId)) return Number(pose[parameterId])
+  return Number(parameter?.default ?? 0)
+}
+
+function normalizedAutoRigValue(value: number, parameter: AutoRigParameter | undefined): number {
+  const min = Number(parameter?.min ?? -1)
+  const max = Number(parameter?.max ?? 1)
+  const fallbackDefault = min <= 0 && max >= 0 ? 0 : min
+  const defaultValue = Number(parameter?.default ?? fallbackDefault)
+  const denominator = value >= defaultValue
+    ? Math.max(1e-6, max - defaultValue)
+    : Math.max(1e-6, defaultValue - min)
+  return Math.max(-1, Math.min(1, (value - defaultValue) / denominator))
+}
+
+function normalizedUnitValue(value: number, parameter: AutoRigParameter | undefined): number {
+  const min = Number(parameter?.min ?? 0)
+  const max = Number(parameter?.max ?? 1)
+  return Math.max(0, Math.min(1, (value - min) / Math.max(1e-6, max - min)))
+}
+
+function autoRigParameterStep(parameter: AutoRigParameter): number {
+  const min = Number(parameter.min ?? 0)
+  const max = Number(parameter.max ?? 1)
+  return Math.abs(max - min) <= 2 ? 0.01 : 1
+}
+
+function autoRigParameterValue(pose: Record<string, number>, parameter: AutoRigParameter): number {
+  const id = String(parameter.id || "")
+  return autoRigPoseValue(pose || {}, parameter, id)
+}
+
+function autoRigLayerGroup(layer: AutoRigPreviewLayer): AutoRigLayerGroup {
+  const metadataGroup = String(layer.metadata?.rig_group || "")
+  if (metadataGroup === "head" || metadataGroup === "hair" || metadataGroup === "body" || metadataGroup === "accessory") {
+    return metadataGroup
+  }
+  const name = String(layer.name || "").trim().toLowerCase().replace(/[\s-]+/g, "_")
+  if (name === "headwear" || name === "head_accessory" || name === "face_accessory") return "head"
+  if (hasAutoRigNameToken(name, ["hair", "tail"])) return "hair"
+  if (
+    [
+      "face_skin",
+      "face_detail",
+      "ears",
+      "neck",
+      "eye_white",
+      "iris",
+      "eyelash",
+      "eyebrow",
+      "mouth",
+      "nose",
+    ].includes(name)
+    || name.startsWith("eye_")
+    || name.startsWith("eyebrow_")
+  ) {
+    return "head"
+  }
+  if (
+    hasAutoRigNameToken(name, ["body", "foot", "leg", "hand", "arm"])
+    || name.endsWith("wear")
+    || ["topwear", "bottomwear", "legwear", "footwear", "handwear"].includes(name)
+  ) {
+    return "body"
+  }
+  return "accessory"
+}
+
+function hasAutoRigNameToken(name: string, tokens: string[]): boolean {
+  const parts = name.split("_").filter(Boolean)
+  return tokens.some((token) => parts.includes(token))
+}
+
+function isAutoRigBlinkLayer(layer: AutoRigPreviewLayer): boolean {
+  const name = String(layer.name || "").trim().toLowerCase().replace(/[\s-]+/g, "_")
+  return name === "eye_white" || name === "iris" || name === "eyelash" || name.startsWith("eye_")
+}
+
+function isAutoRigMouthLayer(layer: AutoRigPreviewLayer): boolean {
+  const name = String(layer.name || "").trim().toLowerCase().replace(/[\s-]+/g, "_")
+  return name === "mouth" || name.startsWith("mouth_")
+}
+
+function autoRigLayerBounds(layer: AutoRigPreviewLayer, canvasWidth: number, canvasHeight: number): AutoRigBounds {
+  const bbox = Array.isArray(layer.bbox) ? layer.bbox : []
+  const x = Number(bbox[0] ?? 0)
+  const y = Number(bbox[1] ?? 0)
+  const width = Math.max(1, Number(bbox[2] ?? layer.width ?? canvasWidth))
+  const height = Math.max(1, Number(bbox[3] ?? layer.height ?? canvasHeight))
+  return {
+    x,
+    y,
+    width,
+    height,
+    pivotX: x + width / 2,
+    pivotY: y + height / 2,
+  }
+}
+
+function autoRigGroupBounds(
+  layers: AutoRigPreviewLayer[],
+  canvasWidth: number,
+  canvasHeight: number,
+): Record<AutoRigLayerGroup, AutoRigBounds> {
+  const groups: Record<AutoRigLayerGroup, AutoRigBounds | null> = {
+    head: null,
+    hair: null,
+    body: null,
+    accessory: null,
+  }
+  for (const layer of layers) {
+    const group = autoRigLayerGroup(layer)
+    const bounds = autoRigLayerBounds(layer, canvasWidth, canvasHeight)
+    groups[group] = unionAutoRigBounds(groups[group], bounds)
+  }
+  const fallback = {
+    x: 0,
+    y: 0,
+    width: canvasWidth,
+    height: canvasHeight,
+    pivotX: canvasWidth / 2,
+    pivotY: canvasHeight / 2,
+  }
+  return {
+    head: groups.head || fallback,
+    hair: groups.hair || groups.head || fallback,
+    body: groups.body || fallback,
+    accessory: groups.accessory || fallback,
+  }
+}
+
+function unionAutoRigBounds(a: AutoRigBounds | null, b: AutoRigBounds): AutoRigBounds {
+  if (!a) return b
+  const x1 = Math.min(a.x, b.x)
+  const y1 = Math.min(a.y, b.y)
+  const x2 = Math.max(a.x + a.width, b.x + b.width)
+  const y2 = Math.max(a.y + a.height, b.y + b.height)
+  return {
+    x: x1,
+    y: y1,
+    width: Math.max(1, x2 - x1),
+    height: Math.max(1, y2 - y1),
+    pivotX: x1 + (x2 - x1) / 2,
+    pivotY: y1 + (y2 - y1) / 2,
+  }
+}
+
+function identityAutoRigTransform(bounds: AutoRigBounds): AutoRigTransform {
+  return {
+    pivotX: bounds.pivotX,
+    pivotY: bounds.pivotY,
+    offsetX: 0,
+    offsetY: 0,
+    rotationDeg: 0,
+    scaleX: 1,
+    scaleY: 1,
+  }
+}
+
+function autoRigGroupTransform(
+  group: AutoRigLayerGroup,
+  bounds: AutoRigBounds,
+  parameters: Record<string, AutoRigParameter>,
+  pose: Record<string, number>,
+): AutoRigTransform {
+  const transform = identityAutoRigTransform(bounds)
+  if (group === "head") {
+    const angleX = normalizedAutoRigValue(autoRigPoseValue(pose, parameters.ParamAngleX, "ParamAngleX"), parameters.ParamAngleX)
+    const angleY = normalizedAutoRigValue(autoRigPoseValue(pose, parameters.ParamAngleY, "ParamAngleY"), parameters.ParamAngleY)
+    const angleZ = autoRigPoseValue(pose, parameters.ParamAngleZ, "ParamAngleZ")
+    transform.offsetX = angleX * bounds.width * 0.08
+    transform.offsetY = angleY * bounds.height * 0.06
+    transform.rotationDeg = angleZ * 0.16
+  } else if (group === "body") {
+    const bodyX = normalizedAutoRigValue(autoRigPoseValue(pose, parameters.ParamBodyAngleX, "ParamBodyAngleX"), parameters.ParamBodyAngleX)
+    const bodyY = normalizedAutoRigValue(autoRigPoseValue(pose, parameters.ParamBodyAngleY, "ParamBodyAngleY"), parameters.ParamBodyAngleY)
+    const breath = normalizedUnitValue(autoRigPoseValue(pose, parameters.ParamBreath, "ParamBreath"), parameters.ParamBreath)
+    transform.offsetX = bodyX * bounds.width * 0.04
+    transform.offsetY = bodyY * bounds.height * 0.03
+    transform.scaleY = 1 + breath * 0.015
+  }
+  return transform
+}
+
+function applyAutoRigTransform(ctx: any, transform: AutoRigTransform) {
+  ctx.translate(transform.pivotX + transform.offsetX, transform.pivotY + transform.offsetY)
+  ctx.rotate((transform.rotationDeg * Math.PI) / 180)
+  ctx.scale(Math.max(0.05, transform.scaleX), Math.max(0.05, transform.scaleY))
+  ctx.translate(-transform.pivotX, -transform.pivotY)
+}
+
+async function drawAutoRigModel(
+  canvas: any,
+  model: AutoRigPreviewModel,
+  pluginId: string,
+  pose: Record<string, number>,
+): Promise<void> {
+  const [width, height] = autoRigCanvasSize(model)
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return
+  ctx.clearRect(0, 0, width, height)
+  const parameters = autoRigParameterMap(model)
+  const layers = [...(model.layers || [])].sort((a, b) => Number(a.draw_order || 0) - Number(b.draw_order || 0))
+  const groupBounds = autoRigGroupBounds(layers, width, height)
+  for (const layer of layers) {
+    const url = artifactUrl(pluginId, layer.texture_path)
+    if (!url) continue
+    const image = await loadImage(url)
+    drawAutoRigLayer(ctx, image, layer, parameters, pose, groupBounds, width, height)
+  }
+}
+
+function loadImage(src: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error(`Image load failed: ${src}`))
+    image.src = src
+  })
+}
+
+function drawAutoRigLayer(
+  ctx: any,
+  image: any,
+  layer: AutoRigPreviewLayer,
+  parameters: Record<string, AutoRigParameter>,
+  pose: Record<string, number>,
+  groupBounds: Record<AutoRigLayerGroup, AutoRigBounds>,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  const layerWidth = Number(layer.width || canvasWidth)
+  const layerHeight = Number(layer.height || canvasHeight)
+  const group = autoRigLayerGroup(layer)
+  const parentGroup = group === "hair" ? "head" : group
+  const parentTransform = autoRigGroupTransform(parentGroup, groupBounds[parentGroup], parameters, pose)
+  const localTransform = identityAutoRigTransform(autoRigLayerBounds(layer, canvasWidth, canvasHeight))
+
+  for (const binding of layer.bindings || []) {
+    const parameterId = String(binding.parameter || "")
+    if (!parameterId) continue
+    const parameter = parameters[parameterId]
+    const value = autoRigPoseValue(pose, parameter, parameterId)
+    const normalized = normalizedAutoRigValue(value, parameter)
+    const scale = Number(binding.scale ?? 0)
+    if (binding.type === "sway" && group === "hair") {
+      localTransform.offsetX += normalized * groupBounds.hair.width * scale
+      localTransform.rotationDeg += normalized * 12 * scale
+    } else if (binding.type === "scale_y" && parameterId === "ParamMouthOpenY" && isAutoRigMouthLayer(layer)) {
+      localTransform.scaleY += normalized * scale
+    } else if (binding.type === "mask_y" && parameterId === "ParamEyeBlink" && isAutoRigBlinkLayer(layer)) {
+      localTransform.scaleY *= Math.max(0.05, normalizedUnitValue(value, parameter))
+    }
+  }
+
+  ctx.save()
+  applyAutoRigTransform(ctx, parentTransform)
+  applyAutoRigTransform(ctx, localTransform)
+  ctx.drawImage(image, 0, 0, layerWidth, layerHeight)
+  ctx.restore()
+}
+
 export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const pluginId = String(props.plugin?.id || props.plugin?.plugin_id || "live2d_auto_layer")
@@ -152,6 +500,9 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
   const [cubismHandoffPath, setCubismHandoffPath] = props.useLocalState("cubismHandoffPath", "")
   const [autoRigPath, setAutoRigPath] = props.useLocalState("autoRigPath", "")
   const [autoRigQuality, setAutoRigQuality] = props.useLocalState<AutoRigQualitySummary | null>("autoRigQuality", null)
+  const [autoRigModel, setAutoRigModel] = props.useLocalState<AutoRigPreviewModel | null>("autoRigModel", null)
+  const [autoRigPose, setAutoRigPose] = props.useLocalState<Record<string, number>>("autoRigPose", {})
+  const autoRigCanvasRef = useRef<any>(null)
 
   useEffect(() => {
     form.setField("method", String(safeState.default_method || "anime_face"))
@@ -204,6 +555,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       setCubismHandoffPath("")
       setAutoRigPath("")
       setAutoRigQuality(null)
+      setAutoRigModel(null)
+      setAutoRigPose({})
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.splitDone"))
     } catch (exc: any) {
@@ -247,6 +600,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       setCubismHandoffPath("")
       setAutoRigPath("")
       setAutoRigQuality(null)
+      setAutoRigModel(null)
+      setAutoRigPose({})
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.resegmentDone"))
     } catch (exc: any) {
@@ -284,6 +639,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       setCubismHandoffPath("")
       setAutoRigPath("")
       setAutoRigQuality(null)
+      setAutoRigModel(null)
+      setAutoRigPose({})
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.importDone"))
     } catch (exc: any) {
@@ -335,6 +692,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
         setCubismHandoffPath("")
         setAutoRigPath("")
         setAutoRigQuality(null)
+        setAutoRigModel(null)
+        setAutoRigPose({})
       }
       await props.api.refresh()
       toast.success(t("panel.messages.sessionDeleted"))
@@ -357,6 +716,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       setCubismHandoffPath("")
       setAutoRigPath("")
       setAutoRigQuality(null)
+      setAutoRigModel(null)
+      setAutoRigPose({})
     } catch (exc: any) {
       const message = String(exc?.message || exc)
       setError(message)
@@ -393,7 +754,39 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
           ? data.quality_summary as AutoRigQualitySummary
           : null,
       )
+      setAutoRigModel(null)
+      setAutoRigPose({})
       toast.success(String(data.message || t("panel.messages.autoRigExportDone")))
+    } catch (exc: any) {
+      const message = String(exc?.message || exc)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+      setProgressText("")
+    }
+  }
+
+  async function runLoadAutoRigModel() {
+    const sessionId = String(result?.session_id || "").trim()
+    if (!sessionId) {
+      toast.error(t("panel.errors.sessionRequired"))
+      return
+    }
+    setBusy(true)
+    setProgressText(t("panel.messages.loadingAutoRig"))
+    setError("")
+    try {
+      const envelope = await props.api.call(
+        "live2d_load_auto_rig_model",
+        { session_id: sessionId },
+        { timeoutMs: 120000 },
+      )
+      const data = unwrapActionResult(envelope) as AutoRigPreviewModel
+      setAutoRigModel(data)
+      setAutoRigPose(defaultAutoRigPose(data))
+      setAutoRigQuality(data.quality_summary || null)
+      toast.success(t("panel.messages.autoRigLoaded"))
     } catch (exc: any) {
       const message = String(exc?.message || exc)
       setError(message)
@@ -451,10 +844,14 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
   const deviceLabel = devices.cuda ? "CUDA" : devices.mps ? "MPS" : "CPU"
   const isExtractWorkspace = workspaceMode === "extract"
   const isAutoRigWorkspace = workspaceMode === "auto_rig"
+  const isAutoRigPreviewWorkspace = workspaceMode === "auto_rig_preview"
   const isCubismWorkspace = workspaceMode === "cubism"
   const isImportMode = sourceMode === "import"
+  const autoRigParameters = Array.isArray(autoRigModel?.parameters) ? autoRigModel?.parameters || [] : []
   const workspaceTitle = isAutoRigWorkspace
     ? t("panel.autoRig.title")
+    : isAutoRigPreviewWorkspace
+      ? t("panel.autoRigPreview.title")
     : isCubismWorkspace
       ? t("panel.cubism.title")
       : t("panel.process.title")
@@ -464,6 +861,19 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
     setAutoEnvCheckRequested(true)
     void checkEnvironment({ silent: true })
   }, [environmentKnown, autoEnvCheckRequested, checkingEnv])
+
+  useEffect(() => {
+    const canvas = autoRigCanvasRef.current
+    if (!canvas || !autoRigModel) return
+    let cancelled = false
+    drawAutoRigModel(canvas, autoRigModel, pluginId, autoRigPose || {}).catch((exc) => {
+      if (cancelled) return
+      setError(String(exc?.message || exc))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [autoRigModel, autoRigPose, pluginId])
 
   return (
     <Page className="lal-page">
@@ -498,6 +908,7 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
         options={[
           { value: "extract", label: t("panel.workspaces.extract") },
           { value: "auto_rig", label: t("panel.workspaces.autoRig") },
+          { value: "auto_rig_preview", label: t("panel.workspaces.autoRigPreview") },
           { value: "cubism", label: t("panel.workspaces.cubism") },
         ]}
         onChange={(value) => setWorkspaceMode(String(value))}
@@ -652,6 +1063,59 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
                   />
                 </ButtonGroup>
               </>
+            ) : isAutoRigPreviewWorkspace ? (
+              <>
+                <KeyValue
+                  items={[
+                    { key: "session", label: t("panel.result.session"), value: result?.session_id || "-" },
+                    { key: "model", label: t("panel.autoRigPreview.model"), value: autoRigModel?.format || "-" },
+                    { key: "layers", label: t("panel.sessions.layers"), value: String(autoRigModel?.layers?.length || 0) },
+                  ]}
+                />
+                {autoRigQuality ? (
+                  <KeyValue
+                    items={[
+                      { key: "visual", label: t("panel.quality.visual"), value: qualityStatusLabel(t, autoRigQuality.visual_status) },
+                      { key: "rig", label: t("panel.quality.rigGeometry"), value: qualityStatusLabel(t, autoRigQuality.rig_geometry_status) },
+                      { key: "high", label: t("panel.quality.highRiskLayers"), value: String(autoRigQuality.high_risk_layer_count || 0) },
+                      { key: "medium", label: t("panel.quality.mediumRiskLayers"), value: String(autoRigQuality.medium_risk_layer_count || 0) },
+                    ]}
+                  />
+                ) : null}
+                {autoRigModel ? (
+                  <div className="lal-panel-section">
+                    <div className="lal-section-title">{t("panel.autoRigPreview.pose")}</div>
+                    {autoRigParameters.map((parameter) => {
+                      const id = String(parameter.id || "")
+                      const value = autoRigParameterValue(autoRigPose || {}, parameter)
+                      return (
+                        <Field
+                          key={id}
+                          className="lal-field"
+                          label={String(parameter.name || id)}
+                          help={String(value)}
+                        >
+                          <Slider
+                            value={value}
+                            min={Number(parameter.min ?? 0)}
+                            max={Number(parameter.max ?? 1)}
+                            step={autoRigParameterStep(parameter)}
+                            onChange={(nextValue) => setAutoRigPose({ ...(autoRigPose || {}), [id]: Number(nextValue) })}
+                          />
+                        </Field>
+                      )
+                    })}
+                  </div>
+                ) : null}
+                <ButtonGroup className="lal-run-actions">
+                  <Button tone="primary" disabled={busy || !result?.session_id} onClick={runLoadAutoRigModel}>
+                    {t("panel.actions.loadAutoRig")}
+                  </Button>
+                  <Button tone="default" disabled={busy || !autoRigModel} onClick={() => setAutoRigPose(defaultAutoRigPose(autoRigModel))}>
+                    {t("panel.actions.resetPose")}
+                  </Button>
+                </ButtonGroup>
+              </>
             ) : (
               <>
                 <KeyValue
@@ -680,9 +1144,15 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
         <Card className="lal-result-panel" title={t("panel.result.title")}>
           <div className="lal-result-body">
             <div className="lal-result-top">
-              <Alert tone={result?.status === "succeeded" ? "success" : "warning"}>
-                {result?.message || t("panel.result.empty")}
-              </Alert>
+              {isAutoRigPreviewWorkspace ? (
+                <Alert tone={autoRigModel ? "success" : "warning"}>
+                  {autoRigModel ? t("panel.autoRigPreview.loaded") : t("panel.autoRigPreview.empty")}
+                </Alert>
+              ) : (
+                <Alert tone={result?.status === "succeeded" ? "success" : "warning"}>
+                  {result?.message || t("panel.result.empty")}
+                </Alert>
+              )}
               {isExtractWorkspace ? (
                 <FileDownload
                   href={artifactUrl(pluginId, result?.zip_path)}
@@ -693,23 +1163,46 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
                 />
               ) : null}
             </div>
-            <div className="lal-preview-grid">
-              <ImagePreview src={previewSrc} label={selectedLayer?.name || t("panel.result.preview")} emptyText={t("panel.result.noPreview")} />
-              <div className="lal-layer-rail">
-                <Gallery items={galleryItems} columns={2} emptyText={t("panel.layers.empty")} onSelect={(item) => setSelectedLayer(item)} />
+            {isAutoRigPreviewWorkspace ? (
+              <div className="lal-auto-rig-preview">
+                {autoRigModel ? (
+                  <canvas
+                    ref={autoRigCanvasRef}
+                    width={autoRigCanvasSize(autoRigModel)[0]}
+                    height={autoRigCanvasSize(autoRigModel)[1]}
+                    style={{
+                      width: "100%",
+                      maxHeight: "720px",
+                      objectFit: "contain",
+                      border: "1px solid #d8e0ea",
+                      borderRadius: "8px",
+                      background:
+                        "repeating-conic-gradient(#f1f5f9 0% 25%, #ffffff 0% 50%) 50% / 24px 24px",
+                    }}
+                  />
+                ) : (
+                  <Text>{t("panel.autoRigPreview.noModel")}</Text>
+                )}
               </div>
-            </div>
-            {result ? (
+            ) : (
+              <div className="lal-preview-grid">
+                <ImagePreview src={previewSrc} label={selectedLayer?.name || t("panel.result.preview")} emptyText={t("panel.result.noPreview")} />
+                <div className="lal-layer-rail">
+                  <Gallery items={galleryItems} columns={2} emptyText={t("panel.layers.empty")} onSelect={(item) => setSelectedLayer(item)} />
+                </div>
+              </div>
+            )}
+            {result && !isAutoRigPreviewWorkspace ? (
               <div className="lal-artifact-row">
                 <span>{t("panel.result.session")}: {result.session_id || "-"}</span>
                 <span>{t("panel.result.zip")}: {pathValue(result.zip_path)}</span>
               </div>
-            ) : (
+            ) : !isAutoRigPreviewWorkspace ? (
               <div className="lal-artifact-row is-empty">
                 <span>{t("panel.result.session")}: -</span>
                 <span>{t("panel.result.zip")}: -</span>
               </div>
-            )}
+            ) : null}
           </div>
         </Card>
       </div>

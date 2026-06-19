@@ -323,6 +323,43 @@ class ProcessRouter(PluginRouter):
         return Ok(result)
 
     @ui.action(
+        label=tr("actions.loadAutoRigModel.label", default="Load AutoRig model"),
+        tone="primary",
+        group="process",
+        order=37,
+        refresh_context=False,
+    )
+    @plugin_entry(
+        id="live2d_load_auto_rig_model",
+        name=tr("entries.loadAutoRigModel.name", default="Load NEKO auto-rig model"),
+        description=tr(
+            "entries.loadAutoRigModel.description",
+            default="Load and validate the generated NEKO AutoRig model for a session, including texture artifact paths and quality summary.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+            },
+            "required": ["session_id"],
+        },
+        llm_result_fields=["session_id", "format", "canvas_size", "quality_summary"],
+    )
+    async def load_auto_rig_model(self, session_id: str = "", **_):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.load_auto_rig_model,
+                clean_id,
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_load_auto_rig_model failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(result)
+
+    @ui.action(
         label=tr("actions.listSessions.label", default="List sessions"),
         tone="default",
         group="sessions",
