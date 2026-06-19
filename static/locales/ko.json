@@ -4291,7 +4291,7 @@
              "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
              "attemptsSummary": "샷 요약: {{summary}}",
              "personalBest": "개인 최고: {{score}}점",
-             "globalRank": "글로벌 순위: #{{rank}}{{total}}",
+             "globalRank": "글로벌 순위: #{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "내 승리",
                  "nekoWin": "Neko 승리",

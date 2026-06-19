@@ -4291,7 +4291,7 @@
              "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
              "attemptsSummary": "Resumen de golpes: {{summary}}",
              "personalBest": "Mejor personal: {{score}} pts",
-             "globalRank": "Puesto global: #{{rank}}{{total}}",
+             "globalRank": "Puesto global: #{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "Ganaste",
                  "nekoWin": "Gana Neko",

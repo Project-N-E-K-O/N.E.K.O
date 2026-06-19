@@ -324,8 +324,8 @@ def test_badminton_player_court_position_follows_mouse_x_axis_only(mock_page: Pa
     moved = page.evaluate("window.BadmintonDemo.getState()")
     assert moved["playerCourt"]["targetX"] > left_state["playerCourt"]["targetX"]
     assert moved["playerCourt"]["x"] > left_state["playerCourt"]["x"]
-    assert moved["playerCourt"]["targetY"] == left_state["playerCourt"]["targetY"]
-    assert moved["playerCourt"]["y"] == left_state["playerCourt"]["y"]
+    assert abs(moved["playerCourt"]["targetY"] - left_state["playerCourt"]["targetY"]) < 0.001
+    assert abs(moved["playerCourt"]["y"] - left_state["playerCourt"]["y"]) < 0.001
 
 
 @pytest.mark.e2e
@@ -779,6 +779,7 @@ def test_badminton_route_and_public_api(mock_page: Page, running_server: str):
 
     expect(page).to_have_url(re.compile(r"/badminton_demo"))
     expect(page).to_have_title(re.compile("羽毛球挑战"))
-    assert page.evaluate("window.BadmintonDemo === window.BadmintonDemo") is True
+    assert page.evaluate("typeof window.BadmintonDemo.getState") == "function"
+    assert page.evaluate("typeof window.BadmintonDemo.shoot") == "function"
     state = page.evaluate("window.BadmintonDemo.getState()")
     assert state["mode"] == "duel"

@@ -4270,7 +4270,7 @@
              "chances": "Попытки {{count}}",
              "practiceTitle": "Свободная тренировка: удары без ограничений, счет не попадает в рейтинг",
              "attemptsTitle": "Осталось {{remaining}}/{{total}}, промахов {{missed}}",
-             "duelTitle": "Дуэль с Neko: вы и Удар Nekoе по очереди",
+             "duelTitle": "Дуэль с Neko: вы и Neko бьете по очереди",
              "timedTitle": "На время: неограниченные удары за 60 секунд",
              "horseTitle": "HORSE: повторите дистанцию, угол и точную зону успешного удара",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
@@ -4291,7 +4291,7 @@
              "summary": "Счет: {{score}} | Попаданий: {{made}} | Серия: {{streak}} | Лучшая серия: {{best}} | Дальше всего: {{record}} | Дистанция: {{distance}}",
              "attemptsSummary": "Сводка ударов: {{summary}}",
              "personalBest": "Личный рекорд: {{score}} очк.",
-             "globalRank": "Мировой рейтинг: #{{rank}}{{total}}",
+             "globalRank": "Мировой рейтинг: #{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "Вы победили",
                  "nekoWin": "Neko победила",

@@ -281,7 +281,8 @@ def test_badminton_audio_config_contract():
     assert "zapsplat_sport_badminton_racket_fast_swing_whoosh_001_76396.mp3" in text
     assert "whoosh: [{ src: racketSwing" in text
     assert "var racketShuttleHits = [" in text
-    assert "shuttleContact: racketShuttleHits.map" in text
+    assert "var racketShuttleSingle =" in text
+    assert "shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map" in text
 
 
 @pytest.mark.unit

@@ -4289,9 +4289,9 @@
             "timed": "Contra o tempo: {{made}} acertos, melhor sequência {{best}}, pontos {{score}}",
             "practice": "Treino livre: pontuação não registrada no ranking | Acertos: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Distância: {{distance}}",
             "summary": "Pontos: {{score}} | Acertos: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Maior distância: {{record}} | Distância: {{distance}}",
-             "attemptsSummary": "Resumo dos rebatidas: {{summary}}",
+             "attemptsSummary": "Resumo das rebatidas: {{summary}}",
              "personalBest": "Recorde pessoal: {{score}} pts",
-             "globalRank": "Ranking global: #{{rank}}{{total}}",
+             "globalRank": "Ranking global: #{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "Você venceu",
                  "nekoWin": "Neko venceu",
@@ -4431,8 +4431,8 @@
                      "Mais uma?"
                  ],
                  "long_aim": [
-                     "Arremesse logo.",
-                     "Arremesse logo."
+                     "Rebata logo.",
+                     "Rebata logo."
                  ],
                  "close_to_record": [
                      "Quase no recorde.",
@@ -4489,8 +4489,8 @@
                      "Mais uma?"
                  ],
                  "long_aim": [
-                     "Arremesse logo.",
-                     "Arremesse logo."
+                     "Rebata logo.",
+                     "Rebata logo."
                  ],
                  "close_to_record": [
                      "Quase no recorde.",
@@ -4547,8 +4547,8 @@
                      "Mais uma?"
                  ],
                  "long_aim": [
-                     "Arremesse logo.",
-                     "Arremesse logo."
+                     "Rebata logo.",
+                     "Rebata logo."
                  ],
                  "close_to_record": [
                      "Quase no recorde.",

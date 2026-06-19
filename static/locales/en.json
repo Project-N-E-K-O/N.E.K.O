@@ -4291,7 +4291,7 @@
              "summary": "Score: {{score}} | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Farthest: {{record}} | Shot distance: {{distance}}",
              "attemptsSummary": "Shot summary: {{summary}}",
              "personalBest": "Personal best: {{score}} pts",
-             "globalRank": "Global rank: #{{rank}}{{total}}",
+             "globalRank": "Global rank: #{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "You win",
                  "nekoWin": "Neko wins",

@@ -8,6 +8,7 @@
     '/static/game/games/badminton/audio/badminton-racket-shuttlecock-hit-3.mp3',
     '/static/game/games/badminton/audio/badminton-racket-shuttlecock-hit-4.mp3',
   ];
+  var racketShuttleSingle = '/static/game/games/badminton/audio/badminton-racket-shuttlecock-single.mp3';
   var racketSwing = '/static/game/games/badminton/audio/zapsplat_sport_badminton_racket_fast_swing_whoosh_001_76396.mp3';
 
   var badmintonGameAudioConfig = {
@@ -54,7 +55,7 @@
         out: [{ src: racketShuttle, gainDb: -5 }],
         whoosh: [{ src: racketSwing, gainDb: -5 }],
       },
-      shuttleContact: racketShuttleHits.map(function (src) { return { src: src, gainDb: -2 }; }),
+      shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map(function (src) { return { src: src, gainDb: -2 }; }),
       net: [{ src: racketShuttle, gainDb: -7 }],
       streak: [{ src: '/static/game/games/soccer/audio/Chocobos_S.mp3', gainDb: -6 }],
       record: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: -2 }],

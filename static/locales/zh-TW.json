@@ -4270,7 +4270,7 @@
              "chances": "機會 {{count}}",
              "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
              "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
-             "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流羽毛球",
+             "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流打羽毛球",
             "timedTitle": "限時挑戰：60 秒內不限揮拍次數",
              "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
@@ -4291,7 +4291,7 @@
              "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
              "attemptsSummary": "羽毛球摘要：{{summary}}",
              "personalBest": "個人最佳：{{score}}分",
-             "globalRank": "全球排名：#{{rank}}{{total}}",
+             "globalRank": "全球排名：#{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "你贏了",
                  "nekoWin": "Neko贏了",
@@ -4613,12 +4613,12 @@
              },
              "mindGame": [
                  "你手在抖哦",
-                 "想好再投，不急~",
+                 "想好再打，不急~",
                  "這個距離可不近喵"
              ],
              "easterEgg": {
                  "lateNight": "這麼晚了還在羽毛球？",
-                 "xmas": "鈴鐺都掛上了，還要投喵？",
+                 "xmas": "鈴鐺都掛上了，還要打喵？",
                  "newYear": "新年快樂喵",
                  "lineIn3": "你是不是開掛了",
                  "lineIn5": "……我要檢查一下邊線",

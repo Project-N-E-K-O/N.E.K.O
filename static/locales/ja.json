@@ -4291,7 +4291,7 @@
              "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
              "attemptsSummary": "ショット概要：{{summary}}",
              "personalBest": "自己ベスト：{{score}}点",
-             "globalRank": "世界順位：#{{rank}}{{total}}",
+             "globalRank": "世界順位：#{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "あなたの勝ち",
                  "nekoWin": "Neko の勝ち",

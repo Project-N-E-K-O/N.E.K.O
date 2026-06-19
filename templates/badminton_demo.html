@@ -4933,9 +4933,9 @@
       scoreText += ' | ' + _i18n('result.personalBest', '个人最佳：{{score}}分', { score: personalBest.score });
     }
     if (game.globalRank) {
-      scoreText += ' | ' + _i18n('result.globalRank', '全球排名：#{{rank}}{{total}}', {
+      scoreText += ' | ' + _i18n('result.globalRank', '全球排名：#{{rank}} / {{total}}', {
         rank: game.globalRank,
-        total: game.globalTotalPlayers ? '/' + game.globalTotalPlayers : ''
+        total: game.globalTotalPlayers || ''
       });
     }
     resultStats.textContent = scoreText + ratingText;

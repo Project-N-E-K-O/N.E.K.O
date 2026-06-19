@@ -2903,7 +2903,7 @@ def test_build_game_llm_visible_event_filters_soccer_internal_fields():
 
 
 @pytest.mark.unit
-def test_build_game_llm_visible_event_filters_badminton_memory_flags():
+def test_build_game_llm_visible_event_filters_badminton_memory_flags_from_camel_case():
     event = {
         "kind": "shot-made",
         "badmintonGameMemoryEnabled": True,

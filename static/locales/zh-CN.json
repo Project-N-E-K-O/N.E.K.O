@@ -4291,7 +4291,7 @@
              "summary": "总分：{{score}} | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 最远：{{record}} | 本球距离：{{distance}}",
              "attemptsSummary": "羽毛球摘要：{{summary}}",
              "personalBest": "个人最佳：{{score}}分",
-             "globalRank": "全球排名：#{{rank}}{{total}}",
+             "globalRank": "全球排名：#{{rank}} / {{total}}",
              "outcome": {
                  "youWin": "你赢了",
                  "nekoWin": "Yui 赢了",
@@ -4613,12 +4613,12 @@
              },
              "mindGame": [
                  "你手在抖哦",
-                 "想好再投，不急~",
+                 "想好再挥拍，不急~",
                  "这个距离可不近喵"
              ],
              "easterEgg": {
                  "lateNight": "这么晚了还在羽毛球？",
-                 "xmas": "铃铛都挂上了，还要投喵？",
+                 "xmas": "铃铛都挂上了，还要挥拍喵？",
                  "newYear": "新年快乐喵",
                  "lineIn3": "你是不是开挂了",
                  "lineIn5": "……我要检查一下边线",
