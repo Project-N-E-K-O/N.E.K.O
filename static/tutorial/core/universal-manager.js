@@ -1367,6 +1367,7 @@ class UniversalTutorialManager {
         } catch (_) {}
         const lifecycleEndedMessage = {
             action: 'yui_guide_tutorial_lifecycle_ended',
+            tutorialRunId: tutorialRunId,
             reason: rawReason,
             timestamp: Date.now()
         };

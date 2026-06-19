@@ -1507,6 +1507,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert clear_pc_overlay_block.index("const lifecycleEndedMessage = {") < clear_pc_overlay_block.index(
         "window.nekoTutorialOverlay.clear({"
     )
+    assert "tutorialRunId: tutorialRunId," in clear_pc_overlay_block
     assert "window.nekoTutorialOverlay.relayToChat(lifecycleEndedMessage);" in clear_pc_overlay_block
     assert "window.nekoTutorialOverlay.relayToPet(lifecycleEndedMessage);" in clear_pc_overlay_block
     assert "window.appInterpage.nekoBroadcastChannel.postMessage(lifecycleEndedMessage);" in clear_pc_overlay_block

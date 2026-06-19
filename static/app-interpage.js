@@ -3754,7 +3754,7 @@
 
     function toYuiGuideScreenPoint(x, y) {
         var metrics = getYuiGuideWindowMetrics();
-        var bounds = metrics.bounds || metrics.contentBounds || { x: 0, y: 0 };
+        var bounds = metrics.contentBounds || metrics.bounds || { x: 0, y: 0 };
         var viewport = window.visualViewport || null;
         var offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
         var offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
