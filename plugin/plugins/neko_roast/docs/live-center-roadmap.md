@@ -69,7 +69,7 @@ LiveEvent/ViewerEvent
 | **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——`bili_live_ingest` 把富模型包成 `LiveEvent` 统一信封（`contracts.LiveEvent`：type/uid/payload/source/ts/schema_version/raw）发布到 `EventBus`；`EventBus` 升级为真订阅分发（`subscribe(type,handler,owner)` / `publish`），每订阅者隔离 + 归属（owner）+ audit（`event_handler_failed`）+ 无订阅者静默丢弃。`live_events` 改为**经 bus 订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"`** 的示范订阅者（`submit()` 签名不变、内部择优复用既有 pipeline 语境）。**这是「分发给其他开发者各写各事件 handler」的核心契约**（development.md「直播事件中枢（EventBus）」含第三方加 handler 配方）| 单测 +8（`test_event_bus.py`）+ 契约 +1；端到端经 bus 的 `test_live_listener_routes_rich_event_through_hub_to_pipeline` 仍绿；gift/SC/guard 接线已单测覆盖，专属 P3 handler 待做 |
 | **可靠性收尾（兜底层②④收口）** | ① UI 错误边界：`panel.tsx` `safeModuleCard` 用 try/catch 包每张互动模块卡的同步渲染（hosted-ui runtime 无 class error boundary），未来第三方模块 `config_schema`/渲染抛错只塌成一张降级卡（`panel.modules.renderError`）不黑屏整盘（兜底层④，见 ui-architecture §4）。② 模块 `on_enable/on_disable` 生命周期钩子：`ModuleRegistry.enable/disable` 隔离调用（单点失败标 degraded + audit），地基件，待接 per-module 启停真实调用方 | 单测 +3（`test_module_registry.py`）+ 契约 +1（`test_panel_wraps_module_cards_in_error_boundary`）；panel transpile OK；i18n +1 键 8×228 |
 
-测试基线：`uv run pytest plugin/plugins/neko_roast/tests -q` → **44 passed**；CLI check **0 error**（6 条模板 warning 允许）。`neko_roast` 已提交并推送到 `CN-Zephyr/N.E.K.O` 的 `Roast` 分支；后续改动继续保持在该分支，非本插件改动不混入本插件提交。
+测试基线：`uv run pytest plugin/plugins/neko_roast/tests -q` → **58 passed**；CLI check **0 error**（6 条模板 warning 允许）。`neko_roast` 已提交并推送到 `CN-Zephyr/N.E.K.O` 的 `Roast` 分支；后续改动继续保持在该分支，非本插件改动不混入本插件提交。
 
 ---
 
@@ -94,7 +94,7 @@ LiveEvent/ViewerEvent
 - **读状态**：`GET .../hosted-ui/context?kind=panel&id=main` → `.state.{config,live_connection,recent_results,recent_audit}`。
 - **改 py 后让运行态生效**：`POST .../stop` 再 `.../start`（重载子进程）。改 `panel.tsx` **不用重新构建前端**——plugin-manager 用 sucrase **运行时转译**（见 §3 人气值 UI 行），UI 里(重)开 neko_roast 面板即生效。注意 manifest `auto_start=false`：后端起来后插件**不会自动启动**，hosted-ui 路由要等 `POST /plugin/neko_roast/start` 才注册（否则 context/action 全 404）。
 - **配置改不动时（写竞争卡 10s）的绕过**：用 host 直写端点 `POST /plugin/neko_roast/config/hot-update`，body `{"config":{"neko_roast":{...}},"mode":"temporary"}` —— 走 host 直接热更（`handler_called`，不经插件 `update_own_config` IPC，不碰文件写竞争），即时生效且不落盘（`mode:temporary`，`plugin.toml` 不变，stop/start 即还原）。P2.5 真机验证就是靠它把 `dry_run`/`live_room_id` 热更进去，再 `connect_live_room`（此时 `room_id==config` 跳过 `set_live_room` 持久化）才连上。多个键放同一次请求里（merge 生效，不会互相覆盖）。
-- **测试**：仓库根 `D:\Users\zheng\Documents\Code\neko\N.E.K.O` 下 `uv run pytest plugin/plugins/neko_roast/tests -q`；CLI `uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast`。
+- **测试**：仓库根下运行 `uv run pytest plugin/plugins/neko_roast/tests -q`；CLI `uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast`。
 - **日志**：`%LOCALAPPDATA%\N.E.K.O\logs\`（主日志找 `send_lanlan_response`=猫猫开口、`free-vision-model`=头像进视觉）。
 - **测试房间** `81004`（匿名只读）。PowerShell 打印中文先 `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $env:PYTHONIOENCODING="utf-8"`。
 - **彻底重启**（万不得已）：杀光 neko python+electron+openfang+放端口 → `cd N.E.K.O; uv run python launcher.py`（后台）→ `cd NEKO-PC; npm start`（后台）。遇到疑似配置 / storage layout / hosted-ui 状态漂移时，优先用全量重启排除旧进程缓存。
@@ -113,10 +113,10 @@ LiveEvent/ViewerEvent
 ## 7. 待拍板（动手前先定）
 
 1. ~~**值优选策略**：爆量时全评 / `get_score` 优选 / 采样？~~ ✅ **已定**：`get_score` 开窗优选 + 首评即时（P2.5 已落地，见 development.md「直播事件中枢」）。
-3. **`automation_ops` 归属**：直播中心内的模块，还是它去调用的独立能力？
-4. **登录态 cookie**怎么拿/存（P5 前必答；P0–P3 匿名读弹幕即可）。
-5. ~~**退役旧 `bilibili_danmaku`**（与 neko_roast 同房间会双连冲突；旧插件有同款 from_danmaku bug）~~ ✅ **2026-06-16 软退役（fix + 标记弃用，未删除）**：①把同款 `from_danmaku` `info[7]` 字段错位崩溃 bug 移植修复到 `bilibili_danmaku/livedanmaku.py`（含 vip/svip 错位）；②README + manifest description 加弃用横幅（指向 neko_roast、警告勿同房双连）。**未删除**：它 git-tracked（38 文件）+ 被 CI/host 测试引用，且是 P5 复用的 `bili_auth_service.py` 代码源、neko_roast 尚未功能对等——完整删除待 neko_roast 对等后单独走 branch/PR。
-6. ~~**配置写竞争根治**（host 级，可能与在途 WIP 相关）~~ ✅ **插件侧已根治症状**（`update_config` 内存先行 + 带预算尽力持久化，见 §4 与 development.md「配置持久化与写竞争」）；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支。
+2. **`automation_ops` 归属**：直播中心内的模块，还是它去调用的独立能力？
+3. **登录态 cookie**怎么拿/存（P5 前必答；P0–P3 匿名读弹幕即可）。
+4. ~~**退役旧 `bilibili_danmaku`**（与 neko_roast 同房间会双连冲突；旧插件有同款 from_danmaku bug）~~ ✅ **2026-06-16 软退役（fix + 标记弃用，未删除）**：①把同款 `from_danmaku` `info[7]` 字段错位崩溃 bug 移植修复到 `bilibili_danmaku/livedanmaku.py`（含 vip/svip 错位）；②README + manifest description 加弃用横幅（指向 neko_roast、警告勿同房双连）。**未删除**：它 git-tracked（38 文件）+ 被 CI/host 测试引用，且是 P5 复用的 `bili_auth_service.py` 代码源、neko_roast 尚未功能对等——完整删除待 neko_roast 对等后单独走 branch/PR。
+5. ~~**配置写竞争根治**（host 级，可能与在途 WIP 相关）~~ ✅ **插件侧已根治症状**（`update_config` 内存先行 + 带预算尽力持久化，见 §4 与 development.md「配置持久化与写竞争」）；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支。
 
 ---
 
@@ -124,7 +124,7 @@ LiveEvent/ViewerEvent
 
 - 自适应焦点由 LLM 判断，非确定性；`pendant` 依赖 bilibili_api。
 - B站协议会变（WBI / 风控），需跟进。
-- `lookup_live_room` 的 HTTP 路径**无反 -352**（不像弹幕 WS 有临时 buvid3），频繁请求/同 IP 多连后查询会撞风控失败；已把失败码翻成人话（`bili_live_ingest._friendly_lookup_message`：-352→"风控校验失败，稍后重试/换网络/登录"，并在面板 Alert 显示该 message 而非死写"请检查房间号"），但**根治**需给 lookup 也加反 -352 或走登录态。注意：查询失败 ≠ 监听失败，弹幕 WS 路径通常仍可连。
+- `lookup_live_room` 的 HTTP 路径已做 A1 反 -352 降频（临时 buvid3、浏览器 headers、撞 -352 刷新重试一次、成功缓存），但重度风控 IP 仍可能失败；已把失败码翻成人话（`bili_live_ingest._friendly_lookup_message`：-352→"风控校验失败，稍后重试/换网络/登录"，并在面板 Alert 显示该 message 而非死写"请检查房间号"），**根治**需登录态（P5）。注意：查询失败 ≠ 监听失败，弹幕 WS 路径通常仍可连。
 - 插件侧配置持久化仍按“内存先行 + 4s 预算”看待：host 持久化异常时配置仍内存即时生效，但**那一次的持久化会失败**（`config_persist_timeout`），即该次改动不落盘——stop/start 后可能还原成 `plugin.toml` 里的值。无竞争 / 无异常时应秒过。
 - ~~富模型 `on_event` 尚未被 pipeline 消费~~ ✅ P2.5 已由 `live_events` 中枢消费，`on_danmaku`→pipeline 直连已退役；`medal_info` 字段顺序沿用旧实现，精确化留待事件族梳理。
 
@@ -160,10 +160,10 @@ LiveEvent/ViewerEvent
 ### B. 功能路线（详见 §6）
 
 4. ~~**P2.5 完整版（事件中枢地基）**：`LiveEvent` 统一信封、`EventBus` 真订阅分发（隔离 + 归属 + audit）、`InteractionModule` 补 `on_enable/on_disable`、窗口择优扩到 gift/SC/guard~~ ✅（见 §3「事件中枢地基」+ development.md「直播事件中枢（EventBus）」）。
-6. **P4 档案 / 记忆**：`contribution_rank` + `watch_time` + 跨场观众记忆（v0.1 观众档案只存 8 个字段，见 development.md「数据边界」）。
-7. **P5 私信 + 登录**：`bili_dm_ingest`（收）+ `bili_write_tools`（发，需登录态）+ 扫码登录（复用 `bilibili_danmaku/bili_auth_service.py`：QR 生成→轮询→拿 SESSDATA/bili_jct/buvid3）。**顺带根治 -352**（登录态风控等级断崖下降）。
-8. **P6 主播自动化**：`automation_ops`（复用 NEKO CUA/agent）。
-9. **收官：删除 bilibili_danmaku**：neko_roast 功能对等（尤其 P5 复用完其 `bili_auth_service.py`）后，正式删除旧插件 38 个 tracked 文件 + 清 CI/host 测试/前端引用，走 git branch/PR。当前为**软退役**（fix + 弃用横幅，见 §7-5）。
+5. **P4 档案 / 记忆**：`contribution_rank` + `watch_time` + 跨场观众记忆（v0.1 观众档案只存 8 个字段，见 development.md「数据边界」）。
+6. **P5 私信 + 登录**：`bili_dm_ingest`（收）+ `bili_write_tools`（发，需登录态）+ 扫码登录（复用 `bilibili_danmaku/bili_auth_service.py`：QR 生成→轮询→拿 SESSDATA/bili_jct/buvid3）。**顺带根治 -352**（登录态风控等级断崖下降）。
+7. **P6 主播自动化**：`automation_ops`（复用 NEKO CUA/agent）。
+8. **收官：删除 bilibili_danmaku**：neko_roast 功能对等（尤其 P5 复用完其 `bili_auth_service.py`）后，正式删除旧插件 38 个 tracked 文件 + 清 CI/host 测试/前端引用，走 git branch/PR。当前为**软退役**（fix + 弃用横幅，见 §7-5）。
 
 ---
 

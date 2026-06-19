@@ -4,7 +4,7 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是参考规格（厚），
 > 本文是上手向导（薄）。
 >
-> 更新日期：2026-06-19 · 测试基线 44 passed / 0 error
+> 更新日期：2026-06-19 · 测试基线 58 passed / 0 error
 
 ---
 
@@ -133,7 +133,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
 改了 `panel.tsx` 还要确认 sucrase 转译通过（前端 plugin-manager 用生产同款选项
-`transforms:['typescript','jsx']`, `jsxPragma:'h'`, `production`）。当前基线：**44 passed / 0 error**。
+`transforms:['typescript','jsx']`, `jsxPragma:'h'`, `production`）。当前基线：**58 passed / 0 error**。
 
 ## 11. 红线 / 硬规则
 
