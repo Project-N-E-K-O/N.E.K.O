@@ -4327,6 +4327,7 @@ def test_subtitle_shared_drops_legacy_panel_control_branches():
     ]
     for token in legacy_tokens:
         assert token not in shared_script
+    assert "if (refs.display.classList.contains('hidden')) return;" in shared_script
 
 
 @pytest.mark.frontend

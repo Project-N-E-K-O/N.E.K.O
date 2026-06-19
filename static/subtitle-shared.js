@@ -2099,6 +2099,7 @@
                 scheduleClean('subtitle-ui-pointerleave');
             };
             var onDocumentMouseMove = function(e) {
+                if (refs.display.classList.contains('hidden')) return;
                 var inside = isPointInsidePanel(e);
                 if (inside) {
                     panelPointerInside = true;
