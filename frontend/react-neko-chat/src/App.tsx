@@ -4069,8 +4069,8 @@ function CompactChatApp({
   const rotateCompactInputToolWheelSteps = useCallback((direction: 1 | -1, stepCount: number, options?: { forceFast?: boolean }) => {
     if (stepCount <= 0) return;
     markCompactInputToolWheelMotion(stepCount, options);
-    kickCompactInputToolWheelSelectionPointer(direction);
     for (let step = 0; step < stepCount; step += 1) {
+      kickCompactInputToolWheelSelectionPointer(direction);
       rotateCompactInputToolWheel(direction);
       playCompactToolWheelDetentSound();
     }
