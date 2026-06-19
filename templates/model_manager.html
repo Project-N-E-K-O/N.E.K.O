@@ -7,32 +7,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="live2d.manager">模型管理器 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
-    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
+    <script>
+        const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');
+        window.VRM_DEFAULT_LIGHTING = Object.freeze(JSON.parse(vrmDefaultLightingData?.textContent || '{}'));
+    </script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/model_manager.css">
+    <link rel="stylesheet" href="/static/css/model_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <link rel="stylesheet" href="/static/css/model-profiler.css">
     <script src="/static/theme-manager.js"></script>
 </head>
 
-<body>
+<body class="model-manager-page">
 
 
     <div id="sidebar">
         <div id="sidebar-controls" class="sidebar-controls">
         <div class="control-group">
             <button id="backToMainBtn" class="btn btn-primary" data-i18n-title="live2d.backToMain">
-                <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                 <span class="round-stroke-text" id="back-text" data-i18n="live2d.backToMain" data-text="Back to Main">返回主页</span>
-                <img src="/static/icons/paw_ui.png?v=1" alt="" class="paw-icon" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <img src="/static/icons/paw_ui.png?v=1" alt="" class="paw-icon" draggable="false" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">
             </button>
         </div>
 
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
+            <input type="file" id="pngtuber-model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
             <input type="file" id="mmd-file-upload" accept=".pmx,.pmd,.zip" style="display: none;">
             <input type="file" id="mmd-animation-file-upload" accept=".vmd" style="display: none;">
@@ -60,10 +65,12 @@
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
                     <option value="live3d">Live3D</option>
+                    <option value="pngtuber">PNGTuber</option>
                 </select>
                 <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
                     <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
                     <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="Live3D">Live3D</span></div>
+                    <div class="dropdown-item" data-value="pngtuber"><span class="dropdown-item-text" data-text="PNGTuber">PNGTuber</span></div>
                 </div>
             </div>
         </div>
@@ -231,6 +238,25 @@
                 <button id="play-expression-btn" class="btn btn-primary" type="button" disabled data-i18n-title="common.play" data-i18n-aria="common.play">
                     <img src="/static/icons/motion_play_icon.png?v=1" data-i18n-alt="common.play" class="expression-play-icon">
                 </button>
+            </div>
+        </div>
+
+        <div class="control-group" id="pngtuber-preview-group" style="display: none; flex-direction: column; align-items: stretch; gap: 10px;">
+            <div id="pngtuber-basic-preview-section" style="display: flex; flex-direction: column; gap: 6px;">
+                <button id="pngtuber-talk-preview-btn" class="btn btn-primary" type="button" aria-label="测试说话" data-i18n-title="live2d.pngtuberTalkPreview" data-i18n-aria="live2d.pngtuberTalkPreview">
+                    <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.pngtuberTalkPreview" data-text="测试说话">测试说话</span>
+                </button>
+            </div>
+            <div id="pngtuber-state-preview-section" style="display: none; flex-direction: column; gap: 6px;">
+                <div id="pngtuber-state-preview-list" style="position: relative;">
+                    <button id="pngtuber-state-preview-select-btn" class="btn btn-primary" type="button" aria-label="状态预览" data-i18n-title="live2d.pngtuberStatePreview" data-i18n-aria="live2d.pngtuberStatePreview">
+                        <span class="round-stroke-text" id="pngtuber-state-preview-select-text" data-i18n="live2d.pngtuberStatePreview" data-text="状态预览">状态预览</span>
+                    </button>
+                    <select id="pngtuber-state-preview-select" class="control-select" style="display: none;">
+                        <option value="" data-i18n="live2d.pngtuberStatePreview">状态预览</option>
+                    </select>
+                    <div id="pngtuber-state-preview-dropdown" class="pngtuber-state-preview-dropdown" style="display: none;"></div>
+                </div>
             </div>
         </div>
 
@@ -533,6 +559,7 @@
     <div id="mmd-container" class="hidden">
         <canvas id="mmd-canvas"></canvas>
     </div>
+    <div id="pngtuber-container" class="hidden"></div>
 
     <div id="delete-model-modal">
         <div class="modal-content">
@@ -635,8 +662,9 @@
     </script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
     <script src="/static/avatar-portrait.js"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
-    <script src="/static/js/model_manager.js"></script>
+    <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- 性能分析器 -->
     <script src="/static/model-profiler.js"></script>
@@ -664,6 +692,15 @@
                     return vrmManager || mmdManager || null;
                 };
 
+                const isLive2DActive = function() {
+                    const live2dContainer = document.getElementById('live2d-container');
+                    if (!isVisible(live2dContainer)) return false;
+                    if (!window.live2dManager?.currentModel) return false;
+                    const vrmReady = !!window.vrmManager?.currentModel?.vrm;
+                    const mmdReady = !!window.mmdManager?.currentModel?.mesh;
+                    return !vrmReady && !mmdReady;
+                };
+
                 window._profilerUI = new ModelProfilerUI({
                     container: mount,
                     collapsed: true,
@@ -673,6 +710,11 @@
                     getRenderer: function() {
                         var mgr = getActiveManager();
                         return mgr ? mgr.renderer : null;
+                    },
+                    getUnsupportedReason: function() {
+                        return isLive2DActive()
+                            ? { key: 'profiler.placeholder.live2dUnsupported', fallback: 'Live2D 模型暂不支持性能分析' }
+                            : null;
                     }
                 });
                 window._profilerUI.mount();
@@ -684,8 +726,11 @@
     <script src="/static/libs/driver.min.js"></script>
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
+    <script src="/static/tutorial/core/skip-controller.js?v=13"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v=13"></script>
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js?v=12"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v=13"></script>
+    <script src="/static/tutorial/core/universal-manager.js?v=13"></script>
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
     <!-- 初始化 -->

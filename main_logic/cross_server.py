@@ -1,9 +1,23 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-本模块用于将lanlan的消息转发至所有相关服务器，包括：
-1. Bullet Server。对实时内容进行监听并与直播间弹幕进行交互。
-2. Monitor Server。将实时内容转发至所有副终端。副终端会同步播放与主终端完全相同的内容，但不具备交互性。同一时间只有一个主终端可以交互。
-3. Memory Server。对对话历史进行总结、分析，并转为持久化记忆。
-注意，cross server是一个单向的转发器，不会将任何内容回传给主进程。如需回传，目前仍需要建立专门的双向连接。
+This module forwards lanlan's messages to all related servers, including:
+1. Bullet Server: listens to real-time content and interacts with live-stream chat (danmaku).
+2. Monitor Server: forwards real-time content to all secondary terminals. Secondary terminals play exactly the same content as the primary terminal but are non-interactive. Only one primary terminal can interact at a time.
+3. Memory Server: summarizes and analyzes conversation history and converts it into persistent memory.
+Note that the cross server is a one-way forwarder and never sends anything back to the main process. If a backchannel is needed, a dedicated bidirectional connection still has to be established.
 """
 
 import ssl
@@ -14,7 +28,6 @@ import asyncio
 import time
 import pickle
 import aiohttp
-from queue import Empty
 from config import (
     MONITOR_SERVER_PORT,
     MEMORY_SERVER_PORT,
@@ -88,11 +101,22 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
-def merge_unsynced_tail_assistants(chat_history, last_synced_index):
-    """合并 last_synced_index 之后末尾连续的 assistant 消息为一条。
+# Mirror schema + detection now lives in main_logic.mirror_meta;
+# cross_server only consumes those helpers — does not own the schema.
+from main_logic.mirror_meta import (
+    MIRROR_USER_INPUT_TYPES,
+    is_mirror_assistant_message,
+    is_mirror_turn_end_meta,
+)
 
-    只触碰未同步到 memory 的主动搭话消息，不影响已同步的正常回复。
-    返回被消除的消息数（0 表示无需合并）。
+_USER_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+
+
+def merge_unsynced_tail_assistants(chat_history, last_synced_index):
+    """Merge the trailing run of consecutive assistant messages after last_synced_index into one.
+
+    Only touches proactive-chat messages not yet synced to memory; synced normal replies
+    are unaffected. Returns the number of messages eliminated (0 means nothing to merge).
     """
     tail = chat_history[last_synced_index:]
     if len(tail) < 2:
@@ -185,7 +209,10 @@ def _should_persist_avatar_interaction_memory(
 def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
     attachments = []
     for raw in pending_user_images or []:
-        url = str(raw or "").strip()
+        if isinstance(raw, dict):
+            url = str(raw.get("data") or raw.get("url") or "").strip()
+        else:
+            url = str(raw or "").strip()
         if not url:
             continue
         attachments.append({
@@ -193,6 +220,85 @@ def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]
             "url": url,
         })
     return attachments
+
+
+def _append_pending_user_image(
+    pending_user_images: list,
+    data: object,
+    request_id: object,
+    input_type: object = None,
+) -> bool:
+    """Append a real user image entry and return whether one was queued.
+
+    Empty data means the caller only sent metadata, so the placeholder is skipped.
+    """
+    image_data = str(data or "").strip()
+    if not image_data:
+        return False
+    entry = {
+        "data": image_data,
+        "request_id": request_id or "",
+    }
+    if input_type:
+        entry["input_type"] = input_type
+    pending_user_images.append(entry)
+    if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+        del pending_user_images[:-PENDING_USER_IMAGES_MAX]
+    return True
+
+
+def _select_pending_user_images_for_turn(pending_user_images: list, request_id: object) -> list:
+    turn_request_id = str(request_id or "")
+    selected = []
+    for raw in pending_user_images or []:
+        if not isinstance(raw, dict):
+            if turn_request_id:
+                continue
+            selected.append(raw)
+            continue
+        image_request_id = str(raw.get("request_id") or "")
+        if image_request_id and image_request_id != turn_request_id:
+            continue
+        selected.append(raw)
+    return selected
+
+
+def _partition_pending_user_images_for_turn(
+    pending_user_images: list,
+    request_id: object,
+    *,
+    consume_untagged: bool = True,
+) -> tuple[list, list]:
+    turn_request_id = str(request_id or "")
+    selected = []
+    remaining = []
+    for raw in pending_user_images or []:
+        if not isinstance(raw, dict):
+            if not consume_untagged:
+                remaining.append(raw)
+                continue
+            if not turn_request_id:
+                selected.append(raw)
+            continue
+        image_request_id = str(raw.get("request_id") or "")
+        if image_request_id and image_request_id != turn_request_id:
+            remaining.append(raw)
+            continue
+        if not image_request_id and not consume_untagged:
+            remaining.append(raw)
+            continue
+        selected.append(raw)
+    return selected, remaining
+
+
+def _select_pending_user_images_for_session_end(pending_user_images: list, request_id: object) -> list:
+    session_request_id = str(request_id or "")
+    if not session_request_id:
+        for raw in reversed(pending_user_images or []):
+            if isinstance(raw, dict) and str(raw.get("request_id") or ""):
+                session_request_id = str(raw.get("request_id") or "")
+                break
+    return _select_pending_user_images_for_turn(pending_user_images, session_request_id)
 
 
 def _build_recent_analyze_messages(
@@ -241,8 +347,52 @@ def _build_recent_analyze_messages(
     return [msg for msg in recent if msg.get('content') or msg.get('attachments')]
 
 
-async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
-    """保持 WebSocket 连接活跃的读取循环"""
+async def _safe_close(target) -> None:
+    """Unified fallback for closing ws / session. We are already in the cleanup phase, so a failed close must not affect the rest of the flow."""
+    if target is None:
+        return
+    try:
+        await target.close()
+    except Exception as e:
+        logger.debug(f"_safe_close: ignored exception during close: {e}")
+
+
+class _WSSlot:
+    """Shared state for a single ws endpoint. Read/written by the main loop, reader, and maintainer.
+
+    The main loop only reads ``ws`` / ``dead_event`` and marks them dead; it never calls
+    ws_connect / close. The entire lifecycle is managed by :func:`_slot_maintainer` in a
+    separate task.
+    """
+    __slots__ = ("name", "url", "lanlan_name", "ws_kwargs",
+                 "ws", "session", "reader", "maintainer", "dead_event")
+
+    def __init__(self, name: str, url: str, lanlan_name: str, *, ws_kwargs=None):
+        self.name = name
+        self.url = url
+        self.lanlan_name = lanlan_name
+        self.ws_kwargs = ws_kwargs or {}
+        self.ws: aiohttp.ClientWebSocketResponse | None = None
+        self.session: aiohttp.ClientSession | None = None
+        self.reader: asyncio.Task | None = None
+        self.maintainer: asyncio.Task | None = None
+        self.dead_event = asyncio.Event()
+        self.dead_event.set()  # 初始即"死" → maintainer 第一次 wait 立即返回，触发首连
+
+
+def _mark_dead(slot: _WSSlot) -> None:
+    """Mark the slot as disconnected. Idempotent. Called both when the main loop's send fails and when the reader detects a close."""
+    slot.ws = None
+    slot.dead_event.set()
+
+
+async def _slot_reader(slot: _WSSlot, ws: aiohttp.ClientWebSocketResponse) -> None:
+    """Read loop bound to a specific ws instance. Detects close → mark_dead wakes the maintainer.
+
+    The ws is passed as a parameter instead of read from the slot, so that an old reader
+    cannot mistakenly mark a new ws dead after the maintainer has already replaced
+    slot.ws. Does not call mark_dead when actively cancelled by the maintainer.
+    """
     try:
         while True:
             try:
@@ -252,9 +402,111 @@ async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
             except asyncio.TimeoutError:
                 pass
             except asyncio.CancelledError:
-                break
+                return
     except Exception:
         pass
+    # 仅当当前 slot.ws 仍是这条 ws 时才标死，避免覆盖 maintainer 刚装上的新连接
+    if slot.ws is ws:
+        _mark_dead(slot)
+
+
+async def _slot_maintainer(
+    slot: _WSSlot,
+    *,
+    backoff_min: float = 0.25,
+    backoff_max: float = 1.5,
+) -> None:
+    """Per-slot reconnect loop, event-driven + exponential backoff.
+
+    The monitor is an optional add-on; when absent, this task silently retries at the
+    backoff_max cadence and the main sync loop is completely unaware.
+
+    Cycle guarantee: each attempt = ``wait_for(ws_connect, timeout=backoff)``, so the
+    cycle duration is clamped by backoff on both sides —
+    - upper bound: connect hangs until timeout before failing, cycle ≈ backoff
+    - lower bound: connect fails instantly (refused), sleep pads up to backoff, cycle = backoff
+
+    backoff_max=1.5s means "worst case 1.5s polling". On Windows a bare ws_connect
+    failure can take ~4s (TCP SYN timeout); without wait_for this guarantee would break.
+    """
+    backoff = backoff_min
+    while True:
+        await slot.dead_event.wait()
+
+        # 旧 reader / session 异步清理（不阻塞重连本身）
+        old_reader = slot.reader
+        old_session = slot.session
+        slot.reader = None
+        slot.session = None
+        if old_reader is not None:
+            old_reader.cancel()
+        if old_session is not None:
+            asyncio.create_task(_safe_close(old_session))
+
+        new_session = aiohttp.ClientSession()
+        slot.session = new_session
+        cycle_start = time.monotonic()
+        try:
+            new_ws = await asyncio.wait_for(
+                new_session.ws_connect(slot.url, **slot.ws_kwargs),
+                timeout=backoff,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(
+                f"[{slot.lanlan_name}] {slot.name} ws_connect 失败: "
+                f"{type(e).__name__}: {e} (backoff {backoff:.2f}s)"
+            )
+            # 失败的 session 立即后台收，避免 lingering
+            asyncio.create_task(_safe_close(new_session))
+            slot.session = None
+            # 拉到 backoff 周期：fast-fail (refused, ms 级) 时补 sleep；
+            # timeout 到点失败时基本不 sleep 直接进下一轮
+            elapsed = time.monotonic() - cycle_start
+            if elapsed < backoff:
+                await asyncio.sleep(backoff - elapsed)
+            backoff = min(backoff * 2, backoff_max)
+            continue  # dead_event 仍 set，下轮立即再试
+
+        # 顺序很重要：先把 ws 装上 + 清 dead_event，再创建 reader。
+        # 否则 reader 可能在 clear() 之前就 mark_dead，clear 会把这个信号擦掉。
+        slot.ws = new_ws
+        slot.dead_event.clear()
+        slot.reader = asyncio.create_task(
+            _slot_reader(slot, new_ws),
+            name=f"WSReader-{slot.name}-{slot.lanlan_name}",
+        )
+        backoff = backoff_min
+
+
+async def _try_send_json(slot: _WSSlot | None, payload: dict) -> bool:
+    """Fail-soft send. Returns False when the slot is missing / ws is dead / send raises; never propagates upward."""
+    if slot is None:
+        return False
+    ws = slot.ws
+    if ws is None:
+        return False
+    try:
+        await ws.send_json(payload)
+        return True
+    except Exception:
+        _mark_dead(slot)
+        return False
+
+
+async def _try_send_bytes(slot: _WSSlot | None, payload: bytes) -> bool:
+    if slot is None:
+        return False
+    ws = slot.ws
+    if ws is None:
+        return False
+    try:
+        await ws.send_bytes(payload)
+        return True
+    except Exception:
+        _mark_dead(slot)
+        return False
 
 
 async def _post_memory_server(
@@ -336,74 +588,129 @@ def _mark_memory_cache_exception(
         logger.warning(msg)
 
 
-def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", config=None, status_callback=None):
-    """独立进程运行的同步连接器
+async def run_sync_connector(
+    message_queue: asyncio.Queue,
+    lanlan_name,
+    sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
+    config=None,
+    status_callback=None,
+):
+    """Async-native sync connector, running on the caller's main event loop.
+
+    Architecture:
+    - Main loop: blocks on ``await message_queue.get()`` for messages, then pushes data
+      into the ws via ``_try_send_*``; fail-soft skips when the ws is dead/missing.
+      **The main loop never calls ws_connect / session.close / ws.close**, so a monitor
+      that hasn't started or is disconnected never blocks other await paths like memory.
+    - One :func:`_slot_maintainer` background task per ws: woken by ``dead_event`` +
+      exponential-backoff reconnect (0.25s → capped at 2s). Retries silently on failure
+      without disturbing the main loop.
+    - One :func:`_slot_reader` background task per live ws: detects server close →
+      ``_mark_dead`` → wakes the maintainer.
+    - The application-level heartbeat has been removed: aiohttp's underlying
+      ``heartbeat=10`` ping/pong turns a dead connection into a ``CLOSED`` the reader
+      can see within ~10s.
 
     Args:
-        status_callback: Optional callable(str) -> None, thread-safe, invoked
-            on the caller's event loop to push status/error messages to the frontend.
+        status_callback: optional ``Callable[[str], None]``. Runs on the main loop, so it
+            may call ``asyncio.create_task(...)`` directly without
+            ``run_coroutine_threadsafe``.
     """
-
-    # 创建一个新的事件循环
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    chat_history = []
+    chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
     if config is None:
         config = {}
     config = default_config | config
 
-    async def maintain_connection(chat_history, lanlan_name):
-        sync_session = None
-        sync_ws = None
-        sync_reader = None
-        binary_session = None
-        binary_ws = None
-        binary_reader = None
-        bullet_session = None
-        bullet_ws = None
-        bullet_reader = None
+    # 历史保留：旧 thread 版本里多处 ``if shutdown_event.is_set(): break`` 用于
+    # 子进程时代跳过对正在关闭的 memory_server 的 HTTP 调用。改 async 后取消
+    # 由 await 点自然 raise CancelledError 顶替，guard 不再有意义。统一替换成
+    # 永远 False 的 stub，避免大面积重排缩进；这些 guard 现在是死代码，但语义
+    # 仍然正确（不阻挡正常路径），后续清理 PR 可一并删。
+    class _NeverShutdown:
+        @staticmethod
+        def is_set() -> bool:
+            return False
+    shutdown_event = _NeverShutdown()
 
-        user_input_cache = ''
-        text_output_cache = '' # lanlan的当前消息
-        current_turn = 'user'
-        had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
-        current_turn_start_index = 0
-        last_screen = None
-        pending_user_images = []
-        last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
-        avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
-        memory_cache_health_state = {
-            MEMORY_CACHE_SCOPE_AVATAR: False,
-            MEMORY_CACHE_SCOPE_TURN_END: False,
-        }
+    # ws slots：config 里关掉的端点压根不创建 maintainer，零成本。
+    sync_slot: _WSSlot | None = None
+    binary_slot: _WSSlot | None = None
+    bullet_slot: _WSSlot | None = None
+    if config['monitor']:
+        sync_slot = _WSSlot(
+            'sync',
+            f"{sync_server_url}/sync/{lanlan_name}",
+            lanlan_name,
+            ws_kwargs={'heartbeat': 10},
+        )
+        binary_slot = _WSSlot(
+            'binary',
+            f"{sync_server_url}/sync_binary/{lanlan_name}",
+            lanlan_name,
+            ws_kwargs={'heartbeat': 10},
+        )
+    if config['bullet']:
+        bullet_slot = _WSSlot(
+            'bullet',
+            f"wss://127.0.0.1:{COMMENTER_SERVER_PORT}/sync/{lanlan_name}",
+            lanlan_name,
+            ws_kwargs={'ssl': ssl._create_unverified_context()},
+        )
+    slots: list[_WSSlot] = [s for s in (sync_slot, binary_slot, bullet_slot) if s is not None]
+    for s in slots:
+        s.maintainer = asyncio.create_task(
+            _slot_maintainer(s),
+            name=f"WSMaint-{s.name}-{lanlan_name}",
+        )
 
-        while not shutdown_event.is_set():
-            try:
-                # 检查消息队列
-                while not message_queue.empty():
-                    try:
-                        message = message_queue.get_nowait()
-                    except Empty:
-                        break
+    user_input_cache = ''
+    text_output_cache = ''  # lanlan的当前消息
+    text_output_request_id = None
+    current_turn = 'user'
+    had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
+    current_turn_start_index = 0
+    last_screen = None
+    pending_user_images: list = []
+    last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
+    avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
+    memory_cache_health_state = {
+        MEMORY_CACHE_SCOPE_AVATAR: False,
+        MEMORY_CACHE_SCOPE_TURN_END: False,
+    }
 
+    try:
+        while True:
+            # 阻塞等消息。无消息时主 loop 完全沉默——ws 维护已下沉到 _slot_maintainer，
+            # 不再需要周期唤醒做 reconnect/heartbeat 巡检。
+            message = await message_queue.get()  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
+
+            if message is not None:
+                try:
                     if message["type"] == "json":
-                        # Forward to monitor if enabled
-                        if config['monitor'] and sync_ws:
-                            await sync_ws.send_json(message["data"])
+                        # Forward to monitor if enabled (fail-soft: monitor 不在直接跳过)
+                        await _try_send_json(sync_slot, message["data"])
 
                         # Only treat assistant turn when it's a gemini_response
                         if message["data"].get("type") == "gemini_response":
+                            if is_mirror_assistant_message(message["data"]):
+                                logger.debug(
+                                    "[%s] mirror assistant line skipped for ordinary memory: source=%s",
+                                    lanlan_name,
+                                    (message["data"].get("metadata") or {}).get("source"),
+                                )
+                                continue
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
                                     user_input_cache = ''
                                 current_turn = 'assistant'
+                                text_output_request_id = message["data"].get("request_id")
                                 current_turn_start_index = len(chat_history)
                                 text_output_cache = datetime.now().strftime('[%Y%m%d %a %H:%M] ')
 
-                                if config['bullet'] and bullet_ws:
+                                if bullet_slot is not None and bullet_slot.ws is not None:
                                     try:
                                         last_user = last_ai = None
                                         for i in chat_history[::-1]:
@@ -421,7 +728,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             "screen": last_screen
                                         }
                                         binary_message = pickle.dumps(message_data)
-                                        await bullet_ws.send_bytes(binary_message)
+                                        await _try_send_bytes(bullet_slot, binary_message)
                                     except Exception as e:
                                         logger.error(f"[{lanlan_name}] Error when sending to commenter: {e}")
 
@@ -432,31 +739,39 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 pass
 
                     elif message["type"] == "binary":
-                        if config['monitor'] and binary_ws:
-                            await binary_ws.send_bytes(message["data"])
+                        await _try_send_bytes(binary_slot, message["data"])
 
                     elif message["type"] == "user":  # 准备转录
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
-                            if user_input_cache == '' and config['monitor'] and sync_ws:
-                                await sync_ws.send_json({'type': 'user_activity'}) #用于打断前端声音播放
+                            if user_input_cache == '':
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
                             user_input_cache += data
                             # 发送用户转录到 monitor 供副终端显示
-                            if config['monitor'] and sync_ws and data:
-                                await sync_ws.send_json({'type': 'user_transcript', 'text': data})
-                        elif input_type == "screen":
-                            last_screen = data
                             if data:
-                                pending_user_images.append(data)
-                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
-                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
-                        elif input_type == "camera":
-                            last_screen = data
+                                await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
+                        elif input_type in MIRROR_USER_INPUT_TYPES:
+                            # Mirror channel user inputs (e.g. text/voice that
+                            # was hijacked into an external controller) are
+                            # logged for monitor display but **never** flushed
+                            # into chat_history as a UserMessage — the chat
+                            # LLM did not "hear" them; they belong to the
+                            # external controller's transcript log.
                             if data:
-                                pending_user_images.append(data)
-                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
-                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
+                                await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
+                            await _try_send_json(sync_slot, {'type': 'user_activity'})
+                        elif input_type in _USER_IMAGE_INPUT_TYPES:
+                            if input_type in {"screen", "camera"}:
+                                last_screen = data
+                            appended_image = _append_pending_user_image(
+                                pending_user_images,
+                                data,
+                                message["data"].get("request_id") or "",
+                                input_type,
+                            )
+                            if not appended_image and message["data"].get("has_image"):
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})
 
                     elif message["type"] == "system":
                         try:
@@ -465,10 +780,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append({'role': 'system', 'content': [
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                             
                             elif message["data"] == "response_discarded_clear":
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
+                                text_output_request_id = None
                             
                             if message["data"] == "renew session":
                                 # 检查是否正在关闭
@@ -488,6 +805,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -532,18 +850,57 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
 
                             if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
                                 is_agent_callback_turn_end = (message["data"] == 'turn end agent_callback')
+                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
+                                # 的 pending_* 状态。game-only 足球台词在这里先截断，避免
+                                # 未打标的兼容镜像文本先 append 到 ordinary chat_history。
+                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
+                                if not isinstance(turn_end_meta, dict):
+                                    turn_end_meta = None
+                                turn_request_id = message.get("request_id") if isinstance(message, dict) else None
+                                was_assistant_turn = current_turn == 'assistant'
+                                if is_mirror_turn_end_meta(turn_end_meta):
+                                    # Mirror turn-end: mirror assistant messages
+                                    # never enter ``text_output_cache`` (they
+                                    # ``continue`` at line ~595), and mirror user
+                                    # inputs never enter ``user_input_cache``
+                                    # (policy A at line ~660), so we must NOT
+                                    # touch user-side state — a pre-takeover real
+                                    # user utterance is still legitimate and must
+                                    # be flushed when the post-takeover assistant
+                                    # turn arrives.
+                                    #
+                                    # BUT if takeover started mid-ordinary-
+                                    # assistant turn, that turn becomes orphaned:
+                                    # ``current_turn`` stays ``'assistant'`` and
+                                    # ``text_output_cache`` holds partial text
+                                    # from a turn that never completes.  Without
+                                    # cleanup the next post-takeover real
+                                    # ``gemini_response`` is treated as a
+                                    # continuation, skipping the ``current_turn
+                                    # == 'user'`` block that flushes
+                                    # ``user_input_cache`` into chat_history → the
+                                    # user's input is silently dropped.
+                                    # So reset assistant-side state when the
+                                    # current ordinary turn was in flight, leave
+                                    # user-side alone.
+                                    if was_assistant_turn:
+                                        text_output_cache = ''
+                                        text_output_request_id = None
+                                        current_turn = 'user'
+                                        current_turn_start_index = len(chat_history)
+                                        had_user_input_this_turn = False
+                                    await _try_send_json(sync_slot, {'type': 'turn end'})
+                                    logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
+                                    continue
                                 current_turn = 'user'
                                 text_output_cache = normalize_text(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
-                                # 的 pending_* 状态。kind == 'avatar_interaction' 才进入隔离
-                                # 路径，其它情况按 proactive / normal 处理。
-                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
-                                if not isinstance(turn_end_meta, dict):
-                                    turn_end_meta = None
+                                text_output_request_id = None
+                                # kind == 'avatar_interaction' 才进入隔离路径，其它情况按
+                                # proactive / normal 处理。
                                 # meta 由 core 端 turn end 原子打标；avatar 互动若被用户
                                 # 接管则 core 会清空 meta，所以这里不再需要 had_user_input
                                 # 二次兜底，避免"用户语音缓存刚好先入队"误落回普通路径。
@@ -559,8 +916,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 主动搭话（无用户输入）时：合并未同步的连续 assistant 消息，不写入 /cache
                                 if not had_user_input_this_turn and not is_avatar_interaction_turn:
                                     merge_unsynced_tail_assistants(chat_history, last_synced_index)
-                                if config['monitor'] and sync_ws:
-                                    await sync_ws.send_json({'type': 'turn end'})
+                                await _try_send_json(sync_slot, {'type': 'turn end'})
                                 if is_avatar_interaction_turn:
                                     # Avatar tool turns are handled in an isolated
                                     # memory path so they never leak into analyzer
@@ -635,11 +991,18 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
                                 # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
                                 if not shutdown_event.is_set():
+                                    selected_pending_user_images, remaining_pending_user_images = (
+                                        _partition_pending_user_images_for_turn(
+                                            pending_user_images,
+                                            turn_request_id,
+                                            consume_untagged=had_user_input_this_turn,
+                                        )
+                                    )
                                     try:
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            pending_user_images,
+                                            selected_pending_user_images,
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
@@ -670,7 +1033,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     finally:
-                                        pending_user_images = []
+                                        pending_user_images = remaining_pending_user_images
 
                                 # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
@@ -723,6 +1086,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -734,7 +1098,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
                                             chat_history,
-                                            pending_user_images,
+                                            _select_pending_user_images_for_session_end(
+                                                pending_user_images,
+                                                message.get("request_id"),
+                                            ),
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
@@ -803,151 +1170,33 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 last_synced_index = 0
                         except Exception as e:
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
-                    await asyncio.sleep(0.02)
-            except Exception as e:
-                logger.error(f"[{lanlan_name}] Message processing error: {e}", exc_info=True)
-                await asyncio.sleep(0.02)
-            
-            # WebSocket 连接管理（独立于消息处理）
-            try:
-                # 如果连接不存在，尝试建立连接
-                try:
-                    if config['monitor']:
-                        if sync_ws is None:
-                            if sync_session:
-                                await sync_session.close()
-                            sync_session = aiohttp.ClientSession()
-                            try:
-                                sync_ws = await sync_session.ws_connect(
-                                    f"{sync_server_url}/sync/{lanlan_name}",
-                                    heartbeat=10,
-                                )
-                                # print(f"[Sync Process] [{lanlan_name}] 文本连接已建立")
-                                sync_reader = asyncio.create_task(keep_reader(sync_ws))
-                            except Exception:
-                                # logger.warning(f"[{lanlan_name}] Monitor文本连接失败: {e}")
-                                sync_ws = None
-
-                        if binary_ws is None:
-                            if binary_session:
-                                await binary_session.close()
-                            binary_session = aiohttp.ClientSession()
-                            try:
-                                binary_ws = await binary_session.ws_connect(
-                                    f"{sync_server_url}/sync_binary/{lanlan_name}",
-                                    heartbeat=10,
-                                )
-                                # print(f"[Sync Process] [{lanlan_name}] 二进制连接已建立")
-                                binary_reader = asyncio.create_task(keep_reader(binary_ws))
-                            except Exception:
-                                # logger.warning(f"[{lanlan_name}] Monitor二进制连接失败: {e}")
-                                binary_ws = None
-
-                        # 发送心跳（捕获异常以检测连接断开）
-                        if config['monitor'] and sync_ws:
-                            try:
-                                await sync_ws.send_json({"type": "heartbeat", "timestamp": time.time()})
-                            except Exception:
-                                sync_ws = None
-                                
-                        if config['monitor'] and binary_ws:
-                            try:
-                                await binary_ws.send_bytes(b'\x00\x01\x02\x03')
-                            except Exception:
-                                binary_ws = None
-
                 except Exception as e:
-                    logger.error(f"[{lanlan_name}] Monitor连接异常: {e}", exc_info=True)
-                    sync_ws = None
-                    binary_ws = None
+                    logger.error(f"[{lanlan_name}] Message processing error: {e}", exc_info=True)
 
-                try:
-                    if config['bullet']:
-                        if bullet_ws is None:
-                            if bullet_session:
-                                await bullet_session.close()
-                            bullet_session = aiohttp.ClientSession()
-                            try:
-                                bullet_ws = await bullet_session.ws_connect(
-                                    f"wss://127.0.0.1:{COMMENTER_SERVER_PORT}/sync/{lanlan_name}",
-                                    ssl=ssl._create_unverified_context()
-                                )
-                                # print(f"[Sync Process] [{lanlan_name}] Bullet连接已建立")
-                                bullet_reader = asyncio.create_task(keep_reader(bullet_ws))
-                            except Exception:
-                                # Bullet 连接失败是正常的（该服务可能未启动）
-                                bullet_ws = None
-                except Exception as e:
-                    logger.error(f"[{lanlan_name}] Bullet连接异常: {e}", exc_info=True)
-                    bullet_ws = None
-                
-                # 短暂休眠避免CPU占用过高
-                await asyncio.sleep(0.02)
+            # ws 维护已下沉到独立 _slot_maintainer task，主 loop 不再做巡检。
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                # WebSocket 连接异常，标记连接为失败状态
-                logger.error(f"[{lanlan_name}] WebSocket连接异常: {e}")
-                sync_ws = None
-                binary_ws = None
-                bullet_ws = None
-                await asyncio.sleep(0.03)  # 重连前等待
+    except asyncio.CancelledError:
+        raise
+    finally:
+        # cleanup 顺序：先 cancel maintainer + reader（停止新建连接 / 读循环），
+        # 再 close 现存的 ws + session。maintainer 自己持有 session 引用，cancel
+        # 后我们从 slot 里读出来一并关。
+        for s in slots:
+            if s.maintainer is not None:
+                s.maintainer.cancel()
+            if s.reader is not None:
+                s.reader.cancel()
 
-        # 关闭资源（并行：3 个 ws + 3 个 session 互相独立）
-        async def _safe_close(target):
-            if target is None:
-                return
-            try:
-                await target.close()
-            except Exception as e:
-                # 已进入重连/退出阶段，close 失败不影响后续流程；记 debug 方便排障
-                logger.debug(f"_safe_close: ignored exception during close: {e}")
+        bg_tasks = [t for s in slots for t in (s.maintainer, s.reader) if t is not None]
+        if bg_tasks:
+            await asyncio.gather(*bg_tasks, return_exceptions=True)
 
         await asyncio.gather(
-            _safe_close(sync_ws), _safe_close(binary_ws), _safe_close(bullet_ws),
-            _safe_close(sync_session), _safe_close(binary_session), _safe_close(bullet_session),
+            *(_safe_close(s.ws) for s in slots),
+            *(_safe_close(s.session) for s in slots),
             return_exceptions=True,
         )
-        for rdr in [sync_reader, binary_reader, bullet_reader]:
-            if rdr:
-                try:
-                    rdr.cancel()
-                except Exception:
-                    pass
-
-    async def _shutdown_watcher():
-        """轮询 shutdown_event，一旦触发就让 maintain_connection 自然退出并执行清理"""
-        while not shutdown_event.is_set():
-            await asyncio.sleep(0.2)
-        # shutdown_event 已触发，maintain_connection 的 while 循环会在下次检查时退出，
-        # 并执行自身的清理逻辑（关闭 WebSocket / aiohttp session / reader task）。
-        # 不再强制取消所有 task，避免打断 maintain_connection 的 finally/cleanup 流程。
-
-    async def _run_with_shutdown():
-        watcher = asyncio.ensure_future(_shutdown_watcher())
-        try:
-            await maintain_connection(chat_history, lanlan_name)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            watcher.cancel()
-            try:
-                await watcher
-            except asyncio.CancelledError:
-                pass
-
-    try:
-        loop.run_until_complete(_run_with_shutdown())
-    except Exception as e:
-        logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
-    finally:
-        try:
-            from utils.internal_http_client import aclose_internal_http_client_current_loop
-
-            loop.run_until_complete(aclose_internal_http_client_current_loop())
-        except Exception:
-            pass
-        loop.close()
-        # 线程退出阶段测试环境可能已经关闭日志捕获流；这里避免再做收尾 info 日志，
-        # 以免 shutdown 正常完成时反而刷出 logging error 噪音。
+        # 注意：不在这里调用 aclose_internal_http_client_current_loop()。
+        # 旧版子进程/独立线程拥有自己的 event loop，其 http client 也是 per-loop
+        # 缓存的，退出时需要 close。现在合并到主 loop，client 由主代码共享，
+        # 我们没有所有权，不应当 close。

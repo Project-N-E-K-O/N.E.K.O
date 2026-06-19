@@ -11,12 +11,9 @@
           <el-tag v-if="plugin.type === 'extension'" size="small" type="primary" effect="plain" class="type-tag">
             {{ t('plugins.extension') }}
           </el-tag>
-          <h3 class="plugin-name">{{ plugin.name }}</h3>
+          <h3 class="plugin-name">{{ displayText.name }}</h3>
           <StatusIndicator :status="plugin.status || 'stopped'" />
-          <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
-            {{ t('plugins.disabled') }}
-          </el-tag>
-          <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
+          <el-tag v-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
             {{ t('plugins.manualStart') }}
           </el-tag>
         </div>
@@ -24,7 +21,7 @@
     </template>
 
     <div class="plugin-card-body">
-      <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
+      <p class="plugin-description">{{ displayText.description || t('common.noData') }}</p>
 
       <PluginMetricsInline
         v-if="showMetrics"
@@ -32,13 +29,28 @@
         :plugin-status="plugin.status || 'stopped'"
       />
 
-      <div class="plugin-meta">
-        <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
-        <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
-          → {{ plugin.host_plugin_id }}
-        </span>
+      <SourceDetailRow
+        v-if="showSourceDetail"
+        :install-source="plugin.install_source"
+        :latest-version="latestVersion"
+      />
+
+      <footer class="plugin-card-footer">
+        <div class="plugin-card-footer__main">
+          <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
+            <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
+          </el-tag>
+          <SourceTag
+            :source="plugin.install_source?.source"
+            :has-update="hasUpdate"
+            compact
+          />
+          <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
+            → {{ plugin.host_plugin_id }}
+          </span>
+        </div>
         <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
-      </div>
+      </footer>
     </div>
   </el-card>
 </template>
@@ -48,20 +60,28 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
-import type { PluginMeta } from '@/types/api'
+import SourceTag from '@/components/plugin/SourceTag.vue'
+import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
+import { useMarketVersionsStore } from '@/stores/marketVersions'
+import { hasNewerVersion } from '@/utils/version'
+import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
+import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string; host_plugin_id?: string }
   isSelected?: boolean
   showMetrics?: boolean
+  showSourceDetail?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
   showMetrics: false,
+  showSourceDetail: false,
 })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const marketVersions = useMarketVersionsStore()
 
 defineEmits<{
   click: []
@@ -71,10 +91,34 @@ defineEmits<{
 const entryCount = computed(() => {
   return props.plugin.entries?.length || 0
 })
+
+const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
+
+/** Look up the market's latest version for this plugin, IF it was installed
+ *  from the market. Returns null for non-market / unknown plugins. Callers
+ *  (PluginList) kick off the market refresh when they turn the "show source
+ *  detail" toggle on, so by the time we render here the store is populated
+ *  (or never will be, if market is offline — in which case latest stays
+ *  null and no "update available" badge appears). */
+const latestVersion = computed<string | null>(() => {
+  const src = props.plugin.install_source
+  if (!src || src.source !== 'market') return null
+  const detail = src.source_detail as PluginInstallSourceDetailMarket | null
+  if (!detail?.plugin_market_id) return null
+  return marketVersions.latest(detail.plugin_market_id, detail.channel)
+})
+
+const hasUpdate = computed<boolean>(() => {
+  const src = props.plugin.install_source
+  if (!src || src.source !== 'market') return false
+  const detail = src.source_detail as PluginInstallSourceDetailMarket | null
+  return hasNewerVersion(detail?.version, latestVersion.value)
+})
 </script>
 
 <style scoped>
 .plugin-card {
+  container-type: inline-size;
   cursor: pointer;
   border-radius: var(--plugin-entry-radius, 16px);
   transition:
@@ -121,6 +165,8 @@ const entryCount = computed(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
 .plugin-description {
@@ -134,23 +180,60 @@ const entryCount = computed(() => {
   overflow: hidden;
 }
 
-.plugin-meta {
-  display: flex;
+.plugin-card-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
   margin-top: auto;
   padding-top: 10px;
+  min-width: 0;
+}
+
+.plugin-card-footer__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.plugin-version-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.plugin-version-tag :deep(.el-tag__content) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-version-tag__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .plugin-entries {
-  margin-left: auto;
+  justify-self: end;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .plugin-host {
   color: var(--el-color-primary);
   font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -161,6 +244,17 @@ const entryCount = computed(() => {
 @media (max-width: 640px) {
   .plugin-info {
     align-items: flex-start;
+  }
+}
+
+@container (max-width: 220px) {
+  .plugin-card-footer {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .plugin-entries {
+    justify-self: start;
   }
 }
 </style>

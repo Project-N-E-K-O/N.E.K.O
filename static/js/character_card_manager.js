@@ -5,6 +5,17 @@ let _reservedFieldsReady = null;
 
 const SYSTEM_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.SYSTEM_RESERVED_FIELDS_FALLBACK;
 const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_FIELDS_FALLBACK;
+const FRONTEND_FORCE_HIDDEN_FIELDS = [
+    'live2d_item_id',
+    'live2d_idle_animation',
+    '_reserved',
+    '_field_order',
+    'item_id',
+    'idleAnimation',
+    'idleAnimations',
+    'mmd_idle_animation',
+    'mmd_idle_animations',
+];
 
 function _safeArray(value) {
     return ReservedFieldsUtils._safeArray(value);
@@ -34,15 +45,146 @@ function _getReservedConfigOrFallback() {
 
 function getWorkshopReservedFields() {
     const cfg = _getReservedConfigOrFallback();
-    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations']
-        .filter(f => cfg.all_reserved_fields.includes(f));
-    return _uniqueFields([...cfg.workshop_reserved_fields, ...extraSystemFields]);
+    return _uniqueFields([...cfg.workshop_reserved_fields, ...FRONTEND_FORCE_HIDDEN_FIELDS]);
 }
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    // 完全遵照角色管理：隐藏所有 system + workshop 保留字段
-    return _uniqueFields([...cfg.all_reserved_fields]);
+    // 即使运行中的后端还没重启、返回了旧保留字段列表，也不要把这些兼容字段渲染成普通设定。
+    return _uniqueFields([...cfg.all_reserved_fields, ...FRONTEND_FORCE_HIDDEN_FIELDS]);
+}
+
+function normalizeCharacterFieldName(fieldName) {
+    return String(fieldName ?? '').trim();
+}
+
+function isCharacterReservedFieldName(fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (!normalizedFieldName) return false;
+    return getWorkshopHiddenFields().includes(normalizedFieldName);
+}
+
+function normalizeCharacterFieldValue(value, fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (normalizedFieldName === '档案名') {
+        return typeof value === 'string' ? value.trim() : value;
+    }
+    return value;
+}
+
+function collectCharacterFields(form, options = {}) {
+    const {
+        baseData = {},
+        excludeFieldNames = [],
+        includeProfileName = false,
+    } = options;
+    const data = {};
+    const seen = new Set();
+    const fieldOrder = [];
+
+    Object.entries(baseData || {}).forEach(([key, value]) => {
+        const normalizedKey = normalizeCharacterFieldName(key);
+        if (!normalizedKey) return;
+        data[normalizedKey] = value;
+        seen.add(normalizedKey);
+    });
+
+    const excluded = new Set(
+        (excludeFieldNames || []).map(normalizeCharacterFieldName).filter(Boolean)
+    );
+    if (!includeProfileName) {
+        excluded.add('档案名');
+    }
+
+    for (const [rawKey, rawValue] of new FormData(form).entries()) {
+        const key = normalizeCharacterFieldName(rawKey);
+        if (!key || excluded.has(key) || isCharacterReservedFieldName(key)) {
+            continue;
+        }
+        const value = normalizeCharacterFieldValue(rawValue, key);
+        if (!value) {
+            continue;
+        }
+        if (seen.has(key)) {
+            return { data, duplicateKey: key, fieldOrder };
+        }
+        data[key] = value;
+        seen.add(key);
+        fieldOrder.push(key);
+    }
+
+    return { data, duplicateKey: '', fieldOrder };
+}
+
+const CHARACTER_FIELD_ORDER_PAYLOAD_KEY = '_field_order';
+
+function attachCharacterFieldOrderPayload(data, fieldOrder) {
+    if (!data || !Array.isArray(fieldOrder)) return data;
+    const seen = new Set();
+    data[CHARACTER_FIELD_ORDER_PAYLOAD_KEY] = fieldOrder
+        .map(normalizeCharacterFieldName)
+        .filter(key => {
+            if (!key || seen.has(key) || isCharacterReservedFieldName(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    return data;
+}
+
+function getStoredCharacterFieldOrder(rawData) {
+    if (!rawData || typeof rawData !== 'object') return [];
+    const reserved = rawData._reserved && typeof rawData._reserved === 'object' ? rawData._reserved : null;
+    const order = reserved && Array.isArray(reserved.field_order)
+        ? reserved.field_order
+        : (Array.isArray(rawData[CHARACTER_FIELD_ORDER_PAYLOAD_KEY]) ? rawData[CHARACTER_FIELD_ORDER_PAYLOAD_KEY] : []);
+    const seen = new Set();
+    return order
+        .map(normalizeCharacterFieldName)
+        .filter(key => {
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function getOrderedCharacterFieldKeys(rawData, hiddenFields = [], options = {}) {
+    if (!rawData || typeof rawData !== 'object') return [];
+    // 渲染自定义字段时要剔除系统保留名（live2d/model_type 等）；但工坊导入 scanCharaFile 需要保留这些
+    // 模型字段，只按调用方传入的 hiddenFields 过滤，故用此开关让调用方决定是否额外剔除保留名。
+    const { skipReservedNames = true } = options;
+    const hidden = new Set((hiddenFields || []).map(normalizeCharacterFieldName).filter(Boolean));
+    const seen = new Set();
+    const keys = [];
+    const addKey = (rawKey) => {
+        const key = normalizeCharacterFieldName(rawKey);
+        if (!key || seen.has(key) || hidden.has(key)) return;
+        if (skipReservedNames && isCharacterReservedFieldName(key)) return;
+        const value = rawData[key];
+        if (value === null || value === undefined) return;
+        seen.add(key);
+        keys.push(key);
+    };
+
+    // 数字形式的对象 key 会被浏览器提前枚举，优先使用后端保存的显式顺序。
+    getStoredCharacterFieldOrder(rawData).forEach(addKey);
+    Object.keys(rawData).forEach(addKey);
+    return keys;
+}
+
+function setLocalRawDataFieldOrder(rawData, fieldOrder) {
+    if (!rawData || typeof rawData !== 'object' || !Array.isArray(fieldOrder)) return rawData;
+    const reserved = rawData._reserved && typeof rawData._reserved === 'object'
+        ? rawData._reserved
+        : (rawData._reserved = {});
+    const seen = new Set();
+    reserved.field_order = fieldOrder
+        .map(normalizeCharacterFieldName)
+        .filter(key => {
+            if (!key || seen.has(key) || isCharacterReservedFieldName(key) || rawData[key] === undefined) return false;
+            seen.add(key);
+            return true;
+        });
+    return rawData;
 }
 
 function loadCharacterReservedFieldsConfig() {
@@ -56,16 +198,244 @@ function ensureReservedFieldsLoaded() {
     return _reservedFieldsReady || Promise.resolve();
 }
 
+function createVoiceConfigSwitchOpId(lanlanName) {
+    return 'voice-config-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '-' + (lanlanName || 'current');
+}
+
+function notifyVoiceConfigSwitching(lanlanName, active, opId) {
+    const payload = {
+        action: 'voice_config_switching',
+        type: 'voice_config_switching',
+        active: !!active,
+        op_id: opId || '',
+        lanlan_name: lanlanName || '',
+        timestamp: Date.now()
+    };
+
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            const channel = new BroadcastChannel('neko_page_channel');
+            channel.postMessage(payload);
+            setTimeout(() => channel.close(), 1000);
+        } catch (_) { /* 跨窗口同步失败时继续走 postMessage 兜底 */ }
+    }
+
+    if (window.nekoElectronVoiceConfigSwitching && typeof window.nekoElectronVoiceConfigSwitching.send === 'function') {
+        try { window.nekoElectronVoiceConfigSwitching.send(payload); } catch (_) { }
+    }
+
+    if (window.parent !== window) {
+        try { window.parent.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+    if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+}
+
+const WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS = Object.freeze({
+    cosyvoice: 'qwen',
+    cosyvoice_intl: 'qwen_intl',
+    minimax: 'minimax',
+    minimax_intl: 'minimax_intl',
+});
+const WORKSHOP_VOICE_RESTRICTED_REGISTRY_KEYS = new Set([
+    'qwen_intl',
+    'minimax_intl',
+]);
+const workshopVoiceProviderRestrictionState = {
+    loaded: false,
+    loadingPromise: null,
+    isMainlandChinaUser: false,
+    apiKeyRegistry: {},
+};
+const WORKSHOP_VOICE_PROVIDER_FETCH_TIMEOUT_MS = 5000;
+const WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS = 3;
+const WORKSHOP_VOICE_PROVIDER_FETCH_BACKOFF_MS = 250;
+
+function sleepWorkshopVoiceProviderRetry(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWorkshopVoiceProviderJson(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), WORKSHOP_VOICE_PROVIDER_FETCH_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return data;
+        } catch (error) {
+            lastError = error;
+            if (attempt >= WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS) break;
+            await sleepWorkshopVoiceProviderRetry(WORKSHOP_VOICE_PROVIDER_FETCH_BACKOFF_MS * attempt);
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+    throw lastError || new Error('请求失败');
+}
+
+function getWorkshopVoiceProviderRegistryKey(provider) {
+    return WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS[provider] || provider;
+}
+
+async function checkWorkshopVoiceMainlandChinaUser() {
+    let data = null;
+    try {
+        data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (_) {
+        return true;
+    }
+
+    if (data && data.is_mainland_china === true) {
+        return true;
+    }
+
+    const ipCountry = String((data && data.ip_country) || '').trim().toUpperCase();
+    if (data && data.success === true && ipCountry && ipCountry !== 'CN') {
+        return false;
+    }
+
+    return true;
+}
+
+async function loadWorkshopVoiceProviderRestrictionState() {
+    if (workshopVoiceProviderRestrictionState.loaded) {
+        return workshopVoiceProviderRestrictionState;
+    }
+    if (workshopVoiceProviderRestrictionState.loadingPromise) {
+        return workshopVoiceProviderRestrictionState.loadingPromise;
+    }
+
+    workshopVoiceProviderRestrictionState.loadingPromise = (async () => {
+        const [isMainlandChinaUser, providersResponse] = await Promise.all([
+            checkWorkshopVoiceMainlandChinaUser(),
+            fetchWorkshopVoiceProviderJson('/api/config/api_providers').catch(() => null)
+        ]);
+        let apiKeyRegistry = {};
+        if (providersResponse && providersResponse.success) {
+            apiKeyRegistry = providersResponse.api_key_registry || {};
+        }
+        workshopVoiceProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
+        workshopVoiceProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
+        workshopVoiceProviderRestrictionState.loaded = true;
+        return workshopVoiceProviderRestrictionState;
+    })().finally(() => {
+        workshopVoiceProviderRestrictionState.loadingPromise = null;
+    });
+
+    return workshopVoiceProviderRestrictionState.loadingPromise;
+}
+
+async function ensureWorkshopVoiceProviderRestrictionsLoaded() {
+    try {
+        await loadWorkshopVoiceProviderRestrictionState();
+    } catch (error) {
+        console.warn('参考语音服务商地区配置加载失败，使用默认显示策略:', error);
+    }
+    return workshopVoiceProviderRestrictionState;
+}
+
+function isWorkshopVoiceProviderRestricted(provider) {
+    if (!workshopVoiceProviderRestrictionState.isMainlandChinaUser) return false;
+    const registryKey = getWorkshopVoiceProviderRegistryKey(provider);
+    const entry = workshopVoiceProviderRestrictionState.apiKeyRegistry[registryKey];
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'restricted')) {
+        return entry.restricted === true;
+    }
+    return WORKSHOP_VOICE_RESTRICTED_REGISTRY_KEYS.has(registryKey);
+}
+
+function getFirstAvailableWorkshopVoiceProviderValue(providerSelect) {
+    if (!providerSelect) return '';
+    const options = Array.from(providerSelect.options || []);
+    const availableOption = options.find(option => !option.disabled && !option.hidden && option.style.display !== 'none');
+    return availableOption ? availableOption.value : '';
+}
+
+async function applyWorkshopVoiceProviderRestrictions(providerSelect) {
+    await ensureWorkshopVoiceProviderRestrictionsLoaded();
+    if (!providerSelect) return false;
+    const previousValue = providerSelect.value;
+    Array.from(providerSelect.options || []).forEach(option => {
+        const restricted = isWorkshopVoiceProviderRestricted(option.value);
+        option.disabled = restricted;
+        option.hidden = restricted;
+        option.style.display = restricted ? 'none' : '';
+    });
+
+    const selectedOption = providerSelect.options[providerSelect.selectedIndex];
+    if (selectedOption && !selectedOption.disabled && !selectedOption.hidden && selectedOption.style.display !== 'none') {
+        return false;
+    }
+
+    const fallbackValue = getFirstAvailableWorkshopVoiceProviderValue(providerSelect);
+    if (fallbackValue) {
+        providerSelect.value = fallbackValue;
+    }
+    return providerSelect.value !== previousValue;
+}
+
+async function initWorkshopVoiceProviderRestrictions() {
+    const providerSelect = document.getElementById('voice-reference-provider-hint');
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    return workshopVoiceProviderRestrictionState;
+}
+
 // 顶部 tab 按钮初始化（旧版自定义 tooltip 因为文本与按钮文字重复且定位有误已移除）
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
+    initWorkshopVoiceProviderRestrictions().catch(error => {
+        console.warn('初始化参考语音服务商地区过滤失败:', error);
+    });
 
     // 云存档管理按钮
     const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
     if (openCloudsaveManagerBtn) {
+        setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, true);
         openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
+        void refreshCloudsaveManagerEntryAvailability(openCloudsaveManagerBtn);
     }
 });
+
+function setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, disabled) {
+    if (!openCloudsaveManagerBtn) return;
+    const isDisabled = disabled === true;
+    openCloudsaveManagerBtn.disabled = isDisabled;
+    openCloudsaveManagerBtn.setAttribute('aria-disabled', isDisabled ? 'true' : 'false');
+    openCloudsaveManagerBtn.classList.toggle('button-disabled', isDisabled);
+}
+
+async function refreshCloudsaveManagerEntryAvailability(openCloudsaveManagerBtn) {
+    if (!openCloudsaveManagerBtn || typeof fetch !== 'function') return;
+
+    try {
+        const response = await fetch('/api/cloudsave/summary', { cache: 'no-store' });
+        if (!response.ok) {
+            setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, false);
+            return;
+        }
+        const summary = await response.json();
+        const steamAutoCloud = summary && summary.steam_autocloud && typeof summary.steam_autocloud === 'object'
+            ? summary.steam_autocloud
+            : {};
+        const disabled = summary.provider_available === false || steamAutoCloud.disabled === true;
+        setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, disabled);
+    } catch (error) {
+        console.warn('刷新云存档入口状态失败:', error);
+        setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, false);
+    }
+}
 
 // 构建云存档管理页 URL（带当前 UI 语言；角色名由云存档页内自行选择）
 function buildCloudsaveManagerUrl() {
@@ -82,6 +452,14 @@ function buildCloudsaveManagerUrl() {
 
 // 打开云存档管理窗口（与 chara_manager.js 中的实现保持行为一致）
 function openCloudsaveManager() {
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (!openCloudsaveManagerBtn) {
+        return;
+    }
+    if (openCloudsaveManagerBtn.disabled) {
+        return;
+    }
+
     const url = buildCloudsaveManagerUrl();
     const windowName = 'neko_cloudsave_manager';
     const width = 1180;
@@ -96,6 +474,9 @@ function openCloudsaveManager() {
             const targetUrl = new URL(url, window.location.origin).toString();
             if (existingWindow.location.href !== targetUrl) {
                 existingWindow.location.href = targetUrl;
+            }
+            if (typeof window.requestOpenedWindowRestore === 'function') {
+                window.requestOpenedWindowRestore(existingWindow);
             }
             existingWindow.focus();
             return;
@@ -151,11 +532,59 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（mao_pro）
+// 检查当前模型是否为默认模型（yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
-    return currentModel === 'mao_pro';
+    return isStaticDefaultLive2DModel(currentModel, window._currentCardRawData || {});
+}
+
+function getLive2DModelInfo(modelName) {
+    if (!modelName) {
+        return null;
+    }
+    const allModels = Array.isArray(window.allModels) ? window.allModels : [];
+    const matches = allModels.filter(model => model && model.name === modelName);
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function hasStaticModelFlag(metadata) {
+    if (!metadata || typeof metadata !== 'object') {
+        return false;
+    }
+    return metadata.source === 'static'
+        || metadata.isStatic === true
+        || metadata.is_static === true
+        || metadata.isDefault === true
+        || metadata.is_default === true;
+}
+
+function isLegacyDefaultLive2DModel(modelName) {
+    return modelName === 'yui_default' || modelName === 'yui-default';
+}
+
+function isStaticDefaultLive2DModel(modelName, rawData = {}) {
+    if (isLegacyDefaultLive2DModel(modelName)) {
+        return true;
+    }
+
+    if (modelName !== 'yui-origin') {
+        return false;
+    }
+
+    if (window.currentCharacterCardModel === modelName && window.currentCharacterCardModelSource) {
+        return window.currentCharacterCardModelSource === 'static';
+    }
+
+    const modelInfo = getLive2DModelInfo(modelName);
+    if (hasStaticModelFlag(modelInfo) || hasStaticModelFlag(modelInfo && modelInfo.modelMetadata)) {
+        return true;
+    }
+
+    const rawModel = rawData && typeof rawData.model === 'object' ? rawData.model : null;
+    return hasStaticModelFlag(rawData && rawData.modelMetadata)
+        || hasStaticModelFlag(rawData && rawData._reserved && rawData._reserved.modelMetadata)
+        || hasStaticModelFlag(rawModel);
 }
 
 // 更新上传按钮状态（不再依赖model-select元素）
@@ -346,6 +775,39 @@ function applyWorkshopSyncData() {
 // 视图切换防抖锁，防止动画期间重复点击
 let _viewSwitching = false;
 
+function lockWorkshopTabLayoutForSwitch() {
+    const tabContents = document.querySelector('.tab-contents');
+    const scrollContainer = document.querySelector('.layout-container');
+    if (!tabContents) return () => {};
+
+    const previousMinHeight = tabContents.style.minHeight;
+    const currentHeight = Math.ceil(tabContents.getBoundingClientRect().height);
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    if (currentHeight > 0) {
+        tabContents.style.minHeight = currentHeight + 'px';
+    }
+
+    return () => {
+        const restoreScroll = () => {
+            if (scrollContainer) {
+                scrollContainer.scrollTop = scrollTop;
+            } else {
+                window.scrollTo(window.scrollX, scrollTop);
+            }
+        };
+
+        restoreScroll();
+        requestAnimationFrame(() => {
+            restoreScroll();
+            requestAnimationFrame(() => {
+                tabContents.style.minHeight = previousMinHeight;
+                restoreScroll();
+            });
+        });
+    };
+}
+
 function switchTab(tabId, event) {
     if (_viewSwitching) return;
 
@@ -363,6 +825,7 @@ function switchTab(tabId, event) {
     }
 
     _viewSwitching = true;
+    const unlockTabLayout = lockWorkshopTabLayoutForSwitch();
 
     // 同步按钮 active 状态（点击事件 / 编程调用都覆盖）
     tabButtons.forEach(btn => {
@@ -378,7 +841,7 @@ function switchTab(tabId, event) {
         btn.classList.toggle('active', onclick.includes(tabId));
     });
 
-    // 找到当前激活视图（要离场的）
+    // 找到当前激活视图。切换时不叠放、不位移，避免两个面板短暂覆盖或抖动。
     const tabContents = document.querySelectorAll('.tab-content');
     let leavingTab = null;
     tabContents.forEach(content => {
@@ -393,27 +856,17 @@ function switchTab(tabId, event) {
     });
 
     const finalize = () => {
+        unlockTabLayout();
         _viewSwitching = false;
     };
 
     if (leavingTab && leavingTab !== selectedTab) {
-        // 旧视图执行 leaving 动画，新视图同步入场（重叠以遮住底层蓝色背景）
-        leavingTab.classList.remove('active');
-        leavingTab.classList.add('tab-leaving');
-
-        selectedTab.classList.add('active', 'tab-entering');
+        leavingTab.classList.remove('active', 'tab-leaving', 'tab-entering');
+        leavingTab.style.display = '';
+        selectedTab.classList.remove('tab-leaving', 'tab-entering');
+        selectedTab.classList.add('active');
         if (window.updatePageTexts) window.updatePageTexts();
-
-        // 旧视图保持原状作为底层；新视图自上而下"拉下帘幕"完全覆盖（500ms 与 CSS @keyframes viewCurtainReveal 时长一致）
-        setTimeout(() => {
-            leavingTab.classList.remove('tab-leaving');
-            leavingTab.style.display = '';
-        }, 520);
-        // 新视图入场结束
-        setTimeout(() => {
-            selectedTab.classList.remove('tab-entering');
-            finalize();
-        }, 520);
+        finalize();
     } else {
         // 没有离场视图（首次或同 tab）：直接显示
         selectedTab.classList.add('active');
@@ -1277,7 +1730,7 @@ function selectReferenceAudio() {
     fileInput.click();
 }
 
-function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
+async function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
     const displayNameInput = document.getElementById('voice-reference-display-name');
     const prefixInput = document.getElementById('voice-reference-prefix');
     const languageSelect = document.getElementById('voice-reference-language');
@@ -1287,7 +1740,10 @@ function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
     if (displayNameInput) displayNameInput.value = defaultTitle || '';
     if (prefixInput) prefixInput.value = sanitizeWorkshopVoicePrefix(defaultTitle, 'voice');
     if (languageSelect) languageSelect.value = 'ch';
-    if (providerSelect) providerSelect.value = 'cosyvoice';
+    if (providerSelect) {
+        providerSelect.value = 'cosyvoice';
+        await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    }
 }
 
 async function uploadWorkshopReferenceAudio(contentFolder, defaultTitle) {
@@ -1310,7 +1766,8 @@ async function uploadWorkshopReferenceAudio(contentFolder, defaultTitle) {
     formData.append('prefix', prefix);
     formData.append('display_name', displayNameInput?.value.trim() || defaultTitle || prefix);
     formData.append('ref_language', languageSelect?.value || 'ch');
-    formData.append('provider_hint', providerSelect?.value || 'cosyvoice');
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    formData.append('provider_hint', providerSelect?.value || getFirstAvailableWorkshopVoiceProviderValue(providerSelect) || 'cosyvoice');
 
     showMessage('正在写入参考语音...', 'info');
     const response = await fetch('/api/steam/workshop/upload-reference-audio', {
@@ -1461,7 +1918,7 @@ function uploadItem() {
             }
             return data;
         })
-        .then(data => {
+        .then(async data => {
             // 恢复按钮状态
             if (uploadButton) {
                 uploadButton.textContent = originalText;
@@ -1547,6 +2004,7 @@ function uploadItem() {
                     }
                 });
                 clearReferenceAudioSelection();
+                await applyWorkshopVoiceProviderRestrictions(document.getElementById('voice-reference-provider-hint'));
 
                 // 清空标签
                 const tagsContainer = document.getElementById('tags-container');
@@ -1831,12 +2289,101 @@ function renderSubscriptionsPage() {
                         <button class="button button-primary" onclick="openWorkshopVoiceClone('${formattedItem.id}')" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
                             ${window.t ? window.t('steam.openVoiceClone') : '在语音克隆页打开'}
                         </button>` : ''}
+                        <button class="button button-primary" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="addWorkshopCharacterCardFromSubscription(this)" style="margin-bottom: 8px;">${window.t ? window.t('steam.workshopAddCharacterCard') : '加入角色卡'}</button>
                         <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+function formatWorkshopCharacterNameList(names) {
+    const list = Array.isArray(names)
+        ? names.map(name => String(name || '').trim()).filter(Boolean)
+        : [];
+    return list.length > 0 ? list.join('、') : (window.t ? window.t('steam.unknownCharacterCard') : '未知角色卡');
+}
+
+async function showWorkshopCharacterAddAlert(message, type = 'info') {
+    if (typeof showAlertDialog === 'function') {
+        const title = type === 'info'
+            ? (window.t ? window.t('steam.characterCardAlreadyExistsTitle') : '角色卡已存在')
+            : (window.t ? window.t('common.warning') : '提示');
+        await showAlertDialog(message, {
+            type,
+            title,
+        });
+        return;
+    }
+    window.alert(message);
+}
+
+async function addWorkshopCharacterCardFromSubscription(button) {
+    const itemId = button?.dataset?.itemId || '';
+    if (!itemId) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = window.t ? window.t('steam.workshopAddingCharacterCard') : '正在加入...';
+
+    try {
+        const response = await fetch(`/api/steam/workshop/sync-character/${encodeURIComponent(itemId)}`, {
+            method: 'POST',
+        });
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {
+            data = {};
+        }
+
+        if (data.code === 'WORKSHOP_CHARACTER_ALREADY_EXISTS') {
+            const namesText = formatWorkshopCharacterNameList(data.existing_character_names);
+            const message = window.t
+                ? window.t('steam.characterCardAlreadyExistsMessage', { names: namesText })
+                : `角色卡已存在：${namesText}`;
+            await showWorkshopCharacterAddAlert(message, 'info');
+            return;
+        }
+
+        if (!response.ok || !data.success) {
+            const fallbackError = data.error || data.message || (window.t ? window.t('common.unknownError') : 'Unknown error');
+            const key = data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                ? 'steam.workshopCharacterNotFound'
+                : 'steam.workshopCharacterAddFailed';
+            const message = window.t
+                ? window.t(key, { error: fallbackError })
+                : (data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                    ? '此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。'
+                    : `加入角色卡失败: ${fallbackError}`);
+            await showWorkshopCharacterAddAlert(message, 'warning');
+            return;
+        }
+
+        const namesText = formatWorkshopCharacterNameList(data.added_character_names);
+        const successMessage = window.t
+            ? window.t('steam.workshopCharacterAdded', { names: namesText })
+            : `已加入角色卡：${namesText}`;
+        showMessage(successMessage, 'success');
+        try {
+            await loadCharacterCards();
+        } catch (refreshError) {
+            console.warn('刷新角色卡列表失败:', refreshError);
+            const refreshMessage = window.t
+                ? window.t('steam.characterCardsRefreshFailed', { error: refreshError.message })
+                : `刷新列表失败: ${refreshError.message}`;
+            showMessage(refreshMessage, 'warning');
+        }
+    } catch (error) {
+        const message = window.t
+            ? window.t('steam.workshopCharacterAddFailed', { error: error.message })
+            : `加入角色卡失败: ${error.message}`;
+        showMessage(message, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
 }
 
 // 更新分页控件
@@ -2242,7 +2789,7 @@ function unsubscribeItem(itemId, itemName) {
                     return;
                 }
                 const errorMsg = (data && (data.error || data.message)) || `HTTP ${response.status}`;
-                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                showMessage(window.t ? window.t('steam.unsubscribeFailed', { error: errorMsg }) : `取消订阅失败: ${errorMsg}`, 'error');
                 restoreCard();
                 return;
             }
@@ -2327,7 +2874,7 @@ function unsubscribeItem(itemId, itemName) {
                 }
             } else {
                 const errorMsg = (data && (data.error || data.message)) || (window.t ? window.t('common.unknownError') : '未知错误');
-                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                showMessage(window.t ? window.t('steam.unsubscribeFailed', { error: errorMsg }) : `取消订阅失败: ${errorMsg}`, 'error');
                 restoreCard();
             }
         })
@@ -2406,12 +2953,17 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
             // 跳过的字段：档案名（已处理）、保留字段
             const skipKeys = ['档案名', ...RESERVED_FIELDS];
 
-            // 添加所有非保留字段
-            for (const [key, value] of Object.entries(charaData)) {
-                if (!skipKeys.includes(key) && value !== undefined && value !== null && value !== '') {
+            const fieldOrder = [];
+            // 工坊导入要保留 live2d/model_type/vrm 等模型字段（仅靠 skipKeys 过滤工坊元数据），
+            // 不能套用渲染路径对系统保留名的剔除，否则导入卡会丢失模型绑定、开成错误或缺失的模型。
+            getOrderedCharacterFieldKeys(charaData, skipKeys, { skipReservedNames: false }).forEach(key => {
+                const value = charaData[key];
+                if (value !== undefined && value !== null && value !== '') {
                     catgirlFormat[key] = value;
+                    fieldOrder.push(key);
                 }
-            }
+            });
+            attachCharacterFieldOrderPayload(catgirlFormat, fieldOrder);
 
             // 重要：如果角色卡有 live2d 字段，需要同时保存 live2d_item_id
             // 这样首页加载时才能正确构建工坊模型的路径
@@ -2525,7 +3077,10 @@ function syncTitleDataText() {
 // 加载角色卡数据
 async function loadCharacterData() {
     try {
-        const resp = await fetch('/api/characters/');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
         return await resp.json();
     } catch (error) {
         console.error('加载角色数据失败:', error);
@@ -2540,8 +3095,288 @@ let globalCharacterCards = [];
 // 全局变量：当前打开的角色卡ID（用于模态框操作）
 let currentCharacterCardId = null;
 
+const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
+let characterCardLoadSequence = 0;
+
+function getCharacterCardDescriptionFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return window.t ? window.t('steam.noDescription') : '暂无描述';
+    }
+    if (data['description']) return data['description'];
+    if (data['描述']) return data['描述'];
+    if (data['角色卡描述']) return data['角色卡描述'];
+    return window.t ? window.t('steam.noDescription') : '暂无描述';
+}
+
+function getCharacterCardTagsFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return [];
+    }
+    return Array.isArray(data['关键词']) ? data['关键词'] : [];
+}
+
+function buildCharacterCardEntry(name, data, id) {
+    return {
+        id: id,
+        name: name,
+        description: getCharacterCardDescriptionFromData(data),
+        tags: getCharacterCardTagsFromData(data),
+        rawData: data || {},
+        originalName: name
+    };
+}
+
+function findCharacterCardIndexByName(name) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    return cards.findIndex(card => String(card?.originalName || card?.name || '') === String(name));
+}
+
+function getNextCharacterCardId() {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    let maxId = 0;
+    cards.forEach(card => {
+        const numericId = Number(card && card.id);
+        if (Number.isFinite(numericId)) {
+            maxId = Math.max(maxId, numericId);
+        }
+    });
+    return maxId + 1;
+}
+
+function buildLocalCatgirlRawData(catgirlName, submittedData, fieldOrder) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const previousRawData = existingIdx >= 0 && cards[existingIdx]?.rawData && typeof cards[existingIdx].rawData === 'object'
+        ? cards[existingIdx].rawData
+        : {};
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const nextRawData = {};
+
+    // 通用编辑接口会保留系统字段，但会用本次提交的普通字段整体替换旧普通字段。
+    Object.keys(previousRawData).forEach(key => {
+        if (allReservedFields.includes(key)) {
+            nextRawData[key] = previousRawData[key];
+        }
+    });
+    Object.entries(submittedData || {}).forEach(([key, value]) => {
+        if (!key || key === '档案名' || allReservedFields.includes(key)) {
+            return;
+        }
+        if (value !== null && value !== undefined && String(value).trim() !== '') {
+            nextRawData[key] = value;
+        }
+    });
+    if (Array.isArray(fieldOrder)) {
+        setLocalRawDataFieldOrder(nextRawData, fieldOrder);
+    }
+    return nextRawData;
+}
+
+function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const merged = {};
+
+    // 本轮刚保存的普通字段优先；重新拉取的数据只用于补回模型、音色等保留字段。
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (!allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(freshRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    return merged;
+}
+
+function syncCharacterCardCache(catgirlName, rawData) {
+    if (!catgirlName) return;
+    if (!Array.isArray(window.characterCards)) {
+        window.characterCards = [];
+    }
+
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const existingCard = existingIdx >= 0 ? window.characterCards[existingIdx] : null;
+    const cardId = existingCard?.id ?? getNextCharacterCardId();
+    const updatedCard = buildCharacterCardEntry(catgirlName, rawData || {}, cardId);
+
+    if (existingIdx >= 0) {
+        window.characterCards[existingIdx] = updatedCard;
+    } else {
+        window.characterCards.push(updatedCard);
+    }
+    globalCharacterCards = window.characterCards || [];
+
+    refreshCharacterCardSelectOptions();
+    renderCharaCardsView();
+}
+
+function waitForCharacterCardModelScanBudget(scanPromise) {
+    const eventual = Promise.resolve(scanPromise)
+        .then(scanCompleted => scanCompleted === true)
+        .catch(error => {
+            console.warn('角色卡模型扫描失败，先渲染角色列表:', error);
+            return false;
+        });
+
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = inTime => {
+            if (settled) return;
+            settled = true;
+            resolve({ inTime, eventual });
+        };
+
+        window.setTimeout(() => finish(false), CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS);
+        eventual.then(scanCompleted => finish(scanCompleted === true));
+    });
+}
+
+async function collectCharacterSettingsCardsFromModels(idCounter, loadSequence) {
+    let nextId = idCounter;
+    const newCards = [];
+    for (const model of availableModels) {
+        // 每个模型外层 fetch 前先校验序列号；旧轮被新一轮 loadCharacterCards 抢占后立刻早退，
+        // 避免在大目录下继续打 model_files / *.chara.json 的废请求拖慢最新一轮 I/O
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+            return { cards: newCards, nextId };
+        }
+        try {
+            // 调用API获取模型文件列表
+            const response = await fetch(`/api/live2d/model_files/${model.name}`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    // 检查是否有*.chara.json格式的角色卡文件
+                    const jsonFiles = data.json_files || [];
+                    const characterSettingsFiles = jsonFiles.filter(file =>
+                        file.endsWith('.chara.json')
+                    );
+
+                    // 如果找到character_settings文件，解析并添加到角色卡列表
+                    for (const file of characterSettingsFiles) {
+                        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+                            return { cards: newCards, nextId };
+                        }
+                        try {
+                            // 获取完整的文件内容
+                            // 构建正确的文件URL - 从模型配置文件路径推断
+                            const modelJsonUrl = model.path;
+                            const modelRootUrl = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
+                            const fileUrl = modelRootUrl + file;
+
+                            const fileResponse = await fetch(fileUrl);
+                            if (fileResponse.ok) {
+                                const jsonData = await fileResponse.json();
+                                // 检查是否包含"type": "character_settings"
+                                if (jsonData && jsonData.type === 'character_settings') {
+                                    newCards.push({
+                                        id: nextId++,
+                                        name: jsonData.name || `${model.name}_settings`,
+                                        description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
+                                        tags: jsonData.tags || [],
+                                        rawData: jsonData  // 保存原始数据，方便详情页使用
+                                    });
+                                }
+                            }
+                        } catch (fileError) {
+                            console.error(`解析文件${file}失败:`, fileError);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`获取模型${model.name}文件列表失败:`, error);
+        }
+    }
+    return { cards: newCards, nextId };
+}
+
+function mergeCharacterSettingsCardsFromModels(loadSequence, discovered) {
+    const cards = discovered?.cards || [];
+    if (loadSequence !== characterCardLoadSequence || cards.length === 0) {
+        return;
+    }
+    window.characterCards = (window.characterCards || []).concat(cards);
+    globalCharacterCards = window.characterCards || [];
+    refreshCharacterCardSelectOptions();
+    // 主列表视图也要同步刷新，否则晚到的旧格式兼容卡得等下次整页刷新才会出现
+    renderCharaCardsView();
+}
+
+function refreshExpandedCardAfterScan(loadSequence) {
+    if (loadSequence !== characterCardLoadSequence) return;
+    if (!currentCharacterCardId) return;
+    const card = (window.characterCards || []).find(c => String(c.id) === String(currentCharacterCardId));
+    if (card) {
+        // availableModels 在扫描完成后才落地，重跑 expand 让上传/预览按钮基于最新模型列表渲染
+        expandCharacterCardSection(card);
+    }
+}
+
+function refreshCharacterCardSelectOptions() {
+    const characterCardSelect = document.getElementById('character-card-select');
+
+    if (!characterCardSelect) {
+        return;
+    }
+
+    // 保留当前选中值，重建后再恢复，避免异步补卡时把用户已选项清掉
+    const previousValue = characterCardSelect.value;
+
+    // 清空现有选项（保留第一个默认选项）
+    while (characterCardSelect.options.length > 1) {
+        characterCardSelect.remove(1);
+    }
+
+    if (window.characterCards && window.characterCards.length > 0) {
+        // 填充下拉选项
+        window.characterCards.forEach(card => {
+            const option = document.createElement('option');
+            option.value = card.id;
+            option.text = card.name;
+            characterCardSelect.add(option);
+        });
+
+        // 添加change事件监听器
+        characterCardSelect.onchange = function () {
+            const selectedId = this.value;
+            if (selectedId) {
+                // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
+                const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
+                if (selectedCard) {
+                    expandCharacterCardSection(selectedCard);
+                }
+            }
+        };
+
+        if (previousValue && Array.from(characterCardSelect.options).some(option => option.value === previousValue)) {
+            characterCardSelect.value = previousValue;
+        }
+    }
+}
+
 // 加载角色卡列表
 async function loadCharacterCards() {
+    const loadSequence = ++characterCardLoadSequence;
+
+    // 新一轮加载先失效上一轮的模型扫描缓存：scanModels 现在 fire-and-forget，
+    // 若新一轮扫描卡住/失败，本应基于过期清单判断上传可用性会出现假阳性。
+    // 清空后扫描完成前 UI 会显示"无可用模型"，是诚实的 loading 信号；
+    // refreshExpandedCardAfterScan 在扫描完成后会按当前展开卡重渲染恢复正常状态。
+    availableModels = [];
+    availableVrmModels = [];
+    availableMmdModels = [];
+    window.allModels = [];
+    window.allVrmModels = [];
+    window.allMmdModels = [];
+
     // 显示加载状态
     const characterCardsList = document.getElementById('character-cards-list');
     if (characterCardsList) {
@@ -2556,8 +3391,9 @@ async function loadCharacterCards() {
     const characterData = await loadCharacterData();
     if (!characterData) return;
 
-    // 调用scanModels()获取可用模型列表
-    await scanModels();
+    // 模型扫描可能受 Linux 新存储根、创意工坊目录或 Steam 状态影响变慢。
+    // 角色列表不应被模型扫描阻塞；扫描完成后再用于预览/上传等增强能力。
+    const modelScanPromise = scanModels(loadSequence);
 
     // 转换角色数据为角色卡格式（定义为全局变量，供其他函数使用）
     window.characterCards = [];
@@ -2566,31 +3402,7 @@ async function loadCharacterCards() {
     // 只处理猫娘数据，忽略其他角色类型（包括主人）
     const catgirls = characterData['猫娘'] || {};
     for (const [name, data] of Object.entries(catgirls)) {
-        // 兼容实际的数据结构 - 使用可用字段创建角色卡
-        // 只从description或角色卡描述字段获取描述信息
-        let description = window.t ? window.t('steam.noDescription') : '暂无描述';
-        if (data['description']) {
-            description = data['description'];
-        } else if (data['描述']) {
-            description = data['描述'];
-        } else if (data['角色卡描述']) {
-            description = data['角色卡描述'];
-        }
-
-        // 只从关键词字段获取标签信息，不自动生成标签
-        let tags = [];
-        if (data['关键词'] && Array.isArray(data['关键词']) && data['关键词'].length > 0) {
-            tags = data['关键词'];
-        }
-
-        window.characterCards.push({
-            id: idCounter++,
-            name: name,
-            description: description,
-            tags: tags,
-            rawData: data,  // 保存原始数据，方便详情页使用
-            originalName: name  // 保存原始键名
-        });
+        window.characterCards.push(buildCharacterCardEntry(name, data, idCounter++));
     }
 
     // 从character_cards文件夹加载角色卡
@@ -2614,88 +3426,11 @@ async function loadCharacterCards() {
         console.error('从character_cards文件夹加载角色卡失败:', error);
     }
 
-    // 扫描模型文件夹中的character_settings JSON文件（兼容旧格式）
-    for (const model of availableModels) {
-        try {
-            // 调用API获取模型文件列表
-            const response = await fetch(`/api/live2d/model_files/${model.name}`);
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success) {
-                    // 检查是否有*.chara.json格式的角色卡文件
-                    const jsonFiles = data.json_files || [];
-                    const characterSettingsFiles = jsonFiles.filter(file =>
-                        file.endsWith('.chara.json')
-                    );
-
-                    // 如果找到character_settings文件，解析并添加到角色卡列表
-                    for (const file of characterSettingsFiles) {
-                        try {
-                            // 获取完整的文件内容
-                            // 构建正确的文件URL - 从模型配置文件路径推断
-                            const modelJsonUrl = model.path;
-                            const modelRootUrl = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
-                            const fileUrl = modelRootUrl + file;
-
-                            const fileResponse = await fetch(fileUrl);
-                            if (fileResponse.ok) {
-                                const jsonData = await fileResponse.json();
-                                // 检查是否包含"type": "character_settings"
-                                if (jsonData && jsonData.type === 'character_settings') {
-                                    window.characterCards.push({
-                                        id: idCounter++,
-                                        name: jsonData.name || `${model.name}_settings`,
-                                            description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
-                                        tags: jsonData.tags || [],
-                                        rawData: jsonData  // 保存原始数据，方便详情页使用
-                                    });
-                                }
-                            }
-                        } catch (fileError) {
-                            console.error(`解析文件${file}失败:`, fileError);
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            console.error(`获取模型${model.name}文件列表失败:`, error);
-        }
-    }
+    // 扫描模型文件夹中的 character_settings JSON 文件仅用于旧格式兼容，不能阻塞角色管理主列表。
+    const characterSettingsStartId = idCounter;
 
     // 渲染角色卡列表（改为下拉选单）
-    const characterCardSelect = document.getElementById('character-card-select');
-
-    if (characterCardSelect) {
-        // 清空现有选项（保留第一个默认选项）
-        while (characterCardSelect.options.length > 1) {
-            characterCardSelect.remove(1);
-        }
-
-        if (window.characterCards && window.characterCards.length > 0) {
-            // 填充下拉选项
-            window.characterCards.forEach(card => {
-                const option = document.createElement('option');
-                option.value = card.id;
-                option.text = card.name;
-                characterCardSelect.add(option);
-            });
-
-            // 添加change事件监听器
-            characterCardSelect.onchange = function () {
-                const selectedId = this.value;
-                if (selectedId) {
-                    // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
-                    const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
-                    if (selectedCard) {
-                        expandCharacterCardSection(selectedCard);
-                    }
-                }
-            };
-
-        } else {
-            // 没有角色卡时，也可以保留默认选项或者显示无
-        }
-    }
+    refreshCharacterCardSelectOptions();
 
     // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
     globalCharacterCards = window.characterCards || [];
@@ -2727,12 +3462,40 @@ async function loadCharacterCards() {
     // 同步加载主人档案和已隐藏猫娘列表
     loadMasterProfile();
     renderHiddenCatgirls();
+
+    waitForCharacterCardModelScanBudget(modelScanPromise)
+        .then(scanBudget => {
+            const appendAfterScan = () => collectCharacterSettingsCardsFromModels(characterSettingsStartId, loadSequence)
+                .then(discovered => mergeCharacterSettingsCardsFromModels(loadSequence, discovered));
+
+            scanBudget.eventual.then(scanCompleted => {
+                if (scanCompleted) {
+                    // 扫描成功后回补当前展开角色卡的上传/预览状态，避免用户先点开卡片时停留在旧/空 availableModels
+                    refreshExpandedCardAfterScan(loadSequence);
+                }
+                if (scanBudget.inTime || !scanCompleted) {
+                    return null;
+                }
+                return appendAfterScan();
+            }).catch(error => {
+                console.warn('角色卡旧格式兼容延迟扫描失败，已保留主列表:', error);
+            });
+
+            if (!scanBudget.inTime) {
+                return null;
+            }
+            return appendAfterScan();
+        })
+        .catch(error => {
+            console.warn('角色卡旧格式兼容扫描失败，已保留主列表:', error);
+        });
 }
 
 // ===== 角色卡 卡片/列表 视图 =====
 
 // 已设置卡面的猫娘名集合（避免无卡面的 404 控制台噪声）
 window._cardFaceNames = window._cardFaceNames || new Set();
+const CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
 async function loadCardFaceNames() {
     try {
         const resp = await fetch('/api/characters/card-faces');
@@ -2744,6 +3507,248 @@ async function loadCardFaceNames() {
     } catch (e) {
         // 忽略，退化为不加载头像
     }
+}
+
+function openManagedPopup(url, windowName, features) {
+    window._openWindows = window._openWindows || {};
+    const existingWindow = window._openWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        const replacementName = `${windowName}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const replacementWindow = window.open(url, replacementName, features);
+        if (replacementWindow) {
+            try { existingWindow.close(); } catch (_) {}
+            try {
+                // 随机名只用于绕开旧窗口复用；新窗口接管后恢复固定名称，方便其他上下文继续定位。
+                replacementWindow.name = windowName;
+            } catch (error) {
+                console.warn('更新弹窗名称失败:', error);
+            }
+            window._openWindows[windowName] = replacementWindow;
+            try { replacementWindow.focus(); } catch (_) {}
+            return replacementWindow;
+        }
+
+        try {
+            // 新窗口被拦截时才复用旧窗口，仍然保证内容跟随最后一次打开。
+            existingWindow.location.href = new URL(url, window.location.origin).toString();
+        } catch (error) {
+            console.warn('更新弹窗地址失败:', error);
+        }
+        if (typeof window.requestOpenedWindowRestore === 'function') {
+            window.requestOpenedWindowRestore(existingWindow);
+        }
+        existingWindow.focus();
+        return existingWindow;
+    }
+    delete window._openWindows[windowName];
+
+    const popup = window.open(url, windowName, features);
+    if (popup) {
+        window._openWindows[windowName] = popup;
+        try { popup.focus(); } catch (_) {}
+    }
+    return popup;
+}
+window.openManagedPopup = openManagedPopup;
+
+function refreshOpenCardMetaBlock(name) {
+    const panelWrapper = document.getElementById('catgirl-panel-wrapper');
+    if (!panelWrapper || !name) return;
+    const formName = panelWrapper.querySelector('form [name="档案名"]')?.value;
+    if (formName !== name) return;
+    const metaBlock = panelWrapper.querySelector('#card-meta-block');
+    if (metaBlock && typeof renderCardMetaBlock === 'function') {
+        renderCardMetaBlock(metaBlock, name, false);
+    }
+}
+
+function updateCardMetaAfterFaceChange(name, timestamp) {
+    if (!name) return;
+    window._cardMetas = window._cardMetas || {};
+    const existing = window._cardMetas[name] || {};
+    const updatedAt = new Date(timestamp || Date.now()).toISOString();
+    window._cardMetas[name] = {
+        author: existing.author || '',
+        origin: 'self',
+        created_at: existing.created_at || updatedAt,
+        updated_at: updatedAt
+    };
+    refreshOpenCardMetaBlock(name);
+}
+
+function applyCardFaceUpdated(name, timestamp) {
+    if (!name) return;
+    const ts = timestamp || Date.now();
+    const newSrc = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face?t=${ts}`;
+    if (window._cardFaceNames) window._cardFaceNames.add(name);
+    updateCardMetaAfterFaceChange(name, ts);
+
+    const panelWrapper = document.getElementById('catgirl-panel-wrapper');
+    if (panelWrapper) {
+        const formName = panelWrapper.querySelector('form [name="档案名"]')?.value;
+        if (formName === name) {
+            const cardImage = panelWrapper.querySelector('.catgirl-panel-card-image');
+            const placeholder = cardImage?.querySelector('.card-avatar-placeholder');
+            if (cardImage) {
+                let panelImg = cardImage.querySelector('.card-face-img');
+                if (!panelImg) {
+                    panelImg = document.createElement('img');
+                    panelImg.className = 'card-face-img';
+                    panelImg.alt = '角色卡面';
+                    cardImage.insertBefore(panelImg, placeholder || cardImage.firstChild);
+                }
+                panelImg.onload = () => {
+                    if (placeholder) placeholder.style.display = 'none';
+                };
+                panelImg.onerror = () => {
+                    if (placeholder) placeholder.style.display = '';
+                };
+                panelImg.src = newSrc;
+            }
+        }
+    }
+
+    document.querySelectorAll('.chara-card-item').forEach(cardItem => {
+        const cardName = cardItem.querySelector('.card-name');
+        if (!cardName || cardName.textContent !== name) return;
+        const gridAvatar = cardItem.querySelector('.card-avatar');
+        if (!gridAvatar) return;
+        let gridImg = gridAvatar.querySelector('.card-face-img');
+        const gridPlaceholder = gridAvatar.querySelector('.card-avatar-placeholder');
+        if (!gridImg) {
+            gridImg = document.createElement('img');
+            gridImg.className = 'card-face-img';
+            gridImg.alt = name;
+            if (gridPlaceholder) {
+                gridAvatar.insertBefore(gridImg, gridPlaceholder);
+            } else {
+                gridAvatar.appendChild(gridImg);
+            }
+        }
+        gridImg.onload = () => {
+            if (gridPlaceholder) gridPlaceholder.style.display = 'none';
+        };
+        gridImg.onerror = () => {
+            if (gridPlaceholder) gridPlaceholder.style.display = '';
+        };
+        gridImg.src = newSrc;
+    });
+}
+
+function handleExternalCardFaceUpdated(data) {
+    if (!data || data.type !== 'card-face-updated') return;
+    applyCardFaceUpdated(data.name, data.timestamp);
+}
+
+(function initCardFaceUpdateEvents() {
+    window.addEventListener('message', event => {
+        if (event.origin !== window.location.origin) return;
+        handleExternalCardFaceUpdated(event.data);
+    });
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            const channel = new BroadcastChannel('neko-card-face-events');
+            channel.onmessage = event => {
+                if (event.origin !== window.location.origin) return;
+                handleExternalCardFaceUpdated(event.data);
+            };
+        } catch (_) {}
+    }
+    window.addEventListener('storage', event => {
+        if (event.key !== 'neko_card_face_event' || !event.newValue) return;
+        try {
+            handleExternalCardFaceUpdated(JSON.parse(event.newValue));
+        } catch (_) {}
+    });
+})();
+
+async function openModelManagerForCharacterForm(form, fallbackName) {
+    let catgirlName = getProfileNameFromCharacterForm(form, fallbackName);
+    if (!catgirlName) {
+        await showProfileNameRequiredDialog();
+        return;
+    }
+
+    if (form && form._isNew && !form._autoCreated) {
+        try {
+            const tmpResp = await fetch('/api/characters/catgirl', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ '档案名': catgirlName })
+            });
+            if (tmpResp.ok) {
+                const tmpResult = await tmpResp.json().catch(() => ({}));
+                const createdName = tmpResult.character_name || catgirlName;
+                const nameInput = form.querySelector?.('[name="档案名"]');
+                if (nameInput) nameInput.value = createdName;
+                catgirlName = createdName;
+                form._autoCreated = true;
+                form._autoCreatedName = createdName;
+            } else {
+                const errData = await tmpResp.json().catch(() => ({}));
+                showMessage((window.t ? window.t('character.tempSaveFailed', { error: errData.error || '' }) : '临时保存失败: ' + (errData.error || '')), 'error');
+                return;
+            }
+        } catch (e) {
+            showMessage((window.t ? window.t('character.tempSaveFailed', { error: e.message }) : '临时保存失败: ' + e.message), 'error');
+            return;
+        }
+    }
+
+    const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
+    if (!window._openSettingsWindows) window._openSettingsWindows = {};
+    const existingWindow = window._openSettingsWindows[url];
+    if (existingWindow && !existingWindow.closed) {
+        if (form && form._autoCreated) form._autoCreatedDependentPopup = existingWindow;
+        existingWindow.focus();
+        return;
+    }
+    delete window._openSettingsWindows[url];
+
+    const popup = window.open(url, '_blank',
+        'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
+    if (!popup) {
+        if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
+        // 弹窗被拦截：回滚本次及此前重命名遗留的 detached 临时角色，避免用户直接刷新/关页时残留空记录
+        if (form && (form._autoCreated || form._autoCreatedDetachedName)) {
+            await rollbackAutoCreatedCatgirl(form);
+        }
+        return;
+    }
+
+    window._openSettingsWindows[url] = popup;
+    if (form && form._autoCreated) form._autoCreatedDependentPopup = popup;
+    popup.moveTo(0, 0);
+    popup.resizeTo(screen.availWidth, screen.availHeight);
+    const timer = setInterval(() => {
+        if (!popup.closed) {
+            if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;
+            return;
+        }
+        clearInterval(timer);
+        if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
+        if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;
+        if (form && form._autoCreatedDependentPopup === popup) form._autoCreatedDependentPopup = null;
+        if (form && form._autoCreatedRollbackWhenDependentCloses && !form._autoCreatedDependentPopupSaved) {
+            rollbackAutoCreatedCatgirl(form).catch(e => console.warn('[角色面板] 延迟回滚临时角色失败:', e));
+        }
+        if (typeof loadCharacterCards === 'function') {
+            loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+        }
+    }, 500);
+}
+
+function getProfileNameFromCharacterForm(form, fallbackName) {
+    return String(form?.querySelector?.('[name="档案名"]')?.value || fallbackName || '').trim();
+}
+
+async function showProfileNameRequiredDialog(key = 'character.fillProfileNameFirst', fallback = '请先填写猫娘档案名，然后再设置模型') {
+    const message = window.t ? window.t(key) : fallback;
+    if (typeof showAlertDialog === 'function') {
+        await showAlertDialog(message, { type: 'warning' });
+        return;
+    }
+    showMessage(message, 'warning');
 }
 
 // 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
@@ -2849,7 +3854,8 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
                     if (window._cardMetas) window._cardMetas[name] = data.meta || { ...m, author: newVal };
                     showMessage(window.t ? window.t('character.cardAuthorUpdated') : '作者已更新', 'success');
                 } catch (e) {
-                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed') : '作者更新失败', 'error');
+                    const errorMessage = e.message || String(e);
+                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed', { error: errorMessage }) : '更新作者失败: ' + errorMessage, 'error');
                     authorInput.value = author;
                 } finally { saving = false; }
             };
@@ -3033,41 +4039,40 @@ if (document.readyState === 'loading') {
     _setupImportCardButton();
 }
 
-// ===== API 设置弹窗 =====
-const _API_KEY_ALLOWED_ORIGINS = [window.location.origin];
-function openApiKeySettings() {
-    const existingModal = document.getElementById('api-key-settings-modal');
-    if (existingModal) {
-        existingModal.style.display = 'block';
-        return;
+// ===== API 设置窗口 =====
+function buildApiKeySettingsWindowFeatures(width = 1240, height = 940) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
     }
-    const modal = document.createElement('div');
-    modal.id = 'api-key-settings-modal';
-    modal.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.4);z-index:9999';
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
 
-    const apiKeyMessageHandler = function (e) {
-        if (!_API_KEY_ALLOWED_ORIGINS.includes(e.origin)) return;
-        if (e.data && e.data.type === 'close_api_key_settings') {
-            const m = document.getElementById('api-key-settings-modal');
-            if (m && m.parentNode) m.parentNode.removeChild(m);
-            window.removeEventListener('message', apiKeyMessageHandler);
+function openApiKeySettings() {
+    const url = '/api_key';
+    const windowName = 'neko_api_key';
+    const features = buildApiKeySettingsWindowFeatures();
+    let childWin = null;
+
+    if (typeof window.openOrFocusWindow === 'function') {
+        childWin = window.openOrFocusWindow(url, windowName, features);
+    } else {
+        childWin = window.open(url, windowName, features);
+    }
+
+    if (childWin && typeof childWin.focus === 'function') {
+        try {
+            childWin.focus();
+        } catch (error) {
+            // 部分浏览器环境不允许主动聚焦，忽略即可。
         }
-    };
-
-    modal.onclick = function (e) {
-        if (e.target === modal) {
-            window.removeEventListener('message', apiKeyMessageHandler);
-            if (modal.parentNode) modal.parentNode.removeChild(modal);
-        }
-    };
-
-    const iframe = document.createElement('iframe');
-    iframe.src = '/api_key';
-    iframe.style.cssText = 'width:800px;height:720px;border:none;background:#fff;display:block;margin:50px auto;border-radius:8px';
-
-    window.addEventListener('message', apiKeyMessageHandler);
-    modal.appendChild(iframe);
-    document.body.appendChild(modal);
+    }
 }
 
 function _setupApiKeySettingsButton() {
@@ -3369,17 +4374,9 @@ function switchCharaCardsView(mode) {
 
     const container = document.getElementById('chara-cards-container');
     if (container) {
-        // 退出动画
-        container.style.opacity = '0';
-        container.style.transform = 'scale(0.97)';
-        setTimeout(function () {
-            renderCharaCardsView();
-            // 入场动画
-            requestAnimationFrame(function () {
-                container.style.opacity = '1';
-                container.style.transform = 'scale(1)';
-            });
-        }, 200);
+        container.style.opacity = '1';
+        container.style.transform = 'none';
+        renderCharaCardsView();
     } else {
         renderCharaCardsView();
     }
@@ -3491,7 +4488,10 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+        const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+        placeholderSpan.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+            ? translatedNoCardImage
+            : '暂未设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -3529,9 +4529,9 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'card-action-btn switch-btn';
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -3605,9 +4605,9 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'list-action-btn switch-btn';
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -3666,6 +4666,64 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 // ===== 角色卡详情面板 =====
 
 let _catgirlPanelOpen = false;
+const CATGIRL_PANEL_STEAM_COMPACT_WIDTH = 1280;
+let _catgirlPanelSteamLayoutRaf = null;
+
+function isCatgirlPanelSteamCompactWindow() {
+    const width = window.innerWidth || document.documentElement.clientWidth || 0;
+    return width > 0 && width < CATGIRL_PANEL_STEAM_COMPACT_WIDTH;
+}
+
+function refreshSteamPreviewAfterPanelLayoutChange() {
+    requestAnimationFrame(function () {
+        if (typeof buildPreviewRing === 'function') buildPreviewRing();
+        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+            const l2dContainer = document.getElementById('live2d-preview-content');
+            if (l2dContainer && l2dContainer.clientWidth > 0 && l2dContainer.clientHeight > 0) {
+                live2dPreviewManager.pixi_app.renderer.resize(l2dContainer.clientWidth, l2dContainer.clientHeight);
+                if (live2dPreviewManager.currentModel) {
+                    live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                }
+            }
+        }
+        syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+        syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
+    });
+}
+
+function updateCatgirlPanelSteamCardLayout(wrapper) {
+    const panel = wrapper || document.getElementById('catgirl-panel-wrapper');
+    if (!panel) return;
+
+    const activeTab = panel.querySelector('.panel-tab.active');
+    const shouldHideCardFace = !!(
+        activeTab
+        && activeTab.dataset.tab === 'steam'
+        && isCatgirlPanelSteamCompactWindow()
+    );
+    const wasHidden = panel.classList.contains('steam-compact-card-hidden');
+    panel.classList.toggle('steam-compact-card-hidden', shouldHideCardFace);
+    const indicator = panel.querySelector('.panel-tabs-indicator');
+    if (activeTab && indicator) {
+        indicator.style.left = activeTab.offsetLeft + 'px';
+        indicator.style.width = activeTab.offsetWidth + 'px';
+    }
+    const changed = wasHidden !== shouldHideCardFace;
+    if (changed) {
+        setTimeout(refreshSteamPreviewAfterPanelLayoutChange, 430);
+    }
+}
+
+function scheduleCatgirlPanelSteamCardLayoutUpdate() {
+    if (_catgirlPanelSteamLayoutRaf) cancelAnimationFrame(_catgirlPanelSteamLayoutRaf);
+    _catgirlPanelSteamLayoutRaf = requestAnimationFrame(function () {
+        _catgirlPanelSteamLayoutRaf = null;
+        updateCatgirlPanelSteamCardLayout();
+    });
+}
+
+window.addEventListener('resize', scheduleCatgirlPanelSteamCardLayoutUpdate);
 
 function openCatgirlPanel(card, originEl) {
     if (_catgirlPanelOpen) return;
@@ -3686,6 +4744,7 @@ function openCatgirlPanel(card, originEl) {
     const wrapper = document.createElement('div');
     wrapper.className = 'catgirl-panel-wrapper card-only';
     wrapper.id = 'catgirl-panel-wrapper';
+    if (name) wrapper.dataset.catgirlName = name;
 
     // 设置动画起点
     if (originEl) {
@@ -3701,11 +4760,27 @@ function openCatgirlPanel(card, originEl) {
 
     const cardImage = document.createElement('div');
     cardImage.className = 'catgirl-panel-card-image';
-    cardImage.setAttribute('data-edit-label', window.t ? window.t('character.editCardFace') : '✎ 编辑卡面');
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+    const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+    imgPlaceholder.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+        ? translatedNoCardImage
+        : '暂未设置卡面';
     cardImage.appendChild(imgPlaceholder);
+
+    const cardActionOverlay = document.createElement('div');
+    cardActionOverlay.className = 'catgirl-panel-card-actions';
+    const modelSettingsAction = document.createElement('button');
+    modelSettingsAction.type = 'button';
+    modelSettingsAction.className = 'catgirl-panel-card-action';
+    modelSettingsAction.textContent = window.t ? window.t('character.cardFaceModelSettings') : '模型设置';
+    const editCardFaceAction = document.createElement('button');
+    editCardFaceAction.type = 'button';
+    editCardFaceAction.className = 'catgirl-panel-card-action';
+    editCardFaceAction.textContent = window.t ? window.t('character.editCardFace') : '编辑卡面';
+    cardActionOverlay.appendChild(modelSettingsAction);
+    cardActionOverlay.appendChild(editCardFaceAction);
+    cardImage.appendChild(cardActionOverlay);
 
     // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
     if (name && window._cardFaceNames && window._cardFaceNames.has(name)) {
@@ -3720,66 +4795,50 @@ function openCatgirlPanel(card, originEl) {
         img.src = cardFaceUrl + '?t=' + Date.now();
     }
 
-    // 点击卡面打开角色卡制作页面
-    cardImage.addEventListener('click', () => {
+    const openCardMaker = async () => {
         // 优先使用表单中当前填写的档案名（新建猫娘可能已临时保存）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        const currentName = getProfileNameFromCharacterForm(form, name);
         if (!currentName) {
-            showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+            await showProfileNameRequiredDialog(
+                'character.fillProfileNameFirstForCardFace',
+                '请先填写猫娘档案名，然后再设置卡面'
+            );
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
-        window.open(makerUrl, '_blank', 'width=1200,height=800');
+        openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
+    };
+
+    const openCardModelManager = async () => {
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        await openModelManagerForCharacterForm(form, name);
+    };
+
+    // 点击卡面主体打开模型管理；编辑卡面按钮仍进入角色卡制作页面。
+    cardImage.addEventListener('click', async (event) => {
+        if (event.target.closest('.catgirl-panel-card-action')) return;
+        await openCardModelManager();
+    });
+    editCardFaceAction.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openCardMaker();
+    });
+    modelSettingsAction.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await openCardModelManager();
     });
 
     // 监听角色卡制作页面的保存消息
     const onCardFaceMessage = (event) => {
+        if (event.origin !== window.location.origin) return;
         // 获取当前实际的档案名（新建猫娘时 name 为 null，需要从表单读取）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
         const currentName = form?.querySelector('[name="档案名"]')?.value || name;
         if (!currentName) return;
 
         if (event.data && event.data.type === 'card-face-updated' && event.data.name === currentName) {
-            const ts = event.data.timestamp;
-            const newSrc = `/api/characters/catgirl/${encodeURIComponent(currentName)}/card-face?t=${ts}`;
-            // 更新缓存：标记该名字现在已有卡面
-            if (window._cardFaceNames) window._cardFaceNames.add(currentName);
-
-            // 更新面板卡面图片
-            let panelImg = cardImage.querySelector('.card-face-img');
-            if (!panelImg) {
-                panelImg = document.createElement('img');
-                panelImg.className = 'card-face-img';
-                panelImg.alt = '角色卡面';
-                cardImage.insertBefore(panelImg, imgPlaceholder);
-                imgPlaceholder.style.display = 'none';
-            }
-            panelImg.src = newSrc;
-
-            // 同步更新角色列表中的卡面
-            document.querySelectorAll('.chara-card-item').forEach(cardItem => {
-                const cardName = cardItem.querySelector('.card-name');
-                if (cardName && cardName.textContent === currentName) {
-                    const gridAvatar = cardItem.querySelector('.card-avatar');
-                    if (gridAvatar) {
-                        let gridImg = gridAvatar.querySelector('.card-face-img');
-                        const gridPlaceholder = gridAvatar.querySelector('.card-avatar-placeholder');
-                        if (!gridImg) {
-                            gridImg = document.createElement('img');
-                            gridImg.className = 'card-face-img';
-                            gridImg.alt = currentName;
-                            if (gridPlaceholder) {
-                                gridAvatar.insertBefore(gridImg, gridPlaceholder);
-                                gridPlaceholder.style.display = 'none';
-                            } else {
-                                gridAvatar.appendChild(gridImg);
-                            }
-                        }
-                        gridImg.src = newSrc;
-                    }
-                }
-            });
+            applyCardFaceUpdated(currentName, event.data.timestamp);
         }
     };
     window.addEventListener('message', onCardFaceMessage);
@@ -3818,40 +4877,24 @@ function openCatgirlPanel(card, originEl) {
         };
         actions.appendChild(exportBtn);
 
-        const switchBtn = document.createElement('button');
-        switchBtn.type = 'button';
-        switchBtn.className = 'card-panel-action-btn switch-btn';
         const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
-        switchBtn.disabled = isCurrentChara;
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
-        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换') + '</span>';
-        switchBtn.onclick = function (e) {
-            e.stopPropagation();
-            workshopSwitchCatgirl(name);
-        };
-        actions.appendChild(switchBtn);
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
-        deleteBtn.className = 'card-panel-action-btn delete-btn';
-        deleteBtn.disabled = isCurrentChara;
+        deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
         deleteBtn.title = isCurrentChara
             ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
             : (window.t ? window.t('character.deleteCard') : '删除角色卡');
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            if (isCurrentChara) {
-                if (typeof showMessage === 'function') {
-                    showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡', 'error');
-                }
-                return;
+            // 不再用打开面板时快照的 isCurrentChara 拦截——workshopDeleteCatgirl 内部会用权威当前角色名做判断，
+            // 这样跨窗口切换、用户取消、后端拒绝等情况都会被正确处理，且只有真正删除成功后才关面板，避免提前关掉丢未保存改动
+            const deleted = await workshopDeleteCatgirl(name);
+            if (deleted) {
+                closeCatgirlPanel();
             }
-            workshopDeleteCatgirl(name);
-            // 删除会刷新列表，关闭面板
-            setTimeout(() => closeCatgirlPanel(), 300);
         };
         actions.appendChild(deleteBtn);
 
@@ -3914,6 +4957,7 @@ function openCatgirlPanel(card, originEl) {
     const closeBtnImg = document.createElement('img');
     closeBtnImg.src = '/static/icons/close_button.png';
     closeBtnImg.alt = window.t ? window.t('common.close') : '关闭';
+    closeBtnImg.draggable = false;
     closeBtn.appendChild(closeBtnImg);
     closeBtn.onclick = closeCatgirlPanel;
     headerBar.appendChild(closeBtn);
@@ -3948,9 +4992,11 @@ function openCatgirlPanel(card, originEl) {
             '/static/icons/star.png',
             '/static/icons/paw_ui.png'
         ];
-        const spawnCurtainTransition = function (targetTabName, reverse) {
+        const spawnCurtainTransition = function (targetTabName, reverse, fullPanel) {
             const curtain = document.createElement('div');
-            curtain.className = 'panel-transition-curtain' + (reverse ? ' curtain-reverse' : '');
+            curtain.className = 'panel-transition-curtain'
+                + (reverse ? ' curtain-reverse' : '')
+                + (fullPanel ? ' full-panel' : '');
 
             // 幕布色块
             const sweep = document.createElement('div');
@@ -3990,7 +5036,8 @@ function openCatgirlPanel(card, originEl) {
             centerIcon.style.animationDelay = '0.18s';
             curtain.appendChild(centerIcon);
 
-            rightSection.appendChild(curtain);
+            const curtainHost = fullPanel ? wrapper : rightSection;
+            curtainHost.appendChild(curtain);
             setTimeout(function () { curtain.remove(); }, 900);
         };
 
@@ -4014,11 +5061,17 @@ function openCatgirlPanel(card, originEl) {
                 const currentIdx = currentActiveTabBtn ? allTabs.indexOf(currentActiveTabBtn) : -1;
                 const targetIdx = allTabs.indexOf(this);
                 const reverseDirection = (currentIdx >= 0 && targetIdx >= 0 && targetIdx < currentIdx);
+                const needsFullPanelCurtain = wrapper.classList.contains('steam-compact-card-hidden')
+                    || (targetTab === 'steam' && isCatgirlPanelSteamCompactWindow());
 
                 _tabSwitching = true;
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
                 updateIndicator();
+
+                // 小窗口 Steam 切换会联动左侧卡面，幕布先覆盖整个面板再更新布局。
+                spawnCurtainTransition(targetTab, reverseDirection, needsFullPanelCurtain);
+                updateCatgirlPanelSteamCardLayout(wrapper);
 
                 // 根据当前激活状态切换设定齿轮图标 on/off
                 if (settingsIcon) {
@@ -4026,9 +5079,6 @@ function openCatgirlPanel(card, originEl) {
                         ? '/static/icons/set_on.png'
                         : '/static/icons/set_off.png';
                 }
-
-                // 播放幕布转场
-                spawnCurtainTransition(targetTab, reverseDirection);
 
                 // 退出当前页 — absolute定位防止撑高容器
                 if (currentActive) {
@@ -4063,16 +5113,9 @@ function openCatgirlPanel(card, originEl) {
                                     }
                                 }
                             }
-                            // VRM resize
-                            const vrmContainer = document.getElementById('vrm-preview-container');
-                            if (vrmContainer && workshopVrmManager && workshopVrmManager.renderer) {
-                                workshopVrmManager.renderer.setSize(vrmContainer.clientWidth, vrmContainer.clientHeight);
-                            }
-                            // MMD resize
-                            const mmdContainer = document.getElementById('mmd-preview-container');
-                            if (mmdContainer && workshopMmdManager && workshopMmdManager.renderer) {
-                                workshopMmdManager.renderer.setSize(mmdContainer.clientWidth, mmdContainer.clientHeight);
-                            }
+                            // VRM / MMD resize：同步 renderer、camera 和 OutlineEffect，避免只改 canvas 尺寸导致 3D 预览横向变形。
+                            syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+                            syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
                         });
                     }
 
@@ -4099,6 +5142,7 @@ function openCatgirlPanel(card, originEl) {
 
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
+    updateCatgirlPanelSteamCardLayout(wrapper);
 
     // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
@@ -4141,14 +5185,18 @@ function openCatgirlPanel(card, originEl) {
             setTimeout(_resizeAllPanelTextareas, 500);
 
             // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
+            // 用 overlay 持有 timer id，关闭时统一 clearTimeout，避免在 closing 期间重建预览
             if (!isNew) {
-                setTimeout(() => {
+                const steamInitTimer = setTimeout(() => {
+                    overlay._steamTabInitTimer = null;
+                    if (overlay.dataset.closing === 'true' || !overlay.isConnected) return;
                     const steamContainer = rightSection.querySelector('.panel-tab-steam');
                     if (steamContainer && !steamContainer.dataset.initialized) {
                         steamContainer.dataset.initialized = 'true';
                         buildSteamTabContent(name, rawData, card, steamContainer);
                     }
                 }, 500);
+                overlay._steamTabInitTimer = steamInitTimer;
             }
         }, 500);
     });
@@ -4160,15 +5208,155 @@ function openNewCatgirlPanel() {
 }
 window.openNewCatgirlPanel = openNewCatgirlPanel;
 
-function closeCatgirlPanel() {
+function buildCreatedCatgirlPanelActions(name) {
+    const actions = document.createElement('div');
+    actions.className = 'card-panel-actions';
+
+    const exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'card-panel-action-btn export-btn';
+    exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
+    exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+        + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+    exportBtn.onclick = function (e) {
+        e.stopPropagation();
+        exportCharacterCard(name);
+    };
+    actions.appendChild(exportBtn);
+
+    const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
+    deleteBtn.title = isCurrentChara
+        ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+        : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+    deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+        + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+    deleteBtn.onclick = async function (e) {
+        e.stopPropagation();
+        const deleted = await workshopDeleteCatgirl(name);
+        if (deleted) {
+            closeCatgirlPanel();
+        }
+    };
+    actions.appendChild(deleteBtn);
+
+    return actions;
+}
+
+async function rollbackAutoCreatedCatgirl(form, targetName = '') {
+    if (!form) return;
+    const tempNames = Array.from(new Set(
+        (targetName
+            ? [targetName]
+            : [form._autoCreatedName, form._autoCreatedDetachedName]
+        ).filter(Boolean)
+    ));
+    if (!tempNames.length) return;
+    const deletedNames = [];
+    try {
+        for (const tempName of tempNames) {
+            const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(tempName), {
+                method: 'DELETE'
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                console.warn('[角色面板] 回滚临时角色失败:', tempName, errData.error || resp.statusText);
+                continue;
+            }
+            deletedNames.push(tempName);
+            if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
+            if (window._cardMetas) delete window._cardMetas[tempName];
+        }
+        if (!deletedNames.length) return;
+        if (deletedNames.includes(form._autoCreatedName)) {
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        }
+        if (deletedNames.includes(form._autoCreatedDetachedName)) {
+            form._autoCreatedDetachedName = '';
+        }
+        if (!form._autoCreatedName && !form._autoCreatedDetachedName) {
+            form._autoCreatedRollbackWhenDependentCloses = false;
+            form._autoCreatedDependentPopupSaved = false;
+        }
+        if (typeof loadCharacterCards === 'function') {
+            loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+        }
+    } catch (e) {
+        console.warn('[角色面板] 回滚临时角色请求失败:', tempNames.join(', '), e);
+    }
+}
+
+function hasOpenAutoCreatedDependentPopup(form) {
+    const popup = form && form._autoCreatedDependentPopup;
+    return !!(popup && !popup.closed);
+}
+
+async function closeCatgirlPanel() {
     const overlay = document.querySelector('.catgirl-panel-overlay');
     if (!overlay) return;
+    if (overlay.dataset.closing === 'true') return;
+    overlay.dataset.closing = 'true';
 
-    // 清理模型预览资源（如果 Steam 标签页曾加载过）
+    // 详情面板被显式关闭：companion 是绑在「这一次卡片编辑会话」上的助手，会话结束就
+    // 跟着收掉。关键安全点（Codex #3328901017）：打开/切换到「别的卡」必须先走到这里把
+    // 当前面板关掉（openCatgirlPanel 顶部有 _catgirlPanelOpen 互斥 guard，开新面板前
+    // 一定先 closeCatgirlPanel）。所以在这里直接 teardown+destroy companion，就从根上
+    // 杜绝了「A 的聊天被 _companionEnsureLiveForm 的选择器回退误绑到下一张打开的卡 B、
+    // 后续 action/autosave 改错卡」。合法的 in-place rebuild（改档案名字段后
+    // saveCatgirlFromPanel 重建、新卡首存 popup 被拦走 rebuildSavedCatgirlPanel）都不经过
+    // closeCatgirlPanel，companion 不受影响、照常跟随。
+    if (window._cardCompanion) {
+        _companionTeardown(window._cardCompanion);
+        _companionDestroy(window._cardCompanion);
+        window._cardCompanion = null;
+    }
+
+    const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._voiceSelectCleanup) {
+        currentForm._voiceSelectCleanup();
+        delete currentForm._voiceSelectCleanup;
+    }
+    if (currentForm && currentForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
+        delete currentForm._characterPersonalityUpdateHandler;
+    }
+    // _autoCreatedDependentPopupSaved 由 500ms 轮询置位，存在 popup 已关到 timer 下次触发之间的窗口；
+    // 同时直接读 popup._modelManagerHasSaved 兜底，避免误把刚保存好的临时角色回滚掉
+    const dependentPopupForCheck = currentForm && currentForm._autoCreatedDependentPopup;
+    const dependentSaved = !!(currentForm && (
+        currentForm._autoCreatedDependentPopupSaved
+        || (dependentPopupForCheck && dependentPopupForCheck._modelManagerHasSaved)
+    ));
+    if (!dependentSaved && hasOpenAutoCreatedDependentPopup(currentForm)) {
+        currentForm._autoCreatedRollbackWhenDependentCloses = true;
+    } else if (!dependentSaved) {
+        await rollbackAutoCreatedCatgirl(currentForm);
+    }
+
+    // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
+    if (typeof cancelWorkshopPreviewLoads === 'function') {
+        cancelWorkshopPreviewLoads();
+    } else if (typeof cancelPendingLive2DPreviewLoads === 'function') {
+        cancelPendingLive2DPreviewLoads();
+    }
+
+    // 取消尚未触发的 Steam 标签页延迟初始化，避免在清理后又把预览建回来
+    if (overlay._steamTabInitTimer) {
+        clearTimeout(overlay._steamTabInitTimer);
+        overlay._steamTabInitTimer = null;
+    }
+
+    // 清理模型预览资源（如果 Steam 标签页曾加载过）；清理完成后再执行收起动画
     try {
-        if (typeof disposeWorkshopVrm === 'function') disposeWorkshopVrm();
-        if (typeof disposeWorkshopMmd === 'function') disposeWorkshopMmd();
-        if (typeof clearLive2DPreview === 'function') clearLive2DPreview();
+        const cleanupTasks = [];
+        if (typeof disposeWorkshopVrm === 'function') cleanupTasks.push(disposeWorkshopVrm());
+        if (typeof disposeWorkshopMmd === 'function') cleanupTasks.push(disposeWorkshopMmd());
+        if (typeof destroyLive2DPreviewContext === 'function') cleanupTasks.push(destroyLive2DPreviewContext());
+        await Promise.allSettled(cleanupTasks);
     } catch (e) {
         console.warn('[Panel] 清理预览资源时出错:', e);
     }
@@ -4179,28 +5367,37 @@ function closeCatgirlPanel() {
         wrapper.classList.add('phase-center');
     }
 
-    setTimeout(() => {
-        overlay.classList.remove('active');
-        if (wrapper) wrapper.classList.remove('phase-center');
-        setTimeout(() => {
-            overlay.remove();
-            _catgirlPanelOpen = false;
-        }, 400);
-    }, 300);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    overlay.classList.remove('active');
+    if (wrapper) wrapper.classList.remove('phase-center');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    overlay.remove();
+    _catgirlPanelOpen = false;
 }
 window.closeCatgirlPanel = closeCatgirlPanel;
 
 function buildCatgirlDetailForm(name, rawData, isNew, container) {
+    const previousForm = container && typeof container.querySelector === 'function'
+        ? container.querySelector('form')
+        : null;
+    if (previousForm && previousForm._voiceSelectCleanup) {
+        previousForm._voiceSelectCleanup();
+    }
+    if (previousForm && previousForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
+    }
+
     let cat = rawData || {};
     let form = document.createElement('form');
     form.id = name ? 'catgirl-form-' + name : 'catgirl-form-new';
     form.style.padding = '0';
     form._catgirlName = name;
+    form._isNew = !!isNew;
     form.onsubmit = function (e) { e.preventDefault(); };
 
     // 档案名
     const baseWrapper = document.createElement('div');
-    baseWrapper.className = 'field-row-wrapper';
+    baseWrapper.className = 'field-row-wrapper profile-row';
 
     const baseLabel = document.createElement('label');
     const profileNameText = (window.t && typeof window.t === 'function') ? window.t('character.profileName') : '档案名';
@@ -4220,6 +5417,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     if (isNew) {
         nameInput.addEventListener('change', function () {
             if (form._autoCreated && form._autoCreatedName !== nameInput.value.trim()) {
+                form._autoCreatedDetachedName = form._autoCreatedName;
                 form._autoCreated = false;
                 form._autoCreatedName = '';
             }
@@ -4233,10 +5431,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     if (!isNew) {
         const renameBtn = document.createElement('button');
         renameBtn.type = 'button';
-        renameBtn.className = 'btn sm';
+        renameBtn.className = 'btn sm row-action-btn rename-action';
         renameBtn.id = 'rename-catgirl-btn';
-        renameBtn.style.marginLeft = '8px';
-        renameBtn.style.minWidth = '120px';
         const renameText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">' + window.t('character.rename') + '</span>'
             : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
@@ -4275,7 +5471,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             } catch (e) {
                 console.error('重命名失败:', e);
                 if (typeof showAlert === 'function') {
-                    await showAlert(window.t ? window.t('character.renameError') : '重命名时发生错误');
+                    const errorMessage = e.message || String(e);
+                    await showAlert(window.t ? window.t('character.renameError', { error: errorMessage }) : '重命名失败: ' + errorMessage);
                 }
             }
         });
@@ -4285,26 +5482,25 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
-    Object.keys(cat).forEach(k => {
-        if (ALL_RESERVED.includes(k)) return;
+    const renderedCustomFields = new Set();
+    getOrderedCharacterFieldKeys(cat, ALL_RESERVED).forEach(k => {
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (!normalizedKey || ALL_RESERVED.includes(normalizedKey) || renderedCustomFields.has(normalizedKey)) return;
         const val = cat[k];
         if (val === null || val === undefined) return;
+        renderedCustomFields.add(normalizedKey);
 
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
-
-        const deleteFieldText = (window.t && typeof window.t === 'function')
-            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
-            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const labelEl = document.createElement('label');
-        _panelSetFieldLabel(labelEl, k);
+        _panelSetFieldLabel(labelEl, normalizedKey);
         wrapper.appendChild(labelEl);
 
         const fr = document.createElement('div');
         fr.className = 'field-row';
         const textareaEl = document.createElement('textarea');
-        textareaEl.name = k;
+        textareaEl.name = normalizedKey;
         textareaEl.rows = 1;
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
@@ -4315,8 +5511,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
-        delBtn.innerHTML = deleteFieldText;
+        delBtn.className = 'btn sm delete row-action-btn delete-action setting-field-delete';
+        _panelConfigureFieldDeleteButton(delBtn);
         delBtn.addEventListener('click', function () {
             wrapper.remove();
             const sb = form.querySelector('#save-button');
@@ -4334,7 +5530,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 新增设定按钮区
     const addFieldArea = document.createElement('div');
-    addFieldArea.className = 'btn-area add-field-area';
+    addFieldArea.className = 'btn-area add-field-area settings-toolbar-row';
     addFieldArea.style.display = 'flex';
     addFieldArea.style.alignItems = 'center';
     addFieldArea.style.marginTop = '10px';
@@ -4350,11 +5546,36 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     addFieldSpacer.style.flex = '1';
     addFieldArea.appendChild(addFieldSpacer);
 
+    // 猫猫辅助生成按钮（位于「新增设定」左侧）。
+    // `settings-secondary-action` 是 grid placement marker —— 详情面板的 settings
+    // toolbar row 用 CSS Grid 把 `.btn.sm` 默认塞到 grid-column: 4；不显式标 col
+    // 的话 AI 按钮和 Add 按钮会在同一列里堆成上下两行。靠这个 class 把它推到
+    // col 3，跟 `.settings-save-action` / `.settings-cancel-action` 是同一套 pattern。
+    const aiAssistBtn = document.createElement('button');
+    aiAssistBtn.type = 'button';
+    aiAssistBtn.className = 'btn sm ai-assist settings-secondary-action';
+    aiAssistBtn.id = 'panel-ai-assist-catgirl-btn';
+    aiAssistBtn.style.minWidth = '140px';
+    const aiAssistText = (window.t && typeof window.t === 'function')
+        ? '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">' + window.t('character.aiAssist') + '</span>'
+        : '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">猫猫辅助生成</span>';
+    aiAssistBtn.innerHTML = aiAssistText;
+    aiAssistBtn.onclick = function () {
+        try {
+            openCardAssistCompanion(form, name, isNew);
+        } catch (err) {
+            console.error('[card-assist] open companion failed:', err);
+            if (typeof showAlertDialog === 'function') {
+                showAlertDialog(String(err && err.message || err), { type: 'error' });
+            }
+        }
+    };
+    addFieldArea.appendChild(aiAssistBtn);
+
     const addFieldBtn = document.createElement('button');
     addFieldBtn.type = 'button';
-    addFieldBtn.className = 'btn sm add';
+    addFieldBtn.className = 'btn sm add settings-primary-action';
     addFieldBtn.id = 'panel-add-catgirl-field-btn';
-    addFieldBtn.style.minWidth = '120px';
     const addFieldText = (window.t && typeof window.t === 'function')
         ? '<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addField">' + window.t('character.addField') + '</span>'
         : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
@@ -4370,9 +5591,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         } else {
             key = prompt(window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）');
         }
+        key = normalizeCharacterFieldName(key);
         const FORBIDDEN = ALL_RESERVED;
         if (!key || FORBIDDEN.includes(key)) return;
-        if (form.querySelector('[name="' + CSS.escape(key) + '"]')) {
+        if (Array.from(form.querySelectorAll('input, textarea, select')).some(el => normalizeCharacterFieldName(el.name) === key)) {
             if (typeof showAlert === 'function') {
                 await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
             } else {
@@ -4381,11 +5603,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             return;
         }
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
-
-        const deleteFieldText = (window.t && typeof window.t === 'function')
-            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
-            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const labelEl = document.createElement('label');
         _panelSetFieldLabel(labelEl, key);
@@ -4404,8 +5622,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
-        delBtn.innerHTML = deleteFieldText;
+        delBtn.className = 'btn sm delete row-action-btn delete-action setting-field-delete';
+        _panelConfigureFieldDeleteButton(delBtn);
         delBtn.addEventListener('click', function () {
             wrapper.remove();
             if (saveButton) saveButton.style.display = '';
@@ -4424,56 +5642,149 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     addFieldArea.appendChild(addFieldBtn);
     form.appendChild(addFieldArea);
 
-    // 进阶设定折叠
-    const fold = document.createElement('div');
-    fold.className = 'fold open';
-
-    const foldToggle = document.createElement('div');
-    foldToggle.className = 'fold-toggle';
-    const arrowSpan = document.createElement('img');
-    arrowSpan.className = 'arrow';
-    arrowSpan.src = '/static/icons/dropdown_arrow.png';
-    arrowSpan.alt = '';
-    arrowSpan.style.width = '32px';
-    arrowSpan.style.height = '32px';
-    arrowSpan.style.verticalAlign = 'middle';
-    arrowSpan.style.transition = 'transform 0.2s';
-    arrowSpan.style.transform = 'rotate(0deg)';
-    foldToggle.appendChild(arrowSpan);
-    foldToggle.appendChild(document.createTextNode(' '));
-    const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
-    foldToggle.appendChild(toggleText);
-    foldToggle.onclick = function () {
-        fold.classList.toggle('open');
-        arrowSpan.style.transform = fold.classList.contains('open') ? 'rotate(0deg)' : 'rotate(-90deg)';
-        // localStorage 持久化折叠状态
-        if (name) {
-            localStorage.setItem('catgirl_advanced_' + name, fold.classList.contains('open'));
+    function readCharacterPersonalitySelection(characterData) {
+        const reserved = characterData && typeof characterData === 'object' ? characterData['_reserved'] : null;
+        const override = reserved && typeof reserved === 'object' ? reserved['persona_override'] : null;
+        const profile = override && typeof override.profile === 'object' ? override.profile : {};
+        const presetId = override && typeof override === 'object' ? String(override.preset_id || '').trim() : '';
+        const hasOverride = !!(override && presetId);
+        // 通过 i18n 键获取本地化显示名，回退到 profile 原始值
+        const fallbackName = String(profile['性格原型'] || presetId).trim();
+        const i18nKey = presetId ? 'memory.characterSelection.' + presetId + '.name' : '';
+        var displayName = '';
+        if (hasOverride) {
+            if (typeof window.t === 'function' && i18nKey) {
+                var translated = window.t(i18nKey, fallbackName);
+                displayName = (typeof translated === 'string' && translated && translated !== i18nKey)
+                    ? translated
+                    : fallbackName;
+            } else {
+                displayName = fallbackName;
+            }
         }
-    };
-    fold.appendChild(foldToggle);
+        return {
+            hasOverride,
+            presetId,
+            profile,
+            displayName: displayName,
+        };
+    }
 
-    const foldContent = document.createElement('div');
-    foldContent.className = 'fold-content';
+    function applyCharacterPersonalitySelection(selection) {
+        const reserved = cat['_reserved'] && typeof cat['_reserved'] === 'object'
+            ? cat['_reserved']
+            : (cat['_reserved'] = {});
+        if (!selection || selection.mode !== 'override') {
+            delete reserved['persona_override'];
+            if (!Object.keys(reserved).length) {
+                delete cat['_reserved'];
+            }
+            return;
+        }
 
-    // 模型设定
-    const modelWrapper = document.createElement('div');
-    modelWrapper.className = 'field-row-wrapper';
-    const modelLabel = document.createElement('label');
-    modelLabel.textContent = window.t ? window.t('character.modelSettings') : '模型设定';
-    modelLabel.style.fontSize = '1rem';
-    modelWrapper.appendChild(modelLabel);
+        reserved['persona_override'] = {
+            preset_id: String(selection.preset_id || '').trim(),
+            source: String(selection.source || '').trim(),
+            selected_at: String(selection.selected_at || '').trim(),
+            profile: selection.profile && typeof selection.profile === 'object'
+                ? { ...selection.profile }
+                : {},
+        };
+    }
 
-    const modelLink = document.createElement('span');
-    modelLink.className = 'live2d-link';
-    modelLink.title = window.t ? window.t('character.manageModel') : '点击管理模型';
-    modelLink.style.color = '#40C5F1';
-    modelLink.style.cursor = 'pointer';
-    modelLink.style.textDecoration = 'underline';
-    modelLink.style.display = 'flex';
-    modelLink.style.alignItems = 'center';
+    function isPersonalityPanelAlive() {
+        if (!container || !container.isConnected) {
+            return false;
+        }
+        const overlay = typeof container.closest === 'function'
+            ? container.closest('.catgirl-panel-overlay')
+            : null;
+        return !!(overlay && overlay.isConnected && overlay.dataset.closing !== 'true');
+    }
 
-    // 辅助函数：检查模型路径是否有效
+    const personalityWrapper = document.createElement('div');
+    personalityWrapper.className = 'field-row-wrapper personality-row';
+    const personalityLabel = document.createElement('label');
+    personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
+    personalityLabel.style.fontSize = '1rem';
+    personalityWrapper.appendChild(personalityLabel);
+
+    const personalityRow = document.createElement('div');
+    personalityRow.className = 'field-row';
+    const personalitySummary = document.createElement('div');
+    personalitySummary.style.flex = '1';
+    personalitySummary.style.padding = '0 12px';
+    personalitySummary.style.color = '#40C5F1';
+    personalitySummary.style.fontSize = '0.95rem';
+    personalitySummary.style.whiteSpace = 'nowrap';
+    personalitySummary.style.overflow = 'hidden';
+    personalitySummary.style.textOverflow = 'ellipsis';
+    const personalitySelection = readCharacterPersonalitySelection(cat);
+    personalitySummary.textContent = personalitySelection.hasOverride
+        ? personalitySelection.displayName
+        : (window.t ? window.t('character.personalityUseDefault') : '跟随角色卡默认设定');
+    personalityRow.appendChild(personalitySummary);
+    personalityWrapper.appendChild(personalityRow);
+
+    const personalitySelectBtn = document.createElement('button');
+    personalitySelectBtn.type = 'button';
+    personalitySelectBtn.className = 'btn sm row-action-btn personality-select-action';
+    personalitySelectBtn.dataset.testid = 'character-personality-select';
+    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span>'
+        + (window.t ? window.t('character.personalitySelect') : '选择人格') + '</span>';
+    personalitySelectBtn.disabled = !!isNew;
+    personalitySelectBtn.addEventListener('click', async function () {
+        if (isNew) {
+            return;
+        }
+        if (!window.CharacterPersonalityOnboarding || typeof window.CharacterPersonalityOnboarding.openFromSettings !== 'function') {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.personalityModuleUnavailable') : '人格选择模块尚未加载');
+            }
+            return;
+        }
+        await window.CharacterPersonalityOnboarding.openFromSettings(name);
+    });
+    personalityWrapper.appendChild(personalitySelectBtn);
+
+    const personalityClearBtn = document.createElement('button');
+    personalityClearBtn.type = 'button';
+    personalityClearBtn.className = 'btn sm delete row-action-btn personality-clear-action';
+    personalityClearBtn.dataset.testid = 'character-personality-clear';
+    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span>'
+        + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
+    personalityClearBtn.disabled = !personalitySelection.hasOverride;
+    personalityClearBtn.addEventListener('click', async function () {
+        if (!name || personalityClearBtn.disabled) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
+                method: 'DELETE',
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+            }
+            applyCharacterPersonalitySelection(result.selection);
+            if (isPersonalityPanelAlive()) {
+                buildCatgirlDetailForm(name, cat, false, container);
+            }
+            if (typeof loadCharacterCards === 'function') {
+                loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+            }
+            showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
+        } catch (e) {
+            console.error('清除人格设定失败:', e);
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.personalityClearFailed') : '清除人格设定失败');
+            }
+        }
+    });
+    personalityWrapper.appendChild(personalityClearBtn);
+    form.appendChild(personalityWrapper);
+
+    // 模型信息仅用于保存时保留 Live2D 待机动作，模型管理入口已移到卡面按钮。
     function validateModelPath(path) {
         if (path === undefined || path === null) return '';
         if (typeof path !== 'string') path = String(path);
@@ -4485,132 +5796,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const modelType = cat['model_type'] || 'live2d';
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
-    let modelDisplayText = '';
-
-    const mmdPath = validateModelPath(cat['mmd'])
-        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
-    const vrmPath = validateModelPath(cat['vrm'])
-        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
     const live2dPath = validateModelPath(cat['live2d']);
-
-    const live3dSubType = String(
-        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
-    ).trim().toLowerCase();
-
-    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
-        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
-    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
-        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
-    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
-        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
-    } else if (normalizedModelType === 'live3d' && vrmPath) {
-        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
-    } else if (live2dPath) {
-        modelDisplayText = live2dPath;
-    } else {
-        modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
-    }
-
-    modelLink.textContent = modelDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
-    modelWrapper.appendChild(modelLink);
-    foldContent.appendChild(modelWrapper);
-
-    // 模型设定弹窗逻辑
-    modelLink.onclick = async function () {
-        const catgirlName = form.querySelector('[name="档案名"]').value;
-        if (!catgirlName) {
-            if (typeof showAlert === 'function') {
-                await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置模型');
-            }
-            return;
-        }
-        // 新建猫娘时，先临时保存（自动创建角色记录），确保模型管理器能正确关联
-        if (isNew && !form._autoCreated) {
-            try {
-                const tmpResp = await fetch('/api/characters/catgirl', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ '档案名': catgirlName })
-                });
-                if (tmpResp.ok) {
-                    form._autoCreated = true;
-                    form._autoCreatedName = catgirlName;
-                } else {
-                    const errData = await tmpResp.json().catch(() => ({}));
-                    showMessage((window.t ? window.t('character.tempSaveFailed', { error: errData.error || '' }) : '临时保存失败: ' + (errData.error || '')), 'error');
-                    return;
-                }
-            } catch (e) {
-                showMessage((window.t ? window.t('character.tempSaveFailed', { error: e.message }) : '临时保存失败: ' + e.message), 'error');
-                return;
-            }
-        }
-        const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
-        if (!window._openSettingsWindows) window._openSettingsWindows = {};
-        if (window._openSettingsWindows[url]) {
-            const existingWindow = window._openSettingsWindows[url];
-            if (existingWindow && !existingWindow.closed) {
-                existingWindow.focus();
-                return;
-            } else {
-                delete window._openSettingsWindows[url];
-            }
-        }
-        const popup = window.open(url, '_blank',
-            'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
-        if (!popup) {
-            if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
-            return;
-        }
-        window._openSettingsWindows[url] = popup;
-        popup.moveTo(0, 0);
-        popup.resizeTo(screen.availWidth, screen.availHeight);
-        const timer = setInterval(async () => {
-            if (popup.closed) {
-                clearInterval(timer);
-                if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
-                loadCharacterCards();
-                // 模型管理器关闭后，重新获取角色数据并更新模型显示名称
-                try {
-                    const resp = await fetch('/api/characters/');
-                    if (resp.ok) {
-                        const allData = await resp.json();
-                        const updatedCat = allData?.['猫娘']?.[catgirlName];
-                        if (!updatedCat) throw new Error('catgirl not found');
-                        const updModelType = updatedCat['model_type'] || 'live2d';
-                        const updNormType = updModelType === 'vrm' ? 'live3d' : updModelType;
-                        const updMmd = validateModelPath(updatedCat['mmd'])
-                            || validateModelPath(updatedCat['_reserved']?.avatar?.mmd?.model_path);
-                        const updVrm = validateModelPath(updatedCat['vrm'])
-                            || validateModelPath(updatedCat['_reserved']?.avatar?.vrm?.model_path);
-                        const updLive2d = validateModelPath(updatedCat['live2d']);
-                        const updSubType = String(
-                            updatedCat['_reserved']?.avatar?.live3d_sub_type || updatedCat['live3d_sub_type'] || ''
-                        ).trim().toLowerCase();
-                        let newDisplayText = '';
-                        if (updNormType === 'live3d' && updSubType === 'mmd' && updMmd) {
-                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
-                        } else if (updNormType === 'live3d' && updSubType === 'vrm' && updVrm) {
-                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
-                        } else if (updNormType === 'live3d' && updMmd && !updVrm) {
-                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
-                        } else if (updNormType === 'live3d' && updVrm) {
-                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
-                        } else if (updLive2d) {
-                            newDisplayText = updLive2d;
-                        }
-                        modelLink.textContent = newDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
-                    }
-                } catch (e) {
-                    console.warn('[Panel] 更新模型显示名称失败:', e);
-                }
-            }
-        }, 500);
-    };
 
     // 音色设定
     const voiceWrapper = document.createElement('div');
-    voiceWrapper.className = 'field-row-wrapper';
+    voiceWrapper.className = 'field-row-wrapper voice-row';
     const voiceLabel = document.createElement('label');
     voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
     voiceLabel.style.fontSize = '1rem';
@@ -4621,13 +5811,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.overflow = 'visible';
     voiceRow.style.position = 'relative';
     voiceRow.style.alignItems = 'center';
-    voiceRow.style.flex = '0 0 auto';
-    voiceRow.style.width = 'auto';
-    voiceRow.style.minWidth = '200px';
-    voiceRow.style.maxWidth = '300px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
-    voiceSelect.className = 'form-control';
+    voiceSelect.className = 'form-control voice-native-select';
+    voiceSelect.tabIndex = -1;
+    voiceSelect.setAttribute('aria-hidden', 'true');
     voiceSelect.style.flex = '0 0 auto';
     voiceSelect.style.width = '100%';
     voiceSelect.style.position = 'relative';
@@ -4641,14 +5829,15 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
     voiceRow.appendChild(voiceSelect);
+    const voiceSelectUi = _panelCreateVoiceSelectUi(voiceSelect);
+    voiceRow.appendChild(voiceSelectUi.container);
+    form._voiceSelectCleanup = voiceSelectUi.destroy;
     voiceWrapper.appendChild(voiceRow);
 
     // 注册新声音按钮
     const registerVoiceBtn = document.createElement('button');
     registerVoiceBtn.type = 'button';
-    registerVoiceBtn.className = 'btn sm';
-    registerVoiceBtn.style.marginLeft = '8px';
-    registerVoiceBtn.style.minWidth = '120px';
+    registerVoiceBtn.className = 'btn sm row-action-btn voice-register-action';
     const registerVoiceText = (window.t && typeof window.t === 'function')
         ? '<img src="/static/icons/sound.png" alt="" class="sound-icon"> <span data-i18n="character.registerNewVoice">' + window.t('character.registerNewVoice') + '</span>'
         : '<img src="/static/icons/sound.png" alt="" class="sound-icon"> 注册新声音';
@@ -4679,14 +5868,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         }
     });
     voiceWrapper.appendChild(registerVoiceBtn);
-    foldContent.appendChild(voiceWrapper);
-
-    fold.appendChild(foldContent);
-    form.appendChild(fold);
+    form.appendChild(voiceWrapper);
 
     // 操作按钮区
     const btnArea = document.createElement('div');
-    btnArea.className = 'btn-area';
+    btnArea.className = 'btn-area settings-action-row';
     btnArea.style.display = 'flex';
     btnArea.style.alignItems = 'center';
     btnArea.style.marginTop = '10px';
@@ -4704,22 +5890,23 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
     saveButton.id = 'save-button';
-    saveButton.className = 'btn sm';
-    saveButton.style.minWidth = '120px';
+    saveButton.className = 'btn sm settings-save-action';
     if (!isNew) saveButton.style.display = 'none';
-    saveButton.textContent = isNew
-        ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
-        : (window.t ? window.t('character.saveChanges') : '保存修改');
+    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span>'
+        + (isNew
+            ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
+            : (window.t ? window.t('character.saveChanges') : '保存修改'))
+        + '</span>';
     saveButton.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
     btnArea.appendChild(saveButton);
 
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
     cancelButton.id = 'cancel-button';
-    cancelButton.className = 'btn sm';
-    cancelButton.style.minWidth = '120px';
+    cancelButton.className = 'btn sm settings-cancel-action';
     if (!isNew) cancelButton.style.display = 'none';
-    cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span>'
+        + (window.t ? window.t('character.cancel') : '取消') + '</span>';
     cancelButton.onclick = function () {
         if (saveButton) saveButton.style.display = 'none';
         if (cancelButton) cancelButton.style.display = 'none';
@@ -4741,6 +5928,35 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     container.innerHTML = '';
     container.appendChild(form);
 
+    if (!isNew && name) {
+        const handleCharacterPersonalityUpdated = async function (event) {
+            const detail = event && event.detail ? event.detail : {};
+            if (String(detail.characterName || '').trim() !== name) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
+                    cache: 'no-store',
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+                }
+                applyCharacterPersonalitySelection(result.selection);
+                if (isPersonalityPanelAlive()) {
+                    buildCatgirlDetailForm(name, cat, false, container);
+                }
+                if (typeof loadCharacterCards === 'function') {
+                    loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+                }
+            } catch (e) {
+                console.warn('刷新人格设定展示失败:', e);
+            }
+        };
+        form._characterPersonalityUpdateHandler = handleCharacterPersonalityUpdated;
+        window.addEventListener('neko:character-personality-updated', handleCharacterPersonalityUpdated);
+    }
+
     // 绑定变化监听以显隐保存/取消按钮（新建猫娘始终显示）
     if (!isNew) {
         function showCatgirlActionButtons() {
@@ -4759,22 +5975,15 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
 
     // 加载音色列表
-    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
+    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim()).then(() => {
+        voiceSelectUi.refresh();
+    }, () => {
+        voiceSelectUi.refresh();
+    });
     form._voicesLoadPromise = voicesLoadPromise;
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
     form._modelType = normalizedModelType;
-
-    // 恢复进阶设定折叠状态
-    if (name) {
-        setTimeout(() => {
-            const savedState = localStorage.getItem('catgirl_advanced_' + name);
-            if (savedState === 'false') {
-                fold.classList.remove('open');
-                arrowSpan.style.transform = 'rotate(-90deg)';
-            }
-        }, 0);
-    }
 
     // 初始化textarea自动调整
     setTimeout(() => {
@@ -4841,50 +6050,410 @@ function _panelSetFieldLabel(labelEl, key) {
     }
 }
 
+function _panelConfigureFieldDeleteButton(button) {
+    const deleteText = (window.t && typeof window.t === 'function')
+        ? window.t('character.deleteField')
+        : '删除设定';
+    button.removeAttribute('title');
+    button.setAttribute('aria-label', deleteText);
+    button.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon" aria-hidden="true">';
+}
+
+function _panelResizeTextarea(textarea) {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const style = getComputedStyle(textarea);
+    const minHeight = parseInt(style.minHeight) || 30;
+
+    // 计算内容高度，考虑padding
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
+
+    const scrollHeight = textarea.scrollHeight;
+    const contentHeight = scrollHeight - paddingTop - paddingBottom;
+
+    // 三行高度的估算：line-height*3
+    const computedLineHeight = parseFloat(style.lineHeight);
+    const fontSize = parseFloat(style.fontSize) || 14;
+    const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
+    const threeLinesHeight = lineHeight * 3;
+    const maxContentHeight = threeLinesHeight;
+    const newContentHeight = Math.min(maxContentHeight, contentHeight);
+    const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+
+    textarea.style.height = newHeight + 'px';
+
+    // 根据内容是否超过三行来决定是否显示滚动条
+    const fieldRow = textarea.closest('.field-row');
+    if (fieldRow) {
+        if (contentHeight > maxContentHeight) {
+            textarea.style.overflowY = 'auto';
+            fieldRow.classList.add('has-scrollbar');
+        } else {
+            textarea.style.overflowY = 'hidden';
+            fieldRow.classList.remove('has-scrollbar');
+        }
+    }
+}
+
+function _panelRequestTextareaAutoResize(textarea) {
+    if (!textarea) return;
+    _panelResizeTextarea(textarea);
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => _panelResizeTextarea(textarea));
+    } else {
+        setTimeout(() => _panelResizeTextarea(textarea), 0);
+    }
+}
+
 // textarea自动调整高度（匹配原版逻辑：三行最大高度 + scrollbar类切换）
 function _panelAttachTextareaAutoResize(textarea) {
-    if (!textarea || textarea.dataset.autoResizeAttached) return;
+    if (!textarea) return;
+    if (textarea.dataset.autoResizeAttached) {
+        _panelRequestTextareaAutoResize(textarea);
+        return;
+    }
     textarea.dataset.autoResizeAttached = 'true';
 
     function resize() {
-        textarea.style.height = 'auto';
-        const style = getComputedStyle(textarea);
-        const minHeight = parseInt(style.minHeight) || 30;
-
-        // 计算内容高度，考虑padding
-        const paddingTop = parseInt(style.paddingTop) || 0;
-        const paddingBottom = parseInt(style.paddingBottom) || 0;
-
-        const scrollHeight = textarea.scrollHeight;
-        const contentHeight = scrollHeight - paddingTop - paddingBottom;
-
-        // 三行高度的估算：line-height*3
-        const computedLineHeight = parseFloat(style.lineHeight);
-        const fontSize = parseFloat(style.fontSize) || 14;
-        const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
-        const threeLinesHeight = lineHeight * 3;
-        const maxContentHeight = threeLinesHeight;
-        const newContentHeight = Math.min(maxContentHeight, contentHeight);
-        const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
-
-        textarea.style.height = newHeight + 'px';
-
-        // 根据内容是否超过三行来决定是否显示滚动条
-        const fieldRow = textarea.closest('.field-row');
-        if (fieldRow) {
-            if (contentHeight > maxContentHeight) {
-                textarea.style.overflowY = 'auto';
-                fieldRow.classList.add('has-scrollbar');
-            } else {
-                textarea.style.overflowY = 'hidden';
-                fieldRow.classList.remove('has-scrollbar');
-            }
-        }
+        _panelRequestTextareaAutoResize(textarea);
     }
 
     textarea.addEventListener('input', resize);
     textarea.addEventListener('focus', resize);
     resize();
+}
+
+function _panelGetNativeVoiceProviderLabel(nativeEntries) {
+    if (!Array.isArray(nativeEntries)) return '';
+    for (const [, voiceData] of nativeEntries) {
+        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        if (label) return String(label);
+    }
+    return '';
+}
+
+function _panelFormatNativeVoiceGroupLabel(nativeEntries) {
+    const providerLabel = _panelGetNativeVoiceProviderLabel(nativeEntries);
+    if (providerLabel) {
+        return window.t
+            ? window.t('character.nativePresetVoices', { provider: providerLabel })
+            : providerLabel + ' 原生音色';
+    }
+    return window.t ? window.t('character.nativePresetVoicesGeneric') : '原生预设音色';
+}
+
+function _panelNormalizeVoiceGroupLabel(label) {
+    return String(label || '').replace(/^[\s\-—–─]+|[\s\-—–─]+$/g, '').trim();
+}
+
+function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
+    if (voiceData && typeof voiceData === 'object') {
+        const prefix = String(voiceData.prefix || '').trim();
+        if (prefix) return prefix;
+
+        const name = String(voiceData.name || '').trim();
+        if (name) return name;
+    }
+    return String(voiceId || '').trim();
+}
+
+// ── source-first 选声：把音色按「provider · 来源」分组（声音来源统一架构 §5）──
+// 品牌名跨语言通用，用 JS 常量；只有 local（本地 CosyVoice）/ free（免费）与「· 来源」
+// 后缀需本地化（voice.provider.* / voice.source.*）。
+const _PANEL_VOICE_PROVIDER_SHORT = Object.freeze({
+    cosyvoice: 'CosyVoice',
+    cosyvoice_intl: 'CosyVoice Intl',
+    minimax: 'MiniMax',
+    minimax_intl: 'MiniMax Intl',
+    elevenlabs: 'ElevenLabs',
+    gptsovits: 'GPT-SoVITS',
+    gemini: 'Gemini',
+    step: 'StepFun',
+    grok: 'Grok',
+    mimo: 'MiMo',
+    vllm_omni: 'vLLM-Omni',
+});
+
+function _panelVoiceI18n(key, fallback) {
+    if (window.t) {
+        const t = window.t(key);
+        if (t && t !== key) return t;
+    }
+    return fallback;
+}
+
+function _panelVoiceProviderShortName(provider) {
+    const p = String(provider || '').trim();
+    if (!p) return _panelVoiceI18n('voice.providerUnknown', '其他');
+    if (p === 'local') return _panelVoiceI18n('voice.providerLocal', '本地 CosyVoice');
+    if (p === 'free') return _panelVoiceI18n('voice.providerFree', '免费');
+    return _PANEL_VOICE_PROVIDER_SHORT[p] || p;
+}
+
+function _panelVoiceSourceLabel(source) {
+    const s = String(source || '').trim();
+    const map = {
+        preset: ['voice.sourcePreset', '预制'],
+        clone: ['voice.sourceClone', '克隆'],
+        design: ['voice.sourceDesign', '描述生成'],
+    };
+    const entry = map[s];
+    return entry ? _panelVoiceI18n(entry[0], entry[1]) : s;
+}
+
+// 「<Provider> · <来源>」组标签，如 "ElevenLabs · 克隆" / "Gemini · 预制"
+function _panelVoiceSourceGroupLabel(provider, source) {
+    return _panelVoiceProviderShortName(provider) + ' · ' + _panelVoiceSourceLabel(source);
+}
+
+// 创建音色自定义单选下拉，原生 select 只负责表单值。
+function _panelCreateVoiceSelectUi(selectEl) {
+    const container = document.createElement('div');
+    container.className = 'voice-custom-select';
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'voice-select-header';
+    header.setAttribute('aria-haspopup', 'listbox');
+    header.setAttribute('aria-expanded', 'false');
+
+    const selectedText = document.createElement('span');
+    selectedText.className = 'voice-select-selected';
+    selectedText.textContent = selectEl.options[selectEl.selectedIndex]?.textContent || '';
+    header.appendChild(selectedText);
+
+    const options = document.createElement('div');
+    options.className = 'voice-select-options';
+    options.id = 'voice-select-options-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    options.setAttribute('role', 'listbox');
+    header.setAttribute('aria-controls', options.id);
+
+    container.appendChild(header);
+    container.appendChild(options);
+
+    function getItems() {
+        return Array.from(options.querySelectorAll('.voice-select-option:not(.disabled)'));
+    }
+
+    function updateScrollbarState() {
+        requestAnimationFrame(() => {
+            options.classList.toggle('has-scrollbar', options.scrollHeight > options.clientHeight);
+        });
+    }
+
+    function setOptionTabbability(isTabbable) {
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            if (item.classList.contains('disabled')) {
+                item.setAttribute('tabindex', '-1');
+                return;
+            }
+            item.setAttribute('tabindex', isTabbable ? '0' : '-1');
+        });
+    }
+
+    function applyDropdownDirection() {
+        const maxHeight = 250;
+        const gap = 8;
+        const headerRect = header.getBoundingClientRect();
+        const optionHeight = Math.min(options.scrollHeight || maxHeight, maxHeight);
+        const spaceBelow = window.innerHeight - headerRect.bottom - gap;
+        const spaceAbove = headerRect.top - gap;
+        let placement = 'open-down';
+        let computedMaxHeight = maxHeight;
+
+        if (spaceBelow >= optionHeight) {
+            placement = 'open-down';
+        } else if (spaceAbove >= optionHeight) {
+            placement = 'open-up';
+        } else if (spaceAbove > spaceBelow) {
+            placement = 'open-up';
+            computedMaxHeight = Math.max(80, Math.floor(spaceAbove));
+        } else {
+            computedMaxHeight = Math.max(80, Math.floor(spaceBelow));
+        }
+
+        container.classList.toggle('open-up', placement === 'open-up');
+        container.classList.toggle('open-down', placement === 'open-down');
+        options.style.maxHeight = computedMaxHeight + 'px';
+        updateScrollbarState();
+    }
+
+    function closeDropdown(restoreFocus = false) {
+        const wasActive = container.classList.contains('active');
+        container.classList.remove('active', 'open-up', 'open-down');
+        header.setAttribute('aria-expanded', 'false');
+        setOptionTabbability(false);
+        if (restoreFocus && wasActive && header.isConnected) {
+            header.focus();
+        }
+    }
+
+    function openDropdown() {
+        document.querySelectorAll('.voice-custom-select.active').forEach(activeSelect => {
+            if (activeSelect === container) return;
+            activeSelect.classList.remove('active', 'open-up', 'open-down');
+            const activeHeader = activeSelect.querySelector('.voice-select-header');
+            if (activeHeader) activeHeader.setAttribute('aria-expanded', 'false');
+            activeSelect.querySelectorAll('.voice-select-option:not(.disabled)').forEach(item => {
+                item.setAttribute('tabindex', '-1');
+            });
+        });
+
+        container.classList.add('active');
+        header.setAttribute('aria-expanded', 'true');
+        setOptionTabbability(true);
+        applyDropdownDirection();
+
+        const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+        if (selectedItem) selectedItem.scrollIntoView({ block: 'nearest' });
+    }
+
+    function toggleDropdown() {
+        if (container.classList.contains('active')) {
+            closeDropdown();
+        } else {
+            openDropdown();
+        }
+    }
+
+    function syncSelectionState() {
+        const selectedOption = selectEl.options[selectEl.selectedIndex] || selectEl.querySelector('option');
+        const displayText = selectedOption ? selectedOption.textContent : '';
+        selectedText.textContent = displayText;
+        header.title = selectedOption ? (selectedOption.title || displayText) : '';
+
+        // 只高亮第一个值匹配项：海外免费列表里 default(pin) 与 Leda(原生) voice_id
+        // 同为 "Leda"（刻意不去重），若按 value 全量比较会多项同时选中。原生
+        // <select> 在重复 value 下 selectedIndex 也只落第一个，这里与之对齐。
+        let matched = false;
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            const isSelected = !matched && item.dataset.value === selectEl.value;
+            if (isSelected) matched = true;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+    }
+
+    function selectOptionValue(value) {
+        if (selectEl.value === value) {
+            closeDropdown(true);
+            return;
+        }
+        selectEl.value = value;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        closeDropdown(true);
+    }
+
+    function focusItemByOffset(currentItem, offset) {
+        const items = getItems();
+        if (items.length === 0) return;
+        const currentIndex = items.indexOf(currentItem);
+        const nextIndex = currentIndex >= 0
+            ? (currentIndex + offset + items.length) % items.length
+            : 0;
+        items[nextIndex].focus();
+    }
+
+    function appendOptionItem(option) {
+        const item = document.createElement('div');
+        item.className = 'voice-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('tabindex', '-1');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent || option.value;
+        item.title = option.title || item.textContent;
+
+        if (option.disabled) {
+            item.classList.add('disabled');
+            item.setAttribute('aria-disabled', 'true');
+        } else {
+            item.addEventListener('click', () => selectOptionValue(option.value));
+            item.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    selectOptionValue(option.value);
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    focusItemByOffset(item, 1);
+                } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    focusItemByOffset(item, -1);
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeDropdown(true);
+                }
+            });
+        }
+
+        options.appendChild(item);
+    }
+
+    function refresh() {
+        options.innerHTML = '';
+        Array.from(selectEl.children).forEach(child => {
+            if (child.tagName === 'OPTGROUP') {
+                const groupOptions = Array.from(child.children).filter(option => option.tagName === 'OPTION');
+                if (groupOptions.length > 0) {
+                    const groupLabel = document.createElement('div');
+                    groupLabel.className = 'voice-select-group-label';
+                    const groupLabelText = document.createElement('span');
+                    groupLabelText.className = 'voice-select-group-text';
+                    groupLabelText.textContent = _panelNormalizeVoiceGroupLabel(child.label);
+                    groupLabel.appendChild(groupLabelText);
+                    options.appendChild(groupLabel);
+                    groupOptions.forEach(appendOptionItem);
+                }
+            } else if (child.tagName === 'OPTION') {
+                appendOptionItem(child);
+            }
+        });
+        syncSelectionState();
+        setOptionTabbability(container.classList.contains('active'));
+        updateScrollbarState();
+    }
+
+    function handleDocumentClick(event) {
+        if (!container.contains(event.target)) {
+            closeDropdown();
+        }
+    }
+
+    function handleDocumentKeydown(event) {
+        if (event.key === 'Escape' && container.classList.contains('active')) {
+            closeDropdown(true);
+        }
+    }
+
+    header.addEventListener('click', toggleDropdown);
+    header.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDropdown();
+        } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            if (!container.classList.contains('active')) openDropdown();
+            const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+            (selectedItem || getItems()[0])?.focus();
+        }
+    });
+    selectEl.addEventListener('change', syncSelectionState);
+    document.addEventListener('click', handleDocumentClick);
+    document.addEventListener('keydown', handleDocumentKeydown);
+
+    refresh();
+
+    return {
+        container,
+        refresh,
+        destroy() {
+            closeDropdown();
+            selectEl.removeEventListener('change', syncSelectionState);
+            document.removeEventListener('click', handleDocumentClick);
+            document.removeEventListener('keydown', handleDocumentKeydown);
+            container.remove();
+        }
+    };
 }
 
 // 加载音色列表（完整复制原版逻辑）
@@ -4904,29 +6473,52 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
             selectEl.appendChild(defaultOption);
 
-            // 添加音色选项
-            const voiceOwners = data.voice_owners || {};
+            // 置顶音色（海外免费 free_intl：yui + default），紧跟在"未指定音色"之后，
+            // 排在列表最上面。展示名按 i18n_key 本地化；Leda 不去重，仍出现在 Gemini
+            // 长列表里（default pin 的目标）。
+            if (Array.isArray(data.pinned_voices) && data.pinned_voices.length > 0) {
+                data.pinned_voices.forEach(function (pin) {
+                    if (!pin || !pin.voice_id) return;
+                    const option = document.createElement('option');
+                    option.value = pin.voice_id;
+                    option.textContent = (window.t && pin.i18n_key)
+                        ? window.t(pin.i18n_key)
+                        : (pin.prefix || pin.voice_id);
+                    option.title = pin.voice_id;
+                    if (pin.voice_id === currentVoiceId) option.selected = true;
+                    selectEl.appendChild(option);
+                });
+            }
+
+            // 注册的音色：按「provider · 来源」分组成 optgroup（source-first，§5）。来源取
+            // voiceData.source（design=描述生成 / clone=克隆），缺省按 clone（存量克隆音色没有
+            // source 字段）。同 (provider, 来源) 复用同一组；provider 缺失归到「其他 · …」。
+            const _cloneGroups = {};
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
+                const provider = (voiceData && voiceData.provider) || '';
+                const source = (voiceData && voiceData.source === 'design') ? 'design' : 'clone';
+                const groupKey = provider + '|' + source;
+                if (!_cloneGroups[groupKey]) {
+                    const grp = document.createElement('optgroup');
+                    grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, source));
+                    grp.dataset.voiceSourceGroup = source;
+                    _cloneGroups[groupKey] = grp;
+                    selectEl.appendChild(grp);
+                }
                 const option = document.createElement('option');
                 option.value = voiceId;
-                // 显示名称：优先用 voice_owners，其次 voiceData.name，最后 voiceId
-                let displayName = voiceId;
-                if (voiceOwners[voiceId]) {
-                    displayName = voiceOwners[voiceId] + ' - ' + voiceId;
-                } else if (voiceData && voiceData.name) {
-                    displayName = voiceData.name;
-                }
-                option.textContent = displayName;
+                // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
+                option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                 option.title = voiceId;
                 if (voiceId === currentVoiceId) option.selected = true;
-                selectEl.appendChild(option);
+                _cloneGroups[groupKey].appendChild(option);
             });
 
             // 免费预设音色
             if (data.free_voices && Object.keys(data.free_voices).length > 0) {
                 const freeGroup = document.createElement('optgroup');
-                const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
-                freeGroup.label = '── ' + freeLabel + ' ──';
+                freeGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('free', 'preset'));
+                freeGroup.dataset.voiceSourceGroup = 'preset';
                 Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                     const option = document.createElement('option');
                     option.value = voiceId;
@@ -4936,10 +6528,70 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
                 selectEl.appendChild(freeGroup);
             }
+
+            // 当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
+            // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
+            // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
+            // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+            if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+                const renderedVoiceIds = new Set();
+                Object.keys(data.voices || {}).forEach(function (id) {
+                    renderedVoiceIds.add(String(id).toLowerCase());
+                });
+                if (data.free_voices) {
+                    Object.values(data.free_voices).forEach(function (id) {
+                        if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                    });
+                }
+                const nativeEntries = Object.entries(data.native_voices)
+                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
+                if (nativeEntries.length > 0) {
+                    const nativeGroup = document.createElement('optgroup');
+                    // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
+                    const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
+                        || _panelVoiceI18n('voice.providerUnknown', '其他');
+                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(
+                        _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
+                    );
+                    nativeGroup.dataset.voiceSourceGroup = 'preset';
+                    nativeEntries.forEach(function ([voiceId, voiceData]) {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.title = voiceId;
+                        if (voiceId === currentVoiceId) option.selected = true;
+                        nativeGroup.appendChild(option);
+                    });
+                    selectEl.appendChild(nativeGroup);
+                }
+            }
         }
 
         // 加载 GPT-SoVITS 声音列表
         await _loadPanelGsvVoices(selectEl, currentVoiceId);
+
+        // 保底：currentVoiceId 在任何分支都没渲染时（Gemini 别名、免费版被过滤掉的
+        // CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项 select
+        // 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
+        // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+        // 必须放在所有 loader（含 _loadPanelGsvVoices）之后才能正确判断是否已渲染；
+        // gsv: 前缀 ID 由 _loadPanelGsvVoices.ensureGsvFallback 自行兜底，跳过避免双插。
+        if (currentVoiceId
+            && !currentVoiceId.startsWith(GSV_PREFIX)
+            && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            const fallbackGroup = document.createElement('optgroup');
+            const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+            fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
+            fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = currentVoiceId;
+            fallbackOption.textContent = currentVoiceId + ' (?)';
+            fallbackOption.title = currentVoiceId;
+            fallbackOption.selected = true;
+            fallbackGroup.appendChild(fallbackOption);
+            selectEl.appendChild(fallbackGroup);
+            selectEl.value = currentVoiceId;
+        }
     } catch (e) {
         console.warn('加载音色列表失败:', e);
     }
@@ -4958,9 +6610,9 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         let gsvGroup = selectEl.querySelector('optgroup[data-gsv-group="true"]');
         if (!gsvGroup) {
             gsvGroup = document.createElement('optgroup');
-            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
             gsvGroup.dataset.gsvGroup = 'true';
+            gsvGroup.dataset.voiceSourceGroup = 'clone';
             selectEl.appendChild(gsvGroup);
         }
         const fallbackOpt = document.createElement('option');
@@ -4970,18 +6622,57 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         selectEl.value = currentVoiceId;
     }
 
+    // GSV 不可用时把后端给的 code 翻成一行人话塞到下拉里——以前是静默丢，
+    // 用户连"为啥没出现"都看不到，只能猜是 server 没起还是开关没勾。
+    const _gsvT = (key, fallback) => (window.t && typeof window.t === 'function' && window.t(key)) || fallback;
+
+    function _appendGsvDiagnosticOption(message) {
+        const diagGroup = document.createElement('optgroup');
+        diagGroup.label = '── GPT-SoVITS ──';
+        diagGroup.dataset.gsvDiagGroup = 'true';
+        const diagOpt = document.createElement('option');
+        diagOpt.value = '';
+        diagOpt.disabled = true;
+        diagOpt.textContent = message;
+        diagGroup.appendChild(diagOpt);
+        selectEl.appendChild(diagGroup);
+    }
+
+    function _diagnoseFailure(result, status) {
+        const code = result && result.code;
+        if (code === 'GPTSOVITS_NOT_ENABLED') {
+            return _gsvT('character.gsvDiagNotEnabled', 'GPT-SoVITS 未启用 (请在 API 设置勾选)');
+        }
+        if (code === 'CUSTOM_API_NOT_ENABLED') {
+            return _gsvT('character.gsvDiagUrlMissing', 'GPT-SoVITS URL 未配置 (请在 API 设置填写)');
+        }
+        if (code === 'TTS_CUSTOM_URL_NOT_CONFIGURED') {
+            return _gsvT('character.gsvDiagUrlInvalid', 'GPT-SoVITS URL 未配置或不是 http(s)');
+        }
+        if (code === 'TTS_CUSTOM_URL_LOCALHOST_ONLY') {
+            return _gsvT('character.gsvDiagUrlLocalhostOnly', 'GPT-SoVITS URL 必须是 localhost');
+        }
+        if (status === 502 || (result && /连接 GPT-SoVITS API 失败/.test(result.error || ''))) {
+            return _gsvT('character.gsvDiagUnreachable', 'GPT-SoVITS server 未运行或不可达');
+        }
+        const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+        return base + (result && result.error ? ': ' + result.error : '');
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     try {
-        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        const resp = await fetch('/api/characters/custom_tts_voices?provider=gptsovits', { signal: controller.signal });
         clearTimeout(timeoutId);
-        const result = await resp.json();
+        // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
+        // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。
+        const result = await resp.json().catch(() => ({}));
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
-            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
             gsvGroup.dataset.gsvGroup = 'true';
+            gsvGroup.dataset.voiceSourceGroup = 'clone';
             result.voices.forEach(function (v) {
                 const option = document.createElement('option');
                 option.value = v.voice_id;
@@ -5000,20 +6691,60 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
             if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
                 selectEl.value = currentVoiceId;
             }
+        } else if (result && result.success && Array.isArray(result.voices) && result.voices.length === 0) {
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagEmpty', 'GPT-SoVITS server 没有任何声音 (空列表)'));
+        } else {
+            _appendGsvDiagnosticOption(_diagnoseFailure(result, resp.status));
         }
         ensureGsvFallback();
     } catch (e) {
         clearTimeout(timeoutId);
         console.debug('GPT-SoVITS voices not available:', e.message);
+        if (e.name === 'AbortError') {
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagTimeout', 'GPT-SoVITS server 响应超时 (>3s)'));
+        } else {
+            const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+            _appendGsvDiagnosticOption(base + (e && e.message ? ': ' + e.message : ''));
+        }
         ensureGsvFallback();
     }
 }
 
+async function rebuildSavedCatgirlPanel(form, catgirlName) {
+    const container = form?.parentNode;
+    if (!container || !catgirlName) return;
+    try {
+        const freshData = await loadCharacterData();
+        const rawData = freshData?.['猫娘']?.[catgirlName] || {};
+        const wrapper = container.closest('.catgirl-panel-wrapper');
+        // 新建→已创建 原地切换：跟 openCatgirlPanel 那条路径对偶，给 wrapper 也补上
+        // dataset.catgirlName，否则 _refreshOpenCatgirlPanelActions 找不到面板对应的角色名、
+        // 切角色后这个 panel 的按钮态不会被刷新。catgirlName 在函数顶部已 guard 过。
+        if (wrapper) {
+            wrapper.dataset.catgirlName = catgirlName;
+        }
+        const leftSection = wrapper?.querySelector('.catgirl-panel-left');
+        const metaBlock = leftSection?.querySelector('#card-meta-block');
+        if (metaBlock && typeof renderCardMetaBlock === 'function') {
+            renderCardMetaBlock(metaBlock, catgirlName, false, rawData);
+        }
+        if (leftSection) {
+            leftSection.querySelector('.card-panel-actions')?.remove();
+            leftSection.appendChild(buildCreatedCatgirlPanelActions(catgirlName));
+        }
+        buildCatgirlDetailForm(catgirlName, rawData, false, container);
+    } catch (e) {
+        console.warn('[角色面板] 切换到已创建角色状态失败:', e);
+    }
+}
+
 async function saveCatgirlFromPanel(form, originalName, isNew) {
-    // 防止重复提交
+    // 返回 true 表示真正落库成功；false 表示任一失败/早退分支（重复提交、
+    // 校验失败、HTTP 错、success:false）。调用方（如 card-assist 的"应用并保存"）
+    // 依赖这个返回值决定是否关闭面板/弹成功提示，否则会出现保存失败但 UI 报成功的假象。
     if (form.dataset.submitting === 'true') {
         console.log('表单正在提交中，忽略重复提交');
-        return;
+        return false;
     }
     form.dataset.submitting = 'true';
 
@@ -5023,28 +6754,24 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             await form._voicesLoadPromise;
         }
 
-        const data = {};
-
         // 收集表单数据
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
-            showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
-            return;
+            await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
+            return false;
         }
-        data['档案名'] = nameInput.value.trim();
 
-        // 收集已有字段（通过 FormData 统一收集，跳过voice_id）
-        const fd = new FormData(form);
         const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
-
-        for (const [k, v] of fd.entries()) {
-            if (k === 'voice_id') continue;
-            const normalizedValue = typeof v === 'string' ? v.trim() : v;
-            if (k && normalizedValue) {
-                data[k] = normalizedValue;
-            }
+        const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
+            baseData: { '档案名': nameInput.value.trim() },
+            excludeFieldNames: ['档案名', 'voice_id'],
+        });
+        if (duplicateKey) {
+            showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+            return;
         }
+        attachCharacterFieldOrderPayload(data, fieldOrder);
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
         const effectiveIsNew = isNew && !form._autoCreated;
@@ -5062,19 +6789,32 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 const errorJson = JSON.parse(errorText);
                 if (errorJson.error) errorMessage = errorJson.error;
             } catch (e) { /* keep original */ }
-            showMessage((window.t ? window.t('character.saveFailedWithError') : '保存失败: ') + errorMessage, 'error');
-            return;
+            showMessage(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage, 'error');
+            return false;
         }
 
         const result = await response.json();
         if (result.success === false) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
-            return;
+            return false;
+        }
+        const localRawData = buildLocalCatgirlRawData(data['档案名'], data, fieldOrder);
+        let savedRawDataForCache = localRawData;
+        syncCharacterCardCache(data['档案名'], localRawData);
+        if (form._autoCreatedDetachedName) {
+            await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        } else if (form._autoCreated) {
+            form._autoCreated = false;
+            form._autoCreatedName = '';
         }
 
         // voice_id 通过专用接口更新
         if (selectedVoiceId !== previousVoiceId) {
             if (selectedVoiceId) {
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
+                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
                 try {
                     const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(data['档案名']), {
                         method: 'PUT',
@@ -5082,20 +6822,38 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         body: JSON.stringify({ voice_id: selectedVoiceId })
                     });
                     const voiceResult = await voiceResp.json().catch(() => ({}));
+                    // 留 console 痕迹：toast 一闪而过看不清，这里把 PUT 的完整 status/payload
+                    // 持久打到 console，遇到 "保存后再打开 voice 又没了" 这类问题能直接定位
+                    // 是 PUT 被拒、还是后续 cleanup_invalid_voice_ids 把它清掉了。
+                    console.log(
+                        '[character voice PUT]',
+                        'name=', data['档案名'],
+                        'voice_id=', selectedVoiceId,
+                        'status=', voiceResp.status,
+                        'response=', voiceResult,
+                    );
                     if (!voiceResp.ok || voiceResult.success === false) {
                         const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
+                        // available_voices 直接打出来，方便看到 backend 当前认到的合法音色
+                        if (voiceResult && Array.isArray(voiceResult.available_voices)) {
+                            console.warn('[character voice PUT] backend 当前合法音色:', voiceResult.available_voices);
+                        }
                         showMessage(
-                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
                     }
                 } catch (voiceErr) {
                     showMessage(
-                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (voiceErr.message || String(voiceErr)),
+                        window.t ? window.t('character.partialSaveVoiceFailed', { error: voiceErr.message || String(voiceErr) }) : '角色已保存，但音色更新失败: ' + (voiceErr.message || String(voiceErr)),
                         'error'
                     );
+                } finally {
+                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
                 }
             } else if (previousVoiceId) {
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
+                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
                 try {
                     const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(data['档案名']) + '/unregister_voice', {
                         method: 'POST'
@@ -5104,15 +6862,17 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     if (!clearResp.ok || clearResult.success === false) {
                         const detail = (clearResult && clearResult.error) || (clearResp.status + ' ' + clearResp.statusText);
                         showMessage(
-                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
                     }
                 } catch (clearErr) {
                     showMessage(
-                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (clearErr.message || String(clearErr)),
+                        window.t ? window.t('character.partialSaveVoiceFailed', { error: clearErr.message || String(clearErr) }) : '角色已保存，但音色更新失败: ' + (clearErr.message || String(clearErr)),
                         'error'
                     );
+                } finally {
+                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
                 }
             }
         }
@@ -5144,7 +6904,29 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
             : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
         if (isNew) {
-            closeCatgirlPanel();
+            const catgirlName = data['档案名'];
+            const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
+            if (!hasCardFace) {
+                const makerParams = new URLSearchParams({
+                    name: catgirlName,
+                    mode: 'maker',
+                    fallback_default_on_close: '1'
+                });
+                const makerUrl = `/card_maker?${makerParams.toString()}`;
+                const makerWindow = openManagedPopup(
+                    makerUrl,
+                    CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,
+                    'width=1200,height=800'
+                );
+                if (!makerWindow) {
+                    await showAlertDialog(window.t ? window.t('character.cardMakerPopupBlocked') : '卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。', { type: 'warning' });
+                    await rebuildSavedCatgirlPanel(form, catgirlName);
+                } else {
+                    closeCatgirlPanel();
+                }
+            } else {
+                closeCatgirlPanel();
+            }
         } else {
             const container = form.parentNode;
             const saveBtn = form.querySelector('#save-button');
@@ -5153,24 +6935,126 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (cancelBtn) cancelBtn.style.display = 'none';
             try {
                 const freshData = await loadCharacterData();
-                if (freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]) {
-                    buildCatgirlDetailForm(data['档案名'], freshData['猫娘'][data['档案名']], false, container);
-                }
+                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]
+                    ? freshData['猫娘'][data['档案名']]
+                    : {};
+                savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
+                syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+                buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
+                buildCatgirlDetailForm(data['档案名'], localRawData, false, container);
             }
         }
         await loadCharacterCards();
+        setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
+        syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+        return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);
-        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误: ' + error.message, 'error');
+        const errorMessage = error.message || String(error);
+        showMessage(window.t ? window.t('character.saveError', { error: errorMessage }) : '保存时发生错误: ' + errorMessage, 'error');
+        return false;
     } finally {
         form.dataset.submitting = 'false';
     }
 }
 
+async function ensureCanModifyCardsOutsideVoiceMode() {
+    // 检查语音状态 - 先获取权威当前角色，再检查语音模式
+    // cache: 'no-store' 防止浏览器/WebView 复用旧响应导致语音保护 fail-open
+    try {
+        const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
+        if (!currentResp.ok) {
+            throw new Error(`current_catgirl request failed: ${currentResp.status}`);
+        }
+        const currentData = await currentResp.json();
+        const currentCatgirl = currentData.current_catgirl || '';
+
+        if (currentCatgirl) {
+            const voiceResp = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
+                { cache: 'no-store' }
+            );
+            if (!voiceResp.ok) {
+                throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
+            }
+            const voiceData = await voiceResp.json();
+            if (voiceData.is_voice_mode) {
+                const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
+                showMessage(msg, 'error', 6000);
+                await showAlertDialog(msg, { type: 'error' });
+                return { ok: false };
+            }
+        }
+        return { ok: true, currentCatgirl };
+    } catch (error) {
+        console.error('检查语音模式状态失败:', error);
+        const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return { ok: false };
+    }
+}
+
+// 跨窗口通知主窗口（index.html / chat.html）热切换角色
+// 后端的 WebSocket 通知只会送到已有活跃 session 的连接；用户从角色管理页直接切角色时，
+// 主窗口未必握着 session（比如还没点过开始），WebSocket 路径会沉默。BroadcastChannel
+// 兜底覆盖这一情况，且对端 handleCatgirlSwitch 自带 isSwitchingCatgirl/同名跳过的去重。
+let _nekoPageChannelForCharaSwitch = null;
+function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl) {
+    if (!newCatgirl || newCatgirl === oldCatgirl) return;
+    if (typeof BroadcastChannel === 'undefined') return;
+    try {
+        if (!_nekoPageChannelForCharaSwitch) {
+            _nekoPageChannelForCharaSwitch = new BroadcastChannel('neko_page_channel');
+        }
+        _nekoPageChannelForCharaSwitch.postMessage({
+            action: 'catgirl_switched',
+            new_catgirl: newCatgirl,
+            old_catgirl: oldCatgirl,
+            timestamp: Date.now()
+        });
+    } catch (e) {
+        console.warn('[CharaCardManager] catgirl_switched 广播失败:', e);
+    }
+}
+
+// 角色卡详情面板（modal）目前只读取 _workshopCurrentCatgirl 的初始值来决定按钮态，
+// 切角色后必须主动同步开着的面板，否则用户在小窗里点完按钮会觉得"毫无反应"。
+//
+// 单一数据源：依赖 wrapper.dataset.catgirlName 判定面板对应角色。任何创建/重建面板的
+// 路径都必须设这个 dataset（目前是 openCatgirlPanel 和 rebuildSavedCatgirlPanel）；
+// 不从表单 [name="档案名"] 兜底读，避免拿到用户编辑中的脏值。
+function _refreshOpenCatgirlPanelActions() {
+    const wrapper = document.getElementById('catgirl-panel-wrapper');
+    if (!wrapper) return;
+    const panelName = wrapper.dataset.catgirlName || '';
+    if (!panelName) return;
+    const isCurrent = (window._workshopCurrentCatgirl || '') === panelName;
+    const switchBtn = wrapper.querySelector('.card-panel-actions .switch-btn');
+    if (switchBtn) {
+        switchBtn.disabled = isCurrent;
+    }
+    const deleteBtn = wrapper.querySelector('.card-panel-actions .delete-btn');
+    if (deleteBtn) {
+        deleteBtn.classList.toggle('disabled', isCurrent);
+        deleteBtn.title = isCurrent
+            ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+            : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+    }
+}
+
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return;
+    }
+
+    const oldCatgirl = guard.currentCatgirl || window._workshopCurrentCatgirl || '';
+
     try {
         const response = await fetch('/api/characters/current_catgirl', {
             method: 'POST',
@@ -5181,6 +7065,8 @@ async function workshopSwitchCatgirl(name) {
         if (result.success) {
             window._workshopCurrentCatgirl = name;
             renderCharaCardsView();
+            _refreshOpenCatgirlPanelActions();
+            _broadcastCatgirlSwitched(name, oldCatgirl);
             showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
         } else {
             showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
@@ -5192,22 +7078,32 @@ async function workshopSwitchCatgirl(name) {
 }
 
 // 删除猫娘
+// 返回值约定：成功删除返回 true；任何早退/失败/用户取消都返回 false——给调用方据此决定是否关面板
 async function workshopDeleteCatgirl(name) {
-    // 检查是否为当前猫娘
-    if (name === window._workshopCurrentCatgirl) {
-        showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
-        return;
+    // 先做语音态预检并拿到权威当前角色名，避免别窗口切换后本地缓存失效
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return false;
+    }
+
+    // 用权威值校验“是否当前角色”——本地 window._workshopCurrentCatgirl 在跨窗口切换后可能过期
+    const authoritativeCurrent = guard.currentCatgirl || window._workshopCurrentCatgirl;
+    if (name === authoritativeCurrent) {
+        const msg = window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return false;
     }
 
     // 检查是否只剩一只猫娘
     try {
-        const resp = await fetch('/api/characters/', { cache: 'no-store' });
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (resp.ok) {
             const allData = await resp.json();
             const catgirls = allData?.['猫娘'] || {};
             if (Object.keys(catgirls).length <= 1) {
                 showMessage(window.t ? window.t('character.onlyOneCatgirlLeft') : '只剩一只猫娘，无法删除！', 'error');
-                return;
+                return false;
             }
         }
     } catch (e) {
@@ -5235,15 +7131,28 @@ async function workshopDeleteCatgirl(name) {
         cancelText,
         danger: true,
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
 
     try {
-        await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (!resp.ok) {
+            let serverMsg = '';
+            try {
+                const data = await resp.json();
+                serverMsg = data?.error || data?.message || '';
+            } catch (_) { /* 响应不是 JSON 就退回到默认文案 */ }
+            const msg = serverMsg || (window.t ? window.t('character.deleteError') : '删除猫娘时发生错误');
+            showMessage(msg, 'error', 6000);
+            await showAlertDialog(msg, { type: 'error' });
+            return false;
+        }
         // 重新加载角色卡列表
         await loadCharacterCards();
+        return true;
     } catch (error) {
         console.error('删除猫娘失败:', error);
         showMessage(window.t ? window.t('character.deleteError') : '删除猫娘时发生错误', 'error');
+        return false;
     }
 }
 
@@ -5444,9 +7353,7 @@ function buildSteamTabContent(name, rawData, card, container) {
     controlsDiv.innerHTML = `
         <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px;">
-                <select id="preview-motion-select" class="control-input" style="width: 100%;">
-                    <option value="" data-i18n="steam.selectMotion">${window.t ? window.t('steam.selectMotion') : '选择动作'}</option>
-                </select>
+                <select id="preview-motion-select" class="control-input" style="width: 100%;"></select>
                 <div style="font-size: 11px; color: #888; margin-top: 3px; text-align: center;" data-i18n="character.idleMotionHint">${window.t ? window.t('character.idleMotionHint') : '保存角色时，当前选中的动作将被设为待机动作'}</div>
             </div>
             <div class="btn-play-wrapper">
@@ -5457,9 +7364,7 @@ function buildSteamTabContent(name, rawData, card, container) {
         </div>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px;">
-                <select id="preview-expression-select" class="control-input" style="width: 100%;">
-                    <option value="" data-i18n="steam.selectExpression">${window.t ? window.t('steam.selectExpression') : '选择表情'}</option>
-                </select>
+                <select id="preview-expression-select" class="control-input" style="width: 100%;"></select>
             </div>
             <div class="btn-play-wrapper">
                 <button id="preview-play-expression-btn" class="btn" disabled>
@@ -5758,6 +7663,8 @@ function expandCharacterCardSection(card) {
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
+    const currentLive2DModelInfo = effectiveModelType === 'live2d' ? getLive2DModelInfo(live2d) : null;
+    window.currentCharacterCardModelSource = currentLive2DModelInfo && currentLive2DModelInfo.source ? currentLive2DModelInfo.source : '';
     window._currentCardRawData = rawData;
 
     // 检查模型是否可上传（检查是否来自static目录）
@@ -6146,6 +8053,10 @@ async function handleUploadToWorkshop() {
         // 现在角色使用的是 rawData 中的数据，只覆盖 description 和 tags
         const fullCharaData = { ...rawData };
 
+        // 字段顺序是展示属性，先在删保留字段前抓住它，删完再以顶层 _field_order 挂回。
+        // 否则数字 key 的自定义字段名会被下载方按对象枚举顺序提前，复现本次修复要解决的乱序问题。
+        const workshopFieldOrder = getStoredCharacterFieldOrder(rawData);
+
         // 重要：清理系统保留字段，防止恶意数据或循环引用被上传到工坊
         // 这些字段是下载时由系统添加的元数据，不应该出现在工坊角色卡中
         // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
@@ -6153,6 +8064,10 @@ async function handleUploadToWorkshop() {
         const SYSTEM_RESERVED_FIELDS = getWorkshopReservedFields();
         for (const field of SYSTEM_RESERVED_FIELDS) {
             delete fullCharaData[field];
+        }
+        // 顺序元数据本身被当作系统保留字段删掉了，这里按显式顺序重新挂回，供下载方按创建顺序渲染。
+        if (workshopFieldOrder.length) {
+            attachCharacterFieldOrderPayload(fullCharaData, workshopFieldOrder);
         }
 
         // 重要：添加"档案名"字段，这是下载后解析为 characters.json key 的必需字段
@@ -6181,17 +8096,21 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除mao_pro）- 仅限 Live2D 模型类型
-        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'mao_pro')) {
-            const validModels = availableModels.filter(model => model.name !== 'mao_pro');
+        // 设置默认模型（排除yui-origin）- 仅限 Live2D 模型类型
+        if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
+            const validModels = availableModels.filter(model =>
+                model
+                && model.name
+                && !hasStaticModelFlag(model)
+                && !hasStaticModelFlag(model.modelMetadata)
+            );
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
-            } else if (availableModels.length > 0) {
-                selectedModelName = availableModels[0].name;
             } else {
                 showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;
             }
+            fullCharaData.live2d = selectedModelName;
         } else if ((currentModelType === 'vrm' || currentModelType === 'mmd') && !selectedModelName) {
             showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
             return;
@@ -6272,7 +8191,7 @@ async function performUpload(data) {
                 }
                 return response.json();
             })
-            .then(result => {
+            .then(async result => {
                 if (result.success) {
                     // 不再显示"上传准备完成"消息，模态框弹出本身就表明准备工作已完成
 
@@ -6285,6 +8204,7 @@ async function performUpload(data) {
                     const itemTitle = document.getElementById('item-title');
                     const itemDescription = document.getElementById('item-description');
                     const contentFolder = document.getElementById('content-folder');
+                    const previewImageInput = document.getElementById('preview-image');
                     const tagsContainer = document.getElementById('tags-container');
 
 
@@ -6299,7 +8219,12 @@ async function performUpload(data) {
                     }
                     // 使用临时目录路径（隐藏字段）
                     if (contentFolder) contentFolder.value = result.temp_folder;
-                    resetWorkshopVoiceReferenceFields(cardName);
+                    // 若后端成功从角色卡卡面复制出预览图，则默认带入；没有卡面时不改动用户当前预览图输入。
+                    if (previewImageInput && result.preview_image) {
+                        previewImageInput.value = result.preview_image;
+                        previewImageInput.classList.remove('error');
+                    }
+                    await resetWorkshopVoiceReferenceFields(cardName);
 
                     // 添加角色卡标签到上传标签（允许用户编辑）
                     if (tagsContainer) {
@@ -6369,7 +8294,7 @@ function editCharacterCardModal() {
 }
 
 // 扫描Live2D模型
-async function scanModels() {
+async function scanModels(loadSequence) {
     showMessage(window.t ? window.t('steam.scanningModels') : '正在扫描模型...', 'info');
 
     try {
@@ -6386,22 +8311,19 @@ async function scanModels() {
         }
         const models = await live2dResponse.json();
 
-        // 存储所有模型到全局变量（用于角色卡加载，包括static目录的模型）
-        window.allModels = models;
-
-        // 过滤掉来自static目录的模型（如mao_pro），只保留用户文档目录中的模型
+        // 过滤掉来自static目录的模型（如默认/版权Live2D），只保留用户文档目录中的模型
         // 这是为了防止上传版权Live2D模型
         const uploadableModels = models.filter(model => model.source !== 'static');
-        // 存储可上传模型列表到全局变量（用于上传检查）
-        availableModels = uploadableModels;
 
-        // 处理 VRM 模型
+        // 处理 VRM 模型（先收集到局部变量，避免旧轮扫描晚到时回滚新轮结果）
+        let scannedAllVrmModels = null;
+        let nextAvailableVrmModels = null;
         try {
             if (vrmResponse && vrmResponse.ok) {
                 const vrmData = await vrmResponse.json();
                 if (vrmData.success && vrmData.models) {
-                    window.allVrmModels = vrmData.models;
-                    availableVrmModels = vrmData.models.filter(m => m.location !== 'project');
+                    scannedAllVrmModels = vrmData.models;
+                    nextAvailableVrmModels = vrmData.models.filter(m => m.location !== 'project');
                 }
             }
         } catch (e) {
@@ -6409,17 +8331,34 @@ async function scanModels() {
         }
 
         // 处理 MMD 模型
+        let scannedAllMmdModels = null;
+        let nextAvailableMmdModels = null;
         try {
             if (mmdResponse && mmdResponse.ok) {
                 const mmdData = await mmdResponse.json();
                 if (mmdData.success && mmdData.models) {
-                    window.allMmdModels = mmdData.models;
-                    availableMmdModels = mmdData.models.filter(m => m.location !== 'project');
+                    scannedAllMmdModels = mmdData.models;
+                    nextAvailableMmdModels = mmdData.models.filter(m => m.location !== 'project');
                 }
             }
         } catch (e) {
             console.warn('处理MMD模型列表失败:', e);
         }
+
+        // 序列号校验：若已被新一轮 loadCharacterCards 触发，丢弃本轮结果，防止旧扫描回滚新数据
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+            return false;
+        }
+
+        // 提交到全局变量（用于角色卡加载，包括static目录的模型）
+        // 注意：6 个全局必须无条件覆写到本轮结果，VRM/MMD 子扫描失败时落 [] 而非沿用旧值；
+        // 否则 tab 切换路径里如果 VRM/MMD 端点偶发失败，会保留上一轮的 stale 列表造成假阳性
+        window.allModels = models;
+        availableModels = uploadableModels;
+        window.allVrmModels = scannedAllVrmModels || [];
+        availableVrmModels = nextAvailableVrmModels || [];
+        window.allMmdModels = scannedAllMmdModels || [];
+        availableMmdModels = nextAvailableMmdModels || [];
 
         // 触发模型扫描完成事件，通知其他组件刷新 UI（具有容错能力）
         try {
@@ -6445,10 +8384,12 @@ async function scanModels() {
             console.warn('更新 Live2D 模型选择按钮文字失败:', e);
         }
 
+        return true;
 
     } catch (error) {
         console.error('扫描模型失败:', error);
         showMessage(window.t ? window.t('steam.modelScanError') : '扫描模型失败', 'error');
+        return false;
     }
 }
 
@@ -6623,7 +8564,7 @@ function setFormDisabled(disabled) {
     if (registerBtn) registerBtn.disabled = disabled;
 }
 
-function registerVoice() {
+async function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('voice-register-result');
@@ -6661,6 +8602,10 @@ function registerVoice() {
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     formData.append('prefix', prefix);
+    const providerSelect = document.getElementById('voice-reference-provider-hint');
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    const providerValue = providerSelect && providerSelect.value ? providerSelect.value.trim() : '';
+    formData.append('provider', providerValue || getFirstAvailableWorkshopVoiceProviderValue(providerSelect) || 'cosyvoice');
 
     fetch('/api/characters/voice_clone', {
         method: 'POST',
@@ -6679,6 +8624,8 @@ function registerVoice() {
                 // 自动更新voice_id到后端
                 const lanlanName = document.getElementById('lanlan_name').value;
                 if (lanlanName) {
+                    const voiceSwitchOpId = createVoiceConfigSwitchOpId(lanlanName);
+                    notifyVoiceConfigSwitching(lanlanName, true, voiceSwitchOpId);
                     fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
@@ -6701,6 +8648,8 @@ function registerVoice() {
                         }
                     }).catch(e => {
                         resultDiv.innerHTML += '<br><span class="error" style="color: red;">' + (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错') + '</span>';
+                    }).finally(() => {
+                        notifyVoiceConfigSwitching(lanlanName, false, voiceSwitchOpId);
                     });
                 }
 
@@ -6751,6 +8700,37 @@ let _workshopVrmModulesLoaded = false;
 let _workshopMmdModulesLoaded = false;
 let _workshopVrmModulesLoading = false;
 let _workshopMmdModulesLoading = false;
+let _workshopPreviewGeneration = 0;
+
+function cancelWorkshopPreviewLoads() {
+    _workshopPreviewGeneration += 1;
+    cancelPendingLive2DPreviewLoads();
+}
+
+function isWorkshopPreviewLoadCurrent(generation) {
+    return generation === _workshopPreviewGeneration && !!document.getElementById('live2d-preview-content');
+}
+
+async function disposeStaleWorkshopPreviewManager(manager, type) {
+    if (!manager) return;
+    try {
+        if (type === 'mmd' && typeof manager.stopAnimation === 'function') {
+            manager.stopAnimation();
+        }
+        if (typeof manager.dispose === 'function') {
+            await manager.dispose();
+        }
+    } catch (e) {
+        console.warn(`[Workshop ${String(type || '').toUpperCase()}] 清理过期预览实例失败:`, e);
+    } finally {
+        if (type === 'vrm' && workshopVrmManager === manager) {
+            workshopVrmManager = null;
+        }
+        if (type === 'mmd' && workshopMmdManager === manager) {
+            workshopMmdManager = null;
+        }
+    }
+}
 
 // 按需加载 VRM 模块
 async function ensureVrmModulesLoaded() {
@@ -6901,8 +8881,45 @@ async function disposeWorkshopMmd() {
     hideAll3DPreviews();
 }
 
+function syncWorkshop3DPreviewSize(manager, canvasId) {
+    if (!manager || !manager.renderer) return false;
+
+    const previewContent = document.getElementById('live2d-preview-content');
+    const canvas = canvasId ? document.getElementById(canvasId) : (manager.renderer.domElement || null);
+    const rect = previewContent ? previewContent.getBoundingClientRect() : null;
+    const w = Math.max(1, Math.round(rect?.width || previewContent?.clientWidth || canvas?.clientWidth || 0));
+    const h = Math.max(1, Math.round(rect?.height || previewContent?.clientHeight || canvas?.clientHeight || 0));
+    if (w <= 1 || h <= 1) return false;
+
+    if (canvas) {
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.width = Math.round(w * (window.devicePixelRatio || 1));
+        canvas.height = Math.round(h * (window.devicePixelRatio || 1));
+    }
+
+    manager.renderer.setSize(w, h, false);
+    if (manager.camera) {
+        manager.camera.aspect = w / h;
+        manager.camera.updateProjectionMatrix();
+    }
+    if (manager.effect && typeof manager.effect.setSize === 'function') {
+        manager.effect.setSize(w, h);
+    }
+    return true;
+}
+
+function scheduleWorkshop3DPreviewResize(manager, canvasId) {
+    requestAnimationFrame(() => {
+        syncWorkshop3DPreviewSize(manager, canvasId);
+        requestAnimationFrame(() => syncWorkshop3DPreviewSize(manager, canvasId));
+    });
+}
+
 // 加载 VRM 模型预览
 async function loadVrmPreview(modelPath, rawData) {
+    const previewGeneration = ++_workshopPreviewGeneration;
+    let localVrmManager = null;
     try {
         cancelPendingLive2DPreviewLoads();
         selectedModelInfo = null;
@@ -6911,10 +8928,11 @@ async function loadVrmPreview(modelPath, rawData) {
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
 
         // 清理 Live2D 预览（如果有）
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             currentPreviewModel = null;
         }
 
@@ -6934,6 +8952,7 @@ async function loadVrmPreview(modelPath, rawData) {
 
         // 确保 VRM 模块已加载
         const loaded = await ensureVrmModulesLoaded();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
         if (!loaded) {
             console.error('[Workshop VRM] 模块加载失败');
             showMessage(window.t ? window.t('steam.vrmModuleLoadFailed') || 'VRM 模块加载失败' : 'VRM 模块加载失败', 'error');
@@ -6945,13 +8964,18 @@ async function loadVrmPreview(modelPath, rawData) {
         if (vrmContainer) vrmContainer.style.display = 'block';
 
         // 创建 VRM 管理器实例
-        workshopVrmManager = new window.VRMManager();
+        localVrmManager = new window.VRMManager();
+        workshopVrmManager = localVrmManager;
 
         // 获取光照配置
         const lighting = rawData?.['lighting'] || null;
 
         // 初始化 Three.js 场景
-        await workshopVrmManager.initThreeJS('vrm-preview-canvas', 'vrm-preview-container', lighting);
+        await localVrmManager.initThreeJS('vrm-preview-canvas', 'vrm-preview-container', lighting);
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopVrmManager !== localVrmManager) {
+            await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+            return;
+        }
 
         // 修正容器样式：VRMCore.init 会设置 position:fixed 覆盖全屏，
         // 这里覆盖为 absolute 使其嵌入预览区域内
@@ -6965,19 +8989,9 @@ async function loadVrmPreview(modelPath, rawData) {
             vrmContainerEl.style.zIndex = '10';
         }
 
-        // 按预览区域实际尺寸重设渲染器大小
+        // 按预览区域实际尺寸同步 renderer / camera / effect，避免 CSS 尺寸和 WebGL 后备尺寸不一致。
         const previewContent = document.getElementById('live2d-preview-content');
-        if (previewContent && workshopVrmManager.renderer) {
-            const w = previewContent.clientWidth;
-            const h = previewContent.clientHeight;
-            if (w > 0 && h > 0) {
-                workshopVrmManager.renderer.setSize(w, h);
-                if (workshopVrmManager.camera) {
-                    workshopVrmManager.camera.aspect = w / h;
-                    workshopVrmManager.camera.updateProjectionMatrix();
-                }
-            }
-        }
+        syncWorkshop3DPreviewSize(localVrmManager, 'vrm-preview-canvas');
 
         // 允许 3D 交互：临时启用预览区域的 pointer-events
         if (previewContent) previewContent.style.pointerEvents = 'auto';
@@ -6988,25 +9002,34 @@ async function loadVrmPreview(modelPath, rawData) {
         const idleAnimation = rawData?.['idleAnimation'] || '/static/vrm/animation/wait03.vrma';
 
         // 加载模型
-        const result = await workshopVrmManager.loadModel(modelPath, {
+        const result = await localVrmManager.loadModel(modelPath, {
             canvasId: 'vrm-preview-canvas',
             containerId: 'vrm-preview-container',
             addShadow: true,
             idleAnimation: idleAnimation
         });
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopVrmManager !== localVrmManager) {
+            await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+            return;
+        }
 
         if (result) {
+            scheduleWorkshop3DPreviewResize(localVrmManager, 'vrm-preview-canvas');
             console.log('[Workshop VRM] 模型预览加载成功');
             showMessage(window.t ? window.t('steam.vrmPreviewLoaded') || 'VRM 模型预览已加载' : 'VRM 模型预览已加载', 'success');
         }
     } catch (error) {
         console.error('[Workshop VRM] 加载预览失败:', error);
+        await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+        currentPreviewModel = null;
         showMessage(window.t ? window.t('steam.vrmPreviewFailed') || 'VRM 模型预览加载失败' : 'VRM 模型预览加载失败', 'error');
     }
 }
 
 // 加载 MMD 模型预览
 async function loadMmdPreview(modelPath, rawData) {
+    const previewGeneration = ++_workshopPreviewGeneration;
+    let localMmdManager = null;
     try {
         cancelPendingLive2DPreviewLoads();
         selectedModelInfo = null;
@@ -7015,10 +9038,11 @@ async function loadMmdPreview(modelPath, rawData) {
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
 
         // 清理 Live2D 预览（如果有）
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             currentPreviewModel = null;
         }
 
@@ -7038,6 +9062,7 @@ async function loadMmdPreview(modelPath, rawData) {
 
         // 确保 MMD 模块已加载
         const loaded = await ensureMmdModulesLoaded();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
         if (!loaded) {
             console.error('[Workshop MMD] 模块加载失败');
             showMessage(window.t ? window.t('steam.mmdModuleLoadFailed') || 'MMD 模块加载失败' : 'MMD 模块加载失败', 'error');
@@ -7049,10 +9074,15 @@ async function loadMmdPreview(modelPath, rawData) {
         if (mmdContainer) mmdContainer.style.display = 'block';
 
         // 创建 MMD 管理器实例
-        workshopMmdManager = new window.MMDManager();
+        localMmdManager = new window.MMDManager();
+        workshopMmdManager = localMmdManager;
 
         // 初始化
-        await workshopMmdManager.init('mmd-preview-canvas', 'mmd-preview-container');
+        await localMmdManager.init('mmd-preview-canvas', 'mmd-preview-container');
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopMmdManager !== localMmdManager) {
+            await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+            return;
+        }
 
         // 修正容器样式：MMDCore.init 会设置 position:fixed 覆盖全屏，
         // 这里覆盖为 absolute 使其嵌入预览区域内
@@ -7066,19 +9096,9 @@ async function loadMmdPreview(modelPath, rawData) {
             mmdContainerEl.style.zIndex = '10';
         }
 
-        // 按预览区域实际尺寸重设渲染器大小
+        // 按预览区域实际尺寸同步 renderer / camera / effect，避免 CSS 尺寸和 WebGL 后备尺寸不一致。
         const previewContent = document.getElementById('live2d-preview-content');
-        if (previewContent && workshopMmdManager.renderer) {
-            const w = previewContent.clientWidth;
-            const h = previewContent.clientHeight;
-            if (w > 0 && h > 0) {
-                workshopMmdManager.renderer.setSize(w, h);
-                if (workshopMmdManager.camera) {
-                    workshopMmdManager.camera.aspect = w / h;
-                    workshopMmdManager.camera.updateProjectionMatrix();
-                }
-            }
-        }
+        syncWorkshop3DPreviewSize(localMmdManager, 'mmd-preview-canvas');
 
         // 允许 3D 交互：临时启用预览区域的 pointer-events
         if (previewContent) previewContent.style.pointerEvents = 'auto';
@@ -7086,15 +9106,24 @@ async function loadMmdPreview(modelPath, rawData) {
         if (overlay) overlay.style.display = 'none';
 
         // 加载模型
-        const modelInfo = await workshopMmdManager.loadModel(modelPath);
+        const modelInfo = await localMmdManager.loadModel(modelPath);
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopMmdManager !== localMmdManager) {
+            await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+            return;
+        }
 
         if (modelInfo) {
+            scheduleWorkshop3DPreviewResize(localMmdManager, 'mmd-preview-canvas');
             // 如果有 idle 动画，尝试加载
             const idleAnimation = rawData?.['mmd_idle_animation'] || '';
-            if (idleAnimation && typeof workshopMmdManager.loadAnimation === 'function') {
+            if (idleAnimation && typeof localMmdManager.loadAnimation === 'function') {
                 try {
-                    await workshopMmdManager.loadAnimation(idleAnimation);
-                    workshopMmdManager.playAnimation();
+                    await localMmdManager.loadAnimation(idleAnimation);
+                    if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopMmdManager !== localMmdManager) {
+                        await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+                        return;
+                    }
+                    localMmdManager.playAnimation();
                 } catch (e) {
                     console.warn('[Workshop MMD] idle 动画加载失败:', e);
                 }
@@ -7104,12 +9133,15 @@ async function loadMmdPreview(modelPath, rawData) {
         }
     } catch (error) {
         console.error('[Workshop MMD] 加载预览失败:', error);
+        await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+        currentPreviewModel = null;
         showMessage(window.t ? window.t('steam.mmdPreviewFailed') || 'MMD 模型预览加载失败' : 'MMD 模型预览加载失败', 'error');
     }
 }
 
 // 清除所有模型预览（Live2D + VRM + MMD）
 async function clearAllModelPreviews(showModelNotSetMessage = false) {
+    cancelWorkshopPreviewLoads();
     selectedModelInfo = null;
     setLive2DPreviewRefreshButtonState(false, false);
     await disposeWorkshopVrm();
@@ -7139,11 +9171,12 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
     try {
         cancelPendingLive2DPreviewLoads();
         selectedModelInfo = null;
+        window._previewMotionFiles = [];
         setLive2DPreviewRefreshButtonState(false, false);
 
         // 如果有模型加载，先移除它
-        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+        if (live2dPreviewManager && typeof live2dPreviewManager.removeModel === 'function') {
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
         }
         currentPreviewModel = null;
 
@@ -7187,6 +9220,72 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
     }
 }
 
+async function destroyLive2DPreviewContext() {
+    const manager = live2dPreviewManager;
+    cancelPendingLive2DPreviewLoads();
+    selectedModelInfo = null;
+    currentPreviewModel = null;
+    window._previewMotionFiles = [];
+    setLive2DPreviewRefreshButtonState(false, false);
+
+    if (!manager) {
+        return;
+    }
+
+    if (typeof manager._activeLoadToken === 'number') {
+        manager._activeLoadToken += 1;
+    }
+
+    try {
+        await clearLive2DPreview();
+    } finally {
+        manager._isLoadingModel = false;
+        manager._modelLoadState = 'idle';
+        manager._isModelReadyForInteraction = false;
+
+        if (manager._canvasRevealTimer) {
+            clearTimeout(manager._canvasRevealTimer);
+            manager._canvasRevealTimer = null;
+        }
+
+        try {
+            if (manager.pixi_app && manager.pixi_app.view && manager.pixi_app.view.style) {
+                manager.pixi_app.view.style.transition = '';
+                manager.pixi_app.view.style.opacity = '';
+            }
+        } catch (_) {}
+
+        if (manager._previewResizeHandlerBound && manager._previewResizeHandler) {
+            window.removeEventListener('resize', manager._previewResizeHandler);
+        }
+        manager._previewResizeHandlerBound = false;
+        manager._previewResizeHandler = null;
+
+        if (manager._screenChangeHandler) {
+            window.removeEventListener('resize', manager._screenChangeHandler);
+            manager._screenChangeHandler = null;
+        }
+        if (manager._displayChangeHandler) {
+            window.removeEventListener('electron-display-changed', manager._displayChangeHandler);
+            manager._displayChangeHandler = null;
+        }
+
+        if (manager.pixi_app && typeof manager.pixi_app.destroy === 'function') {
+            try {
+                manager.pixi_app.destroy(true);
+            } catch (destroyError) {
+                console.warn('[CharacterCard] 销毁 Live2D 预览 PIXI 实例失败:', destroyError);
+            }
+        }
+
+        manager.pixi_app = null;
+        manager.currentModel = null;
+        manager.isInitialized = false;
+        manager._lastPIXIContext = { canvasId: null, containerId: null };
+        live2dPreviewManager = null;
+    }
+}
+
 // 通过模型名称加载Live2D模型
 async function loadLive2DModelByName(modelName, modelInfo = null) {
     const loadGeneration = beginLive2DPreviewLoadGeneration();
@@ -7199,7 +9298,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         if (loadedModel && live2dPreviewManager?.currentModel === loadedModel) {
             try {
-                await live2dPreviewManager.removeModel(true);
+                await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             } catch (cleanupError) {
                 console.warn('[CharacterCard] 清理过期 Live2D 预览失败:', cleanupError);
             }
@@ -7231,7 +9330,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         // 如果已经有模型加载，先移除它
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             // 重置当前预览模型引用
             currentPreviewModel = null;
         }
@@ -7434,16 +9533,20 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         console.error('Failed to update preview controls:', error);
     }
 
-    // 恢复已保存的待机动作（如果存在）
+    // 恢复已保存的待机动作（如果存在）。显式保留空值，避免“无动作”被浏览器默认选中第一个 option。
     const rawData = window._currentCardRawData || {};
     const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
         || rawData.avatar?.live2d?.idle_animation
-        || rawData.live2d_idle_animation;
+        || rawData.live2d_idle_animation
+        || '';
     const savedIdleAnimationBaseName = savedIdleAnimation
         ? String(savedIdleAnimation).split('/').pop()
         : '';
     const availableMotionFiles = window._previewMotionFiles || [];
     let initialMotionToPlay = '';
+    if (motionSelect) {
+        motionSelect.value = '';
+    }
     if (savedIdleAnimationBaseName && motionSelect) {
         const matchingSavedMotion = availableMotionFiles.find(file => {
             const normalizedFile = String(file || '');
@@ -7453,17 +9556,6 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         if (matchingSavedMotion) {
             motionSelect.value = matchingSavedMotion;
             initialMotionToPlay = matchingSavedMotion;
-        }
-    }
-
-    if (!initialMotionToPlay && motionSelect && motionSelect.value) {
-        initialMotionToPlay = motionSelect.value;
-    }
-
-    if (!initialMotionToPlay && availableMotionFiles.length > 0) {
-        initialMotionToPlay = availableMotionFiles[0];
-        if (motionSelect) {
-            motionSelect.value = initialMotionToPlay;
         }
     }
 
@@ -7521,7 +9613,8 @@ function updateCardPreview() {
     container.innerHTML = '';
 
     // 遍历所有属性并动态生成显示
-    for (const [key, value] of Object.entries(rawData)) {
+    for (const key of getOrderedCharacterFieldKeys(rawData, hiddenFields)) {
+        const value = rawData[key];
         // 跳过保留字段
         if (hiddenFields.includes(key)) continue;
 
@@ -7875,10 +9968,16 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     motionSelect.innerHTML = '';
     expressionSelect.innerHTML = '';
 
-    // 更新动作选择框
+    // 更新动作选择框：始终提供空选项，允许保存“无待机动作”。
+    const emptyMotionOption = document.createElement('option');
+    emptyMotionOption.value = '';
+    emptyMotionOption.textContent = (window.t && window.t('character.noIdleMotion', '无动作')) || '无动作';
+    motionSelect.appendChild(emptyMotionOption);
+
     if (motionFiles.length > 0) {
         motionSelect.disabled = false;
         playMotionBtn.disabled = false;
+        motionSelect.value = '';
 
         // 添加动作选项（value 使用文件名，便于直接作为 live2d_idle_animation）
         motionFiles.forEach((motionFile) => {
@@ -7890,17 +9989,19 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         motionSelect.disabled = true;
         playMotionBtn.disabled = true;
-
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = window.t('live2d.noMotionFiles', '没有动作文件');
-        motionSelect.appendChild(option);
+        emptyMotionOption.textContent = (window.t && window.t('live2d.noMotionFiles', '没有动作文件')) || '没有动作文件';
     }
 
-    // 更新表情选择框
+    // 更新表情选择框：始终提供空选项，避免默认选中第一个表情。
+    const emptyExpressionOption = document.createElement('option');
+    emptyExpressionOption.value = '';
+    emptyExpressionOption.textContent = (window.t && window.t('character.noExpression', '无表情')) || '无表情';
+    expressionSelect.appendChild(emptyExpressionOption);
+
     if (expressionFiles.length > 0) {
         expressionSelect.disabled = false;
         playExpressionBtn.disabled = false;
+        expressionSelect.value = '';
 
         // 添加表情选项
         expressionFiles.forEach(expressionFile => {
@@ -7913,11 +10014,7 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         expressionSelect.disabled = true;
         playExpressionBtn.disabled = true;
-
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = window.t('live2d.noExpressionFiles', '没有表情文件');
-        expressionSelect.appendChild(option);
+        emptyExpressionOption.textContent = (window.t && window.t('live2d.noExpressionFiles', '没有表情文件')) || '没有表情文件';
     }
 
     // 显示预览控件
@@ -8165,6 +10262,8 @@ function renderMasterForm(master) {
     const form = document.getElementById('master-form');
     if (!form) return;
     form.innerHTML = '';
+    const masterProfileName = normalizeCharacterFieldName(master['档案名']);
+    const hasMasterProfileName = !!masterProfileName;
 
     // 档案名
     const baseWrapper = document.createElement('div');
@@ -8181,8 +10280,15 @@ function renderMasterForm(master) {
     nameInput.type = 'text';
     nameInput.name = '档案名';
     nameInput.required = true;
-    nameInput.value = master['档案名'] || '';
+    nameInput.value = masterProfileName;
     nameInput.autocomplete = 'off';
+    nameInput.readOnly = hasMasterProfileName;
+    nameInput.setAttribute('aria-readonly', hasMasterProfileName ? 'true' : 'false');
+    if (hasMasterProfileName) {
+        nameInput.title = window.t
+            ? window.t('character.profileNameRenameOnlyHint')
+            : '请通过“修改名称”按钮修改档案名';
+    }
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
 
@@ -8192,26 +10298,38 @@ function renderMasterForm(master) {
     renameBtn.className = 'btn sm';
     renameBtn.style.minWidth = '70px';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
+    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     renameBtn.textContent = renameText;
+    renameBtn.title = renameTitle;
+    renameBtn.setAttribute('aria-label', renameTitle);
+    renameBtn.disabled = !hasMasterProfileName;
     renameBtn.onclick = renameMaster;
     baseWrapper.appendChild(renameBtn);
 
     form.appendChild(baseWrapper);
 
     // 自定义字段
+    const renderedCustomFields = new Set();
     Object.keys(master).forEach(k => {
-        if (k === '档案名') return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (
+            !normalizedKey
+            || normalizedKey === '档案名'
+            || isCharacterReservedFieldName(normalizedKey)
+            || renderedCustomFields.has(normalizedKey)
+        ) return;
+        renderedCustomFields.add(normalizedKey);
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = normalizedKey;
         wrapper.appendChild(label);
 
         const row = document.createElement('div');
         row.className = 'field-row';
         const textarea = document.createElement('textarea');
-        textarea.name = k;
+        textarea.name = normalizedKey;
         textarea.rows = 1;
         textarea.value = master[k];
         row.appendChild(textarea);
@@ -8230,7 +10348,9 @@ function renderMasterForm(master) {
         // textarea自动调整
         _panelAttachTextareaAutoResize(textarea);
         // 自动保存和变化监听
-        attachAutoSaveListener(textarea, 'master');
+        if (hasMasterProfileName) {
+            attachAutoSaveListener(textarea, 'master');
+        }
         textarea.addEventListener('input', showMasterActionButtons);
         textarea.addEventListener('change', showMasterActionButtons);
     });
@@ -8255,7 +10375,7 @@ function renderMasterForm(master) {
     saveBtn.type = 'button';
     saveBtn.id = 'save-master-btn';
     saveBtn.className = 'btn sm';
-    saveBtn.style.display = 'none';
+    saveBtn.style.display = hasMasterProfileName ? 'none' : '';
     const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
     saveBtn.textContent = saveText;
     saveBtn.onclick = saveMasterForm;
@@ -8275,10 +10395,11 @@ function renderMasterForm(master) {
 
     form.appendChild(btnArea);
 
-    // 为档案名输入框添加自动保存和变化监听
-    attachAutoSaveListener(nameInput, 'master');
-    nameInput.addEventListener('input', showMasterActionButtons);
-    nameInput.addEventListener('change', showMasterActionButtons);
+    // 档案名只允许通过重命名接口修改，避免绕过改名事件记录。
+    if (!hasMasterProfileName) {
+        nameInput.addEventListener('input', showMasterActionButtons);
+        nameInput.addEventListener('change', showMasterActionButtons);
+    }
 }
 
 function showMasterActionButtons() {
@@ -8290,6 +10411,11 @@ function showMasterActionButtons() {
     if (cancelBtn) cancelBtn.style.display = '';
 }
 
+function hasMasterFormProfileName(form) {
+    const nameInput = form?.querySelector('input[name="档案名"]');
+    return !!normalizeCharacterFieldName(nameInput?.value || '');
+}
+
 async function saveMasterForm() {
     const form = document.getElementById('master-form');
     if (!form) return;
@@ -8298,9 +10424,16 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
-    const data = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) data[k] = v;
+    const baseData = nameInput.readOnly
+        ? {}
+        : { '档案名': normalizeCharacterFieldName(nameInput.value) };
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData,
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
     try {
         const resp = await fetch('/api/characters/master', {
@@ -8354,14 +10487,18 @@ function attachAutoSaveListener(input, type, catgirlName) {
 async function autoSaveMasterField(input) {
     const form = input.closest('form');
     if (!form || form.id !== 'master-form') return;
-    const fieldName = input.name;
+    if (!hasMasterFormProfileName(form)) return;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName) return;
-    if (fieldName === '档案名' && !input.value.trim()) return;
-    const allData = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) allData[k] = v;
+    if (fieldName === '档案名') return;
+    const { data: allData, duplicateKey } = collectCharacterFields(form, {
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
-    if (!allData['档案名']) return;
+    // 空对象用于持久化“清空最后一个自定义字段”的自动保存。
     try {
         const resp = await fetch('/api/characters/master', {
             method: 'POST',
@@ -8390,16 +10527,17 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!catgirlName) return;
     const form = input.closest('form');
     if (!form) return;
-    const fieldName = input.name;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
-    const data = { '档案名': catgirlName };
-    const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
-    const inputs = form.querySelectorAll('input, textarea');
-    inputs.forEach(inp => {
-        if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
-            data[inp.name] = inp.value;
-        }
+    const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
+        baseData: { '档案名': catgirlName },
+        excludeFieldNames: ['档案名', 'voice_id'],
     });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
+    }
+    attachCharacterFieldOrderPayload(data, fieldOrder);
     try {
         const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
             method: 'PUT',
@@ -8407,6 +10545,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
+            syncCharacterCardCache(catgirlName, buildLocalCatgirlRawData(catgirlName, data, fieldOrder));
             storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             const sentFields = new Set(Object.keys(data));
@@ -8458,8 +10597,11 @@ async function addMasterField() {
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
     }
-    if (!key || key === '档案名') return;
-    const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
+    key = normalizeCharacterFieldName(key);
+    if (!key || key === '档案名' || isCharacterReservedFieldName(key)) return;
+    const exists = Array.from(form.querySelectorAll('textarea, input')).some(
+        el => normalizeCharacterFieldName(el.name) === key
+    );
     if (exists) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
         return;
@@ -8487,7 +10629,9 @@ async function addMasterField() {
 
     form.insertBefore(wrapper, form.querySelector('.btn-area'));
     _panelAttachTextareaAutoResize(textarea);
-    attachAutoSaveListener(textarea, 'master');
+    if (hasMasterFormProfileName(form)) {
+        attachAutoSaveListener(textarea, 'master');
+    }
     textarea.addEventListener('input', showMasterActionButtons);
     textarea.addEventListener('change', showMasterActionButtons);
     textarea.focus();
@@ -8506,24 +10650,50 @@ async function renameMaster() {
     const form = document.getElementById('master-form');
     if (!form) return;
     const nameInput = form.querySelector('input[name="档案名"]');
-    const oldName = nameInput?.value || '';
+    const oldName = normalizeCharacterFieldName(nameInput?.value || '');
+    if (!oldName) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
+        return;
+    }
+    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
+    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     let newName;
     if (typeof showPrompt === 'function') {
         newName = await showPrompt(
-            window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+            promptText,
             oldName,
-            window.t ? window.t('character.renameTitle') : '修改名称'
+            titleText
         );
     } else {
-        newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', oldName);
+        newName = prompt(promptText, oldName);
     }
-    if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
+    const normalizedNewName = normalizeCharacterFieldName(newName);
+    if (!normalizedNewName || normalizedNewName === oldName) return;
     try {
-        const resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ new_name: newName.trim() })
-        });
+        const useBodyFallback = /[\\/]/.test(oldName);
+        let resp;
+        if (useBodyFallback) {
+            // 旧配置可能含路径分隔符，无法可靠放进 path 参数，改用普通保存接口修复档案名。
+            const { data, duplicateKey } = collectCharacterFields(form, {
+                baseData: { '档案名': normalizedNewName },
+                excludeFieldNames: ['档案名'],
+            });
+            if (duplicateKey) {
+                showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+                return;
+            }
+            resp = await fetch('/api/characters/master', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        } else {
+            resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_name: normalizedNewName })
+            });
+        }
         const result = await resp.json();
         if (result.success) {
             showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
@@ -8532,7 +10702,8 @@ async function renameMaster() {
             showMessage(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'), 'error');
         }
     } catch (e) {
-        showMessage(window.t ? window.t('character.renameError') : '重命名时发生错误', 'error');
+        const errorMessage = e.message || String(e);
+        showMessage(window.t ? window.t('character.renameError', { error: errorMessage }) : '重命名失败: ' + errorMessage, 'error');
     }
 }
 
@@ -8671,6 +10842,1731 @@ function panelAttachAutoSaveListener(input, catgirlName) {
             }
         }, 0);
     });
+}
+
+// ===================== 猫猫辅助生成猫娘设定（陪伴式聊天面板） =====================
+// 设计：点击「✨ 猫猫辅助生成」会在屏幕右侧拉出一个驻留的聊天面板，扮演一只
+// 「设定捏人助手猫娘」（暂用 YUI 的卡面顶替，未来会换成开发猫角色）。面板里：
+//   - 先一句话描述 → AI 抛 2-4 道带 chip 的澄清问题 → AI 一次性生成全部字段
+//     并自动应用到表单 → 进入自由聊天模式
+//   - 聊天模式下用户可以随时让助手再调字段（"让她更外向"、"招牌台词换一句"），
+//     LLM 在 /api/card-assist/chat 返回结构化 actions，前端自动 patch 表单
+//   - 同时监视表单：用户在面板外手改字段时，把这条改动以「你刚改了 X」的
+//     system 气泡告诉助手 + 用户，保持双方对当前状态的共识
+// 助手不主动调 LLM 评论（成本考虑）；用户随时可以用 quick chip 让她审一审。
+
+// 判断某字段名是否是「系统/工坊保留字段」——AI 不该把它当普通设定去写。
+// ⚠ 之前这里维护一份写死的部分列表，漏了 live3d_sub_type / vrm_animation / lighting /
+// live2d_item_id 等：那些 key 会被渲染成普通 AI 字段、autosave 报成功，但后端保存时被
+// collectCharacterFields / _filter_mutable_catgirl_fields 丢掉，刷新后字段消失、改动静默
+// 丢失（Codex #3331668038）。改成复用角色编辑器同一套 isCharacterReservedFieldName（走后端
+// 实时配置 + ReservedFieldsUtils 兜底，与后端 CHARACTER_RESERVED_FIELDS 同源），再叠加
+// card-assist 特有的 '档案名'（表单元数据 input 的固定 name，不在保留字段配置里）。
+function _cardAssistIsReservedKey(key) {
+    const k = String(key == null ? '' : key).trim();
+    if (!k) return false;
+    if (k === '档案名') return true;
+    try {
+        if (typeof isCharacterReservedFieldName === 'function') {
+            return isCharacterReservedFieldName(k);
+        }
+    } catch (_) { /* 极端兜底：helper 不可用就只挡 '档案名' */ }
+    return false;
+}
+
+// 当前用作"开发猫"占位的猫娘 profile name。/api/characters/catgirl/{name}/card-face
+// 命中就用真实卡面，不命中走 fallback 圆圈。未来替换开发猫只需要改这里。
+const CARD_COMPANION_DEV_CAT_NAME = 'YUI';
+
+function _cardAssistT(key, fallback, vars) {
+    if (window.t && typeof window.t === 'function') {
+        try {
+            const v = window.t(key, vars || undefined);
+            if (typeof v === 'string' && v && v !== key) return v;
+        } catch (_) { /* fall through */ }
+    }
+    return fallback;
+}
+
+function _cardAssistCurrentLocale() {
+    try {
+        const lang = (typeof getCurrentUiLanguage === 'function') ? getCurrentUiLanguage() : '';
+        return lang || 'en';
+    } catch (_) { return 'en'; }
+}
+
+// 收集表单上所有用户可见的字段 name（textarea + input），保留出现顺序、去重、
+// 跳过保留 key。Apply 时是按 `textarea[name=...]` 精确匹配的，所以必须把
+// 模板真实使用的 key（en 模板用 "Gender"/"Age" 之类、zh 用 "性别"/"年龄" 之类）
+// 喂给 LLM，否则生成出来的中文 key 会以"新增字段"形式平行插入，旧字段不会被覆盖。
+function _cardAssistCollectFieldKeys(form) {
+    const keys = [];
+    if (!form) return keys;
+    const seen = new Set();
+    form.querySelectorAll('textarea[name], input[name]').forEach(function (el) {
+        const k = el.getAttribute('name');
+        if (!k || _cardAssistIsReservedKey(k)) return;
+        if (seen.has(k)) return;
+        seen.add(k);
+        keys.push(k);
+    });
+    return keys;
+}
+
+function _cardAssistCollectCurrentFormData(form) {
+    const data = {};
+    if (!form) return data;
+    const fd = new FormData(form);
+    for (const [k, v] of fd.entries()) {
+        if (!k || _cardAssistIsReservedKey(k)) continue;
+        const val = typeof v === 'string' ? v.trim() : v;
+        if (val) data[k] = val;
+    }
+    return data;
+}
+
+// card-assist 的 4 个端点会真去打 LLM、花用户配额，后端按统一守卫（issue #1479）
+// 要求带本地 Origin/CSRF 头，挡掉恶意网页用 no-cors 伪造 JSON 偷跑配额（Codex
+// #3328998416）。本页（character_card_manager.html，独立页）不加载 app-prompt-shared.js
+// → 没有 window.nekoLocalMutationSecurity，所以这里自包含地拿 X-CSRF-Token：
+//   1) 主 app 上下文里若已有统一安全助手就直接用（带刷新逻辑）；
+//   2) 独立页兜底：从 /api/config/page_config 取 autostart_csrf_token（与本页已加载的
+//      tutorial/core/universal-manager.js 同一套来源），缓存一次即可（per-instance 常量）。
+// 取不到就返回空头——后端会 403，_cardAssistFetch 下面的错误通路照常当失败处理，不会
+// 静默成功。Origin 头由浏览器对同源 POST 自动带上，与本页 tutorial 上报走的是同一条路。
+let _cardAssistCsrfToken = null;
+async function _cardAssistCsrfHeaders() {
+    try {
+        const sec = window.nekoLocalMutationSecurity;
+        if (sec && typeof sec.getMutationHeaders === 'function') {
+            const h = await sec.getMutationHeaders();
+            if (h && typeof h === 'object') return h;
+        }
+    } catch (_) { /* fall through to page_config */ }
+    if (_cardAssistCsrfToken) return { 'X-CSRF-Token': _cardAssistCsrfToken };
+    try {
+        const r = await fetch('/api/config/page_config', { cache: 'no-store' });
+        if (r.ok) {
+            const d = await r.json();
+            if (d && typeof d.autostart_csrf_token === 'string' && d.autostart_csrf_token) {
+                _cardAssistCsrfToken = d.autostart_csrf_token;
+                return { 'X-CSRF-Token': _cardAssistCsrfToken };
+            }
+        }
+    } catch (_) { /* 取不到 → 空头，后端 403 由错误通路兜住 */ }
+    return {};
+}
+
+async function _cardAssistFetch(path, payload) {
+    const csrfHeaders = await _cardAssistCsrfHeaders();
+    const resp = await fetch(path, {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+        body: JSON.stringify(payload || {}),
+    });
+    let body = null;
+    try { body = await resp.json(); } catch (_) { body = null; }
+    if (!resp.ok || !body || body.success === false) {
+        const err = (body && (body.message || body.error)) || ('HTTP ' + resp.status);
+        const e = new Error(err);
+        // 后端目前用 {success, error: "<machine_code>", message: "..."} 形状，
+        // body.error 就是机器码；兼容性预留 body.code（其他接口可能这么写）。
+        e.code = body && (body.code || body.error);
+        throw e;
+    }
+    return body;
+}
+
+// ========== 入口：打开/复用 companion 面板 ==========
+
+function openCardAssistCompanion(form, originalName, isNew) {
+    if (window._cardCompanion) {
+        const existing = window._cardCompanion;
+        if (existing.form === form) {
+            // 同一只猫娘 → 把已有面板拉回前台
+            _companionSetMinimized(existing, false);
+            if (existing.inputEl) {
+                try { existing.inputEl.focus(); } catch (_) {}
+            }
+            return;
+        }
+        // 切换到不同的猫娘 → 销毁旧面板再开新的
+        _companionTeardown(existing);
+        _companionDestroy(existing);
+        window._cardCompanion = null;
+    }
+    const state = _companionCreate(form, originalName, isNew);
+    window._cardCompanion = state;
+    document.body.appendChild(state.overlay);
+    _companionAttachFormWatchers(state);
+    _companionGreet(state);
+    setTimeout(() => { if (state.inputEl) state.inputEl.focus(); }, 80);
+}
+
+function _companionCreate(form, originalName, isNew) {
+    const state = {
+        form: form,
+        originalName: originalName,
+        isNew: !!isNew,
+        devCatName: CARD_COMPANION_DEV_CAT_NAME,
+        // 状态机：
+        //   awaiting_description → 还在等用户给一句话描述
+        //   asking_questions     → AI 抛出了 N 道澄清问题，正在轮流回答
+        //   generating           → 正在调 /generate 写草稿（极短瞬态）
+        //   chat                 → 草稿已应用，自由对话 + 局部 patch
+        mode: 'awaiting_description',
+        description: '',
+        pendingQuestions: [],
+        currentQuestionIdx: 0,
+        collectedAnswers: {},
+        // /chat 调用时发回去的对话历史（OpenAI 格式）
+        chatHistory: [],
+        // 表单监视：detach 列表 + 上次快照
+        formWatchHandlers: [],
+        formWatchSnapshot: {},
+        // DOM refs
+        overlay: null,
+        threadEl: null,
+        inputEl: null,
+        sendBtnEl: null,
+        quickRowEl: null,
+        avatarToggleEl: null,
+        dragCleanup: null,
+        expandedPanelRect: null,
+        minimizeTransitionTimer: null,
+        minimizedClickSuppressTimer: null,
+        suppressNextMinimizedClick: false,
+        minimized: false,
+        busy: false,
+    };
+    state.overlay = _companionBuildPanel(state);
+    return state;
+}
+
+function _companionDestroy(state) {
+    if (state.overlay && state.overlay.parentNode) {
+        state.overlay.parentNode.removeChild(state.overlay);
+    }
+}
+
+function _companionSetMinimized(state, minimized) {
+    if (!state || !state.overlay) return;
+    const overlay = state.overlay;
+    if (state.minimizeTransitionTimer) {
+        clearTimeout(state.minimizeTransitionTimer);
+        state.minimizeTransitionTimer = null;
+    }
+    if (state.minimizedClickSuppressTimer) {
+        clearTimeout(state.minimizedClickSuppressTimer);
+        state.minimizedClickSuppressTimer = null;
+    }
+    overlay.classList.remove('card-companion-collapsing', 'card-companion-expanding');
+    const shouldMinimize = !!minimized;
+    const currentlyMinimized = !!state.minimized;
+    if (shouldMinimize === currentlyMinimized) return;
+    state.minimized = shouldMinimize;
+
+    if (shouldMinimize) {
+        const panelRect = overlay.getBoundingClientRect();
+        const avatarRect = state.avatarToggleEl
+            ? state.avatarToggleEl.getBoundingClientRect()
+            : panelRect;
+        state.expandedPanelRect = {
+            left: panelRect.left,
+            top: panelRect.top,
+            width: panelRect.width,
+            height: panelRect.height,
+        };
+        overlay.style.left = panelRect.left + 'px';
+        overlay.style.top = panelRect.top + 'px';
+        overlay.style.width = panelRect.width + 'px';
+        overlay.style.height = panelRect.height + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.style.minWidth = '0px';
+        overlay.style.maxWidth = 'none';
+        overlay.style.minHeight = '0px';
+        overlay.style.maxHeight = 'none';
+        overlay.getBoundingClientRect();
+        overlay.classList.add('card-companion-collapsing');
+        overlay.style.left = avatarRect.left + 'px';
+        overlay.style.top = avatarRect.top + 'px';
+        overlay.style.width = avatarRect.width + 'px';
+        overlay.style.height = avatarRect.height + 'px';
+        state.minimizeTransitionTimer = setTimeout(function () {
+            overlay.classList.remove('card-companion-collapsing');
+            overlay.classList.add('card-companion-minimized');
+            state.minimizeTransitionTimer = null;
+        }, 260);
+    } else {
+        const currentRect = overlay.getBoundingClientRect();
+        const targetRect = state.expandedPanelRect || currentRect;
+        overlay.style.left = currentRect.left + 'px';
+        overlay.style.top = currentRect.top + 'px';
+        overlay.style.width = currentRect.width + 'px';
+        overlay.style.height = currentRect.height + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.classList.add('card-companion-expanding');
+        overlay.classList.remove('card-companion-minimized');
+        overlay.getBoundingClientRect();
+        overlay.style.left = targetRect.left + 'px';
+        overlay.style.top = targetRect.top + 'px';
+        overlay.style.width = targetRect.width + 'px';
+        overlay.style.height = targetRect.height + 'px';
+        state.minimizeTransitionTimer = setTimeout(function () {
+            overlay.classList.remove('card-companion-expanding');
+            state.minimizeTransitionTimer = null;
+        }, 260);
+    }
+    if (state.avatarToggleEl) {
+        const title = shouldMinimize
+            ? _cardAssistT('character.aiCompanionExpand', '展开')
+            : _cardAssistT('character.aiCompanionMinimize', '收起');
+        state.avatarToggleEl.title = title;
+        state.avatarToggleEl.setAttribute('aria-label', title);
+        state.avatarToggleEl.setAttribute('aria-expanded', shouldMinimize ? 'false' : 'true');
+    }
+}
+
+function _companionTeardown(state) {
+    if (!state) return;
+    // ⚠ 先把 _companionSetBusy 给「未落库新卡」禁掉的 Save 无条件恢复：用户在 LLM 请求
+    // 还在飞时点 × 关掉 companion = 主动结束 AI 流程，但 teardown 只置 closed / 摘监听、
+    // 迟到响应的 guard 又会直接 return，于是 Save 会一直灰着直到那次请求超时（最多 60s）。
+    // 这里在关闭时强制放开，避免表单还在页面上却存不了（Codex #3331627614 / CR #3331629488）。
+    try {
+        if (state.form) {
+            const saveBtn = state.form.querySelector('#save-button');
+            if (saveBtn) saveBtn.disabled = false;
+        }
+    } catch (_) { /* form 可能已 detach，忽略 */ }
+    // closed flag：所有 in-flight 的 await 拿到 response 后会 check 这个，
+    // 避免 companion 已经关掉/切到别只猫娘了，迟到的 LLM 结果还在静默改表单。
+    state.closed = true;
+    if (state.minimizeTransitionTimer) {
+        clearTimeout(state.minimizeTransitionTimer);
+        state.minimizeTransitionTimer = null;
+    }
+    if (state.minimizedClickSuppressTimer) {
+        clearTimeout(state.minimizedClickSuppressTimer);
+        state.minimizedClickSuppressTimer = null;
+    }
+    if (typeof state.dragCleanup === 'function') {
+        try { state.dragCleanup(); } catch (_) {}
+        state.dragCleanup = null;
+    }
+    if (state.form && state.formWatchHandlers) {
+        state.formWatchHandlers.forEach(function (pair) {
+            try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
+        });
+        state.formWatchHandlers = [];
+    }
+}
+
+function _companionBuildPanel(state) {
+    const overlay = document.createElement('aside');
+    overlay.className = 'card-companion-panel';
+    overlay.setAttribute('role', 'complementary');
+    // 阻止面板上的点击冒泡到外层的"点击外部关闭"之类的逻辑（虽然没有，但
+    // 防御一下）
+    overlay.addEventListener('click', function (e) { e.stopPropagation(); });
+    overlay.addEventListener('click', function (e) {
+        if (!state.minimized) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (state.suppressNextMinimizedClick) {
+            state.suppressNextMinimizedClick = false;
+            if (state.minimizedClickSuppressTimer) {
+                clearTimeout(state.minimizedClickSuppressTimer);
+                state.minimizedClickSuppressTimer = null;
+            }
+            return;
+        }
+        _companionSetMinimized(state, false);
+    }, true);
+
+    // --- header ---
+    const header = document.createElement('div');
+    header.className = 'card-companion-header';
+    header.title = _cardAssistT('character.aiCompanionDragHint', '拖动窗口');
+
+    const avatar = document.createElement('div');
+    avatar.className = 'card-companion-avatar';
+    avatar.title = _cardAssistT('character.aiCompanionMinimize', '收起');
+    avatar.setAttribute('role', 'button');
+    avatar.setAttribute('tabindex', '0');
+    avatar.setAttribute('aria-label', avatar.title);
+    avatar.setAttribute('aria-expanded', 'true');
+    avatar.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        _companionSetMinimized(state, !state.minimized);
+    });
+    avatar.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        e.stopPropagation();
+        _companionSetMinimized(state, !state.minimized);
+    });
+    state.avatarToggleEl = avatar;
+    const avatarImg = document.createElement('img');
+    avatarImg.alt = state.devCatName;
+    // 不加 ?t=Date.now() cache-bust：companion avatar 是个稳定的静态图，让
+    // 浏览器 HTTP cache + 后端 ETag 接管 —— 多次开关 companion / 切换猫娘
+    // 不用每次都拉一次图。如果未来要在 card-face 改了之后立刻刷新，应该用
+    // 一个稳定的 cache key（如卡面文件 mtime / hash）而不是 Date.now()。
+    avatarImg.src = '/api/characters/catgirl/' + encodeURIComponent(state.devCatName) + '/card-face';
+    avatarImg.onerror = function () {
+        avatarImg.remove();
+        const fallback = document.createElement('div');
+        fallback.className = 'card-companion-avatar-fallback';
+        fallback.textContent = (state.devCatName || 'AI').slice(0, 2);
+        avatar.appendChild(fallback);
+    };
+    avatar.appendChild(avatarImg);
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'card-companion-title';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'card-companion-name';
+    nameEl.textContent = state.devCatName;
+    const subEl = document.createElement('div');
+    subEl.className = 'card-companion-sub';
+    subEl.textContent = _cardAssistT('character.aiCompanionSub', '设定捏人助手 · 暂代开发猫');
+    titleWrap.appendChild(nameEl);
+    titleWrap.appendChild(subEl);
+
+    const headerPaw = document.createElement('img');
+    headerPaw.className = 'card-companion-header-paw';
+    headerPaw.src = '/static/icons/paw_ui.png';
+    headerPaw.alt = '';
+    headerPaw.draggable = false;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'card-companion-close';
+    closeBtn.title = _cardAssistT('character.aiCompanionClose', '关闭');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('click', function () {
+        _companionTeardown(state);
+        _companionDestroy(state);
+        if (window._cardCompanion === state) window._cardCompanion = null;
+    });
+
+    header.appendChild(avatar);
+    header.appendChild(titleWrap);
+    header.appendChild(headerPaw);
+    header.appendChild(closeBtn);
+    overlay.appendChild(header);
+    _companionAttachWindowDrag(state, overlay, header);
+
+    // --- thread ---
+    const thread = document.createElement('div');
+    thread.className = 'card-companion-thread';
+    overlay.appendChild(thread);
+    state.threadEl = thread;
+
+    // --- input bar ---
+    const inputBar = document.createElement('div');
+    inputBar.className = 'card-companion-input-bar';
+
+    const inputRow = document.createElement('div');
+    inputRow.className = 'card-companion-input-row';
+
+    const input = document.createElement('textarea');
+    input.className = 'card-companion-input';
+    input.rows = 1;
+    input.placeholder = _cardAssistT('character.aiCompanionPlaceholder',
+        '说点什么…（Enter 发送、Shift+Enter 换行）');
+    input.addEventListener('input', function () { _cardAssistAutoResize(input); });
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            _companionSubmit(state);
+        }
+    });
+    inputRow.appendChild(input);
+    state.inputEl = input;
+
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'card-companion-send';
+    sendBtn.textContent = _cardAssistT('character.aiCompanionSend', '发送');
+    sendBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        _companionSubmit(state);
+    });
+    inputRow.appendChild(sendBtn);
+    state.sendBtnEl = sendBtn;
+
+    inputBar.appendChild(inputRow);
+
+    // 一些预设的快捷指令，方便用户不用手动输入
+    const quickRow = document.createElement('div');
+    quickRow.className = 'card-companion-quick-row';
+    const quickActions = [
+        { label: _cardAssistT('character.aiCompanionQuickAdvice', '💡 给点建议'),
+          send: _cardAssistT('character.aiCompanionQuickAdviceMsg',
+                '看一下当前的角色设定，给我几条具体的改进建议吧。'),
+          requireMode: 'chat', adviceOnly: true },
+        { label: _cardAssistT('character.aiCompanionQuickCheck', '🔍 帮我审一下'),
+          send: _cardAssistT('character.aiCompanionQuickCheckMsg',
+                '审一下角色设定有没有矛盾、空泛或者重复的地方。'),
+          requireMode: 'chat', adviceOnly: true },
+        { label: _cardAssistT('character.aiCompanionQuickRegen', '🎲 重写整张卡'),
+          send: _cardAssistT('character.aiCompanionQuickRegenMsg',
+                '把所有可见字段都按原本的角色定位重新写一遍。'),
+          requireMode: 'chat', fullRewrite: true },
+    ];
+    quickActions.forEach(function (qa) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'card-companion-quick-chip';
+        chip.textContent = qa.label;
+        chip.dataset.requireMode = qa.requireMode || '';
+        chip.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (chip.disabled) return;
+            // 「重写整张卡」用 locale 无关的 flag 标明全量重写意图，别让后端去正则匹配本地化
+            // 文案——ja/ko/pt/ru/es/zh-TW 的「重写」措辞匹配不到，后端 _complete_full_rewrite_actions
+            // 补全通路就不会触发，部分 action 列表会被当部分重写存下去（Codex #3333137718）。
+            state._pendingFullRewrite = !!qa.fullRewrite;
+            state._pendingAdviceOnly = !!qa.adviceOnly;
+            input.value = qa.send;
+            _companionSubmit(state);
+        });
+        quickRow.appendChild(chip);
+    });
+    inputBar.appendChild(quickRow);
+    state.quickRowEl = quickRow;
+
+    overlay.appendChild(inputBar);
+
+    return overlay;
+}
+
+function _companionAttachWindowDrag(state, overlay, handle) {
+    if (!overlay || !handle) return;
+    let dragging = false;
+    let startClientX = 0;
+    let startClientY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let dragLeft = 0;
+    let dragTop = 0;
+    let activePointerId = null;
+    let movedEnoughToDrag = false;
+
+    function suppressMinimizedClickOnce() {
+        state.suppressNextMinimizedClick = true;
+        if (state.minimizedClickSuppressTimer) {
+            clearTimeout(state.minimizedClickSuppressTimer);
+        }
+        state.minimizedClickSuppressTimer = setTimeout(function () {
+            state.suppressNextMinimizedClick = false;
+            state.minimizedClickSuppressTimer = null;
+        }, 600);
+    }
+
+    function clampWindow(left, top) {
+        const rect = overlay.getBoundingClientRect();
+        const margin = 8;
+        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+        const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+        return {
+            left: Math.min(Math.max(left, margin), maxLeft),
+            top: Math.min(Math.max(top, margin), maxTop),
+        };
+    }
+
+    function placeWindow(left, top) {
+        const next = clampWindow(left, top);
+        overlay.style.left = next.left + 'px';
+        overlay.style.top = next.top + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+        if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+        const deltaX = e.clientX - startClientX;
+        const deltaY = e.clientY - startClientY;
+        if (state.minimized && !movedEnoughToDrag && Math.hypot(deltaX, deltaY) > 5) {
+            movedEnoughToDrag = true;
+        }
+        e.preventDefault();
+        const next = clampWindow(startLeft + deltaX, startTop + deltaY);
+        dragLeft = next.left;
+        dragTop = next.top;
+        overlay.style.left = dragLeft + 'px';
+        overlay.style.top = dragTop + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+    }
+
+    function stopDrag() {
+        if (!dragging) return;
+        const wasMinimizedDrag = state.minimized && movedEnoughToDrag;
+        dragging = false;
+        activePointerId = null;
+        overlay.style.left = dragLeft + 'px';
+        overlay.style.top = dragTop + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.style.transform = '';
+        movedEnoughToDrag = false;
+        overlay.classList.remove('card-companion-dragging');
+        window.requestAnimationFrame(function () {
+            if (!dragging) overlay.style.transition = '';
+        });
+        if (wasMinimizedDrag) {
+            suppressMinimizedClickOnce();
+        }
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', stopDrag);
+        window.removeEventListener('pointercancel', stopDrag);
+    }
+
+    function onPointerDown(e) {
+        if (e.button !== undefined && e.button !== 0) return;
+        const interactive = e.target && e.target.closest && e.target.closest('button, a, input, textarea, select, [role="button"]');
+        if (interactive && !state.minimized) return;
+        const rect = overlay.getBoundingClientRect();
+        dragging = true;
+        activePointerId = e.pointerId;
+        movedEnoughToDrag = false;
+        startClientX = e.clientX;
+        startClientY = e.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+        dragLeft = startLeft;
+        dragTop = startTop;
+        overlay.style.transition = 'none';
+        overlay.style.left = startLeft + 'px';
+        overlay.style.top = startTop + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.style.transform = '';
+        overlay.classList.add('card-companion-dragging');
+        if (handle.setPointerCapture && activePointerId !== null) {
+            try { handle.setPointerCapture(activePointerId); } catch (_) {}
+        }
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', stopDrag);
+        window.addEventListener('pointercancel', stopDrag);
+        e.preventDefault();
+    }
+
+    function onResize() {
+        const rect = overlay.getBoundingClientRect();
+        placeWindow(rect.left, rect.top);
+    }
+
+    handle.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('resize', onResize);
+    state.dragCleanup = function () {
+        stopDrag();
+        handle.removeEventListener('pointerdown', onPointerDown);
+        window.removeEventListener('resize', onResize);
+    };
+}
+
+function _companionGreet(state) {
+    // 入口分流：
+    //   - 空白卡（profile name 之外没有任何已填字段）→ 走多轮 Asking 流程
+    //     （awaiting_description → clarify → generate → chat）
+    //   - 已经有 tag 的卡 → 跳过 Asking，直接进入 chat（AI Design）。
+    //     问候里列出现有字段做摘要，提示用 "💡/🔍" quick chip 让 AI 基于
+    //     已有 tag 给建议；不预先消耗一次 LLM 调用。
+    //
+    // _cardAssistCollectCurrentFormData 已经用 _cardAssistIsReservedKey 过滤掉保留字段
+    // （档案名/voice_id/lighting 等），所以只剩"真·角色设定字段"。空对象 → 空白卡。
+    const existingData = _cardAssistCollectCurrentFormData(state.form);
+    const filledKeys = Object.keys(existingData);
+    if (!filledKeys.length) {
+        _companionAppendAssistant(state,
+            _cardAssistT('character.aiCompanionGreeting',
+                '喵～我是设定捏人助手，先告诉我你想要一只什么样的猫娘呀？一句话描述就好，我会再问几个细节，然后帮你把整张卡写好喵。'));
+        // mode 默认就是 awaiting_description（_companionCreate 里初始化的）
+    } else {
+        _companionEnterDesignMode(state, existingData, filledKeys);
+    }
+    _companionUpdateQuickAvailability(state);
+}
+
+// 已有 tag 的卡：跳过 Asking，直接进 chat。第一条 assistant 气泡把现有字段
+// 列一下，让用户和 AI 都对得上号，再提示一下后续怎么交互。
+function _companionEnterDesignMode(state, existingData, filledKeys) {
+    state.mode = 'chat';
+    // 太多字段时只列前 12 条，剩下的折叠成"…还有 N 项"，避免气泡铺一屏
+    const MAX_LIST = 12;
+    const head = filledKeys.slice(0, MAX_LIST);
+    const lines = head.map(function (k) {
+        return '• ' + k + '：' + _companionTruncate(String(existingData[k] || ''), 30);
+    });
+    if (filledKeys.length > MAX_LIST) {
+        // i18next 风格的 {{n}} 占位符，跟 repo 里其它 60+ 处 {{var}} 一致。
+        // _cardAssistT 把 vars 透传给 window.t(key, vars) → i18next 标准插值。
+        // fallback 字符串里把数字直接内联，避免 i18next 没加载时 {{n}} 字面量
+        // 漏出给用户。
+        const remaining = filledKeys.length - MAX_LIST;
+        lines.push('• ' + _cardAssistT('character.aiCompanionDesignMore',
+            '…（还有 ' + remaining + ' 项）',
+            { n: remaining }));
+    }
+    const greeting = _cardAssistT('character.aiCompanionDesignGreeting',
+        '喵～我是设定捏人助手。看到你这只猫娘已经有点雏形啦，我先看看你已经填了什么：') +
+        '\n\n' + lines.join('\n') +
+        '\n\n' + _cardAssistT('character.aiCompanionDesignAsk',
+        '想让我帮你做点啥呢？直接告诉我就行（比如「让她更傲娇一点」、「招牌台词换一句」），也可以点下面的「🔍 帮我审一下」让我整体看看~');
+    _companionAppendAssistant(state, greeting);
+    // 注：不预先塞 chatHistory，让 quick chip 触发的"帮我审一下"消息成为第一条
+    // user 输入，对话上下文更自然；current_card / target_field_keys 在每次
+    // /chat 调用前都重新收集，AI 永远看得到最新表单状态。
+}
+
+function _companionUpdateQuickAvailability(state) {
+    // companion 已 teardown（state.closed）后绝不再碰表单控件：teardown 已无条件把未落库新卡
+    // 的 Save 恢复了，迟到的 in-flight finally（如 _companionRunClarify 的 _companionSetBusy(false)）
+    // 不能借这里按「未落库新卡 + 非 chat 模式」规则把它又禁回去——否则 companion 已销毁、详情
+    // 面板还开着，用户再也点不动 Save（Codex #3333702549）。
+    if (!state || state.closed) return;
+    // 详情表单 Save 的禁用集中在这里（busy 变化 + 每次 mode 切换都会调到，是唯一同步点）。
+    // 防竞态：**未落库新卡**在「打 LLM（busy）」或「澄清问答流程（asking_questions，答最后一题
+    // 就触发生成）」时禁掉 Save——堵住「用户在草稿还没生成完的窗口里手动 Save 把新卡建出来」与
+    // 生成竞态：那一下会用旧快照建卡，且若走 popup / 有卡面分支会 closeCatgirlPanel 把面板连同
+    // AI 字段一起带走、事后救不回（Codex #3329022313 / #3329817833 / #3333137733）。
+    // ⚠ awaiting_description（首启 + 澄清失败回退）**不禁**：此刻没有任何在途生成，禁 Save 是过宽
+    // 的——零竞态收益，只会把用户困住：澄清失败（如没配 API）后想放弃 AI、手动建卡却点不动，得先
+    // 关 companion 才行（Codex #3333683160）。手动 Save 真撞上后续生成的竞态，本就由 busy +
+    // _companionTryAutoSave 的 wait/replay 兜底，不靠在这里禁 awaiting_description 的 Save。进入
+    // chat 模式（草稿已落表单）同样放开，save-then-chat 由 _companionRunChat 的 dataset.submitting
+    // 短路守住。已落库卡完全不禁。关 companion 时 _companionTeardown 会无条件恢复，不会卡死。
+    try {
+        if (state.form) {
+            const sb = state.form.querySelector('#save-button');
+            if (sb) {
+                const unsavedNewCard = state.isNew === true && !state.form._autoCreated;
+                sb.disabled = unsavedNewCard && (!!state.busy || state.mode === 'asking_questions');
+            }
+        }
+    } catch (_) { /* form 可能已 detach，忽略 */ }
+    if (!state.quickRowEl) return;
+    state.quickRowEl.querySelectorAll('.card-companion-quick-chip').forEach(function (chip) {
+        const req = chip.dataset.requireMode || '';
+        const ok = !req || state.mode === req;
+        chip.disabled = !ok || state.busy;
+        chip.classList.toggle('card-companion-quick-chip-disabled', !ok);
+    });
+}
+
+function _companionSetBusy(state, busy) {
+    state.busy = !!busy;
+    if (state.sendBtnEl) state.sendBtnEl.disabled = !!busy;
+    if (state.inputEl) state.inputEl.disabled = !!busy;
+    _companionUpdateQuickAvailability(state);  // 内含详情表单 Save 的禁用同步
+}
+
+async function _companionSubmit(state) {
+    if (state.busy) return;
+    const txt = (state.inputEl && state.inputEl.value ? state.inputEl.value : '').trim();
+    if (!txt) return;
+    state.inputEl.value = '';
+    _cardAssistAutoResize(state.inputEl);
+    await _companionHandleUserText(state, txt);
+}
+
+async function _companionHandleUserText(state, text) {
+    _companionAppendUser(state, text);
+    if (state.mode === 'awaiting_description') {
+        state.description = text;
+        await _companionRunClarify(state);
+    } else if (state.mode === 'asking_questions') {
+        // 用户没点 chip，而是在输入框敲了自定义答案 → 当作当前问题的回答
+        const q = state.pendingQuestions[state.currentQuestionIdx];
+        if (q) {
+            state.collectedAnswers[q.id] = text;
+            state.currentQuestionIdx++;
+            _companionRenderNextQuestion(state);
+        }
+    } else {
+        // chat 模式：进 /api/card-assist/chat
+        state.chatHistory.push({ role: 'user', content: text });
+        await _companionRunChat(state);
+    }
+}
+
+async function _companionRunClarify(state) {
+    _companionSetBusy(state, true);
+    const typing = _companionAppendTyping(state);
+    try {
+        // form 找不到（用户切走了详情面板 / 关掉了）→ 早 return，不要白白吃一次
+        // LLM 调用。同样的 short-circuit 在 _companionRunGenerate / _companionRunChat
+        // 也加了，否则即使后端把 reply + actions 返回回来，前端 apply 阶段也只能
+        // 弹「⚠ 角色表单不在屏幕上了」，钱白花、用户体验冲突。
+        if (!_companionEnsureLiveForm(state)) {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
+        const resp = await _cardAssistFetch('/api/card-assist/clarify', {
+            description: state.description,
+            current_card: _cardAssistCollectCurrentFormData(state.form),
+            target_field_keys: _cardAssistCollectFieldKeys(state.form),
+            locale: _cardAssistCurrentLocale(),
+        });
+        // 用户在 in-flight 期间关掉了 companion → 静默丢掉迟到的结果，绝不
+        // 静默地把字段写进 form（form 还活着，但 user intent 已是"取消"）。
+        if (state.closed) return;
+        typing.remove();
+        state.pendingQuestions = resp.questions || [];
+        state.currentQuestionIdx = 0;
+        if (!state.pendingQuestions.length) {
+            // 没出问题就直接跳到 generate
+            await _companionRunGenerate(state);
+            return;
+        }
+        state.mode = 'asking_questions';
+        _companionUpdateQuickAvailability(state);
+        _companionRenderNextQuestion(state);
+    } catch (err) {
+        typing.remove();
+        _companionAppendError(state, err);
+        state.mode = 'awaiting_description';
+        _companionUpdateQuickAvailability(state);
+    } finally {
+        _companionSetBusy(state, false);
+    }
+}
+
+function _companionRenderNextQuestion(state) {
+    if (state.currentQuestionIdx >= state.pendingQuestions.length) {
+        _companionRunGenerate(state);
+        return;
+    }
+    const q = state.pendingQuestions[state.currentQuestionIdx];
+    const total = state.pendingQuestions.length;
+    const prefix = '【' + (state.currentQuestionIdx + 1) + '/' + total + ' · ' + (q.header || '') + '】';
+    // 捕获 chip 创建时的「这是第几题」snapshot；用户后续通过输入框回答 / 点更新
+    // 的 chip 推进进度后，老 bubble 上的 chip 仍可见可点。stale chip 点击如果
+    // 不防一手，会把旧答案塞进 collectedAnswers 并再次 ++currentQuestionIdx —
+    // 跳过下一题、覆盖原本写好的答案。
+    const ownIdx = state.currentQuestionIdx;
+    const ownQid = q.id;
+    _companionAppendAssistant(state, q.label, {
+        prefix: prefix,
+        chips: (q.options || []).map(function (opt) {
+            return {
+                label: opt,
+                onClick: function () {
+                    // 已经被其他途径推进过 → stale chip，no-op
+                    if (state.currentQuestionIdx !== ownIdx) return;
+                    state.collectedAnswers[ownQid] = opt;
+                    _companionAppendUser(state, opt);
+                    state.currentQuestionIdx++;
+                    _companionRenderNextQuestion(state);
+                }
+            };
+        }),
+        allowCustom: q.allowCustom !== false,
+        // 同 chip 的 ownIdx 防 race —— 自定义输入框按 Enter 也要先确认这条
+        // bubble 还对应当前题，否则老 bubble 的输入会把答案塞给"现在的题"
+        // 并再次 ++idx 跳过下一题。
+        customSubmit: function (v) {
+            if (state.currentQuestionIdx !== ownIdx) return;
+            state.collectedAnswers[ownQid] = v;
+            _companionAppendUser(state, v);
+            state.currentQuestionIdx++;
+            _companionRenderNextQuestion(state);
+        },
+    });
+}
+
+async function _companionRunGenerate(state) {
+    _companionSetBusy(state, true);
+    const typing = _companionAppendTyping(state,
+        _cardAssistT('character.aiCompanionGenerating', '正在帮你写草稿…'));
+    try {
+        if (!_companionEnsureLiveForm(state)) {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
+        const resp = await _cardAssistFetch('/api/card-assist/generate', {
+            description: state.description,
+            answers: state.collectedAnswers,
+            current_card: _cardAssistCollectCurrentFormData(state.form),
+            target_field_keys: _cardAssistCollectFieldKeys(state.form),
+            locale: _cardAssistCurrentLocale(),
+        });
+        // closed-companion guard：用户在 in-flight 期间关掉了 companion → 绝
+        // 不静默地往 form 写字段并 autoSave，关闭即取消。
+        if (state.closed) return;
+        typing.remove();
+        const fields = resp.fields || {};
+        const fieldKeys = Object.keys(fields);
+        if (!fieldKeys.length) {
+            _companionAppendAssistant(state,
+                _cardAssistT('character.aiCompanionEmptyDraft',
+                    '草稿空空的喵，我们再聊几句吧～'));
+            state.mode = 'chat';
+            _companionUpdateQuickAvailability(state);
+            return;
+        }
+        // 直接应用到表单
+        // ⚠ /generate 的 await 期间 state.form 可能被 rebuild（用户改名/保存先完成、旧
+        // form detach）。这里 apply 前再 ensure 一次，把 draft 写进**当前活着**的 form；
+        // 接不上就报 form-gone，绝不写进 detached DOM——否则字段写了个寂寞，紧接着的
+        // _companionTryAutoSave rebind 到新 form 又没有 in-flight replay 通路，会把不带
+        // draft 的表单存下去、助手却报「已应用」（Codex #3332998069）。
+        if (!_companionEnsureLiveForm(state)) {
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
+        const applyRes = _cardAssistApplyToForm(state.form, fields, fieldKeys,
+                                                 state.originalName, state.isNew);
+        _companionRefreshFormSnapshot(state);
+        await _companionTryAutoSave(state);
+        // 用一条 assistant 气泡总结。区分 update vs create，让用户能立即看出
+        // LLM 用的 key 是不是和表单里的字段对上号了 —— 如果 created 一大堆，
+        // 说明 LLM 没听话用错 key，老字段没被覆盖。
+        const lines = [];
+        if (applyRes.updated.length) {
+            lines.push(_cardAssistT('character.aiCompanionDraftUpdated', '✎ 改写') + '：' +
+                applyRes.updated.map(function (k) { return k; }).join('、'));
+        }
+        if (applyRes.created.length) {
+            lines.push(_cardAssistT('character.aiCompanionDraftCreated', '+ 新增') + '：' +
+                applyRes.created.map(function (k) { return k; }).join('、'));
+        }
+        if (applyRes.skipped.length) {
+            lines.push(_cardAssistT('character.aiCompanionDraftSkipped', '⤬ 跳过') + '：' +
+                applyRes.skipped.map(function (k) { return k; }).join('、'));
+        }
+        const msg = _cardAssistT('character.aiCompanionDraftReady',
+            '草稿写好啦，已经填进表单了喵～你随时改、随时跟我说要调啥都行：') +
+            (lines.length ? '\n' + lines.join('\n') : '');
+        _companionAppendAssistant(state, msg);
+        // 进入聊天模式，把 description + 生成结果当上下文塞进 chatHistory。
+        // seed 通过 i18n 走当前 locale —— 之前硬编码中文会让英文 locale 用户
+        // 走完澄清问答后被 LLM 镜像成中文回复。
+        state.mode = 'chat';
+        const seedDescribe = _cardAssistT('character.aiCompanionSeedDescribe',
+            'Generate a catgirl card based on this description: ');
+        const seedGenerated = _cardAssistT('character.aiCompanionSeedGenerated',
+            'Generated and filled into the form: ');
+        state.chatHistory.push({ role: 'user',
+            content: seedDescribe + state.description });
+        state.chatHistory.push({ role: 'assistant',
+            content: seedGenerated + JSON.stringify(fields) });
+        _companionUpdateQuickAvailability(state);
+    } catch (err) {
+        typing.remove();
+        _companionAppendError(state, err);
+        state.mode = 'chat';
+        _companionUpdateQuickAvailability(state);
+    } finally {
+        _companionSetBusy(state, false);
+    }
+}
+
+async function _companionRunChat(state) {
+    _companionSetBusy(state, true);
+    // ⚠ full_rewrite 一次性消费：在任何 early-return（form-gone 等）**之前**就读出并清掉，
+    // 否则这次点「重写整张卡」若撞上 form rebuild、没接上 live form 而提前 return，标记会
+    // 残留、被下一条普通聊天消息误当成整卡重写（CodeRabbit #3333410664）。
+    const fullRewrite = state._pendingFullRewrite === true;
+    state._pendingFullRewrite = false;
+    // 「给建议 / 帮我审一下」属于只读分析，不该顺手自动改表单；和 full_rewrite 一样做一次性消费，
+    // 避免某次 advice 请求 early-return 后把标记泄漏到下一条普通聊天消息（本次回归）。
+    const adviceOnly = state._pendingAdviceOnly === true;
+    state._pendingAdviceOnly = false;
+    const typing = _companionAppendTyping(state);
+    try {
+        if (!_companionEnsureLiveForm(state)) {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
+        // 新卡首存正在飞行中（用户在 chat 模式点了 Save、又紧接着发消息）：别在它收尾前打
+        // LLM / 改表单。否则 saveCatgirlFromPanel 已用「编辑前的快照」序列化，这次应用的 chat
+        // 编辑会在「首存成功关面板 / 开卡面」分支里随面板一起没掉、_companionTryAutoSave 又
+        // rebind 不上（Codex #3333457418）。短路并提示等保存收尾——用户消息还在 chatHistory 里，
+        // 存好后再发一次即可（生成/问答流程下 Save 本就被禁，这里只兜 chat 模式这条路）。
+        if (state.isNew && !state.form._autoCreated
+                && state.form.dataset.submitting === 'true') {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionSaveInProgress',
+                    '⏳ 正在保存这张新卡，存好了我再帮你改喵～稍等一下再发一次吧。'));
+            return;
+        }
+        // full_rewrite 已在函数开头一次性读出并清掉（见上），这里直接透传（Codex #3333137718）。
+        const resp = await _cardAssistFetch('/api/card-assist/chat', {
+            messages: state.chatHistory,
+            current_card: _cardAssistCollectCurrentFormData(state.form),
+            target_field_keys: _cardAssistCollectFieldKeys(state.form),
+            dev_cat_name: state.devCatName,
+            locale: _cardAssistCurrentLocale(),
+            advice_only: adviceOnly,
+            full_rewrite: fullRewrite,
+        });
+        // closed-companion guard：同 clarify/generate，关掉 companion 之后
+        // 迟到的 reply + actions 都丢弃，不再静默改 form。
+        if (state.closed) return;
+        typing.remove();
+        const reply = (resp.reply || '').trim();
+        if (reply) {
+            _companionAppendAssistant(state, reply);
+            state.chatHistory.push({ role: 'assistant', content: reply });
+        }
+        const actions = Array.isArray(resp.actions) ? resp.actions : [];
+        const summary = _companionApplyActions(state, actions);
+        if (summary) {
+            _companionAppendSystem(state, summary);
+            _companionRefreshFormSnapshot(state);
+            await _companionTryAutoSave(state);
+        }
+    } catch (err) {
+        typing.remove();
+        _companionAppendError(state, err);
+    } finally {
+        _companionSetBusy(state, false);
+    }
+}
+
+function _companionApplyActions(state, actions) {
+    if (!actions || !actions.length) return '';
+    // form 可能已经被 buildCatgirlDetailForm 重新渲染过 → 尝试按 id 重新接上当前
+    // 活着的同名表单。接不上才真的报错。
+    if (!_companionEnsureLiveForm(state)) {
+        return _cardAssistT('character.aiCompanionFormGone',
+            '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。');
+    }
+    const updatedTags = [];
+    const createdTags = [];
+    const removedTags = [];
+    const skippedTags = [];
+    actions.forEach(function (a) {
+        if (!a || !a.type || !a.field_key) return;
+        if (_cardAssistIsReservedKey(a.field_key)) {
+            skippedTags.push(a.field_key);
+            return;
+        }
+        if (a.type === 'remove_field') {
+            const ta = _findFieldTextareaByName(state.form, a.field_key);
+            if (ta) {
+                const wrapper = ta.closest('.field-row-wrapper');
+                if (wrapper) wrapper.remove();
+                removedTags.push(a.field_key);
+            } else {
+                skippedTags.push(a.field_key);
+            }
+            return;
+        }
+        // refine_field 严格要求字段已存在 —— LLM 偶尔会把目标字段名打错 / 大
+        // 小写漂移（"Personality archetype" vs "Personality Archetype"），
+        // 如果直接走 ApplyToForm 那条「找不到就创建」分支，会静默新建一条
+        // 重复字段然后被 autoSave 持久化，留下脏 schema。把这种 typo case
+        // 当 skipped 处理，让用户能看见。
+        // add_field 反过来：本意就是新增，找不到才正常。
+        if (a.type === 'refine_field') {
+            if (!_findFieldTextareaByName(state.form, a.field_key)) {
+                skippedTags.push(a.field_key);
+                return;
+            }
+        }
+        const single = {};
+        single[a.field_key] = a.value;
+        const res = _cardAssistApplyToForm(state.form, single, [a.field_key],
+                                           state.originalName, state.isNew);
+        res.updated.forEach(function (k) { updatedTags.push(k); });
+        res.created.forEach(function (k) { createdTags.push(k); });
+        res.skipped.forEach(function (k) { skippedTags.push(k); });
+    });
+    // 把刚 apply 出来的 4 类结果挂到 state，供 _companionTryAutoSave 在 wait→
+    // rebuild 路径上 replay 时区分"该重写的字段"和"该重新删除的字段" —— snapshot
+    // 自己只记得到值，不记得到"故意删除"这种 intent，必须显式传过去。
+    state._lastApplyResult = {
+        updated: updatedTags.slice(),
+        created: createdTags.slice(),
+        removed: removedTags.slice(),
+        skipped: skippedTags.slice(),
+    };
+    // remove_field 这条分支直接删 DOM 行，不像 _cardAssistApplyToForm 末尾那样会把
+    // Save / Cancel 亮出来。已保存卡这两个按钮默认 display:none（见 buildCatgirlDetailForm
+    // 里 `if (!isNew) ...style.display = 'none'`），一旦后面 _companionTryAutoSave 失败、
+    // 系统气泡提示「请手动点 Save 重试」时，按钮却还藏着 → 用户无从重试，被删字段在
+    // reload 后复活。所以只要真发生了删除（纯 remove、没有 update/create 顺带亮按钮的场景）
+    // 就把 Save / Cancel 显式亮出来，让那条 fallback 提示是可操作的。
+    if (removedTags.length && state.form) {
+        const sb = state.form.querySelector('#save-button');
+        const cb = state.form.querySelector('#cancel-button');
+        if (sb) sb.style.display = '';
+        if (cb) cb.style.display = '';
+    }
+    const parts = [];
+    if (updatedTags.length) parts.push('✎ ' + updatedTags.join(', '));
+    if (createdTags.length) parts.push('+ ' + createdTags.join(', '));
+    if (removedTags.length) parts.push('🗑 ' + removedTags.join(', '));
+    if (skippedTags.length) parts.push('⤬ ' + skippedTags.join(', ') +
+        '（' + _cardAssistT('character.aiCompanionSkipped', '未匹配/已保留') + '）');
+    if (!parts.length) return '';
+    return _cardAssistT('character.aiCompanionAppliedPrefix', '已应用：') + parts.join('  ·  ');
+}
+
+async function _companionTryAutoSave(state) {
+    // 任何"对 form 动手"的入口前都先确保 form 还活着，否则保存的是个 detached
+    // 表单 → FormData 拿到空值 / PUT 把字段全清光。
+    if (!_companionEnsureLiveForm(state)) return;
+
+    // ⚠ 关键：空白卡（state.isNew === true 且后端还没收到过 POST）下，绝对不能
+    // 调 saveCatgirlFromPanel —— 它的"首次保存成功"分支会触发 closeCatgirlPanel()
+    // （见 character_card_manager.js ~6331/6334），把整个详情面板收起来，用户跟
+    // companion 聊到一半画面被甩走。
+    //
+    // 解决方案：新卡用户必须先**手动**点一次 Save 把卡建出来；之后 state.isNew
+    // 翻成 false（或者 form._autoCreated 标记起来），auto-save 就可以接管走 PUT。
+    // 手动 Save 后老的 saveCatgirlFromPanel 流程会 buildCatgirlDetailForm
+    // 重新渲染表单，companion 会在下一次 _companionEnsureLiveForm 时自动跟过去。
+    // ⚠ 例外：若此刻**已有一次手动 Save 在飞行中**（dataset.submitting === 'true'），说明用户
+    // 正在把这张新卡建出来。这时绝不能直接 return —— 否则在「用户点 Save 时 /generate 还在飞」
+    // 的竞态里，那次 Save 已经用「AI 写字段**之前**」的旧快照序列化好了，保存成功后会用旧快照
+    // rebuild / 关面板，把 AI 刚写进去、用户已看到「已应用」的字段静默丢掉（Codex #3329022313）。
+    // 所以这种情况要落到下面的 wait/replay：等那次 Save 收尾、把 AI 字段 replay 到 rebuild 出来
+    // 的已保存卡表单上再存一遍。等待之后会再确认卡是否真落库（见 saveCatgirlFromPanel 前的二次 guard）。
+    if (state.isNew && !state.form._autoCreated
+            && state.form.dataset.submitting !== 'true') {
+        // 一只新卡里只提示一次，避免 AI 改几次就刷几条 toast。
+        if (!state._warnedNewCardSaveHint) {
+            state._warnedNewCardSaveHint = true;
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionNewCardSaveHint',
+                    '💡 新卡片要先点一下下面的 Save 才能让我自动保存，' +
+                    '现在字段都已经写进表单了喵～'));
+        }
+        return;
+    }
+    if (typeof saveCatgirlFromPanel === 'function') {
+        // saveCatgirlFromPanel 自己已经 toast 了错误（HTTP 非 2xx / success:false
+        // / 网络异常都会经 showMessage(... ,'error')），但它**不抛**而是 `return false`。
+        // 之前 catch{} 把 return value 丢了 —— 用户在 toast 之外看到 companion 的
+        // 系统气泡仍然显示「✎ 已应用」，体感是「字段改了 + 已保存」，实际上后端
+        // 拒绝了。这里读回 ok 值，false 时再补一条 system 错误气泡兜底。
+        //
+        // ⚠ saveCatgirlFromPanel 的 `return false` 有**两种**语义混用：
+        //   (1) form.dataset.submitting === 'true' 的 debounce skip —— 表示有
+        //       另一个 save 正在飞行中；
+        //   (2) HTTP / validation / 网络异常的真·失败。
+        //
+        // 上一轮 (3bf0b171) 把 (1) 当失败误报；上一轮的 fix (722ada87) 简单粗暴
+        // 改成 "in-flight 就 return"。但**那条捷径会丢数据**：
+        //   T0: 用户手动 Save → saveCatgirlFromPanel 用 T0 的 form 数据起 POST
+        //   T1: companion 把 AI 的新字段写进**同一个**form 的 textarea
+        //   T2: companion tryAutoSave → 看到 dataset.submitting='true' → return
+        //   T3: 后端 success → buildCatgirlDetailForm() 用 server 返回的数据
+        //       (T0 的快照) 重建 form → companion 写进去的 T1 字段被抹掉
+        //   T4: 既没存进后端、也不在 form 里、companion 也不知道要重试 —— 静默丢失
+        //
+        // 修法：不再 return，改成**等 in-flight save 收尾**（轮询 dataset.submitting
+        // 翻 'false'），然后 _companionEnsureLiveForm 接上可能 rebuild 出来的新
+        // form。如果 form 实例真的换了，比对 formWatchSnapshot（这次 tryAutoSave
+        // 之前刚 refresh 过、代表 companion 期望的状态）和新 form 的实际字段值，
+        // 把丢失/被抹掉的字段 replay 一遍，然后再调 saveCatgirlFromPanel 把
+        // companion 的修改真正落盘。
+        // ⚠ snapshot 和 lastApplyResult 必须在 wait/rebind 之前**defensive 拷贝**：
+        // wait loop 里的每次 _companionEnsureLiveForm 在切到新 form 后会调
+        // _companionAttachFormWatchers，那个函数会重写 state.formWatchSnapshot
+        // = _cardAssistCollectCurrentFormData(<新 form>)，把"companion 期望状态"
+        // 直接覆盖成"后端刚 rebuild 出来的旧值"。等下面的 diff 拿到时 snapshot
+        // 已经和当前 form 一模一样、永远比不出差异、replay 哑火 → 数据丢失。
+        // lastApplyResult 同理在某些重入路径上可能被覆盖，也先快照下来。
+        const formBeforeWait = state.form;
+        const expectedSnapshot = Object.assign({}, state.formWatchSnapshot || {});
+        const lastApply = state._lastApplyResult || {};
+        const expectedRemovals = (lastApply.removed || []).slice();
+        const WAIT_TIMEOUT_MS = 8000;
+        const POLL_MS = 100;
+        let waited = 0;
+        // ⚠ 必须盯 **formBeforeWait 自己** 的 dataset.submitting 清掉，而不是 state.form：
+        // 那次手动保存的 PUT 一旦成功就会触发 buildCatgirlDetailForm 重建，旧 form 随之
+        // detach、_companionEnsureLiveForm 会把 state.form 重绑到**新** form，新 form 的
+        // submitting 从没被置位 → 若拿 state.form 当条件，循环会在重建一发生就**提前 break**。
+        // 但此时手动保存还没收尾（saveCatgirlFromPanel 的 finally 清 submitting 之前，已保存卡
+        // 分支还要 await loadCharacterData + 再跑一次 buildCatgirlDetailForm）。companion 抢在
+        // 它收尾前 replay + 自存，就会被那次后续重建覆盖 → 退回这条 wait/replay 本来要消灭的
+        // 静默丢失（Codex #3328951294 P1）。saveCatgirlFromPanel 的 finally 清的是原始 form
+        // 引用（== formBeforeWait）的 submitting，detach 之后该 dataset 仍可读，所以这里安全。
+        while (waited < WAIT_TIMEOUT_MS && formBeforeWait.dataset.submitting === 'true') {
+            await new Promise(function (r) { setTimeout(r, POLL_MS); });
+            waited += POLL_MS;
+        }
+        // 超时仍在 submitting 就放弃，避免 hang 死 —— 但**不能静默退出**：那次慢保存收尾时
+        // 会用较旧的请求快照重建表单，把 companion 刚写进去的改动/删除覆盖掉，而用户只看到
+        // 之前那条「已应用」气泡、误以为存好了（Codex #3328963563）。所以补一条失败气泡讲清楚，
+        // 并尽量把 Save/Cancel 亮出来给一个手动兜底入口（若那次保存最终失败、没重建表单，这俩
+        // 按钮就是真正的重试路径）。
+        if (formBeforeWait.dataset.submitting === 'true') {
+            console.warn('[card-companion] auto-save waited 8s for in-flight save, giving up');
+            const tsb = formBeforeWait.querySelector('#save-button');
+            const tcb = formBeforeWait.querySelector('#cancel-button');
+            if (tsb) tsb.style.display = '';
+            if (tcb) tcb.style.display = '';
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionAutoSaveFailed',
+                    '⚠ 自动保存失败了喵——表单里的字段已经写好，请看下弹出的错误提示再手动点 Save 重试。'));
+            return;
+        }
+        // 手动保存确认收尾后，再接上它可能 rebuild 出来的新 form（接不上 = 面板没了 → 放弃）
+        if (!_companionEnsureLiveForm(state)) return;
+        // form 实例换过 → 用 BEFORE-WAIT 那份 snapshot + removed 名单把 companion
+        // 期望的状态重新灌进新 form。两条独立通道：
+        //   1) 字段值 replay：跳过那些「companion 故意删除」的 key，避免把刚删
+        //      掉的字段又写回去；只 apply 真正有 diff 的 key（避免误覆盖 server）。
+        //   2) 删除 replay：对 server rebuild 后又冒出来的 removed 字段重新执行
+        //      DOM 删除。snapshot 自己不携带"我删过它"的信息，所以必须靠
+        //      expectedRemovals 显式记下。
+        if (state.form !== formBeforeWait) {
+            const removalSet = expectedRemovals.length
+                ? new Set(expectedRemovals) : null;
+            if (Object.keys(expectedSnapshot).length) {
+                const replayValues = {};
+                const replayKeys = [];
+                Object.keys(expectedSnapshot).forEach(function (k) {
+                    if (removalSet && removalSet.has(k)) return;
+                    const ta = _findFieldTextareaByName(state.form, k);
+                    const cur = ((ta && ta.value) || '').trim();
+                    const want = (expectedSnapshot[k] || '').trim();
+                    if (want && cur !== want) {
+                        replayValues[k] = expectedSnapshot[k];
+                        replayKeys.push(k);
+                    }
+                });
+                if (replayKeys.length) {
+                    _cardAssistApplyToForm(state.form, replayValues, replayKeys,
+                        state.originalName, state.isNew);
+                }
+            }
+            expectedRemovals.forEach(function (k) {
+                const ta = _findFieldTextareaByName(state.form, k);
+                if (!ta) return;
+                const wrapper = ta.closest('.field-row-wrapper');
+                if (wrapper) wrapper.remove();
+            });
+            // replay 里若含「删除」：rebuilt 的已保存卡表单 Save/Cancel 默认是藏着的
+            //（手动 save 成功后又被隐藏）。若只 replay 了删除、没 replay 任何字段值，
+            // 上面的 _cardAssistApplyToForm 不会被调到、不会顺带亮按钮；紧接着的
+            // autosave 一旦失败、提示用户「手动点 Save 重试」时按钮却不可见 → 删除丢失
+            //（Codex #3328942158）。跟直连 remove_field 路径一样，这里把 Save/Cancel 亮出。
+            if (expectedRemovals.length) {
+                const rsb = state.form.querySelector('#save-button');
+                const rcb = state.form.querySelector('#cancel-button');
+                if (rsb) rsb.style.display = '';
+                if (rcb) rcb.style.display = '';
+            }
+            // 重新刷一遍 watch snapshot 把 "我们刚 replay 完的状态" 当成新的
+            // baseline，避免后面 form-watch listener 把 replay 误判成"用户手改"
+            // 弹一堆系统气泡。
+            _companionRefreshFormSnapshot(state);
+        }
+        // 一次性消耗掉 lastApplyResult，避免下次 tryAutoSave 误用过期数据
+        state._lastApplyResult = null;
+        // 二次 guard（配合上面「新卡 + in-flight save 时不 return」的放行）：等那次手动 Save
+        // 收尾后，若卡**仍未落库**（state 还是 isNew 且非 _autoCreated，说明那次 Save 失败 /
+        // 没建成），绝不能调 saveCatgirlFromPanel —— 它会 POST 建卡 + closeCatgirlPanel 甩走
+        // 面板，正是新卡 guard 要避免的。这种情况 AI 字段已 replay 在表单里，提示用户手动 Save 即可。
+        if (state.isNew && !state.form._autoCreated) {
+            if (!state._warnedNewCardSaveHint) {
+                state._warnedNewCardSaveHint = true;
+                _companionAppendSystem(state,
+                    _cardAssistT('character.aiCompanionNewCardSaveHint',
+                        '💡 新卡片要先点一下下面的 Save 才能让我自动保存，' +
+                        '现在字段都已经写进表单了喵～'));
+            }
+            return;
+        }
+        let ok = true;
+        try {
+            // _autoCreated 的卡其实已经 POST 到后端了 → 对它来说这次只是 PUT 更新。但若仍
+            // 把 isNew=true 传进去，saveCatgirlFromPanel 的**保存成功后 UI 分支**会按原始
+            // isNew 去 closeCatgirlPanel / 开卡面制作弹窗，把正在进行的 companion 聊天打断
+            //（Codex #3328942156）。它的请求方法本就按内部 effectiveIsNew(=isNew && !_autoCreated)
+            // 走 PUT、不受这里影响；这里按"是否已落库"把 _autoCreated 当作已保存卡传进去，
+            // 让 post-save 走原地刷新而不是甩走面板。走到这一步：要么本就是已保存卡 / _autoCreated，
+            // 要么是「新卡 + in-flight save」竞态等完后卡已落库（未落库的已被上面的二次 guard 拦掉）。
+            const effectiveIsNew = state.isNew && !state.form._autoCreated;
+            const ret = await saveCatgirlFromPanel(state.form, state.originalName, effectiveIsNew);
+            if (ret === false) ok = false;
+        } catch (e) {
+            console.warn('[card-companion] auto-save after action failed:', e);
+            ok = false;
+        }
+        if (!ok) {
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionAutoSaveFailed',
+                    '⚠ 自动保存失败了喵——表单里的字段已经写好，请看下弹出的错误提示再手动点 Save 重试。'));
+        }
+    }
+}
+
+// ========== 表单监视：用户在面板外手改字段时给个 system 提示 ==========
+
+function _companionAttachFormWatchers(state) {
+    if (!state.form) return;
+    // 如果之前 attach 过、但 form 实例换了，先把旧的 listener 清掉，避免旧表单
+    // 还在 DOM 树里时双触发。
+    if (state.formWatchHandlers && state.formWatchHandlers.length) {
+        state.formWatchHandlers.forEach(function (pair) {
+            try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
+        });
+        state.formWatchHandlers = [];
+    }
+    state.formWatchSnapshot = _cardAssistCollectCurrentFormData(state.form);
+    const inputHandler = function (e) {
+        const t = e.target;
+        if (!t || !t.name) return;
+        if (t.tagName !== 'TEXTAREA' && t.tagName !== 'INPUT') return;
+        if (_cardAssistIsReservedKey(t.name)) return;
+        // 防抖：用户停手 600ms 才看是不是真的改了
+        clearTimeout(t._companionWatchTimer);
+        t._companionWatchTimer = setTimeout(function () {
+            const newVal = (t.value || '').trim();
+            const oldVal = (state.formWatchSnapshot[t.name] || '').trim();
+            if (newVal === oldVal) return;  // companion 自己改的 → snapshot 已同步，会在这里跳过
+            state.formWatchSnapshot[t.name] = newVal;
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionUserEdited', '你刚改了') +
+                ' 「' + t.name + '」' +
+                (oldVal
+                    ? '：' + _companionTruncate(oldVal, 20) + ' → ' + _companionTruncate(newVal, 20)
+                    : '：' + _companionTruncate(newVal, 40)));
+        }, 600);
+    };
+    state.form.addEventListener('input', inputHandler);
+    state.formWatchHandlers.push(['input', inputHandler]);
+}
+
+function _companionRefreshFormSnapshot(state) {
+    if (!state.form) return;
+    state.formWatchSnapshot = _cardAssistCollectCurrentFormData(state.form);
+}
+
+// 切换猫娘 / 关掉再开详情面板 / 重命名 / 任何让 buildCatgirlDetailForm 重新跑过
+// 的操作，都会让 state.form 指向一个 detach 掉的旧 DOM 实例。companion 自己
+// 是侧栏，活得比 form 长。每次要"动 form"之前调一下这个 helper，会按
+//   1) state.form 还在 DOM 里 → 直接用
+//   2) document.getElementById('catgirl-form-' + originalName) → 重新绑定 + 重挂监听
+//   3) 都没有 → 返回 false，调用方据此让 companion 给个明确提示
+// 实现这套自动跟随，用户不用关掉 companion 再开一次。
+function _companionEnsureLiveForm(state) {
+    if (!state) return false;
+    if (state.form && state.form.isConnected) return true;
+    // 找 live form 的两条路（按顺序回退）：
+    //   1) 有 originalName → 按 `catgirl-form-${originalName}` 精确查（已保存卡
+    //      常态：切猫娘 / 关再开）
+    //   2) 上一步失败 / originalName 为空 → 用 DOM 选择器在当前 catgirl panel 里
+    //      找那个唯一 form。详情面板同时只能有一个 form，所以选择器命中唯一。
+    //      这一支专门覆盖两个场景：
+    //        a. 「空白新卡 → 填档案名 → 手动 Save → form id 从 catgirl-form-new
+    //           变成 catgirl-form-<actualName>」（originalName='', id 漂移）
+    //        b. **重命名**：用户在 companion 开着的情况下改了档案名，
+    //           saveCatgirlFromPanel 用新名 rebuild 表单，旧 id 找不到，但新
+    //           form 已经挂在 panel 里、companion 应该顺势跟过去
+    //      然后下面的 sync 逻辑会把 state.originalName 回填成新 form 的真实名字。
+    let liveForm = null;
+    if (state.originalName) {
+        liveForm = document.getElementById('catgirl-form-' + state.originalName);
+    }
+    if (!liveForm) {
+        // path-2 选择器回退：在当前 catgirl panel 里找那个唯一 form。
+        // 安全性（Codex #3328901017）：打开/切换到「别的卡」必须先 closeCatgirlPanel
+        //（openCatgirlPanel 顶部 _catgirlPanelOpen 互斥），而 closeCatgirlPanel 会直接
+        // teardown+destroy 掉 companion。所以能走到这一支时 companion 必然还活着 = 详情
+        // 面板从未被关过 = 当前可见的唯一 form 一定是「同一张卡」的 in-place rebuild
+        //（改档案名字段后 saveCatgirlFromPanel 重建、新卡首存 popup 被拦走
+        // rebuildSavedCatgirlPanel），绝不会抓到另一张卡 → 不会误绑。
+        liveForm = document.querySelector('.catgirl-panel-right form[id^="catgirl-form-"]');
+    }
+    if (!liveForm) return false;
+    // 拿到了"现行"的同名表单。把 state.form 换过去并重挂 watcher。
+    // 注意：旧 form 上的 listener 已随 DOM 卸载消失，无需手动 remove —— 但
+    // _companionAttachFormWatchers 内部已经做了 defensive removeEventListener。
+    state.form = liveForm;
+    // ⚠ 必须同步 isNew / originalName ——`buildCatgirlDetailForm` 重建表单时
+    // 会把 `_isNew` / `_catgirlName` 设到最新值（比如用户首次保存新卡后表单
+    // 以 isNew=false 重建、或者用户做了重命名）。companion 这边如果继续用
+    // 创建时的旧 `state.isNew`：
+    //   - `_companionTryAutoSave` 里的 `if (state.isNew && !state.form._autoCreated)`
+    //     永久命中 → 自动保存永远 bail，新卡保存提示反复弹
+    //   - 一旦走到 saveCatgirlFromPanel，`effectiveIsNew=true` 会触发 POST 而
+    //     不是 PUT，造成同名 catgirl 409 / 重复
+    const liveIsNew = liveForm._isNew === true;
+    const wasNew = state.isNew;
+    state.isNew = liveIsNew;
+    if (liveForm._catgirlName) state.originalName = liveForm._catgirlName;
+    // 新卡变成已保存卡的瞬间清掉 "先点 Save" 一次性提示标记；万一未来某次状态
+    // 再翻回新卡（实操路径几乎不可能但便宜），提示能再次出现。
+    if (wasNew && !liveIsNew) state._warnedNewCardSaveHint = false;
+    state.formWatchHandlers = [];
+    _companionAttachFormWatchers(state);
+    return true;
+}
+
+function _companionTruncate(s, n) {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+function _cardAssistNormalizeDisplayText(text) {
+    let s = String(text == null ? '' : text);
+    // Companion bubbles render plain text, so stray markdown markers look broken.
+    // Strip the common emphasis markers and normalize markdown bullet prefixes.
+    s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+    s = s.replace(/^\s*[*-]\s+/gm, '• ');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
+    s = s.replace(/__([^_]+)__/g, '$1');
+    s = s.replace(/(^|[^\w])\*([^*\n]+)\*(?=[^\w]|$)/g, '$1$2');
+    s = s.replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, '$1$2');
+    return s;
+}
+
+// ========== Bubble 工厂 ==========
+
+function _companionScrollToBottom(state) {
+    if (!state.threadEl) return;
+    // 用 microtask 让 DOM commit 完再算 scrollHeight，否则会拿到 stale 值
+    setTimeout(function () {
+        state.threadEl.scrollTop = state.threadEl.scrollHeight;
+    }, 0);
+}
+
+function _companionAppendAssistant(state, text, opts) {
+    opts = opts || {};
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble card-companion-bubble-assistant';
+
+    if (opts.prefix) {
+        const tag = document.createElement('div');
+        tag.className = 'card-companion-bubble-prefix';
+        tag.textContent = opts.prefix;
+        bubble.appendChild(tag);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'card-companion-bubble-body';
+    body.textContent = _cardAssistNormalizeDisplayText(text);
+    body.style.whiteSpace = 'pre-wrap';
+    bubble.appendChild(body);
+
+    if (opts.chips && opts.chips.length) {
+        const row = document.createElement('div');
+        row.className = 'card-companion-bubble-chips';
+        opts.chips.forEach(function (c) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'card-companion-chip';
+            chip.textContent = c.label;
+            chip.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                // 一次性 chip：点完整行禁用
+                row.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+                const customInput = bubble.querySelector('.card-companion-bubble-custom-input');
+                if (customInput) customInput.disabled = true;
+                if (typeof c.onClick === 'function') c.onClick();
+            });
+            row.appendChild(chip);
+        });
+        bubble.appendChild(row);
+    }
+
+    if (opts.allowCustom) {
+        const customRow = document.createElement('div');
+        customRow.className = 'card-companion-bubble-custom';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'card-companion-bubble-custom-input';
+        input.placeholder = _cardAssistT('character.aiCompanionInlineCustom', '或者自己填一个…');
+        input.addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            const v = (input.value || '').trim();
+            if (!v) return;
+            input.disabled = true;
+            bubble.querySelectorAll('.card-companion-chip').forEach(function (c) { c.disabled = true; });
+            // opts.customSubmit 由调用方提供时优先用它（_companionRenderNextQuestion
+            // 走这一支以便施加 stale-bubble ownIdx 防 race —— 否则用户在老 bubble
+            // 的自定义输入框里按 Enter 会走通用 _companionHandleUserText，把答案
+            // 塞给当前题、再 ++ idx 跳过下一题。chip 那一支也是这个思路）。
+            if (typeof opts.customSubmit === 'function') {
+                opts.customSubmit(v);
+            } else {
+                _companionHandleUserText(state, v);
+            }
+        });
+        customRow.appendChild(input);
+        bubble.appendChild(customRow);
+    }
+
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendUser(state, text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble card-companion-bubble-user';
+    const body = document.createElement('div');
+    body.className = 'card-companion-bubble-body';
+    body.textContent = text || '';
+    body.style.whiteSpace = 'pre-wrap';
+    bubble.appendChild(body);
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendSystem(state, text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble-system';
+    bubble.textContent = _cardAssistNormalizeDisplayText(text);
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendTyping(state, label) {
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble card-companion-bubble-assistant card-companion-typing';
+    const body = document.createElement('div');
+    body.className = 'card-companion-bubble-body';
+    body.innerHTML = (label ? _cardAssistEscapeHtml(label) + ' ' : '') +
+        '<span class="card-companion-typing-dot"></span>' +
+        '<span class="card-companion-typing-dot"></span>' +
+        '<span class="card-companion-typing-dot"></span>';
+    bubble.appendChild(body);
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendError(state, err) {
+    let msg = (err && err.message) || String(err || '');
+    if (err && err.code === 'assist_api_not_configured') {
+        msg = _cardAssistT('character.aiAssistApiMissing',
+            '辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。');
+    }
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble-system card-companion-error';
+    bubble.textContent = '⚠ ' + msg;
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+// 在表单里查找名为 `key` 的字段 textarea。
+//   1. 精确 [name=key] 命中
+//   2. trim 后命中（应对 characters.json 里手抖留下的首尾空格）
+//   3. 全表扫描 + trimmed 小写对比（应对 zh/en locale 漂移、大小写不一致）
+// 命中返回 textarea，未命中返回 null —— 调用方据此决定 update vs create。
+function _findFieldTextareaByName(form, key) {
+    if (!form || !key) return null;
+    const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
+    let ta = form.querySelector('textarea[name="' + esc(key) + '"]');
+    if (ta) return ta;
+    const trimmed = String(key).trim();
+    if (trimmed && trimmed !== key) {
+        ta = form.querySelector('textarea[name="' + esc(trimmed) + '"]');
+        if (ta) return ta;
+    }
+    const lower = trimmed.toLowerCase();
+    const all = form.querySelectorAll('textarea[name]');
+    for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        const n = (el.getAttribute('name') || '').trim();
+        if (n === trimmed) return el;
+        if (n.toLowerCase() === lower) return el;
+    }
+    return null;
+}
+
+// 给一个 field-row-wrapper 闪一下绿色渐变 + 自动滚到视野中央，让用户能立刻
+// 跟上 companion 改了哪一行。
+// opts:
+//   scrollIntoView (bool, default false)
+//     true 时把 row 平滑滚到容器中央。批量 apply 时只对"第一行"传 true，
+//     避免视野被多次 yank 来 yank 去
+//   focusTextarea (HTMLElement | null, default null)
+//     传一个 textarea 进来，闪烁结束前若用户没在其它输入框打字，会顺手把光标
+//     落在它上面 —— 对"AI 改了这个字段、你想接着调"场景挺顺手；
+//     用户正在 companion 输入框里打字的话不抢焦点。
+function _cardAssistFlashRow(wrapperEl, opts) {
+    if (!wrapperEl) return;
+    opts = opts || {};
+    wrapperEl.classList.remove('card-assist-row-flash');
+    // force reflow so re-applying class re-triggers the animation
+    void wrapperEl.offsetWidth;
+    wrapperEl.classList.add('card-assist-row-flash');
+    setTimeout(function () {
+        wrapperEl.classList.remove('card-assist-row-flash');
+    }, 1500);
+
+    if (opts.scrollIntoView) {
+        // 用 microtask 让 DOM 把新插入的 row 算进 layout，再 scrollIntoView 才
+        // 不会拿到 0 高度的 stale rect。
+        setTimeout(function () {
+            try {
+                wrapperEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch (_) {
+                // 老浏览器 fallback：没有 smooth 也照样要滚到位
+                wrapperEl.scrollIntoView();
+            }
+        }, 0);
+    }
+
+    if (opts.focusTextarea) {
+        // 用户正在 companion 输入框 / 其它表单输入框里打字 → 不抢焦点
+        const active = document.activeElement;
+        const userIsTypingElsewhere = active &&
+            (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') &&
+            active !== opts.focusTextarea;
+        if (!userIsTypingElsewhere) {
+            try { opts.focusTextarea.focus({ preventScroll: true }); }
+            catch (_) { try { opts.focusTextarea.focus(); } catch (__) {} }
+        }
+    }
+}
+
+// 将一组 generated[key] = value 写到表单。返回 {updated: [key,...], created: [key,...]}
+// 让上层能区分"改了已有"和"插了新行"，给用户更准确的反馈。
+function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isNew) {
+    const result = { updated: [], created: [], skipped: [] };
+    if (!form || !selectedKeys || !selectedKeys.length) return result;
+    // 防御：form 已经从 DOM 卸载（用户切了猫娘 / 关掉了详情面板）的情况下，
+    // 写值不会有任何视觉效果。给上层一个明确信号。
+    if (!form.isConnected) {
+        selectedKeys.forEach((k) => result.skipped.push(k));
+        return result;
+    }
+    const addFieldArea = form.querySelector('.add-field-area');
+    // 批量应用时只对"第一个真正落到 form 上的字段"做 scrollIntoView，避免一次
+    // generate 写 9 个字段把视野往下连甩 9 次。
+    let didScroll = false;
+    selectedKeys.forEach(function (key) {
+        if (!key || _cardAssistIsReservedKey(key)) {
+            result.skipped.push(key);
+            return;
+        }
+        const value = String(generated[key] == null ? '' : generated[key]);
+        const textarea = _findFieldTextareaByName(form, key);
+        if (textarea) {
+            textarea.value = value;
+            if (typeof _panelRequestTextareaAutoResize === 'function') {
+                _panelRequestTextareaAutoResize(textarea);
+            }
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+            const row = textarea.closest('.field-row-wrapper') || textarea.parentNode;
+            _cardAssistFlashRow(row, {
+                scrollIntoView: !didScroll,
+                focusTextarea: didScroll ? null : textarea,
+            });
+            didScroll = true;
+            result.updated.push(textarea.getAttribute('name') || key);
+            return;
+        }
+        // 字段不存在 → 复用「新增设定」分支的 DOM 构造
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const labelEl = document.createElement('label');
+        if (typeof _panelSetFieldLabel === 'function') {
+            _panelSetFieldLabel(labelEl, key);
+        } else {
+            labelEl.textContent = key;
+        }
+        wrapper.appendChild(labelEl);
+
+        const fr = document.createElement('div');
+        fr.className = 'field-row';
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = key;
+        textareaEl.rows = 1;
+        textareaEl.value = value;
+        fr.appendChild(textareaEl);
+        wrapper.appendChild(fr);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        const delLabel = (window.t && typeof window.t === 'function')
+            ? window.t('character.deleteField')
+            : '删除设定';
+        delBtn.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + delLabel + '</span>';
+        delBtn.addEventListener('click', function () {
+            wrapper.remove();
+            // 镜像普通自定义字段删除路径（见 buildCatgirlDetailForm 里 ~5041）：删掉 AI
+            // 新建的字段后也要把 Save / Cancel 亮出来。否则已保存卡上这次删除既不触发
+            // autosave、也没有可见的手动保存入口，reload 后字段复活（Codex #3328901018）。
+            const sBtn = form.querySelector('#save-button');
+            const cBtn = form.querySelector('#cancel-button');
+            if (sBtn) sBtn.style.display = '';
+            if (cBtn) cBtn.style.display = '';
+        });
+        wrapper.appendChild(delBtn);
+
+        if (addFieldArea && addFieldArea.parentNode === form) {
+            form.insertBefore(wrapper, addFieldArea);
+        } else {
+            form.appendChild(wrapper);
+        }
+        if (typeof _panelAttachTextareaAutoResize === 'function') {
+            _panelAttachTextareaAutoResize(textareaEl);
+        }
+        if (typeof _panelRequestTextareaAutoResize === 'function') {
+            _panelRequestTextareaAutoResize(textareaEl);
+        }
+        if (!isNew && originalName && typeof panelAttachAutoSaveListener === 'function') {
+            panelAttachAutoSaveListener(textareaEl, originalName);
+        }
+        textareaEl.dispatchEvent(new Event('input', { bubbles: true }));
+        _cardAssistFlashRow(wrapper, {
+            scrollIntoView: !didScroll,
+            focusTextarea: didScroll ? null : textareaEl,
+        });
+        didScroll = true;
+        result.created.push(key);
+    });
+    // 让用户看到 Save / Cancel
+    const sb = form.querySelector('#save-button');
+    const cb = form.querySelector('#cancel-button');
+    if (sb) sb.style.display = '';
+    if (cb) cb.style.display = '';
+    return result;
+}
+
+function _cardAssistAutoResize(textarea) {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = (textarea.scrollHeight + 2) + 'px';
+}
+
+function _cardAssistEscapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ===================== 云存档同步与生命周期 =====================

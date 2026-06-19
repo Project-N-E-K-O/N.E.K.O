@@ -13,33 +13,64 @@
     <title data-i18n="app.title">Project N.E.K.O.</title>
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <!-- Electron Pet 窗口标记：必须在任何样式表之前同步执行，给 <html> 打上
+         lanlan-pet-mode，让 index.css 的 (max-width:768px) 手机端规则（黑背景、
+         窄布局）整段排除掉。Electron preload 在页面脚本之前注入这些全局，所以这里
+         能同步读到；同时兜底匹配 userAgent，避免首帧黑屏闪烁。dev 浏览器（无这些
+         信号）不打标记，窄宽手机版行为保持不变。 -->
+    <script>(function () {
+        try {
+            var w = window;
+            var isElectronPet = !!(w.electronDesktopCapturer || w.electronSpatialAudio || w.electronShell)
+                || w.__NEKO_MULTI_WINDOW__ === true
+                || /Electron/i.test(navigator.userAgent || '')
+                || !!(w.process && w.process.versions && w.process.versions.electron);
+            w.__LANLAN_IS_ELECTRON_PET__ = isElectronPet;
+            if (isElectronPet) {
+                document.documentElement.classList.add('lanlan-pet-mode');
+            }
+        } catch (e) { /* 检测失败按非 Electron 处理，退回浏览器行为 */ }
+    })();</script>
+    <!-- 诊断观测：必须最早加载——内部 monkey-patch setInterval/setTimeout 计数活跃
+         timer，业务代码之后加载就抓不到早期注册的那些。默认关，靠
+         localStorage.NEKO_DEBUG_HEALTH=1 + 刷新启用。详见 static/debug-health.js。 -->
+    <script src="/static/debug-health.js?v={{ static_asset_version }}"></script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
-    <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/index.css">
-    <link rel="stylesheet" href="/static/css/storage-location.css">
-    <link rel="stylesheet" href="/static/css/subtitle.css">
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
-    <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css">
+    <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
+    <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <!-- 主题管理器（尽早加载以避免闪烁） -->
-    <script src="/static/theme-manager.js"></script>
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- Driver.js 新手引导库 (本地实现 - 无需 CDN) -->
-    <script src="/static/libs/driver.min.js"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
     <!-- 教程样式定制 -->
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <!-- APlayer 库（本地） -->
-    <link rel="stylesheet" href="/static/libs/APlayer.min.css">
-    <script src="/static/libs/APlayer.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
+    <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 </head>
 
-<body class="subtitle-web-host">
+<body class="subtitle-web-host"{% if initial_chat_surface_mode is defined and initial_chat_surface_mode %}
+      data-initial-chat-surface-mode="{{ initial_chat_surface_mode }}"{% endif %}>
+    <!-- 同步把 Electron Pet 标记补到 body（head 脚本执行时 body 尚不存在）；
+         在 chat-container 等内容解析之前执行，避免窄窗口下手机布局闪一帧。 -->
+    <script>(function () {
+        if (window.__LANLAN_IS_ELECTRON_PET__) {
+            document.body.classList.add('lanlan-pet-mode');
+        }
+    })();</script>
 
     <!-- 旧的按钮面板已迁移到浮动按钮系统（live2d.js），保留隐藏的旧按钮元素供功能触发使用 -->
     <div id="sidebar" style="display: none;">
@@ -257,8 +288,11 @@
                 </div>
             </div>
             <div class="avatar-cropper-buttons">
-                <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropCancel">取消</button>
-                <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button" data-i18n="chat.avatarCropSave">保存</button>
+                <button id="avatar-cropper-retake" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropRetake">重新拍照</button>
+                <div class="avatar-cropper-decision-buttons">
+                    <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropCancel">取消</button>
+                    <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button" data-i18n="chat.avatarCropSave">保存</button>
+                </div>
             </div>
         </div>
     </div>
@@ -273,29 +307,35 @@
     <div id="mmd-container" style="display: none;">
         <canvas id="mmd-canvas"></canvas>
     </div>
+    <div id="pngtuber-container" style="display: none;">
+        <img class="pngtuber-image" alt="PNGTuber avatar" draggable="false">
+    </div>
 
     <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
-    <script src="/static/app-storage-location.js"></script>
+    <script src="/static/app-storage-location.js?v={{ static_asset_version }}"></script>
 
     <!-- Live2D SDK 核心库 -->
-    <script src="/static/libs/live2dcubismcore.min.js"></script>
+    <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version }}"></script>
     <!-- Live2D Cubism JS Framework -->
-    <script src="/static/libs/live2d.min.js"></script>
-    <script src="/static/libs/pixi.min.js"></script>
-    <script src="/static/libs/index.min.js"></script>
-    <script src="/static/libs/ogg-opus-decoder.min.js"></script>
-    <script src="/static/live2d-core.js"></script>
-    <script src="/static/live2d-emotion.js"></script>
-    <script src="/static/live2d-model.js"></script>
-    <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/avatar-popup-common.js"></script>
-    <script src="/static/avatar-ui-popup.js"></script>
-    <script src="/static/avatar-ui-popup-config.js"></script>
-    <script src="/static/avatar-ui-buttons.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
-    <script src="/static/common-ui-hud.js"></script>
-    <script src="/static/avatar-ui-drag.js"></script>
-    <script src="/static/live2d-init.js"></script>
+    <script src="/static/libs/live2d.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/libs/pixi.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/libs/index.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-model.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-multiscreen-drag-hint.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-popup-common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/neko-tooltip.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-init.js?v={{ static_asset_version }}"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
     <script type="importmap">
@@ -306,7 +346,7 @@
             "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
             "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
             "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
-            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v={{ static_asset_version }}",
             "ammojs-typed": "/static/libs/ammojs-typed.module.js"
         }
     }
@@ -320,59 +360,170 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
 
-    <script type="module" src="/static/js/APlayer/main.js"></script>
-    <script src="/static/music_ui.js"></script>
-    <script src="/static/Jukebox.js"></script>
-    <script src="/static/js/index.js"></script>
-    <script src="/static/common_ui.js"></script>
-    <script src="/static/vrm-init.js"></script>
-    <script src="/static/mmd-init.js"></script>
-    <script src="/static/avatar-portrait.js"></script>
-    <script src="/static/character-card-portrait.js"></script>
-    <script src="/static/achievement_manager.js"></script>
-    <script src="/static/js/agent_ui_v2.js"></script>
-    <script src="/static/ogg-opus-decoder-wrapper.js"></script>
+    <script type="module" src="/static/js/APlayer/main.js?v={{ static_asset_version }}"></script>
+    <script src="/static/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/Jukebox.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/vrm-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/mmd-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-portrait.js?v={{ static_asset_version }}"></script>
+    <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/agent_ui_v2.js?v={{ static_asset_version }}"></script>
+    <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
 
     <!-- app 解构模块 -->
-    <script src="/static/subtitle-shared.js"></script>
-    <script src="/static/app-state.js"></script>
-    <script src="/static/app-ui.js"></script>
-    <script src="/static/app-chat-text-utils.js"></script>
-    <script src="/static/app-chat.js"></script>
-    <script src="/static/app-chat-avatar.js"></script>
-    <script src="/static/app-chat-adapter.js"></script>
-    <script src="/static/app-audio-playback.js"></script>
-    <script src="/static/app-spatial-audio.js"></script>
-    <script src="/static/app-audio-capture.js"></script>
-    <script src="/static/app-screen.js"></script>
-    <script src="/static/app-crop.js"></script>
-    <script src="/static/app-interpage.js"></script>
-    <script src="/static/app-proactive.js"></script>
-    <script src="/static/app-settings.js"></script>
-    <script src="/static/avatar-reaction-bubble.js"></script>
-    <script src="/static/app-agent.js"></script>
-    <script src="/static/app-character.js"></script>
-    <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js"></script>
-    <script src="/static/app-prompt-shared.js"></script>
-    <script src="/static/app-autostart-provider.js"></script>
-    <script src="/static/app-tutorial-prompt.js"></script>
-    <script src="/static/app-autostart-prompt.js"></script>
-    <script src="/static/app.js"></script>
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app-react-chat-window.js"></script>
-    <script src="/static/app-chat-export.js"></script>
+    <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-activity-signal.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scoped-resources.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/bridge-command-bus.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/target-geometry-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/chat-window-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/command-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/script-normalizer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-interpage.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/avatar-drop-parser.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-drop-intake.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/app-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-context-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
-    <script src="/static/subtitle.js"></script>
+    <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
-    <link rel="stylesheet" href="/static/css/touch-config.css">
-    <script src="/static/touch-config.js"></script>
-    <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
-    <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260422-9"></script>
-    <script src="/static/yui-guide-director.js?v=20260422-7"></script>
+    <link rel="stylesheet" href="/static/css/touch-config.css?v={{ static_asset_version }}">
+    <script src="/static/touch-config.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day1-home-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day2-screen-voice-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day3-interaction-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day4-companion-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day5-personalization-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day6-agent-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day7-graduation-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-performance-stage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/yui-stage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/wakeup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/standin-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/spotlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/ghost-cursor-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/petal-transition-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/highlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/resistance-controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器（支持所有页面） -->
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/icebreaker/new-user-icebreaker.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            if (window.CharacterPersonalityOnboarding &&
+                typeof window.CharacterPersonalityOnboarding.bootstrap === 'function') {
+                window.CharacterPersonalityOnboarding.bootstrap().catch(error => {
+                    console.warn('[CharacterPersonalityOnboarding] bootstrap failed:', error);
+                });
+            }
+        });
+    </script>
+    <!-- 游戏窗口联动：mini-game 路由激活时隐藏 live2d/vrm/mmd 容器（CSS class
+         开关，避免 pet 透明窗口在 mini-game 进行时挡屏）。事件源是
+         app-websocket.js dispatch 的 ``neko-game-window-state-change``，与
+         chat.html 的折叠联动同源；多窗口模式下 RAW_MESSAGE forwarding 让
+         pet 主窗 + chat.html follower 各自独立响应。 -->
+    <script>
+    (function() {
+        'use strict';
+        function applyGameWindowState(action) {
+            if (!document.body || !document.body.classList) return;
+            if (action === 'opened') {
+                document.body.classList.add('neko-game-active');
+            } else if (action === 'closed') {
+                document.body.classList.remove('neko-game-active');
+            }
+        }
+        window.addEventListener('neko-game-window-state-change', function(ev) {
+            var detail = ev && ev.detail ? ev.detail : {};
+            applyGameWindowState(detail.action || '');
+        });
+        // Bootstrap reconciliation：edge-triggered WS 事件只在 activate /
+        // finalize 推送，pet 主窗加载时若 game 已经先跑起来了会听不到历史
+        // opened，body class 不会加 neko-game-active → live2d/vrm/mmd 仍可见
+        // 挡屏。init 路径主动查 /api/game/route/active 对齐。codex P1。
+        // chat.html 用同一逻辑（在该模板 IIFE 内独立实现一份）。
+        function syncGameWindowStateOnInit() {
+            var lan = '';
+            try {
+                if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                    lan = window.appState.lanlan_name;
+                }
+                if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                    lan = window.lanlan_config.lanlan_name;
+                }
+            } catch (_) {}
+            if (!lan) { setTimeout(syncGameWindowStateOnInit, 100); return; }
+            fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
+                .then(function(data) {
+                    if (!data || !data.active) return;
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                            detail: {
+                                action: 'opened',
+                                lanlanName: data.lanlan_name || lan,
+                                gameType: data.game_type || '',
+                                sessionId: data.session_id || ''
+                            }
+                        }));
+                    } catch (_) {}
+                })
+                .catch(function() {});
+        }
+        syncGameWindowStateOnInit();
+    })();
+    </script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
 </body>
 

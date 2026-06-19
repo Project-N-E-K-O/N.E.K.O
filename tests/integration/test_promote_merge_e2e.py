@@ -72,15 +72,22 @@ def _persona_entry(eid: str, text: str, *, rein: float = 0.0,
 
 def _reflection_above_threshold(rid: str, text: str,
                                  entity: str = 'master') -> dict:
+    # Timestamps must be "now"-relative: evidence decay is computed at
+    # read time (memory/evidence.py, half-life 30 days), so a hardcoded
+    # rein_last_signal_at would rot the fixture below
+    # EVIDENCE_PROMOTED_THRESHOLD as wall-clock time advances and make
+    # _apromote_with_merge bail with 'no_longer_eligible'.
+    from datetime import datetime
+    now_iso = datetime.now().isoformat()
     return {
         'id': rid, 'text': text, 'entity': entity, 'status': 'confirmed',
         'source_fact_ids': ['f1', 'f2'],
-        'created_at': '2026-04-22T10:00:00',
+        'created_at': now_iso,
         'feedback': 'confirmed',
-        'next_eligible_at': '2026-04-22T10:00:00',
+        'next_eligible_at': now_iso,
         # Above EVIDENCE_PROMOTED_THRESHOLD = 2.0
         'reinforcement': 2.5, 'disputation': 0.0,
-        'rein_last_signal_at': '2026-04-22T10:00:00',
+        'rein_last_signal_at': now_iso,
         'disp_last_signal_at': None,
         'sub_zero_days': 0, 'sub_zero_last_increment_date': None,
         'user_fact_reinforce_count': 0,

@@ -20,27 +20,34 @@
         #agent-hud-root {
             width: 100%; height: 100%;
         }
-        /* 窗口拖拽 */
-        .agent-hud-title-bar {
-            -webkit-app-region: drag;
-            height: 28px;
-            background: rgba(0,0,0,0.3);
-            display: flex;
-            align-items: center;
-            padding: 0 10px;
-            user-select: none;
+        /* 独立 AgentHUD 窗口：拖拽交给 Electron 原生窗口区域处理。 */
+        body.agent-hud-standalone-page #agent-task-hud {
+            -webkit-app-region: no-drag;
         }
-        .agent-hud-title-bar * {
+        body.agent-hud-standalone-page #agent-task-hud-header {
+            -webkit-app-region: drag;
+            cursor: grab;
+        }
+        body.agent-hud-standalone-page #agent-task-hud-header:active {
+            cursor: grabbing;
+        }
+        body.agent-hud-standalone-page #agent-task-list,
+        body.agent-hud-standalone-page #agent-task-list *,
+        body.agent-hud-standalone-page #agent-task-hud-minimize,
+        body.agent-hud-standalone-page #agent-task-hud-cancel,
+        body.agent-hud-standalone-page .task-card,
+        body.agent-hud-standalone-page .task-card * {
             -webkit-app-region: no-drag;
         }
     </style>
 </head>
-<body>
+<body class="agent-hud-standalone-page">
     <div id="agent-hud-root">
         <!-- common-ui-hud.js 的 DOM 将在此注入 -->
     </div>
 
     <!-- 加载 AgentHUD 组件 -->
+    <script src="/static/neko-tooltip.js"></script>
     <script src="/static/common-ui-hud.js"></script>
     <script>
         // AgentHUD 独立窗口模式：接收 IPC 消息并更新 UI

@@ -15,7 +15,7 @@ Semantic reproduction scope (P25_BLUEPRINT §1.2 / §1.3)
 -------------------------------------------------------
 What we DO reproduce (LESSONS_LEARNED §1.6 semantic contract):
 
-* Avatar prompt assembly via the nine ``config.prompts_avatar_interaction``
+* Avatar prompt assembly via the nine ``config.prompts.prompts_avatar_interaction``
   pure helpers + seven constant tables (no re-implementation).
 * Agent-callback instruction prefix via ``AGENT_CALLBACK_NOTIFICATION``
   five-language dict.
@@ -297,7 +297,7 @@ def _resolve_language(session: Session) -> tuple[str, str]:
     ``full`` is the raw ``session.persona.language`` (default ``zh-CN``).
     ``short`` is the same value normalised to a 2-char base used by the
     proactive dispatch table (``zh/en/ja/ko/ru``), mirroring the
-    ``_normalize_prompt_language`` rule in ``config.prompts_proactive``.
+    ``_normalize_prompt_language`` rule in ``config.prompts.prompts_proactive``.
     """
     persona = session.persona or {}
     full = str(persona.get("language") or "zh-CN").strip()
@@ -317,10 +317,16 @@ def _resolve_language(session: Session) -> tuple[str, str]:
 
 
 def _resolve_names(session: Session) -> tuple[str, str]:
-    """Return ``(character_name, master_name)`` with ``主人`` fallback."""
+    """Return ``(character_name, master_name)``.
+
+    ``master_name`` 缺省时返回空串，由调用方按场景自行兜底——避免在源头硬编码
+    "主人"等物化称呼。memory_note 路径下游
+    (:func:`config.prompts.prompts_avatar_interaction._build_avatar_interaction_memory_meta`)
+    自带本地化中性词回退（zh="对方"、en="they" 等）。
+    """
     persona = session.persona or {}
     lanlan = str(persona.get("character_name") or "").strip()
-    master = str(persona.get("master_name") or "").strip() or "主人"
+    master = str(persona.get("master_name") or "").strip()
     return lanlan, master
 
 
@@ -1023,7 +1029,7 @@ _PROACTIVE_KINDS = frozenset({
 # 反馈想改就加 UI 可调.
 _PROACTIVE_MEMORY_K: int = 12
 
-# 完整占位符白名单 (逐 kind 扫描 config/prompts_proactive.py 五语种). 缺的
+# 完整占位符白名单 (逐 kind 扫描 config/prompts/prompts_proactive.py 五语种). 缺的
 # 占位符用 ``"(无)"`` 兜底, 保证 ``replace`` 不漏 (见 L33 §1: 语义契约 vs
 # 运行时机制 — 缺失 slot 必须显式 surface, 不能让 ``{window_context}``
 # 字面量漏进 LLM 引发 silent parse error).
@@ -1212,7 +1218,7 @@ def _build_avatar_instruction_bundle(
     :func:`build_external_event_preview` (dry-run path). Both paths see
     the exact same ``instruction_final`` string — that's the contract.
     """
-    from config.prompts_avatar_interaction import (
+    from config.prompts.prompts_avatar_interaction import (
         _build_avatar_interaction_instruction,
         _build_avatar_interaction_memory_meta,
         _normalize_avatar_interaction_payload,
@@ -1238,7 +1244,7 @@ def _build_avatar_instruction_bundle(
             ),
         ))
 
-    meta = _build_avatar_interaction_memory_meta(full_lang, normalized)
+    meta = _build_avatar_interaction_memory_meta(full_lang, normalized, master_name)
     memory_note = str(meta.get("memory_note") or "")
     dedupe_key = str(meta.get("memory_dedupe_key") or normalized["tool_id"])
     dedupe_rank = int(meta.get("memory_dedupe_rank") or 1)
@@ -1269,30 +1275,55 @@ def _build_agent_callback_instruction_bundle(
 ) -> Optional[_InstructionBundle]:
     """Build the agent_callback instruction bundle. Returns ``None`` if
     callbacks are empty (caller → ``reason="empty_callbacks"``).
+
+    Mirrors the production drain path in ``main_logic.core``: synthesizes
+    callback dicts (status=completed, source_kind=system) and renders via
+    ``_build_callback_instruction`` so the testbench wire matches the
+    grouped-by-source/status outer template the real LLM sees.
     """
-    from config.prompts_sys import AGENT_CALLBACK_NOTIFICATION
+    from config.prompts.prompts_sys import SYSTEM_NOTIFICATION_PASSIVE, _loc
+    from main_logic.core import _build_callback_instruction
 
     _full_lang, short_lang = _resolve_language(session)
 
     raw_items = payload.get("callbacks") if isinstance(payload, dict) else None
     if not isinstance(raw_items, list):
         raw_items = []
-    items: list[str] = []
+    callbacks: list[dict[str, Any]] = []
     for item in raw_items:
         if isinstance(item, str) and item.strip():
-            items.append(item.strip())
+            callbacks.append({
+                "status": "completed",
+                "source_kind": "system",
+                "source_name": "",
+                "summary": item.strip(),
+                "detail": item.strip(),
+            })
         elif isinstance(item, dict):
             text = item.get("text") or item.get("summary") or ""
             text = str(text or "").strip()
             if text:
-                items.append(text)
+                callbacks.append({
+                    "status": item.get("status") or "completed",
+                    "source_kind": item.get("source_kind") or "system",
+                    "source_name": item.get("source_name") or "",
+                    "summary": text,
+                    "detail": str(item.get("detail") or text),
+                })
 
-    if not items:
+    if not callbacks:
         return None
 
-    prefix = AGENT_CALLBACK_NOTIFICATION.get(short_lang, AGENT_CALLBACK_NOTIFICATION["en"])
-    template_raw = prefix
-    instruction = prefix + "\n".join(f"- {t}" for t in items)
+    # Use passive=True to mirror the next-user-turn drain semantics that
+    # this simulator was originally built around.
+    instruction = _build_callback_instruction(
+        callbacks,
+        lang=short_lang,
+        lanlan_name=getattr(session, "lanlan_name", "") or "",
+        master_name=getattr(session, "master_name", "") or "",
+        passive=True,
+    )
+    template_raw = _loc(SYSTEM_NOTIFICATION_PASSIVE, short_lang)
     return _InstructionBundle(
         template_raw=template_raw,
         instruction_final=instruction,
@@ -1313,7 +1344,7 @@ def _build_proactive_instruction_bundle(
     / ``{current_chat}`` slot; session.messages[-K:] fills
     ``{memory_context}``.
     """
-    from config.prompts_proactive import (
+    from config.prompts.prompts_proactive import (
         _normalize_prompt_language,
         get_proactive_chat_prompt,
     )
@@ -1390,7 +1421,7 @@ async def simulate_proactive(
     :func:`build_external_event_preview` also calls — L36 §7.25 第 5 层.
     """
     started = time.perf_counter()
-    from config.prompts_proactive import _normalize_prompt_language
+    from config.prompts.prompts_proactive import _normalize_prompt_language
 
     full_lang, _short_lang = _resolve_language(session)
 

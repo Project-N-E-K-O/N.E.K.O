@@ -53,12 +53,14 @@ const emit = defineEmits<{
   (e: 'load'): void
   (e: 'error', error: string): void
   (e: 'message', data: any): void
+  (e: 'openSurface', payload: { pluginId?: string; surfaceId: string; kind?: string }): void
 }>()
 
 const { t } = useI18n()
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const iframeKey = ref(0)
+const uiCacheBust = ref(Date.now())
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
@@ -67,7 +69,11 @@ const expectedOrigin = window.location.origin
 
 const uiUrl = computed(() => {
   if (!props.pluginId) return ''
-  return `/plugin/${encodeURIComponent(props.pluginId)}/ui/`
+  // LEGACY_STATIC_UI_COMPAT:
+  // This component is the original static UI iframe path. New entry points
+  // should consume PluginUiSurface and render static panels through the
+  // surface container, while this remains as compatibility renderer.
+  return `/plugin/${encodeURIComponent(props.pluginId)}/ui/?_ui=${uiCacheBust.value}`
 })
 
 async function checkUIAvailability() {
@@ -116,10 +122,12 @@ async function reload() {
     // UI availability already confirmed (iframe load failed); skip network call
     error.value = null
     loading.value = true
+    uiCacheBust.value = Date.now()
     iframeKey.value++
   } else {
     await checkUIAvailability()
     if (hasUI.value && !error.value) {
+      uiCacheBust.value = Date.now()
       iframeKey.value++
     }
   }
@@ -136,6 +144,18 @@ function handleMessage(event: MessageEvent) {
   const data = event.data
   if (data && typeof data === 'object' && data.type === 'plugin-ui-message') {
     emit('message', data.payload)
+  } else if (data && typeof data === 'object' && data.type === 'neko-study-open-surface') {
+    const payload = data.payload && typeof data.payload === 'object' ? data.payload : {}
+    const surfaceId = typeof payload.surfaceId === 'string' ? payload.surfaceId.trim() : ''
+    if (surfaceId) {
+      const pluginId = typeof payload.pluginId === 'string' ? payload.pluginId.trim() : ''
+      const kind = typeof payload.kind === 'string' ? payload.kind.trim() : ''
+      emit('openSurface', {
+        pluginId: pluginId || undefined,
+        surfaceId,
+        kind: kind || undefined,
+      })
+    }
   }
 }
 
@@ -148,9 +168,15 @@ function sendMessage(payload: any) {
   }, expectedOrigin)
 }
 
+function sendStudySurfaceMessage(message: { type: string; payload?: unknown }) {
+  if (!iframeRef.value?.contentWindow) return
+  iframeRef.value.contentWindow.postMessage(message, expectedOrigin)
+}
+
 defineExpose({
   reload,
   sendMessage,
+  sendStudySurfaceMessage,
   hasUI
 })
 
@@ -164,6 +190,7 @@ onUnmounted(() => {
 })
 
 watch(() => props.pluginId, () => {
+  uiCacheBust.value = Date.now()
   checkUIAvailability()
 })
 </script>

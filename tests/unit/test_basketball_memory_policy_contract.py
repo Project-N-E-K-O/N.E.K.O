@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from .game_route_test_helpers import mark_game_started
+from main_routers import game_router
+
+
+def _basketball_html() -> str:
+    return Path(__file__).resolve().parents[2].joinpath("templates/basketball_demo.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def _basketball_route_state(monkeypatch: pytest.MonkeyPatch) -> dict:
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    return game_router._build_route_state("basketball", "bb-session", "Lan")
+
+
+@pytest.mark.unit
+def test_basketball_game_memory_policy_uses_basketball_fields_and_aliases():
+    policy = game_router._game_memory_policy("basketball", {})
+
+    for field in game_router._game_memory_policy_fields("basketball"):
+        assert policy[field] is False
+    assert policy["game_memory_enabled"] is False
+    assert "soccer_game_memory_enabled" not in policy
+
+    enabled = game_router._game_memory_policy(
+        "basketball",
+        {"basketballGameMemoryEnabled": True},
+    )
+
+    assert enabled["basketball_game_memory_enabled"] is True
+    assert enabled["basketball_game_memory_player_interaction_enabled"] is True
+    assert enabled["basketball_game_memory_event_reply_enabled"] is True
+    assert enabled["basketball_game_memory_archive_enabled"] is True
+    assert enabled["basketball_game_memory_postgame_context_enabled"] is True
+    assert enabled["gameMemoryEnabled"] is True
+    assert enabled["game_memory_archive_enabled"] is True
+
+
+@pytest.mark.unit
+def test_basketball_memory_payload_updates_state_without_touching_soccer_fields(monkeypatch):
+    state = _basketball_route_state(monkeypatch)
+
+    game_router._update_game_memory_enabled_from_payload(
+        state,
+        {
+            "basketballGameMemoryEnabled": True,
+            "basketballGameMemoryPlayerInteractionEnabled": False,
+            "basketballGameMemoryEventReplyEnabled": True,
+            "basketballGameMemoryArchiveEnabled": False,
+            "basketballGameMemoryPostgameContextEnabled": True,
+        },
+        game_type="basketball",
+    )
+
+    assert state["basketball_game_memory_enabled"] is True
+    assert state["basketball_game_memory_player_interaction_enabled"] is False
+    assert state["basketball_game_memory_event_reply_enabled"] is True
+    assert state["basketball_game_memory_archive_enabled"] is False
+    assert state["basketball_game_memory_postgame_context_enabled"] is True
+    assert state["game_memory_enabled"] is True
+    assert state["game_memory_player_interaction_enabled"] is False
+    assert state["game_memory_archive_enabled"] is False
+    assert state["soccer_game_memory_enabled"] is False
+
+
+@pytest.mark.unit
+def test_basketball_memory_policy_is_attached_to_events_and_archives(monkeypatch):
+    state = _basketball_route_state(monkeypatch)
+    state.update(
+        {
+            "basketball_game_memory_enabled": True,
+            "basketball_game_memory_player_interaction_enabled": False,
+            "basketball_game_memory_event_reply_enabled": True,
+            "basketball_game_memory_archive_enabled": True,
+            "basketball_game_memory_postgame_context_enabled": False,
+        }
+    )
+
+    event = game_router._attach_game_memory_flag_to_event(
+        {"kind": "shot_result"},
+        state,
+        game_type="basketball",
+    )
+
+    assert event["basketballGameMemoryEnabled"] is True
+    assert event["basketballGameMemoryPlayerInteractionEnabled"] is False
+    assert event["basketballGameMemoryEventReplyEnabled"] is True
+    assert event["gameMemoryEnabled"] is True
+    assert event["gameMemoryPlayerInteractionEnabled"] is False
+    assert event["gameMemoryEventReplyEnabled"] is True
+
+    archive = game_router._build_game_archive(state)
+    assert archive["basketball_game_memory_enabled"] is True
+    assert archive["basketball_game_memory_player_interaction_enabled"] is False
+    assert archive["basketball_game_memory_postgame_context_enabled"] is False
+    assert archive["game_memory_archive_enabled"] is True
+
+
+@pytest.mark.unit
+def test_basketball_memory_controls_external_events_and_archive_filters(monkeypatch):
+    state = _basketball_route_state(monkeypatch)
+    state.update(
+        {
+            "basketball_game_memory_enabled": True,
+            "basketball_game_memory_player_interaction_enabled": False,
+            "basketball_game_memory_event_reply_enabled": True,
+            "last_state": {"score": {"player": 2, "ai": 1}, "round": 4},
+        }
+    )
+
+    event = game_router._build_external_user_event(
+        state,
+        "nice shot",
+        kind="user-text",
+        source="external_text_route",
+    )
+
+    assert event["basketballGameMemoryEnabled"] is True
+    assert event["basketballGameMemoryPlayerInteractionEnabled"] is False
+    assert event["gameMemoryEnabled"] is False
+    assert event["gameMemoryPlayerInteractionEnabled"] is False
+    assert event["gameMemoryEventReplyEnabled"] is True
+
+    archive = {
+        "game_type": "basketball",
+        "basketball_game_memory_enabled": True,
+        "basketball_game_memory_player_interaction_enabled": False,
+        "basketball_game_memory_event_reply_enabled": True,
+    }
+    assert game_router._game_dialog_item_allowed_for_memory({"type": "user"}, archive) is False
+    assert (
+        game_router._game_dialog_item_allowed_for_memory(
+            {"type": "assistant", "source": "opening_line"}, archive
+        )
+        is True
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basketball_external_transcript_meta_uses_basketball_prefix(monkeypatch):
+    state = _basketball_route_state(monkeypatch)
+    state.update(
+        {
+            "basketball_game_memory_enabled": True,
+            "basketball_game_memory_player_interaction_enabled": False,
+            "basketball_game_memory_event_reply_enabled": True,
+            "last_state": {"score": {"player": 3, "ai": 2}, "round": 5},
+        }
+    )
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "ok", "control": {}, "game_type": game_type, "session_id": session_id}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    handled = await game_router._route_external_transcript_to_game(
+        "Lan",
+        state,
+        "nice shot",
+        source="external_text_route",
+        mode="text",
+        kind="user-text",
+        request_id="req-1",
+    )
+
+    assert handled is True
+    first_meta = state["pending_outputs"][0]["meta"]
+    result_meta = state["pending_outputs"][1]["meta"]
+    assert first_meta["basketballGameMemoryPlayerInteractionEnabled"] is False
+    assert first_meta["basketball_game_memory_player_interaction_enabled"] is False
+    assert "soccerGameMemoryPlayerInteractionEnabled" not in first_meta
+    assert result_meta["basketballGameMemoryPlayerInteractionEnabled"] is False
+    assert result_meta["gameMemoryEnabled"] is False
+
+
+@pytest.mark.unit
+def test_basketball_archive_disabled_uses_generic_skip_reason(monkeypatch):
+    state = mark_game_started(_basketball_route_state(monkeypatch))
+    state["basketball_game_memory_archive_enabled"] = False
+    state["game_memory_archive_enabled"] = False
+
+    reason = game_router._game_archive_memory_skip_reason(state, "route_end")
+    skipped = game_router._build_game_archive_memory_skipped_result(reason)
+
+    assert reason == "game_memory_archive_disabled"
+    assert skipped["status"] == "skipped"
+    assert skipped["reason"] == "game_memory_archive_disabled"
+    assert skipped["message"].startswith("game archive memory disabled;")
+
+
+@pytest.mark.unit
+def test_basketball_demo_memory_toggle_and_payload_contract():
+    html = _basketball_html()
+
+    assert 'id="bb-game-memory-toggle"' in html
+    assert 'data-i18n="basketball.memoryOption.label"' in html
+    assert 'data-i18n="basketball.memoryOption.hint"' in html
+    assert "function _isBasketballGameMemoryEnabled()" in html
+    assert "function _basketballGameMemoryPolicyPayload()" in html
+    assert "function getGameMemoryPolicyPayload" not in html
+    assert html.count("_basketballGameMemoryPolicyPayload()") >= 7
+    assert "basketballGameMemoryEnabled: enabled" in html
+    assert "basketball_game_memory_enabled: enabled" in html
+    assert "gameMemoryArchiveEnabled: enabled" in html
+    assert "game_memory_postgame_context_enabled: enabled" in html
+    assert "gameMemoryToggle.checked === true" in html
+    assert "localStorage.getItem('bb_record')" in html
+    assert "event: Object.assign({}, event, _basketballGameMemoryPolicyPayload())" in html

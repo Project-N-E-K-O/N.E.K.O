@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
-import importlib
 import inspect
 import os
 import re
@@ -23,22 +22,28 @@ def _wrap_logger(logger: Any) -> Any:
     """向后兼容函数，现在直接返回 logger。"""
     return logger
 
+
+def _import_plugin_entry_module(module_path: str, toml_path: Path, logger: Any) -> Any:
+    """延迟使用插件宿主导入兜底，避免用户插件命名空间被内置 plugins 包遮挡。"""
+
+    from plugin.core.host import _import_plugin_module
+
+    return _import_plugin_module(module_path, toml_path, logger)
+
+
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
-
-try:
-    from importlib import metadata as importlib_metadata
-except ImportError:  # pragma: no cover
-    import importlib_metadata  # type: ignore[no-redef]
 
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import get_runtime_override
 from plugin.core.state import state
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     PLUGIN_ENABLE_ID_CONFLICT_CHECK,
@@ -54,17 +59,21 @@ from plugin.core.dependency import (
     _parse_plugin_dependencies,
     _topological_sort_plugins,
 )
+from plugin.core.python_dependencies import (
+    collect_project_python_requirements,
+    find_missing_python_requirements,
+    load_pyproject_toml,
+    split_host_provided_requirements,
+)
 
 try:
     from packaging.version import Version, InvalidVersion
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
-    from packaging.requirements import Requirement
 except ImportError:  # pragma: no cover
     Version = None  # type: ignore
     InvalidVersion = Exception  # type: ignore
     SpecifierSet = None  # type: ignore
     InvalidSpecifier = Exception  # type: ignore
-    Requirement = None  # type: ignore
 
 
 # SimpleEntryMeta 已删除，统一使用 sdk/events.py 中的 EventMeta
@@ -86,39 +95,16 @@ class PluginContext:
     enabled: bool
     auto_start: bool
     python_requirements: List[str] = field(default_factory=list)
+    python_requirement_paths: List[Path] = field(default_factory=list)
+
+
+def _extract_plugin_ui_config(conf: Dict[str, Any], *, plugin_id: str, logger: Any) -> Optional[Dict[str, Any]]:
+    _ = logger
+    return normalize_plugin_ui_manifest(conf, plugin_id=plugin_id)
 
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
 plugin_entry_method_map: Dict[tuple, str] = {}
-
-
-# _parse_specifier, _version_matches 已移动到 dependency.py
-
-_REQ_NAME_SPLIT_RE = re.compile(r"[<>=!~;\[\s]")
-
-
-def _canonicalize_dist_name(name: str) -> str:
-    """Canonicalize package/distribution names per PEP 503."""
-    return re.sub(r"[-_.]+", "-", name).lower().strip()
-
-
-def _parse_requirement_name(requirement: str) -> Optional[str]:
-    """Parse distribution name from requirement spec."""
-    text = str(requirement or "").strip()
-    if not text:
-        return None
-    if Requirement is not None:
-        try:
-            parsed = Requirement(text)
-            return str(parsed.name).strip() or None
-        except Exception:
-            logger.opt(exception=True).debug(
-                "Failed to parse requirement '{}' with packaging.Requirement; falling back to loose parser",
-                text,
-            )
-    # fallback parser for loose specs when packaging is unavailable
-    head = _REQ_NAME_SPLIT_RE.split(text, maxsplit=1)[0].strip()
-    return head or None
 
 
 def _collect_plugin_python_requirements(
@@ -127,7 +113,7 @@ def _collect_plugin_python_requirements(
     logger: Any,
     plugin_id: str,
 ) -> List[str]:
-    """Collect plugin Python dependencies from plugin.toml and requirements.txt."""
+    """Collect plugin Python dependencies from pyproject.toml and legacy requirements.txt."""
     collected: List[str] = []
     seen: set[str] = set()
 
@@ -149,19 +135,17 @@ def _collect_plugin_python_requirements(
         seen.add(key)
         collected.append(req_text)
 
-    plugin_section = conf.get("plugin")
-    if isinstance(plugin_section, dict):
-        deps = plugin_section.get("dependencies")
-        if deps is not None:
-            if not isinstance(deps, list):
-                logger.warning(
-                    "Plugin {}: [plugin].dependencies should be a list of strings; got {}",
-                    plugin_id,
-                    type(deps).__name__,
-                )
-            else:
-                for dep in deps:
-                    _add_req(dep, "[plugin].dependencies")
+    try:
+        python_requirements = collect_project_python_requirements(load_pyproject_toml(toml_path.parent))
+        external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
+        for dep in external_requirements:
+            _add_req(dep, "pyproject.toml [project].dependencies")
+    except Exception as exc:
+        logger.warning(
+            "Plugin {}: failed to read pyproject.toml Python dependencies: {}",
+            plugin_id,
+            exc,
+        )
 
     req_file = toml_path.parent / "requirements.txt"
     if req_file.exists():
@@ -182,84 +166,39 @@ def _collect_plugin_python_requirements(
     return collected
 
 
-def _find_missing_python_requirements(requirements: List[str]) -> List[str]:
+def _plugin_vendor_path(toml_path: Path) -> Path:
+    return toml_path.parent / "vendor"
+
+
+def _collect_plugin_python_requirement_paths(toml_path: Path) -> List[Path]:
+    vendor_dir = _plugin_vendor_path(toml_path)
+    if vendor_dir.is_dir():
+        return [vendor_dir]
+    return []
+
+
+def _ensure_python_requirement_paths(paths: Iterable[Path | str], logger: Any, plugin_id: str) -> None:
+    for path in paths:
+        value = str(path)
+        if not value or value in sys.path:
+            continue
+        sys.path.insert(0, value)
+        logger.info("Plugin {}: added Python requirement path to sys.path: {}", plugin_id, value)
+
+
+def _find_missing_python_requirements(
+    requirements: List[str],
+    search_paths: Iterable[Path | str] | None = None,
+) -> List[str]:
     """Return unsatisfied requirement specs based on installed distributions."""
-    if not requirements:
-        return []
-
-    installed: dict[str, Optional[str]] = {}
     try:
-        for dist in importlib_metadata.distributions():
-            version_text: Optional[str] = None
-            dist_version = getattr(dist, "version", None)
-            if isinstance(dist_version, str) and dist_version.strip():
-                version_text = dist_version.strip()
-            else:
-                meta_version = dist.metadata.get("Version")
-                if isinstance(meta_version, str) and meta_version.strip():
-                    version_text = meta_version.strip()
-
-            dist_name = dist.metadata.get("Name")
-            if isinstance(dist_name, str) and dist_name.strip():
-                installed[_canonicalize_dist_name(dist_name)] = version_text
-
-            dist_attr_name = getattr(dist, "name", None)
-            if isinstance(dist_attr_name, str) and dist_attr_name.strip():
-                installed.setdefault(_canonicalize_dist_name(dist_attr_name), version_text)
+        return find_missing_python_requirements(requirements, search_paths=search_paths)
     except Exception as e:
-        logger.warning("Failed to enumerate installed distributions, "
-                        "dependency checks will be skipped: {}", e)
+        logger.warning(
+            "Failed to enumerate installed distributions, dependency checks will be skipped: {}",
+            e,
+        )
         return []
-
-    missing: List[str] = []
-    seen_missing: set[str] = set()
-    for req in requirements:
-        req_text = str(req or "").strip()
-        if not req_text:
-            continue
-
-        parsed_requirement = None
-        req_name = None
-        if Requirement is not None:
-            try:
-                parsed_requirement = Requirement(req_text)
-                req_name = str(parsed_requirement.name).strip() or None
-                marker = getattr(parsed_requirement, "marker", None)
-                if marker is not None:
-                    try:
-                        if not bool(marker.evaluate()):
-                            continue
-                    except Exception:
-                        pass
-            except Exception:
-                parsed_requirement = None
-
-        if req_name is None:
-            req_name = _parse_requirement_name(req_text)
-        if not req_name:
-            continue
-
-        canon = _canonicalize_dist_name(req_name)
-        installed_version = installed.get(canon)
-        if installed_version is not None and parsed_requirement is not None and Version is not None:
-            specifier = getattr(parsed_requirement, "specifier", None)
-            if specifier:
-                try:
-                    if Version(installed_version) in specifier:
-                        continue
-                except Exception:
-                    pass
-            else:
-                continue
-        elif canon in installed:
-            continue
-
-        missing_key = req_text.lower()
-        if missing_key in seen_missing:
-            continue
-        seen_missing.add(missing_key)
-        missing.append(req_text)
-    return missing
 
 
 
@@ -652,6 +591,7 @@ def _build_plugin_meta(
     dependencies: Optional[List[PluginDependency]] = None,
     input_schema: Optional[Dict[str, Any]] = None,
     host_plugin_id: Optional[str] = None,
+    plugin_ui: Optional[Dict[str, Any]] = None,
 ) -> PluginMeta:
     """统一构建 PluginMeta，消除 disabled / extension / normal 三处重复。"""
     author_data = pdata.get("author")
@@ -678,7 +618,7 @@ def _build_plugin_meta(
         short_desc = truncate_to_tokens(short_desc, 200)
     passive = parse_bool_config(pdata.get("passive"), default=False)
 
-    return PluginMeta(
+    meta = PluginMeta(
         id=pid,
         name=pdata.get("name", pid),
         type=pdata.get("type", "plugin"),
@@ -697,6 +637,54 @@ def _build_plugin_meta(
         dependencies=dependencies or [],
         host_plugin_id=host_plugin_id,
     )
+    if plugin_ui is not None:
+        setattr(meta, "plugin_ui", plugin_ui)
+    i18n_config = pdata.get("i18n")
+    if not isinstance(i18n_config, dict):
+        i18n_config = {}
+    setattr(meta, "i18n", {
+        "default_locale": str(i18n_config.get("default_locale") or "en"),
+        "locales_dir": str(i18n_config.get("locales_dir") or "i18n"),
+    })
+    return meta
+
+
+def _router_entry_preview(
+    pid: str,
+    eid: str,
+    event_meta: Any,
+    _to_dict: Callable[[Any], Dict[str, Any]],
+    _to_string_list: Callable[[Any], List[str]],
+) -> Dict[str, Any]:
+    """Build the static preview dict for one router-declared entry.
+
+    与 1) 分支保持一致：从 `event_meta` 读 return_message，避免 router 预览丢字段喵。
+    """
+    name_obj = getattr(event_meta, "name", None) or ""
+    description_obj = getattr(event_meta, "description", None) or ""
+    return_message_obj = getattr(event_meta, "return_message", None)
+    if return_message_obj is None:
+        return_message_obj = ""
+    preview: Dict[str, Any] = {
+        "id": eid,
+        "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+        "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
+        "event_key": f"{pid}.{eid}",
+        "input_schema": _to_dict(getattr(event_meta, "input_schema", {}) or {}),
+        "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
+        "event_type": "plugin_entry",
+        "kind": str(getattr(event_meta, "kind", "action") or "action"),
+        "auto_start": bool(getattr(event_meta, "auto_start", False)),
+        "timeout": getattr(event_meta, "timeout", None),
+        "model_validate": bool(getattr(event_meta, "model_validate", True)),
+        "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
+        "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
+        "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+    }
+    meta_dict = getattr(event_meta, "metadata", None)
+    if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+        preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+    return preview
 
 
 def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
@@ -753,13 +741,22 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             seen.add(eid)
 
             input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+            name_obj = getattr(event_meta, "name", None)
+            description_obj = getattr(event_meta, "description", None)
+            return_message_obj = getattr(event_meta, "return_message", None)
+            if name_obj is None:
+                name_obj = ""
+            if description_obj is None:
+                description_obj = ""
+            if return_message_obj is None:
+                return_message_obj = ""
             entry_preview: Dict[str, Any] = {
                     "id": eid,
-                    "name": str(getattr(event_meta, "name", "") or ""),
-                    "description": str(getattr(event_meta, "description", "") or ""),
+                    "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+                    "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
                     "event_key": f"{pid}.{eid}",
                     "input_schema": input_schema,
-                    "return_message": str(getattr(event_meta, "return_message", "") or ""),
+                    "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
                     "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
                     "kind": str(getattr(event_meta, "kind", "action") or "action"),
                     "auto_start": bool(getattr(event_meta, "auto_start", False)),
@@ -777,6 +774,62 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
         # Best-effort: preview must never break plugin listing.
         pass
 
+    # 1b) Router-decorated entries declared via `__routers__`.
+    #     这些 entry 是通过 @plugin_entry 装饰在 PluginRouter 子类方法上的，
+    #     静态 preview 之前只看 plugin class 本身的成员，所以 router 入口对
+    #     UI/agent 列表完全不可见喵。这里额外扫描 `__routers__` 里声明的
+    #     router 类（或已实例化的 router），和 1) 一样只抽元数据，不触发运行时。
+    #
+    #     如果声明的是已实例化的 router，优先用实例 `collect_entries()` 拿
+    #     prefix 解析后的入口，避免 preview 的 id 与运行时不一致而被 seen 误去重喵。
+    try:
+        declared_routers = getattr(cls, "__routers__", None) or []
+        for router_item in declared_routers:
+            router_obj = router_item if not isinstance(router_item, type) else None
+            router_cls = router_item if isinstance(router_item, type) else type(router_item)
+
+            # 优先使用实例的已解析入口
+            instance_handled = False
+            if router_obj is not None and hasattr(router_obj, "collect_entries"):
+                try:
+                    collected = router_obj.collect_entries() or {}
+                except Exception:
+                    collected = {}
+                if collected:
+                    instance_handled = True
+                    for resolved_id, handler in collected.items():
+                        event_meta = getattr(handler, "meta", None)
+                        if event_meta is None:
+                            continue
+                        etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                        if etype != "plugin_entry":
+                            continue
+                        eid = str(resolved_id or getattr(event_meta, "id", "") or "")
+                        if not eid or eid in seen:
+                            continue
+                        seen.add(eid)
+                        results.append(_router_entry_preview(pid, eid, event_meta, _to_dict, _to_string_list))
+
+            if instance_handled:
+                continue
+
+            for name, member in inspect.getmembers(router_cls):
+                event_meta = getattr(member, EVENT_META_ATTR, None)
+                if event_meta is None and hasattr(member, "__wrapped__"):
+                    event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+                if not event_meta:
+                    continue
+                etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                if etype != "plugin_entry":
+                    continue
+                eid = str(getattr(event_meta, "id", None) or name)
+                if not eid or eid in seen:
+                    continue
+                seen.add(eid)
+                results.append(_router_entry_preview(pid, eid, event_meta, _to_dict, _to_string_list))
+    except Exception:
+        pass
+
     # 2) Config-specified entries (conf/pdata)
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:
@@ -789,8 +842,8 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                 results.append(
                     {
                         "id": eid,
-                        "name": str(ent.get("name") or ""),
-                        "description": str(ent.get("description") or ""),
+                        "name": ent.get("name") if isinstance(ent.get("name"), (str, dict)) else str(ent.get("name") or ""),
+                        "description": ent.get("description") if isinstance(ent.get("description"), (str, dict)) else str(ent.get("description") or ""),
                         "event_key": f"{pid}.{eid}",
                         "input_schema": _to_dict(ent.get("input_schema") or {}),
                         "return_message": "",
@@ -1018,6 +1071,11 @@ def _parse_single_plugin_config(
     if not entry or ":" not in entry:
         logger.warning("Plugin {} has invalid entry point '{}', skipping", pid, entry)
         return None
+    entry = normalize_plugin_entry_point(
+        str(entry),
+        config_path=toml_path,
+        builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
+    )
     
     logger.debug("Plugin {} entry point: {}", pid, entry)
     
@@ -1065,6 +1123,7 @@ def _parse_single_plugin_config(
     dependencies = _parse_plugin_dependencies(conf, logger, pid)
     # 解析 Python 运行时依赖（第三方包）
     python_requirements = _collect_plugin_python_requirements(conf, toml_path, logger, pid)
+    python_requirement_paths = _collect_plugin_python_requirement_paths(toml_path)
     
     return PluginContext(
         pid=pid,
@@ -1080,6 +1139,7 @@ def _parse_single_plugin_config(
         enabled=enabled_val,
         auto_start=auto_start_val,
         python_requirements=python_requirements,
+        python_requirement_paths=python_requirement_paths,
     )
 
 
@@ -1239,6 +1299,7 @@ def _build_extension_map(
             "ext_id": ctx.pid,
             "ext_entry": ctx.entry,
             "prefix": host_conf.get("prefix", ""),
+            "config_path": str(ctx.toml_path),
         })
     
     return extension_map
@@ -1376,6 +1437,7 @@ def _load_disabled_plugin(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=ctx.pid, logger=logger),
     )
     
     resolved_id = register_plugin(
@@ -1459,6 +1521,7 @@ def _register_failed_plugin(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=pid, logger=logger),
     )
 
     resolved_id = register_plugin(
@@ -1515,6 +1578,7 @@ def _load_extension_plugin(
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
         host_plugin_id=host_pid,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=ctx.pid, logger=logger),
     )
     
     resolved_id = register_plugin(
@@ -1597,7 +1661,7 @@ def _load_adapter_plugin(
 
     try:
         module_path, class_name = entry.split(":", 1)
-        mod = importlib.import_module(module_path)
+        mod = _import_plugin_entry_module(module_path, toml_path, logger)
         cls = getattr(mod, class_name)
         if isinstance(cls, type):
             entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
@@ -1615,6 +1679,7 @@ def _load_adapter_plugin(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=pid, logger=logger),
     )
     
     # 创建进程宿主
@@ -1907,12 +1972,15 @@ def load_plugins_from_roots(
             )
             continue
 
-        unsatisfied_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
+        unsatisfied_python_requirements = _find_missing_python_requirements(
+            ctx.python_requirements,
+            search_paths=ctx.python_requirement_paths,
+        )
         if unsatisfied_python_requirements:
             logger.error(
                 "Plugin {}: unsatisfied Python dependencies: {}. "
-                "Please install them in current runtime environment "
-                "(declared in plugin.toml [plugin].dependencies and/or plugin requirements.txt).",
+                "Please install them into this plugin's vendor/ directory "
+                "(declared in pyproject.toml [project].dependencies or legacy requirements.txt).",
                 pid,
                 unsatisfied_python_requirements,
             )
@@ -1963,6 +2031,8 @@ def load_plugins_from_roots(
         if _check_plugin_already_registered(pid, toml_path, logger):
             continue
 
+        _ensure_python_requirement_paths(ctx.python_requirement_paths, logger, pid)
+
         # adapter 类型：在通过统一依赖和重复检查后，再走 adapter-specific 启动逻辑
         if plugin_type == "adapter":
             _load_adapter_plugin(ctx, logger, process_host_factory, plugin_id=pid)
@@ -1971,7 +2041,7 @@ def load_plugins_from_roots(
         module_path, class_name = entry.split(":", 1)
         logger.debug("Plugin {}: importing {}:{}", pid, module_path, class_name)
         try:
-            mod = importlib.import_module(module_path)
+            mod = _import_plugin_entry_module(module_path, toml_path, logger)
             cls: Type[Any] = getattr(mod, class_name)
         except (ImportError, ModuleNotFoundError) as e:
             logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
@@ -2099,6 +2169,7 @@ def load_plugins_from_roots(
             sdk_conflicts_list=sdk_conflicts_list,
             dependencies=dependencies,
             input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
+            plugin_ui=_extract_plugin_ui_config(conf, plugin_id=pid, logger=logger),
         )
         
         # 在调用 register_plugin 之前，验证 host 是否还在 plugin_hosts 中。

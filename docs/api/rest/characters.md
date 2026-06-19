@@ -133,9 +133,11 @@ List available TTS voices.
 
 ### `GET /api/characters/voice_preview`
 
-Preview a voice (returns audio stream).
+Preview a voice. The response is JSON containing base64-encoded audio.
 
-**Query:** `voice_id`, `text`, `provider`
+**Query:** `voice_id`, `language` (optional; selects the localized preview line)
+
+**Response:** `{ "success": true, "audio": "<base64>", "mime_type": "<audio mime type>" }`
 
 ### `POST /api/characters/voices`
 

@@ -1,74 +1,227 @@
+import leftCatEarUrl from '../../../static/assets/tutorial/highlight/left-cat-ear.png'
+import rightCatEarUrl from '../../../static/assets/tutorial/highlight/right-cat-ear.png'
+import catPawUrl from '../../../static/assets/tutorial/highlight/cat-paw.png'
 import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
 import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
 import { getLocale } from './i18n'
-import { getTrustedOpenerOrigin, useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
+import router from './router'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
+const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
+const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const DESKTOP_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack'
+const DESKTOP_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished'
+const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
+const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
+const HANDOFF_TOKEN_VERSION = 1
+const PREACTIVATE_CLEANUP_MS = 8000
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
-const HOME_YUI_GUIDE_FLOW_ID = 'home_yui_guide_v1'
-const PLUGIN_DASHBOARD_LANDING_SCENE = 'plugin_dashboard_landing'
 const DEFAULT_INTERRUPT_DISTANCE = 32
 const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8
 const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
 const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
 const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
+const SCRIPTED_MOTION_INTERRUPT_WINDOW_MS = 220
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
 const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
+const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14
+const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160
+const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2
+const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420
+const NARRATION_RESUME_BACKTRACK_MS = 320
+const NARRATION_RESUME_MIN_REMAINING_MS = 1400
+const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
+const PLUGIN_DASHBOARD_SCROLL_PHASE_MS = 2000
+const PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS = 1800
+const PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS = 30000
+// Negative values mean inward/inset padding for the plugin-main spotlight.
+const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
+const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
+const MIN_SPOTLIGHT_RADIUS = 4
 const RESISTANCE_LINES = [
-  '喂！不要拽我啦，还没轮到你的回合呢！',
-  '等一下啦！还没结束呢，不要随便打断我啦！',
+  '喂！不要拽我啦，现在还没轮到你的回合呢！',
+  '等一下啦！还没结束呢，不要这么随便打断我啦！',
 ] as const
 const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
   'interrupt_resist_light_3',
 ] as const
-const ANGRY_EXIT_LINE = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const GUIDE_AUDIO_FILE_NAMES = {
+  takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
+  interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+  interrupt_resist_light_1_zh: '喂！不要拽我啦，现在.mp3',
+  interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
+  interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
+} as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
-    zh: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    en: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    ja: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    ko: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    ru: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    en: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    ja: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    ko: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
   },
   interrupt_resist_light_1: {
-    zh: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    en: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    ja: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    ko: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    ru: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1_zh,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
   },
   interrupt_resist_light_3: {
-    zh: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    en: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    ja: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    ko: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    ru: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
   },
   interrupt_angry_exit: {
-    zh: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    en: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    ja: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    ko: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    ru: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
   },
 } as const
+
+const LOCAL_TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
+
+export type PluginDashboardLocalTutorialMotion = 'point' | 'click' | 'ellipse'
+
+export type PluginDashboardLocalTutorialStep = {
+  targetId: string
+  title: string
+  body: string
+  route?: string
+  motion?: PluginDashboardLocalTutorialMotion
+  action?: string
+  waitMs?: number
+  allowMissing?: boolean
+  durationMs?: number
+}
+
+type StartPluginDashboardTutorialOptions = {
+  steps: PluginDashboardLocalTutorialStep[]
+  labels?: {
+    skip?: string
+    keyboardHint?: string
+  }
+}
+
+type StartPluginDashboardTutorialOptionsFactory = () => StartPluginDashboardTutorialOptions
+
+type DesktopTutorialSkipPayload = {
+  sessionId?: string
+  reason?: string
+  source?: string
+  detail?: Record<string, unknown>
+}
+
+declare global {
+  interface Window {
+    nekoYuiGuideDesktopBridge?: {
+      requestTutorialSkip?: (payload?: DesktopTutorialSkipPayload) => Promise<boolean> | boolean
+      requestTutorialInterrupt?: (payload?: DesktopTutorialSkipPayload) => Promise<boolean> | boolean
+    }
+  }
+}
+
+function normalizeOrigin(value: string) {
+  const normalizedValue = String(value || '').trim()
+  if (!normalizedValue) {
+    return ''
+  }
+
+  try {
+    return new URL(normalizedValue).origin
+  } catch {
+    return ''
+  }
+}
+
+function isLoopbackOrigin(origin: string) {
+  try {
+    const url = new URL(origin)
+    const hostname = url.hostname.toLowerCase()
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:')
+      && (
+        hostname === 'localhost'
+        || hostname === '127.0.0.1'
+        || hostname === '::1'
+      )
+    )
+  } catch {
+    return false
+  }
+}
+
+const DEFAULT_OPENER_ORIGIN = normalizeOrigin(import.meta.env.VITE_YUI_TUTORIAL_OPENER_ORIGIN || '')
+const OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'
+const DEFAULT_LOCAL_OPENER_ORIGINS = [
+  'http://127.0.0.1:48911',
+  'http://localhost:48911',
+  'https://127.0.0.1:48912',
+  'https://localhost:48912',
+] as const
+const ALLOWED_OPENER_ORIGINS = new Set(
+  [
+    import.meta.env.VITE_YUI_TUTORIAL_ALLOWED_OPENER_ORIGINS || '',
+    DEFAULT_OPENER_ORIGIN,
+    ...DEFAULT_LOCAL_OPENER_ORIGINS,
+  ]
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean),
+)
+
+function getQueryOpenerOrigin() {
+  try {
+    const params = new URLSearchParams(window.location.search || '')
+    const origin = normalizeOrigin(params.get(OPENER_ORIGIN_QUERY_PARAM) || '')
+    return origin && isLoopbackOrigin(origin) ? origin : ''
+  } catch {
+    return ''
+  }
+}
+
+function getTrustedOpenerOrigin() {
+  if (!window.opener || window.opener.closed) {
+    return getQueryOpenerOrigin() || DEFAULT_OPENER_ORIGIN
+  }
+
+  try {
+    const openerOrigin = window.opener.location.origin
+    if (openerOrigin && (openerOrigin === window.location.origin || ALLOWED_OPENER_ORIGINS.has(openerOrigin))) {
+      return openerOrigin
+    }
+  } catch {
+    // Cross-origin opener access is expected here.
+  }
+
+  return getQueryOpenerOrigin() || DEFAULT_OPENER_ORIGIN
+}
 
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
+const DEFAULT_SPOTLIGHT_PADDING = 6
+const BACKDROP_CUTOUT_INSET = 4
 let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
 let openerMessageOrigin = ''
+const guideAudioDurationCache = new Map<string, number>()
+const guideAudioDurationPromiseCache = new Map<string, Promise<number>>()
 
 type StartPayload = {
   line?: string
@@ -76,6 +229,10 @@ type StartPayload = {
   audioUrl?: string
   closeOnDone?: boolean
   interruptCount?: number
+  narrationDurationMs?: number
+  narrationStartedAtMs?: number
+  skipButtonScreenRect?: ScreenRect | null
+  platformCapabilities?: HomeTutorialPlatformCapabilities | null
 }
 
 type SpotlightRect = {
@@ -84,12 +241,38 @@ type SpotlightRect = {
   width: number
   height: number
   radius: number
+  padding: number
+}
+
+type ScreenRect = {
+  left: number
+  top: number
+  right: number
+  bottom: number
+  coordinateSpace?: string
+  platform?: 'windows' | 'macos' | 'linux' | 'web' | string
+  devicePixelRatio?: number
+  hitPadding?: number
+  forwardingTolerance?: number
+  pointerProfile?: string
+}
+
+type HomeTutorialPlatformCapabilities = {
+  version?: number
+  platform?: 'windows' | 'macos' | 'linux' | 'web' | string
+  windowBoundsSource?: string
+  supportsExternalChat?: boolean
+  supportsSystemTrayHint?: boolean
+  supportsPluginDashboardWindow?: boolean
+  pointerProfile?: string
+  preferredSkipHitPadding?: number
 }
 
 type ActiveNarration = {
   text: string
   voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
   audioUrl?: string
+  resumeAudioOffsetMs: number
   interrupted: boolean
   cancelled: boolean
   playVersion: number
@@ -148,18 +331,13 @@ function resolveGuideLocale() {
   return DEFAULT_GUIDE_LOCALE
 }
 
-function resolveSpeechLang() {
-  const locale = resolveGuideLocale()
-  if (locale === 'ja') return 'ja-JP'
-  if (locale === 'en') return 'en-US'
-  if (locale === 'ko') return 'ko-KR'
-  if (locale === 'ru') return 'ru-RU'
-  return 'zh-CN'
-}
-
 function getAllowedOpenerOrigins() {
+  const origins = new Set<string>(ALLOWED_OPENER_ORIGINS)
+  const queryOpenerOrigin = getQueryOpenerOrigin()
   const trustedOrigin = getTrustedOpenerOrigin()
-  const origins = new Set<string>()
+  if (queryOpenerOrigin) {
+    origins.add(queryOpenerOrigin)
+  }
   if (trustedOrigin) {
     origins.add(trustedOrigin)
   }
@@ -170,16 +348,26 @@ function getAllowedOpenerOrigins() {
 }
 
 function isAllowedOpenerEvent(event: MessageEvent) {
-  const allowedOrigins = getAllowedOpenerOrigins()
-  if (!event.origin || !allowedOrigins.has(event.origin)) {
-    return false
-  }
-
   if (!window.opener || window.opener.closed || event.source !== window.opener) {
     return false
   }
 
-  openerMessageOrigin = event.origin
+  const origin = typeof event.origin === 'string' ? event.origin : ''
+  if (!origin) {
+    return false
+  }
+
+  if (origin === window.location.origin) {
+    openerMessageOrigin = origin
+    return true
+  }
+
+  const allowedOrigins = getAllowedOpenerOrigins()
+  if (!allowedOrigins.has(origin)) {
+    return false
+  }
+
+  openerMessageOrigin = origin
   return true
 }
 
@@ -209,7 +397,30 @@ function resolveGuideAudioSrc(voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY, audioU
   return fileName ? `${GUIDE_AUDIO_BASE_URL}${fileLocale}/${encodeURIComponent(fileName)}` : ''
 }
 
-function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) {
+function getGuideAudioDurationCacheKey(audioSrc: string) {
+  const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
+  if (!normalizedAudioSrc) {
+    return ''
+  }
+
+  try {
+    return new URL(normalizedAudioSrc, window.location.href).href
+  } catch (_) {
+    return normalizedAudioSrc
+  }
+}
+
+function cacheGuideAudioDuration(audioSrc: string, durationSeconds: number) {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return
+  }
+  const cacheKey = getGuideAudioDurationCacheKey(audioSrc)
+  if (cacheKey) {
+    guideAudioDurationCache.set(cacheKey, Math.round(durationSeconds * 1000))
+  }
+}
+
+function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, startAtMs = 0) {
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
     return Promise.reject(new Error('missing_audio_src'))
@@ -217,15 +428,52 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
 
   return new Promise<void>((resolve, reject) => {
     let settled = false
-    const audio = new Audio(normalizedAudioSrc)
+    let playbackStarted = false
+    let seekFallbackTimer: number | null = null
+    const audio = new Audio()
+    const initialTimeSeconds = Math.max(0, startAtMs / 1000)
+    const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
+    let resolveMetadataDuration: ((durationMs: number) => void) | null = null
+    let metadataTimerId: number | null = null
     const maxWaitMs = Math.max(3000, minimumDurationMs) + 12000
     currentGuideAudio = audio
+    if (cacheKey) {
+      let metadataPromise: Promise<number>
+      metadataPromise = new Promise<number>((resolveMetadata) => {
+        resolveMetadataDuration = resolveMetadata
+        metadataTimerId = window.setTimeout(() => {
+          metadataTimerId = null
+          resolveMetadata(0)
+        }, 2500)
+      }).finally(() => {
+        if (guideAudioDurationPromiseCache.get(cacheKey) === metadataPromise) {
+          guideAudioDurationPromiseCache.delete(cacheKey)
+        }
+      })
+      guideAudioDurationPromiseCache.set(cacheKey, metadataPromise)
+    }
+
+    const finishMetadataDuration = (durationMs: number) => {
+      if (metadataTimerId !== null) {
+        window.clearTimeout(metadataTimerId)
+        metadataTimerId = null
+      }
+      if (resolveMetadataDuration) {
+        resolveMetadataDuration(durationMs)
+        resolveMetadataDuration = null
+      }
+    }
 
     const finish = (success: boolean, error?: unknown) => {
       if (settled) {
         return
       }
       settled = true
+      finishMetadataDuration(0)
+      if (seekFallbackTimer !== null) {
+        window.clearTimeout(seekFallbackTimer)
+        seekFallbackTimer = null
+      }
       window.clearTimeout(timerId)
       if (currentGuideAudioTimer === timerId) {
         currentGuideAudioTimer = null
@@ -238,6 +486,8 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
       }
       audio.onended = null
       audio.onerror = null
+      audio.onloadedmetadata = null
+      audio.onseeked = null
       if (success) {
         resolve()
         return
@@ -250,7 +500,81 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
     }, maxWaitMs)
     currentGuideAudioTimer = timerId
 
+    const beginPlayback = () => {
+      if (settled || playbackStarted) {
+        return
+      }
+      playbackStarted = true
+      try {
+        const playback = audio.play()
+        if (playback && typeof playback.then === 'function') {
+          playback.catch((error: unknown) => finish(false, error))
+        }
+      } catch (error) {
+        finish(false, error)
+      }
+    }
+
     audio.preload = 'auto'
+    audio.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+        ? Math.round(audio.duration * 1000)
+        : 0
+      cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+      finishMetadataDuration(durationMs)
+      if (settled) {
+        return
+      }
+      if (initialTimeSeconds > 0) {
+        const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
+          ? Math.max(0, audio.duration - 0.05)
+          : initialTimeSeconds
+        const targetTime = Math.min(initialTimeSeconds, maxSeek)
+
+        if (targetTime > 0.01) {
+          audio.onseeked = () => {
+            audio.onseeked = null
+            if (seekFallbackTimer !== null) {
+              window.clearTimeout(seekFallbackTimer)
+              seekFallbackTimer = null
+            }
+            beginPlayback()
+          }
+          seekFallbackTimer = window.setTimeout(() => {
+            seekFallbackTimer = null
+            audio.onseeked = null
+            beginPlayback()
+          }, 250)
+
+          try {
+            audio.currentTime = targetTime
+          } catch (_) {
+            if (seekFallbackTimer !== null) {
+              window.clearTimeout(seekFallbackTimer)
+              seekFallbackTimer = null
+            }
+            audio.onseeked = null
+            beginPlayback()
+            return
+          }
+
+          if (Math.abs(audio.currentTime - targetTime) <= 0.01) {
+            if (seekFallbackTimer !== null) {
+              window.clearTimeout(seekFallbackTimer)
+              seekFallbackTimer = null
+            }
+            audio.onseeked = null
+            beginPlayback()
+          }
+          return
+        }
+
+        try {
+          audio.currentTime = 0
+        } catch (_) {}
+      }
+      beginPlayback()
+    }
     audio.onended = () => finish(true)
     audio.onerror = () => finish(false, new Error('guide_audio_error'))
     const stop = () => {
@@ -263,12 +587,90 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
     currentGuideSpeechStop = stop
 
     try {
-      const playback = audio.play()
-      if (playback && typeof playback.then === 'function') {
-        playback.catch((error: unknown) => finish(false, error))
-      }
+      audio.src = normalizedAudioSrc
+      audio.load()
     } catch (error) {
       finish(false, error)
+    }
+  })
+}
+
+function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number): Promise<number> {
+  const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
+  if (!normalizedAudioSrc) {
+    return Promise.resolve(fallbackDurationMs)
+  }
+
+  const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
+  const cachedDurationMs = cacheKey ? guideAudioDurationCache.get(cacheKey) : null
+  if (Number.isFinite(cachedDurationMs) && (cachedDurationMs as number) > 0) {
+    return Promise.resolve(cachedDurationMs as number)
+  }
+
+  const pendingDurationPromise = cacheKey ? guideAudioDurationPromiseCache.get(cacheKey) : null
+  if (pendingDurationPromise) {
+    return pendingDurationPromise.then((durationMs): number | Promise<number> => {
+      if (Number.isFinite(durationMs) && durationMs > 0) {
+        return durationMs
+      }
+      return loadGuideAudioDurationMs(normalizedAudioSrc, fallbackDurationMs)
+    })
+  }
+
+  const currentAudioCacheKey = currentGuideAudio
+    ? getGuideAudioDurationCacheKey(currentGuideAudio.currentSrc || currentGuideAudio.src || '')
+    : ''
+  if (
+    currentGuideAudio
+    && cacheKey
+    && currentAudioCacheKey === cacheKey
+    && Number.isFinite(currentGuideAudio.duration)
+    && currentGuideAudio.duration > 0
+  ) {
+    const durationMs = Math.round(currentGuideAudio.duration * 1000)
+    guideAudioDurationCache.set(cacheKey, durationMs)
+    return Promise.resolve(durationMs)
+  }
+
+  return new Promise<number>((resolve) => {
+    let settled = false
+    const audio = new Audio()
+    const finish = (durationMs?: number) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timerId)
+      audio.onloadedmetadata = null
+      audio.onerror = null
+      try {
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.load()
+      } catch (_) {}
+      resolve(Number.isFinite(durationMs) && (durationMs as number) > 0
+        ? Math.round(durationMs as number)
+        : fallbackDurationMs)
+    }
+
+    const timerId = window.setTimeout(() => finish(), 2500)
+    audio.preload = 'metadata'
+    audio.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration * 1000
+        : 0
+      if (cacheKey && durationMs > 0) {
+        guideAudioDurationCache.set(cacheKey, Math.round(durationMs))
+      }
+      finish(durationMs)
+    }
+    audio.onerror = () => finish()
+
+    try {
+      audio.src = normalizedAudioSrc
+      audio.load()
+    } catch (_) {
+      finish()
     }
   })
 }
@@ -284,11 +686,61 @@ function createSvgElement<K extends keyof SVGElementTagNameMap>(
   return element
 }
 
+function readSpotlightNumberAttr(element: Element | null, attributeName: string) {
+  if (!element || !attributeName || typeof element.getAttribute !== 'function') {
+    return null
+  }
+
+  const rawValue = element.getAttribute(attributeName)
+  const value = Number.parseFloat(rawValue || '')
+  return Number.isFinite(value) ? value : null
+}
+
+function ensurePluginSpotlightDecorations(spotlight: HTMLDivElement | null) {
+  if (!spotlight) {
+    return
+  }
+
+  let chrome = spotlight.querySelector('.yui-guide-plugin-spotlight-chrome') as HTMLDivElement | null
+  if (!chrome) {
+    chrome = document.createElement('div')
+    chrome.className = 'yui-guide-plugin-spotlight-chrome'
+    spotlight.appendChild(chrome)
+  } else if (!(chrome instanceof HTMLDivElement)) {
+    chrome = null
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-sweep')) {
+    const sweep = document.createElement('span')
+    sweep.className = 'yui-guide-plugin-spotlight-sweep'
+    spotlight.appendChild(sweep)
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-ear-left')) {
+    const earLeft = document.createElement('div')
+    earLeft.className = 'yui-guide-plugin-spotlight-decoration yui-guide-plugin-spotlight-ear-left'
+    spotlight.appendChild(earLeft)
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-ear-right')) {
+    const earRight = document.createElement('div')
+    earRight.className = 'yui-guide-plugin-spotlight-decoration yui-guide-plugin-spotlight-ear-right'
+    spotlight.appendChild(earRight)
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-paw')) {
+    const paw = document.createElement('div')
+    paw.className = 'yui-guide-plugin-spotlight-decoration yui-guide-plugin-spotlight-paw'
+    spotlight.appendChild(paw)
+  }
+}
+
 function speakTextWithPromise(
   text: string,
   options?: {
     voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
     audioUrl?: string
+    startAtMs?: number
   },
 ): Promise<void> {
   const content = typeof text === 'string' ? text.trim() : ''
@@ -298,54 +750,14 @@ function speakTextWithPromise(
 
   const minDurationMs = estimateSpeechDurationMs(content)
   const localAudioSrc = resolveGuideAudioSrc(options?.voiceKey, options?.audioUrl)
+  const startAtMs = Number.isFinite(options?.startAtMs) ? Math.max(0, Math.round(options?.startAtMs as number)) : 0
   if (localAudioSrc) {
-    return playGuideAudioWithPromise(localAudioSrc, minDurationMs).catch(() => {
-      return speakTextWithPromise(content)
+    return playGuideAudioWithPromise(localAudioSrc, minDurationMs, startAtMs).catch(() => {
+      return wait(minDurationMs)
     })
   }
 
-  if (typeof window.speechSynthesis === 'undefined' || typeof window.SpeechSynthesisUtterance === 'undefined') {
-    return wait(minDurationMs)
-  }
-
-  return new Promise<void>((resolve) => {
-    let settled = false
-    const utterance = new SpeechSynthesisUtterance(content)
-    utterance.lang = resolveSpeechLang()
-    utterance.rate = 1
-    utterance.pitch = 1.1
-
-    const finish = () => {
-      if (settled) {
-        return
-      }
-      settled = true
-      window.clearTimeout(timerId)
-      if (currentGuideSpeechStop === stop) {
-        currentGuideSpeechStop = null
-      }
-      resolve()
-    }
-
-    utterance.onend = finish
-    utterance.onerror = finish
-
-    const timerId = window.setTimeout(finish, minDurationMs + 1200)
-    const stop = () => {
-      try {
-        window.speechSynthesis.cancel()
-      } catch (_) {}
-      finish()
-    }
-    currentGuideSpeechStop = stop
-
-    try {
-      window.speechSynthesis.cancel()
-      window.speechSynthesis.speak(utterance)
-    } catch (_) {
-      finish()
-    }
-  })
+  return wait(minDurationMs)
 }
 
 function stopCurrentGuideSpeech() {
@@ -359,10 +771,33 @@ function stopCurrentGuideSpeech() {
   } catch (_) {}
 }
 
+async function resolveNarrationDurationMs(payload: StartPayload) {
+  if (Number.isFinite(payload.narrationDurationMs)) {
+    return Math.min(Math.max(0, Math.round(payload.narrationDurationMs as number)), 24000)
+  }
+
+  const fallbackDurationMs = PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS
+  const localAudioSrc = resolveGuideAudioSrc(payload.voiceKey, payload.audioUrl)
+  if (!localAudioSrc) {
+    return fallbackDurationMs
+  }
+
+  return loadGuideAudioDurationMs(localAudioSrc, fallbackDurationMs)
+}
+
 function resolveResistanceTextKey(interruptCount: number) {
   return interruptCount >= 2
     ? 'tutorial.yuiGuide.lines.interruptResistLight3'
     : 'tutorial.yuiGuide.lines.interruptResistLight1'
+}
+
+function shouldReduceMotion() {
+  try {
+    const query = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
+    return !!query?.matches
+  } catch {
+    return false
+  }
 }
 
 function injectStyle() {
@@ -373,17 +808,15 @@ function injectStyle() {
   const style = document.createElement('style')
   style.id = `${ROOT_ID}-style`
   style.textContent = `
-    html.yui-guide-plugin-dashboard-running,
-    html.yui-guide-plugin-dashboard-running *,
-    body.yui-guide-plugin-dashboard-running,
-    body.yui-guide-plugin-dashboard-running * {
-      cursor: none !important;
-    }
-
-    html.yui-taking-over,
-    html.yui-taking-over *,
-    body.yui-taking-over,
-    body.yui-taking-over * {
+    #${ROOT_ID},
+    #${ROOT_ID} .yui-guide-plugin-backdrop,
+    #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    #${ROOT_ID} .yui-guide-plugin-spotlight,
+    html.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
+    body.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
+    html.yui-taking-over [data-yui-cursor-hidden="true"],
+    body.yui-taking-over [data-yui-cursor-hidden="true"] {
       cursor: none !important;
     }
 
@@ -391,6 +824,57 @@ function injectStyle() {
     html.yui-taking-over.yui-resistance-cursor-reveal *,
     body.yui-taking-over.yui-resistance-cursor-reveal,
     body.yui-taking-over.yui-resistance-cursor-reveal * {
+      cursor: auto !important;
+    }
+
+    html.yui-taking-over.yui-user-cursor-revealed,
+    html.yui-taking-over.yui-user-cursor-revealed *,
+    body.yui-taking-over.yui-user-cursor-revealed,
+    body.yui-taking-over.yui-user-cursor-revealed * {
+      cursor: auto !important;
+    }
+
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight {
+      cursor: auto !important;
+    }
+
+    html.yui-guide-plugin-dashboard-running button,
+    html.yui-guide-plugin-dashboard-running a[href],
+    html.yui-guide-plugin-dashboard-running input,
+    html.yui-guide-plugin-dashboard-running select,
+    html.yui-guide-plugin-dashboard-running textarea,
+    html.yui-guide-plugin-dashboard-running summary,
+    html.yui-guide-plugin-dashboard-running [role="button"],
+    html.yui-guide-plugin-dashboard-running [role="link"],
+    html.yui-guide-plugin-dashboard-running [tabindex]:not([tabindex="-1"]),
+    body.yui-guide-plugin-dashboard-running button,
+    body.yui-guide-plugin-dashboard-running a[href],
+    body.yui-guide-plugin-dashboard-running input,
+    body.yui-guide-plugin-dashboard-running select,
+    body.yui-guide-plugin-dashboard-running textarea,
+    body.yui-guide-plugin-dashboard-running summary,
+    body.yui-guide-plugin-dashboard-running [role="button"],
+    body.yui-guide-plugin-dashboard-running [role="link"],
+    body.yui-guide-plugin-dashboard-running [tabindex]:not([tabindex="-1"]) {
       cursor: auto !important;
     }
 
@@ -406,8 +890,10 @@ function injectStyle() {
       inset: 0;
       width: 100%;
       height: 100%;
-      opacity: 1;
-      transition: opacity 180ms ease;
+      display: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      transition: none !important;
     }
 
     #${ROOT_ID} .yui-guide-plugin-interaction-shield {
@@ -433,13 +919,10 @@ function injectStyle() {
 
     #${ROOT_ID} .yui-guide-plugin-spotlight {
       position: fixed;
-      border: 3px solid #93d6ff;
       border-radius: 18px;
-      box-shadow:
-        0 0 0 7px #a1e4ff,
-        0 0 0 12px #aff3ff,
-        0 20px 38px rgba(147, 214, 255, 0.26);
       opacity: 0;
+      overflow: visible;
+      isolation: isolate;
       transition:
         opacity 180ms ease,
         left 220ms ease,
@@ -448,9 +931,167 @@ function injectStyle() {
         height 220ms ease;
     }
 
+    #${ROOT_ID} .yui-guide-plugin-spotlight-chrome {
+      position: absolute;
+      inset: 3px;
+      border-radius: inherit;
+      overflow: hidden;
+      isolation: isolate;
+      background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
+      box-shadow:
+        0 0 0 1px rgba(214, 243, 255, 0.72),
+        0 0 18px rgba(104, 194, 255, 0.56),
+        0 0 34px rgba(87, 136, 255, 0.26),
+        inset 0 0 16px rgba(131, 214, 255, 0.16);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-sweep {
+      position: absolute;
+      inset: 8px;
+      border-radius: inherit;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before {
+      content: '';
+      position: absolute;
+      top: -22%;
+      bottom: -22%;
+      left: -48%;
+      width: 34%;
+      background:
+        linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.58) 45%, rgba(125, 225, 255, 0.26) 58%, transparent 100%);
+      filter: blur(0.2px);
+      opacity: 0;
+      transform: translateX(0) skewX(-12deg);
+      animation: yui-guide-plugin-spotlight-sheen 2.4s ease-in-out infinite;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-chrome::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      padding: 2px;
+      border-radius: inherit;
+      --yui-guide-plugin-spotlight-corner-size: min(34%, 138px);
+      --yui-guide-plugin-spotlight-border-gap: min(68%, 144px);
+      background:
+        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) 2px no-repeat,
+        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) 2px no-repeat,
+        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) no-repeat,
+        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) no-repeat,
+        radial-gradient(circle at top left,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) top left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
+        radial-gradient(circle at top right,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) top right / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
+        radial-gradient(circle at bottom right,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) bottom right / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
+        radial-gradient(circle at bottom left,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) bottom left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat;
+      pointer-events: none;
+      z-index: 2;
+      -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+      mask-composite: exclude;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-decoration {
+      position: absolute;
+      pointer-events: none;
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: contain;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-ear-left {
+      top: -29px;
+      left: 2px;
+      width: 94.5px;
+      height: 40.5px;
+      background-image: url('${leftCatEarUrl}');
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-ear-right {
+      top: -30px;
+      right: 2px;
+      width: 94.5px;
+      height: 40.5px;
+      background-image: url('${rightCatEarUrl}');
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-paw {
+      right: -18px;
+      bottom: -11px;
+      width: 51px;
+      height: 51px;
+      background-image: url('${catPawUrl}');
+      filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
+    }
+
     #${ROOT_ID} .yui-guide-plugin-spotlight.is-visible {
       opacity: 1;
       animation: yui-guide-plugin-pulse 1.5s ease-in-out infinite;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-pointer {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 46px;
+      height: 46px;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 2147483647;
+      transform: translate3d(-9999px, -9999px, 0);
+      transform-origin: center center;
+      transition:
+        transform var(--yui-guide-plugin-pointer-duration, 0ms) cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 120ms ease,
+        scale 120ms ease;
+      will-change: transform;
+      background-image: url('${defaultGhostCursorUrl}');
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: contain;
+      filter:
+        drop-shadow(0 10px 18px rgba(10, 31, 68, 0.22))
+        drop-shadow(0 2px 3px rgba(10, 31, 68, 0.18));
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-pointer.is-visible {
+      opacity: 1;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-pointer.is-pressed {
+      background-image: url('${clickGhostCursorUrl}');
+      scale: 1;
     }
 
     #${ROOT_ID}.is-angry .yui-guide-plugin-backdrop-fill {
@@ -460,8 +1101,6 @@ function injectStyle() {
     #${ROOT_ID}.is-angry .yui-guide-plugin-spotlight {
       opacity: 0 !important;
       display: none !important;
-      border-color: transparent;
-      box-shadow: none;
       animation: none;
     }
 
@@ -470,66 +1109,33 @@ function injectStyle() {
       display: none !important;
     }
 
-    #${ROOT_ID} .yui-guide-plugin-cursor-shell {
-      position: fixed;
-      left: 0;
-      top: 0;
-      width: 0;
-      height: 0;
-      transform: translate(0, 0);
-      transition-property: transform;
-      transition-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
-      transition-duration: 0ms;
-      opacity: 0;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor-shell.is-visible {
-      opacity: 1;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor {
-      position: absolute;
-      width: 46px;
-      height: 46px;
-      margin-left: -20px;
-      margin-top: -18px;
-      background-image: url('${defaultGhostCursorUrl}');
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-      filter: drop-shadow(0 10px 20px rgba(138, 78, 50, 0.24));
-    }
-
-    #${ROOT_ID}.is-angry .yui-guide-plugin-cursor {
-      background-color: transparent;
-      filter:
-        drop-shadow(0 14px 26px rgba(116, 33, 25, 0.34))
-        saturate(1.08);
-    }
-
-    #${ROOT_ID}.is-angry .yui-guide-plugin-cursor.is-clicking {
-      background-image: url('${defaultGhostCursorUrl}');
-      animation: none;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor::after {
-      content: none;
-    }
-
-    #${ROOT_ID} .yui-guide-plugin-cursor.is-clicking {
-      background-image: url('${clickGhostCursorUrl}');
-      animation: yui-guide-plugin-click 240ms ease;
-    }
-
     @keyframes yui-guide-plugin-pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.02); }
     }
 
-    @keyframes yui-guide-plugin-click {
-      0% { transform: scale(1); }
-      45% { transform: scale(0.82); }
-      100% { transform: scale(1); }
+    @keyframes yui-guide-plugin-spotlight-sheen {
+      0%,
+      62% {
+        opacity: 0;
+        transform: translateX(0) skewX(-12deg);
+      }
+      78% {
+        opacity: 0.42;
+      }
+      100% {
+        opacity: 0;
+        transform: translateX(420%) skewX(-12deg);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #${ROOT_ID} .yui-guide-plugin-spotlight,
+      #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before,
+      #${ROOT_ID} .yui-guide-plugin-pointer {
+        animation: none !important;
+        transition: none !important;
+      }
     }
   `
   document.head.appendChild(style)
@@ -543,8 +1149,7 @@ class PluginDashboardGuideRuntime {
   backdropCutout: SVGRectElement | null = null
   interactionShield: HTMLDivElement | null = null
   spotlight: HTMLDivElement | null = null
-  cursorShell: HTMLDivElement | null = null
-  cursorInner: HTMLDivElement | null = null
+  pointer: HTMLDivElement | null = null
   cursorPosition: { x: number; y: number } | null = null
   lastCursorTarget: { x: number; y: number } | null = null
   spotlightElement: Element | null = null
@@ -552,28 +1157,63 @@ class PluginDashboardGuideRuntime {
   running = false
   interruptsEnabled = false
   scenePausedForResistance = false
+  homeNarrationFinished = false
+  homeNarrationOwnedByOpener = false
   angryExitTriggered = false
   interruptCount = 0
   interruptAccelerationStreak = 0
   lastInterruptAt = 0
   lastPassiveResistanceAt = 0
   lastPointerPoint: { x: number; y: number; t: number; speed: number } | null = null
+  scriptedMotionInterruptDistance = 0
+  scriptedMotionInterruptWindowStartedAt = 0
   resistanceCursorTimer: number | null = null
+  userCursorRevealMoveCount = 0
+  userCursorRevealed = false
+  lastUserCursorRevealMoveAt = 0
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
+  homeNarrationResolvers: Array<() => void> = []
   cursorMotionToken = 0
   cursorReactionInFlight = false
   cursorTransitionActive = false
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
+  preactivationTimeoutId: number | null = null
+  homeSkipButtonScreenRect: ScreenRect | null = null
+  desktopSkipButton: HTMLButtonElement | null = null
+  desktopSkipButtonCleanup: (() => void) | null = null
+  lastForwardedSkipAt = 0
+  lastForwardedSkipScreenX = NaN
+  lastForwardedSkipScreenY = NaN
+  spotlightRefreshRaf: number | null = null
+  cursorClickResetTimer: number | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
   boundPointerDownHandler = (event: PointerEvent | MouseEvent) => {
+    if (this.isPluginDashboardSkipControlTarget(event)) {
+      return
+    }
+    if (this.forwardHomeSkipClick(event)) {
+      return
+    }
     this.onPointerDown(event)
   }
   boundInteractionGuard = (event: Event) => {
-    if (!this.running || !event || (event as { isTrusted?: boolean }).isTrusted === false) {
+    if (!this.running || !event) {
+      return
+    }
+
+    if (this.isPluginDashboardSkipControlTarget(event)) {
+      return
+    }
+
+    if (this.forwardHomeSkipClick(event)) {
+      return
+    }
+
+    if ((event as { isTrusted?: boolean }).isTrusted === false) {
       return
     }
 
@@ -594,9 +1234,77 @@ class PluginDashboardGuideRuntime {
     }
     this.setSpotlight(this.spotlightElement)
   }
+  boundScheduleSpotlightRefresh = () => {
+    if (this.spotlightRefreshRaf !== null) {
+      return
+    }
+    this.spotlightRefreshRaf = window.requestAnimationFrame(() => {
+      this.spotlightRefreshRaf = null
+      this.boundRefreshSpotlight()
+    })
+  }
 
   isCurrentRun(sessionId: string) {
     return this.running && this.activeSessionId === sessionId
+  }
+
+  hasPendingPluginDashboardHandoff() {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+      return false
+    }
+
+    try {
+      const raw = window.localStorage.getItem(HANDOFF_STORAGE_KEY)
+      if (!raw) {
+        return false
+      }
+      const token = JSON.parse(raw) as {
+        token_version?: number
+        flow_id?: string
+        target_page?: string
+        consumed?: boolean
+        expires_at?: number
+      } | null
+      return !!(
+        token
+        && token.token_version === HANDOFF_TOKEN_VERSION
+        && typeof token.flow_id === 'string'
+        && token.flow_id.trim() !== ''
+        && token.target_page === 'plugin_dashboard'
+        && token.consumed !== true
+        && Number.isFinite(token.expires_at)
+        && Number(token.expires_at) > Date.now()
+      )
+    } catch {
+      return false
+    }
+  }
+
+  clearPreactivationTimeout() {
+    if (this.preactivationTimeoutId !== null) {
+      window.clearTimeout(this.preactivationTimeoutId)
+      this.preactivationTimeoutId = null
+    }
+  }
+
+  preactivatePendingOverlay() {
+    if (!window.opener || window.opener.closed) {
+      return false
+    }
+    if (!this.hasPendingPluginDashboardHandoff()) {
+      return false
+    }
+
+    this.activateOverlayShell()
+    this.clearPreactivationTimeout()
+    this.preactivationTimeoutId = window.setTimeout(() => {
+      this.preactivationTimeoutId = null
+      if (this.running) {
+        return
+      }
+      this.cleanup()
+    }, PREACTIVATE_CLEANUP_MS)
+    return true
   }
 
   ensureRoot() {
@@ -610,6 +1318,8 @@ class PluginDashboardGuideRuntime {
     root.id = ROOT_ID
 
     const backdrop = createSvgElement('svg', 'yui-guide-plugin-backdrop')
+    ;(backdrop as unknown as { hidden?: boolean }).hidden = true
+    backdrop.style.display = 'none'
     const defs = createSvgElement('defs')
     const mask = createSvgElement('mask')
     mask.id = BACKDROP_MASK_ID
@@ -626,7 +1336,7 @@ class PluginDashboardGuideRuntime {
     backdropCutout.style.display = 'none'
 
     const backdropFill = createSvgElement('rect', 'yui-guide-plugin-backdrop-fill')
-    backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)')
+    backdropFill.setAttribute('fill', 'transparent')
     backdropFill.setAttribute('mask', `url(#${BACKDROP_MASK_ID})`)
 
     mask.appendChild(backdropBase)
@@ -638,21 +1348,19 @@ class PluginDashboardGuideRuntime {
     const spotlight = document.createElement('div')
     spotlight.className = 'yui-guide-plugin-spotlight'
     spotlight.hidden = true
+    ensurePluginSpotlightDecorations(spotlight)
+
+    const pointer = document.createElement('div')
+    pointer.className = 'yui-guide-plugin-pointer'
+    pointer.setAttribute('aria-hidden', 'true')
 
     const interactionShield = document.createElement('div')
     interactionShield.className = 'yui-guide-plugin-interaction-shield'
 
-    const cursorShell = document.createElement('div')
-    cursorShell.className = 'yui-guide-plugin-cursor-shell'
-
-    const cursorInner = document.createElement('div')
-    cursorInner.className = 'yui-guide-plugin-cursor'
-    cursorShell.appendChild(cursorInner)
-
     root.appendChild(backdrop)
     root.appendChild(interactionShield)
     root.appendChild(spotlight)
-    root.appendChild(cursorShell)
+    root.appendChild(pointer)
     document.body.appendChild(root)
 
     this.root = root
@@ -662,9 +1370,168 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = backdropCutout
     this.interactionShield = interactionShield
     this.spotlight = spotlight
-    this.cursorShell = cursorShell
-    this.cursorInner = cursorInner
+    this.pointer = pointer
     this.syncBackdropViewport()
+  }
+
+  hasDesktopTutorialSkipBridge() {
+    return !!(
+      window.nekoYuiGuideDesktopBridge
+      && typeof window.nekoYuiGuideDesktopBridge.requestTutorialSkip === 'function'
+    )
+  }
+
+  hasDesktopTutorialInterruptBridge() {
+    return !!(
+      window.nekoYuiGuideDesktopBridge
+      && typeof window.nekoYuiGuideDesktopBridge.requestTutorialInterrupt === 'function'
+    )
+  }
+
+  isPluginDashboardSkipControlTarget(event: Event) {
+    const target = event.target
+    return !!(
+      target
+      && target instanceof Element
+      && target.closest('[data-yui-plugin-dashboard-skip-control="true"]')
+    )
+  }
+
+  canRequestHomeInterruptPlayback() {
+    if (this.hasDesktopTutorialInterruptBridge()) {
+      return true
+    }
+    return !!(
+      window.opener
+      && !window.opener.closed
+      && (openerMessageOrigin || getTrustedOpenerOrigin())
+    )
+  }
+
+  requestPluginDashboardSkip(detail?: Record<string, unknown>) {
+    const normalizedDetail = detail && typeof detail === 'object' ? detail : {}
+    const detailReason = normalizedDetail.reason
+    const normalizedReason = typeof detailReason === 'string' && detailReason.trim()
+      ? detailReason.trim()
+      : 'skip'
+    const payload: DesktopTutorialSkipPayload = {
+      sessionId: this.activeSessionId,
+      reason: normalizedReason,
+      source: 'plugin_dashboard',
+      detail: normalizedDetail,
+    }
+    const bridge = window.nekoYuiGuideDesktopBridge
+    if (bridge && typeof bridge.requestTutorialSkip === 'function') {
+      try {
+        const result = bridge.requestTutorialSkip(payload)
+        if (result && typeof (result as Promise<boolean>).then === 'function') {
+          void (result as Promise<boolean>).then((handled) => {
+            if (!handled) {
+              this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+            }
+          }).catch(() => {
+            this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+          })
+          return true
+        }
+        if (result === true) {
+          return true
+        }
+      } catch (_) {}
+    }
+
+    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+    return true
+  }
+
+  ensureDesktopSkipButton() {
+    if (!this.root || this.desktopSkipButton || !this.hasDesktopTutorialSkipBridge()) {
+      return
+    }
+
+    const button = document.createElement('button')
+    button.type = 'button'
+    const locale = resolveGuideLocale()
+    const labelByLocale: Record<string, string> = {
+      zh: '跳过',
+      en: 'Skip',
+      ja: 'スキップ',
+      ko: '건너뛰기',
+      ru: 'Пропустить',
+    }
+    const label = labelByLocale[locale] || labelByLocale.en
+    button.textContent = label
+    button.setAttribute('aria-label', label)
+    button.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
+    button.style.position = 'fixed'
+    button.style.top = '18px'
+    button.style.right = '18px'
+    button.style.zIndex = '2147483647'
+    button.style.pointerEvents = 'auto'
+    button.style.border = '0'
+    button.style.borderRadius = '999px'
+    button.style.padding = '8px 14px'
+    button.style.background = 'rgba(8, 18, 44, 0.86)'
+    button.style.color = '#eef7ff'
+    button.style.boxShadow = '0 10px 28px rgba(8, 17, 40, 0.28)'
+    button.style.fontSize = '13px'
+    button.style.fontWeight = '600'
+    button.style.cursor = 'pointer'
+
+    let skipHandled = false
+    const stopSkipEvent = (event: Event) => {
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+    }
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      stopSkipEvent(event)
+      if (skipHandled) {
+        return
+      }
+      skipHandled = true
+      button.setAttribute('aria-disabled', 'true')
+      button.style.opacity = '0.72'
+      this.requestPluginDashboardSkip({
+        source: 'plugin_dashboard_button',
+      })
+    }
+
+    button.addEventListener('pointerdown', stopSkipEvent)
+    button.addEventListener('pointerup', stopSkipEvent)
+    button.addEventListener('mousedown', stopSkipEvent)
+    button.addEventListener('mouseup', stopSkipEvent)
+    button.addEventListener('touchstart', stopSkipEvent)
+    button.addEventListener('touchend', stopSkipEvent)
+    button.addEventListener('click', handleSkip)
+    this.root.appendChild(button)
+    this.desktopSkipButton = button
+    this.desktopSkipButtonCleanup = () => {
+      button.removeEventListener('pointerdown', stopSkipEvent)
+      button.removeEventListener('pointerup', stopSkipEvent)
+      button.removeEventListener('mousedown', stopSkipEvent)
+      button.removeEventListener('mouseup', stopSkipEvent)
+      button.removeEventListener('touchstart', stopSkipEvent)
+      button.removeEventListener('touchend', stopSkipEvent)
+      button.removeEventListener('click', handleSkip)
+    }
+  }
+
+  clearDesktopSkipButton() {
+    if (this.desktopSkipButtonCleanup) {
+      this.desktopSkipButtonCleanup()
+    }
+    this.desktopSkipButtonCleanup = null
+    if (this.desktopSkipButton && this.desktopSkipButton.parentNode) {
+      this.desktopSkipButton.parentNode.removeChild(this.desktopSkipButton)
+    }
+    this.desktopSkipButton = null
   }
 
   notify(type: string, sessionId: string, detail?: Record<string, unknown>, requestId?: string) {
@@ -696,18 +1563,18 @@ class PluginDashboardGuideRuntime {
     } catch (_) {}
   }
 
-  handleInterruptAckMessage(event: MessageEvent) {
-    if (!isAllowedOpenerEvent(event)) {
-      return
-    }
-
-    const data = event.data
-    if (!data || typeof data !== 'object' || data.type !== INTERRUPT_ACK_EVENT) {
+  handleInterruptAckData(data: unknown) {
+    const payload = data && typeof data === 'object'
+      ? data as { type?: unknown; requestId?: unknown }
+      : null
+    if (!payload || payload.type !== INTERRUPT_ACK_EVENT) {
       return
     }
 
     const pending = this.pendingInterruptAck
-    const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    const requestId = typeof payload.requestId === 'string'
+      ? payload.requestId
+      : ''
     if (!pending || !requestId || pending.requestId !== requestId) {
       return
     }
@@ -715,27 +1582,48 @@ class PluginDashboardGuideRuntime {
     this.clearPendingInterruptAck(true)
   }
 
-  requestHomeInterruptPlayback(
+  handleInterruptAckMessage(event: MessageEvent) {
+    if (!isAllowedOpenerEvent(event)) {
+      return
+    }
+
+    this.handleInterruptAckData(event.data)
+  }
+
+  handleDesktopInterruptAckEvent(event: Event) {
+    const detail = (event as CustomEvent).detail
+    this.handleInterruptAckData(detail)
+  }
+
+  handleDesktopNarrationFinishedEvent(event: Event) {
+    const detail = (event as CustomEvent).detail
+    const sessionId = detail && typeof detail.sessionId === 'string' ? detail.sessionId : ''
+    if (sessionId) {
+      this.markHomeNarrationFinished(sessionId)
+    }
+  }
+
+  async requestHomeInterruptPlayback(
     detail: {
       kind: 'interrupt_resist_light' | 'interrupt_angry_exit'
       text: string
       textKey: string
       voiceKey: keyof typeof GUIDE_AUDIO_BY_KEY
       interruptCount: number
+      x?: number
+      y?: number
     },
   ) {
-    if (!window.opener || window.opener.closed) {
-      return Promise.resolve(false)
-    }
-
-    const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
-    if (!targetOrigin) {
-      return Promise.resolve(false)
-    }
-
     this.clearPendingInterruptAck(false)
     const requestId = `plugin-dashboard-interrupt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const timeoutMs = clamp(estimateSpeechDurationMs(detail.text) + 4000, 4000, 12000)
+    const timeoutExtraMs = detail.kind === 'interrupt_angry_exit'
+      ? PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS
+      : 4000
+    const timeoutMs = clamp(
+      estimateSpeechDurationMs(detail.text) + timeoutExtraMs,
+      4000,
+      detail.kind === 'interrupt_angry_exit' ? 60000 : 12000,
+    )
 
     return new Promise<boolean>((resolve) => {
       const timeoutId = window.setTimeout(() => {
@@ -751,11 +1639,53 @@ class PluginDashboardGuideRuntime {
         timeoutId,
       }
 
-      try {
-        this.notify(INTERRUPT_REQUEST_EVENT, this.activeSessionId, detail, requestId)
-      } catch (_) {
-        this.clearPendingInterruptAck(false)
+      const sendPostMessageFallback = () => {
+        if (!this.pendingInterruptAck || this.pendingInterruptAck.requestId !== requestId) {
+          return
+        }
+
+        if (!window.opener || window.opener.closed) {
+          this.clearPendingInterruptAck(false)
+          return
+        }
+
+        const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
+        if (!targetOrigin) {
+          this.clearPendingInterruptAck(false)
+          return
+        }
+
+        try {
+          this.notify(INTERRUPT_REQUEST_EVENT, this.activeSessionId, detail, requestId)
+        } catch (_) {
+          this.clearPendingInterruptAck(false)
+        }
       }
+
+      const bridge = window.nekoYuiGuideDesktopBridge
+      if (bridge && typeof bridge.requestTutorialInterrupt === 'function') {
+        try {
+          const handled = bridge.requestTutorialInterrupt({
+            sessionId: this.activeSessionId,
+            reason: 'interrupt',
+            source: 'plugin_dashboard',
+            detail: {
+              requestId,
+              ...detail,
+            },
+          })
+          void Promise.resolve(handled).then((result) => {
+            if (result !== true) {
+              sendPostMessageFallback()
+            }
+          }).catch(() => {
+            sendPostMessageFallback()
+          })
+          return
+        } catch (_) {}
+      }
+
+      sendPostMessageFallback()
     })
   }
 
@@ -793,7 +1723,8 @@ class PluginDashboardGuideRuntime {
       return null
     }
 
-    const padding = 12
+    const padding = readSpotlightNumberAttr(htmlElement, 'data-yui-guide-spotlight-padding')
+      ?? DEFAULT_SPOTLIGHT_PADDING
     const left = Math.max(0, Math.floor(rect.left - padding))
     const top = Math.max(0, Math.floor(rect.top - padding))
     const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding))
@@ -803,10 +1734,12 @@ class PluginDashboardGuideRuntime {
 
     let radius = 18
     try {
-      const computed = window.getComputedStyle(htmlElement)
-      const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
+      const explicitRadius = readSpotlightNumberAttr(htmlElement, 'data-yui-guide-spotlight-radius')
+      const parsedRadius = Number.isFinite(explicitRadius) && Number(explicitRadius) > 0
+        ? Number(explicitRadius)
+        : Number.parseFloat(window.getComputedStyle(htmlElement).borderTopLeftRadius || window.getComputedStyle(htmlElement).borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
-        radius = parsedRadius + 12
+        radius = Math.max(MIN_SPOTLIGHT_RADIUS, parsedRadius + padding)
       }
     } catch (_) {}
 
@@ -816,7 +1749,133 @@ class PluginDashboardGuideRuntime {
       width,
       height,
       radius,
+      padding,
     }
+  }
+
+  getHomeSkipForwardingTolerance(rect: ScreenRect) {
+    const explicitTolerance = Number(rect.forwardingTolerance)
+    if (Number.isFinite(explicitTolerance) && explicitTolerance >= 0) {
+      return explicitTolerance
+    }
+
+    const coordinateSpace = String(rect.coordinateSpace || '').toLowerCase()
+    const rawPadding = Number(rect.hitPadding)
+    const basePadding = Number.isFinite(rawPadding) ? Math.max(0, rawPadding) : 0
+    if (coordinateSpace === 'electron-window-bounds') {
+      const platform = String(rect.platform || '').toLowerCase()
+      if (platform === 'linux') return Math.max(8, Math.round(basePadding * 0.35))
+      if (platform === 'macos') return Math.max(6, Math.round(basePadding * 0.25))
+      return Math.max(4, Math.round(basePadding * 0.2))
+    }
+    return 6
+  }
+
+  getEventScreenPoint(event: Event) {
+    if (
+      typeof window.MouseEvent !== 'undefined'
+      && event instanceof window.MouseEvent
+    ) {
+      return {
+        screenX: Number(event.screenX),
+        screenY: Number(event.screenY),
+      }
+    }
+
+    if (
+      typeof window.TouchEvent !== 'undefined'
+      && event instanceof window.TouchEvent
+    ) {
+      const touch = event.changedTouches[0] || event.touches[0]
+      if (touch) {
+        return {
+          screenX: Number(touch.screenX),
+          screenY: Number(touch.screenY),
+        }
+      }
+    }
+
+    return null
+  }
+
+  isHomeSkipForwardActivationEvent(event: Event) {
+    return (
+      event.type === 'pointerdown'
+      || event.type === 'mousedown'
+      || event.type === 'touchstart'
+      || event.type === 'click'
+    )
+  }
+
+  forwardHomeSkipClick(event: Event) {
+    if (!this.running || !event || !this.activeSessionId) {
+      return false
+    }
+    if (!this.isHomeSkipForwardActivationEvent(event)) {
+      return false
+    }
+
+    const rect = this.homeSkipButtonScreenRect
+    if (!rect) {
+      return false
+    }
+
+    const point = this.getEventScreenPoint(event)
+    const screenX = point && Number.isFinite(point.screenX) ? point.screenX : NaN
+    const screenY = point && Number.isFinite(point.screenY) ? point.screenY : NaN
+    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+      return false
+    }
+
+    const tolerance = this.getHomeSkipForwardingTolerance(rect)
+    if (
+      screenX < rect.left - tolerance
+      || screenX > rect.right + tolerance
+      || screenY < rect.top - tolerance
+      || screenY > rect.bottom + tolerance
+    ) {
+      return false
+    }
+
+    const now = Date.now()
+    if (
+      (now - this.lastForwardedSkipAt) < 700
+      && Math.abs(screenX - this.lastForwardedSkipScreenX) <= 2
+      && Math.abs(screenY - this.lastForwardedSkipScreenY) <= 2
+    ) {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+      return true
+    }
+
+    if (typeof event.preventDefault === 'function') {
+      event.preventDefault()
+    }
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation()
+    }
+    if (typeof event.stopPropagation === 'function') {
+      event.stopPropagation()
+    }
+
+    this.lastForwardedSkipAt = now
+    this.lastForwardedSkipScreenX = screenX
+    this.lastForwardedSkipScreenY = screenY
+    this.requestPluginDashboardSkip({
+      source: 'plugin_dashboard',
+      screenX,
+      screenY,
+      coordinateSpace: rect.coordinateSpace || '',
+      platform: rect.platform || '',
+    })
+    return true
   }
 
   syncBackdropViewport() {
@@ -837,6 +1896,10 @@ class PluginDashboardGuideRuntime {
 
   updateBackdropCutout(spotlightRect: SpotlightRect | null) {
     if (!this.backdropCutout) {
+      if (this.backdrop) {
+        ;(this.backdrop as unknown as { hidden?: boolean }).hidden = true
+        this.backdrop.style.display = 'none'
+      }
       return
     }
 
@@ -856,12 +1919,24 @@ class PluginDashboardGuideRuntime {
     ;(this.backdropCutout as unknown as { hidden?: boolean }).hidden = false
     this.backdropCutout.setAttribute('visibility', 'visible')
     this.backdropCutout.style.removeProperty('display')
-    this.backdropCutout.setAttribute('x', String(spotlightRect.left))
-    this.backdropCutout.setAttribute('y', String(spotlightRect.top))
-    this.backdropCutout.setAttribute('width', String(spotlightRect.width))
-    this.backdropCutout.setAttribute('height', String(spotlightRect.height))
-    this.backdropCutout.setAttribute('rx', String(spotlightRect.radius))
-    this.backdropCutout.setAttribute('ry', String(spotlightRect.radius))
+    const maxInset = Math.max(0, spotlightRect.padding)
+    const inset = Math.max(0, Math.min(
+      BACKDROP_CUTOUT_INSET,
+      maxInset,
+      Math.floor(spotlightRect.width / 2),
+      Math.floor(spotlightRect.height / 2),
+    ))
+    const x = spotlightRect.left + inset
+    const y = spotlightRect.top + inset
+    const width = Math.max(0, spotlightRect.width - (inset * 2))
+    const height = Math.max(0, spotlightRect.height - (inset * 2))
+    const radius = Math.max(0, spotlightRect.radius - inset)
+    this.backdropCutout.setAttribute('x', String(x))
+    this.backdropCutout.setAttribute('y', String(y))
+    this.backdropCutout.setAttribute('width', String(width))
+    this.backdropCutout.setAttribute('height', String(height))
+    this.backdropCutout.setAttribute('rx', String(radius))
+    this.backdropCutout.setAttribute('ry', String(radius))
   }
 
   setSpotlight(element: Element | null) {
@@ -905,58 +1980,58 @@ class PluginDashboardGuideRuntime {
     this.updateBackdropCutout(null)
   }
 
-  showCursor(x: number, y: number) {
+  activateOverlayShell() {
     this.ensureRoot()
-    if (!this.cursorShell) {
-      return
-    }
-
     document.documentElement.classList.add('yui-guide-plugin-dashboard-running')
     document.documentElement.classList.add('yui-taking-over')
     document.body.classList.add('yui-guide-plugin-dashboard-running')
     document.body.classList.add('yui-taking-over')
-    this.cursorShell.classList.add('is-visible')
-    this.cursorShell.style.transitionDuration = '0ms'
-    this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
+  }
+
+  showCursor(x: number, y: number) {
+    this.activateOverlayShell()
     this.cursorPosition = { x, y }
     this.lastCursorTarget = { x, y }
+    this.syncPointer()
   }
 
   getRenderedCursorPosition() {
-    if (!this.cursorShell) {
-      return this.cursorPosition
-    }
-
-    try {
-      const transform = window.getComputedStyle(this.cursorShell).transform
-      if (!transform || transform === 'none') {
-        return this.cursorPosition
-      }
-      const matrix = new DOMMatrixReadOnly(transform)
-      return {
-        x: matrix.m41,
-        y: matrix.m42,
-      }
-    } catch (_) {
-      return this.cursorPosition
-    }
+    return this.cursorPosition
   }
 
   cancelCursorMotion() {
-    if (!this.cursorShell) {
-      return
-    }
-
     this.cursorMotionToken += 1
     this.cursorTransitionActive = false
-    const position = this.getRenderedCursorPosition()
-    if (!position) {
+    this.setPointerTransitionDuration(0)
+  }
+
+  setPointerTransitionDuration(durationMs = 0) {
+    if (!this.pointer) {
       return
     }
 
-    this.cursorShell.style.transitionDuration = '0ms'
-    this.cursorShell.style.transform = `translate(${Math.round(position.x)}px, ${Math.round(position.y)}px)`
-    this.cursorPosition = position
+    this.pointer.style.setProperty(
+      '--yui-guide-plugin-pointer-duration',
+      `${Math.max(0, Math.round(durationMs))}ms`,
+    )
+  }
+
+  syncPointer(durationMs = 0) {
+    this.ensureRoot()
+    if (!this.pointer) {
+      return
+    }
+
+    this.setPointerTransitionDuration(durationMs)
+    const position = this.cursorPosition
+    if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
+      this.pointer.classList.remove('is-visible')
+      this.pointer.style.transform = 'translate3d(-9999px, -9999px, 0)'
+      return
+    }
+
+    this.pointer.style.transform = `translate3d(${Math.round(position.x - 20)}px, ${Math.round(position.y - 18)}px, 0)`
+    this.pointer.classList.add('is-visible')
   }
 
   moveCursor(
@@ -967,10 +2042,6 @@ class PluginDashboardGuideRuntime {
     waitForSceneResume = true,
   ) {
     this.ensureRoot()
-    if (!this.cursorShell) {
-      return Promise.resolve(false)
-    }
-
     if (!this.cursorPosition) {
       this.showCursor(x, y)
       return Promise.resolve(true)
@@ -978,8 +2049,6 @@ class PluginDashboardGuideRuntime {
 
     const motionToken = ++this.cursorMotionToken
     this.cursorTransitionActive = true
-    this.cursorShell.classList.add('is-visible')
-    this.cursorShell.style.transitionDuration = `${Math.max(0, durationMs)}ms`
 
     return new Promise<boolean>((resolve) => {
       let settled = false
@@ -988,7 +2057,6 @@ class PluginDashboardGuideRuntime {
           return
         }
         settled = true
-        this.cursorShell?.removeEventListener('transitionend', handleEnd)
         const finalize = async () => {
           if (motionToken === this.cursorMotionToken) {
             this.cursorTransitionActive = false
@@ -1000,17 +2068,12 @@ class PluginDashboardGuideRuntime {
           ) {
             await this.waitUntilSceneResumed()
           }
-          resolve(completed && motionToken === this.cursorMotionToken)
+          const didComplete = completed && motionToken === this.cursorMotionToken
+          resolve(didComplete)
         }
         void finalize()
       }
-      const handleEnd = (event: Event) => {
-        if (event.target === this.cursorShell) {
-          finish(true)
-        }
-      }
 
-      this.cursorShell?.addEventListener('transitionend', handleEnd)
       window.requestAnimationFrame(() => {
         if (motionToken !== this.cursorMotionToken) {
           finish(false)
@@ -1024,13 +2087,11 @@ class PluginDashboardGuideRuntime {
           finish(false)
           return
         }
-        if (this.cursorShell) {
-          this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
-        }
+        this.cursorPosition = { x, y }
+        this.lastCursorTarget = { x, y }
+        this.syncPointer(durationMs)
       })
       window.setTimeout(() => finish(true), durationMs + 80)
-      this.cursorPosition = { x, y }
-      this.lastCursorTarget = { x, y }
     })
   }
 
@@ -1059,25 +2120,39 @@ class PluginDashboardGuideRuntime {
     return false
   }
 
-  clickCursor() {
-    if (!this.cursorInner) {
-      return
+  clickCursor(durationMs = DEFAULT_CURSOR_CLICK_VISIBLE_MS) {
+    if (this.cursorClickResetTimer !== null) {
+      window.clearTimeout(this.cursorClickResetTimer)
+      this.cursorClickResetTimer = null
     }
-
-    this.cursorInner.classList.remove('is-clicking')
-    void this.cursorInner.offsetWidth
-    this.cursorInner.classList.add('is-clicking')
-    window.setTimeout(() => {
-      this.cursorInner?.classList.remove('is-clicking')
-    }, 260)
+    document.documentElement.classList.add('yui-taking-over')
+    document.body.classList.add('yui-taking-over')
+    this.pointer?.classList.add('is-pressed')
+    this.cursorClickResetTimer = window.setTimeout(() => {
+      this.cursorClickResetTimer = null
+      this.resetCursorVisualState()
+    }, Math.max(0, durationMs))
   }
 
   resetCursorVisualState() {
-    if (!this.cursorInner) {
-      return
+    if (this.cursorClickResetTimer !== null) {
+      window.clearTimeout(this.cursorClickResetTimer)
+      this.cursorClickResetTimer = null
     }
+    this.pointer?.classList.remove('is-pressed')
+    if (!this.userCursorRevealed) {
+      document.documentElement.classList.remove('yui-user-cursor-revealed')
+      document.body.classList.remove('yui-user-cursor-revealed')
+    }
+  }
 
-    this.cursorInner.classList.remove('is-clicking')
+  stopGhostCursorAnimation() {
+    this.cancelCursorMotion()
+    this.resetCursorVisualState()
+    this.cursorTransitionActive = false
+    this.cursorPosition = null
+    this.lastCursorTarget = null
+    this.syncPointer()
   }
 
   async animateScroll(container: HTMLElement, deltaY: number, durationMs: number, isCurrent?: () => boolean) {
@@ -1127,15 +2202,41 @@ class PluginDashboardGuideRuntime {
     const centerY = rect.top + rect.height * 0.42
     const radiusX = Math.min(440, rect.width * 0.72)
     const radiusY = Math.min(224, rect.height * 0.4)
+    const startX = centerX + radiusX
+    const startY = centerY
+    let ellipseMotionDurationMs = durationMs
+    if (this.cursorPosition && Math.hypot(startX - this.cursorPosition.x, startY - this.cursorPosition.y) > 2) {
+      const prepareMoveDurationMs = Math.min(
+        Math.max(0, durationMs - 360),
+        Math.min(1400, Math.max(700, Math.round(durationMs * 0.3))),
+      )
+      const prepared = await this.moveCursor(
+        startX,
+        startY,
+        prepareMoveDurationMs,
+        isCurrent,
+      )
+      if (!prepared || (isCurrent && !isCurrent())) {
+        return
+      }
+      ellipseMotionDurationMs = Math.max(0, durationMs - prepareMoveDurationMs)
+    } else if (!this.cursorPosition) {
+      this.showCursor(startX, startY)
+    }
+    if (ellipseMotionDurationMs <= 0) {
+      return
+    }
+
     const startedAt = performance.now()
     let pausedAt: number | null = null
     let pausedDurationMs = 0
+    const motionToken = ++this.cursorMotionToken
     this.cursorTransitionActive = true
 
     try {
       await new Promise<void>((resolve) => {
         const tick = (now: number) => {
-          if (isCurrent && !isCurrent()) {
+          if (motionToken !== this.cursorMotionToken || (isCurrent && !isCurrent())) {
             resolve()
             return
           }
@@ -1150,16 +2251,13 @@ class PluginDashboardGuideRuntime {
             pausedDurationMs += now - pausedAt
             pausedAt = null
           }
-          const progress = clamp((now - startedAt - pausedDurationMs) / durationMs, 0, 1)
+          const progress = clamp((now - startedAt - pausedDurationMs) / ellipseMotionDurationMs, 0, 1)
           const angle = progress * Math.PI * 2
           const x = centerX + Math.cos(angle) * radiusX
           const y = centerY + Math.sin(angle) * radiusY
-          if (this.cursorShell) {
-            this.cursorShell.style.transitionDuration = '80ms'
-            this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
-            this.cursorPosition = { x, y }
-            this.lastCursorTarget = { x, y }
-          }
+          this.cursorPosition = { x, y }
+          this.lastCursorTarget = { x, y }
+          this.syncPointer(0)
 
           if (progress >= 1) {
             resolve()
@@ -1171,7 +2269,9 @@ class PluginDashboardGuideRuntime {
         window.requestAnimationFrame(tick)
       })
     } finally {
-      this.cursorTransitionActive = false
+      if (motionToken === this.cursorMotionToken) {
+        this.cursorTransitionActive = false
+      }
     }
   }
 
@@ -1180,6 +2280,7 @@ class PluginDashboardGuideRuntime {
     options?: {
       voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
       audioUrl?: string
+      startAtMs?: number
     },
   ) {
     await speakTextWithPromise(text, options)
@@ -1191,6 +2292,8 @@ class PluginDashboardGuideRuntime {
     }
     this.scenePausedForResistance = true
     this.cancelCursorMotion()
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
   }
 
   resumeCurrentSceneAfterResistance() {
@@ -1213,6 +2316,34 @@ class PluginDashboardGuideRuntime {
     }
     return new Promise<void>((resolve) => {
       this.scenePauseResolvers.push(resolve)
+    })
+  }
+
+  markHomeNarrationFinished(sessionId: string) {
+    if (!this.isCurrentRun(sessionId) || this.homeNarrationFinished) {
+      return
+    }
+
+    this.homeNarrationFinished = true
+    this.homeNarrationOwnedByOpener = false
+    const resolvers = this.homeNarrationResolvers.slice()
+    this.homeNarrationResolvers = []
+    resolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
+  }
+
+  waitForHomeNarrationFinished(sessionId: string, isCurrent?: () => boolean) {
+    if (this.homeNarrationFinished) {
+      return Promise.resolve(true)
+    }
+
+    return new Promise<boolean>((resolve) => {
+      this.homeNarrationResolvers.push(() => {
+        resolve(!isCurrent || isCurrent())
+      })
     })
   }
 
@@ -1247,6 +2378,7 @@ class PluginDashboardGuideRuntime {
     void this.speakLine(narration.text, {
       voiceKey: narration.voiceKey,
       audioUrl: narration.audioUrl,
+      startAtMs: narration.resumeAudioOffsetMs,
     }).then(() => {
       if (
         this.activeNarration !== narration
@@ -1259,6 +2391,7 @@ class PluginDashboardGuideRuntime {
         return
       }
 
+      narration.resumeAudioOffsetMs = 0
       this.activeNarration = null
       try {
         narration.resolve()
@@ -1293,6 +2426,7 @@ class PluginDashboardGuideRuntime {
         text: content,
         voiceKey: options?.voiceKey,
         audioUrl: options?.audioUrl,
+        resumeAudioOffsetMs: 0,
         interrupted: false,
         cancelled: false,
         playVersion: 0,
@@ -1306,16 +2440,42 @@ class PluginDashboardGuideRuntime {
   interruptNarrationForResistance() {
     const narration = this.activeNarration
     if (!narration || narration.cancelled) {
-      return false
+      if (!currentGuideAudio && !currentGuideSpeechStop) {
+        return false
+      }
+
+      this.clearNarrationResumeTimer()
+      stopCurrentGuideSpeech()
+      return true
     }
     if (narration.interrupted) {
       return true
     }
 
+    narration.resumeAudioOffsetMs = this.getSafeNarrationResumeAudioOffsetMs(currentGuideAudio)
     narration.interrupted = true
     this.clearNarrationResumeTimer()
     stopCurrentGuideSpeech()
     return true
+  }
+
+  getSafeNarrationResumeAudioOffsetMs(audio: HTMLAudioElement | null) {
+    if (!audio || !Number.isFinite(audio.currentTime)) {
+      return 0
+    }
+
+    const rawOffsetMs = Math.max(0, Math.round(audio.currentTime * 1000))
+    const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+      ? Math.round(audio.duration * 1000)
+      : 0
+    const maxResumeOffsetMs = durationMs > 0
+      ? Math.max(0, durationMs - NARRATION_RESUME_MIN_REMAINING_MS)
+      : rawOffsetMs
+    return clamp(
+      rawOffsetMs - NARRATION_RESUME_BACKTRACK_MS,
+      0,
+      maxResumeOffsetMs,
+    )
   }
 
   scheduleNarrationResume() {
@@ -1447,7 +2607,7 @@ class PluginDashboardGuideRuntime {
   }
 
   onPointerDown(event: MouseEvent) {
-    if (!event || event.isTrusted === false) {
+    if (!event) {
       return
     }
     const x = Number.isFinite(event.clientX) ? event.clientX : null
@@ -1462,6 +2622,8 @@ class PluginDashboardGuideRuntime {
       speed: 0,
     }
     this.interruptAccelerationStreak = 0
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
   }
 
   handleInterrupt(event: MouseEvent) {
@@ -1471,7 +2633,6 @@ class PluginDashboardGuideRuntime {
       || this.scenePausedForResistance
       || !this.interruptsEnabled
       || !event
-      || event.isTrusted === false
     ) {
       return
     }
@@ -1486,7 +2647,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    if (!this.canRequestHomeInterruptPlayback() && typeof document.hasFocus === 'function' && !document.hasFocus()) {
       return
     }
 
@@ -1515,17 +2676,42 @@ class PluginDashboardGuideRuntime {
     const acceleration = (speed - previousSpeed) / dt
 
     this.lastPointerPoint = { x, y, t: now, speed }
+    this.noteUserCursorRevealAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
-    if (distance < DEFAULT_INTERRUPT_DISTANCE) {
+    if (
+      this.homeNarrationOwnedByOpener
+      && !this.homeNarrationFinished
+      && !this.canRequestHomeInterruptPlayback()
+    ) {
+      return
+    }
+
+    const isScriptedMotionInterrupt = this.cursorTransitionActive
+    let effectiveDistance = distance
+    if (isScriptedMotionInterrupt && distance < DEFAULT_INTERRUPT_DISTANCE) {
+      if (
+        this.scriptedMotionInterruptWindowStartedAt <= 0
+        || (now - this.scriptedMotionInterruptWindowStartedAt) > SCRIPTED_MOTION_INTERRUPT_WINDOW_MS
+      ) {
+        this.scriptedMotionInterruptWindowStartedAt = now
+        this.scriptedMotionInterruptDistance = 0
+      }
+      this.scriptedMotionInterruptDistance += distance
+      effectiveDistance = this.scriptedMotionInterruptDistance
+    }
+
+    if (effectiveDistance < DEFAULT_INTERRUPT_DISTANCE) {
       this.interruptAccelerationStreak = 0
       return
     }
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
+
     if (speed < DEFAULT_INTERRUPT_SPEED_THRESHOLD) {
       this.interruptAccelerationStreak = 0
       return
     }
-    const isScriptedMotionInterrupt = this.cursorTransitionActive
     if (!isScriptedMotionInterrupt && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
       this.interruptAccelerationStreak = 0
       return
@@ -1545,6 +2731,7 @@ class PluginDashboardGuideRuntime {
     }
     this.lastInterruptAt = now
     this.interruptCount += 1
+    this.cancelCursorMotion()
 
     if (this.interruptCount >= 3) {
       void this.abortAsAngryExit()
@@ -1554,7 +2741,58 @@ class PluginDashboardGuideRuntime {
     void this.playLightResistance(x, y)
   }
 
+  noteUserCursorRevealAttempt(distance: number, now: number) {
+    if (
+      this.userCursorRevealed
+      || !Number.isFinite(distance)
+      || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
+      || !document.body.classList.contains('yui-taking-over')
+    ) {
+      return
+    }
+
+    if ((now - this.lastUserCursorRevealMoveAt) < DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS) {
+      return
+    }
+
+    this.lastUserCursorRevealMoveAt = now
+    this.userCursorRevealMoveCount += 1
+    if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
+      this.revealUserCursor()
+    }
+  }
+
+  revealUserCursor() {
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    this.userCursorRevealed = true
+    document.documentElement.classList.add('yui-user-cursor-revealed')
+    document.body.classList.add('yui-user-cursor-revealed')
+    document.documentElement.classList.add('yui-resistance-cursor-reveal')
+    document.body.classList.add('yui-resistance-cursor-reveal')
+  }
+
+  clearUserCursorReveal() {
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    this.userCursorRevealed = false
+    this.userCursorRevealMoveCount = 0
+    this.lastUserCursorRevealMoveAt = 0
+    document.documentElement.classList.remove('yui-user-cursor-revealed')
+    document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+    document.body.classList.remove('yui-user-cursor-revealed')
+    document.body.classList.remove('yui-resistance-cursor-reveal')
+  }
+
   revealRealCursorTemporarily() {
+    if (this.userCursorRevealed) {
+      this.revealUserCursor()
+      return
+    }
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
     }
@@ -1562,8 +2800,10 @@ class PluginDashboardGuideRuntime {
     document.body.classList.add('yui-resistance-cursor-reveal')
     this.resistanceCursorTimer = window.setTimeout(() => {
       this.resistanceCursorTimer = null
-      document.documentElement.classList.remove('yui-resistance-cursor-reveal')
-      document.body.classList.remove('yui-resistance-cursor-reveal')
+      if (!this.userCursorRevealed) {
+        document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+        document.body.classList.remove('yui-resistance-cursor-reveal')
+      }
     }, DEFAULT_RESISTANCE_CURSOR_REVEAL_MS)
   }
 
@@ -1590,6 +2830,8 @@ class PluginDashboardGuideRuntime {
       textKey,
       voiceKey,
       interruptCount: this.interruptCount,
+      x,
+      y,
     })
     if (!isSameSession()) {
       return
@@ -1621,10 +2863,12 @@ class PluginDashboardGuideRuntime {
     this.angryExitTriggered = true
     this.interruptsEnabled = false
     this.cancelActiveNarration()
-    this.cancelCursorMotion()
+    this.stopGhostCursorAnimation()
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
     this.clearSpotlight()
-    this.resetCursorVisualState()
     this.setAngryVisual(true)
+    this.homeNarrationFinished = false
     const handledByHome = await this.requestHomeInterruptPlayback({
       kind: 'interrupt_angry_exit',
       text: ANGRY_EXIT_LINE,
@@ -1642,12 +2886,24 @@ class PluginDashboardGuideRuntime {
       if (!isSameSession()) {
         return
       }
+    } else {
+      const angryExitTimeoutMs = clamp(estimateSpeechDurationMs(ANGRY_EXIT_LINE) + 2000, 4000, 12000)
+      const homeNarrationCompleted = await Promise.race([
+        this.waitForHomeNarrationFinished(sessionAtStart, isSameSession),
+        wait(angryExitTimeoutMs).then(() => isSameSession()),
+      ])
+      if (!homeNarrationCompleted || !isSameSession()) {
+        return
+      }
     }
     if (!isSameSession()) {
       return
     }
-    this.notify(DONE_EVENT, this.activeSessionId)
-    this.cleanup()
+    this.requestPluginDashboardSkip({
+      source: 'plugin_dashboard_angry_exit',
+      reason: 'angry_exit',
+      interruptCount: this.interruptCount,
+    })
   }
 
   cleanup() {
@@ -1659,12 +2915,25 @@ class PluginDashboardGuideRuntime {
         resolve()
       } catch (_) {}
     })
+    const narrationResolvers = this.homeNarrationResolvers.slice()
+    this.homeNarrationResolvers = []
+    narrationResolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
     document.documentElement.classList.remove('yui-guide-plugin-dashboard-running')
+    document.documentElement.removeAttribute('data-yui-guide-spotlight-padding')
     document.documentElement.classList.remove('yui-taking-over')
     document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+    document.documentElement.classList.remove('yui-user-cursor-revealed')
     document.body.classList.remove('yui-guide-plugin-dashboard-running')
     document.body.classList.remove('yui-taking-over')
     document.body.classList.remove('yui-resistance-cursor-reveal')
+    document.body.classList.remove('yui-user-cursor-revealed')
+    document
+      .querySelector('[data-yui-guide-id="plugin-main"]')
+      ?.removeAttribute('data-yui-guide-spotlight-padding')
     if (currentGuideAudioTimer !== null) {
       window.clearTimeout(currentGuideAudioTimer)
       currentGuideAudioTimer = null
@@ -1678,17 +2947,25 @@ class PluginDashboardGuideRuntime {
       } catch (_) {}
       currentGuideAudio = null
     }
-    try {
-      window.speechSynthesis?.cancel()
-    } catch (_) {}
     this.cancelActiveNarration()
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
+    this.userCursorRevealed = false
+    this.userCursorRevealMoveCount = 0
+    this.lastUserCursorRevealMoveAt = 0
+    this.resetCursorVisualState()
     this.clearPendingInterruptAck(false)
-    window.removeEventListener('resize', this.boundRefreshSpotlight, true)
-    window.removeEventListener('scroll', this.boundRefreshSpotlight, true)
+    this.lastForwardedSkipAt = 0
+    this.lastForwardedSkipScreenX = NaN
+    this.lastForwardedSkipScreenY = NaN
+    if (this.spotlightRefreshRaf !== null) {
+      window.cancelAnimationFrame(this.spotlightRefreshRaf)
+      this.spotlightRefreshRaf = null
+    }
+    window.removeEventListener('resize', this.boundScheduleSpotlightRefresh, true)
+    window.removeEventListener('scroll', this.boundScheduleSpotlightRefresh, true)
     window.removeEventListener('pointermove', this.boundPointerMoveHandler, true)
     window.removeEventListener('pointerdown', this.boundPointerDownHandler, true)
     document.removeEventListener('pointerdown', this.boundInteractionGuard, true)
@@ -1702,6 +2979,7 @@ class PluginDashboardGuideRuntime {
     document.removeEventListener('click', this.boundInteractionGuard, true)
     document.removeEventListener('dblclick', this.boundInteractionGuard, true)
     document.removeEventListener('contextmenu', this.boundInteractionGuard, true)
+    this.clearDesktopSkipButton()
     this.clearSpotlight()
     if (this.root && this.root.parentNode) {
       this.root.parentNode.removeChild(this.root)
@@ -1717,28 +2995,36 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = null
     this.interactionShield = null
     this.spotlight = null
-    this.cursorShell = null
-    this.cursorInner = null
+    this.pointer = null
     this.cursorPosition = null
     this.spotlightElement = null
     this.lastCursorTarget = null
     this.running = false
     this.activeSessionId = ''
+    this.desktopSkipButton = null
+    this.desktopSkipButtonCleanup = null
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
+    this.homeNarrationFinished = false
+    this.homeNarrationOwnedByOpener = false
     this.angryExitTriggered = false
     this.interruptCount = 0
     this.interruptAccelerationStreak = 0
     this.lastInterruptAt = 0
     this.lastPassiveResistanceAt = 0
     this.lastPointerPoint = null
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
     this.narrationResumeTimer = null
     this.cursorMotionToken = 0
     this.cursorReactionInFlight = false
     this.cursorTransitionActive = false
     this.activeNarration = null
     this.pendingInterruptAck = null
+    this.clearPreactivationTimeout()
+    this.homeSkipButtonScreenRect = null
     this.scenePauseResolvers = []
+    this.homeNarrationResolvers = []
   }
 
   async run(sessionId: string, payload: StartPayload) {
@@ -1746,16 +3032,38 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    this.clearPreactivationTimeout()
     this.cleanup()
     this.running = true
     this.activeSessionId = sessionId
     this.interruptCount = Number.isFinite(payload.interruptCount)
       ? Math.max(0, Math.floor(payload.interruptCount as number))
       : 0
+    this.homeSkipButtonScreenRect = payload.skipButtonScreenRect
+      && Number.isFinite(payload.skipButtonScreenRect.left)
+      && Number.isFinite(payload.skipButtonScreenRect.top)
+      && Number.isFinite(payload.skipButtonScreenRect.right)
+      && Number.isFinite(payload.skipButtonScreenRect.bottom)
+      ? {
+          left: Math.round(payload.skipButtonScreenRect.left),
+          top: Math.round(payload.skipButtonScreenRect.top),
+          right: Math.round(payload.skipButtonScreenRect.right),
+          bottom: Math.round(payload.skipButtonScreenRect.bottom),
+          coordinateSpace: payload.skipButtonScreenRect.coordinateSpace,
+          platform: payload.skipButtonScreenRect.platform,
+          devicePixelRatio: payload.skipButtonScreenRect.devicePixelRatio,
+          hitPadding: payload.skipButtonScreenRect.hitPadding,
+          forwardingTolerance: payload.skipButtonScreenRect.forwardingTolerance,
+          pointerProfile: payload.skipButtonScreenRect.pointerProfile || payload.platformCapabilities?.pointerProfile,
+        }
+      : null
+    this.homeNarrationFinished = false
+    this.homeNarrationOwnedByOpener = false
     const isCurrent = () => this.isCurrentRun(sessionId)
-    this.ensureRoot()
-    window.addEventListener('resize', this.boundRefreshSpotlight, true)
-    window.addEventListener('scroll', this.boundRefreshSpotlight, true)
+    this.activateOverlayShell()
+    this.ensureDesktopSkipButton()
+    window.addEventListener('resize', this.boundScheduleSpotlightRefresh, true)
+    window.addEventListener('scroll', this.boundScheduleSpotlightRefresh, true)
     // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
     // 单挂 mousemove/mousedown 会让触屏设备永远攒不到 interruptCount，被脚本接管到结束。
     // pointer 事件统一覆盖鼠标和触屏，capture 阶段先于 document 上的 interactionGuard 执行。
@@ -1798,6 +3106,8 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    mainContainer.setAttribute('data-yui-guide-spotlight-padding', String(PLUGIN_MAIN_SPOTLIGHT_INSET))
+
     if (!isCurrent()) {
       return
     }
@@ -1810,14 +3120,17 @@ class PluginDashboardGuideRuntime {
     if (!isCurrent()) {
       return
     }
-    this.showCursor(startX, startY)
+    await this.moveCursor(startX, startY, 420, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
     this.setSpotlight(pluginButton)
     await this.moveCursorToElementWithRecovery(pluginButton, 700, isCurrent)
     if (!isCurrent()) {
       return
     }
-    this.clickCursor()
-    if (!isCurrent()) {
+    this.clickCursor(DEFAULT_CURSOR_CLICK_VISIBLE_MS)
+    if (!(await this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS, isCurrent))) {
       return
     }
     pluginButton.click()
@@ -1825,33 +3138,136 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    const speechPromise = this.startNarration(payload.line || '', {
-      voiceKey: payload.voiceKey,
-      audioUrl: payload.audioUrl,
-    })
+    const totalNarrationDurationMs = await resolveNarrationDurationMs(payload)
+    const elapsedBeforeMotionMs = Number.isFinite(payload.narrationStartedAtMs)
+      ? Math.max(0, Date.now() - Math.round(payload.narrationStartedAtMs as number))
+      : 0
+    const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
+    this.homeNarrationOwnedByOpener = true
+    const isCurrentWithoutAngryExit = () => isCurrent() && !this.angryExitTriggered
+    const homeNarrationFallbackActiveMs = clamp(
+      budgetMs + PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS,
+      PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS,
+      120000,
+    )
+    let homeNarrationFallbackTimer: number | null = null
+    let homeNarrationFallbackCancelled = false
+    let homeNarrationFallbackRemainingMs = homeNarrationFallbackActiveMs
+    let homeNarrationFallbackLastTickAt = Date.now()
+    const clearHomeNarrationFallbackTimer = () => {
+      homeNarrationFallbackCancelled = true
+      if (homeNarrationFallbackTimer !== null) {
+        window.clearTimeout(homeNarrationFallbackTimer)
+        homeNarrationFallbackTimer = null
+      }
+    }
+    const tickHomeNarrationFallback = () => {
+      if (
+        homeNarrationFallbackCancelled
+        || this.homeNarrationFinished
+        || this.angryExitTriggered
+        || !isCurrent()
+      ) {
+        return
+      }
 
-    if (!isCurrent()) {
+      const now = Date.now()
+      const pausedForInterrupt = this.scenePausedForResistance || !!this.pendingInterruptAck
+      if (!pausedForInterrupt) {
+        homeNarrationFallbackRemainingMs -= Math.max(0, now - homeNarrationFallbackLastTickAt)
+      }
+      homeNarrationFallbackLastTickAt = now
+      if (homeNarrationFallbackRemainingMs <= 0) {
+        homeNarrationFallbackTimer = null
+        this.markHomeNarrationFinished(sessionId)
+        return
+      }
+
+      homeNarrationFallbackTimer = window.setTimeout(tickHomeNarrationFallback, 250)
+    }
+    homeNarrationFallbackTimer = window.setTimeout(tickHomeNarrationFallback, 250)
+    const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
+    const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
+    const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
+    const fixedPartsDurationMs = baseMoveToMainDurationMs + baseScrollDownDurationMs + baseScrollUpDurationMs
+    let moveToMainDurationMs = baseMoveToMainDurationMs
+    let scrollDownDurationMs = baseScrollDownDurationMs
+    let scrollUpDurationMs = baseScrollUpDurationMs
+    let ellipseDurationMs = Math.max(0, budgetMs - fixedPartsDurationMs)
+    if (budgetMs < fixedPartsDurationMs && fixedPartsDurationMs > 0) {
+      const scale = budgetMs / fixedPartsDurationMs
+      moveToMainDurationMs = Math.floor(baseMoveToMainDurationMs * scale)
+      scrollDownDurationMs = Math.floor(baseScrollDownDurationMs * scale)
+      scrollUpDurationMs = Math.max(0, Math.round(budgetMs) - moveToMainDurationMs - scrollDownDurationMs)
+      ellipseDurationMs = 0
+    }
+
+    if (!isCurrentWithoutAngryExit()) {
+      clearHomeNarrationFallbackTimer()
       return
     }
     this.setSpotlight(mainContainer)
-    await this.moveCursorToElementWithRecovery(mainContainer, 780, isCurrent)
+    if (moveToMainDurationMs > 0) {
+      await this.moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+    }
+    if (scrollDownDurationMs > 0) {
+      await this.animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+    }
+    if (scrollUpDurationMs > 0) {
+      await this.animateScroll(mainContainer, -150, scrollUpDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+    }
+    if (ellipseDurationMs > 0) {
+      await this.runEllipse(mainContainer, ellipseDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+    }
+
+    while (isCurrentWithoutAngryExit() && !this.homeNarrationFinished) {
+      this.setSpotlight(mainContainer)
+      await this.runEllipse(mainContainer, PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS, isCurrentWithoutAngryExit)
+      if (!isCurrent()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+      if (this.angryExitTriggered) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+      if (!this.homeNarrationFinished) {
+        await wait(80)
+      }
+    }
+
+    if (this.angryExitTriggered) {
+      clearHomeNarrationFallbackTimer()
+      return
+    }
+
+    try {
+      if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+        return
+      }
+    } finally {
+      clearHomeNarrationFallbackTimer()
+    }
     if (!isCurrent()) {
       return
     }
-    await this.animateScroll(mainContainer, 150, 1000, isCurrent)
-    if (!isCurrent()) {
-      return
-    }
-    await this.animateScroll(mainContainer, -150, 1000, isCurrent)
-    if (!isCurrent()) {
-      return
-    }
-    await this.runEllipse(mainContainer, 7000, isCurrent)
-    if (!isCurrent()) {
-      return
-    }
-    await speechPromise
-    if (!isCurrent()) {
+    if (this.angryExitTriggered) {
       return
     }
 
@@ -1861,9 +3277,6 @@ class PluginDashboardGuideRuntime {
     }
 
     if (payload.closeOnDone !== false) {
-      if (!(await this.waitForSceneDelay(120, isCurrent))) {
-        return
-      }
       window.close()
     }
 
@@ -1874,46 +3287,459 @@ class PluginDashboardGuideRuntime {
   }
 }
 
+class PluginDashboardLocalTutorialRunner {
+  runtime = new PluginDashboardGuideRuntime()
+  tooltip: HTMLDivElement | null = null
+  titleEl: HTMLDivElement | null = null
+  bodyEl: HTMLDivElement | null = null
+  hintEl: HTMLDivElement | null = null
+  skipButton: HTMLButtonElement | null = null
+  cancelled = false
+  shieldClickHandler: ((event: Event) => void) | null = null
+  keydownHandler: ((event: KeyboardEvent) => void) | null = null
+  advanceResolver: (() => void) | null = null
+  cancelResolvers: Array<() => void> = []
+  advanceEnabled = false
+
+  async start(options: StartPluginDashboardTutorialOptions) {
+    const steps = Array.isArray(options.steps) ? options.steps.filter(Boolean) : []
+    if (!steps.length) {
+      return
+    }
+    const firstStep = steps[0]
+    if (!firstStep) {
+      return
+    }
+
+    this.runtime.activateOverlayShell()
+    this.runtime.ensureRoot()
+    this.ensureTooltip(options.labels)
+    this.bindAdvanceHandlers()
+
+    try {
+      const initialTarget = await this.waitForStepTarget(firstStep, 1200)
+      if (initialTarget) {
+        const rect = this.runtime.getRect(initialTarget)
+        const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
+        const y = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
+        this.runtime.showCursor(x, y)
+      } else {
+        this.runtime.showCursor(window.innerWidth / 2, window.innerHeight / 2)
+      }
+
+      for (const step of steps) {
+        if (this.cancelled) {
+          return
+        }
+
+        await this.runStep(step)
+      }
+    } catch (error) {
+      this.requestCancel()
+      console.warn('[PluginDashboardLocalTutorialRunner] 教程步骤执行失败:', error)
+    } finally {
+      this.cleanup()
+    }
+  }
+
+  ensureTooltip(labels?: StartPluginDashboardTutorialOptions['labels']) {
+    if (!this.runtime.root || this.tooltip) {
+      return
+    }
+
+    const tooltip = document.createElement('div')
+    tooltip.style.position = 'fixed'
+    tooltip.style.right = '24px'
+    tooltip.style.bottom = '24px'
+    tooltip.style.width = 'min(360px, calc(100vw - 32px))'
+    tooltip.style.padding = '16px 16px 14px'
+    tooltip.style.borderRadius = '18px'
+    tooltip.style.background = 'rgba(8, 18, 44, 0.92)'
+    tooltip.style.border = '1px solid rgba(160, 214, 255, 0.35)'
+    tooltip.style.boxShadow = '0 24px 80px rgba(8, 17, 40, 0.45)'
+    tooltip.style.backdropFilter = 'blur(14px)'
+    tooltip.style.color = '#eef7ff'
+    tooltip.style.pointerEvents = 'auto'
+    tooltip.style.zIndex = '2147483647'
+    tooltip.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+
+    const titleEl = document.createElement('div')
+    titleEl.style.fontSize = '16px'
+    titleEl.style.fontWeight = '700'
+    titleEl.style.lineHeight = '1.35'
+    titleEl.style.marginBottom = '8px'
+
+    const bodyEl = document.createElement('div')
+    bodyEl.style.fontSize = '14px'
+    bodyEl.style.lineHeight = '1.6'
+    bodyEl.style.color = 'rgba(238, 247, 255, 0.92)'
+
+    const footer = document.createElement('div')
+    footer.style.display = 'flex'
+    footer.style.alignItems = 'center'
+    footer.style.justifyContent = 'space-between'
+    footer.style.gap = '12px'
+    footer.style.marginTop = '14px'
+
+    const hintEl = document.createElement('div')
+    hintEl.textContent = labels?.keyboardHint || ''
+    hintEl.style.fontSize = '12px'
+    hintEl.style.lineHeight = '1.45'
+    hintEl.style.color = 'rgba(194, 219, 255, 0.78)'
+    hintEl.style.flex = '1'
+
+    const skipButton = document.createElement('button')
+    skipButton.type = 'button'
+    skipButton.textContent = labels?.skip || 'Skip'
+    skipButton.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
+    skipButton.style.border = '0'
+    skipButton.style.borderRadius = '999px'
+    skipButton.style.padding = '8px 14px'
+    skipButton.style.background = 'rgba(107, 170, 255, 0.18)'
+    skipButton.style.color = '#eef7ff'
+    skipButton.style.fontSize = '13px'
+    skipButton.style.fontWeight = '600'
+    skipButton.style.cursor = 'pointer'
+    const stopSkipEvent = (event: Event) => {
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+    }
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      stopSkipEvent(event)
+      this.requestCancel()
+    }
+    skipButton.addEventListener('pointerdown', stopSkipEvent)
+    skipButton.addEventListener('pointerup', stopSkipEvent)
+    skipButton.addEventListener('mousedown', stopSkipEvent)
+    skipButton.addEventListener('mouseup', stopSkipEvent)
+    skipButton.addEventListener('touchstart', stopSkipEvent)
+    skipButton.addEventListener('touchend', stopSkipEvent)
+    skipButton.addEventListener('click', handleSkip)
+
+    footer.appendChild(hintEl)
+    footer.appendChild(skipButton)
+    tooltip.appendChild(titleEl)
+    tooltip.appendChild(bodyEl)
+    tooltip.appendChild(footer)
+    this.runtime.root.appendChild(tooltip)
+
+    this.tooltip = tooltip
+    this.titleEl = titleEl
+    this.bodyEl = bodyEl
+    this.hintEl = hintEl
+    this.skipButton = skipButton
+  }
+
+  bindAdvanceHandlers() {
+    const shield = this.runtime.interactionShield
+    if (shield && !this.shieldClickHandler) {
+      this.shieldClickHandler = () => {
+        if (!this.advanceEnabled) {
+          return
+        }
+        this.resolveAdvance()
+      }
+      shield.addEventListener('click', this.shieldClickHandler)
+    }
+
+    if (!this.keydownHandler) {
+      this.keydownHandler = (event: KeyboardEvent) => {
+        if (!this.advanceEnabled) {
+          return
+        }
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return
+        }
+        event.preventDefault()
+        this.resolveAdvance()
+      }
+      window.addEventListener('keydown', this.keydownHandler, true)
+    }
+  }
+
+  resolveAdvance() {
+    const resolver = this.advanceResolver
+    this.advanceResolver = null
+    if (resolver) {
+      resolver()
+    }
+  }
+
+  requestCancel() {
+    this.cancelled = true
+    this.advanceEnabled = false
+    this.runtime.cancelCursorMotion()
+    this.resolveAdvance()
+    const resolvers = this.cancelResolvers.slice()
+    this.cancelResolvers = []
+    resolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
+  }
+
+  waitForCancelOrTimeout(delayMs: number) {
+    if (this.cancelled) {
+      return Promise.resolve(false)
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false
+      let timeoutId: number | null = null
+      const finish = (completed: boolean) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId)
+          timeoutId = null
+        }
+        this.cancelResolvers = this.cancelResolvers.filter((resolver) => resolver !== cancel)
+        resolve(completed && !this.cancelled)
+      }
+      const cancel = () => finish(false)
+      this.cancelResolvers.push(cancel)
+      timeoutId = window.setTimeout(() => finish(true), Math.max(0, Math.round(delayMs)))
+    })
+  }
+
+  async navigate(route?: string) {
+    const targetRoute = String(route || '').trim()
+    if (!targetRoute) {
+      return
+    }
+
+    const currentFullPath = router.currentRoute.value.fullPath
+    if (currentFullPath === targetRoute) {
+      return
+    }
+
+    try {
+      await router.push(targetRoute)
+    } catch (_) {}
+    await wait(80)
+  }
+
+  async dispatchAction(action?: string) {
+    const value = String(action || '').trim()
+    if (!value) {
+      return
+    }
+
+    window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_ACTION_EVENT, {
+      detail: {
+        action: value,
+      },
+    }))
+  }
+
+  async waitForStepTarget(step: PluginDashboardLocalTutorialStep, timeoutMs = 3600) {
+    const targetId = String(step.targetId || '').trim()
+    if (!targetId) {
+      return null
+    }
+
+    const startedAt = Date.now()
+    while (!this.cancelled && (Date.now() - startedAt) < timeoutMs) {
+      const element = document.querySelector(`[data-yui-guide-id="${targetId}"]`) as HTMLElement | null
+      if (element) {
+        return element
+      }
+      if (!(await this.waitForCancelOrTimeout(80))) {
+        return null
+      }
+    }
+
+    return null
+  }
+
+  positionTooltip(target: HTMLElement | null) {
+    if (!this.tooltip) {
+      return
+    }
+
+    const rect = target ? this.runtime.getRect(target) : null
+    const tooltipWidth = Math.min(360, Math.max(280, Math.round(window.innerWidth * 0.28)))
+    this.tooltip.style.width = `${Math.min(tooltipWidth, window.innerWidth - 32)}px`
+
+    if (!rect) {
+      this.tooltip.style.left = ''
+      this.tooltip.style.top = ''
+      this.tooltip.style.right = '24px'
+      this.tooltip.style.bottom = '24px'
+      return
+    }
+
+    const margin = 16
+    const tooltipRect = this.tooltip.getBoundingClientRect()
+    const preferredTop = rect.bottom + 16
+    const placeBelow = preferredTop + tooltipRect.height <= window.innerHeight - margin
+    const left = clamp(rect.left + (rect.width / 2) - (tooltipRect.width / 2), margin, window.innerWidth - tooltipRect.width - margin)
+    const top = placeBelow
+      ? preferredTop
+      : Math.max(margin, rect.top - tooltipRect.height - 16)
+
+    this.tooltip.style.left = `${Math.round(left)}px`
+    this.tooltip.style.top = `${Math.round(top)}px`
+    this.tooltip.style.right = 'auto'
+    this.tooltip.style.bottom = 'auto'
+  }
+
+  async runStep(step: PluginDashboardLocalTutorialStep) {
+    await this.navigate(step.route)
+    if (this.cancelled) {
+      return
+    }
+
+    await this.dispatchAction(step.action)
+    if (step.waitMs && step.waitMs > 0) {
+      await this.waitForCancelOrTimeout(step.waitMs)
+    } else if (step.action) {
+      await this.waitForCancelOrTimeout(120)
+    }
+    if (this.cancelled) {
+      return
+    }
+
+    const target = await this.waitForStepTarget(step)
+    if (!target) {
+      if (step.allowMissing) {
+        return
+      }
+      throw new Error(`[PluginDashboardLocalTutorialRunner] Missing target for step: ${step.targetId || '(unknown)'}`)
+    }
+
+    if (this.titleEl) {
+      this.titleEl.textContent = step.title || ''
+    }
+    if (this.bodyEl) {
+      this.bodyEl.textContent = step.body || ''
+    }
+
+    this.runtime.setSpotlight(target)
+    this.positionTooltip(target)
+
+    const motion = step.motion || 'point'
+    const durationMs = Math.max(600, Math.round(step.durationMs || 1800))
+    if (motion === 'ellipse') {
+      await this.runtime.moveCursorToElementWithRecovery(target, 460, () => !this.cancelled)
+      if (!this.cancelled) {
+        await this.runtime.runEllipse(target, durationMs, () => !this.cancelled)
+      }
+    } else {
+      await this.runtime.moveCursorToElementWithRecovery(target, Math.min(700, durationMs), () => !this.cancelled)
+      if (!this.cancelled && motion === 'click') {
+        this.runtime.clickCursor()
+      }
+    }
+
+    if (this.cancelled) {
+      return
+    }
+
+    this.advanceEnabled = false
+    window.setTimeout(() => {
+      this.advanceEnabled = true
+    }, 500)
+
+    await new Promise<void>((resolve) => {
+      this.advanceResolver = resolve
+      window.setTimeout(() => {
+        if (this.advanceResolver === resolve) {
+          this.resolveAdvance()
+        }
+      }, Math.max(1200, durationMs))
+    })
+    this.advanceEnabled = false
+  }
+
+  cleanup() {
+    this.requestCancel()
+
+    if (this.runtime.interactionShield && this.shieldClickHandler) {
+      this.runtime.interactionShield.removeEventListener('click', this.shieldClickHandler)
+    }
+    if (this.keydownHandler) {
+      window.removeEventListener('keydown', this.keydownHandler, true)
+    }
+
+    this.shieldClickHandler = null
+    this.keydownHandler = null
+    this.tooltip = null
+    this.titleEl = null
+    this.bodyEl = null
+    this.hintEl = null
+    this.skipButton = null
+    this.runtime.cleanup()
+  }
+}
+
+let activeLocalTutorialRunner: PluginDashboardLocalTutorialRunner | null = null
+let pluginDashboardRuntimeInitialized = false
+
+export function startPluginDashboardTutorial(options: StartPluginDashboardTutorialOptions) {
+  activeLocalTutorialRunner?.cleanup()
+  const runner = new PluginDashboardLocalTutorialRunner()
+  activeLocalTutorialRunner = runner
+  void runner.start(options).finally(() => {
+    if (activeLocalTutorialRunner === runner) {
+      activeLocalTutorialRunner = null
+    }
+  })
+}
+
 export function initPluginDashboardYuiGuideRuntime() {
+  if (pluginDashboardRuntimeInitialized) {
+    return
+  }
+  pluginDashboardRuntimeInitialized = true
+
   const runtime = new PluginDashboardGuideRuntime()
-  const tutorialBridge = useYuiTutorialBridge()
   let receivedStartMessage = false
-  const initialBridgeState = tutorialBridge.state.value
-  const shouldUseBridgeFallback = !!(
-    initialBridgeState.isActive
-    && initialBridgeState.flowId === HOME_YUI_GUIDE_FLOW_ID
-    && initialBridgeState.sourcePage === 'home'
-    && initialBridgeState.resumeScene === PLUGIN_DASHBOARD_LANDING_SCENE
-  )
-  const fallbackStartPayload: StartPayload = {
-    line: '',
-    closeOnDone: false,
-  }
-  let fallbackSessionId = shouldUseBridgeFallback
-    ? `query-${initialBridgeState.handoffToken || Date.now()}`
-    : ''
+  runtime.preactivatePendingOverlay()
 
-  const mergeStartPayload = (target: StartPayload, payload: StartPayload) => {
-    if (typeof payload.line === 'string') {
-      target.line = payload.line
-    }
-    if (payload.voiceKey) {
-      target.voiceKey = payload.voiceKey
-    }
-    if (typeof payload.audioUrl === 'string') {
-      target.audioUrl = payload.audioUrl
-    }
-    if (typeof payload.closeOnDone === 'boolean') {
-      target.closeOnDone = payload.closeOnDone
-    }
-    if (Number.isFinite(payload.interruptCount)) {
-      target.interruptCount = Math.max(0, Math.floor(payload.interruptCount as number))
-    }
+  const handleDesktopInterruptAckEvent = (event: Event) => {
+    runtime.handleDesktopInterruptAckEvent(event)
+  }
+  const handleDesktopNarrationFinishedEvent = (event: Event) => {
+    runtime.handleDesktopNarrationFinishedEvent(event)
   }
 
-  window.addEventListener('message', (event: MessageEvent) => {
+  const handleRuntimeMessage = (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object') {
+      return
+    }
+
+    if (data.type === TERMINATE_EVENT && isAllowedOpenerEvent(event)) {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      if (sessionId && runtime.activeSessionId && sessionId !== runtime.activeSessionId) {
+        return
+      }
+
+      runtime.cleanup()
+      if (data.closeWindow !== false) {
+        try {
+          window.close()
+        } catch (_) {}
+      }
+      return
+    }
+
+    if (data.type === NARRATION_FINISHED_EVENT && isAllowedOpenerEvent(event)) {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      if (sessionId) {
+        runtime.markHomeNarrationFinished(sessionId)
+      }
       return
     }
 
@@ -1937,13 +3763,7 @@ export function initPluginDashboardYuiGuideRuntime() {
 
     const startPayload = (data.payload || {}) as StartPayload
 
-    if (shouldUseBridgeFallback && !receivedStartMessage) {
-      fallbackSessionId = sessionId
-      mergeStartPayload(fallbackStartPayload, startPayload)
-      receivedStartMessage = true
-      return
-    }
-
+    activeLocalTutorialRunner?.cleanup()
     receivedStartMessage = true
     runtime.run(sessionId, startPayload).catch(() => {
       if (!runtime.isCurrentRun(sessionId)) {
@@ -1951,34 +3771,24 @@ export function initPluginDashboardYuiGuideRuntime() {
       }
       runtime.notify(DONE_EVENT, sessionId)
       runtime.cleanup()
+    }).finally(() => {
+      receivedStartMessage = false
     })
-  })
+  }
 
-  window.setTimeout(() => {
-    if (!shouldUseBridgeFallback) {
-      return
-    }
+  const cleanupRuntimeListeners = () => {
+    window.removeEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
+    window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+    window.removeEventListener('message', handleRuntimeMessage)
+    pluginDashboardRuntimeInitialized = false
+  }
+  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
+  runtime.cleanup = () => {
+    cleanupRuntimeListeners()
+    originalRuntimeCleanup()
+  }
 
-    const bridgeState = tutorialBridge.state.value
-    if (
-      !bridgeState.isActive
-      || bridgeState.flowId !== HOME_YUI_GUIDE_FLOW_ID
-      || bridgeState.sourcePage !== 'home'
-      || bridgeState.resumeScene !== PLUGIN_DASHBOARD_LANDING_SCENE
-    ) {
-      return
-    }
-
-    receivedStartMessage = true
-    const sessionId = fallbackSessionId || `query-${bridgeState.handoffToken || Date.now()}`
-    runtime.run(sessionId, fallbackStartPayload).catch(() => {
-      if (!runtime.isCurrentRun(sessionId)) {
-        return
-      }
-      // 与主 START_EVENT 分支保持对称：先通知 opener DONE 再 cleanup，
-      // 否则 fallback 路径下 run 抛错时主页教程永远收不到完成信号会卡死
-      runtime.notify(DONE_EVENT, sessionId)
-      runtime.cleanup()
-    })
-  }, 320)
+  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
+  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+  window.addEventListener('message', handleRuntimeMessage)
 }

@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Characters Router
 
@@ -6,6 +20,18 @@ Handles character (catgirl) management endpoints including:
 - Character CRUD operations
 - Voice settings
 - Microphone settings
+
+URL convention
+--------------
+Every endpoint here is declared WITHOUT a trailing slash (e.g.
+``@router.get('')`` not ``@router.get('/')``, ``@router.get('/voices')`` not
+``@router.get('/voices/')``). Frontend callers must match exactly — never
+``fetch('/api/characters/')``. Triggering Starlette's slash-redirect 307
+returns an absolute ``Location`` built from the request ``Host`` and breaks
+under reverse proxies that don't transparently forward ``Host``. See
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the full
+rationale and the PR #938 incident; ``scripts/check_api_trailing_slash.py``
++ ``scripts/check_frontend_api_trailing_slash.py`` enforce this in CI.
 """
 import re
 import json
@@ -16,18 +42,25 @@ import asyncio
 import copy
 import base64
 import hashlib
+import math
 import struct
 import tempfile
+import wave
 import zlib
-from urllib.parse import urlparse
+import socket
+from dataclasses import dataclass
+from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
+import aiohttp
 import httpx
-import dashscope
-from dashscope.audio.tts_v2 import SpeechSynthesizer
+# dashscope 仅用于声音克隆 TTS 预览（_do_preview_synthesize），import 偏重
+# （~0.1s）且不在 greeting/启动链上，改成用到时再 import；由 module_warmup 预热。
 
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
 from .shared_state import (
     get_config_manager,
     get_session_manager,
@@ -37,15 +70,45 @@ from .shared_state import (
     get_remove_one_catgirl,
 )
 from .workshop_router import _ugc_sync_lock
-from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
+from main_logic.tts_client import (
+    get_custom_tts_voices,
+    CustomTTSVoiceFetchError,
+)
+from utils.elevenlabs_tts_voices import (
+    ELEVENLABS_TTS_DEFAULT_MODEL,
+    ELEVENLABS_TTS_VOICE_PREFIX,
+)
+from .agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
     delete_character_memory_storage,
     list_character_memory_paths,
     rename_character_memory_storage,
 )
-from utils.config_manager import get_reserved, set_reserved, flatten_reserved
+from utils.config_manager import (
+    delete_reserved,
+    ensure_default_yui_voice_for_free_api,
+    flatten_reserved,
+    get_reserved,
+    set_reserved,
+    strip_generated_persona_selection_prompt,
+)
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.voice_config import read_legacy_voice_id
+from utils.native_voice_registry import (
+    get_active_realtime_native_provider_for_ui,
+    get_native_voice_catalog_for_ui,
+    normalize_native_voice,
+    resolve_native_voice_for_routing,
+)
+from utils import tts_provider_registry
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.initial_personality_state import (
+    clear_manual_personality_reselect,
+    load_initial_personality_state,
+    mark_manual_personality_reselect,
+    mark_initial_personality_state,
+)
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -56,23 +119,541 @@ from utils.voice_clone import (
     MINIMAX_PREFIX_MAX_LENGTH,
     get_minimax_base_url,
     get_minimax_storage_prefix,
+    MimoVoiceCloneClient,
+    MimoVoiceCloneError,
+    MIMO_VOICE_STORAGE_KEY,
     QwenVoiceCloneClient,
     QwenVoiceCloneError,
     qwen_language_hints,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
-from utils.language_utils import normalize_language_code
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.new_character_greeting_state import (
+    mark_pending as mark_new_character_greeting_pending,
+    remove_pending as remove_new_character_greeting_pending,
+    rename_pending as rename_new_character_greeting_pending,
+)
+from utils.persona_presets import (
+    build_persona_override_payload,
+    get_persona_preset,
+    list_persona_presets,
+)
 from utils.url_utils import encode_url_path
-from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable, is_cloudsave_disabled
+from config import (
+    MEMORY_SERVER_PORT,
+    TFLINK_UPLOAD_URL,
+    CHARACTER_RESERVED_FIELDS,
+    DEFAULT_LIVE2D_MODEL_NAME,
+)
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
+DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+_DIRECT_LINK_MAX_REDIRECTS = 10
+_DIRECT_LINK_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_PNGTUBER_CARD_MODEL_DIR = "pngtuber"
+_PNGTUBER_IMAGE_KEYS = (
+    "idle_image",
+    "talking_image",
+    "drag_image",
+    "click_image",
+    "happy_image",
+    "sad_image",
+    "angry_image",
+    "surprised_image",
+)
+_PNGTUBER_PACKABLE_KEYS = (*_PNGTUBER_IMAGE_KEYS, "layered_metadata", "metadata")
+
+
+def _strip_url_suffix(path: str) -> str:
+    return str(path or "").split("?", 1)[0].split("#", 1)[0]
+
+
+def _pngtuber_user_rel_from_url(value: str) -> str:
+    normalized = _strip_url_suffix(str(value or "").strip().replace("\\", "/"))
+    prefix = "/user_pngtuber/"
+    if not normalized.startswith(prefix):
+        return ""
+    rel = normalized[len(prefix):]
+    rel_path = Path(rel)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return ""
+    return rel
+
+
+def _collect_pngtuber_user_asset_refs(pngtuber_config: dict) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    if not isinstance(pngtuber_config, dict):
+        return refs
+    for key in _PNGTUBER_PACKABLE_KEYS:
+        rel = _pngtuber_user_rel_from_url(str(pngtuber_config.get(key) or ""))
+        if rel:
+            refs[key] = rel
+    return refs
+
+
+def _pngtuber_package_roots_from_refs(refs: dict[str, str]) -> list[str]:
+    roots: list[str] = []
+    seen: set[str] = set()
+    for rel in refs.values():
+        parts = Path(rel).parts
+        if not parts:
+            continue
+        root = parts[0]
+        if root in ("", ".", "..") or root in seen:
+            continue
+        roots.append(root)
+        seen.add(root)
+    return roots
+
+
+def _with_pngtuber_model_path_rewrites(data, rewrites: dict[str, str]):
+    if not rewrites:
+        return data
+    if isinstance(data, dict):
+        return {
+            key: _with_pngtuber_model_path_rewrites(value, rewrites)
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [_with_pngtuber_model_path_rewrites(item, rewrites) for item in data]
+    if isinstance(data, str):
+        rel = _pngtuber_user_rel_from_url(data)
+        if rel in rewrites:
+            suffix = ""
+            for marker in ("?", "#"):
+                index = data.find(marker)
+                if index >= 0:
+                    suffix = data[index:]
+                    break
+            return rewrites[rel] + suffix
+    return data
+
+
+def _add_pngtuber_assets_to_character_zip(zf, catgirl_data: dict, config_manager) -> bool:
+    pngtuber_config = get_reserved(catgirl_data, "avatar", "pngtuber", default={})
+    refs = _collect_pngtuber_user_asset_refs(pngtuber_config)
+    if not refs:
+        return False
+    added = False
+    added_arcs: set[str] = set()
+    for root_name in _pngtuber_package_roots_from_refs(refs):
+        source_root = config_manager.pngtuber_dir / root_name
+        if source_root.is_file():
+            rel = source_root.relative_to(config_manager.pngtuber_dir).as_posix()
+            arc_name = f"model/{_PNGTUBER_CARD_MODEL_DIR}/{rel}"
+            if arc_name not in added_arcs:
+                zf.write(source_root, arc_name)
+                added_arcs.add(arc_name)
+                added = True
+            continue
+
+        if not source_root.is_dir():
+            logger.warning(f"PNGTuber export asset missing, skipping: {source_root}")
+            continue
+
+        for file_path in sorted(source_root.rglob("*")):
+            if not file_path.is_file():
+                continue
+            rel = file_path.relative_to(config_manager.pngtuber_dir).as_posix()
+            arc_name = f"model/{_PNGTUBER_CARD_MODEL_DIR}/{rel}"
+            if arc_name in added_arcs:
+                continue
+            zf.write(file_path, arc_name)
+            added_arcs.add(arc_name)
+            added = True
+    return added
+
+
+def _rewrite_imported_pngtuber_refs(character_data: dict, rel_map: dict[str, str]) -> dict:
+    rewrites = {
+        rel: f"/user_pngtuber/{new_rel}"
+        for rel, new_rel in rel_map.items()
+    }
+    return _with_pngtuber_model_path_rewrites(character_data, rewrites)
+
+
+def _restore_imported_pngtuber_avatar_config(character_data: dict, source_data: dict, rel_map: dict[str, str]) -> dict:
+    if not isinstance(character_data, dict) or not isinstance(source_data, dict):
+        return character_data
+
+    model_type = get_reserved(
+        source_data,
+        "avatar",
+        "model_type",
+        default="",
+        legacy_keys=("model_type",),
+    )
+    pngtuber_config = get_reserved(source_data, "avatar", "pngtuber", default={})
+    if model_type != "pngtuber" or not isinstance(pngtuber_config, dict):
+        return character_data
+
+    restored = {"_reserved": {"avatar": {"pngtuber": copy.deepcopy(pngtuber_config)}}}
+    if rel_map:
+        restored = _rewrite_imported_pngtuber_refs(restored, rel_map)
+
+    avatar = character_data.setdefault("_reserved", {}).setdefault("avatar", {})
+    avatar["model_type"] = "pngtuber"
+    avatar["live3d_sub_type"] = ""
+    avatar["pngtuber"] = restored["_reserved"]["avatar"]["pngtuber"]
+    avatar["asset_source"] = "local_imported"
+    avatar["asset_source_id"] = ""
+    return character_data
+
+
+def _copy_imported_pngtuber_assets(model_dir: Path, config_manager) -> dict[str, str]:
+    pngtuber_model_dir = model_dir / _PNGTUBER_CARD_MODEL_DIR
+    if not pngtuber_model_dir.exists() or not pngtuber_model_dir.is_dir():
+        return {}
+
+    config_manager.pngtuber_dir.mkdir(parents=True, exist_ok=True)
+    rel_map: dict[str, str] = {}
+
+    for item in pngtuber_model_dir.iterdir():
+        if item.name in ("", ".", ".."):
+            continue
+        target_name = item.name
+        target_path = config_manager.pngtuber_dir / target_name
+        if target_path.exists():
+            counter = 1
+            stem = item.stem
+            suffix = item.suffix
+            while target_path.exists():
+                target_name = f"{stem}({counter}){suffix}" if item.is_file() else f"{item.name}({counter})"
+                target_path = config_manager.pngtuber_dir / target_name
+                counter += 1
+
+        if item.is_dir():
+            shutil.copytree(item, target_path)
+            for copied in item.rglob("*"):
+                if copied.is_file():
+                    old_rel = str(copied.relative_to(pngtuber_model_dir)).replace("\\", "/")
+                    new_rel = str((Path(target_name) / copied.relative_to(item)).as_posix())
+                    rel_map[old_rel] = new_rel
+        elif item.is_file():
+            shutil.copy2(item, target_path)
+            rel_map[item.name] = target_name
+
+    return rel_map
+
+
+class DirectLinkSecurityError(Exception):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+class ElevenLabsUpstreamError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class DirectLinkValidatedTarget:
+    url: str
+    hostname: str
+    port: int
+    addr_info: list
+
+
+class _DirectLinkPinnedResolver(aiohttp.abc.AbstractResolver):
+    def __init__(self, target: DirectLinkValidatedTarget):
+        self._hostname = target.hostname.casefold()
+        self._addr_info = list(target.addr_info)
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        if (host or "").casefold() != self._hostname:
+            raise OSError(f"unexpected direct_link DNS host: {host}")
+
+        records = []
+        for addr_family, socktype, proto, _canonname, sockaddr in self._addr_info:
+            ip = sockaddr[0]
+            resolved_port = sockaddr[1] if len(sockaddr) > 1 else port
+            records.append({
+                "hostname": host,
+                "host": ip,
+                "port": resolved_port,
+                "family": addr_family,
+                "proto": proto,
+                "flags": 0,
+            })
+        return records
+
+    async def close(self):
+        return None
+
+
+class _DirectLinkProbeResponse:
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _direct_link_hostname(target_url: str) -> str:
+    parsed_url = urlparse(target_url)
+    if parsed_url.scheme not in ("http", "https"):
+        raise DirectLinkSecurityError("direct_link 必须是有效的HTTP/HTTPS链接", "INVALID_DIRECT_LINK")
+
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise DirectLinkSecurityError("direct_link 缺少主机名", "INVALID_DIRECT_LINK")
+    if hostname.lower() == "localhost":
+        raise DirectLinkSecurityError("direct_link 不能指向 localhost", "PRIVATE_IP_NOT_ALLOWED")
+    return hostname
+
+
+def _direct_link_port(target_url: str) -> int:
+    parsed_url = urlparse(target_url)
+    try:
+        explicit_port = parsed_url.port
+    except ValueError as exc:
+        raise DirectLinkSecurityError("direct_link 端口无效", "INVALID_DIRECT_LINK") from exc
+    if explicit_port is not None:
+        return explicit_port
+    return 443 if parsed_url.scheme == "https" else 80
+
+
+def _assert_direct_link_addresses_safe(addr_info) -> None:
+    import ipaddress
+
+    for _, _, _, _, sockaddr in addr_info:
+        ip = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (
+            ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+            or ip_obj.is_reserved
+        ):
+            raise DirectLinkSecurityError("direct_link 指向受限地址，已拒绝", "PRIVATE_IP_NOT_ALLOWED")
+
+
+async def _validate_direct_link_target(target_url: str) -> DirectLinkValidatedTarget:
+    hostname = _direct_link_hostname(target_url)
+    port = _direct_link_port(target_url)
+
+    try:
+        loop = asyncio.get_running_loop()
+        addr_info = await loop.getaddrinfo(
+            hostname,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise DirectLinkSecurityError(
+            f"direct_link 主机无法解析: {hostname}",
+            "DIRECT_LINK_DNS_FAILED",
+        ) from exc
+
+    _assert_direct_link_addresses_safe(addr_info)
+    return DirectLinkValidatedTarget(
+        url=target_url,
+        hostname=hostname,
+        port=port,
+        addr_info=addr_info,
+    )
+
+
+async def _redirect_target_from_response(response) -> DirectLinkValidatedTarget:
+    location = response.headers.get("location")
+    if not location:
+        raise DirectLinkSecurityError("直链重定向响应缺少 Location 头", "DIRECT_LINK_REDIRECT_INVALID")
+
+    next_url = urljoin(str(response.url), location)
+    return await _validate_direct_link_target(next_url)
+
+
+def _open_pinned_direct_link_session(target: DirectLinkValidatedTarget, *, timeout: float):
+    resolver = _DirectLinkPinnedResolver(target)
+    connector = aiohttp.TCPConnector(
+        resolver=resolver,
+        use_dns_cache=False,
+        ttl_dns_cache=0,
+    )
+    return aiohttp.ClientSession(
+        connector=connector,
+        connector_owner=True,
+        timeout=aiohttp.ClientTimeout(total=timeout),
+        trust_env=False,
+    )
+
+
+async def _request_direct_link_follow_redirects(
+    method: str,
+    direct_link: str,
+    *,
+    stream: bool = False,
+    headers: dict[str, str] | None = None,
+) -> _DirectLinkProbeResponse:
+    target = await _validate_direct_link_target(direct_link)
+    for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
+        async with _open_pinned_direct_link_session(target, timeout=30) as session:
+            async with session.request(
+                method,
+                target.url,
+                headers=headers,
+                allow_redirects=False,
+            ) as response:
+                status_code = response.status
+                if stream:
+                    response.release()
+                else:
+                    await response.read()
+                if status_code in _DIRECT_LINK_REDIRECT_STATUSES:
+                    target = await _redirect_target_from_response(response)
+                    continue
+                return _DirectLinkProbeResponse(status_code)
+    raise DirectLinkSecurityError("直链重定向次数过多", "TOO_MANY_REDIRECTS")
+
+
+async def _download_direct_link_audio(
+    direct_link: str,
+    *,
+    max_file_size: int,
+) -> tuple[str, bytes]:
+    target = await _validate_direct_link_target(direct_link)
+    for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
+        async with _open_pinned_direct_link_session(target, timeout=60) as session:
+            async with session.get(target.url, allow_redirects=False) as download_resp:
+                if download_resp.status in _DIRECT_LINK_REDIRECT_STATUSES:
+                    target = await _redirect_target_from_response(download_resp)
+                    download_resp.release()
+                    continue
+
+                if download_resp.status != 200:
+                    raise DirectLinkSecurityError(
+                        f"直链下载失败，状态码: {download_resp.status}",
+                        "DOWNLOAD_FAILED",
+                    )
+
+                filename = "audio.wav"
+                content_disposition = download_resp.headers.get("content-disposition", "")
+                if "filename=" in content_disposition:
+                    match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
+                    if match:
+                        filename = match.group(1)
+                else:
+                    parsed = urlparse(str(download_resp.url))
+                    path_filename = parsed.path.split("/")[-1]
+                    if path_filename and "." in path_filename:
+                        filename = path_filename
+
+                audio_buffer = io.BytesIO()
+                total_size = 0
+                async for chunk in download_resp.content.iter_chunked(8192):
+                    total_size += len(chunk)
+                    if total_size > max_file_size:
+                        raise DirectLinkSecurityError("音频文件超过100MB限制", "FILE_TOO_LARGE")
+                    audio_buffer.write(chunk)
+
+                return filename, audio_buffer.getvalue()
+
+    raise DirectLinkSecurityError("直链重定向次数过多", "TOO_MANY_REDIRECTS")
+
+
+def _voice_session_starting_response():
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "VOICE_SESSION_STARTING",
+            "error": VOICE_SESSION_STARTING_ERROR,
+            "retryable": True,
+        },
+        status_code=409,
+    )
+
+
+def _is_current_catgirl_voice_session_starting(name: str, characters, session_manager) -> bool:
+    if name != characters.get("当前猫娘", ""):
+        return False
+    mgr = session_manager.get(name) if session_manager else None
+    if not mgr:
+        return False
+    return bool(
+        getattr(mgr, "is_starting", False)
+        and not getattr(mgr, "is_active", False)
+        and (getattr(mgr, "starting_input_mode", None) or getattr(mgr, "input_mode", "")) == "audio"
+    )
+
+
+def _get_new_catgirl_default_voice_id() -> str:
+    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
+    from utils.api_config_loader import get_free_voices
+
+    free_voices = get_free_voices() or {}
+    return (
+        free_voices.get('cuteGirl')
+        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
+        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
+    )
+
+
+async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
+    try:
+        await mark_new_character_greeting_pending(config_manager, character_name, source=source)
+        return True, ""
+    except Exception as exc:
+        logger.exception("mark new character greeting pending failed: %s", character_name)
+        return False, str(exc)
+
+
+def _build_profile_rename_event(old_name: str, new_name: str) -> dict:
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    return {
+        "type": "profile_rename",
+        "old_name": old_name,
+        "new_name": new_name,
+        "renamed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _append_profile_rename_event(character_payload: dict, old_name: str, new_name: str) -> None:
+    """Write the rename event into the hidden AI context; the character manager page does not render `_reserved` as a regular field."""
+    if not isinstance(character_payload, dict):
+        return
+
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    if old_name == new_name:
+        return
+
+    existing = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    events = [event for event in existing if isinstance(event, dict)] if isinstance(existing, list) else []
+    new_event = _build_profile_rename_event(old_name, new_name)
+
+    # 防止同一次请求重放时连续写入完全相同的改名事件。
+    if events:
+        last = events[-1]
+        if (
+            last.get("type") == new_event["type"]
+            and str(last.get("old_name") or "") == new_event["old_name"]
+            and str(last.get("new_name") or "") == new_event["new_name"]
+        ):
+            return
+
+    events.append(new_event)
+    set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
 
 
 def _json_no_store_response(content, *, status_code: int = 200):
@@ -84,6 +665,429 @@ def _json_no_store_response(content, *, status_code: int = 200):
             "Pragma": "no-cache",
         },
     )
+
+
+def _build_persona_selection_payload(character_payload: dict) -> dict:
+    override = get_reserved(character_payload, "persona_override", default=None)
+    if not isinstance(override, dict):
+        return {
+            "mode": "default",
+            "preset_id": "",
+            "source": "",
+            "selected_at": "",
+            "profile": {},
+        }
+
+    profile = override.get("profile")
+    return {
+        "mode": "override",
+        "preset_id": str(override.get("preset_id") or "").strip(),
+        "source": str(override.get("source") or "").strip(),
+        "selected_at": str(override.get("selected_at") or "").strip(),
+        "profile": dict(profile) if isinstance(profile, dict) else {},
+    }
+
+
+def _normalize_persona_request_language(raw_language: object) -> str | None:
+    """Normalize the UI language carried by a persona selection request; invalid values stay None so downstream keeps its existing fallback."""
+    raw = str(raw_language or "").strip()
+    if not raw or not is_supported_language_code(raw):
+        return None
+    return normalize_language_code(raw, format="full")
+
+
+def _get_persona_request_language(request: Request) -> str | None:
+    """Extract the persona preset language from query params or Accept-Language."""
+    language = request.query_params.get("language") or request.query_params.get("i18n_language")
+    if language:
+        normalized = _normalize_persona_request_language(language)
+        if normalized is not None:
+            return normalized
+    accept_lang = request.headers.get("Accept-Language", "")
+    if accept_lang:
+        for language_part in accept_lang.split(","):
+            normalized = _normalize_persona_request_language(language_part.split(";")[0].strip())
+            if normalized is not None:
+                return normalized
+    return None
+
+
+def _get_persona_payload_request_language(payload: object, request: Request) -> str | None:
+    """Prefer the request-body language; fall back to query params and headers when invalid or missing."""
+    body_language = None
+    if isinstance(payload, dict):
+        body_language = payload.get("i18n_language") or payload.get("language")
+    if body_language:
+        normalized = _normalize_persona_request_language(body_language)
+        if normalized is not None:
+            return normalized
+    return _get_persona_request_language(request)
+
+
+def _normalize_voice_preview_language(raw_language: object) -> str | None:
+    """Normalize the voice preview language; returns None for invalid values so other sources can be tried."""
+    raw = str(raw_language or "").strip()
+    if not raw or not is_supported_language_code(raw):
+        return None
+    normalized = normalize_language_code(raw, format="full")
+    if normalized in VOICE_PREVIEW_TEXTS:
+        return normalized
+    return None
+
+
+def _get_voice_preview_language(request: Request, language: object = None, i18n_language: object = None) -> str:
+    """Pick the preview text by the frontend i18n language; defaults to the legacy Chinese preview."""
+    for candidate in (language, i18n_language):
+        normalized = _normalize_voice_preview_language(candidate)
+        if normalized:
+            return normalized
+
+    accept_lang = request.headers.get("Accept-Language", "")
+    if accept_lang:
+        for language_part in accept_lang.split(","):
+            normalized = _normalize_voice_preview_language(language_part.split(";")[0].strip())
+            if normalized:
+                return normalized
+
+    return "zh-CN"
+
+
+def _is_free_preset_voice_id(voice_id: object) -> bool:
+    """Check whether this is a runtime free preset voice."""
+    normalized = str(voice_id or "").strip()
+    if not normalized:
+        return False
+    try:
+        from utils.api_config_loader import get_free_voices
+        free_voice_ids = set((get_free_voices() or {}).values())
+    except Exception:
+        return False
+    return normalized in free_voice_ids
+
+
+def _get_active_native_preview_provider(config_manager, voice_id: object) -> str | None:
+    """Decide whether the voice_id should take the current realtime provider's native preview path."""
+    normalized = str(voice_id or "").strip()
+    if not normalized:
+        return None
+    active_provider = get_active_realtime_native_provider_for_ui(config_manager)
+    if not active_provider:
+        return None
+    _, uses_provider_native_voice = resolve_native_voice_for_routing(
+        active_provider,
+        normalized,
+        config_manager.voice_id_exists_in_any_storage,
+    )
+    if uses_provider_native_voice:
+        return active_provider
+    return None
+
+
+def _is_unpreviewable_selected_preset_voice(config_manager, core_config, voice_id, voice_data) -> bool:
+    """Whether voice_id is a built-in preset of the currently selected hosted/local
+    provider (e.g. MiMo) that has no dedicated preview path yet — and is NOT a user clone.
+
+    A cloned voice whose id collides with a preset name must still preview through its
+    clone path: runtime dispatch selects clone providers (priority 30/40/50) ahead of a
+    static-catalog provider like MiMo (60), so the clone wins. Any id present in a voice
+    storage bucket is therefore never treated as an unpreviewable preset (dual to the
+    native-preview collision guard, which passes voice_id_exists_in_any_storage)."""
+    if voice_data:
+        return False
+    try:
+        if config_manager.voice_id_exists_in_any_storage(voice_id):
+            return False
+    except Exception:
+        # 存储桶查询异常（极少见的 IO 错误）：按「无法确认是克隆」继续走下方预制判定，
+        # 不因一次查询失败改变结论；留一条带堆栈的 debug 便于排查（同 _grok 撞名查模式）。
+        logger.debug("voice_id_exists_in_any_storage 查询失败，按非克隆继续判定", exc_info=True)
+    return tts_provider_registry.is_selected_preset_voice(core_config or {}, config_manager, voice_id)
+
+
+def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
+    """Read the WAV returned by upstream; returns PCM plus channel count, sample width and sample rate."""
+    with io.BytesIO(audio_bytes) as wav_io:
+        with wave.open(wav_io, "rb") as wav_file:
+            pcm_data = wav_file.readframes(wav_file.getnframes())
+            return (
+                pcm_data,
+                wav_file.getnchannels(),
+                wav_file.getsampwidth(),
+                wav_file.getframerate(),
+            )
+
+
+def _build_wav_payload(pcm_chunks: list[bytes], channels: int, sample_width: int, sample_rate: int) -> bytes:
+    """Wrap multiple PCM chunks into a single WAV playable directly by the frontend Audio element."""
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(pcm_chunks))
+    return out.getvalue()
+
+
+async def _synthesize_step_voice_preview(
+    voice_id: str,
+    preview_line: str,
+    preview_language: str,
+    audio_api_key: str = "",
+    *,
+    free_mode: bool = False,
+) -> bytes:
+    """Generate a preview WAV using the StepFun/free TTS WebSocket."""
+    import websockets
+
+    from main_logic.tts_client import _adjust_free_tts_url, _build_step_tts_create_data
+
+    tts_url = (
+        _adjust_free_tts_url("wss://www.lanlan.tech/tts")
+        if free_mode
+        else "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
+    )
+    headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
+    lang_hint = "ja" if preview_language == "ja" else None
+    is_lanlan_app = "lanlan.app" in tts_url
+    session_id = ""
+    pcm_chunks: list[bytes] = []
+    wav_meta: tuple[int, int, int] | None = None
+
+    async with asyncio.timeout(20):
+        async with websockets.connect(tts_url, additional_headers=headers) as ws:
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                if isinstance(raw, bytes):
+                    continue
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type == "tts.connection.done":
+                    session_id = event.get("data", {}).get("session_id") or ""
+                    break
+                if event_type == "tts.response.error":
+                    raise RuntimeError(str(event.get("data") or event))
+
+            if not session_id:
+                raise RuntimeError("TTS 连接未返回 session_id")
+
+            create_data = _build_step_tts_create_data(session_id, voice_id, lang_hint, is_lanlan_app)
+
+            await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
+            await ws.send(json.dumps({
+                "type": "tts.text.delta",
+                "data": {"session_id": session_id, "text": preview_line},
+            }))
+            await ws.send(json.dumps({
+                "type": "tts.text.done",
+                "data": {"session_id": session_id},
+            }))
+
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=12.0)
+                if isinstance(raw, bytes):
+                    continue
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type == "tts.response.error":
+                    raise RuntimeError(str(event.get("data") or event))
+                if event_type == "tts.response.audio.delta":
+                    audio_b64 = event.get("data", {}).get("audio", "")
+                    if audio_b64:
+                        pcm_data, channels, sample_width, sample_rate = _read_wav_payload(base64.b64decode(audio_b64))
+                        pcm_chunks.append(pcm_data)
+                        wav_meta = wav_meta or (channels, sample_width, sample_rate)
+                elif event_type in ("tts.response.done", "tts.response.audio.done"):
+                    break
+
+    if not pcm_chunks or wav_meta is None:
+        raise RuntimeError("TTS 未返回音频")
+
+    channels, sample_width, sample_rate = wav_meta
+    return _build_wav_payload(pcm_chunks, channels, sample_width, sample_rate)
+
+
+async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, preview_language: str, audio_api_key: str = "") -> bytes:
+    """Generate a preview WAV for a free preset voice using the free TTS WebSocket."""
+    return await _synthesize_step_voice_preview(
+        voice_id=voice_id,
+        preview_line=preview_line,
+        preview_language=preview_language,
+        audio_api_key=audio_api_key,
+        free_mode=True,
+    )
+
+
+async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: str, audio_api_key: str) -> bytes:
+    """Generate a preview WAV using Gemini native TTS."""
+    from utils.gemini_tts_voices import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
+
+    normalized_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
+    if not recognized:
+        raise ValueError(f"不支持的 Gemini 原生音色: {voice_id}")
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": f"Say the text with a proper tone, don't omit or add any words:\n\"{preview_line}\""}]}],
+        "generationConfig": {
+            "response_modalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": normalized_voice_id}
+                }
+            },
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(14, connect=10)) as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+    candidates = data.get("candidates", [])
+    if candidates:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if parts:
+            audio_b64 = parts[0].get("inlineData", {}).get("data")
+            if audio_b64:
+                return _build_wav_payload([base64.b64decode(audio_b64)], 1, 2, 24000)
+    raise RuntimeError("Gemini TTS 未返回音频")
+
+
+def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
+    return isinstance(prompt_text, str) and "<NEKO_PERSONA_SELECTION>" in prompt_text
+
+
+def _clear_stale_generated_persona_prompt(character_payload: dict) -> None:
+    if not isinstance(character_payload, dict):
+        return
+    stored_prompt = get_reserved(
+        character_payload,
+        "system_prompt",
+        default=None,
+        legacy_keys=("system_prompt",),
+    )
+    if _has_generated_persona_selection_prompt(stored_prompt):
+        cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
+        if cleaned_prompt:
+            set_reserved(character_payload, "system_prompt", cleaned_prompt)
+        else:
+            delete_reserved(character_payload, "system_prompt")
+
+
+async def _read_json_object_or_400(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return None, JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    return payload if isinstance(payload, dict) else {}, None
+
+
+async def _clear_character_recent_history(config_manager, character_name: str) -> None:
+    recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    assert_cloudsave_writable(
+        config_manager,
+        operation="save",
+        target=f"memory/{character_name}/recent.json",
+    )
+    await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
+    await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
+
+
+def _normalize_prompt_synced_field_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or None
+    if isinstance(value, list):
+        if not value:
+            return None
+        return '、'.join(str(item) for item in value)
+    if isinstance(value, (dict, set, tuple)):
+        return None
+    return str(value)
+
+
+def _prompt_synced_catgirl_fields(catgirl_payload: dict) -> dict:
+    if not isinstance(catgirl_payload, dict):
+        return {}
+    result = {}
+    for key, value in catgirl_payload.items():
+        if key in CHARACTER_RESERVED_FIELD_SET:
+            continue
+        normalized = _normalize_prompt_synced_field_value(value)
+        if normalized is not None:
+            result[key] = normalized
+    return result
+
+
+def _catgirl_prompt_fields_changed(previous_payload: dict, current_payload: dict) -> bool:
+    return _prompt_synced_catgirl_fields(previous_payload) != _prompt_synced_catgirl_fields(current_payload)
+
+
+async def _refresh_catgirl_context_after_profile_change(
+    config_manager,
+    name: str,
+    characters: dict,
+    *,
+    is_new: bool = False,
+    reload_message: str = "角色设定已更新，页面即将刷新",
+) -> dict:
+    result = {
+        "context_refreshed": True,
+        "recent_history_cleared": False,
+        "reload_notified": False,
+        "session_restarted": False,
+    }
+
+    try:
+        await _clear_character_recent_history(config_manager, name)
+        result["recent_history_cleared"] = True
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.warning("清理角色近期上下文失败: name=%s err=%s", name, exc, exc_info=True)
+        result.update({
+            "success": False,
+            "partial_success": True,
+            "context_refreshed": False,
+            "context_refresh_failed": True,
+            "recent_history_clear_failed": True,
+            "recent_history_clear_error": str(exc),
+            "recent_history_clear_error_type": type(exc).__name__,
+            "recent_history_clear_target": f"memory/{name}/recent.json",
+            "session_reset_skipped": True,
+            "init_skipped": True,
+            "error": "角色设定已保存，但近期上下文清理失败，设定未完全刷新",
+        })
+        return result
+
+    session_manager = get_session_manager()
+    is_current_catgirl = name == (characters or {}).get('当前猫娘', '')
+    mgr = session_manager.get(name) if is_current_catgirl and session_manager else None
+    expected_session = getattr(mgr, "session", None) if mgr and getattr(mgr, "is_active", False) else None
+
+    if expected_session is not None:
+        result["reload_notified"] = await send_reload_page_notice(mgr, reload_message)
+        try:
+            await mgr.end_session(by_server=True, expected_session=expected_session)
+            result["session_restarted"] = True
+        except Exception as exc:
+            logger.error("角色设定更新后结束 session 失败: name=%s err=%s", name, exc)
+        reset_circuit = getattr(mgr, "reset_session_start_circuit", None)
+        if callable(reset_circuit):
+            reset_circuit()
+
+    init_one_catgirl = get_init_one_catgirl()
+    await init_one_catgirl(name, is_new=is_new)
+    return result
+
+
+async def _rollback_character_persona_selection_change(config_manager, previous_characters: dict) -> None:
+    await config_manager.asave_characters(previous_characters)
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
@@ -273,9 +1277,9 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
 
 
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
-    """将 ZIP 数据嵌入 PNG 的 ancillary private chunk（neKo 块），插在 IEND 之前。
+    """Embed ZIP data into a PNG ancillary private chunk (the neKo chunk), inserted before IEND.
 
-    生成的文件仍是合法 PNG，任何图片查看器 / Electron 都可以正常预览。
+    The resulting file is still a valid PNG; any image viewer / Electron can preview it normally.
     """
     # PNG IEND 块固定 12 字节: 00 00 00 00  49 45 4E 44  AE 42 60 82
     if len(png_data) < 12 or png_data[-12:-4] != b'\x00\x00\x00\x00IEND':
@@ -317,8 +1321,15 @@ def _validate_profile_name(name: str) -> str | None:
     return None
 
 
+def _profile_name_contains_path_separator(name: str) -> bool:
+    return validate_character_name(
+        str(name or "").strip(),
+        max_units=PROFILE_NAME_MAX_UNITS,
+    ).code == 'contains_path_separator'
+
+
 def _filter_mutable_catgirl_fields(data: dict) -> dict:
-    """过滤掉角色通用编辑接口不允许写入的保留字段。"""
+    """Filter out reserved fields that the generic character edit API must not write."""
     if not isinstance(data, dict):
         logger.warning(
             "_filter_mutable_catgirl_fields expected dict, got %s: %r",
@@ -333,8 +1344,69 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
     }
 
 
+def _normalize_catgirl_field_order(order, available_fields: list[str]) -> list[str]:
+    """Order regular profile fields by the explicit order, appending omitted fields in their current stored order."""
+    available = {str(key) for key in available_fields}
+    result: list[str] = []
+    seen: set[str] = set()
+
+    if isinstance(order, list):
+        for raw_key in order:
+            key = str(raw_key or "").strip()
+            if not key or key in seen or key not in available:
+                continue
+            result.append(key)
+            seen.add(key)
+
+    for raw_key in available_fields:
+        key = str(raw_key or "").strip()
+        if key and key not in seen:
+            result.append(key)
+            seen.add(key)
+    return result
+
+
+def _extract_catgirl_field_order_payload(raw_data: dict) -> list[str] | None:
+    """Read the field order submitted by the frontend; returns None when no explicit order is given."""
+    if not isinstance(raw_data, dict):
+        return None
+    raw_order = raw_data.get("_field_order")
+    if isinstance(raw_order, list):
+        return [str(item or "").strip() for item in raw_order]
+    reserved = raw_data.get("_reserved")
+    if isinstance(reserved, dict) and isinstance(reserved.get("field_order"), list):
+        return [str(item or "").strip() for item in reserved["field_order"]]
+    return None
+
+
+def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | None = None) -> None:
+    """Maintain the creation order of regular profile fields, preventing numeric keys from being reordered first by JS enumeration rules."""
+    if not isinstance(catgirl_data, dict):
+        return
+    available_fields = [
+        str(key)
+        for key in catgirl_data.keys()
+        if key not in CHARACTER_RESERVED_FIELD_SET
+    ]
+    if requested_order is None:
+        # 也认顶层 _field_order：工坊上传卡的顺序存在顶层（上传时 _reserved 被剥离），
+        # 只读 _reserved.field_order 会漏掉它而退回 JSON key 枚举顺序（数字 key 被提前）。
+        requested_order = _extract_catgirl_field_order_payload(catgirl_data)
+    field_order = _normalize_catgirl_field_order(requested_order, available_fields)
+    set_reserved(catgirl_data, "field_order", field_order)
+
+
+def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
+    """Prepend the field order before flattening reserved fields, so the frontend renders in creation order."""
+    if not isinstance(catgirl_data, dict):
+        return catgirl_data
+    data = copy.deepcopy(catgirl_data)
+    _sync_catgirl_field_order(data)
+    return flatten_reserved(data)
+
+
 def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
-    """将用户输入的前缀规范化为 MiniMax 可接受的安全前缀。"""
+    """Normalize the user-entered prefix into a safe prefix that MiniMax accepts."""
     import uuid
 
     original_prefix = str(prefix or '').strip()
@@ -352,28 +1424,265 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
     return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
 
 
-async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
+async def _get_elevenlabs_base_url(config_manager) -> str:
+    return "https://api.elevenlabs.io"
+
+
+def _config_value_is_enabled(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'off', ''}:
+            return False
+    return bool(value)
+
+
+def _prefixed_elevenlabs_voice_id(raw_voice_id: str) -> str:
+    raw = (raw_voice_id or '').strip()
+    if raw.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
+        return raw
+    return f'{ELEVENLABS_TTS_VOICE_PREFIX}{raw}'
+
+
+def _raw_elevenlabs_voice_id(voice_id: str) -> str:
+    raw = (voice_id or '').strip()
+    if raw.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
+        return raw[len(ELEVENLABS_TTS_VOICE_PREFIX):].strip()
+    return raw
+
+
+def _raise_for_elevenlabs_response(resp: httpx.Response, action: str) -> None:
+    if resp.status_code < 400:
+        return
+    message = f"ElevenLabs {action} API error ({resp.status_code}): {resp.text[:300]}"
+    if resp.status_code >= 500:
+        raise ElevenLabsUpstreamError(resp.status_code, message)
+    raise ValueError(message)
+
+
+async def _elevenlabs_clone_voice(
+    *,
+    api_key: str,
+    base_url: str,
+    audio_buffer: io.BytesIO,
+    filename: str,
+    name: str,
+) -> str:
+    audio_buffer.seek(0)
+    safe_name = (name or 'NEKO Voice').strip()[:100] or 'NEKO Voice'
+    url = f"{base_url.rstrip('/')}/v1/voices/add"
+    headers = {"xi-api-key": api_key}
+    data = {
+        "name": safe_name,
+        "description": "Created from NEKO voice clone",
+        "labels": json.dumps({"source": "NEKO"}),
+    }
+    files = [("files", (filename or "voice.wav", audio_buffer, "application/octet-stream"))]
+    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, data=data, files=files)
+    _raise_for_elevenlabs_response(resp, "voice clone")
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while adding voice") from exc
+    raw_voice_id = payload.get("voice_id") or payload.get("voiceId") or ""
+    if not raw_voice_id:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
+    return _prefixed_elevenlabs_voice_id(raw_voice_id)
+
+
+# ── ElevenLabs voice design (text description → generated voice) ──────────────
+# Voice design is the third voice source (besides preset/clone): a text prompt is
+# turned into voice previews, the user picks one, and create-from-preview lands it
+# as a normal ElevenLabs voice_id (stored with source='design'). Dispatch then
+# reuses the existing ElevenLabs clone path (voice_meta.provider=='elevenlabs'),
+# so no separate worker is needed (design doc §7).
+ELEVENLABS_VOICE_DESIGN_DESC_MIN = 20
+ELEVENLABS_VOICE_DESIGN_DESC_MAX = 1000
+# ElevenLabs voice-design previews require a ``text`` between 100 and 1000 chars to
+# synthesize audible samples. ``auto_generate_text`` only returns generated voice ids
+# (no audio), which would yield empty/unplayable previews — so we always pass a fixed
+# preview line instead (must stay ≥ 100 chars).
+ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT = (
+    "Hello! This is a preview of your designed voice. I can read your stories, chat "
+    "with you about your day, and keep you company whenever you would like a friendly "
+    "voice nearby. How do I sound to you so far?"
+)
+
+
+async def _elevenlabs_design_previews(
+    *,
+    api_key: str,
+    base_url: str,
+    voice_description: str,
+) -> list[dict]:
+    """Call POST /v1/text-to-voice/design — returns the list of voice previews.
+
+    Each preview has ``generated_voice_id`` (the handle for create-from-preview)
+    and ``audio_base_64`` (an mp3 sample for the user to audition). We let
+    ElevenLabs auto-generate the preview text so the caller only supplies a
+    description.
     """
-    发送页面刷新通知给前端（通过 WebSocket）
-    
+    url = f"{base_url.rstrip('/')}/v1/text-to-voice/design"
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    payload = {
+        "voice_description": voice_description,
+        # 显式给 text（≥100 chars）而非 auto_generate_text，确保返回可试听的 audio_base_64。
+        "text": ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
+    }
+    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    _raise_for_elevenlabs_response(resp, "voice design")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while designing voice") from exc
+    previews = data.get("previews") if isinstance(data, dict) else None
+    if not isinstance(previews, list) or not previews:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice previews")
+    return previews
+
+
+async def _elevenlabs_create_voice_from_preview(
+    *,
+    api_key: str,
+    base_url: str,
+    voice_name: str,
+    voice_description: str,
+    generated_voice_id: str,
+) -> str:
+    """Call POST /v1/text-to-voice — persist a designed preview into a voice_id."""
+    safe_name = (voice_name or 'NEKO Designed Voice').strip()[:100] or 'NEKO Designed Voice'
+    url = f"{base_url.rstrip('/')}/v1/text-to-voice"
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    payload = {
+        "voice_name": safe_name,
+        "voice_description": voice_description,
+        "generated_voice_id": generated_voice_id,
+        "labels": {"source": "NEKO"},
+    }
+    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    _raise_for_elevenlabs_response(resp, "voice design create")
+    try:
+        payload_resp = resp.json()
+    except Exception as exc:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while creating designed voice") from exc
+    raw_voice_id = payload_resp.get("voice_id") or payload_resp.get("voiceId") or ""
+    if not raw_voice_id:
+        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
+    return _prefixed_elevenlabs_voice_id(raw_voice_id)
+
+
+def _is_local_voice_clone_tts_config(tts_config: dict, core_config: dict | None = None) -> bool:
+    provider = str((core_config or {}).get('ttsModelProvider') or '').strip()
+    if provider == 'vllm_omni':
+        return False
+    base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
+    return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
+
+
+def _local_voice_clone_tts_base_url(tts_config: dict, core_config: dict | None = None) -> str:
+    return str(
+        tts_config.get('base_url')
+        or tts_config.get('url')
+        or (core_config or {}).get('ttsModelUrl')
+        or (core_config or {}).get('TTS_MODEL_URL')
+        or ''
+    ).strip()
+
+
+async def _elevenlabs_synthesize_preview(
+    config_manager,
+    voice_id: str,
+    text: str,
+    *,
+    base_url: str | None = None,
+) -> tuple[bytes, str]:
+    api_key = config_manager.get_tts_api_key('elevenlabs')
+    if not api_key:
+        return b'', 'ELEVENLABS_API_KEY_MISSING'
+    raw_voice_id = _raw_elevenlabs_voice_id(voice_id)
+    if not raw_voice_id:
+        return b'', 'TTS_VOICE_ID_MISSING'
+
+    # 优先使用传入的 base_url，否则获取默认值并去除末尾斜杠
+    base_url = (base_url or await _get_elevenlabs_base_url(config_manager)).rstrip('/')
+
+    payload = {
+        "text": text,
+        "model_id": ELEVENLABS_TTS_DEFAULT_MODEL,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+        },
+    }
+    url = f"{base_url}/v1/text-to-speech/{raw_voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+    }
+    params = {"output_format": "mp3_44100_128"}
+    async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, params=params, json=payload)
+    _raise_for_elevenlabs_response(resp, "preview")
+    return resp.content, ''
+
+
+def _resolve_reload_page_notice_code(message_text: str, message_code: str | None = None) -> str:
+    if message_code:
+        return message_code
+
+    text = str(message_text or "")
+    if "云存档" in text:
+        return "RELOAD_PAGE_CLOUDSAVE_CHARACTER"
+    if "人格" in text:
+        return "RELOAD_PAGE_PERSONA"
+    if "角色设定" in text or "设定" in text:
+        return "RELOAD_PAGE_CHARACTER_SETTINGS"
+    if "音色" in text:
+        return "RELOAD_PAGE_VOICE_STYLE"
+    if "语音" in text:
+        return "RELOAD_PAGE_VOICE"
+    return "RELOAD_PAGE"
+
+
+async def send_reload_page_notice(
+    session,
+    message_text: str = "语音已更新，页面即将刷新",
+    message_code: str | None = None,
+):
+    """
+    Send a page-reload notice to the frontend (via WebSocket).
+
     Args:
-        session: LLMSessionManager 实例
-        message_text: 要发送的消息文本（会被自动翻译）
-    
+        session: LLMSessionManager instance
+        message_text: message text to send (auto-translated)
+        message_code: explicit localized message code; inferred from the message text when empty
+
     Returns:
-        bool: 是否成功发送
+        bool: whether the notice was sent successfully
     """
     if not session or not session.websocket:
         return False
-    
+
     # 检查 WebSocket 连接状态
     if not hasattr(session.websocket, 'client_state') or session.websocket.client_state != session.websocket.client_state.CONNECTED:
         return False
-    
+
     try:
+        notice_code = _resolve_reload_page_notice_code(message_text, message_code)
         await session.websocket.send_text(json.dumps({
             "type": "reload_page",
-            "message": json.dumps({"code": "RELOAD_PAGE", "details": {"message": message_text}})
+            "message": json.dumps({"code": notice_code, "details": {"message": message_text}})
         }))
         logger.info("已通知前端刷新页面")
         return True
@@ -511,6 +1820,9 @@ def _restore_snapshot_paths(records) -> None:
 
 
 def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
+    if is_cloudsave_disabled():
+        return config_manager.build_default_character_tombstones_state()
+
     cloud_state = config_manager.load_cloudsave_local_state()
     sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
     tombstone_state = config_manager.load_character_tombstones_state()
@@ -587,7 +1899,7 @@ async def _rollback_character_operation(
 
 @router.get('')
 async def get_characters(request: Request):
-    """获取角色数据，支持根据用户语言自动翻译人设"""
+    """Get character data, with persona auto-translation based on the user language."""
     _config_manager = get_config_manager()
     # 创建深拷贝，避免修改原始配置数据
     characters_data = copy.deepcopy(await _config_manager.aload_characters())
@@ -595,8 +1907,8 @@ async def get_characters(request: Request):
         # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
         for cat_name, cat_data in list(characters_data['猫娘'].items()):
             if isinstance(cat_data, dict):
-                characters_data['猫娘'][cat_name] = flatten_reserved(cat_data)
-    
+                characters_data['猫娘'][cat_name] = _flatten_catgirl_for_response(cat_data)
+
     # 尝试从请求参数或请求头获取用户语言
     user_language = request.query_params.get('language')
     if not user_language:
@@ -605,40 +1917,40 @@ async def get_characters(request: Request):
         user_language = accept_lang.split(',')[0].split(';')[0].strip()
     # 使用公共函数归一化语言代码
     user_language = normalize_language_code(user_language, format='full')
-    
+
     # 如果语言是中文，不需要翻译
     if user_language == 'zh-CN':
         return _json_no_store_response(characters_data)
-    
+
     # 需要翻译：翻译人设数据（在深拷贝上进行，不影响原始配置）
     try:
         from utils.language_utils import get_translation_service
         translation_service = get_translation_service(_config_manager)
-        
+
         # 翻译主人数据
         if '主人' in characters_data and isinstance(characters_data['主人'], dict):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
                 user_language,
-                fields_to_translate=['档案名', '昵称']
+                fields_to_translate=['昵称']
             )
-        
+
         # 翻译猫娘数据（并行翻译以提升性能）
         if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
             async def translate_catgirl(name, data):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
+                        fields_to_translate=['昵称', '性别']  # 注意：不翻译档案名和 system_prompt
                     )
                 return name, data
-            
+
             results = await asyncio.gather(*[
                 translate_catgirl(name, data)
                 for name, data in characters_data['猫娘'].items()
             ])
             characters_data['猫娘'] = dict(results)
-        
+
         return _json_no_store_response(characters_data)
     except Exception as e:
         logger.error(f"翻译人设数据失败: {e}，返回原始数据")
@@ -647,27 +1959,27 @@ async def get_characters(request: Request):
 
 @router.get('/current_live2d_model')
 async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
-    """获取指定角色或当前角色的Live2D模型信息
-    
+    """Get Live2D model info for the specified or current character.
+
     Args:
-        catgirl_name: 角色名称
-        item_id: 可选的物品ID，用于直接指定模型
+        catgirl_name: character name
+        item_id: optional item ID to directly specify the model
     """
     try:
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
-        
+
         # 如果没有指定角色名称，使用当前猫娘
         if not catgirl_name:
             catgirl_name = characters.get('当前猫娘', '')
-        
+
         # 查找指定角色的Live2D模型
         live2d_model_name = None
         model_info = None
         saved_model_path = ""
         saved_asset_source = ""
         saved_item_id = ""
-        
+
         # 首先尝试通过item_id查找模型
         if item_id:
             try:
@@ -676,7 +1988,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 all_models = find_models()
                 # 查找匹配item_id的模型
                 matching_model = next((m for m in all_models if m.get('item_id') == item_id), None)
-                
+
                 if matching_model:
                     logger.debug(f"通过item_id找到模型: {matching_model['name']}")
                     # 复制模型信息
@@ -684,7 +1996,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     live2d_model_name = model_info['name']
             except Exception as e:
                 logger.warning(f"通过item_id查找模型失败: {e}")
-        
+
         # 如果没有通过item_id找到模型，再通过角色名称查找
         if not model_info and catgirl_name:
             # 在猫娘列表中查找
@@ -705,7 +2017,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     'asset_source',
                     default='',
                 )
-                
+
                 # 检查是否有保存的item_id
                 saved_item_id = get_reserved(
                     catgirl_data,
@@ -732,13 +2044,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             live2d_model_name = model_info['name']
                     except Exception as e:
                         logger.warning(f"通过保存的item_id查找模型失败: {e}")
-        
+
         # 如果找到了模型名称，获取模型信息
         if live2d_model_name:
             try:
                 # 先从完整的模型列表中查找，这样可以获取到item_id等完整信息
                 all_models = find_models()
-                
+
                 # 同时获取工坊模型列表，确保能找到工坊模型
                 try:
                     from .workshop_router import get_subscribed_workshop_items
@@ -776,7 +2088,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                                 })
                 except Exception as we:
                     logger.debug(f"获取工坊模型列表时出错（非关键）: {we}")
-                
+
                 matching_model = model_info.copy() if model_info else None
                 if matching_model is None:
                     # 保留前面已命中的 item_id 结果；仅在没有现成匹配时再做目录级回退查找。
@@ -797,7 +2109,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     )
                     if fallback_model is not None:
                         matching_model = fallback_model
-                
+
                 if matching_model:
                     # 使用完整的模型信息，包含item_id
                     model_info = matching_model.copy()
@@ -810,7 +2122,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            
+
                             # 使用保存的item_id构建model_path，从之前的逻辑中获取saved_item_id
                             saved_item_id = (
                                 get_reserved(
@@ -821,7 +2133,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                     legacy_keys=('live2d_item_id', 'item_id'),
                                 ) if 'catgirl_data' in locals() else ''
                             )
-                            
+
                             # 如果有保存的item_id，使用它构建路径
                             if saved_item_id:
                                 if url_prefix == '/workshop':
@@ -834,7 +2146,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                 # 原始路径构建逻辑
                                 model_path = encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
                                 logger.debug(f"使用模型名称构建路径: {model_path}")
-                            
+
                             model_info = {
                                 'name': live2d_model_name,
                                 'item_id': saved_item_id,
@@ -842,37 +2154,65 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             }
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
-        
-        # 回退机制：如果没有找到模型，使用默认的mao_pro
+
+        # 回退机制：如果没有找到模型，使用默认模型 (DEFAULT_LIVE2D_MODEL_NAME)
         if not live2d_model_name or not model_info:
-            logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 mao_pro")
-            live2d_model_name = 'mao_pro'
+            logger.info(
+                f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 "
+                f"{DEFAULT_LIVE2D_MODEL_NAME}"
+            )
+            live2d_model_name = DEFAULT_LIVE2D_MODEL_NAME
             try:
-                # 先从完整的模型列表中查找mao_pro
+                # 先从完整的模型列表中查找内置/static 默认模型，避免误匹配用户/工坊同名模型
                 all_models = find_models()
-                matching_model = next((m for m in all_models if m['name'] == 'mao_pro'), None)
-                
+                matching_model = next(
+                    (
+                        m for m in all_models
+                        if m.get('name') == DEFAULT_LIVE2D_MODEL_NAME
+                        and m.get('source') in ('static', 'builtin')
+                    ),
+                    None,
+                )
+                if matching_model is None:
+                    matching_model = next(
+                        (m for m in all_models if m.get('name') == DEFAULT_LIVE2D_MODEL_NAME),
+                        None,
+                    )
+
                 if matching_model:
                     model_info = matching_model.copy()
                     model_info['is_fallback'] = True
                 else:
                     # 如果找不到，回退到原来的逻辑
-                    model_dir, url_prefix = find_model_directory('mao_pro')
+                    model_dir, url_prefix = find_model_directory(DEFAULT_LIVE2D_MODEL_NAME)
                     if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            model_path = f'{url_prefix}/mao_pro/{model_file}'
+                            model_path = f'{url_prefix}/{DEFAULT_LIVE2D_MODEL_NAME}/{model_file}'
                             model_info = {
-                                'name': 'mao_pro',
+                                'name': DEFAULT_LIVE2D_MODEL_NAME,
                                 'path': model_path,
                                 'is_fallback': True  # 标记这是回退模型
                             }
             except Exception as e:
-                logger.error(f"获取默认模型mao_pro失败: {e}")
-        
+                logger.error(
+                    f"获取默认模型 {DEFAULT_LIVE2D_MODEL_NAME} 失败: {e}"
+                )
+
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
+
+        if not model_info or not model_info.get('path'):
+            error_message = f"默认Live2D模型 {DEFAULT_LIVE2D_MODEL_NAME} 不可用"
+            logger.error(error_message)
+            return JSONResponse(content={
+                'success': False,
+                'catgirl_name': catgirl_name,
+                'model_name': live2d_model_name or DEFAULT_LIVE2D_MODEL_NAME,
+                'model_info': None,
+                'error': error_message,
+            })
 
         return JSONResponse(content={
             'success': True,
@@ -880,7 +2220,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             'model_name': live2d_model_name,
             'model_info': model_info
         })
-        
+
     except Exception as e:
         logger.error(f"获取角色Live2D模型失败: {e}")
         return JSONResponse(content={
@@ -890,7 +2230,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
 @router.put('/catgirl/l2d/{name}')
 async def update_catgirl_l2d(name: str, request: Request):
-    """更新指定猫娘的模型设置（支持Live2D和VRM）"""
+    """Update the specified catgirl's model settings (supports Live2D and VRM)."""
     try:
         data = await request.json()
         live2d_model = data.get('live2d')
@@ -905,21 +2245,126 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
-        
-        # 【修复】model_type 只允许 {live2d, vrm, live3d}，否则 400
-        if model_type_str not in ['live2d', 'vrm', 'live3d']:
+
+        # 【修复】model_type 只允许 {live2d, vrm, live3d, pngtuber}，否则 400
+        if model_type_str not in ['live2d', 'vrm', 'live3d', 'pngtuber']:
             return JSONResponse(
                 content={
                     'success': False,
-                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm 或 live3d'
+                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm、live3d 或 pngtuber'
                 },
                 status_code=400
             )
-        
+
         # 归一化：旧客户端发送的 'vrm' 统一为 'live3d'（走 Live3D VRM 子分支处理）
         if model_type_str == 'vrm':
             model_type_str = 'live3d'
-        
+
+        if model_type_str == 'pngtuber':
+            raw_pngtuber = data.get('pngtuber') if isinstance(data.get('pngtuber'), dict) else {}
+            pngtuber_payload = dict(raw_pngtuber)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                if key not in pngtuber_payload and key in data:
+                    pngtuber_payload[key] = data.get(key)
+            allowed_prefixes = ('/user_pngtuber/', '/static/', '/workshop/')
+            allowed_exts = ('.png', '.gif', '.jpg', '.jpeg', '.webp')
+            idle_image = str(pngtuber_payload.get('idle_image') or '').strip().replace('\\', '/')
+            if not idle_image:
+                return JSONResponse(content={'success': False, 'error': '未提供PNGTuber idle_image'}, status_code=400)
+            for key in ('idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'):
+                image_path = str(pngtuber_payload.get(key) or '').strip().replace('\\', '/')
+                if not image_path:
+                    pngtuber_payload[key] = ''
+                    continue
+                if image_path.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径不能使用data URL: {key}'}, status_code=400)
+                if '..' in image_path:
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径不能包含路径遍历（..）: {key}'}, status_code=400)
+                is_remote_image = image_path.startswith('http://') or image_path.startswith('https://')
+                if not is_remote_image and not any(image_path.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头: {key}'}, status_code=400)
+                extension_path = image_path.lower().split('?', 1)[0].split('#', 1)[0]
+                if not extension_path.endswith(allowed_exts):
+                    return JSONResponse(content={'success': False, 'error': f'PNGTuber图片格式必须是 PNG/GIF/JPG/JPEG/WebP: {key}'}, status_code=400)
+                pngtuber_payload[key] = image_path
+
+            metadata_path = str(
+                pngtuber_payload.get('layered_metadata')
+                or pngtuber_payload.get('metadata')
+                or ''
+            ).strip().replace('\\', '/')
+
+            def _infer_pngtuber_metadata_from_idle(idle_path: str) -> str:
+                parts = [part for part in idle_path.split('/') if part]
+                if len(parts) < 3:
+                    return ''
+                source_prefix = parts[0]
+                model_folder = parts[1]
+                try:
+                    config_manager = get_config_manager()
+                    if source_prefix == 'user_pngtuber':
+                        root = config_manager.pngtuber_dir / model_folder
+                        url_prefix = '/user_pngtuber'
+                    elif source_prefix == 'static':
+                        root = config_manager.project_root / 'static' / model_folder
+                        url_prefix = '/static'
+                    elif source_prefix == 'workshop':
+                        root = config_manager.workshop_dir / model_folder
+                        url_prefix = '/workshop'
+                    else:
+                        return ''
+                except Exception:
+                    return ''
+                for filename in (
+                    'metadata.pngtube-remix.json',
+                    'metadata.pngtuber-plus.json',
+                    'metadata.json',
+                ):
+                    if (root / filename).is_file():
+                        return f'{url_prefix}/{model_folder}/{filename}'
+                return ''
+
+            if not metadata_path:
+                metadata_path = _infer_pngtuber_metadata_from_idle(idle_image)
+
+            if metadata_path:
+                if metadata_path.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径不能使用data URL'}, status_code=400)
+                if '..' in metadata_path:
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径不能包含路径遍历（..）'}, status_code=400)
+                is_remote_metadata = metadata_path.startswith('http://') or metadata_path.startswith('https://')
+                if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头'}, status_code=400)
+                metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
+                if not metadata_ext_path.endswith('.json'):
+                    return JSONResponse(content={'success': False, 'error': 'PNGTuber分层metadata必须是 JSON 文件'}, status_code=400)
+                pngtuber_payload['layered_metadata'] = metadata_path
+                pngtuber_payload['adapter'] = 'layered_canvas_v1'
+            else:
+                pngtuber_payload['layered_metadata'] = ''
+                pngtuber_payload['adapter'] = ''
+
+            for key in ('source_type', 'source_format'):
+                value = str(pngtuber_payload.get(key) or '').strip()
+                pngtuber_payload[key] = value
+
+            def _bounded_number(value, default, min_value, max_value):
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return default
+                if not math.isfinite(parsed):
+                    raise ValueError('数值字段必须是有限值')
+                return max(min_value, min(max_value, parsed))
+
+            try:
+                pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
+                pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
+                pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+            except ValueError as exc:
+                return JSONResponse(content={'success': False, 'error': str(exc)}, status_code=400)
+            pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
+
         if model_type_str == 'live3d':
             # Live3D 模式：接受 VRM 或 MMD 模型
             if vrm_model and mmd_model:
@@ -948,7 +2393,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 mmd_model = mmd_model_str
             else:
                 return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
-        else:
+        elif model_type_str != 'pngtuber':
             if not live2d_model:
                 return JSONResponse(
                     content={
@@ -957,27 +2402,27 @@ async def update_catgirl_l2d(name: str, request: Request):
                     },
                     status_code=400
                 )
-        
+
         # 加载当前角色配置
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
-        
+
         # 确保猫娘配置存在
         if '猫娘' not in characters:
             characters['猫娘'] = {}
-        
+
         # 确保指定猫娘的配置存在
         if name not in characters['猫娘']:
             return JSONResponse(
-                {'success': False, 'error': '猫娘不存在'}, 
+                {'success': False, 'error': '猫娘不存在'},
                 status_code=404
             )
-        
+
         # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
         if model_type_str == 'live3d':
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
             active_model_binding_path = ""
-            
+
             if vrm_model:
                 # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
@@ -998,7 +2443,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                         if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
                             return JSONResponse(content={'success': False, 'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
-                
+
                 if 'idle_animation' in data:
                     if idle_animation is None or idle_animation == '' or idle_animation == []:
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
@@ -1019,7 +2464,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                             if not any(item_str.startswith(prefix) for prefix in allowed_animation_prefixes):
                                 return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
                         set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [str(x).strip() for x in idle_list])
-                
+
                 logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
             elif mmd_model:
                 # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
@@ -1041,7 +2486,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                         if not any(mmd_animation_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
                             return JSONResponse(content={'success': False, 'error': 'MMD动画路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
-                
+
                 if 'mmd_idle_animation' in data:
                     if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
@@ -1062,7 +2507,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                             if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
                                 return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
-                
+
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
 
             current_asset_source, current_asset_source_id = _derive_model_asset_binding(
@@ -1076,6 +2521,25 @@ async def update_catgirl_l2d(name: str, request: Request):
                 'asset_source',
                 current_asset_source or 'local_imported',
             )
+        elif model_type_str == 'pngtuber':
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'pngtuber')
+            set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'pngtuber', pngtuber_payload)
+            pngtuber_binding_path = str(
+                idle_image
+                or pngtuber_payload.get('layered_metadata')
+                or ''
+            ).strip()
+            pngtuber_binding_item_id = str(item_id or "").strip()
+            if not pngtuber_binding_path.startswith('/workshop/'):
+                pngtuber_binding_item_id = ''
+            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                pngtuber_binding_path,
+                item_id=pngtuber_binding_item_id,
+            )
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')
+            logger.debug(f"已保存角色 {name} 的PNGTuber配置")
         else:
             # 更新Live2D模型设置，同时保存item_id（如果有）
             live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
@@ -1127,26 +2591,28 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
-        
+
         # 保存配置
         await _config_manager.asave_characters(characters)
-        # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
-        
-        
+        # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(name, is_new=False)
+
+
         if model_type_str == 'live3d':
             active_model = vrm_model or mmd_model
             sub_type = 'VRM' if vrm_model else 'MMD'
             message = f'已更新角色 {name} 的Live3D({sub_type})模型为 {active_model}'
+        elif model_type_str == 'pngtuber':
+            message = f'已更新角色 {name} 的PNGTuber配置'
         else:
             message = f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
-        
+
         return JSONResponse(content={
             'success': True,
             'message': message
         })
-        
+
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -1159,11 +2625,11 @@ async def update_catgirl_l2d(name: str, request: Request):
 
 @router.patch('/catgirl/{name}/touch_set')
 async def update_catgirl_touch_set(name: str, request: Request):
-    """全量更新指定猫娘当前模型的触摸动画配置
-    
-    请求体格式:
+    """Fully replace the touch animation config of the specified catgirl's current model.
+
+    Request body format:
     {
-        "model_name": "模型名称",
+        "model_name": "model name",
         "touch_set": {
             "default": {"motions": [], "expressions": []},
             "HitArea1": {"motions": ["motion1"], "expressions": ["exp1"]}
@@ -1172,7 +2638,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
     """
     try:
         data = await request.json()
-        
+
         model_name = data.get('model_name')
         touch_set_data = data.get('touch_set')
 
@@ -1182,50 +2648,51 @@ async def update_catgirl_touch_set(name: str, request: Request):
                 status_code=400
             )
         model_name = model_name.strip()
-        
+
         if touch_set_data is None:
             return JSONResponse(
                 content={'success': False, 'error': '缺少 touch_set 参数'},
                 status_code=400
             )
-        
+
         if not isinstance(touch_set_data, dict):
             return JSONResponse(
                 content={'success': False, 'error': 'touch_set 必须是对象'},
                 status_code=400
             )
-        
+
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
-        
+
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(
                 content={'success': False, 'error': '角色不存在'},
                 status_code=404
             )
-        
+
         existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
-        
+
         if not existing_touch_set:
             existing_touch_set = {}
-        
+
         existing_touch_set[model_name] = touch_set_data
-        
+
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
         await _config_manager.asave_characters(characters)
-        
-        initialize_character_data = get_initialize_character_data()
-        if initialize_character_data:
-            await initialize_character_data()
-        
+
+        # Fast path：只刷新被编辑角色的 session_manager（touch_set），不遍历其它 N-1 个。
+        init_one_catgirl = get_init_one_catgirl()
+        if init_one_catgirl:
+            await init_one_catgirl(name, is_new=False)
+
         logger.debug(f"已更新角色 {name} 模型 {model_name} 的触摸配置")
-        
+
         return JSONResponse(content={
             'success': True,
             'message': f'已更新角色 {name} 的触摸配置',
             'touch_set': existing_touch_set
         })
-        
+
     except Exception as e:
         logger.exception("更新触摸配置失败")
         return JSONResponse(content={
@@ -1236,17 +2703,17 @@ async def update_catgirl_touch_set(name: str, request: Request):
 
 @router.put('/catgirl/{name}/lighting')
 async def update_catgirl_lighting(name: str, request: Request):
-    """更新指定猫娘的VRM打光配置
-    
+    """Update the specified catgirl's VRM lighting config.
+
     Args:
-        name: 角色名称
-        request: 请求体包含 lighting (dict) 和可选的 apply_runtime (bool)
-                 apply_runtime 也可通过 query param 传递,query param 优先级更高
+        name: character name
+        request: body containing lighting (dict) and an optional apply_runtime (bool);
+                 apply_runtime can also be passed as a query param, which takes precedence
     """
     try:
         data = await request.json()
         lighting = data.get('lighting')
-        
+
         apply_runtime = data.get('apply_runtime', False)
         query_params = request.query_params
         if 'apply_runtime' in query_params:
@@ -1272,7 +2739,7 @@ async def update_catgirl_lighting(name: str, request: Request):
         model_type_normalized = str(model_type).lower() if model_type else 'live2d'
         if model_type_normalized not in ('vrm', 'live3d'):
             logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
-        
+
         from config import get_default_vrm_lighting
         existing_lighting = get_reserved(
             characters['猫娘'][name],
@@ -1286,13 +2753,13 @@ async def update_catgirl_lighting(name: str, request: Request):
             base_lighting = existing_lighting
         else:
             base_lighting = get_default_vrm_lighting()
-        
+
         if not isinstance(lighting, dict):
             return JSONResponse(content={
                 'success': False,
                 'error': 'lighting 必须是对象'
             }, status_code=400)
-        
+
         lighting = {**base_lighting, **lighting}
 
         from config import VRM_LIGHTING_RANGES
@@ -1312,7 +2779,7 @@ async def update_catgirl_lighting(name: str, request: Request):
                     'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
                 }, status_code=400)
 
-        
+
         set_reserved(
             characters['猫娘'][name],
             'avatar',
@@ -1330,14 +2797,15 @@ async def update_catgirl_lighting(name: str, request: Request):
         )
 
         await _config_manager.asave_characters(characters)
-        
+
         if apply_runtime:
-            initialize_character_data = get_initialize_character_data()
-            if initialize_character_data:
-                await initialize_character_data()
-                logger.info(f"已执行完整配置重载（角色 {name} 的打光配置）")
+            # Fast path：只刷新被编辑角色的 session_manager（lighting），不遍历其它 N-1 个。
+            init_one_catgirl = get_init_one_catgirl()
+            if init_one_catgirl:
+                await init_one_catgirl(name, is_new=False)
+                logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
         else:
-            logger.debug("跳过完整配置重载（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
+            logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
 
         if apply_runtime:
             message = f'已保存角色 {name} 的打光配置并已应用到运行时'
@@ -1361,7 +2829,7 @@ async def update_catgirl_lighting(name: str, request: Request):
 
 @router.put('/catgirl/{name}/mmd_settings')
 async def update_catgirl_mmd_settings(name: str, request: Request):
-    """更新指定角色的MMD模型设置（光照、渲染、物理、鼠标跟踪）"""
+    """Update the specified character's MMD model settings (lighting, rendering, physics, mouse tracking)."""
     def _to_bool(val):
         if isinstance(val, bool):
             return val
@@ -1457,7 +2925,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
 
 @router.get('/catgirl/{name}/mmd_settings')
 async def get_catgirl_mmd_settings(name: str):
-    """获取指定角色的MMD模型设置"""
+    """Get the specified character's MMD model settings."""
     try:
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
@@ -1509,17 +2977,20 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
-    old_voice_id = str(get_reserved(
+    old_voice_id = read_legacy_voice_id(get_reserved(
         characters['猫娘'][name],
         'voice_id',
         default='',
         legacy_keys=('voice_id',)
-    ) or '').strip()
+    ))
 
     # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
     if old_voice_id == voice_id:
         logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
+
+    if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+        return _voice_session_starting_response()
 
     # 验证voice_id是否在voice_storage中
     if not _config_manager.validate_voice_id(voice_id):
@@ -1531,21 +3002,22 @@ async def update_catgirl_voice_id(name: str, request: Request):
             'available_voices': available_voices
         }, status_code=400)
 
-    set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
+    # 用户设音色：惰性迁移这一条到结构对象（用到哪条迁哪条，见 voice_id_to_storage_value）。
+    set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
     await _config_manager.asave_characters(characters)
-    
+
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
     is_current_catgirl = (name == characters.get('当前猫娘', ''))
     session_ended = False
-    
+
     if is_current_catgirl and name in session_manager:
         # 检查是否有活跃的session
         if session_manager[name].is_active:
             logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备刷新...")
-            
+
             # 1. 先发送刷新消息（WebSocket还连着）
             await send_reload_page_notice(session_manager[name])
-            
+
             # 2. 立刻关闭session（这会断开WebSocket）
             try:
                 await session_manager[name].end_session(by_server=True)
@@ -1553,43 +3025,62 @@ async def update_catgirl_voice_id(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
-    
-    # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
+            # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
+            # reload 页面后用户的下一次 start_session 应是全新尝试，否则
+            # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
+            session_manager[name].reset_session_start_circuit()
+
+    # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
+    # 非当前角色分支也要显式刷 session_manager[name]：以前靠下次 switch 的全量 init 顺带
+    # rescue，但 set_current_catgirl 已切到 switch_current_catgirl_fast，rescue 不再发生，
+    # 必须在这里就把 voice_id 写进 session_manager[name]（init_one_catgirl 只写该 key，
+    # 不会影响当前 session）。
+    init_one_catgirl = get_init_one_catgirl()
+    await init_one_catgirl(name, is_new=False)
     if is_current_catgirl:
-        # 3. 重新加载配置，让新的voice_id生效
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
         logger.info("配置已重新加载，新的voice_id已生效")
     else:
-        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
-        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
-    
+        logger.info(f"非当前猫娘 {name} 的音色已更新并同步到 session_manager")
+
     return {"success": True, "session_restarted": session_ended, "voice_id_changed": True}
 
 @router.get('/catgirl/{name}/voice_mode_status')
 async def get_catgirl_voice_mode_status(name: str):
-    """检查指定角色是否在语音模式下"""
+    """Check whether the specified character is in voice mode."""
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
     is_current = characters.get('当前猫娘') == name
-    
+
     if name not in session_manager:
-        return JSONResponse({'is_voice_mode': False, 'is_current': is_current, 'is_active': False})
-    
+        return _json_no_store_response({
+            'is_voice_mode': False,
+            'is_current': is_current,
+            'is_active': False,
+            'is_starting': False,
+            'is_voice_starting': False,
+        })
+
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
-    
-    is_voice_mode = False
+    is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
+    is_audio_starting = _is_current_catgirl_voice_session_starting(name, characters, session_manager)
+
+    is_voice_mode = is_audio_starting
     if is_active and mgr:
         # 检查是否是语音模式（通过session类型判断）
         from main_logic.omni_realtime_client import OmniRealtimeClient
-        is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
-    
-    return JSONResponse({
+        is_voice_mode = is_voice_mode or bool(
+            getattr(mgr, 'input_mode', '') == 'audio'
+            or (mgr.session and isinstance(mgr.session, OmniRealtimeClient))
+        )
+
+    return _json_no_store_response({
         'is_voice_mode': is_voice_mode,
         'is_current': is_current,
-        'is_active': is_active
+        'is_active': is_active,
+        'is_starting': is_starting,
+        'is_voice_starting': is_audio_starting,
     })
 
 
@@ -1615,13 +3106,13 @@ async def rename_catgirl(old_name: str, request: Request):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
-    
+
     # 如果当前猫娘是被重命名的猫娘，先缓存 WebSocket，
     # 只有在持久化和重载全部成功后才发送通知，避免前端先切换到未提交状态。
     is_current_catgirl = characters.get('当前猫娘') == old_name
     rename_notification_ws = None
     rename_notification_message = None
-    
+
     # 检查当前角色是否有活跃的语音session
     if is_current_catgirl and old_name in session_manager:
         mgr = session_manager[old_name]
@@ -1629,10 +3120,10 @@ async def rename_catgirl(old_name: str, request: Request):
             # 检查是否是语音模式（通过session类型判断）
             from main_logic.omni_realtime_client import OmniRealtimeClient
             is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
-            
+
             if is_voice_mode:
                 return JSONResponse({
-                    'success': False, 
+                    'success': False,
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
     if is_current_catgirl and old_name in session_manager:
@@ -1690,14 +3181,18 @@ async def rename_catgirl(old_name: str, request: Request):
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+            _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
             await _config_manager.asave_characters(characters)
 
-            # 自动重新加载配置
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
+            # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
+            # 等价于"删除旧 + 新增新"，不遍历其它 N-1 个。
+            remove_one_catgirl = get_remove_one_catgirl()
+            init_one_catgirl = get_init_one_catgirl()
+            await remove_one_catgirl(old_name)
+            await init_one_catgirl(new_name, is_new=True)
 
             # 迁移卡面 PNG 与 sidecar JSON（纳入同一事务）
             from datetime import datetime as _dt
@@ -1742,6 +3237,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     },
                     status_code=500,
                 )
+
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -1773,28 +3269,46 @@ async def rename_catgirl(old_name: str, request: Request):
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
-    return {
+    pending_rename_ok = True
+    pending_rename_error = ""
+    try:
+        await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
+    except Exception as exc:
+        pending_rename_ok = False
+        pending_rename_error = str(exc)
+        logger.exception("rename new character greeting pending failed: %s -> %s", old_name, new_name)
+
+    result = {
         "success": True,
         "memory_renamed": True,
         "memory_server_reloaded": memory_server_reloaded,
     }
+    if not pending_rename_ok:
+        result["partial_success"] = True
+        result["pending_rename_ok"] = False
+        result["pending_rename_failed"] = True
+        result["pending_rename_error"] = pending_rename_error
+    return result
 
 
 @router.post('/catgirl/{name}/unregister_voice')
 async def unregister_voice(name: str):
-    """解除猫娘的声音注册"""
+    """Unregister the catgirl's voice."""
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
         characters = await _config_manager.aload_characters()
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-        
+
         # 检查是否已有voice_id
-        old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+        old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
-        
+
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
+
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
         await _config_manager.asave_characters(characters)
@@ -1813,44 +3327,251 @@ async def unregister_voice(name: str):
                     logger.info(f"{name} 的session已结束")
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
+                # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                session_manager[name].reset_session_start_circuit()
 
-        # 自动重新加载配置
-        if is_current_catgirl:
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
-        
+        # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
+        # 非当前角色分支也要走 init_one_catgirl：以前靠下次 switch 的全量 init 顺带 rescue，
+        # 但 set_current_catgirl 已切到 switch_current_catgirl_fast，rescue 不再发生。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(name, is_new=False)
+
         logger.info(f"已解除猫娘 '{name}' 的声音注册")
         return {"success": True, "message": "声音注册已解除", "session_restarted": session_ended, "voice_id_changed": True}
-        
+
     except Exception as e:
         logger.error(f"解除声音注册时出错: {e}")
         return JSONResponse({'success': False, 'error': f'解除注册失败: {str(e)}'}, status_code=500)
 
 @router.get('/current_catgirl')
 async def get_current_catgirl():
-    """获取当前使用的猫娘名称"""
+    """Get the name of the currently active catgirl."""
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
     return _json_no_store_response({'current_catgirl': current_catgirl})
 
+
+@router.get('/persona-presets')
+async def list_persona_presets_route(request: Request):
+    return _json_no_store_response({
+        "success": True,
+        "presets": list_persona_presets(lang=_get_persona_request_language(request)),
+    })
+
+
+@router.get('/persona-onboarding-state')
+async def get_persona_onboarding_state():
+    config_manager = get_config_manager()
+    state = await asyncio.to_thread(load_initial_personality_state, config_manager)
+    return _json_no_store_response({
+        "success": True,
+        "state": state,
+    })
+
+
+@router.post('/persona-onboarding-state')
+async def set_persona_onboarding_state(request: Request):
+    payload, error_response = await _read_json_object_or_400(request)
+    if error_response is not None:
+        return error_response
+    config_manager = get_config_manager()
+    status_in = str((payload or {}).get("status") or "").strip()
+    state = await asyncio.to_thread(
+        mark_initial_personality_state,
+        status_in,
+        config_manager=config_manager,
+    )
+    # Telemetry：onboarding 漏斗的关键节点。**用归一化后的 state["status"]**
+    # 而非请求体原值 status_in：mark_initial_personality_state 会把状态收敛成
+    # 小枚举（pending / completed / skipped 等），客户端可以传任意 status 字符串
+    # 但存储 fallback 成 pending。直接用 raw 会让任意输入变成不同的
+    # onboarding_step dim，污染 funnel 切片 + 吃 instrument key 预算（同
+    # lanlan_name 教训：raw 客户端输入不进 dim）（Codex）。
+    _norm_status = (state.get("status") if isinstance(state, dict) else None) or "unknown"
+    try:
+        from utils.instrument import event as _instr_event, counter as _instr_counter
+        _instr_event("onboarding_step", status=str(_norm_status)[:32])
+        _instr_counter("onboarding_step", status=str(_norm_status)[:32])
+    except Exception:
+        # 埋点失败绝不影响 onboarding endpoint —— 一条 telemetry 走丢比让
+        # 用户卡在角色选择失败重要多了。日志也省，防 import 故障刷屏。
+        pass
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.post('/persona-reselect-current')
+async def request_current_character_persona_reselect():
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    current_character_name = str(characters.get('当前猫娘') or '').strip()
+    if not current_character_name:
+        return JSONResponse({'success': False, 'error': '当前没有可用角色'}, status_code=400)
+
+    state = await asyncio.to_thread(
+        mark_manual_personality_reselect,
+        current_character_name,
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.delete('/persona-reselect-current')
+async def clear_current_character_persona_reselect():
+    config_manager = get_config_manager()
+    state = await asyncio.to_thread(
+        clear_manual_personality_reselect,
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.get('/character/{name}/persona-selection')
+async def get_character_persona_selection(name: str):
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    return _json_no_store_response({
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    })
+
+
+@router.put('/character/{name}/persona-selection')
+async def update_character_persona_selection(name: str, request: Request):
+    payload, error_response = await _read_json_object_or_400(request)
+    if error_response is not None:
+        return error_response
+    preset_id = str((payload or {}).get("preset_id") or "").strip()
+    source = str((payload or {}).get("source") or "").strip()
+    preset = get_persona_preset(preset_id)
+    if preset is None:
+        return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
+
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    selected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    request_language = _get_persona_payload_request_language(payload, request)
+    override_payload = build_persona_override_payload(
+        preset_id,
+        source=source,
+        selected_at=selected_at,
+        lang=request_language,
+    )
+    if override_payload is None:
+        return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
+
+    previous_characters = copy.deepcopy(characters)
+    set_reserved(character_payload, "persona_override", override_payload)
+    _clear_stale_generated_persona_prompt(character_payload)
+    try:
+        await config_manager.asave_characters(characters)
+        await _clear_character_recent_history(config_manager, name)
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
+
+        initialize_one_character = get_init_one_catgirl()
+        await initialize_one_character(name, is_new=False)
+        if source == "manual_reselect":
+            await asyncio.to_thread(
+                clear_manual_personality_reselect,
+                config_manager=config_manager,
+            )
+        elif source == "onboarding":
+            await asyncio.to_thread(
+                mark_initial_personality_state,
+                "completed",
+                config_manager=config_manager,
+            )
+    except Exception:
+        await _rollback_character_persona_selection_change(config_manager, previous_characters)
+        raise
+
+    return {
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    }
+
+
+@router.delete('/character/{name}/persona-selection')
+async def clear_character_persona_selection(name: str):
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    previous_characters = copy.deepcopy(characters)
+    delete_reserved(character_payload, "persona_override")
+    _clear_stale_generated_persona_prompt(character_payload)
+    try:
+        await config_manager.asave_characters(characters)
+        await _clear_character_recent_history(config_manager, name)
+
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
+
+        initialize_one_character = get_init_one_catgirl()
+        await initialize_one_character(name, is_new=False)
+    except Exception:
+        await _rollback_character_persona_selection_change(config_manager, previous_characters)
+        raise
+
+    return {
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    }
+
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
-    """设置当前使用的猫娘"""
+    """Set the currently active catgirl."""
     data = await request.json()
     catgirl_name = data.get('catgirl_name', '') if data else ''
-    
+
     if not catgirl_name:
         return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
-    
+
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
     if catgirl_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
-    
+
     old_catgirl = characters.get('当前猫娘', '')
-    
+
     # 检查当前角色是否有活跃的语音session
     if old_catgirl and old_catgirl in session_manager:
         mgr = session_manager[old_catgirl]
@@ -1858,10 +3579,10 @@ async def set_current_catgirl(request: Request):
             # 检查是否是语音模式（通过session类型判断）
             from main_logic.omni_realtime_client import OmniRealtimeClient
             is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
-            
+
             if is_voice_mode:
                 return JSONResponse({
-                    'success': False, 
+                    'success': False,
                     'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
                 }, status_code=400)
     characters['当前猫娘'] = catgirl_name
@@ -1870,18 +3591,44 @@ async def set_current_catgirl(request: Request):
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
-    
+
+    # 角色卡切换会复用同一个前端猫爪面板和工具服务全局状态。
+    # 这里先把旧状态归零，避免新角色刷新后继承上一张卡的开关状态。
+    if old_catgirl != catgirl_name:
+        await force_disable_agent_for_character_switch(catgirl_name, old_catgirl)
+
+    # B8: if the previous character had an active game route, finalize it
+    # immediately. Otherwise the heartbeat-based timeout (10-60s) would
+    # leave a stale ``OmniOfflineClient`` consuming game events under the
+    # outgoing character's name and keep the SessionManager takeover
+    # muting the incoming character's ordinary chat output.
+    if old_catgirl and old_catgirl != catgirl_name:
+        try:
+            from main_routers.game_router import finalize_game_routes_for_character
+            finalized = await finalize_game_routes_for_character(old_catgirl)
+            if finalized:
+                logger.info(
+                    "角色切换：已收尾 %d 个旧角色 %s 的游戏路由",
+                    finalized,
+                    old_catgirl,
+                )
+        except Exception as exc:
+            # Swallow — character switch must not fail because of
+            # game-route cleanup; the heartbeat sweep will eventually
+            # clean up if this hook misses.
+            logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
+
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
     notification_count = 0
     logger.info(f"开始通知WebSocket客户端：猫娘从 {old_catgirl} 切换到 {catgirl_name}")
-    
+
     message = json.dumps({
         "type": "catgirl_switched",
         "new_catgirl": catgirl_name,
         "old_catgirl": old_catgirl
     })
-    
+
     # 并行通知所有 session_manager —— 每个 send_text 独立，per-mgr 失败时只清自己的 ws，
     # 串行版本里一个慢/卡的 ws 会拖累后面的通知。
     snapshot = list(session_manager.items())
@@ -1908,19 +3655,19 @@ async def set_current_catgirl(request: Request):
         return_exceptions=True,
     )
     notification_count = sum(1 for r in _notify_results if r is True)
-    
+
     if notification_count > 0:
         logger.info(f"✅ 已通过WebSocket通知 {notification_count} 个连接的客户端：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
     else:
         logger.warning("⚠️ 没有找到任何活跃的WebSocket连接来通知猫娘切换")
         logger.warning("提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
-    
+
     return {"success": True}
 
 
 @router.post('/reload')
 async def reload_character_config():
-    """重新加载角色配置（热重载）"""
+    """Reload the character config (hot reload)."""
     try:
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -1928,7 +3675,7 @@ async def reload_character_config():
     except Exception as e:
         logger.error(f"重新加载角色配置失败: {e}")
         return JSONResponse(
-            {'success': False, 'error': f'重新加载失败: {str(e)}'}, 
+            {'success': False, 'error': f'重新加载失败: {str(e)}'},
             status_code=500
         )
 
@@ -1940,17 +3687,40 @@ async def update_master(request: Request):
     except Exception as e:
         logger.warning(f"解析主人更新请求体失败: {e}")
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
-    if not data:
-        return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
-    profile_name = data.get('档案名')
-    err = _validate_profile_name(profile_name)
-    if err:
-        return JSONResponse({'success': False, 'error': err}, status_code=400)
-    data['档案名'] = str(profile_name).strip()
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是JSON对象'}, status_code=400)
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = await _config_manager.aload_characters()
-    characters['主人'] = {k: v for k, v in data.items() if v}
+    previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
+    previous_profile_name = ""
+    if isinstance(previous_master, dict):
+        previous_profile_name = str(previous_master.get('档案名') or '').strip()
+    requested_profile_name = str(data.get('档案名') or '').strip()
+    profile_name = previous_profile_name or requested_profile_name
+    renamed_via_body_fallback = False
+    if (
+        previous_profile_name
+        and requested_profile_name
+        and requested_profile_name != previous_profile_name
+        and _profile_name_contains_path_separator(previous_profile_name)
+    ):
+        profile_name = requested_profile_name
+        renamed_via_body_fallback = True
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    next_master = {
+        k: v
+        for k, v in data.items()
+        if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
+    }
+    next_master['档案名'] = profile_name
+    if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
+        next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+    if renamed_via_body_fallback:
+        _append_profile_rename_event(next_master, previous_profile_name, profile_name)
+    characters['主人'] = next_master
     await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
@@ -1959,7 +3729,7 @@ async def update_master(request: Request):
 
 @router.post('/master/{old_name}/rename')
 async def rename_master(old_name: str, request: Request):
-    """重命名主人档案"""
+    """Rename the master profile."""
     _config_manager = get_config_manager()
     try:
         data = await request.json()
@@ -1984,10 +3754,8 @@ async def rename_master(old_name: str, request: Request):
         if current_master != old_name:
             return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
 
-        if new_name in characters.get('猫娘', {}):
-            return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
-
         characters['主人']['档案名'] = new_name
+        _append_profile_rename_event(characters['主人'], old_name, new_name)
         await _config_manager.asave_characters(characters)
 
     try:
@@ -2020,6 +3788,7 @@ async def add_catgirl(request: Request):
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
     data = _filter_mutable_catgirl_fields(raw_data)
+    requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     data['档案名'] = str(profile_name).strip()
 
     _config_manager = get_config_manager()
@@ -2047,18 +3816,31 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    _sync_catgirl_field_order(catgirl_data, requested_field_order)
+    # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
+    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
+    default_free_voice_id = _get_new_catgirl_default_voice_id()
+    set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
+    pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(key, is_new=True)
 
     memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
 
-    return {
+    response: dict = {
         "success": True,
         "character_name": key,
         "memory_server_reloaded": memory_server_reloaded,
     }
+    if not pending_mark_ok:
+        response["partial_success"] = True
+        response["pending_mark_ok"] = False
+        response["pending_mark_failed"] = True
+        response["pending_mark_error"] = pending_mark_error
+    return response
 
 
 @router.put('/catgirl/{name}')
@@ -2085,19 +3867,26 @@ async def update_catgirl(name: str, request: Request):
         requested_model_type = str(raw_data.get('model_type') or '').strip().lower()
         if requested_model_type == 'vrm':
             requested_model_type = 'live3d'
-        if requested_model_type and requested_model_type not in ('live2d', 'live3d'):
+        if requested_model_type and requested_model_type not in ('live2d', 'live3d', 'pngtuber'):
             return JSONResponse(
-                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d 或 live3d'},
+                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d、live3d 或 pngtuber'},
                 status_code=400,
             )
 
     data = _filter_mutable_catgirl_fields(raw_data)
+    requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+    previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
 
-    old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+    voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
+    if voice_id_will_change:
+        session_manager = get_session_manager()
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
 
     if voice_id_in_payload and requested_voice_id:
         # 验证 voice_id 是否在 voice_storage 中
@@ -2123,18 +3912,21 @@ async def update_catgirl(name: str, request: Request):
         if k != '档案名' and v:
             characters['猫娘'][name][k] = v
 
-    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段。
+    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
     if voice_id_in_payload:
-        set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
+        set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
 
     # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
     if model_type_in_payload and requested_model_type:
         set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
+    _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
+
     await _config_manager.asave_characters(characters)
 
-    new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
     voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
+    prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
 
     # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
     ignored_reserved_fields = sorted(
@@ -2148,7 +3940,21 @@ async def update_catgirl(name: str, request: Request):
         )
 
     session_ended = False
-    if voice_id_changed:
+    context_refresh_result = {
+        "context_refreshed": False,
+        "recent_history_cleared": False,
+        "reload_notified": False,
+        "session_restarted": False,
+    }
+    if prompt_fields_changed:
+        context_refresh_result = await _refresh_catgirl_context_after_profile_change(
+            _config_manager,
+            name,
+            characters,
+            is_new=False,
+        )
+        session_ended = context_refresh_result["session_restarted"]
+    elif voice_id_changed:
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
@@ -2162,6 +3968,9 @@ async def update_catgirl(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
+            # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+            # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+            session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:
             # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
@@ -2183,9 +3992,10 @@ async def update_catgirl(name: str, request: Request):
 
     return {
         "success": True,
+        **context_refresh_result,
         "voice_id_changed": voice_id_changed,
         "session_restarted": session_ended,
-        "ignored_reserved_fields": ignored_reserved_fields
+        "ignored_reserved_fields": ignored_reserved_fields,
     }
 
 
@@ -2237,7 +4047,8 @@ async def delete_catgirl(name: str):
         tombstone_snapshot = None
         memory_server_reloaded = False
         try:
-            tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
+            if not is_cloudsave_disabled():
+                tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
             removed_memory_paths = await asyncio.to_thread(
                 delete_character_memory_storage, _config_manager, name
@@ -2251,10 +4062,11 @@ async def delete_catgirl(name: str):
             if meta_path.exists():
                 await asyncio.to_thread(meta_path.unlink)
 
-            await asyncio.to_thread(
-                _config_manager.save_character_tombstones_state,
-                _build_character_tombstones_state(_config_manager, name),
-            )
+            if not is_cloudsave_disabled():
+                await asyncio.to_thread(
+                    _config_manager.save_character_tombstones_state,
+                    _build_character_tombstones_state(_config_manager, name),
+                )
 
             # 删除角色配置
             del characters['猫娘'][name]
@@ -2265,6 +4077,13 @@ async def delete_catgirl(name: str):
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
             if not memory_server_reloaded:
                 raise RuntimeError("notify_memory_server_reload returned False")
+            if is_cloudsave_disabled():
+                try:
+                    from main_routers.workshop_router import mark_session_deleted_character_name
+
+                    mark_session_deleted_character_name(name)
+                except Exception as exc:
+                    logger.warning("记录本会话工坊删除标记失败: %s", exc)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -2297,52 +4116,85 @@ async def delete_catgirl(name: str):
                 status_code=500,
             )
 
-    return {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    pending_remove_ok = True
+    pending_remove_error = ""
+    try:
+        await remove_new_character_greeting_pending(_config_manager, name)
+    except Exception as exc:
+        pending_remove_ok = False
+        pending_remove_error = str(exc)
+        logger.exception("remove new character greeting pending failed: %s", name)
+
+    result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    if not pending_remove_ok:
+        result["partial_success"] = True
+        result["pending_remove_ok"] = False
+        result["pending_remove_failed"] = True
+        result["pending_remove_error"] = pending_remove_error
+    return result
 
 @router.post('/clear_voice_ids')
 async def clear_voice_ids():
-    """清除所有角色的本地Voice ID记录"""
+    """Clear all characters' local voice ID records."""
     try:
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
         cleared_count = 0
-        
+
         # 清除所有猫娘的voice_id
         if '猫娘' in characters:
             for name in characters['猫娘']:
-                if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
+                if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):
                     set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
-        
+
         await _config_manager.asave_characters(characters)
+        await ensure_default_yui_voice_for_free_api(_config_manager)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
-        
+
         return JSONResponse({
-            'success': True, 
+            'success': True,
             'message': f'已清除 {cleared_count} 个角色的Voice ID记录',
             'cleared_count': cleared_count
         })
     except Exception as e:
         return JSONResponse({
-            'success': False, 
+            'success': False,
             'error': f'清除Voice ID记录时出错: {str(e)}'
         }, status_code=500)
 
 
 @router.get('/custom_tts_voices')
-async def list_custom_tts_voices_for_characters():
-    """获取自定义 TTS 可用声音列表（用于角色管理页面的音色选择）。
-
-    当前由适配层处理 GPT-SoVITS provider 的路径映射与 voice_id 前缀规则。
-    """
+async def list_custom_tts_voices_for_characters(provider: str = ''):
+    """Return custom GPT-SoVITS voices for the character UI."""
     try:
         _config_manager = get_config_manager()
-        
-        # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
+        core_config = await _config_manager.aget_core_config()
         tts_config = _config_manager.get_model_api_config('tts_custom')
-        base_url = (tts_config.get('base_url') or '').rstrip('/')
+
+        base_url = (
+            tts_config.get('base_url')
+            or tts_config.get('url')
+            or core_config.get('ttsModelUrl')
+            or core_config.get('TTS_MODEL_URL')
+            or ''
+        )
+        if tts_config.get('is_enabled') is False or core_config.get('GPTSOVITS_ENABLED') is False:
+            return JSONResponse({
+                'success': False,
+                'error': 'GPTSOVITS_NOT_ENABLED',
+                'code': 'GPTSOVITS_NOT_ENABLED',
+                'voices': []
+            }, status_code=400)
+        if not tts_config.get('is_custom'):
+            return JSONResponse({
+                'success': False,
+                'error': 'CUSTOM_API_NOT_ENABLED',
+                'code': 'CUSTOM_API_NOT_ENABLED',
+                'voices': []
+            }, status_code=400)
         if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
             return JSONResponse({
                 'success': False,
@@ -2350,8 +4202,7 @@ async def list_custom_tts_voices_for_characters():
                 'code': 'TTS_CUSTOM_URL_NOT_CONFIGURED',
                 'voices': []
             }, status_code=400)
-        
-        # SSRF 防护：GPT-SoVITS 仅限 localhost
+
         from urllib.parse import urlparse
         import ipaddress
         parsed = urlparse(base_url)
@@ -2362,19 +4213,19 @@ async def list_custom_tts_voices_for_characters():
         except ValueError:
             if host not in ('localhost',):
                 return JSONResponse({'success': False, 'error': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'code': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'voices': []}, status_code=400)
-        
-        # 通过适配层获取并标准化自定义 TTS voices
+
         voices = await get_custom_tts_voices(base_url, provider='gptsovits')
-        
         return JSONResponse({
             'success': True,
+            'provider': 'gptsovits',
             'voices': voices,
             'api_url': base_url
         })
     except (CustomTTSVoiceFetchError, ValueError) as e:
+        error_text = str(e)
         return JSONResponse({
             'success': False,
-            'error': f'连接 GPT-SoVITS API 失败: {str(e)}',
+            'error': f'连接 GPT-SoVITS API 失败: {error_text}',
             'voices': []
         }, status_code=502)
     except Exception as e:
@@ -2383,27 +4234,24 @@ async def list_custom_tts_voices_for_characters():
             'error': f'获取 GPT-SoVITS 声音列表失败: {str(e)}',
             'voices': []
         }, status_code=500)
-
-
 @router.post('/set_microphone')
 async def set_microphone(request: Request):
     try:
         data = await request.json()
         microphone_id = data.get('microphone_id')
-        
+
         # 使用标准的load/save函数
         _config_manager = get_config_manager()
         characters_data = await _config_manager.aload_characters()
-        
+
         # 添加或更新麦克风选择
         characters_data['当前麦克风'] = microphone_id
-        
+
         # 保存配置
         await _config_manager.asave_characters(characters_data)
-        # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
-        
+        # 麦克风 ID 是纯前端读取的字段（仅 get_microphone 读），不影响任何 catgirl
+        # 的 prompt / voice_id / session_manager，无需触发任何 init。
+
         return {"success": True}
     except Exception as e:
         logger.error(f"保存麦克风选择失败: {e}")
@@ -2416,32 +4264,129 @@ async def get_microphone():
         _config_manager = get_config_manager()
         # 使用配置管理器加载角色配置
         characters_data = await _config_manager.aload_characters()
-        
+
         # 获取保存的麦克风选择
         microphone_id = characters_data.get('当前麦克风')
-        
+
         return {"microphone_id": microphone_id}
     except Exception as e:
         logger.error(f"获取麦克风选择失败: {e}")
         return {"microphone_id": None}
 
 
+def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> list[dict]:
+    """The two pinned voices at the top of the overseas free (free_intl) list.
+
+    - yui: the initial/default character voice; sends the literal "yui" (the
+      server maps it to yui's dedicated voice).
+    - default: synonymous with Leda, sends "Leda". It still remains a normal
+      entry in the long Gemini list (no dedup); this merely pins an extra copy
+      on top relabeled as "default".
+
+    Display names are localized by the frontend via i18n_key; this only provides
+    voice_id / i18n_key / fallback prefix.
+
+    voice_id_exists: if a pin's voice_id collides with a user-registered/cloned
+    voice (e.g. a local-TTS user created a voice whose ID is "yui"/"Leda"), the
+    runtime routing prefers the cloned path on collision and no longer treats it
+    as native (see the collision branch of NativeVoiceProvider.resolve_for_routing),
+    so clicking the pinned entry would never reach Gemini — hide it outright to
+    avoid misleading the user.
+    """
+    def _pin(voice_id: str, i18n_key: str, fallback: str) -> dict | None:
+        if callable(voice_id_exists) and voice_id_exists(voice_id):
+            return None
+        meta = native_catalog.get(voice_id) or {}
+        return {
+            "voice_id": voice_id,
+            "i18n_key": i18n_key,
+            "prefix": meta.get("prefix") or fallback,
+            "provider": "free_intl",
+            "builtin": True,
+        }
+
+    pins = [
+        _pin("yui", "voice.freeVoice.yui", "Yui"),
+        _pin("Leda", "voice.freeVoice.default", "Default"),
+    ]
+    return [pin for pin in pins if pin is not None]
+
+
 @router.get('/voices')
 async def get_voices():
-    """获取当前API key对应的所有已注册音色"""
+    """Get all registered voices for the current API key."""
     _config_manager = get_config_manager()
-    result = {"voices": _config_manager.get_voices_for_current_api()}
-    
+    result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
+
     core_config = await _config_manager.aget_core_config()
-    if core_config.get('IS_FREE_VERSION'):
-        core_url = core_config.get('CORE_URL', '')
-        openrouter_url = core_config.get('OPENROUTER_URL', '')
-        if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
-            from utils.api_config_loader import get_free_voices
-            free_voices = get_free_voices()
-            if free_voices:
-                result["free_voices"] = free_voices
-    
+    # 先看有没有自带静态预制目录的 provider 被选中（如 MiMo，hosted）。与 dispatch
+    # 同一优先级判定：选中的 provider 若有 preset_catalog 就用它，并压过 core-native
+    # （assistApi=mimo 在 dispatch 里 priority 60 也先于 native 命中）；GPT-SoVITS /
+    # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
+    # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    # 选声目录与 dispatch 同一优先级：先看哪个注册表 provider 赢得当前配置。
+    #  - 赢家有静态预制目录（如 MiMo）→ 出该目录，压过 core-native（用 is not None，
+    #    空目录也算命中，不误回退）。
+    #  - 赢家无静态目录（vLLM-Omni / GPT-SoVITS，用户自填/自部署音色）→ 既不出目录、
+    #    也不回退 core-native：dispatch 会路由到该赢家，露出 gemini 等原生音色会让用户
+    #    选中后被误传给赢家触发 unsupported-voice（PR #1848 Codex review）。
+    #  - 无注册表 provider 赢 → 回退 core-native（gemini/step/...）。
+    # 复用 native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
+    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    winning_provider_key = tts_provider_registry.selected_provider_key(
+        core_config or {}, _config_manager
+    )
+    selected_preset_catalog = (
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
+        if winning_provider_key else None
+    )
+    active_native_provider = (
+        get_active_realtime_native_provider_for_ui(_config_manager)
+        if winning_provider_key is None else None
+    )
+    if selected_preset_catalog is not None:
+        result["native_voices"] = selected_preset_catalog
+    elif active_native_provider:
+        native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
+        if active_native_provider == 'free_intl':
+            # 海外免费（lanlan.app/Gemini）：yui + default(=Leda) 两个置顶 pin，
+            # 其后是 Gemini 全量目录。yui 从长列表里挪到 pin（不重复展示）；
+            # Leda 不去重，仍作为普通条目留在长列表里（= default pin 的目标）。
+            # pin 的展示名由前端按 i18n_key 本地化。
+            voice_exists = getattr(_config_manager, "voice_id_exists_in_any_storage", None)
+            result["pinned_voices"] = _build_free_intl_voice_pins(
+                native_catalog,
+                voice_id_exists=voice_exists,
+            )
+            # 撞名（跨 api-key 桶存在同名克隆/自定义音色）的条目也从长列表里去掉：
+            # runtime 路由/preview 用 any-storage 撞名判定会拒绝当 native，展示了
+            # 点选也到不了 Gemini（与 pin 的撞名隐藏对偶）。前端只按当前 api 的
+            # voices 去重，跨桶撞名漏网，故在后端按同一谓词收口。
+            def _free_intl_keep(voice_id: str) -> bool:
+                if voice_id == 'yui':
+                    return False
+                if callable(voice_exists) and voice_exists(voice_id):
+                    return False
+                return True
+            native_catalog = {
+                voice_id: meta
+                for voice_id, meta in native_catalog.items()
+                if _free_intl_keep(voice_id)
+            }
+        result["native_voices"] = native_catalog
+
+    # 免费预设音色只在 core=free 运行时可用（与 assist 无关）；core_url 仍须指向
+    # lanlan.tech 免费端点，海外 lanlan.app 路由由 should_block_free_voice_for_route 兜底。
+    # 此处已持有 core_config，直接读 CORE_API_TYPE（等价 is_free_voice()），省一次读取。
+    # CORE_URL 用 `or ''` 归一化：key 存在但值为 None 时 `.get(k, '')` 仍返回 None，
+    # `in None` 会抛 TypeError 让 /voices 500。
+    if core_config.get('CORE_API_TYPE') == 'free' and 'lanlan.tech' in (core_config.get('CORE_URL') or ''):
+        from utils.api_config_loader import get_free_voices
+        free_voices = get_free_voices()
+        if free_voices:
+            result["free_voices"] = free_voices
+
     # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
     characters = await _config_manager.aload_characters()
     voice_owners = {}
@@ -2449,22 +4394,28 @@ async def get_voices():
         if not isinstance(catgirl_config, dict):
             logger.warning(f"角色配置格式异常，已跳过 voice_owners 统计: {catgirl_name}")
             continue
-        vid = get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',))
+        vid = read_legacy_voice_id(get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',)))
         if vid:
             voice_owners.setdefault(vid, []).append(catgirl_name)
     result["voice_owners"] = voice_owners
-    
+
     return result
 
 
 @router.get('/voice_preview')
-async def get_voice_preview(voice_id: str):
-    """获取音色预览音频"""
+async def get_voice_preview(
+    request: Request,
+    voice_id: str,
+    language: str | None = None,
+    i18n_language: str | None = None,
+):
+    """Get the voice preview audio."""
     try:
         _config_manager = get_config_manager()
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
+        is_free_preset_voice = _is_free_preset_voice_id(voice_id)
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
@@ -2480,9 +4431,230 @@ async def get_voice_preview(voice_id: str):
             core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
+        cosyvoice_base_url = ''
+        if provider in ('cosyvoice', 'cosyvoice_intl'):
+            cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+            runtime_key = (cosyvoice_runtime.get('api_key') or '').strip()
+            if runtime_key:
+                audio_api_key = runtime_key
+            elif provider == 'cosyvoice_intl':
+                # intl key 缺失时不要继续用顶上从 tts_custom/AUDIO_API_KEY 拿到的
+                # 国内 key 去打 intl DashScope 端点，必然 401，错误现象比明确缺 key
+                # 难排查。和 minimax/native step/gemini 分支一致显式返回缺 key。
+                return JSONResponse({
+                    'success': False,
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING'
+                }, status_code=400)
+            cosyvoice_base_url = (
+                (voice_data or {}).get('dashscope_base_url')
+                or cosyvoice_runtime.get('base_url', '')
+            )
+
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
-        
-        text = "喵喵喵～这里是neko～很高兴见到你～"
+
+        preview_language = _get_voice_preview_language(request, language, i18n_language)
+        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+
+        # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
+        # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
+        # 在此显式拦下返回「暂不支持试听」，避免落到下方 DashScope/CosyVoice 通用分支拿着
+        # 该 provider 的 key/voice_id 误合成（PR #1848 Codex review；真试听留作后续）。
+        # 与预制同名的克隆音色不拦（dispatch 克隆 provider 先于 MiMo 命中），仍走克隆试听。
+        preview_core_config = await _config_manager.aget_core_config()
+        if _is_unpreviewable_selected_preset_voice(
+            _config_manager, preview_core_config, voice_id, voice_data
+        ):
+            return JSONResponse({
+                'success': False,
+                'error': f'当前预制音色暂不支持试听: {voice_id}',
+                'code': 'PRESET_VOICE_PREVIEW_UNSUPPORTED',
+            }, status_code=400)
+
+        # MiMo 克隆音色（provider=='mimo'）试听：读 voice_meta 里的参考样本 base64，用
+        # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
+        # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
+        if provider == 'mimo':
+            sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
+            if not sample_b64:
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 克隆音色缺少参考样本，无法试听: {voice_id}',
+                    'code': 'MIMO_VOICE_SAMPLE_MISSING',
+                }, status_code=400)
+            mimo_api_key = _config_manager.get_tts_api_key('mimo')
+            if not mimo_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'MIMO_API_KEY_MISSING',
+                    'code': 'MIMO_API_KEY_MISSING',
+                }, status_code=400)
+            # base_url 与 dispatch 同源：assistApi=mimo（Token Plan 唯一场景）用 OPENROUTER_URL，
+            # 否则用 voice_meta 存的 mimo_base_url，缺省默认端点。
+            if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
+                mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
+            else:
+                mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
+            try:
+                sample_bytes = base64.b64decode(sample_b64)
+            except ValueError:  # binascii.Error 是 ValueError 子类
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 克隆音色样本损坏，无法试听: {voice_id}',
+                    'code': 'MIMO_VOICE_SAMPLE_CORRUPT',
+                }, status_code=400)
+            try:
+                mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                audio_data = await mimo_client.synthesize_preview(
+                    sample_bytes,
+                    (voice_data or {}).get('clone_sample_mime') or 'audio/wav',
+                    text=text,
+                )
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"MiMo 克隆音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except MimoVoiceCloneError as e:
+                logger.error(f"MiMo 克隆音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 预览生成失败: {str(e)}',
+                    'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"MiMo 克隆音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'MiMo 预览生成失败: {str(e)}',
+                }, status_code=500)
+
+        native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
+        if native_preview_provider:
+            native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
+            try:
+                if native_preview_provider in ('step', 'free', 'free_intl'):
+                    # 只读 tts_default.api_key —— 跟 step_realtime_tts_worker 走的 key 对偶；
+                    # 不能回退到 audio_api_key（顶上从 tts_custom / AUDIO_API_KEY 取的，都是
+                    # GPT-SoVITS / CosyVoice 这种别家 provider 的 bearer，把它透给
+                    # api.stepfun.com 一律 401，错误现象比明确缺 key 难排查。
+                    # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
+                    # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
+                    try:
+                        native_tts_config = _config_manager.get_model_api_config('tts_default')
+                        native_audio_api_key = native_tts_config.get('api_key', '') or ''
+                    except Exception:
+                        native_audio_api_key = ''
+                    if native_preview_provider == 'step' and not native_audio_api_key:
+                        return JSONResponse({
+                            'success': False,
+                            'error': 'TTS_AUDIO_API_KEY_MISSING',
+                            'code': 'TTS_AUDIO_API_KEY_MISSING'
+                        }, status_code=400)
+                    audio_data = await _synthesize_step_voice_preview(
+                        voice_id=native_voice_id,
+                        preview_line=text,
+                        preview_language=preview_language,
+                        audio_api_key=native_audio_api_key,
+                        free_mode=(native_preview_provider in ('free', 'free_intl')),
+                    )
+                elif native_preview_provider == 'gemini':
+                    core_config = await _config_manager.aget_core_config()
+                    native_audio_api_key = (core_config or {}).get('CORE_API_KEY', '')
+                    if not native_audio_api_key:
+                        return JSONResponse({
+                            'success': False,
+                            'error': 'TTS_AUDIO_API_KEY_MISSING',
+                            'code': 'TTS_AUDIO_API_KEY_MISSING'
+                        }, status_code=400)
+                    audio_data = await _synthesize_gemini_native_voice_preview(
+                        voice_id=native_voice_id,
+                        preview_line=text,
+                        audio_api_key=native_audio_api_key,
+                    )
+                else:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'当前原生音色暂不支持预览: {native_preview_provider}'
+                    }, status_code=400)
+
+                logger.info(f"原生音色 {native_voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/wav'
+                }
+            except Exception as e:
+                logger.error(f"原生音色 {native_voice_id} 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'原生音色预览生成失败: {str(e)}'
+                }, status_code=500)
+
+        if provider == 'elevenlabs' or voice_id.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
+            try:
+                # 从 voice_data 中提取克隆时持久化的 base_url 传给 helper
+                audio_data, error_code = await _elevenlabs_synthesize_preview(
+                    _config_manager,
+                    voice_id,
+                    text,
+                    base_url=(voice_data or {}).get('elevenlabs_base_url')
+                )
+                if error_code:
+                    return JSONResponse({
+                        'success': False,
+                        'error': error_code,
+                        'code': error_code
+                    }, status_code=400)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"ElevenLabs 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/mpeg'
+                }
+            except ElevenLabsUpstreamError as e:
+                logger.error(f"ElevenLabs 预览上游服务错误 ({e.status_code}): {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'ElevenLabs 上游服务错误: {str(e)}',
+                    'code': 'ELEVENLABS_UPSTREAM_ERROR'
+                }, status_code=502)
+            except ValueError as e:
+                # 新增专门的客户端错误 4xx 捕获分支
+                logger.error(f"ElevenLabs 预览请求失败 (4xx): {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'ElevenLabs 请求参数或验证错误: {str(e)}',
+                    'code': 'ELEVENLABS_API_ERROR'
+                }, status_code=400)
+            except Exception as e:
+                logger.error(f"ElevenLabs 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'ElevenLabs预览生成失败: {str(e)}'
+                }, status_code=500)
+        if is_free_preset_voice:
+            try:
+                audio_data = await _synthesize_free_voice_preview(
+                    voice_id=voice_id,
+                    preview_line=text,
+                    preview_language=preview_language,
+                    audio_api_key=audio_api_key or '',
+                )
+                logger.info(f"免费预设音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/wav'
+                }
+            except Exception as e:
+                logger.error(f"免费预设音色 {voice_id} 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'免费预设音色预览生成失败: {str(e)}'
+                }, status_code=500)
+
         if provider in ('minimax', 'minimax_intl'):
             minimax_api_key = _config_manager.get_tts_api_key(provider)
             if not minimax_api_key:
@@ -2516,29 +4688,56 @@ async def get_voice_preview(voice_id: str):
             return JSONResponse({'success': False, 'error': 'TTS_AUDIO_API_KEY_MISSING', 'code': 'TTS_AUDIO_API_KEY_MISSING'}, status_code=400)
 
         # 生成音频
-        dashscope.api_key = audio_api_key
         try:
-            from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model()
-            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
-            # 使用 asyncio.to_thread 包装同步阻塞调用
-            audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
-            
+            tts_api_config = _config_manager.get_model_api_config('tts_custom')
+        except Exception as e:
+            logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
+            tts_api_config = {}
+        preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
+
+        from utils.api_config_loader import get_cosyvoice_clone_model
+        clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
+
+        def _do_preview_synthesize():
+            import dashscope
+            from dashscope.audio.tts_v2 import SpeechSynthesizer
+            # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
+            # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
+            # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
+            # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
+            # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
+            with DASHSCOPE_GLOBAL_LOCK:
+                dashscope.api_key = audio_api_key
+                try:
+                    configure_dashscope_sdk_urls(
+                        dashscope,
+                        preview_base_url,
+                        websocket_path="inference",
+                    )
+                except Exception as e:
+                    logger.warning("DashScope 预览地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+                    configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+                synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
+                return synthesizer, synthesizer.call(text)
+
+        try:
+            synthesizer, audio_data = await asyncio.to_thread(_do_preview_synthesize)
+
             if not audio_data:
                 request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()
                 logger.error(f"生成音频失败: audio_data 为空. Request ID: {request_id}")
                 return JSONResponse({
-                    'success': False, 
+                    'success': False,
                     'error': f'生成音频失败 (Request ID: {request_id})。请检查 API Key 额度或音色 ID 是否有效。'
                 }, status_code=500)
-                
+
             logger.info(f"音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
-                
+
             # 将音频数据转换为 Base64 字符串
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-                
+
             return {
-                "success": True, 
+                "success": True,
                 "audio": audio_base64,
                 "mime_type": "audio/mpeg"
             }
@@ -2546,7 +4745,7 @@ async def get_voice_preview(voice_id: str):
             error_msg = str(e)
             logger.error(f"SpeechSynthesizer 调用异常: {error_msg}")
             return JSONResponse({
-                'success': False, 
+                'success': False,
                 'error': f'语音合成异常: {error_msg}'
             }, status_code=500)
     except Exception as e:
@@ -2556,26 +4755,26 @@ async def get_voice_preview(voice_id: str):
 
 @router.post('/voices')
 async def register_voice(request: Request):
-    """注册新音色"""
+    """Register a new voice."""
     try:
         data = await request.json()
         voice_id = data.get('voice_id')
         voice_data = data.get('voice_data')
-        
+
         if not voice_id or not voice_data:
             return JSONResponse({
                 'success': False,
                 'error': 'TTS_VOICE_REGISTER_MISSING_PARAMS',
                 'code': 'TTS_VOICE_REGISTER_MISSING_PARAMS'
             }, status_code=400)
-        
+
         # 准备音色数据
         complete_voice_data = {
             **voice_data,
             'voice_id': voice_id,
             'created_at': datetime.now().isoformat()
         }
-        
+
         try:
             _config_manager = get_config_manager()
             _config_manager.save_voice_for_current_api(voice_id, complete_voice_data)
@@ -2585,7 +4784,7 @@ async def register_voice(request: Request):
                 'success': False,
                 'error': f'保存音色配置失败: {str(e)}'
             }, status_code=500)
-            
+
         return {"success": True, "message": "音色注册成功"}
     except Exception as e:
         return JSONResponse({
@@ -2596,11 +4795,11 @@ async def register_voice(request: Request):
 
 @router.delete('/voices/{voice_id}')
 async def delete_voice(voice_id: str):
-    """删除指定音色"""
+    """Delete the specified voice."""
     try:
         _config_manager = get_config_manager()
         deleted = _config_manager.delete_voice_for_current_api(voice_id)
-        
+
         if deleted:
             # 清理所有角色中使用该音色的引用
             _config_manager = get_config_manager()
@@ -2608,20 +4807,20 @@ async def delete_voice(voice_id: str):
             characters = await _config_manager.aload_characters()
             cleaned_count = 0
             affected_active_names = []
-            
+
             if '猫娘' in characters:
                 for name in characters['猫娘']:
-                    if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)) == voice_id:
+                    if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))) == voice_id:
                         set_reserved(characters['猫娘'][name], 'voice_id', '')
                         cleaned_count += 1
-                        
+
                         # 检查该角色是否是当前活跃的 session
                         if name in session_manager and session_manager[name].is_active:
                             affected_active_names.append(name)
-            
+
             if cleaned_count > 0:
                 await _config_manager.asave_characters(characters)
-                
+
                 # 对于受影响的活跃角色，并行通知 + 结束 session（每个 end_session ≈ 1s）
                 async def _refresh_one(name):
                     logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备刷新...")
@@ -2633,6 +4832,9 @@ async def delete_voice(voice_id: str):
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+                    # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                    # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                    session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:
                     await asyncio.gather(
@@ -2643,7 +4845,7 @@ async def delete_voice(voice_id: str):
                 # 自动重新加载配置
                 initialize_character_data = get_initialize_character_data()
                 await initialize_character_data()
-            
+
             logger.info(f"已删除音色 '{voice_id}'，并清理了 {cleaned_count} 个角色的引用")
             return {
                 "success": True,
@@ -2671,14 +4873,14 @@ MAX_CARD_FACE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class _UploadTooLargeError(Exception):
-    """上传文件大小超过限制"""
+    """Uploaded file size exceeds the limit."""
 
 
 async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
-    """读取上传文件并检查大小限制，返回 BytesIO (positioned at 0)。
+    """Read an uploaded file with a size-limit check, returning BytesIO (positioned at 0).
 
     Raises:
-        _UploadTooLargeError: 文件大小超过 max_size。
+        _UploadTooLargeError: file size exceeds max_size.
     """
     buf = io.BytesIO()
     total = 0
@@ -2699,16 +4901,16 @@ async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
 @router.post('/audio/analyze_silence')
 async def analyze_silence(file: UploadFile = File(...)):
     """
-    分析上传音频中的静音段落。
+    Analyze silence segments in the uploaded audio.
 
-    返回:
-        - original_duration / original_duration_ms: 原始音频总时长
-        - silence_duration / silence_duration_ms: 检测到的静音总时长 (total_silence_ms)
-        - removable_silence / removable_silence_ms: 实际可移除的静音时长
-        - estimated_duration / estimated_duration_ms: 处理后预计剩余时长
-        - saving_percentage: 节省百分比 (基于实际可移除量)
-        - silence_segments: 静音段列表 [{start_ms, end_ms, duration_ms}]
-        - has_silence: 是否检测到可移除静音
+    Returns:
+        - original_duration / original_duration_ms: total duration of the original audio
+        - silence_duration / silence_duration_ms: total detected silence (total_silence_ms)
+        - removable_silence / removable_silence_ms: silence that can actually be removed
+        - estimated_duration / estimated_duration_ms: estimated remaining duration after processing
+        - saving_percentage: savings percentage (based on the actually removable amount)
+        - silence_segments: list of silence segments [{start_ms, end_ms, duration_ms}]
+        - has_silence: whether removable silence was detected
     """
     from utils.audio_silence_remover import (
         detect_silence, convert_to_wav_if_needed, format_duration_mmss
@@ -2763,10 +4965,10 @@ async def analyze_silence(file: UploadFile = File(...)):
 @router.post('/audio/trim_silence')
 async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | None = Form(default=None)):
     """
-    执行静音裁剪并返回处理后的音频。
+    Perform silence trimming and return the processed audio.
 
-    先分析静音段，然后将超长静音缩减至 200ms（从正中间裁剪）。
-    返回处理后的 WAV 文件 (base64 编码) 以及 MD5 校验值。
+    Analyzes silence segments first, then shrinks over-long silences down to 200ms (cut from the middle).
+    Returns the processed WAV file (base64-encoded) plus an MD5 checksum.
     """
     import uuid
     import base64 as b64
@@ -2887,7 +5089,7 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
 
 @router.get('/audio/trim_progress/{task_id}')
 async def get_trim_progress(task_id: str):
-    """获取裁剪任务进度"""
+    """Get trim task progress."""
     task = _trim_tasks.get(task_id)
     if not task:
         return JSONResponse({'exists': False, 'progress': 100, 'phase': 'done'})
@@ -2901,7 +5103,7 @@ async def get_trim_progress(task_id: str):
 
 @router.post('/audio/trim_cancel/{task_id}')
 async def cancel_trim_task(task_id: str):
-    """取消裁剪任务"""
+    """Cancel a trim task."""
     task = _trim_tasks.get(task_id)
     if task:
         task['cancelled'] = True
@@ -2917,14 +5119,14 @@ async def voice_clone(
     provider: str = Form(default="cosyvoice"),
 ):
     """
-    语音克隆接口
-    
-    参数:
-        file: 音频文件
-        prefix: 音色前缀名
-        ref_language: 参考音频的语言，可选值：ch, en, fr, de, ja, ko, ru
-                      注意：这是参考音频的语言，不是目标语音的语言
-        provider: 服务商，可选值：cosyvoice (阿里云), minimax (国服), minimax_intl (国际服)
+    Voice cloning endpoint.
+
+    Parameters:
+        file: audio file
+        prefix: voice prefix name
+        ref_language: language of the reference audio; one of: ch, en, fr, de, ja, ko, ru
+                      Note: this is the language of the reference audio, not the target voice
+        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:
@@ -2936,20 +5138,24 @@ async def voice_clone(
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
 
     audio_md5 = hashlib.md5(file_buffer.getvalue()).hexdigest()
-    
+
     # 提前规范化 provider 和 ref_language
     provider = provider.lower().strip() if provider else 'cosyvoice'
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     ref_language = ref_language.lower().strip() if ref_language else 'ch'
     if ref_language not in valid_languages:
         ref_language = 'ch'
-    
+
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
     tts_config = _config_manager.get_model_api_config('tts_custom')
-    base_url = tts_config.get('base_url', '')
-    is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-    
+    try:
+        core_config = await _config_manager.aget_core_config() or {}
+    except Exception:
+        core_config = {}
+    base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
+    is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
+
     if is_local_tts:
         # ==================== 本地 TTS 注册流程 ====================
         # MD5 + ref_language 去重：检查是否已有相同音频 + 相同语言注册过的音色
@@ -2963,24 +5169,24 @@ async def voice_clone(
                 'reused': True,
                 'is_local': True
             })
-        
+
         # 将 ws(s):// 转换为 http(s):// 用于 REST API 调用
         if base_url.startswith('wss://'):
             http_base = 'https://' + base_url[6:]
         else:
             http_base = 'http://' + base_url[5:]
-        
+
         # 移除可能的 /v1/audio/speech/stream 路径，只保留主机部分
         # 例如: ws://127.0.0.1:50000/v1/audio/speech/stream -> http://127.0.0.1:50000
         if '/v1/' in http_base:
             http_base = http_base.split('/v1/')[0]
-        
+
         register_url = f"{http_base}/v1/speakers/register"
         logger.info(f"使用本地 TTS 注册: {register_url}")
-        
+
         try:
             file_buffer.seek(0)
-            
+
             # 根据用户 demo，API 格式：
             # POST /v1/speakers/register
             # multipart/form-data: speaker_id, prompt_text, prompt_audio
@@ -2995,11 +5201,11 @@ async def voice_clone(
             # per-call AsyncClient: 用户手动上传音色文件触发，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 resp = await client.post(register_url, data=data, files=files)
-                
+
                 if resp.status_code == 200:
                     result = resp.json()
                     voice_id = prefix  # 本地 TTS 使用 speaker_id 作为 voice_id
-                    
+
                     # 保存到本地音色库（使用特殊的 key 标识本地 TTS）
                     voice_data = {
                         'voice_id': voice_id,
@@ -3016,7 +5222,7 @@ async def voice_clone(
                         logger.info(f"本地 TTS voice_id 已保存: {voice_id}")
                     except Exception as save_error:
                         logger.warning(f"保存 voice_id 到音色库失败（本地 TTS 仍可用）: {save_error}")
-                    
+
                     return JSONResponse({
                         'voice_id': voice_id,
                         'message': result.get('message', '本地音色注册成功'),
@@ -3028,7 +5234,7 @@ async def voice_clone(
                     return JSONResponse({
                         'error': f'本地 TTS 注册失败: {error_text[:200]}'
                     }, status_code=resp.status_code)
-                    
+
         except httpx.ConnectError as e:
             logger.error(f"无法连接本地 TTS 服务器: {e}")
             return JSONResponse({
@@ -3039,10 +5245,11 @@ async def voice_clone(
             return JSONResponse({
                 'error': f'本地 TTS 注册失败: {str(e)}'
             }, status_code=500)
-    
+
     # ==================== 云端语音克隆：按 provider 对偶分支 ====================
 
     # 统一通过 config_manager 获取 API Key
+    cosyvoice_runtime = None
     api_key = _config_manager.get_tts_api_key(provider)
 
     if provider in ('minimax', 'minimax_intl'):
@@ -3057,22 +5264,55 @@ async def voice_clone(
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
 
-    elif provider == 'cosyvoice':
-        # ---------- 阿里云 CosyVoice ----------
+    elif provider in ('cosyvoice', 'cosyvoice_intl'):
+        # ---------- 阿里 CosyVoice（国内 / 国际）----------
+        cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+        api_key = (cosyvoice_runtime.get('api_key') or '').strip()
         if not api_key:
             return JSONResponse({
                 'error': 'TTS_AUDIO_API_KEY_MISSING',
                 'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
-        base_url = None
-        storage_key = api_key
-        provider_label = '阿里云CosyVoice'
+        base_url = cosyvoice_runtime.get('base_url', '')
+        storage_key = cosyvoice_runtime.get('storage_key') or api_key
+        provider_label = cosyvoice_runtime.get('provider_label') or '阿里百炼CosyVoice'
+
+    elif provider == 'elevenlabs':
+        if not api_key:
+            return JSONResponse({
+                'error': 'ELEVENLABS_API_KEY_MISSING',
+                'code': 'ELEVENLABS_API_KEY_MISSING',
+                'message': '未配置 ElevenLabs API Key，请先在设置中填写'
+            }, status_code=400)
+        base_url = await _get_elevenlabs_base_url(_config_manager)
+        storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+        provider_label = 'ElevenLabs'
+
+    elif provider == 'mimo':
+        if not api_key:
+            return JSONResponse({
+                'error': 'MIMO_API_KEY_MISSING',
+                'code': 'MIMO_API_KEY_MISSING',
+                'message': '未配置 MiMo API Key，请先在设置中填写'
+            }, status_code=400)
+        # base_url 须与 api_key 同源：assistApi=mimo（含 Token Plan）时 get_core_config 已把
+        # OPENROUTER_URL 解析成对应端点（普通 / token-plan-*），get_tts_api_key('mimo') 也据此
+        # 返回配套 key；否则用默认 xiaomimimo 端点。和 _mimo_resolve 的 base_url 规则对偶。
+        if str(core_config.get('assistApi') or '').strip().lower() == 'mimo':
+            base_url = (core_config.get('OPENROUTER_URL') or '').strip()
+        else:
+            base_url = ''
+        storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
+        provider_label = 'MiMo'
 
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
     # ---------- 公共流程：MD5 去重 ----------
-    existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+    if provider in ('cosyvoice', 'cosyvoice_intl'):
+        existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
+    else:
+        existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
     if existing:
         voice_id, voice_data = existing
         logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -3085,7 +5325,7 @@ async def voice_clone(
 
     # ---------- 公共流程：音频规范化 ----------
     try:
-        if provider == 'cosyvoice':
+        if provider in ('cosyvoice', 'cosyvoice_intl'):
             mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
             if not mime_type:
                 return JSONResponse({'error': error_msg}, status_code=400)
@@ -3129,11 +5369,68 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
-        else:  # cosyvoice
+        elif provider == 'elevenlabs':
+            voice_id = await _elevenlabs_clone_voice(
+                api_key=api_key,
+                base_url=base_url,
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                name=prefix,
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'elevenlabs',
+                'source': 'clone',
+                'elevenlabs_base_url': base_url,
+                'created_at': datetime.now().isoformat()
+            }
+
+        elif provider == 'mimo':
+            # MiMo 没有远端注册接口（已核实官方文档：voiceclone 只能每次内联参考音频，无
+            # create-voice / 远端 voice_id）。所以严格对偶 MiniMax 的做法是：把克隆身份整段
+            # 落进 voice_storage.json 的 voice_meta——MiniMax 那里存的是远端 voice_id，这里存
+            # 参考音频本身（base64）。不另起本地文件存储，voice_meta 随 voice_storage.json 一起
+            # 云同步（与 MiniMax 同构）。校验样本可用后再落库。
+            client = MimoVoiceCloneClient(api_key=api_key, base_url=base_url or None)
+            sample_bytes = normalized_buffer.getvalue()
+            await client.validate_sample(sample_bytes, mime_type='audio/wav')
+            # voice_id 维度必须与 MD5 去重键 (storage_key, audio_md5, ref_language) 一致：
+            #  - 含 key 末 8 位：同一音频在不同 MiMo key 下落不同 voice_id，避免跨 __MIMO__ 桶
+            #    同名被 delete_voice_for_current_api 按 id 扫桶误删（Codex review #1851）。
+            #  - 含 ref_language：去重带 ref_language，若 id 不带则「同音频换语言」绕过去重却又
+            #    生成同名 id，覆盖掉前一条 voice_data（CodeRabbit review #1851）。
+            voice_id = f'mimo-clone-{api_key[-8:]}-{ref_language}-{audio_md5[:12]}'
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'mimo',
+                'source': 'clone',
+                # 克隆身份：参考音频 base64（对偶 MiniMax 的远端 voice_id），dispatch/preview
+                # 读它内联进 voiceclone 请求。存进 voice_meta 即随 voice_storage.json 云同步。
+                'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
+                'clone_sample_mime': 'audio/wav',
+                # base_url 存进 voice_meta（对偶 minimax_base_url）；dispatch 在 assistApi=mimo
+                # （Token Plan 的唯一场景）时仍按当前配置重解析，保证 key/端点配套。
+                'mimo_base_url': base_url or '',
+                'created_at': datetime.now().isoformat()
+            }
+
+        else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = get_cosyvoice_clone_model()
+            clone_model = get_cosyvoice_clone_model(provider)
             language_hints = qwen_language_hints(ref_language)
-            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+            dashscope_base_url = (cosyvoice_runtime or {}).get('base_url', '')
+            client = QwenVoiceCloneClient(
+                api_key=api_key,
+                tflink_upload_url=TFLINK_UPLOAD_URL,
+                dashscope_base_url=dashscope_base_url,
+            )
             voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
@@ -3147,14 +5444,22 @@ async def voice_clone(
                 'file_url': tmp_url,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
-                'provider': 'cosyvoice',
+                'provider': provider,
+                'dashscope_base_url': dashscope_base_url,
                 'clone_model': clone_model,
                 'created_at': datetime.now().isoformat()
             }
 
         logger.info(f"{provider_label} 音色注册成功，voice_id: {voice_id}")
 
-    except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs 音色注册上游服务错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+            'provider': provider,
+        }, status_code=502)
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError) as e:
         logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
         if '超时' in error_detail:
@@ -3174,6 +5479,19 @@ async def voice_clone(
         logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
+        # MiMo 与其它家不同：它没有远端音色资源（克隆身份 = voice_meta 里的样本 base64，
+        # save 失败＝什么都没落库，voice_id 是本地生成、此刻指向空）。返回 200+local_save_failed
+        # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
+        # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
+        # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
+        if provider == 'mimo':
+            return JSONResponse({
+                'error': f'{provider_label}音色保存失败: {str(save_error)}',
+                'code': 'TTS_VOICE_SAVE_FAILED',
+                'provider': provider,
+            }, status_code=500)
+        # 其它 provider（cosyvoice/minimax/elevenlabs）远端音色已创建，本地保存失败仍返回
+        # 200+local_save_failed，避免客户端重试重复创建远端资源、浪费配额（PR #528 既定规则）。
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',
@@ -3189,21 +5507,192 @@ async def voice_clone(
     })
 
 
+def _validate_voice_design_description(raw: object) -> tuple[str, JSONResponse | None]:
+    """Validate a voice-design description against ElevenLabs' 20–1000 char window."""
+    description = str(raw or '').strip()
+    if len(description) < ELEVENLABS_VOICE_DESIGN_DESC_MIN:
+        return description, JSONResponse({
+            'error': 'VOICE_DESIGN_DESCRIPTION_TOO_SHORT',
+            'code': 'VOICE_DESIGN_DESCRIPTION_TOO_SHORT',
+            'min': ELEVENLABS_VOICE_DESIGN_DESC_MIN,
+        }, status_code=400)
+    if len(description) > ELEVENLABS_VOICE_DESIGN_DESC_MAX:
+        return description, JSONResponse({
+            'error': 'VOICE_DESIGN_DESCRIPTION_TOO_LONG',
+            'code': 'VOICE_DESIGN_DESCRIPTION_TOO_LONG',
+            'max': ELEVENLABS_VOICE_DESIGN_DESC_MAX,
+        }, status_code=400)
+    return description, None
+
+
+@router.post('/voice_design_preview')
+async def voice_design_preview(request: Request):
+    """Generate ElevenLabs voice-design previews from a text description.
+
+    Returns a list of previews ``[{generated_voice_id, audio (base64 mp3),
+    media_type, duration_secs}]`` for the user to audition; nothing is persisted
+    yet — :func:`voice_design_create` lands the chosen preview as a voice.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    # request.json() 也可能返回数组/字符串/null（合法 JSON 但非对象）——直接 .get 会 500。
+    if not isinstance(data, dict):
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+
+    description, err = _validate_voice_design_description(data.get('description'))
+    if err is not None:
+        return err
+
+    _config_manager = get_config_manager()
+    api_key = _config_manager.get_tts_api_key('elevenlabs')
+    if not api_key:
+        return JSONResponse({
+            'error': 'ELEVENLABS_API_KEY_MISSING',
+            'code': 'ELEVENLABS_API_KEY_MISSING',
+            'message': '未配置 ElevenLabs API Key，请先在设置中填写',
+        }, status_code=400)
+    base_url = await _get_elevenlabs_base_url(_config_manager)
+
+    try:
+        previews = await _elevenlabs_design_previews(
+            api_key=api_key, base_url=base_url, voice_description=description,
+        )
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs voice design 上游错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+        }, status_code=502)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"ElevenLabs voice design 失败: {e}")
+        return JSONResponse({'error': f'语音设计失败: {str(e)}'}, status_code=500)
+
+    # 只保留既有 generated_voice_id 又带 audio_base_64 的可试听项——预览接口的契约是给前端
+    # 可试听的选项。若过滤后为空（上游没回可用音频），按上游异常返回 502，不伪装成 success。
+    result_previews = [
+        {
+            'generated_voice_id': p.get('generated_voice_id', ''),
+            'audio': p.get('audio_base_64', ''),
+            'media_type': p.get('media_type', 'audio/mpeg'),
+            'duration_secs': p.get('duration_secs'),
+        }
+        for p in previews
+        if isinstance(p, dict) and p.get('generated_voice_id') and p.get('audio_base_64')
+    ]
+    if not result_previews:
+        return JSONResponse({
+            'error': 'ElevenLabs 未返回可试听的语音预览',
+            'code': 'ELEVENLABS_PREVIEWS_EMPTY',
+        }, status_code=502)
+    return JSONResponse({'success': True, 'previews': result_previews})
+
+
+@router.post('/voice_design_create')
+async def voice_design_create(request: Request):
+    """Persist a chosen ElevenLabs design preview into a reusable voice.
+
+    The voice lands as a normal ElevenLabs voice (``source='design'``) in the
+    ElevenLabs voice_storage bucket, so dispatch reuses the existing ElevenLabs
+    clone path (``voice_meta.provider=='elevenlabs'``).
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+
+    description, err = _validate_voice_design_description(data.get('description'))
+    if err is not None:
+        return err
+    generated_voice_id = str(data.get('generated_voice_id') or '').strip()
+    if not generated_voice_id:
+        return JSONResponse({
+            'error': 'VOICE_DESIGN_PREVIEW_MISSING',
+            'code': 'VOICE_DESIGN_PREVIEW_MISSING',
+        }, status_code=400)
+    name = str(data.get('name') or data.get('prefix') or '').strip()
+
+    _config_manager = get_config_manager()
+    api_key = _config_manager.get_tts_api_key('elevenlabs')
+    if not api_key:
+        return JSONResponse({
+            'error': 'ELEVENLABS_API_KEY_MISSING',
+            'code': 'ELEVENLABS_API_KEY_MISSING',
+            'message': '未配置 ElevenLabs API Key，请先在设置中填写',
+        }, status_code=400)
+    base_url = await _get_elevenlabs_base_url(_config_manager)
+
+    try:
+        voice_id = await _elevenlabs_create_voice_from_preview(
+            api_key=api_key,
+            base_url=base_url,
+            voice_name=name or 'NEKO Designed Voice',
+            voice_description=description,
+            generated_voice_id=generated_voice_id,
+        )
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs voice design create 上游错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+        }, status_code=502)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"ElevenLabs voice design create 失败: {e}")
+        return JSONResponse({'error': f'语音设计保存失败: {str(e)}'}, status_code=500)
+
+    voice_data = {
+        'voice_id': voice_id,
+        'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+        'prefix': name or 'Designed Voice',
+        'provider': 'elevenlabs',
+        'source': 'design',
+        'design_description': description,
+        'elevenlabs_base_url': base_url,
+        'created_at': datetime.now().isoformat(),
+    }
+    storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+    try:
+        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+    except Exception as save_error:
+        logger.error(f"保存 ElevenLabs 设计音色到音色库失败: {save_error}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': 'ElevenLabs 设计音色创建成功，但本地保存失败',
+            'local_save_failed': True,
+            'error': str(save_error),
+            'provider': 'elevenlabs',
+        }, status_code=200)
+
+    return JSONResponse({
+        'voice_id': voice_id,
+        'message': 'ElevenLabs 设计音色创建成功并已保存到音色库',
+        'provider': 'elevenlabs',
+        'source': 'design',
+    })
+
+
 @router.post('/voice_clone_direct')
 async def voice_clone_direct(request: Request):
     """
-    直链语音克隆接口 - 跳过音频上传步骤，直接使用提供的直链URL注册音色
-    
-    支持 CosyVoice 和 MiniMax 服务商：
-    - CosyVoice: 直接使用直链URL注册音色
-    - MiniMax: 先下载音频文件，再上传到MiniMax服务器注册音色
-    
-    请求体:
+    Direct-link voice cloning endpoint — skips the audio upload step and registers the voice directly from the provided direct URL.
+
+    Supports the CosyVoice, MiniMax and ElevenLabs providers:
+    - CosyVoice: registers the voice directly with the direct-link URL
+    - MiniMax: downloads the audio file first, then uploads it to the MiniMax server to register the voice
+
+    Request body:
         {
-            "direct_link": "https://example.com/audio.wav",  // 音频直链URL
-            "prefix": "custom_prefix",                        // 音色前缀名
-            "ref_language": "ch",                             // 参考音频语言
-            "provider": "cosyvoice"                           // 服务商：cosyvoice / minimax / minimax_intl
+            "direct_link": "https://example.com/audio.wav",  // direct audio URL
+            "prefix": "custom_prefix",                        // voice prefix name
+            "ref_language": "ch",                             // reference audio language
+            "provider": "cosyvoice"                           // provider: cosyvoice / cosyvoice_intl / minimax / minimax_intl / elevenlabs
         }
     """
     try:
@@ -3221,42 +5710,13 @@ async def voice_clone_direct(request: Request):
         return JSONResponse({'error': '缺少 direct_link 参数'}, status_code=400)
     if not prefix:
         return JSONResponse({'error': '缺少 prefix 参数'}, status_code=400)
-    if not direct_link.startswith(('http://', 'https://')):
-        return JSONResponse({'error': 'direct_link 必须是有效的HTTP/HTTPS链接'}, status_code=400)
-
-    # SSRF防护：验证直链域名不是内网IP
     try:
-        from urllib.parse import urlparse
-        import socket
-        import ipaddress
-        
-        parsed_url = urlparse(direct_link)
-        hostname = parsed_url.hostname
-        
-        if not hostname:
-            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
-        
-        # 解析域名到IP
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-        except socket.gaierror:
-            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
-        
-        # 检查每个IP是否是内网IP
-        for _, _, _, _, sockaddr in addr_info:
-            ip = sockaddr[0]
-            try:
-                ip_obj = ipaddress.ip_address(ip)
-                # 检查是否是内网、回环、链路本地、未指定或多播地址
-                if (ip_obj.is_loopback or ip_obj.is_private or 
-                    ip_obj.is_link_local or ip_obj.is_unspecified or 
-                    ip_obj.is_multicast):
-                    return JSONResponse({
-                        'error': '直链不能指向内网地址',
-                        'code': 'PRIVATE_IP_NOT_ALLOWED'
-                    }, status_code=400)
-            except ValueError:
-                continue
+        await _validate_direct_link_target(direct_link)
+    except DirectLinkSecurityError as e:
+        return JSONResponse({
+            'error': str(e),
+            'code': e.code,
+        }, status_code=400)
     except Exception as e:
         logger.warning(f"SSRF检查失败: {e}")
         return JSONResponse({'error': '直链安全检查失败'}, status_code=400)
@@ -3267,23 +5727,35 @@ async def voice_clone_direct(request: Request):
         ref_language = 'ch'
 
     # 验证服务商参数
-    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice']
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'cosyvoice_intl', 'elevenlabs']
     if provider not in valid_providers:
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
             'code': 'TTS_PROVIDER_INVALID',
-            'message': f'支持的服务商: {", ".join(valid_providers)}'
+            'message': f'支持的服务商: {", ".join(valid_providers)}',
+            'details': {'provider': provider, 'valid_providers': ', '.join(valid_providers)},
         }, status_code=400)
 
     # 获取 API Key
     _config_manager = get_config_manager()
-    api_key = _config_manager.get_tts_api_key(provider)
+    cosyvoice_runtime = None
+    if provider in ('cosyvoice', 'cosyvoice_intl'):
+        cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+        api_key = (cosyvoice_runtime.get('api_key') or '').strip()
+    else:
+        api_key = _config_manager.get_tts_api_key(provider)
     if not api_key:
         if provider in ('minimax', 'minimax_intl'):
             return JSONResponse({
                 'error': 'MINIMAX_API_KEY_MISSING',
                 'code': 'MINIMAX_API_KEY_MISSING',
                 'message': '未配置 MiniMax API Key，请先在设置中填写'
+            }, status_code=400)
+        if provider == 'elevenlabs':
+            return JSONResponse({
+                'error': 'ELEVENLABS_API_KEY_MISSING',
+                'code': 'ELEVENLABS_API_KEY_MISSING',
+                'message': '未配置 ElevenLabs API Key，请先在设置中填写'
             }, status_code=400)
         else:
             return JSONResponse({
@@ -3293,11 +5765,11 @@ async def voice_clone_direct(request: Request):
 
     # 导入所有可能用到的异常类（用于后面的异常捕获）
     from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
-    
+
     # 设置服务商相关参数
     if provider in ('minimax', 'minimax_intl'):
         from utils.voice_clone import (
-            MinimaxVoiceCloneClient, 
+            MinimaxVoiceCloneClient,
             minimax_normalize_language,
             get_minimax_base_url,
             get_minimax_storage_prefix
@@ -3305,25 +5777,46 @@ async def voice_clone_direct(request: Request):
         base_url = get_minimax_base_url(provider)
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
-    else:  # cosyvoice
+    elif provider == 'elevenlabs':
+        base_url = await _get_elevenlabs_base_url(_config_manager)
+        storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+        provider_label = 'ElevenLabs'
+    else:  # cosyvoice / cosyvoice_intl
         from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
-        storage_key = api_key
-        provider_label = '阿里云CosyVoice'
+        base_url = (cosyvoice_runtime or {}).get('base_url', '')
+        storage_key = (cosyvoice_runtime or {}).get('storage_key') or api_key
+        provider_label = (cosyvoice_runtime or {}).get('provider_label') or '阿里百炼CosyVoice'
 
     # 验证直链是否可访问（HEAD失败时回退到GET）
-    # per-call AsyncClient: 用户粘贴直链触发的一次性克隆流程，冷路径（外部 CDN 主机）
+    # 每一跳都固定到已校验的解析结果，避免校验后请求阶段被 DNS rebinding 绕过。
     try:
-        async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
-            head_resp = await client.head(direct_link, follow_redirects=True)
+        head_resp = await _request_direct_link_follow_redirects("HEAD", direct_link)
+        try:
             if head_resp.status_code >= 400:
                 # HEAD失败，尝试GET
                 logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
-                get_resp = await client.get(direct_link, follow_redirects=True)
-                if get_resp.status_code >= 400:
-                    return JSONResponse({
-                        'error': f'直链无法访问，状态码: {get_resp.status_code}',
-                        'code': 'DIRECT_LINK_INACCESSIBLE'
-                    }, status_code=400)
+                get_resp = await _request_direct_link_follow_redirects(
+                    "GET",
+                    direct_link,
+                    stream=True,
+                    headers={"Range": "bytes=0-0"},
+                )
+                try:
+                    if get_resp.status_code >= 400:
+                        return JSONResponse({
+                            'error': f'直链无法访问，状态码: {get_resp.status_code}',
+                            'code': 'DIRECT_LINK_INACCESSIBLE'
+                        }, status_code=400)
+                finally:
+                    await get_resp.aclose()
+        finally:
+            await head_resp.aclose()
+    except DirectLinkSecurityError as e:
+        logger.warning(f"直链安全校验失败: {e}")
+        return JSONResponse({
+            'error': str(e),
+            'code': e.code,
+        }, status_code=400)
     except Exception as e:
         logger.warning(f"直链验证失败: {e}")
         # 不阻断流程，只是警告
@@ -3336,54 +5829,19 @@ async def voice_clone_direct(request: Request):
             logger.info(f"开始下载直链音频: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
 
-            # per-call AsyncClient: 用户一次性直链下载，冷路径
-            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
-                    if download_resp.status_code != 200:
-                        return JSONResponse({
-                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                            'code': 'DOWNLOAD_FAILED'
-                        }, status_code=400)
-                    
-                    # 从Content-Disposition或URL推断文件名
-                    filename = 'audio.wav'
-                    content_disposition = download_resp.headers.get('content-disposition', '')
-                    if 'filename=' in content_disposition:
-                        import re
-                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
-                        if match:
-                            filename = match.group(1)
-                    else:
-                        # 从URL路径获取文件名
-                        from urllib.parse import urlparse
-                        parsed = urlparse(direct_link)
-                        path_filename = parsed.path.split('/')[-1]
-                        if path_filename and '.' in path_filename:
-                            filename = path_filename
-                    
-                    # 流式读取内容并检查大小
-                    audio_buffer = io.BytesIO()
-                    total_size = 0
-                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
-                        total_size += len(chunk)
-                        if total_size > MAX_FILE_SIZE:
-                            return JSONResponse({
-                                'error': '音频文件超过100MB限制',
-                                'code': 'FILE_TOO_LARGE'
-                            }, status_code=400)
-                        audio_buffer.write(chunk)
-                    
-                    audio_buffer.seek(0)
-                    audio_bytes = audio_buffer.getvalue()
-            
+            filename, audio_bytes = await _download_direct_link_audio(
+                direct_link,
+                max_file_size=MAX_FILE_SIZE,
+            )
+
             logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
-            
+
             # 2. 计算音频内容的 MD5 用于去重（与文件上传路径保持一致）
             import hashlib
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
-            
+
             # 3. MD5 去重检查
-            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
             if existing:
                 voice_id, voice_data = existing
                 logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
@@ -3393,27 +5851,28 @@ async def voice_clone_direct(request: Request):
                     'reused': True,
                     'provider': provider
                 })
-            
+
             # 2. 音频归一化处理（与文件上传路径保持一致）
             from utils.audio import normalize_voice_clone_api_audio
             original_buffer = io.BytesIO(audio_bytes)
-            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+            normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
+                normalize_voice_clone_api_audio,
                 original_buffer, filename
             )
-            
+
             original_prefix, minimax_prefix = _build_minimax_request_prefix(prefix, provider_label)
 
             # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
-            
+
             voice_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
                 prefix=minimax_prefix,
                 language=minimax_lang,
             )
-            
+
             voice_data = {
                 'voice_id': voice_id,
                 'prefix': original_prefix,  # 保存原始前缀用于显示
@@ -3427,45 +5886,74 @@ async def voice_clone_direct(request: Request):
                 'created_at': datetime.now().isoformat(),
                 'is_direct_link': True
             }
-            
+
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
-            
-        else:  # cosyvoice
+
+        elif provider == 'elevenlabs':
+            MAX_FILE_SIZE = 100 * 1024 * 1024
+
+            filename, audio_bytes = await _download_direct_link_audio(
+                direct_link,
+                max_file_size=MAX_FILE_SIZE,
+            )
+
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+
+            normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
+                normalize_voice_clone_api_audio,
+                io.BytesIO(audio_bytes),
+                filename,
+            )
+            voice_id = await _elevenlabs_clone_voice(
+                api_key=api_key,
+                base_url=base_url,
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                name=prefix,
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+                'prefix': prefix,
+                'direct_link': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'elevenlabs',
+                'elevenlabs_base_url': base_url,
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+
+        else:  # cosyvoice / cosyvoice_intl
             # ========== CosyVoice 直链克隆流程 ==========
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
 
-            # per-call AsyncClient: 用户一次性直链下载，冷路径
-            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
-                    if download_resp.status_code != 200:
-                        return JSONResponse({
-                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                            'code': 'DOWNLOAD_FAILED'
-                        }, status_code=400)
-                    
-                    # 流式读取内容并检查大小
-                    audio_buffer = io.BytesIO()
-                    total_size = 0
-                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
-                        total_size += len(chunk)
-                        if total_size > MAX_FILE_SIZE:
-                            return JSONResponse({
-                                'error': '音频文件超过100MB限制',
-                                'code': 'FILE_TOO_LARGE'
-                            }, status_code=400)
-                        audio_buffer.write(chunk)
-                    
-                    audio_buffer.seek(0)
-                    audio_bytes = audio_buffer.getvalue()
-            
+            _, audio_bytes = await _download_direct_link_audio(
+                direct_link,
+                max_file_size=MAX_FILE_SIZE,
+            )
+
             logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
-            
+
             # 2. 计算音频内容的 MD5 用于去重
             import hashlib
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
-            
+
             # 3. MD5 去重检查
             existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
             if existing:
@@ -3477,13 +5965,17 @@ async def voice_clone_direct(request: Request):
                     'reused': True,
                     'provider': provider
                 })
-            
+
             # 4. 使用直链注册音色
             language_hints = qwen_language_hints(ref_language)
-            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+            client = QwenVoiceCloneClient(
+                api_key=api_key,
+                tflink_upload_url=TFLINK_UPLOAD_URL,
+                dashscope_base_url=base_url,
+            )
 
             from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = get_cosyvoice_clone_model()
+            clone_model = get_cosyvoice_clone_model(provider)
             voice_id, _ = await asyncio.to_thread(
                 client.create_voice,
                 prefix=prefix,
@@ -3498,7 +5990,8 @@ async def voice_clone_direct(request: Request):
                 'file_url': direct_link,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
-                'provider': 'cosyvoice',
+                'provider': provider,
+                'dashscope_base_url': base_url,
                 'clone_model': clone_model,
                 'created_at': datetime.now().isoformat(),
                 'is_direct_link': True
@@ -3506,6 +5999,20 @@ async def voice_clone_direct(request: Request):
 
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
 
+    except DirectLinkSecurityError as e:
+        logger.warning(f"{provider_label} 直链安全校验失败: {e}")
+        return JSONResponse({
+            'error': str(e),
+            'code': e.code,
+            'provider': provider,
+        }, status_code=400)
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs 直链音色注册上游服务错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+            'provider': provider,
+        }, status_code=502)
     except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
         logger.error(f"{provider_label} 直链音色注册失败: {e}")
         error_detail = str(e)
@@ -3548,14 +6055,14 @@ async def voice_clone_direct(request: Request):
 
 @router.get('/character-card/list')
 async def get_character_cards():
-    """获取character_cards文件夹中的所有角色卡"""
+    """Get all character cards in the character_cards folder."""
     try:
         # 获取config_manager实例
         config_mgr = get_config_manager()
-        
+
         # 确保character_cards目录存在
         config_mgr.ensure_chara_directory()
-        
+
         # 遍历 character_cards 目录下的所有 .chara.json 文件，并行读取
         # （角色卡多时串行 await 会 N 次线程切换 + JSON 解析，整条接口延迟线性增长）
         candidate_filenames = [f for f in os.listdir(config_mgr.chara_dir) if f.endswith('.chara.json')]
@@ -3565,6 +6072,7 @@ async def get_character_cards():
             try:
                 data = await read_json_async(file_path)
                 if data and data.get('name'):
+                    _sync_catgirl_field_order(data)
                     return {
                         'id': filename[:-11],  # 去掉 .chara.json 后缀
                         'name': data['name'],
@@ -3592,27 +6100,27 @@ async def get_character_cards():
 
 @router.post('/catgirl/save-to-model-folder')
 async def save_catgirl_to_model_folder(request: Request):
-    """将角色卡保存到模型所在文件夹"""
+    """Save the character card into the model's folder."""
     try:
         data = await request.json()
         chara_data = data.get('charaData')
         model_name = data.get('modelName')  # 接收模型名称而不是路径
         file_name = data.get('fileName')
-        
+
         if not chara_data or not model_name or not file_name:
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
-        
+
         # 使用find_model_directory函数查找模型的实际文件系统路径
         model_folder_path, _ = find_model_directory(model_name)
-        
+
         # 检查模型目录是否存在
         if not model_folder_path:
             return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
-        
+
         # 检查是否是用户导入的模型，只允许写入用户目录的模型，不允许写入 workshop/static
         config_mgr = get_config_manager()
         is_user_model = is_user_imported_model(model_folder_path, config_mgr)
-        
+
         if not is_user_model:
             return JSONResponse(
                 status_code=403,
@@ -3621,21 +6129,21 @@ async def save_catgirl_to_model_folder(request: Request):
                     "error": "只能保存到用户导入的模型目录。请先导入模型到用户模型目录后再保存。"
                 }
             )
-        
+
         # 确保模型文件夹存在
         if not os.path.exists(model_folder_path):
             os.makedirs(model_folder_path, exist_ok=True)
             logger.info(f"已创建模型文件夹: {model_folder_path}")
-        
+
         # 防路径穿越：只允许文件名，不允许路径
         safe_name = os.path.basename(file_name)
         if safe_name != file_name or ".." in safe_name or safe_name.startswith(("/", "\\")):
             return JSONResponse({"success": False, "error": "非法文件名"}, status_code=400)
-            
+
         # 保存角色卡到模型文件夹
         file_path = os.path.join(model_folder_path, safe_name)
         await atomic_write_json_async(file_path, chara_data, ensure_ascii=False, indent=2)
-        
+
         logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
         return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}
     except Exception as e:
@@ -3645,25 +6153,25 @@ async def save_catgirl_to_model_folder(request: Request):
 
 @router.post('/character-card/save')
 async def save_character_card(request: Request):
-    """保存角色卡到characters.json文件"""
+    """Save the character card to characters.json."""
     try:
         data = await request.json()
         chara_data = data.get('charaData')
         character_card_name = data.get('character_card_name')
-        
+
         if not chara_data or not character_card_name:
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
-        
+
         # 获取config_manager实例
         _config_manager = get_config_manager()
-        
+
         # 加载现有的characters.json
         characters = await _config_manager.aload_characters()
-        
+
         # 确保'猫娘'键存在
         if '猫娘' not in characters:
             characters['猫娘'] = {}
-        
+
         # 获取角色卡名称（档案名）
         # 兼容中英文字段名
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
@@ -3671,28 +6179,64 @@ async def save_character_card(request: Request):
         if name_error:
             return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
         chara_name = str(chara_name).strip()
+        is_new_character = chara_name not in characters['猫娘']
+        previous_catgirl_data = copy.deepcopy(characters['猫娘'].get(chara_name, {}))
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
-        
+
         # 创建猫娘数据，只保存非空字段
         catgirl_data = {}
         for k, v in filtered_chara_data.items():
             if k != '档案名' and k != 'name':
                 if v:  # 只保存非空字段
                     catgirl_data[k] = v
-        
+
         # 更新或创建猫娘数据
         characters['猫娘'][chara_name] = catgirl_data
-        
+
         # 保存到characters.json
         await _config_manager.asave_characters(characters)
-        
-        # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        if initialize_character_data:
-            await initialize_character_data()
-        
+        prompt_fields_changed = (
+            is_new_character
+            or _catgirl_prompt_fields_changed(previous_catgirl_data, catgirl_data)
+        )
+
+        if is_new_character:
+            pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
+        else:
+            pending_mark_ok = True
+            pending_mark_error = ""
+
+        if prompt_fields_changed:
+            context_refresh_result = await _refresh_catgirl_context_after_profile_change(
+                _config_manager,
+                chara_name,
+                characters,
+                is_new=is_new_character,
+            )
+        else:
+            init_one_catgirl = get_init_one_catgirl()
+            await init_one_catgirl(chara_name, is_new=is_new_character)
+            context_refresh_result = {
+                "context_refreshed": False,
+                "recent_history_cleared": False,
+                "reload_notified": False,
+                "session_restarted": False,
+            }
+
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
-        return {"success": True, "character_card_name": chara_name}
+        result: dict = {
+            "success": True,
+            "character_card_name": chara_name,
+            **context_refresh_result,
+        }
+        if not pending_mark_ok:
+            result["partial_success"] = True
+            result["pending_mark_ok"] = False
+            result["pending_mark_failed"] = True
+            result["pending_mark_error"] = pending_mark_error
+        return result
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存角色卡到characters.json失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -3700,15 +6244,15 @@ async def save_character_card(request: Request):
 
 @router.get('/catgirl/{name}/export')
 async def export_catgirl_card(name: str):
-    """导出猫娘角色卡为PNG图片（包含模型和设定的压缩包数据）
+    """Export a catgirl character card as a PNG image (with embedded archive data of the model and profile).
 
-    导出流程：
-    1. 获取猫娘的设定数据
-    2. 如果使用了非默认模型，将模型文件打包到压缩包
-    3. 将压缩包数据拼接到PNG图片中
-    4. 返回PNG图片供下载
+    Export flow:
+    1. Fetch the catgirl's profile data
+    2. If a non-default model is in use, pack the model files into the archive
+    3. Append the archive data to the PNG image
+    4. Return the PNG image for download
 
-    注意：默认模型(mao_pro)不会被包含在导出中
+    Note: the default model (DEFAULT_LIVE2D_MODEL_NAME) is never included in the export.
     """
     import zipfile
     import tempfile
@@ -3737,7 +6281,7 @@ async def export_catgirl_card(name: str):
                 FIELDS_TO_EXCLUDE = {'cursor_follow', 'physics', 'voice_id'}
 
                 def filter_excluded_fields(data):
-                    """递归过滤掉指定字段"""
+                    """Recursively filter out the specified fields."""
                     if isinstance(data, dict):
                         return {
                             k: filter_excluded_fields(v)
@@ -3779,8 +6323,11 @@ async def export_catgirl_card(name: str):
                             live2d_name = live2d_name.split('/')[-1]
 
                         # 检查是否是默认模型
-                        if live2d_name == 'mao_pro':
-                            logger.info(f'猫娘 {name} 使用的是默认模型 mao_pro，跳过模型打包')
+                        if live2d_name == DEFAULT_LIVE2D_MODEL_NAME:
+                            logger.info(
+                                f'猫娘 {name} 使用的是默认模型 '
+                                f'{DEFAULT_LIVE2D_MODEL_NAME}，跳过模型打包'
+                            )
                         else:
                             # 查找模型目录
                             model_dir, _ = find_model_directory(live2d_name)
@@ -3848,6 +6395,10 @@ async def export_catgirl_card(name: str):
                             else:
                                 logger.warning(f'找不到VRM模型文件: {vrm_path}')
 
+                elif model_type == 'pngtuber':
+                    if _add_pngtuber_assets_to_character_zip(zf, catgirl_data, _config_manager):
+                        model_added = True
+
                 # 3. 读取卡面元数据 sidecar（作者 / 创建时间）
                 _sidecar_meta_path = _config_manager.card_face_meta_path(name)
                 _sidecar_existed = await asyncio.to_thread(_sidecar_meta_path.exists)
@@ -3908,43 +6459,17 @@ async def export_catgirl_card(name: str):
                         except Exception as _conv_err:
                             logger.warning(f"[导出角色卡] 卡面非 PNG 且重新编码失败，回退到合成图: {_conv_err}")
                             png_data = None
+                    if png_data is not None:
+                        png_data = await asyncio.to_thread(_strip_legacy_card_face_header, png_data)
                 except Exception as _read_err:
                     logger.warning(f"[导出角色卡] 读取已保存卡面失败，回退到合成图: {_read_err}")
                     png_data = None
 
             if png_data is None:
                 # 回退：合成一张默认长方形角色卡图片
-                from PIL import Image, ImageDraw, ImageFont
+                from PIL import Image
                 width, height = 600, 800
                 img = Image.new('RGB', (width, height), color='#E8F4F8')
-                draw = ImageDraw.Draw(img)
-                header_height = height // 6
-                draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-                font_size = 36
-                font = None
-                font_candidates = [
-                    "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
-                    "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
-                    "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
-                ]
-                for font_name in font_candidates:
-                    try:
-                        font = ImageFont.truetype(font_name, font_size)
-                        break
-                    except (OSError, IOError):
-                        continue
-
-                if font is None:
-                    font = ImageFont.load_default()
-                    logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
-
-                text = name
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_height = bbox[3] - bbox[1]
-                text_x = 30
-                text_y = (header_height - text_height) // 2 - bbox[1]
-                draw.text((text_x, text_y), text, fill='white', font=font)
                 png_path = temp_path / 'character_card.png'
                 img.save(png_path, 'PNG')
                 with open(png_path, 'rb') as f:
@@ -3989,13 +6514,13 @@ async def export_catgirl_card(name: str):
 
 @router.get('/catgirl/{name}/export-settings')
 async def export_catgirl_settings_only(name: str):
-    """仅导出猫娘设定（加密，不包含模型文件）
+    """Export only the catgirl profile (obfuscated, without model files).
 
-    导出流程：
-    1. 获取猫娘的设定数据
-    2. 过滤掉指定字段
-    3. 使用简单的异或加密
-    4. 直接返回加密后的JSON文件
+    Export flow:
+    1. Fetch the catgirl's profile data
+    2. Filter out the specified fields
+    3. Apply simple XOR obfuscation
+    4. Return the obfuscated JSON file directly
     """
     from urllib.parse import quote
 
@@ -4003,10 +6528,11 @@ async def export_catgirl_settings_only(name: str):
     XOR_KEY = b'NEKOCHARA2024'
 
     def xor_obfuscate(data: bytes, key: bytes) -> bytes:
-        """使用XOR进行简单的数据混淆/还原（仅用于防止意外编辑，非安全加密）
+        """Simple XOR data obfuscation/restoration (only to prevent accidental edits; not secure encryption).
 
-        注意：这不是真正的加密，只是简单的可逆混淆，用于防止用户意外编辑。
-        如果需要真正的安全保护，应使用其他加密方案。
+        Note: this is not real encryption, just simple reversible obfuscation to
+        keep users from accidentally editing the data. Use a proper encryption
+        scheme if real security protection is needed.
         """
         return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
@@ -4023,7 +6549,7 @@ async def export_catgirl_settings_only(name: str):
         FIELDS_TO_EXCLUDE = {'cursor_follow', 'physics', 'voice_id', '_reserved'}
 
         def filter_excluded_fields(data):
-            """递归过滤掉指定字段"""
+            """Recursively filter out the specified fields."""
             if isinstance(data, dict):
                 return {
                     k: filter_excluded_fields(v)
@@ -4077,11 +6603,12 @@ async def import_character_card(
     zip_file: UploadFile = File(...),
     card_image: UploadFile = File(None),
 ):
-    """导入角色卡（从PNG图片中提取的ZIP文件）
+    """Import a character card (a ZIP extracted from a PNG image).
 
-    可选参数：
-      - card_image: 原始载体 PNG。若提供且本地尚未存在同名卡面，则直接存为
-        该角色的 card-face，以谙则老角色卡「封面图即卡面」的习惯。
+    Optional parameters:
+      - card_image: the original carrier PNG. If provided and no card face of the
+        same name exists locally yet, it is stored directly as the character's
+        card-face, following the legacy convention that the cover image is the card face.
     """
     import zipfile
     import tempfile
@@ -4092,9 +6619,9 @@ async def import_character_card(
     XOR_KEY = b'NEKOCHARA2024'
 
     def xor_deobfuscate(data: bytes, key: bytes) -> bytes:
-        """使用XOR进行数据还原（与xor_obfuscate相同的操作，用于命名一致性）
+        """XOR data restoration (the same operation as xor_obfuscate; named for consistency).
 
-        注意：这不是真正的解密，只是简单的可逆混淆还原。
+        Note: this is not real decryption, just reversal of the simple reversible obfuscation.
         """
         return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
@@ -4177,6 +6704,7 @@ async def import_character_card(
             # 读取角色设定（支持加密和非加密格式）
             character_json_path = extract_path / 'character.json'
             character_json_encrypted_path = extract_path / 'character.json.encrypted'
+            imported_card_character_data = {}
 
             if character_json_path.exists():
                 # 非加密格式
@@ -4187,6 +6715,7 @@ async def import_character_card(
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                imported_card_character_data = copy.deepcopy(character_data)
                 character_data = _filter_mutable_catgirl_fields(character_data)
                 character_name = str(character_data.get('档案名', '')).strip()
                 character_data['档案名'] = character_name
@@ -4205,6 +6734,7 @@ async def import_character_card(
                     return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
                 if not isinstance(character_data, dict):
                     return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+                imported_card_character_data = copy.deepcopy(character_data)
                 character_data = _filter_mutable_catgirl_fields(character_data)
                 character_name = str(character_data.get('档案名', '')).strip()
                 character_data['档案名'] = character_name
@@ -4239,9 +6769,10 @@ async def import_character_card(
 
             # 处理模型文件（仅当不是 .nekocfg 文件时）
             imported_model_info = None  # 记录导入的模型信息，用于自动使用
+            pngtuber_rel_map: dict[str, str] = {}
 
             def _find_model3_json(directory):
-                """递归查找 .model3.json 文件"""
+                """Recursively find the .model3.json file."""
                 for item in directory.iterdir():
                     if item.is_file() and item.name.lower().endswith('.model3.json'):
                         return item
@@ -4255,8 +6786,17 @@ async def import_character_card(
                 model_dir = extract_path / 'model'
                 if model_dir.exists() and model_dir.is_dir():
                     model_type = metadata.get('model_type', 'live2d')
+                    pngtuber_rel_map = await asyncio.to_thread(
+                        _copy_imported_pngtuber_assets,
+                        model_dir,
+                        _config_manager,
+                    )
+                    if pngtuber_rel_map:
+                        character_data = _rewrite_imported_pngtuber_refs(character_data, pngtuber_rel_map)
 
                     for model_item in model_dir.iterdir():
+                        if model_item.name == _PNGTUBER_CARD_MODEL_DIR:
+                            continue
                         if model_item.is_dir():
                             # 检查是 Live2D 还是 MMD 模型文件夹
                             # MMD 模型文件夹通常包含 .pmx, .pmd 文件
@@ -4392,8 +6932,14 @@ async def import_character_card(
                         character_data['_reserved']['avatar']['mmd']['model_path'] = imported_model_info['path']
                         character_data['_reserved']['avatar']['model_type'] = 'live3d'
                         logger.info(f'已自动为角色 {character_name} 设置MMD模型: {imported_model_info["name"]}')
-                else:
+                elif not pngtuber_rel_map:
                     logger.warning("[导入角色卡] 没有找到可导入的模型")
+
+            character_data = _restore_imported_pngtuber_avatar_config(
+                character_data,
+                imported_card_character_data,
+                pngtuber_rel_map,
+            )
 
             # 添加角色到characters.json
             if '猫娘' not in characters:
@@ -4405,6 +6951,7 @@ async def import_character_card(
 
             # 保存到文件
             await _config_manager.asave_characters(characters)
+            pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
@@ -4434,12 +6981,18 @@ async def import_character_card(
                 await asyncio.to_thread(_write_card_meta, meta_path, meta)
             except Exception as meta_err:
                 logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
-                return JSONResponse({
+                partial_result = {
                     "success": True,
+                    "partial_success": True,
                     "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
                     "card_meta_saved": False,
                     "character_name": character_name,
-                }, status_code=200)
+                    "pending_mark_ok": pending_mark_ok,
+                }
+                if not pending_mark_ok:
+                    partial_result["pending_mark_failed"] = True
+                    partial_result["pending_mark_error"] = pending_mark_error
+                return JSONResponse(partial_result, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
             # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。
@@ -4478,11 +7031,17 @@ async def import_character_card(
             except Exception as face_err:
                 logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
 
-        return JSONResponse({
+        import_result: dict = {
             'success': True,
             'character_name': character_name,
-            'message': f'角色卡 "{character_name}" 导入成功'
-        })
+            'message': f'角色卡 "{character_name}" 导入成功',
+        }
+        if not pending_mark_ok:
+            import_result['partial_success'] = True
+            import_result['pending_mark_ok'] = False
+            import_result['pending_mark_failed'] = True
+            import_result['pending_mark_error'] = pending_mark_error
+        return JSONResponse(import_result)
 
     except zipfile.BadZipFile:
         logger.error("导入角色卡失败：无效的ZIP文件")
@@ -4500,7 +7059,7 @@ async def import_character_card(
 
 # 卡面元数据 sidecar 默认结构
 def _default_card_meta(origin: str = 'self') -> dict:
-    """返回默认卡面元数据。"""
+    """Return the default card-face metadata."""
     return {
         'author': '',
         'origin': origin,  # self / imported / steam
@@ -4510,7 +7069,7 @@ def _default_card_meta(origin: str = 'self') -> dict:
 
 
 def _read_card_meta(meta_path) -> dict:
-    """读取 sidecar JSON，文件不存在或损坏时返回默认值。"""
+    """Read the sidecar JSON; returns defaults when the file is missing or corrupted."""
     try:
         if meta_path.exists():
             with open(meta_path, 'r', encoding='utf-8') as f:
@@ -4529,15 +7088,15 @@ def _read_card_meta(meta_path) -> dict:
 
 
 def _write_card_meta(meta_path, meta: dict) -> None:
-    """写入 sidecar JSON（原子写入）。调用方需先 ensure_card_faces_directory()。"""
+    """Write the sidecar JSON (atomic write). The caller must run ensure_card_faces_directory() first."""
     from utils.file_utils import atomic_write_json
     atomic_write_json(meta_path, meta, ensure_ascii=False, indent=2)
 
 
 def _detect_card_origin_from_character(catgirl_data: dict) -> str:
-    """从猫娘配置推断 origin（用于无 sidecar 时的回退）。
-    依据角色卡本身的来源（character_origin.source），而非模型来源（avatar.asset_source），
-    确保更换模型不会改变角色卡来源标注。"""
+    """Infer origin from the catgirl config (fallback when no sidecar exists).
+    Based on the card's own source (character_origin.source), not the model source (avatar.asset_source),
+    so swapping models never changes the card's origin label."""
     try:
         char_source = get_reserved(catgirl_data, 'character_origin', 'source', default='')
         if char_source == 'steam_workshop':
@@ -4549,7 +7108,7 @@ def _detect_card_origin_from_character(catgirl_data: dict) -> str:
 
 @router.get('/card-faces')
 async def list_card_faces():
-    """返回所有已设置自定义卡面的猫娘名列表（用于前端避免无意义的 404 请求）"""
+    """Return the names of all catgirls with a custom card face set (lets the frontend avoid pointless 404 requests)."""
     _config_manager = get_config_manager()
     faces_dir = _config_manager.card_faces_dir
     names: list[str] = []
@@ -4575,10 +7134,11 @@ async def list_card_faces():
 
 @router.get('/card-metas')
 async def list_card_metas():
-    """批量返回所有猫娘的卡面元数据。
+    """Return card-face metadata for all catgirls in bulk.
 
-    对于没有 sidecar JSON 的历史角色卡，会根据猫娘配置推断 origin 后
-    返回默认值，保证旧版本升级后前端仍能显示卡面信息。
+    For legacy character cards without a sidecar JSON, the origin is inferred
+    from the catgirl config and defaults are returned, so the frontend still
+    shows card-face info after upgrading from older versions.
     """
     _config_manager = get_config_manager()
     faces_dir = _config_manager.card_faces_dir
@@ -4612,7 +7172,7 @@ async def list_card_metas():
 
 @router.get('/catgirl/{name}/card-meta')
 async def get_card_meta(name: str):
-    """获取单个猫娘的卡面元数据。无 sidecar 时根据猫娘配置推断 origin 后返回默认。"""
+    """Get a single catgirl's card-face metadata. Without a sidecar, infers origin from the catgirl config and returns defaults."""
     _config_manager = get_config_manager()
     safe_name = os.path.basename(name)
     if safe_name != name or not name:
@@ -4632,7 +7192,7 @@ async def get_card_meta(name: str):
 
 @router.put('/catgirl/{name}/card-meta')
 async def put_card_meta(name: str, request: Request):
-    """更新卡面元数据（当前仅支持 author 字段，且仅 origin=self 时允许）。"""
+    """Update card-face metadata (currently only the author field, and only when origin=self)."""
     _config_manager = get_config_manager()
     safe_name = os.path.basename(name)
     if safe_name != name or not name:
@@ -4673,9 +7233,57 @@ async def put_card_meta(name: str, request: Request):
     return JSONResponse({'success': True, 'meta': existing})
 
 
+def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
+    """Return old saved card faces without the obsolete blue name header."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image_data)) as img:
+            img.load()
+            width, height = img.size
+            header_height = height // 6
+            if width <= 0 or header_height <= 0:
+                return image_data
+
+            rgb = img.convert('RGB')
+            header_region = rgb.crop((0, 0, width, header_height))
+            top_mean = header_region.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+            header_color = (64, 197, 241)
+            if max(abs(top_mean[i] - header_color[i]) for i in range(3)) > 24:
+                return image_data
+
+            # Avoid mistaking an ordinary blue illustration/background for the
+            # legacy solid-color name header.
+            sample = header_region.resize((16, 16), Image.Resampling.BOX)
+            pixels = list(sample.getdata())
+            channel_spread = max(
+                max(px[i] for px in pixels) - min(px[i] for px in pixels)
+                for i in range(3)
+            )
+            if channel_spread > 28:
+                return image_data
+
+            # The old header usually has a visible color break at the body.
+            # If the next band is effectively the same blue, keep the image.
+            body_band = rgb.crop((0, header_height, width, min(height, header_height * 2)))
+            if body_band.size[1] > 0:
+                body_mean = body_band.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+                if max(abs(body_mean[i] - header_color[i]) for i in range(3)) < 10:
+                    return image_data
+
+            cropped = img.convert('RGBA').crop((0, header_height, width, height))
+            normalized = cropped.resize((width, height), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            normalized.save(out, 'PNG')
+            return out.getvalue()
+    except Exception as exc:
+        logger.warning("legacy card face normalization failed: %s", exc)
+        return image_data
+
+
 @router.get('/catgirl/{name}/card-face')
 async def get_card_face(name: str):
-    """获取角色的自定义卡面图片"""
+    """Get the character's custom card-face image."""
     _config_manager = get_config_manager()
     # 安全检查：防止路径遍历
     safe_name = os.path.basename(name)
@@ -4687,12 +7295,13 @@ async def get_card_face(name: str):
         return JSONResponse({'success': False, 'error': '卡面不存在'}, status_code=404)
 
     image_data = await asyncio.to_thread(face_path.read_bytes)
+    image_data = await asyncio.to_thread(_strip_legacy_card_face_header, image_data)
     return Response(content=image_data, media_type='image/png', headers={'Cache-Control': 'no-store'})
 
 
 @router.put('/catgirl/{name}/card-face')
 async def put_card_face(name: str, image: UploadFile = File(...)):
-    """保存角色的自定义卡面图片"""
+    """Save the character's custom card-face image."""
     _config_manager = get_config_manager()
     # 安全检查：防止路径遍历
     safe_name = os.path.basename(name)
@@ -4780,19 +7389,19 @@ async def export_catgirl_with_portrait(
     portrait: UploadFile = File(...),
     include_model: bool = Form(True)
 ):
-    """导出角色卡（包含立绘图片）
+    """Export a character card (including the portrait image).
 
-    导出流程：
-    1. 接收前端传来的立绘图片
-    2. 将立绘合成到角色卡模板上
-    3. 打包角色设定和模型文件（可选）
-    4. 返回合成的PNG角色卡
+    Export flow:
+    1. Receive the portrait image from the frontend
+    2. Composite the portrait onto the character card template
+    3. Pack the character profile and model files (optional)
+    4. Return the composited PNG character card
     """
     import zipfile
     import tempfile
     from pathlib import Path
     from urllib.parse import quote
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image
 
     temp_dir = None
     try:
@@ -4816,7 +7425,7 @@ async def export_catgirl_with_portrait(
 
             # 过滤掉运行时字段
             def _filter_export_fields(data, keep_model_paths=False):
-                """导出时过滤字段"""
+                """Filter fields on export."""
                 result = {}
                 for key, value in data.items():
                     if key in ('cursor_follow', 'physics', 'voice_id'):
@@ -4852,7 +7461,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name != 'mao_pro':
+                        if live2d_name and live2d_name != DEFAULT_LIVE2D_MODEL_NAME:
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):
@@ -4899,6 +7508,10 @@ async def export_catgirl_with_portrait(
                                 logger.info(f'已添加VRM模型到压缩包: {model_full_path.name}')
                                 model_added = True
 
+                elif model_type == 'pngtuber':
+                    if _add_pngtuber_assets_to_character_zip(zf, catgirl_data, _config_manager):
+                        model_added = True
+
             # 添加元数据文件
             metadata = {
                 'version': '1.0',
@@ -4939,51 +7552,12 @@ async def export_catgirl_with_portrait(
 
             width, height = 600, 800
             card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
-            draw = ImageDraw.Draw(card_img)
 
-            header_height = height // 6
-            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-            font_size = 42
-            font = None
-            font_candidates = [
-                ("msyhbd.ttc", font_size),
-                ("Microsoft YaHei Bold.ttf", font_size),
-                ("simhei.ttf", font_size),
-                ("simsun.ttc", font_size),
-                ("msyh.ttc", font_size),
-                ("Microsoft YaHei.ttf", font_size),
-                ("NotoSansCJK-Regular.ttc", font_size),
-                ("wqy-microhei.ttc", font_size),
-            ]
-            for font_name, size in font_candidates:
-                try:
-                    font = ImageFont.truetype(font_name, size)
-                    logger.info(f"[导出角色卡] 使用字体: {font_name}")
-                    break
-                except Exception as e:
-                    logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
-                    continue
-            if font is None:
-                font = ImageFont.load_default()
-                logger.warning("[导出角色卡] 使用默认字体")
-
-            bbox = draw.textbbox((0, 0), _name, font=font)
-            text_height = bbox[3] - bbox[1]
-            text_x = 40
-            text_y = (header_height - text_height) // 2 - bbox[1]
-
-            shadow_offset = 2
-            draw.text((text_x + shadow_offset, text_y + shadow_offset), _name, fill='#00000040', font=font)
-            draw.text((text_x, text_y), _name, fill='white', font=font)
-
-            # 4. 合成立绘到角色卡
-            # 立绘区域：紧贴顶部蓝色区域下方到卡片底部，与前端预览一致
-            portrait_area_y = header_height
+            portrait_area_y = 0
             portrait_area_width = width
-            portrait_area_height = height - header_height
+            portrait_area_height = height
 
-            # 前端已按 (width × portrait_area_height) 渲染立绘，直接缩放到目标尺寸后粘贴
+            # 前端已按完整卡面尺寸渲染立绘，直接缩放到目标尺寸后粘贴
             portrait_resized = portrait_img.resize((portrait_area_width, portrait_area_height), Image.Resampling.LANCZOS)
             logger.info(f"[导出角色卡] 立绘调整后尺寸: {portrait_resized.size}, 粘贴位置: (0, {portrait_area_y})")
 

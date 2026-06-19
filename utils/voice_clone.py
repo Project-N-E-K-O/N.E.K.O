@@ -1,26 +1,44 @@
 # -*- coding: utf-8 -*-
-"""语音克隆 API 封装模块 — MiniMax + Qwen/CosyVoice。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-将各服务商的语音克隆逻辑集中管理，提供统一的异常基类和对称的客户端接口。
+"""Voice cloning API wrapper module — MiniMax + Qwen/CosyVoice.
 
-MiniMax 语音克隆（国服 + 国际服）:
-  2 步流程: 上传音频 → 创建音色
-  国服 base URL:   https://api.minimaxi.com
-  国际服 base URL: https://api.minimax.io
-  认证: Authorization: Bearer {api_key}
+Centralizes each vendor's voice-clone logic, providing a unified exception base class
+and symmetric client interfaces.
 
-Qwen/CosyVoice 语音克隆:
-  3 步流程: 上传到 tfLink → 获取直链 → DashScope 注册
-  通过阿里云 DashScope SDK 调用
+MiniMax voice cloning (CN + international):
+  2-step flow: upload audio → create voice
+  CN base URL:            https://api.minimaxi.com
+  International base URL: https://api.minimax.io
+  Auth: Authorization: Bearer {api_key}
+
+Qwen/CosyVoice voice cloning:
+  3-step flow: upload to tfLink → get direct link → DashScope registration
+  Called via the Alibaba Cloud DashScope SDK
 """
 
 import asyncio
+import base64
 import io
 import binascii
 import logging
 from typing import Optional
 
 import httpx
+
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class VoiceCloneError(Exception):
-    """语音克隆基础错误"""
+    """Voice cloning base error"""
 
 
 # ============================================================================
@@ -60,23 +78,23 @@ MINIMAX_PREFIX_MAX_LENGTH = 10
 
 
 class MinimaxVoiceCloneError(VoiceCloneError):
-    """MiniMax 语音克隆相关错误"""
+    """MiniMax voice-clone related error"""
 
 
 def minimax_normalize_language(lang: str) -> str:
-    """将项目内部语言代码转换为 MiniMax 语言代码。"""
+    """Convert the project's internal language codes to MiniMax language codes."""
     return _MINIMAX_LANGUAGE_CODE_MAP.get(lang.lower().strip(), 'zh')
 
 
 def get_minimax_base_url(provider: str = 'minimax') -> str:
-    """根据 provider 返回对应的 MiniMax API base URL。"""
+    """Return the MiniMax API base URL for the given provider."""
     if provider == 'minimax_intl':
         return MINIMAX_INTL_BASE_URL
     return MINIMAX_DOMESTIC_BASE_URL
 
 
 def get_minimax_storage_prefix(provider: str = 'minimax') -> str:
-    """根据 provider 返回对应的 voice_storage key 前缀。"""
+    """Return the voice_storage key prefix for the given provider."""
     if provider == 'minimax_intl':
         return MINIMAX_INTL_VOICE_STORAGE_KEY
     return MINIMAX_VOICE_STORAGE_KEY
@@ -88,10 +106,11 @@ def sanitize_minimax_voice_prefix(
     *,
     max_length: Optional[int] = MINIMAX_PREFIX_MAX_LENGTH,
 ) -> str:
-    """将 MiniMax 前缀限制为 ASCII 字母数字。
+    """Restrict the MiniMax prefix to ASCII alphanumerics.
 
-    MiniMax 创建音色时对 ``voice_id`` 的字符集更严格。
-    这里统一只保留英文字母和数字；当结果为空时回退到 ``voice``。
+    MiniMax is stricter about the ``voice_id`` character set when creating voices.
+    Here we keep only English letters and digits; when the result is empty, fall back
+    to ``voice``.
     """
     normalized = ''.join(ch for ch in str(prefix or '') if ch.isascii() and ch.isalnum())
     if max_length is not None:
@@ -106,7 +125,7 @@ def sanitize_minimax_voice_prefix(
 
 
 class MinimaxVoiceCloneClient:
-    """MiniMax 语音克隆客户端（国服 / 国际服通用）"""
+    """MiniMax voice cloning client (works for both the CN and international services)"""
 
     def __init__(self, api_key: str, base_url: Optional[str] = None):
         self.api_key = api_key
@@ -126,7 +145,7 @@ class MinimaxVoiceCloneClient:
         audio_buffer: io.BytesIO,
         filename: str,
     ) -> str:
-        """上传音频到 MiniMax，返回 file_id。
+        """Upload audio to MiniMax, returning file_id.
 
         Raises:
             MinimaxVoiceCloneError
@@ -183,14 +202,14 @@ class MinimaxVoiceCloneClient:
         language: str = "zh",
         voice_description: Optional[str] = None,
     ) -> str:
-        """创建音色，返回最终的 voice_id。
+        """Create a voice, returning the final voice_id.
 
         Args:
-            file_id: upload_file() 返回的 file_id
-            voice_id: 用户自定义的 voice_id（可含 prefix）
-            voice_name: 可选的显示名称
-            language: MiniMax 语言代码 (zh / en / ja …)
-            voice_description: 可选描述
+            file_id: file_id returned by upload_file()
+            voice_id: user-defined voice_id (may include a prefix)
+            voice_name: optional display name
+            language: MiniMax language code (zh / en / ja …)
+            voice_description: optional description
 
         Raises:
             MinimaxVoiceCloneError
@@ -245,7 +264,7 @@ class MinimaxVoiceCloneClient:
         *,
         model: str = "speech-2.8-hd",
     ) -> bytes:
-        """使用 MiniMax T2A 接口生成预览音频，返回 MP3 bytes。"""
+        """Generate preview audio via the MiniMax T2A endpoint, returning MP3 bytes."""
         url = f"{self.base_url}/v1/t2a_v2"
         payload = {
             'model': model,
@@ -312,7 +331,7 @@ class MinimaxVoiceCloneClient:
         prefix: str,
         language: str = "zh",
     ) -> str:
-        """上传音频并创建音色（组合两步），返回 voice_id。"""
+        """Upload audio and create the voice (the two steps combined), returning voice_id."""
         file_id = await self.upload_file(audio_buffer, filename)
         safe_prefix = sanitize_minimax_voice_prefix(prefix, max_length=None)
         voice_id = f"custom{safe_prefix}"
@@ -326,38 +345,185 @@ class MinimaxVoiceCloneClient:
 
 
 # ============================================================================
+# Xiaomi MiMo 语音克隆
+# ============================================================================
+#
+# 与 MiniMax/CosyVoice/ElevenLabs 的「上传样本 → 远端注册 → 拿 voice_id」不同，MiMo 的
+# voiceclone（mimo-v2.5-tts-voiceclone）没有注册步骤（已核实官方文档：无 create-voice /
+# 远端 voice_id）：参考音频每次合成请求内联在 OpenAI 兼容 chat-completions 的 ``audio.voice``
+# 里（``data:audio/...;base64,...``）。
+#
+# **对偶 MiniMax 的存储模型**：MiniMax 在 voice_storage.json 的 voice_meta 里存远端 voice_id
+# 作克隆身份；MiMo 在同一处存**参考音频本身（base64）**作克隆身份——整段落进 voice_meta、
+# 随 voice_storage.json 云同步，不另起本地文件存储。enrollment 时用 MiMo 做一次校验性合成
+# 确认 key + 样本可用（对偶其它家真打远端注册接口）；试听（synthesize_preview）同样内联样本，
+# 对偶 MiniMax 的预览。dispatch 由 mimo provider 按 voice_meta.provider 选中后读出样本内联。
+
+# voice_storage 中标识 MiMo 克隆音色的前缀（按 MiMo API key 末 8 位分桶）
+MIMO_VOICE_STORAGE_KEY = '__MIMO__'
+# MiMo 校验 / 试听用 wav（自包含、非流式一次性返回，便于直接取音频）；运行时 worker 才用
+# pcm16 流式。Codex review #1851：非流式请求不应再要 pcm16 裸流。
+_MIMO_PREVIEW_AUDIO_FORMAT = 'wav'
+
+
+class MimoVoiceCloneError(VoiceCloneError):
+    """MiMo voice-clone related error"""
+
+
+def _extract_mimo_audio_bytes(payload: dict) -> bytes:
+    """Pull base64 audio out of a MiMo chat-completions (non-stream) response.
+
+    Mirrors the worker's extractor but lives here so utils stays off main_logic.
+    Returns decoded bytes, or b'' when no audio field is present.
+    """
+    candidates: list = [payload.get('audio')]
+    for choice in payload.get('choices') or []:
+        if isinstance(choice, dict):
+            candidates.append((choice.get('message') or {}).get('audio'))
+            candidates.append(choice.get('audio'))
+    for cand in candidates:
+        b64 = ''
+        if isinstance(cand, str):
+            b64 = cand
+        elif isinstance(cand, dict):
+            b64 = cand.get('data') or cand.get('audio') or cand.get('content') or ''
+        if not b64:
+            continue
+        try:
+            return base64.b64decode(b64)
+        except (binascii.Error, ValueError, TypeError):
+            # 上游返回了非字符串/非 bytes 的 audio 字段也不应冒泡，按"无音频"继续尝试下一候选。
+            continue
+    return b''
+
+
+class MimoVoiceCloneClient:
+    """MiMo voice-clone enrollment + preview client.
+
+    MiMo has no remote voice registration; ``validate_sample`` confirms the
+    reference sample + API key actually synthesize via the voiceclone model (one
+    short non-stream request), so a bad key / unsupported format / oversized
+    sample fails fast at enrollment instead of going silent at runtime.
+    ``synthesize_preview`` returns audible bytes for the voice-list preview
+    button (dual to MiniMax's ``synthesize_preview``).
+    """
+
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
+        self.api_key = api_key
+        self.base_url = base_url or None
+
+    def _build_payload(self, audio_bytes: bytes, mime_type: str, text: str) -> dict:
+        from utils.mimo_tts_voices import MIMO_TTS_VOICECLONE_MODEL, mimo_voice_clone_data_uri
+        return {
+            'model': MIMO_TTS_VOICECLONE_MODEL,
+            'messages': [{'role': 'assistant', 'content': text}],
+            'audio': {
+                # 非流式取一次性音频：wav 自包含，不要 pcm16 裸流（Codex review）。
+                'format': _MIMO_PREVIEW_AUDIO_FORMAT,
+                'voice': mimo_voice_clone_data_uri(audio_bytes, mime_type),
+            },
+            'stream': False,
+        }
+
+    async def _post(self, payload: dict) -> dict:
+        from utils.mimo_tts_voices import mimo_chat_completions_url
+        url = mimo_chat_completions_url(self.base_url)
+        headers = {'Content-Type': 'application/json', 'api-key': self.api_key}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            raise MimoVoiceCloneError("MiMo 请求超时，请稍后重试") from e
+        except Exception as e:
+            raise MimoVoiceCloneError(f"MiMo 请求失败: {e}") from e
+        if resp.status_code != 200:
+            raise MimoVoiceCloneError(
+                f"MiMo 请求失败: HTTP {resp.status_code}, {resp.text[:300]}"
+            )
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise MimoVoiceCloneError("MiMo 返回了无法解析的响应") from e
+        if isinstance(data, dict) and data.get('error'):
+            err = data['error']
+            msg = err.get('message') if isinstance(err, dict) else str(err)
+            raise MimoVoiceCloneError(f"MiMo 请求失败: {msg}")
+        return data if isinstance(data, dict) else {}
+
+    async def validate_sample(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = 'audio/wav',
+        *,
+        sample_text: str = '你好呀，很高兴认识你。',
+    ) -> None:
+        """Synthesize a short line with the reference sample to confirm it works.
+
+        Confirms the call actually *produced audio* (not just HTTP 200): if the
+        upstream returns success but an empty/missing audio field the sample is
+        unusable, and enrollment must fail here rather than going silent at
+        runtime / preview.
+
+        Raises:
+            MimoVoiceCloneError on a non-200 response / network failure / no audio.
+        """
+        data = await self._post(self._build_payload(audio_bytes, mime_type, sample_text))
+        if not _extract_mimo_audio_bytes(data):
+            raise MimoVoiceCloneError("MiMo 校验未产出音频，参考样本可能不可用")
+
+    async def synthesize_preview(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = 'audio/wav',
+        *,
+        text: str = '你好呀，很高兴认识你。',
+    ) -> bytes:
+        """Synthesize a preview line with the reference sample, returning wav bytes.
+
+        Raises:
+            MimoVoiceCloneError on failure / when no audio is returned.
+        """
+        data = await self._post(self._build_payload(audio_bytes, mime_type, text))
+        audio = _extract_mimo_audio_bytes(data)
+        if not audio:
+            raise MimoVoiceCloneError("MiMo 预览成功但未返回音频")
+        return audio
+
+
+# ============================================================================
 # Qwen / CosyVoice 语音克隆
 # ============================================================================
 
 class QwenVoiceCloneError(VoiceCloneError):
-    """Qwen/CosyVoice 语音克隆相关错误"""
+    """Qwen/CosyVoice voice-clone related error"""
 
 
 def qwen_language_hints(ref_language: str) -> list[str]:
-    """将 ref_language 转换为 DashScope CosyVoice 的 language_hints 参数。
+    """Convert ref_language to DashScope CosyVoice's language_hints parameter.
 
-    中文 (ch) → 空列表（DashScope 默认中文）
-    其他语言 → [ref_language]
+    Chinese (ch) → empty list (DashScope defaults to Chinese)
+    Other languages → [ref_language]
     """
     return [] if ref_language == 'ch' else [ref_language]
 
 
 class QwenVoiceCloneClient:
-    """Qwen/CosyVoice 语音克隆客户端（基于阿里云 DashScope SDK）。
+    """Qwen/CosyVoice voice cloning client (based on the Alibaba Cloud DashScope SDK).
 
-    3 步流程:
-      Step 1 - 上传音频到 tfLink 获取公网直链
-      Step 2 - 通过 DashScope VoiceEnrollmentService 注册音色
-      (Step 1+2 组合为 clone_voice 便捷方法，含重试)
+    3-step flow:
+      Step 1 - upload the audio to tfLink to get a public direct link
+      Step 2 - register the voice via DashScope VoiceEnrollmentService
+      (Steps 1+2 combine into the clone_voice convenience method, with retries)
     """
 
     # 重试配置
     MAX_RETRIES = 3
     RETRY_DELAY = 3  # 秒
 
-    def __init__(self, api_key: str, tflink_upload_url: str):
+    def __init__(self, api_key: str, tflink_upload_url: str, dashscope_base_url: str = ""):
         self.api_key = api_key
         self.tflink_upload_url = tflink_upload_url
+        self.dashscope_base_url = dashscope_base_url
 
     # ------------------------------------------------------------------
     # Step 1 - 上传音频到 tfLink，获取公网直链
@@ -368,7 +534,7 @@ class QwenVoiceCloneClient:
         filename: str,
         mime_type: str = 'audio/wav',
     ) -> str:
-        """上传音频到 tfLink，返回可公网访问的临时 URL。
+        """Upload audio to tfLink, returning a temporary publicly accessible URL.
 
         Raises:
             QwenVoiceCloneError
@@ -444,10 +610,10 @@ class QwenVoiceCloneClient:
         language_hints: list[str],
         target_model: str | None = None,
     ) -> tuple[str, str | None]:
-        """通过 DashScope VoiceEnrollmentService 注册音色（同步调用）。
+        """Register the voice via DashScope VoiceEnrollmentService (sync call).
 
         Returns:
-            (voice_id, request_id) 元组
+            (voice_id, request_id) tuple
 
         Raises:
             QwenVoiceCloneError
@@ -460,10 +626,7 @@ class QwenVoiceCloneClient:
         )
 
         if target_model is None:
-            target_model = get_cosyvoice_clone_model()
-
-        dashscope.api_key = self.api_key
-        service = VoiceEnrollmentService()
+            target_model = get_cosyvoice_clone_model(self.dashscope_base_url)
 
         kwargs: dict = dict(
             target_model=target_model,
@@ -473,9 +636,20 @@ class QwenVoiceCloneClient:
         if language_hints and cosyvoice_model_supports_language_hints(target_model):
             kwargs["language_hints"] = language_hints
 
+        # 写 module-global + 构造 service + service.create_voice 整段都拿
+        # DASHSCOPE_GLOBAL_LOCK：clone_voice 由 asyncio.to_thread 跑在工作线程，
+        # 同进程多个 clone 请求并发时会在 "set global → SDK 调用" 之间互相
+        # 覆盖 key/地域，请求带着别人的凭证发出去 (Codex P1 #3258691457)。
+        # TTS worker / preview 也共用这把锁。
         try:
-            voice_id = service.create_voice(**kwargs)
-            request_id = service.get_last_request_id()
+            with DASHSCOPE_GLOBAL_LOCK:
+                dashscope.api_key = self.api_key
+                configure_dashscope_sdk_urls(
+                    dashscope, self.dashscope_base_url, websocket_path="inference"
+                )
+                service = VoiceEnrollmentService()
+                voice_id = service.create_voice(**kwargs)
+                request_id = service.get_last_request_id()
             logger.info("CosyVoice 音色注册成功: voice_id=%s", voice_id)
             return voice_id, request_id
         except Exception as e:
@@ -493,7 +667,7 @@ class QwenVoiceCloneClient:
         mime_type: str = 'audio/wav',
         target_model: str | None = None,
     ) -> tuple[str, str, str | None]:
-        """上传音频并注册音色（组合两步 + 重试），返回 (voice_id, file_url, request_id)。
+        """Upload audio and register the voice (two steps combined + retries), returning (voice_id, file_url, request_id).
 
         Raises:
             QwenVoiceCloneError

@@ -1,26 +1,44 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-Outbox — per-character 持久化后台任务队列。
+Outbox — per-character persistent background task queue.
 
-为什么存在（P1 修复致命点 1）：
-  _spawn_background_task(extract_facts/synth/...) 纯内存，进程被 kill
-  途中的 task 没有任何补跑机制。用户说反驳 → LLM 调用中 kill → 重启后
-  facts.json 里永远不会有那条反驳 fact，整条 rebuttal → reflection →
-  persona 链路从起点就死。
+Why it exists (P1 fix for fatal issue #1):
+  _spawn_background_task(extract_facts/synth/...) was memory-only; tasks in
+  flight when the process got killed had no re-run mechanism. User rebuts →
+  killed mid-LLM-call → after restart facts.json never gets that rebuttal
+  fact, and the whole rebuttal → reflection → persona chain is dead from the
+  start.
 
-设计：
-  - `outbox.ndjson` per character，append-only，每行一条 JSON 记录。
-  - 每个 op 有 pending 和 done 两条记录；op_id 配对。启动时扫描文件，
-    "pending 且无对应 done" 的 op 视为未完成，需补跑。
-  - Outbox 本身不管 handler 注册 / task 派发——那是 memory_server 编排层
-    的事。本模块只负责落盘、扫描、compact。
+Design:
+  - `outbox.ndjson` per character, append-only, one JSON record per line.
+  - Each op has a pending and a done record, paired by op_id. On startup the
+    file is scanned; ops that are "pending with no matching done" count as
+    unfinished and need re-running.
+  - The Outbox itself does no handler registration / task dispatch — that's
+    the memory_server orchestration layer's job. This module only persists,
+    scans, and compacts.
 
-幂等：caller 必须保证 handler(name, payload) 天然幂等（facts SHA-256 dedup、
-reflection 确定性 id、mark_absorbed 只做 False→True 等）。Outbox 不做
-at-most-once 保证，重放场景下 handler 可能被多次触发。
+Idempotency: the caller must ensure handler(name, payload) is naturally
+idempotent (facts SHA-256 dedup, deterministic reflection ids, mark_absorbed
+only flipping False→True, etc.). The Outbox makes no at-most-once guarantee;
+in replay scenarios a handler may fire multiple times.
 
-不引入 SQLite / Redis，遵循 CLAUDE 约束。只用 ndjson + per-character
-threading.Lock + asyncio.to_thread 实现同步/异步对偶。
+No SQLite / Redis, per the CLAUDE constraints. Just ndjson + per-character
+threading.Lock + asyncio.to_thread for the sync/async twin implementation.
 """
 from __future__ import annotations
 
@@ -38,8 +56,16 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# op_type 常量，避免魔法字符串散落
-OP_EXTRACT_FACTS = "extract_facts"
+# op_type 常量，避免魔法字符串散落。
+#
+# 字符串值是 outbox.ndjson 里持久化的 op_type 字面值——视为不可变 wire-format
+# schema id（同数据库列名），重命名 Python 符号时**不能**改值，否则旧机器上
+# 残留的 pending op 在 replay 时 ``_OUTBOX_HANDLERS.get(op_type)`` 拿不到 handler
+# 会被静默 skip。``OP_POST_TURN_SIGNALS`` 的值仍是 ``"extract_facts"``：PR-1
+# 引入时 handler 主操作是 Stage-1 fact 抽取，PR #1346 把 Stage-1（ON-mode）剥离
+# 到 ``_periodic_signal_extraction_loop`` 后，handler 实际只做 counter bump +
+# 复读嗅探 + check_feedback + OFF-mode Stage-1 fallback——符号名随之更新，值保留。
+OP_POST_TURN_SIGNALS = "extract_facts"
 OP_SYNTH_REFLECTION = "synth_reflection"
 OP_CHECK_FEEDBACK = "check_feedback"
 OP_RESOLVE_CORRECTIONS = "resolve_corrections"
@@ -52,13 +78,13 @@ _COMPACT_LINES_THRESHOLD = 1000
 class Outbox:
     """Per-character append-only ndjson job log.
 
-    公共 API：
+    Public API:
       - append_pending(name, op_type, payload) → op_id
       - append_done(name, op_id)
       - pending_ops(name) → list[record]
-      - compact(name) → int（被丢弃的行数）
+      - compact(name) → int (number of lines dropped)
 
-    每个方法都有对偶 async 版本（a-prefix）。
+    Every method has an async twin (a-prefix).
     """
 
     def __init__(self):
@@ -86,10 +112,11 @@ class Outbox:
     # ── append (sync) ───────────────────────────────────────────
 
     def _write_line(self, path: str, line: str) -> None:
-        """单次 O_APPEND 写入 + fsync 尽力持久化。
+        """Single O_APPEND write + fsync, best-effort durability.
 
-        lock 由调用方持有；write+flush+fsync 一次性完成。
-        fsync 失败（某些 fs 不支持）降级为 warning，不抛。
+        The lock is held by the caller; write+flush+fsync happen in one go.
+        fsync failure (some filesystems lack support) degrades to a warning,
+        no raise.
         """
         with open(path, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
@@ -100,7 +127,7 @@ class Outbox:
                 logger.debug(f"[Outbox] fsync 失败（可忽略）: {e}")
 
     def append_pending(self, name: str, op_type: str, payload: dict) -> str:
-        """登记一个 pending op，返回新分配的 op_id。"""
+        """Register a pending op; returns the newly assigned op_id."""
         op_id = str(uuid.uuid4())
         record = {
             'op_id': op_id,
@@ -115,7 +142,7 @@ class Outbox:
         return op_id
 
     def append_done(self, name: str, op_id: str) -> None:
-        """标记 op 完成。done 记录不需要再带 payload（pending 行是真相源）。"""
+        """Mark an op done. The done record carries no payload (the pending line is the source of truth)."""
         record = {
             'op_id': op_id,
             'status': 'done',
@@ -125,10 +152,29 @@ class Outbox:
         with self._get_lock(name):
             self._write_line(self._outbox_path(name), line)
 
+    def append_attempt(self, name: str, op_id: str) -> None:
+        """Record one failed handler attempt (Site 7 liveness fallback).
+
+        Scans tally attempts per op_id; the caller (memory_server._run_outbox_op)
+        appends done as a dead-letter and abandons the op once the tally reaches
+        ``MEMORY_LIVENESS_MAX_ATTEMPTS``. Otherwise a poison op (a payload that
+        makes the handler raise forever) re-runs on every restart and never
+        leaves pending → ``compact`` blocks forever → outbox.ndjson grows
+        linearly.
+        """
+        record = {
+            'op_id': op_id,
+            'status': 'attempt',
+            'ts': datetime.now().isoformat(),
+        }
+        line = json.dumps(record, ensure_ascii=False)
+        with self._get_lock(name):
+            self._write_line(self._outbox_path(name), line)
+
     # ── scan ────────────────────────────────────────────────────
 
     def _read_all_records(self, path: str) -> list[dict]:
-        """读取整个文件，返回所有可解析记录；损坏行跳过并 warn。"""
+        """Read the whole file; returns all parsable records, skipping corrupt lines with a warning."""
         if not os.path.exists(path):
             return []
         records: list[dict] = []
@@ -146,12 +192,21 @@ class Outbox:
         return records
 
     def pending_ops(self, name: str) -> list[dict]:
-        """返回 pending 且无对应 done 的 op 记录（按登记顺序）。"""
+        """Return op records that are pending with no matching done (in registration order).
+
+        Each returned record carries the non-persistent field ``_attempt_count``
+        (int), the number of ``status='attempt'`` lines counted during the scan.
+        The caller uses it to judge the dead-letter threshold. The returned
+        dicts are fresh instances JSON-loaded by this round's
+        ``_read_all_records``; attaching ``_attempt_count`` cannot contaminate
+        the on-disk pending lines.
+        """
         path = self._outbox_path(name)
         with self._get_lock(name):
             records = self._read_all_records(path)
 
         pending: dict[str, dict] = {}
+        attempts: dict[str, int] = {}
         for rec in records:
             op_id = rec.get('op_id')
             status = rec.get('status')
@@ -164,20 +219,32 @@ class Outbox:
                 pending[op_id] = rec
             elif status == 'done':
                 pending.pop(op_id, None)
+                attempts.pop(op_id, None)
+            elif status == 'attempt':
+                attempts[op_id] = attempts.get(op_id, 0) + 1
+        for op_id, rec in pending.items():
+            rec['_attempt_count'] = attempts.get(op_id, 0)
         return list(pending.values())
 
     # ── compact ─────────────────────────────────────────────────
 
     def compact(self, name: str) -> int:
-        """重写 outbox.ndjson，只保留未完成的 pending 行。返回丢弃行数。
+        """Rewrite outbox.ndjson keeping only unfinished pending lines + their
+        attempt lines. Returns the number of lines dropped.
 
-        通过 atomic_write_text 原子替换。compact 期间被 lock 阻塞的 append
-        会在 rename 完成后继续到新文件。
+        Atomic replacement via atomic_write_text. Appends blocked on the lock
+        during compaction continue into the new file after the rename.
+
+        Attempt-line handling (Site 7 liveness): attempt lines of still-pending
+        ops are kept (the attempt tally decides dead-letter timing; losing it
+        would reset the counter after a restart); for done ops the matching
+        attempt lines are dropped too (nobody reads the tally after done).
         """
         path = self._outbox_path(name)
         with self._get_lock(name):
             records = self._read_all_records(path)
             pending: dict[str, dict] = {}
+            attempts_by_op: dict[str, list[dict]] = {}
             for rec in records:
                 op_id = rec.get('op_id')
                 status = rec.get('status')
@@ -187,9 +254,19 @@ class Outbox:
                     pending[op_id] = rec
                 elif status == 'done':
                     pending.pop(op_id, None)
+                    attempts_by_op.pop(op_id, None)
+                elif status == 'attempt':
+                    attempts_by_op.setdefault(op_id, []).append(rec)
+
+            kept_records: list[dict] = []
+            for rec in pending.values():
+                kept_records.append(rec)
+            for op_id, attempt_recs in attempts_by_op.items():
+                if op_id in pending:
+                    kept_records.extend(attempt_recs)
 
             total_lines = len(records)
-            kept = len(pending)
+            kept = len(kept_records)
             if total_lines == kept:
                 return 0  # 没有可丢弃的行，避免无用 IO
 
@@ -198,13 +275,13 @@ class Outbox:
                 atomic_write_text(path, '', encoding='utf-8')
             else:
                 body = '\n'.join(
-                    json.dumps(r, ensure_ascii=False) for r in pending.values()
+                    json.dumps(r, ensure_ascii=False) for r in kept_records
                 ) + '\n'
                 atomic_write_text(path, body, encoding='utf-8')
             return total_lines - kept
 
     def maybe_compact(self, name: str) -> int:
-        """超过阈值才 compact（启动期或低频扫描时调用）。"""
+        """Compact only above the threshold (called at startup or by the low-frequency scan)."""
         path = self._outbox_path(name)
         if not os.path.exists(path):
             return 0
@@ -228,6 +305,9 @@ class Outbox:
 
     async def aappend_done(self, name: str, op_id: str) -> None:
         await asyncio.to_thread(self.append_done, name, op_id)
+
+    async def aappend_attempt(self, name: str, op_id: str) -> None:
+        await asyncio.to_thread(self.append_attempt, name, op_id)
 
     async def apending_ops(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.pending_ops, name)

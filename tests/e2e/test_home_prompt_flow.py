@@ -14,8 +14,8 @@ from utils.config_manager import get_config_manager
 from utils.tutorial_prompt_state import save_tutorial_prompt_state
 
 
-TUTORIAL_PROMPT_TITLE = "要不要先看一下新手引导？"
-AUTOSTART_PROMPT_TITLE = "要不要让 N.E.K.O 开机自动启动？"
+TUTORIAL_PROMPT_TITLE = "要不要开始主页新手引导？"
+AUTOSTART_PROMPT_TITLE = "要不要让 N.E.K.O. 开机自动启动？"
 LATER_BUTTON_TEXT = "稍后再说"
 
 
@@ -236,13 +236,24 @@ def _install_tutorial_heartbeat_stall(page: Page) -> None:
     )
 
 
-def _expect_prompt_title(page: Page, title: str) -> None:
-    expect(page.locator(".modal-title")).to_have_text(title, timeout=15_000)
+def _expect_prompt_title(page: Page, title: str, *, timeout: int = 15_000) -> None:
+    expect(page.locator(".modal-title")).to_have_text(title, timeout=timeout)
     expect(page.locator(".modal-overlay")).to_have_count(1)
 
 
 def _dismiss_prompt_with_later(page: Page) -> None:
+    previous_title = page.locator(".modal-overlay .modal-title").inner_text(timeout=5_000)
     page.locator(".modal-overlay").get_by_role("button", name=LATER_BUTTON_TEXT).click()
+    page.wait_for_function(
+        """
+        (oldTitle) => {
+            const titleNode = document.querySelector('.modal-overlay .modal-title');
+            return !titleNode || titleNode.textContent.trim() !== oldTitle;
+        }
+        """,
+        arg=previous_title,
+        timeout=5_000,
+    )
 
 
 @pytest.mark.e2e
@@ -260,7 +271,7 @@ def test_home_serializes_tutorial_and_autostart_prompts(mock_page: Page, running
     _expect_prompt_title(page, TUTORIAL_PROMPT_TITLE)
     _dismiss_prompt_with_later(page)
 
-    _expect_prompt_title(page, AUTOSTART_PROMPT_TITLE)
+    _expect_prompt_title(page, AUTOSTART_PROMPT_TITLE, timeout=30_000)
     _dismiss_prompt_with_later(page)
 
     expect(page.locator(".modal-overlay")).to_have_count(0, timeout=10_000)

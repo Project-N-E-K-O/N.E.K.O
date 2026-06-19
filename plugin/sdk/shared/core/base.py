@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 from plugin.sdk.shared.core.base_runtime import (
     resolve_db_config,
     resolve_effective_config,
-    resolve_plugin_dir,
+    resolve_plugin_data_dir,
     resolve_state_backend,
     resolve_store_enabled,
     setup_plugin_file_logging,
@@ -72,7 +72,7 @@ class NekoPluginBase:
         from plugin.sdk.shared.storage.state import PluginStatePersistence
         from plugin.sdk.shared.storage.store import PluginStore
 
-        plugin_dir = resolve_plugin_dir(self.ctx)
+        plugin_dir = resolve_plugin_data_dir(self.ctx)
         effective_cfg = resolve_effective_config(self.ctx)
         store_enabled = resolve_store_enabled(effective_cfg)
         db_enabled, db_name = resolve_db_config(effective_cfg)
@@ -83,6 +83,25 @@ class NekoPluginBase:
         self.db = PluginDatabase(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, enabled=db_enabled, db_name=db_name)
         self.state = PluginStatePersistence(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, backend=state_backend)
         self._state_persistence = self.state
+
+    def refresh_runtime_config(self, effective_config: dict[str, object] | None = None) -> None:
+        """Refresh SDK runtime helpers after the host effective config changes."""
+        cfg = effective_config if isinstance(effective_config, dict) else resolve_effective_config(self.ctx)
+        store_enabled = resolve_store_enabled(cfg)
+        db_enabled, db_name = resolve_db_config(cfg)
+        state_backend = resolve_state_backend(cfg)
+        configure_db_name = getattr(self.db, "configure_database_name", None)
+        normalize_state_backend = getattr(type(self.state), "normalize_backend", None)
+        if callable(normalize_state_backend):
+            state_backend = normalize_state_backend(state_backend)
+
+        if callable(configure_db_name):
+            configure_db_name(db_name)
+        elif hasattr(self.db, "db_name"):
+            self.db.db_name = db_name
+        self.store.enabled = store_enabled
+        self.db.enabled = db_enabled
+        self.state.backend = state_backend
 
     def get_input_schema(self) -> InputSchema:
         schema = getattr(self, "input_schema", None)
@@ -155,7 +174,8 @@ class NekoPluginBase:
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
         del wrap_with_hooks
         entries: dict[str, EventHandler] = {}
-        for attr_name, class_value in inspect.getmembers_static(type(self)):
+        getmembers_static = getattr(inspect, "getmembers_static", inspect.getmembers)
+        for attr_name, class_value in getmembers_static(type(self)):
             if attr_name.startswith("_"):
                 continue
             target = class_value.__func__ if isinstance(class_value, (staticmethod, classmethod)) else class_value

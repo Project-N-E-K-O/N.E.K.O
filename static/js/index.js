@@ -6,6 +6,22 @@
 let lanlan_config = {
     lanlan_name: ""
 };
+
+const RESERVED_PAGE_PATHS = new Set([
+    'api',
+    'chat',
+    'chat_full',
+    'focus',
+    'static',
+    'templates',
+    'toast',
+    'web_chat_compact',
+]);
+
+function isReservedPagePath(pathname) {
+    const pathParts = String(pathname || '').split('/').filter(Boolean);
+    return pathParts.length > 0 && RESERVED_PAGE_PATHS.has(pathParts[0]);
+}
 window.lanlan_config = lanlan_config;
 let cubism4Model = "";
 let vrmModel = "";
@@ -68,7 +84,7 @@ async function loadPageConfig() {
         // 从路径中提取 lanlan_name (例如 /{lanlan_name})
         if (!lanlanNameFromUrl) {
             const pathParts = window.location.pathname.split('/').filter(Boolean);
-            if (pathParts.length > 0 && !['focus', 'api', 'static', 'templates', 'chat', 'toast'].includes(pathParts[0])) {
+            if (pathParts.length > 0 && !RESERVED_PAGE_PATHS.has(pathParts[0])) {
                 lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
             }
         }
@@ -102,13 +118,42 @@ async function loadPageConfig() {
             lanlan_config.lighting = (data.lighting && typeof data.lighting === 'object')
                 ? Object.assign({}, data.lighting)
                 : null;
+            lanlan_config.pngtuber = (data.pngtuber && typeof data.pngtuber === 'object')
+                ? Object.assign({}, data.pngtuber)
+                : null;
             window.master_name = lanlan_config.master_name;
             window.master_profile_name = lanlan_config.master_profile_name;
             window.master_nickname = lanlan_config.master_nickname;
             window.master_display_name = lanlan_config.master_display_name;
             window.lanlan_config = lanlan_config;
             // 根据model_type判断是Live2D还是Live3D (VRM/MMD)
-            if (modelType === 'live3d' || modelType === 'vrm') {
+            if (modelType === 'pngtuber') {
+                cubism4Model = "";
+                window.cubism4Model = "";
+                vrmModel = "";
+                window.vrmModel = "";
+                window.mmdModel = "";
+                const live2dC = document.getElementById('live2d-container');
+                const vrmC = document.getElementById('vrm-container');
+                const mmdC = document.getElementById('mmd-container');
+                if (live2dC) {
+                    live2dC.style.display = 'none';
+                    live2dC.classList.add('hidden');
+                }
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    live2dCanvas.style.visibility = 'hidden';
+                    live2dCanvas.style.pointerEvents = 'none';
+                }
+                if (vrmC) vrmC.style.display = 'none';
+                if (mmdC) mmdC.style.display = 'none';
+                if (typeof window.hideOtherAvatarRuntimesForPNGTuber === 'function') {
+                    window.hideOtherAvatarRuntimesForPNGTuber();
+                }
+                if (typeof window.loadPNGTuberAvatar === 'function') {
+                    window.loadPNGTuberAvatar(lanlan_config.pngtuber || { idle_image: modelPath });
+                }
+            } else if (modelType === 'live3d' || modelType === 'vrm') {
                 const validPath = modelPath &&
                     modelPath !== 'undefined' &&
                     modelPath !== 'null' &&
@@ -141,6 +186,24 @@ async function loadPageConfig() {
                     }
                 }
             } else {
+                if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                    window.pngtuberManager.hide();
+                }
+                if (window.cleanupPNGTuberOverlayUI && typeof window.cleanupPNGTuberOverlayUI === 'function') {
+                    window.cleanupPNGTuberOverlayUI();
+                }
+                const pngtuberC = document.getElementById('pngtuber-container');
+                if (pngtuberC) {
+                    pngtuberC.style.display = 'none';
+                    pngtuberC.classList.add('hidden');
+                }
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    live2dCanvas.style.visibility = 'visible';
+                    live2dCanvas.style.pointerEvents = '';
+                }
+                const live2dC = document.getElementById('live2d-container');
+                if (live2dC) live2dC.classList.remove('hidden');
                 cubism4Model = modelPath;
                 window.cubism4Model = cubism4Model;
                 vrmModel = "";
@@ -196,14 +259,37 @@ function resolvePageConfig(result) {
 function startMultiWindowPageConfigLoad() {
     return new Promise(function (resolve) {
         var settled = false;
-        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
-        var handler = function (event) {
+        var emptyConfigRetryTimer = null;
+        function requestInjectedConfig(delay) {
+            if (typeof window.__nekoRequestConfigInjection !== 'function') {
+                return;
+            }
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
+            emptyConfigRetryTimer = setTimeout(function () {
+                emptyConfigRetryTimer = null;
+                if (!settled && typeof window.__nekoRequestConfigInjection === 'function') {
+                    window.__nekoRequestConfigInjection();
+                }
+            }, typeof delay === 'number' ? delay : 0);
+        }
+        function applyInjectedConfig(detail) {
             if (settled) {
                 return;
             }
+            var d = detail || {};
+            if (!Object.prototype.hasOwnProperty.call(d, 'lanlan_name')) {
+                requestInjectedConfig(500);
+                return;
+            }
             settled = true;
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
             window.removeEventListener('neko:config-injected', handler);
-            var d = (event && event.detail) || {};
             lanlan_config.lanlan_name = d.lanlan_name || '';
             lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
             lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();
@@ -220,6 +306,8 @@ function startMultiWindowPageConfigLoad() {
             lanlan_config.master_profile_name = window.master_profile_name;
             lanlan_config.master_nickname = window.master_nickname;
             lanlan_config.master_display_name = window.master_display_name;
+            var pageTitleName = lanlan_config.master_display_name || lanlan_config.lanlan_name;
+            document.title = pageTitleName ? `${pageTitleName} Terminal - Project N.E.K.O.` : 'Project N.E.K.O.';
             // 头像：如果 IPC 注入了头像 dataUrl，设置到 appChatAvatar
             // appChatAvatar 可能尚未加载（脚本顺序靠后），先暂存到全局变量
             if (d.avatarDataUrl) {
@@ -229,15 +317,30 @@ function startMultiWindowPageConfigLoad() {
                     window.__nekoPendingAvatar = { dataUrl: d.avatarDataUrl, modelType: d.avatarModelType || '' };
                 }
             }
-            resolve(d);
+            // resolve 类型与 5s 超时分支（loadPageConfig() → bool）保持一致，
+            // 避免未来有 consumer 做 result === true 判断时 IPC 路径悄悄失效。
+            resolve(true);
+        }
+        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
+        var handler = function (event) {
+            applyInjectedConfig((event && event.detail) || {});
         };
         window.addEventListener('neko:config-injected', handler);
+        if (window.__nekoInjectedConfig && Object.prototype.hasOwnProperty.call(window.__nekoInjectedConfig, 'lanlan_name')) {
+            applyInjectedConfig(window.__nekoInjectedConfig);
+            return;
+        }
+        requestInjectedConfig(0);
         // 超时保护：5 秒后 fallback 到 HTTP API
         setTimeout(function () {
             if (settled) {
                 return;
             }
             settled = true;
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
             window.removeEventListener('neko:config-injected', handler);
             console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
             loadPageConfig().then(resolve);
@@ -260,7 +363,7 @@ window.startPageConfigLoad = function startPageConfigLoad() {
                 await window.__nekoStorageLocationStartupBarrier;
             }
 
-            if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
+            if (window.__NEKO_MULTI_WINDOW__ && isReservedPagePath(window.location.pathname)) {
                 return resolvePageConfig(await startMultiWindowPageConfigLoad());
             }
 

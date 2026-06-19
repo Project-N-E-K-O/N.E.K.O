@@ -162,7 +162,7 @@ async def test_replace_invalidates_embedding_cache(tmp_path):
 
     await pm._aqueue_correction("小天", "主人住在东京", "主人住在大阪", "master")
     fake_llm = _make_llm_mock([
-        {"index": 0, "action": "replace", "text": "主人住在大阪"},
+        {"index": 0, "action": "merge", "text": "主人住在大阪"},
     ])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         await pm.resolve_corrections("小天")

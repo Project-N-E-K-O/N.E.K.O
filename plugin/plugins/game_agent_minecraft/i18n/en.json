@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft Game Plugin",
+  "plugin.description": "Bridges a local mc-agent (WebSocket) so neko-chan can chat with you while playing alongside you in Minecraft, narrating the game in real time"
+}

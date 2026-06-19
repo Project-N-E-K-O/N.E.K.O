@@ -99,7 +99,7 @@ window.VRM_PATHS = {
 };
 
 // 全局：判断是否为移动端宽度（如果不存在则定义，避免重复定义）
-window.isMobileWidth = window.isMobileWidth || (() => window.innerWidth <= 768);
+window.isMobileWidth = window.isMobileWidth || (() => !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768);
 
 const isModelManagerPage = () => window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null;
 window.vrmManager = null;
@@ -468,6 +468,11 @@ async function initVRMModel() {
         // 如果是模型管理页面，不自动加载模型，直接返回
         if (isModelManagerPage()) {
             console.log('[VRM Init] 模型管理页面，跳过自动模型加载');
+            return;
+        }
+
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
+            console.log('[VRM Init] PNGTuber 模式，跳过 VRM 加载');
             return;
         }
 

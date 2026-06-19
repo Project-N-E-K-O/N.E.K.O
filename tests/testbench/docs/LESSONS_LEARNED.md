@@ -163,7 +163,7 @@
 | payload normalizer pure helper | 冷却节流 (600ms/1500ms 点击防抖) |
 | 输出格式 (memory 记录怎么落盘) | 多实例 keyed on `client_id` 的并发控制 |
 
-**判据**: 任何一个 `from config.prompts_* import _helper()` 能 import 的纯函数
+**判据**: 任何一个 `from config.prompts.prompts_* import _helper()` 能 import 的纯函数
 **几乎一定是语义契约**, testbench 直接 import 复用; 任何带 `contextvar`/`asyncio.Queue`/
 `async def handle_*` 的异步状态机**几乎一定是运行时机制**, testbench 不复现.
 
@@ -204,7 +204,7 @@
 **反模式**:
 
 - **A. 架构不兼容 → 全系统 OOS**: 表现是"看到 WebSocket + 多进程 + contextvar,
-  直接断 OOS". 对治: 拉表重读, 80%+ 的代码通常在 `config/prompts_*.py` 或
+  直接断 OOS". 对治: 拉表重读, 80%+ 的代码通常在 `config/prompts/prompts_*.py` 或
   `_helper_func()` 纯层, 能搬.
 - **B. 测功机不能开上高速**: 表现是"拒绝接入因为复现不了实时流". 对治: 用户
   不是要你开上高速, 是要你测扭矩, 回到测量目标.
@@ -247,7 +247,7 @@
 
 > **本项目实证** (P24 Day 9-E → P25 立项):
 >
-> - PR #769 道具交互 `config/prompts_avatar_interaction.py` = 1196 行里 **9
+> - PR #769 道具交互 `config/prompts/prompts_avatar_interaction.py` = 1196 行里 **9
 >   pure helper + 7 常量表**, testbench 可直接 import;
 >   `main_logic/cross_server.py::_should_persist_avatar_interaction_memory`
 >   是**纯去重策略函数**, 可直接 import.
@@ -800,7 +800,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
 **L35 "蓝图 > 代码时按代码走 + 显式登记"** (P25 Day 2 前端面板派生, 2026-04-23):
 
 - **场景**: 设计阶段蓝图草稿 (文字描述 API / 字段 / 枚举值) 和最终**实装代码**不一致时 — 可能是蓝图起草时笔误 / 主程序后续调整 / 评审轮次没同步. 阶段执行期 (Day N 实装) 遇到歧义, agent 默认按蓝图照抄会**把一个已经删掉的枚举值重新引入**或**测试不存在的 payload 场景**.
-- **真实案例**: P25_BLUEPRINT Day 2 §237 列 avatar tool_id 含 `{lollipop, fist, hammer, hand}`, 但实装的 `config/prompts_avatar_interaction.py::_AVATAR_INTERACTION_ALLOWED_ACTIONS` 只有 `{lollipop, fist, hammer}` 三种, `hand` 从未出现在代码里. 前端面板开发时如果按蓝图做 4 tab, tester 点 `hand` 触发后后端 `_normalize_avatar_interaction_payload` 返 `invalid_payload`, UX 差且**无语义价值** (hand 根本不存在不是 bug). 取舍: 按代码做 3 tab + 面板代码注释 + AGENT_NOTES §4.27 #111 登记 "蓝图写了 hand, 代码未实装, 按代码走".
+- **真实案例**: P25_BLUEPRINT Day 2 §237 列 avatar tool_id 含 `{lollipop, fist, hammer, hand}`, 但实装的 `config/prompts/prompts_avatar_interaction.py::_AVATAR_INTERACTION_ALLOWED_ACTIONS` 只有 `{lollipop, fist, hammer}` 三种, `hand` 从未出现在代码里. 前端面板开发时如果按蓝图做 4 tab, tester 点 `hand` 触发后后端 `_normalize_avatar_interaction_payload` 返 `invalid_payload`, UX 差且**无语义价值** (hand 根本不存在不是 bug). 取舍: 按代码做 3 tab + 面板代码注释 + AGENT_NOTES §4.27 #111 登记 "蓝图写了 hand, 代码未实装, 按代码走".
 - **失败模式**: 不登记直接按代码做 → 下一轮 agent 读蓝图又补 hand 回来 → 打回; 或者按蓝图做 → tester 实际使用时抱怨 "UI 给了 hand 按钮点击失败". 两条路都不对.
 - **防御规则** (两条):
     1. **蓝图 vs 代码不一致 = 代码胜出** (代码是实装, 蓝图是草案, 且蓝图起草时间早于代码定稿).

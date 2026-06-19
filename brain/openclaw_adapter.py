@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 OpenClaw Agent adapter.
 
@@ -20,7 +34,7 @@ import httpx
 
 from config import OPENCLAW_MAGIC_INTENT_MAX_TOKENS
 from utils.file_utils import robust_json_loads
-from utils.llm_client import create_chat_llm
+from utils.llm_client import create_chat_llm_async, strip_thinking_segments
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -108,6 +122,8 @@ def _extract_json_block(raw_text: str) -> str:
 
 
 class OpenClawAdapter:
+    AUTH_ERROR_STATUS_CODES = frozenset({401, 403})
+
     def __init__(self) -> None:
         self.base_url = DEFAULT_OPENCLAW_URL
         self.process_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_PROCESS_ENDPOINT_PATH}"
@@ -205,6 +221,7 @@ class OpenClawAdapter:
                         "enabled": True,
                         "ready": True,
                         "reasons": [f"OpenClaw(QwenPaw) reachable ({self.health_url})"],
+                        "status_code": response.status_code,
                         "provider": "qwenpaw",
                     }
                 self.last_error = f"HTTP {response.status_code}"
@@ -212,6 +229,7 @@ class OpenClawAdapter:
                     "enabled": True,
                     "ready": False,
                     "reasons": [f"OpenClaw(QwenPaw) responded {response.status_code} ({self.health_url})"],
+                    "status_code": response.status_code,
                     "provider": "qwenpaw",
                 }
         except Exception as exc:
@@ -348,7 +366,7 @@ class OpenClawAdapter:
 
         llm = None
         try:
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 model=model,
                 base_url=base_url,
                 api_key=api_key or None,
@@ -356,6 +374,7 @@ class OpenClawAdapter:
                 max_completion_tokens=OPENCLAW_MAGIC_INTENT_MAX_TOKENS,
                 max_retries=0,
                 extra_body=None,
+                timeout=10,  # quick magic-intent classification on the user path
             )
             response = await llm.ainvoke(
                 [
@@ -454,7 +473,10 @@ class OpenClawAdapter:
 
     @staticmethod
     def _strip_reasoning_trace(text: str) -> str:
-        cleaned = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.IGNORECASE | re.DOTALL).strip()
+        # Shared stripper handles both paired <think>...</think> and the
+        # Qwen3.5/3.6 dangling-</think> leak shape; ReAct line filtering below
+        # is openclaw-specific and stays here.
+        cleaned = strip_thinking_segments(text)
         if not cleaned:
             return ""
 

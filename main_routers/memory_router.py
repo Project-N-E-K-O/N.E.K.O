@@ -1,10 +1,29 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Memory Router
 
 Handles memory-related endpoints including:
 - Recent files listing
 - Memory review configuration
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
@@ -149,34 +168,67 @@ def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserve
     return True, ""
 
 
+# 单条消息文本上限(字符)。现场触发的内存尖峰复盘:用户从外部
+# 复制一坨长文本粘贴进 recent → 整段以单条 message 形式落盘 → 后续
+# memory pipeline 把这条当成「stale entry」喂给 embedder → batch 内
+# pad-to-longest 把激活内存顶到多 GB(虽然 embedder 侧已加 token 预算
+# 兜底,这里仍在边界堵住「单条 megablob」的入口,避免把异常大对象
+# 漫到 ndjson / db / recall 等所有下游)。32K 字符 ≈ 32K token(中文)
+# 对正常对话足够宽松(单条 5K 中文 = 一篇较长文章),又把 worst-case
+# 入站体积钉住。
+_RECENT_MESSAGE_TEXT_MAX_CHARS = 32 * 1024
+# 整个 chat payload 的累计文本上限。控制「一次粘贴 1000 条 30K 文本」
+# 这种总量攻击/误操作。2 MB 对真实长会话仍宽裕,异常体积会被打回。
+_RECENT_CHAT_TOTAL_CHARS_MAX = 2 * 1024 * 1024
+# 消息条数上限。冗余防御:即使每条都很短,几十万条也能把后续
+# scan/embed/render 全拖死。
+_RECENT_CHAT_MAX_MESSAGES = 10000
+
+
 def validate_chat_payload(chat: any) -> tuple[bool, str]:
     """
     Validate the chat payload structure.
-    
+
     Args:
         chat: The chat payload to validate
-        
+
     Returns:
         tuple: (is_valid, error_message)
     """
     if not isinstance(chat, list):
         return False, "chat 必须是一个列表"
-    
+
+    if len(chat) > _RECENT_CHAT_MAX_MESSAGES:
+        return False, f"chat 消息数 {len(chat)} 超过上限 {_RECENT_CHAT_MAX_MESSAGES}"
+
+    total_chars = 0
     for idx, item in enumerate(chat):
         if not isinstance(item, dict):
             return False, f"chat[{idx}] 必须是一个字典"
-        
+
         # Validate required 'role' key
         if 'role' not in item:
             return False, f"chat[{idx}] 缺少必需的 'role' 字段"
-        
+
         if not isinstance(item['role'], str):
             return False, f"chat[{idx}]['role'] 必须是字符串"
-        
+
         # Validate optional 'text' key if present
-        if 'text' in item and not isinstance(item['text'], str):
-            return False, f"chat[{idx}]['text'] 必须是字符串"
-    
+        if 'text' in item:
+            if not isinstance(item['text'], str):
+                return False, f"chat[{idx}]['text'] 必须是字符串"
+            text_len = len(item['text'])
+            if text_len > _RECENT_MESSAGE_TEXT_MAX_CHARS:
+                return False, (
+                    f"chat[{idx}]['text'] 长度 {text_len} 超过单条上限 "
+                    f"{_RECENT_MESSAGE_TEXT_MAX_CHARS}(粘贴超长文本请拆分)"
+                )
+            total_chars += text_len
+            if total_chars > _RECENT_CHAT_TOTAL_CHARS_MAX:
+                return False, (
+                    f"chat 累计文本超过总量上限 {_RECENT_CHAT_TOTAL_CHARS_MAX}"
+                )
+
     return True, ""
 
 
@@ -251,7 +303,7 @@ logger = get_module_logger(__name__, "Main")
 
 @router.get('/recent_files')
 async def get_recent_files():
-    """获取 memory 目录下所有 recent*.json 文件名列表"""
+    """List all recent*.json filenames under the memory directory."""
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
     file_names: list[str] = []
@@ -269,7 +321,7 @@ async def get_recent_files():
 
 @router.get('/recent_file')
 async def get_recent_file(filename: str):
-    """获取指定 recent*.json 文件内容"""
+    """Get the content of the specified recent*.json file."""
     # Reject path traversal attempts
     if '/' in filename or '\\' in filename or '..' in filename:
         return JSONResponse({"success": False, "error": "文件名不能包含路径分隔符或目录遍历字符"}, status_code=400)
@@ -378,9 +430,9 @@ async def save_recent_file(request: Request):
 @router.post('/update_catgirl_name')
 async def update_catgirl_name(request: Request):
     """
-    更新记忆文件中的猫娘名称
-    1. 重命名记忆文件
-    2. 更新文件内容中的猫娘名称引用
+    Update the catgirl name in memory files.
+    1. Rename the memory files
+    2. Update name references inside the file contents
     """
     data = await request.json()
     old_name = data.get('old_name')
@@ -432,7 +484,7 @@ async def update_catgirl_name(request: Request):
 
 @router.get('/review_config')
 async def get_review_config():
-    """获取记忆整理配置"""
+    """Get the memory review configuration."""
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -447,7 +499,7 @@ async def get_review_config():
 
 @router.post('/review_config')
 async def update_review_config(request: Request):
-    """更新记忆整理配置"""
+    """Update the memory review configuration."""
     try:
         data = await request.json()
         enabled = data.get('enabled', True)
@@ -465,13 +517,107 @@ async def update_review_config(request: Request):
         await asyncio.to_thread(
             config_manager.save_json_config, 'core_config.json', config_data
         )
-        
+
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:
         logger.error(f"更新记忆整理配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get('/powerful_memory_config')
+async def get_powerful_memory_config():
+    """Get the powerful-memory toggle. Defaults to True (for backward compatibility with existing users)."""
+    try:
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+        return {"enabled": config_data.get('powerful_memory_enabled', True)}
+    except Exception as e:
+        logger.error(f"读取强力记忆配置失败: {e}")
+        return {"enabled": True}
+
+
+@router.post('/powerful_memory_config')
+async def update_powerful_memory_config(request: Request):
+    """Update the powerful-memory toggle.
+
+    Turning it off stops all new LLM paths introduced by the evidence RFC
+    (Stage-2 / promote_merge / rebuttal / negative-keyword / fact_dedup /
+    persona corrections), keeping check_feedback for proactive-chat responses
+    as the only evidence channel. When switching on→off, reset confirmed_at of
+    all confirmed reflections to now to avoid an immediate bulk promote.
+    """
+    try:
+        data = await request.json()
+        enabled = data.get('enabled', True)
+
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+
+        prev_enabled = config_data.get('powerful_memory_enabled', True)
+        config_data['powerful_memory_enabled'] = enabled
+
+        # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
+        # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
+        # **成功后**再 save config。否则 migration 失败后 config 已经
+        # `False`，下一次用户点关也不会再进 prev_enabled and not enabled 分
+        # 支，旧 confirmed_at 锚点永久漏迁移，旧 confirmed 可能立刻被 time-
+        # driven 抓走 promote。必须原子：要么两者都成功，要么都失败。
+        # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
+        # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
+        # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
+        # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
+        if prev_enabled and not enabled:
+            try:
+                from config import MEMORY_SERVER_PORT
+                from utils.internal_http_client import get_internal_http_client
+                client = get_internal_http_client()
+                resp = await client.post(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
+                    timeout=10.0,
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"强力记忆切换 migration HTTP 状态码 {resp.status_code}，配置未保存"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"migration HTTP {resp.status_code}",
+                    }
+                payload = resp.json()
+                if not isinstance(payload, dict) or not payload.get('ok'):
+                    err = payload.get('error', 'migration returned ok=false') if isinstance(payload, dict) else 'migration payload invalid'
+                    logger.warning(f"强力记忆切换 migration 失败，配置未保存: {err}")
+                    return {"success": False, "error": err}
+                migrated = int(payload.get('count', 0))
+                logger.info(
+                    f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
+                    f"reflection 的 confirmed_at 锚点"
+                )
+            except Exception as e:
+                logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
+                return {"success": False, "error": str(e)}
+
+        # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
+        # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
+        await asyncio.to_thread(
+            config_manager.save_json_config, 'core_config.json', config_data
+        )
+
+        logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
+        return {"success": True, "enabled": enabled}
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        logger.error(f"更新强力记忆配置失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -488,14 +634,14 @@ async def update_review_config(request: Request):
 
 def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
     """
-    收集所有非当前 runtime 的 legacy memory 根目录（带来源标签）。
+    Collect all legacy memory root directories outside the current runtime (with source tags).
 
-    返回 ``[(Path, source), ...]``，去重后保持顺序：
-      - ``get_legacy_app_root_candidates()`` 返回的各候选的 ``memory/``
-        子目录（``source="legacy_app_root"``）
-      - ``_readable_docs_dir / <app_name> / memory``（``source="cfa_readable_docs"``）
+    Returns ``[(Path, source), ...]``, deduplicated and order-preserving:
+      - the ``memory/`` subdirectory of each candidate returned by
+        ``get_legacy_app_root_candidates()`` (``source="legacy_app_root"``)
+      - ``_readable_docs_dir / <app_name> / memory`` (``source="cfa_readable_docs"``)
 
-    当前激活的 ``memory_dir`` 绝不会被包含。
+    The currently active ``memory_dir`` is never included.
     """
     roots: list[tuple[Path, str]] = []
     seen: set[str] = set()
@@ -547,8 +693,9 @@ def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
 
 def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
     """
-    计算目录递归 size。遇到权限错误/文件消失时忽略；超过 max_entries 条
-    目提前返回避免阻塞事件循环（返回 -1 作为"过大/未知"标记）。
+    Compute a directory's recursive size. Permission errors / vanished files are
+    ignored; returns early once max_entries is exceeded to avoid blocking the
+    event loop (returns -1 as a "too large / unknown" marker).
     """
     total = 0
     visited = 0
@@ -585,8 +732,9 @@ def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
 @router.get('/legacy/scan')
 async def scan_legacy_memory():
     """
-    扫描 legacy 路径下的角色记忆目录，返回每条的元数据，供前端"清理
-    遗留记忆"按钮弹层使用。本接口**只读**，不做任何删除 / 迁移。
+    Scan character memory directories under legacy paths and return metadata for
+    each entry, used by the frontend "clean up legacy memory" dialog. This
+    endpoint is **read-only** — it never deletes or migrates anything.
     """
     try:
         from utils.config_manager import get_config_manager
@@ -700,8 +848,8 @@ async def scan_legacy_memory():
 
 def _is_path_within(child: Path, parent: Path) -> bool:
     """
-    判断 child 是否严格位于 parent 之下（parent 必须是前缀，且 child != parent）。
-    双方都需要 resolve 后比对，避免 ``..`` 路径逃逸。
+    Check whether child is strictly inside parent (parent must be a prefix, and child != parent).
+    Both sides are resolved before comparison to prevent ``..`` path escapes.
     """
     try:
         child_resolved = child.resolve(strict=False)
@@ -719,13 +867,14 @@ def _is_path_within(child: Path, parent: Path) -> bool:
 @router.post('/legacy/purge')
 async def purge_legacy_memory(request: Request):
     """
-    按前端勾选的 paths 精确删除 legacy memory 条目。
+    Delete exactly the legacy memory entries (paths) the user checked in the frontend.
 
-    安全校验（全部必须通过才删）：
-      1. 每条 path 必须严格位于 ``_collect_legacy_memory_roots`` 返回的
-         任一 root 之下（resolve 后白名单前缀比对），拒绝路径逃逸。
-      2. 不得等于或覆盖当前 runtime ``memory_dir``。
-      3. ``..`` / 相对路径 / 空字符串 / 非字符串 → 400。
+    Safety checks (ALL must pass before deletion):
+      1. Each path must be strictly inside one of the roots returned by
+         ``_collect_legacy_memory_roots`` (whitelist prefix comparison after
+         resolve), rejecting path escapes.
+      2. Must not equal or contain the current runtime ``memory_dir``.
+      3. ``..`` / relative paths / empty strings / non-strings → 400.
     """
     try:
         payload = await request.json()

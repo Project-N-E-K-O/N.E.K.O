@@ -7,116 +7,134 @@
     <title data-i18n="voice.title">音色注册 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js" defer></script>
 </head>
 <body>
     <div class="container">
-        <div class="container-header">
+        <div class="container-header page-title-bar">
             <h2 data-i18n="voice.title" data-text="Voice Registration">音色注册</h2>
-            <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
-            <button class="close-page-btn" onclick="closeVoiceClonePage()" data-i18n-title="common.close">
-                <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
-            </button>
+            <div class="neko-window-actions">
+                <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
+                <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                        <span class="neko-window-minimize-icon"></span>
+                    </button>
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                        <span class="neko-window-maximize-icon"></span>
+                    </button>
+                    <button class="close-page-btn" onclick="closeVoiceClonePage()" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭">
+                        <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close" draggable="false">
+                    </button>
+                </div>
+            </div>
         </div>
         <div class="container-content">
-            <div class="field-row">
-                <label data-i18n="voice.providerLabel">语音克隆服务商</label>
-                <select id="voiceProvider">
-                    <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里云 CosyVoice</option>
-                    <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
-                    <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
-                </select>
-            </div>
-            <div id="provider-notice" class="alibaba-api-notice">
-                <span data-i18n="voice.alibabaApiRequired">此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
-            </div>
-            <div id="workshopVoiceSource" class="workshop-source-card" style="display: none;">
-                <div class="workshop-source-header">
-                    <span class="workshop-source-badge" data-i18n="voice.workshopSourceBadge">创意工坊参考语音</span>
-                    <span id="workshopVoiceSourceTitle" class="workshop-source-title" data-i18n="voice.workshopSourceTitle">创意工坊参考语音</span>
+            <div class="voice-register-main">
+                <div class="field-row">
+                    <label for="voiceProvider" data-i18n="voice.providerLabel">语音克隆服务商</label>
+                    <select id="voiceProvider" class="api-provider-select">
+                        <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里百炼 CosyVoice</option>
+                        <option value="cosyvoice_intl" data-i18n="voice.provider.cosyvoice_intl">阿里国际版 CosyVoice</option>
+                        <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
+                        <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
+                        <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
+                        <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
+                    </select>
                 </div>
-                <div id="workshopVoiceSourceMeta" class="workshop-source-meta"></div>
-                <audio id="workshopVoicePreview" class="workshop-source-audio" controls style="display: none;"></audio>
-                <div id="workshopVoiceSourceStatus" class="workshop-source-status"></div>
-            </div>
-            <!-- 克隆方式切换 -->
-            <div class="field-row">
-                <label data-i18n="voice.cloneMethod">克隆方式</label>
-                <div class="clone-method-toggle" role="tablist" aria-label="克隆方式选择">
-                    <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')"
-                        role="tab" aria-selected="true" aria-controls="fileCloneSection" tabindex="0">
-                        <span data-i18n="voice.cloneMethodFile">本地文件</span>
-                    </button>
-                    <button type="button" class="clone-method-btn" id="btnDirectLinkClone" onclick="switchCloneMethod('directlink')"
-                        role="tab" aria-selected="false" aria-controls="directLinkCloneSection" tabindex="-1">
-                        <span data-i18n="voice.cloneMethodDirectLink">直链克隆</span>
-                    </button>
+                <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
+                    <span data-i18n="voice.alibabaApiRequired">此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
                 </div>
-            </div>
+                <div id="workshopVoiceSource" class="workshop-source-card" style="display: none;">
+                    <div class="workshop-source-header">
+                        <span class="workshop-source-badge" data-i18n="voice.workshopSourceBadge">创意工坊参考语音</span>
+                        <span id="workshopVoiceSourceTitle" class="workshop-source-title" data-i18n="voice.workshopSourceTitle">创意工坊参考语音</span>
+                    </div>
+                    <div id="workshopVoiceSourceMeta" class="workshop-source-meta"></div>
+                    <audio id="workshopVoicePreview" class="workshop-source-audio" controls style="display: none;"></audio>
+                    <div id="workshopVoiceSourceStatus" class="workshop-source-status"></div>
+                </div>
+                <!-- 克隆方式切换 -->
+                <div class="field-row">
+                    <label data-i18n="voice.cloneMethod">克隆方式</label>
+                    <div class="clone-method-toggle" role="tablist" aria-label="克隆方式选择">
+                        <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')"
+                            role="tab" aria-selected="true" aria-controls="fileCloneSection" tabindex="0">
+                            <span data-i18n="voice.cloneMethodFile">本地文件</span>
+                        </button>
+                        <button type="button" class="clone-method-btn" id="btnDirectLinkClone" onclick="switchCloneMethod('directlink')"
+                            role="tab" aria-selected="false" aria-controls="directLinkCloneSection" tabindex="-1">
+                            <span data-i18n="voice.cloneMethodDirectLink">直链克隆</span>
+                        </button>
+                    </div>
+                </div>
 
-            <!-- 克隆输入区域容器（固定高度防止切换时页面跳动） -->
-            <div class="clone-input-container">
-                <!-- 本地文件克隆区域 -->
-                <div id="fileCloneSection" class="clone-section">
-                    <label class="section-label">
-                        <img src="/static/icons/exclamation.png" alt="" class="section-icon">
-                        <span data-i18n="voice.selectFile">选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
-                    </label>
-                    <div class="file-input-wrapper">
-                        <input type="file" id="audioFile" accept="audio/*">
-                        <label for="audioFile" class="file-input-label" id="fileInputLabel">
-                            <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="voice.chooseFile" class="file-icon">
-                            <span class="file-text" data-i18n="voice.chooseFile" data-text="Choose File">选择文件</span>
+                <!-- 克隆输入区域容器（固定高度防止切换时页面跳动） -->
+                <div class="clone-input-container">
+                    <!-- 本地文件克隆区域 -->
+                    <div id="fileCloneSection" class="clone-section">
+                        <label class="section-label">
+                            <img src="/static/icons/exclamation.png" alt="" class="section-icon">
+                            <span data-i18n="voice.selectFile">选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
                         </label>
-                        <div id="fileNameDisplay" class="file-name-display"></div>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="audioFile" accept="audio/*">
+                            <label for="audioFile" class="file-input-label" id="fileInputLabel">
+                                <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="voice.chooseFile" class="file-icon">
+                                <span class="file-text" data-i18n="voice.chooseFile" data-text="Choose File">选择文件</span>
+                            </label>
+                            <div id="fileNameDisplay" class="file-name-display"></div>
+                        </div>
+                    </div>
+
+                    <!-- 直链克隆区域 -->
+                    <div id="directLinkCloneSection" class="clone-section" style="display: none;">
+                        <label class="section-label">
+                            <img src="/static/icons/exclamation.png" alt="" class="section-icon">
+                            <span data-i18n="voice.directLinkUrl">音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
+                        </label>
+                        <div class="field-row">
+                            <input type="url" id="directLinkUrl" data-i18n-placeholder="voice.directLinkPlaceholder"
+                                placeholder="https://example.com/audio.wav">
+                        </div>
+                        <label class="hint" data-i18n="voice.directLinkHint">输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色</label>
                     </div>
                 </div>
 
-                <!-- 直链克隆区域 -->
-                <div id="directLinkCloneSection" class="clone-section" style="display: none;">
-                    <label class="section-label">
-                        <img src="/static/icons/exclamation.png" alt="" class="section-icon">
-                        <span data-i18n="voice.directLinkUrl">音频直链URL（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
-                    </label>
-                    <div class="field-row">
-                        <input type="url" id="directLinkUrl" data-i18n-placeholder="voice.directLinkPlaceholder"
-                            placeholder="https://example.com/audio.wav">
-                    </div>
-                    <label class="hint" data-i18n="voice.directLinkHint">输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色</label>
+                <div class="field-row">
+                    <label for="refLanguage" data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
+                    <label class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
+                    <select id="refLanguage" class="api-provider-select">
+                        <option value="ch" data-i18n="voice.lang.ch">中文</option>
+                        <option value="en" data-i18n="voice.lang.en">英语</option>
+                        <option value="fr" data-i18n="voice.lang.fr">法语</option>
+                        <option value="de" data-i18n="voice.lang.de">德语</option>
+                        <option value="ja" data-i18n="voice.lang.ja">日语</option>
+                        <option value="ko" data-i18n="voice.lang.ko">韩语</option>
+                        <option value="ru" data-i18n="voice.lang.ru">俄语</option>
+                    </select>
                 </div>
+
+                <div class="field-row">
+                    <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
+                    <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
+                        placeholder="Maximum 10 characters, numbers and English letters only" required>
+                </div>
+
+                <input type="hidden" id="lanlan_name" value="">
+
+                <button class="register-voice-btn" onclick="registerVoice()">
+                    <img src="/static/icons/sound.png" data-i18n-alt="voice.register" class="register-icon">
+                    <span class="register-text" data-i18n="voice.register" data-text="Register Voice">注册音色</span>
+                </button>
+
+                <div class="result" id="result"></div>
             </div>
-
-            <div class="field-row">
-                <label data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
-                <label class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
-                <select id="refLanguage">
-                    <option value="ch" data-i18n="voice.lang.ch">中文</option>
-                    <option value="en" data-i18n="voice.lang.en">英语</option>
-                    <option value="fr" data-i18n="voice.lang.fr">法语</option>
-                    <option value="de" data-i18n="voice.lang.de">德语</option>
-                    <option value="ja" data-i18n="voice.lang.ja">日语</option>
-                    <option value="ko" data-i18n="voice.lang.ko">韩语</option>
-                    <option value="ru" data-i18n="voice.lang.ru">俄语</option>
-                </select>
-            </div>
-
-            <div class="field-row">
-                <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
-                <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
-                    placeholder="Maximum 10 characters, numbers and English letters only" required>
-            </div>
-
-            <input type="hidden" id="lanlan_name" value="">
-
-            <button class="register-voice-btn" onclick="registerVoice()">
-                <img src="/static/icons/sound.png" data-i18n-alt="voice.register" class="register-icon">
-                <span class="register-text" data-i18n="voice.register" data-text="Register Voice">注册音色</span>
-            </button>
-
-            <div class="result" id="result"></div>
 
             <!-- 已注册音色列表 -->
             <div class="voice-list-section">
@@ -222,7 +240,10 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/skip-controller.js"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/tutorial/core/universal-manager.js"></script>
 
     <!-- 初始化 -->
     <script>

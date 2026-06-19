@@ -177,6 +177,98 @@ def test_neko_plugin_base_init_wires_ctx_config_plugins() -> None:
     assert base.plugins is not None
 
 
+def test_neko_plugin_base_refreshes_store_enabled_after_effective_config_arrives() -> None:
+    ctx = _Ctx()
+    ctx._effective_config = {}
+    base = _DemoPlugin(ctx=ctx)
+
+    assert base.store.enabled is False
+
+    ctx._effective_config = {
+        "plugin": {
+            "store": {"enabled": True},
+            "database": {"enabled": True, "name": "runtime.db"},
+        },
+        "plugin_state": {"backend": "file"},
+    }
+    base.refresh_runtime_config()
+
+    assert base.store.enabled is True
+    assert base.db.enabled is True
+    assert base.db.db_name == "runtime.db"
+    assert base.state.backend == "file"
+
+
+def test_neko_plugin_base_refresh_validates_database_name_before_enabling() -> None:
+    ctx = _Ctx()
+    ctx._effective_config = {}
+    base = _DemoPlugin(ctx=ctx)
+
+    assert base.store.enabled is False
+    assert base.db.enabled is False
+    assert base.db.db_name == "plugin.db"
+
+    ctx._effective_config = {
+        "plugin": {
+            "store": {"enabled": True},
+            "database": {"enabled": True, "name": "nested/bad.db"},
+        },
+        "plugin_state": {"backend": "file"},
+    }
+
+    with pytest.raises(ValueError, match="plain filename"):
+        base.refresh_runtime_config()
+
+    assert base.store.enabled is False
+    assert base.db.enabled is False
+    assert base.db.db_name == "plugin.db"
+    assert base.state.backend == "off"
+
+
+def test_neko_plugin_base_refresh_normalizes_state_backend() -> None:
+    ctx = _Ctx()
+    base = _DemoPlugin(ctx=ctx)
+
+    base.refresh_runtime_config(
+        {
+            "plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "runtime.db"}},
+            "plugin_state": {"backend": "Memory"},
+        }
+    )
+    assert base.state.backend == "memory"
+
+    base.refresh_runtime_config(
+        {
+            "plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "runtime.db"}},
+            "plugin_state": {"backend": "OFF"},
+        }
+    )
+    assert base.state.backend == "off"
+
+
+def test_neko_plugin_base_i18n_uses_plugin_toml_config(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    locale_dir = plugin_dir / "locales"
+    locale_dir.mkdir(parents=True)
+    (locale_dir / "ja.json").write_text('{"hello": "こんにちは"}', encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join([
+            "[plugin]",
+            'id = "demo"',
+            "[plugin.i18n]",
+            'default_locale = "ja"',
+            'locales_dir = "locales"',
+        ]),
+        encoding="utf-8",
+    )
+
+    base = _DemoPlugin(ctx=_Ctx(config_path=config_path))
+
+    assert base.i18n.default_locale == "ja"
+    assert base.i18n.t("hello", locale="en", default="Hello") == "こんにちは"
+
+
 def test_get_input_schema_returns_dict_or_empty() -> None:
     base = _DemoPlugin(ctx=_Ctx())
     assert base.get_input_schema() == {"type": "object"}
@@ -261,17 +353,19 @@ def test_enable_file_logging_keeps_default_logger_synced() -> None:
     assert logger is base.sdk_logger
 
 
-def test_plugin_base_convenience_accessors(tmp_path) -> None:
+def test_plugin_base_convenience_accessors(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     base = _DemoPlugin(ctx=_Ctx(config_path=config_path))
     assert base.plugin_id == "demo"
     assert base.metadata == {"role": "demo"}
     assert base.bus is not None
     assert base.bus.messages.get().count() == 0
     assert base.config_dir == tmp_path / "demo"
-    assert base.data_path() == tmp_path / "demo" / "data"
-    assert base.data_path("cache", "x.json") == tmp_path / "demo" / "data" / "cache" / "x.json"
+    assert base.data_path() == runtime_root / "plugins" / "demo" / "data"
+    assert base.data_path("cache", "x.json") == runtime_root / "plugins" / "demo" / "data" / "cache" / "x.json"
 
 
 def test_plugin_base_runtime_facades_are_lazy_and_cached() -> None:

@@ -4,34 +4,26 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md) | [日本語](README_ja.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**Проактивный нативный мультимодальный ИИ-компаньон с круглосуточным осознанием окружения, агентными возможностями и воплощённым эмоциональным движком.**
+# Project N.E.K.O. :kissing_cat: <br>**Расслышать ваше настроение. Увидеть ваш мир.<br>Вместе открыть больше того, что вам по душе.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (Сетевой Эмоциональный Познающий Организм)
 >
 > N.E.K.O. — цифровая жизнь, стремящаяся понимать, устанавливать связи и расти вместе с нами.
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_Документация-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: Нулевая конфигурация, готова к использованию — кибер-кошкодевочка, с которой справится даже бабушка!**
+**:older_woman: Нулевая конфигурация и сразу готова к работе — кибер-кошкодевочка, которую даже бабушка легко разбудит!**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/) версия выпущена! Полностью обновлённый интерфейс и бесплатная эксклюзивная модель из коробки (спасибо StepFun за спонсорство). Добавьте в список желаемого!**
+:newspaper: **[Версия в Steam](https://store.steampowered.com/app/4099310/__NEKO/) доступна бесплатно! Если она вам понравится, добавьте её в библиотеку и оставьте добрый отзыв~**
 
 *Project N.E.K.O., НекоВселенная!*
-
-</div>
-
-<div align="center">
-
-#### Демонстрация функций (полная версия на Bilibili) [![Bilibili](https://img.shields.io/badge/Bilibili-Туториал-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 </div>
 
@@ -41,15 +33,15 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>Мультимодальный диалог</b><br>Голос в реальном времени (Realtime API) + текстовый чат (ChatCompletion) с визуальным пониманием</td>
-<td align="center" width="25%">🧠<br><b>Трёхуровневая память</b><br>Факты / Рефлексия / Персона — она действительно «помнит» вас</td>
-<td align="center" width="25%">🤖<br><b>Агентные возможности</b><br>Управление браузером (CUA), компьютером, вызов OpenClaw A2A — она может работать за вас</td>
+<td align="center" width="25%">💬<br><b>Проактивное сопровождение</b><br>Понимание экрана, тренды соцсетей, личные обновления, музыка и мемы — она сама начинает разговор и делится свежим, что вам нравится</td>
+<td align="center" width="25%">🎙️<br><b>Голос, текст и зрение в реальном времени</b><br>Голос в реальном времени (Realtime API) + текстовый чат (ChatCompletion) с живым визуальным пониманием</td>
+<td align="center" width="25%">🧠<br><b>Пятимерная система памяти</b><br>Рабочая / Недавняя / Фактическая / Рефлексивная / Персональная память, чтобы со временем она понимала вас лучше</td>
 <td align="center" width="25%">🎭<br><b>Мультиформатный Аватар</b><br>Live2D / VRM / MMD с захватом движений и отслеживанием в полноэкранном режиме</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Экосистема плагинов</b><br>Полный SDK и маркетплейс плагинов для пользовательских расширений</td>
+<td align="center">🤖<br><b>Выполнение задач агентом</b><br>Управляет браузерами и компьютером, вызывая CUA / OpenClaw A2A / плагины для выполнения задач</td>
+<td align="center">🔌<br><b>Экосистема плагинов</b><br>SDK + маркетплейс плагинов для совместной игры онлайн, взаимодействия с соцсетями, стримами и умным домом</td>
 <td align="center">🌐<br><b>14+ ИИ-провайдеров</b><br>OpenAI / Gemini / Qwen / DeepSeek и другие, с бесплатными моделями из коробки</td>
-<td align="center">💬<br><b>Проактивный чат</b><br>Круглосуточное осознание: понимание экрана, тренды соцсетей, персональные ленты, музыка и мемы — она сама начинает разговор с вами</td>
 <td align="center">🏪<br><b>UGC Мастерская</b><br>Загружайте и делитесь кастомными персонажами, моделями и голосовыми пакетами через Steam Workshop</td>
 </tr>
 </table>
@@ -58,7 +50,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 # Проект N.E.K.O.
 
-`Project N.E.K.O.` — это платформа ИИ-компаньонов на основе открытого исходного кода. Ядро проекта **всегда остаётся открытым** под лицензией MIT — каждый ваш вклад может попасть в официальные версии для Steam и App Store.
+`Project N.E.K.O.` — это платформа ИИ-компаньонов на основе открытого исходного кода. Ядро проекта **всегда остаётся открытым** под лицензией Apache License 2.0 — каждый ваш вклад может попасть в официальные версии для Steam и App Store.
 
 ---
 
@@ -77,7 +69,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **Создатели:** Художники, Live2D/3D моделлеры, актёры озвучки, сценаристы — вы даёте «ей» душу.
 * **Мечтатели:** Ваша обратная связь и поддержка — бесценный вклад.
 
-**Discord**: [Присоединиться](https://discord.gg/5kgHfepNJr) | **QQ-группа**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**: [Присоединиться](https://discord.gg/5kgHfepNJr) | **QQ-группа**: 995414391
 
 ## Быстрый старт
 
@@ -409,7 +401,7 @@ uv run python agent_server.py
 # 5. Перейдите на http://localhost:48911 для настройки API Key и начала работы
 ```
 
-Разработчикам рекомендуется присоединиться к QQ-группе 1022939659.
+Разработчикам рекомендуется присоединиться к QQ-группе 995414391.
 
 </details>
 
@@ -421,7 +413,7 @@ uv run python agent_server.py
 
 Настройте сторонние ИИ-сервисы для дополнительных функций:
 
-- **Core API** (голосовой разговор в реальном времени): Должен поддерживать Realtime API. Рекомендуется: *Gemini*, *OpenAI*, *StepFun* или *Alibaba Cloud*.
+- **Core API** (голосовой разговор в реальном времени): Должен поддерживать Realtime API. Рекомендуется: *Alibaba Cloud*.
 - **Assist API** (память/эмоции/зрение): Поддерживает стандартный интерфейс ChatCompletion. Доступно 14+ провайдеров.
 
 Перейдите на `http://localhost:48911/api_key` для настройки через веб-интерфейс.
@@ -466,8 +458,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Подсистема Computer Use Agent
 ├── 📁 config/                   # ⚙️ Управление конфигурацией
 │   ├── api_providers.json       # Конфигурация API-провайдеров
-│   ├── prompts_chara.py         # Промпты персонажей
-│   └── prompts_sys.py           # Системные промпты
+│   └── 📁 prompts/              # Промпты персонажей, системы и функций
+│       ├── prompts_chara.py     # Промпты персонажей
+│       └── prompts_sys.py       # Системные промпты
 ├── 📁 main_logic/               # 🔧 Основные модули
 │   ├── core.py                  # Основной модуль диалога
 │   ├── cross_server.py          # Межсерверная коммуникация
@@ -475,7 +468,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Текстовый API клиент (ChatCompletion)
 │   └── tts_client.py            # 🔊 Адаптер TTS-движка
 ├── 📁 main_routers/             # 🌐 API-маршруты (14 маршрутов)
-├── 📁 memory/                   # 🧠 Трёхуровневая система памяти
+├── 📁 memory/                   # 🧠 Пятимерная система памяти (частичные примеры)
 │   ├── facts/                   # Память фактов
 │   ├── reflection/              # Память рефлексий
 │   └── persona/                 # Память персоны
@@ -510,6 +503,29 @@ v0.8: Функции памяти, функциональность типа Ope
 v0.9: Поддержка мультисистемности (Linux, мобильные). Запуск сети N.E.K.O. Ожидается: Апрель 2026.
 
 v1.0: Фокус на собственных больших моделях и агентных системах. Ожидается: Июнь 2026.
+
+### Телеметрия (Telemetry)
+
+N.E.K.O. **по умолчанию включает анонимную телеметрию использования LLM-токенов** — она нужна, чтобы отслеживать совместимость версий, распределение использования моделей и частоту ошибок. Мы признаём, что данные нужны для улучшения продукта, но ещё сильнее убеждены: ничего не должно собираться втайне от пользователя.
+
+**Отключить одной строкой (opt-out)**: задайте переменную окружения `DO_NOT_TRACK=1` (или `NEKO_DO_NOT_TRACK=1`). Телеметрия отключается мгновенно, пересборка не нужна. Мы следуем общепринятой open-source-конвенции [Console Do Not Track](https://consoledonottrack.com/).
+
+**Что собираем / не собираем**:
+
+| ✅ Собираем | ❌ Никогда не собираем |
+| --- | --- |
+| Использование LLM-токенов (prompt / cached / completion) | Содержимое диалогов, текст, голос, изображения |
+| Имя модели, тип вызова (`conversation` / `memory` и т.д.) | Имя пользователя, API-ключ, GitHub ID |
+| Количество вызовов / количество ошибок | IP-адрес, геолокацию, MAC, серийные номера железа |
+| Версию приложения, A/B-ветку, locale, часовой пояс, канал дистрибуции (`source` / `release` / `steam`) | Пути файлов, cookie, отпечатки браузера |
+| Псевдонимизированный идентификатор устройства — основной путь: `SHA256(OS_machine_id ‖ namespace)`; запасной: `SHA256(uuid.getnode() ‖ путь_установки ‖ namespace)`. На время миграции отправляются оба ID (новый и legacy), чтобы сервер мог свернуть когорты | Любые PII, по которым можно восстановить личность |
+| **Если Steamworks SDK успешно инициализируется во время выполнения И вы вошли в Steam-клиент**: Steam64 user ID (публичный числовой ID, видимый в URL вашего профиля Steam) | Любые другие ID учётных систем (GitHub / Google / OpenAI / …) |
+
+> **О псевдонимизированном идентификаторе устройства**: односторонний SHA-256, необратим, не содержит пользовательских данных. Одна и та же машина (одна и та же установка ОС) даёт тот же идентификатор, поэтому в классификации GDPR / PIPL это **псевдонимизированный идентификатор**, а не полностью анонимные данные. Используется только для подсчёта DAU с дедупликацией и атрибуции по версиям.
+>
+> **О Steam64**: это публичный числовой ID, который Steam-клиент после входа выдаёт любому стороннему SDK (число в конце URL вашего профиля Steam — это он). Он не содержит email, телефона или настоящего имени, но стабилен между сессиями. **Фактическое условие срабатывания определяется кодом, а не меткой канала дистрибуции**: [`app/main_server.py`](app/main_server.py) безусловно вызывает `initialize_steamworks()` при запуске, а `_get_telemetry_steam_user_id()` в [`utils/token_tracker.py`](utils/token_tracker.py) отправляет любой ненулевой Steam ID, не разделяя каналы `source` / `release` / `steam`. Типичный сценарий — Steam-сборка, но source-чекаут с установленным Python-пакетом `steamworks`, сохранённым `steam_appid.txt` и активной сессией Steam также будет отправлять Steam64. **Чтобы он не отправлялся: (1) самый надёжный способ — `DO_NOT_TRACK=1` для полного отключения; (2) выйти из Steam-клиента; (3) source-пользователи могут удалить пакет `steamworks` или убрать `steam_appid.txt` из рабочего каталога.**
+
+Полная реализация и протокол передачи — в [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) и [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): подпись HMAC-SHA256, окно защиты от повторов ±5 мин, ограничение по скользящему окну (120 req/h/device), хранилище только на запись. Каждый серверный процесс отправляет данные не чаще раза в ~60 секунд (использует тот же таймер троттлинга, что и локальная запись на диск) — на основной поток это не влияет.
 
 </details>
 

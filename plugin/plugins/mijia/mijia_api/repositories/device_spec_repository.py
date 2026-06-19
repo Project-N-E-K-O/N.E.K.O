@@ -213,11 +213,12 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 siid = service.get("iid")
                 if not siid:
                     continue
+                service_desc = service.get("description", "")
 
                 # 先解析属性，建立索引用于 action 参数回填
                 service_properties: Dict[int, DeviceProperty] = {}
                 for prop in service.get("properties", []):
-                    device_property = self._parse_property(siid, prop)
+                    device_property = self._parse_property(siid, prop, service_desc)
                     if device_property:
                         properties.append(device_property)
                         service_properties[device_property.piid] = device_property
@@ -263,11 +264,12 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             services = props.get("spec", {}).get("services", {})
             for siid_str, service in services.items():
                 siid = int(siid_str)
+                service_desc = service.get("description", "")
 
                 # 解析属性
                 service_props = service.get("properties", {})
                 for piid_str, prop in service_props.items():
-                    device_property = self._parse_property_v2(siid, int(piid_str), prop)
+                    device_property = self._parse_property_v2(siid, int(piid_str), prop, service_desc)
                     if device_property:
                         properties.append(device_property)
 
@@ -284,13 +286,14 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             logger.error(f"解析设备规格数据失败: {e}", extra={"model": model})
             raise MijiaAPIException(f"解析设备规格数据失败: {str(e)}") from e
     
-    def _parse_property_v2(self, siid: int, piid: int, prop_data: dict) -> Optional[DeviceProperty]:
+    def _parse_property_v2(self, siid: int, piid: int, prop_data: dict, service_desc: str = "") -> Optional[DeviceProperty]:
         """解析设备属性（home.miot-spec.com格式）
 
         Args:
             siid: 服务ID
             piid: 属性ID
             prop_data: 属性数据
+            service_desc: 服务描述
 
         Returns:
             设备属性对象，解析失败返回None
@@ -348,6 +351,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 value_range=value_range,
                 value_list=value_list,
                 unit=unit,
+                service_description=service_desc or None,
             )
 
         except Exception as e:
@@ -391,12 +395,13 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             logger.warning(f"解析操作失败: {e}", extra={"siid": siid, "aiid": aiid})
             return None
 
-    def _parse_property(self, siid: int, prop_data: dict) -> Optional[DeviceProperty]:
+    def _parse_property(self, siid: int, prop_data: dict, service_desc: str = "") -> Optional[DeviceProperty]:
         """解析设备属性（标准miot-spec格式）
 
         Args:
             siid: 服务ID
             prop_data: 属性数据
+            service_desc: 服务描述
 
         Returns:
             设备属性对象，解析失败返回None
@@ -447,6 +452,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                 value_range=value_range,
                 value_list=value_list,
                 unit=unit,
+                service_description=service_desc or None,
             )
 
         except Exception as e:

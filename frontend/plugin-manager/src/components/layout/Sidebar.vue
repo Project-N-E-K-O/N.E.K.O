@@ -1,7 +1,7 @@
 <template>
   <nav class="sidebar">
     <div class="sidebar-brand">
-      <img src="@/assets/neko-logo.png" alt="N.E.K.O" class="sidebar-brand__logo" />
+      <img src="@/assets/neko-logo.png" alt="N.E.K.O" class="sidebar-brand__logo" draggable="false" />
       <span class="sidebar-brand__text">N.E.K.O</span>
     </div>
     <div class="sidebar-nav">
@@ -66,7 +66,7 @@ const navItems = computed(() => [
   { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
   { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
-  { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs') },
+  { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs'), guideId: 'sidebar-server-logs' },
 ])
 
 function isRouteActive(path: string): boolean {

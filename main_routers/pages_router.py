@@ -1,9 +1,34 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Pages Router
 
 Handles HTML page rendering endpoints.
+
+URL convention: routes declared WITHOUT trailing slash. The literal root
+``@router.get("/")`` is the only legitimate trailing-slash route in the entire
+codebase (it serves ``index.html``); the lint exempts it explicitly. Every
+other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')``,
+etc. See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
+
+import time
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -12,11 +37,154 @@ from .shared_state import get_templates
 
 router = APIRouter(tags=["pages"])
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
+    path
+    for pattern in ("**/*.js", "**/*.json")
+    for path in (_PROJECT_ROOT / "static/tutorial").glob(pattern)
+))
+_YUI_GUIDE_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/css/index.css",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day4-companion-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day5-personalization-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day6-agent-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day7-graduation-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/steps.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",
+    _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
+    _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
+    _PROJECT_ROOT / "static/tutorial/core/round-prelude-controller.js",
+    _PROJECT_ROOT / "static/tutorial/core/universal-manager.js",
+    _PROJECT_ROOT / "static/avatar-performance-stage.js",
+    _PROJECT_ROOT / "static/i18n-i18next.js",
+    _PROJECT_ROOT / "static/app-auto-goodbye.js",
+    _PROJECT_ROOT / "static/app-ui.js",
+    _PROJECT_ROOT / "static/common_ui.js",
+    _PROJECT_ROOT / "static/common-ui-hud.js",
+    _PROJECT_ROOT / "static/app-react-chat-window.js",
+    _PROJECT_ROOT / "static/app-chat-export.js",
+    _PROJECT_ROOT / "static/avatar-ui-buttons.js",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-4.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-5.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat_model_change.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/chat-minimized-yarn-ball.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cloud-thought-bubble.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cloud-thought-bubble-pop.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/sleeping-zzz.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/catnip-pouch.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/fish-cookie.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/toy-mouse.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-click.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice1.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice2.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice3.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-funny.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep1.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep2.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep1.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep2.mp3",
+    _PROJECT_ROOT / "static/css/character_card_manager.css",
+    _PROJECT_ROOT / "static/js/character_card_manager.js",
+    _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
+    _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
+    _PROJECT_ROOT / "static/css/card_maker.css",
+    _PROJECT_ROOT / "static/js/card_maker.js",
+    _PROJECT_ROOT / "static/css/model_manager.css",
+    _PROJECT_ROOT / "static/js/model_manager.js",
+    *_TUTORIAL_RUNTIME_ASSET_PATHS,
+)
+_STATIC_ASSET_CACHE_TTL = 30.0
+_static_asset_version_cache: tuple[float, str] = (0.0, "0")
+_REACT_CHAT_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
+    _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
+    _PROJECT_ROOT / "static/app-interpage.js",
+    _PROJECT_ROOT / "static/app-react-chat-window.js",
+    _PROJECT_ROOT / "static/app-chat-adapter.js",
+    _PROJECT_ROOT / "static/app-buttons.js",
+    _PROJECT_ROOT / "static/icons/edit_tool_unified.png",
+    _PROJECT_ROOT / "static/icons/chat_sugar1.png",
+    _PROJECT_ROOT / "static/icons/chat_sugar2.png",
+    _PROJECT_ROOT / "static/icons/chat_sugar3.png",
+    _PROJECT_ROOT / "static/icons/chat_sugar1_cursor.png",
+    _PROJECT_ROOT / "static/icons/chat_sugar2_cursor.png",
+    _PROJECT_ROOT / "static/icons/cat_claw1.png",
+    _PROJECT_ROOT / "static/icons/cat_claw2.png",
+    _PROJECT_ROOT / "static/icons/cat_claw1_cursor.png",
+    _PROJECT_ROOT / "static/icons/cat_claw2_cursor.png",
+    _PROJECT_ROOT / "static/icons/chat_hammer1.png",
+    _PROJECT_ROOT / "static/icons/chat_hammer2.png",
+    _PROJECT_ROOT / "static/icons/chat_hammer1_cursor.png",
+    _PROJECT_ROOT / "static/icons/chat_hammer2_cursor.png",
+)
+_REACT_CHAT_ASSET_CACHE_TTL = 30.0
+_react_chat_asset_version_cache: tuple[float, str] = (0.0, "0")
+
 
 def _vrm_defaults_ctx() -> dict:
-    """返回 VRM 光照默认值，供 Jinja2 模板注入到 <script> 中。"""
+    """Return VRM lighting defaults for Jinja2 templates to inject into <script>."""
     from config import DEFAULT_VRM_LIGHTING
     return {"vrm_defaults": dict(DEFAULT_VRM_LIGHTING)}
+
+
+def _static_assets_ctx() -> dict:
+    """Return the unified cache version for template static assets."""
+    from config import APP_VERSION
+
+    global _static_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _static_asset_version_cache
+    if now - cached_at < _STATIC_ASSET_CACHE_TTL:
+        return {"static_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _YUI_GUIDE_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _static_asset_version_cache = (now, version)
+    return {"static_asset_version": version}
+
+
+def _react_chat_assets_ctx() -> dict:
+    """Return the unified cache version for React Chat static assets."""
+    global _react_chat_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _react_chat_asset_version_cache
+    if now - cached_at < _REACT_CHAT_ASSET_CACHE_TTL:
+        return {"react_chat_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _REACT_CHAT_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = str(latest_mtime or 0)
+    _react_chat_asset_version_cache = (now, version)
+    return {"react_chat_asset_version": version}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -25,33 +193,36 @@ async def get_default_index(request: Request):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
     })
 
 
 def _render_model_manager(request: Request):
-    """渲染模型管理器页面的内部实现"""
+    """Internal implementation for rendering the model manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/model_manager.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
 @router.get("/l2d", response_class=HTMLResponse)
 async def get_l2d_manager(request: Request):
-    """渲染模型管理器页面(兼容旧路由)"""
+    """Render the model manager page (legacy route compatibility)."""
     return _render_model_manager(request)
 
 
 @router.get("/model_manager", response_class=HTMLResponse)
 async def get_model_manager(request: Request):
-    """渲染模型管理器页面"""
+    """Render the model manager page."""
     return _render_model_manager(request)
 
 
 @router.get("/live2d_parameter_editor", response_class=HTMLResponse)
 async def live2d_parameter_editor(request: Request):
-    """Live2D参数编辑器页面"""
+    """Live2D parameter editor page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
         "request": request
@@ -68,30 +239,43 @@ async def soccer_demo(request: Request):
     })
 
 
+@router.get("/basketball_demo", response_class=HTMLResponse)
+async def basketball_demo(request: Request):
+    """Basketball shooting challenge mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/basketball_demo.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)
 async def live2d_emotion_manager(request: Request):
-    """Live2D情感映射管理器页面"""
+    """Live2D emotion mapping manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
 @router.get("/vrm_emotion_manager", response_class=HTMLResponse)
 async def vrm_emotion_manager(request: Request):
-    """VRM情感映射管理器页面"""
+    """VRM emotion mapping manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/vrm_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
 @router.get("/mmd_emotion_manager", response_class=HTMLResponse)
 async def mmd_emotion_manager(request: Request):
-    """MMD情感映射管理器页面"""
+    """MMD emotion mapping manager page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/mmd_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -103,10 +287,11 @@ async def voice_clone_page(request: Request):
 
 @router.get("/api_key", response_class=HTMLResponse)
 async def api_key_settings(request: Request):
-    """API Key 设置页面"""
+    """API key settings page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/api_key_settings.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -121,24 +306,35 @@ async def chara_manager_redirect(request: Request):
 @router.get('/character_card_manager', response_class=HTMLResponse)
 async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/character_card_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/character_card_manager.html", {
+        "request": request,
+        "lanlan_name": lanlan_name,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/cloudsave_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/cloudsave_manager.html", {
+        "request": request,
+        "lanlan_name": lanlan_name,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse('templates/memory_browser.html', {"request": request})
+    return templates.TemplateResponse('templates/memory_browser.html', {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cookies_login', response_class=HTMLResponse)
 async def cookies_login_page(request: Request):
-    """媒体凭证获取页面"""
+    """Media credential acquisition page."""
     templates = get_templates()
     return templates.TemplateResponse('templates/cookies_login.html', {"request": request})
 
@@ -146,52 +342,87 @@ async def cookies_login_page(request: Request):
 
 @router.get("/chat", response_class=HTMLResponse)
 async def get_chat_page(request: Request):
-    """Chat 独立窗口页面"""
+    """Standalone chat window page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/chat.html", {"request": request, **_vrm_defaults_ctx()})
+    return templates.TemplateResponse("templates/chat.html", {
+        "request": request,
+        "initial_chat_surface_mode": "compact",
+        "initial_chat_host_kind": "compact",
+        **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
+
+
+@router.get("/chat_full", response_class=HTMLResponse)
+async def get_chat_full_page(request: Request):
+    """Web-only full chat window page."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/chat.html", {
+        "request": request,
+        "initial_chat_surface_mode": "full",
+        "initial_chat_host_kind": "full",
+        **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
+
+
+@router.get("/web_chat_compact", response_class=HTMLResponse)
+async def get_web_chat_compact_page(request: Request):
+    """Open the home page with React Chat initialized in compact mode."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/index.html", {
+        "request": request,
+        "initial_chat_surface_mode": "compact",
+        **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
 
 
 @router.get("/subtitle", response_class=HTMLResponse)
 async def get_subtitle_page(request: Request):
-    """Subtitle 独立窗口页面"""
+    """Standalone subtitle window page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/subtitle.html", {"request": request})
 
 
 @router.get("/agenthud", response_class=HTMLResponse)
 async def get_agenthud_page(request: Request):
-    """AgentHUD 独立窗口页面"""
+    """Standalone AgentHUD window page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
 @router.get("/card_maker", response_class=HTMLResponse)
 async def get_card_maker_page(request: Request):
-    """卡面制作页面（独立加载模型并可调整构图）"""
+    """Card-face maker page (loads the model standalone with adjustable composition)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
 @router.get("/jukebox", response_class=HTMLResponse)
 async def get_jukebox_page(request: Request):
-    """Jukebox 点歌台独立窗口页面（Electron 加载）"""
+    """Standalone jukebox window page (loaded by Electron)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/jukebox.html", {"request": request})
 
 
 @router.get("/jukebox/manager", response_class=HTMLResponse)
 async def get_jukebox_manager_page(request: Request):
-    """Jukebox 管理器独立窗口页面 (从点歌台打开)"""
+    """Standalone jukebox manager window page (opened from the jukebox)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/jukebox_manager.html", {"request": request})
 
 
 @router.get("/toast", response_class=HTMLResponse)
 async def get_toast_page(request: Request):
-    """Toast 通知独立窗口页面（Electron 加载）"""
+    """Standalone toast notification window page (loaded by Electron)."""
     templates = get_templates()
     return templates.TemplateResponse("templates/toast.html", {"request": request})
 
@@ -204,4 +435,6 @@ async def get_index(request: Request, lanlan_name: str):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
     })

@@ -1,8 +1,67 @@
 {
   "room_id": 0,
-  "interval_seconds": 15,
+  "interval_seconds": 20,
   "target_lanlan": "",
   "danmaku_max_length": 20,
   "master_bili_uid": 0,
-  "master_bili_name": ""
+  "master_bili_name": "",
+  "background_llm": {
+    "enabled": true,
+    "cloud": {
+      "url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "api_key": ""
+    },
+    "window_size": 20,
+    "max_samples": 30,
+    "gift_window_size": 5,
+    "gift_cooldown": 15,
+    "agent": {
+      "push_cooldown": 12,
+      "silent_push_after": 300,
+      "standby_threshold": 5,
+      "recovery_interval": 30,
+      "memory_ttl": 3600
+    },
+    "neko_name": "",
+    "knowledge_context": "",
+    "user_profile": "",
+    "prompt_template": "",
+    "event_notify": {
+      "cooldowns": {
+        "welcome": 10,
+        "follow": 30,
+        "live_status": 60,
+        "gift": 5,
+        "sc": 3,
+        "guard_buy": 30,
+        "entry_effect": 10,
+        "like": 60,
+        "ranking": 120,
+        "lottery": 10,
+        "notice": 30
+      },
+      "gift_min_rmb": 0,
+      "priority": {
+        "welcome": 2,
+        "follow": 3,
+        "live": 6,
+        "gift": 9,
+        "sc": 9,
+        "guard_buy": 7,
+        "entry_effect": 4,
+        "like": 1,
+        "ranking": 3,
+        "lottery": 5,
+        "block": 4,
+        "notice": 3,
+        "watched": 1
+      },
+      "templates": {
+        "welcome": "欢迎 {user_name} 进入直播间！",
+        "follow": "感谢 {user_name} 关注主播！",
+        "live_start": "主播开播啦！"
+      }
+    }
+  }
 }

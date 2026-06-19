@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -31,6 +32,44 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "plugin_e2e" in item.keywords:
             item.add_marker(skip_marker)
+
+
+@pytest.fixture(autouse=True)
+def _disable_galgame_rapidocr_warmup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op RapidOcrBackend.warmup_async so tests don't oversubscribe cores via daemon ONNX threads."""
+    try:
+        from plugin.plugins.galgame_plugin.ocr_reader import RapidOcrBackend
+    except Exception:
+        return
+    monkeypatch.setattr(RapidOcrBackend, "warmup_async", lambda self, logger=None: None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_study_auto_open_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op study_companion's auto-open-UI launcher.
+
+    ``auto_open_ui`` defaults to True, so any test that starts the plugin would
+    otherwise call ``os.startfile`` / ``xdg-open`` and spawn a real browser tab
+    (e.g. a ``pytest -k study`` run popping ~20 tabs at the plugin UI URL).
+    """
+    try:
+        from plugin.plugins import study_companion as _study
+    except Exception:
+        return
+    monkeypatch.setattr(_study, "_open_url_in_browser", lambda url: None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_galgame_runtime_root(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = Path(str(request.node.fspath))
+    if "galgame" not in str(path):
+        return
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +125,11 @@ def plugin_test_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(runs_router)
     return app
+
+
+@pytest.fixture(scope="session")
+def galgame_i18n_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins/galgame_plugin/i18n"
 
 
 @pytest.fixture

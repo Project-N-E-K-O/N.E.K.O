@@ -878,6 +878,14 @@ class VRMInteraction {
         const renderer = this.manager.renderer;
         if (!scene || !vrm || !camera || !renderer) return false;
 
+        const recordDisplaySwitchMiss = () => {
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss === 'function') {
+                window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss('vrm');
+            }
+        };
+        let displaySwitchAttempted = false;
+
         try {
             // 1. 计算模型在当前窗口中的屏幕空间中心点（像素）
             vrm.scene.updateMatrixWorld(true);
@@ -918,10 +926,6 @@ class VRMInteraction {
             const modelCenterX = (modelMinX + modelMaxX) / 2 + canvasRect.left;
             const modelCenterY = (modelMinY + modelMaxY) / 2 + canvasRect.top;
 
-            // 2. 多屏幕检查
-            const displays = await window.electronScreen.getAllDisplays();
-            if (!displays || displays.length <= 1) return false;
-
             const windowWidth = window.innerWidth;
             const windowHeight = window.innerHeight;
             // 如果模型中心仍在当前窗口内，不切屏
@@ -930,10 +934,20 @@ class VRMInteraction {
                 return false;
             }
 
+            // 2. 多屏幕检查。第一版提示机制不以多屏数量为前置条件：
+            // 只要用户把模型中心拖出当前窗口但未完成切屏，就记一次 miss。
+            displaySwitchAttempted = true;
+            const displays = await window.electronScreen.getAllDisplays();
+            if (!displays || displays.length <= 1) {
+                recordDisplaySwitchMiss();
+                return false;
+            }
+
             // 3. 计算模型中心在整个桌面（screen）上的绝对坐标
             const currentDisplay = await window.electronScreen.getCurrentDisplay();
             if (!currentDisplay) {
                 console.warn('[VRM] 无法获取当前显示器信息');
+                recordDisplaySwitchMiss();
                 return false;
             }
             let currentScreenX = currentDisplay.screenX;
@@ -945,6 +959,7 @@ class VRMInteraction {
                     currentScreenX = currentDisplay.bounds.x;
                     currentScreenY = currentDisplay.bounds.y;
                 } else {
+                    recordDisplaySwitchMiss();
                     return false;
                 }
             }
@@ -971,13 +986,17 @@ class VRMInteraction {
                     break;
                 }
             }
-            if (!targetDisplay) return false;
+            if (!targetDisplay) {
+                recordDisplaySwitchMiss();
+                return false;
+            }
 
             console.log('[VRM] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
 
             const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
 
             if (!(result && result.success && !result.sameDisplay)) {
+                recordDisplaySwitchMiss();
                 return false;
             }
             console.log('[VRM] 屏幕切换成功:', result);
@@ -1012,10 +1031,15 @@ class VRMInteraction {
 
             await this._snapModelIntoScreen({ animate: true });
             await this._savePositionAfterInteraction();
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
+                window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('vrm');
+            }
 
             return true;
         } catch (error) {
             console.error('[VRM] 检测/切换屏幕时出错:', error);
+            if (displaySwitchAttempted) recordDisplaySwitchMiss();
             return false;
         }
     }

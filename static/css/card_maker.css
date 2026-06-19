@@ -157,7 +157,8 @@ body {
 
 #model-viewport #live2d-container,
 #model-viewport #vrm-container,
-#model-viewport #mmd-container {
+#model-viewport #mmd-container,
+#model-viewport #pngtuber-container {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -168,6 +169,19 @@ body {
     width: 100%;
     height: 100%;
     display: block;
+}
+
+#model-viewport #pngtuber-container .pngtuber-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+}
+
+#model-viewport #pngtuber-container .pngtuber-layered-canvas {
+    width: 100%;
+    height: 100%;
 }
 
 /* --- 左侧：卡片预览与编辑区域 --- */
@@ -352,30 +366,10 @@ body {
 
 #card-preview:active { cursor: grabbing; }
 
-#card-header-area {
-    height: calc(100% / 6);
-    background: #40C5F1;
-    display: flex;
-    align-items: center;
-    padding: 0 20px;
-    position: relative;
-    z-index: 1;
-}
-
-#card-preview-name {
-    color: white;
-    font-size: 20px;
-    font-weight: 700;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.25);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 #card-portrait-area {
     position: relative;
     width: 100%;
-    height: calc(100% - 100% / 6);
+    height: 100%;
     overflow: hidden;
     background: #daeef4;
 }
@@ -523,7 +517,17 @@ body {
 
 .btn-primary:hover { background: #35b0d8; transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1); }
 .btn-primary:active { transform: translateY(1px) scale(0.98); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary:disabled,
+.btn-secondary:disabled,
+#control-panel button:disabled,
+#control-panel input:disabled,
+#control-panel select:disabled,
+#control-panel textarea:disabled,
+.page-title-bar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
 
 .btn-secondary {
     background: rgba(64, 197, 241, 0.12);
@@ -618,6 +622,16 @@ body {
     background: rgba(179, 229, 252, 0.45);
 }
 
+.sticker-selection-hint {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #6a8a96;
+    background: rgba(64, 197, 241, 0.08);
+    border: 1px solid rgba(64, 197, 241, 0.18);
+    border-radius: 6px;
+    padding: 7px 9px;
+}
+
 .sticker-import-btn {
     border: 2px dashed #b3e5fc;
     color: #90a4ae;
@@ -628,6 +642,38 @@ body {
     border-color: #40C5F1;
     color: #40C5F1;
     background: rgba(179, 229, 252, 0.35);
+}
+
+.sticker-variant-item {
+    position: relative;
+}
+
+.sticker-variant-toggle-btn {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(64, 197, 241, 0.45);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.88);
+    color: #40C5F1;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s, transform 0.15s;
+}
+
+.sticker-variant-item:hover .sticker-variant-toggle-btn {
+    opacity: 1;
+}
+
+.sticker-variant-toggle-btn:hover {
+    background: #ffffff;
+    transform: scale(1.06);
 }
 
 .sticker-item img {
@@ -708,29 +754,39 @@ body {
 
 .sticker-placed {
     position: absolute;
-    pointer-events: auto;
-    cursor: grab;
+    pointer-events: none;
+    cursor: default;
     user-select: none;
-    outline: 2px solid transparent;
-    outline-offset: 2px;
     border-radius: 4px;
-    transition: outline-color 0.15s;
 }
 
-.sticker-placed:hover,
 .sticker-placed.selected {
-    outline-color: #40C5F1;
+    cursor: grab;
+    pointer-events: auto;
 }
 
 .model-focused .sticker-placed,
 .model-focused .sticker-placed:hover,
 .model-focused .sticker-placed.selected {
-    outline-color: transparent;
     pointer-events: none;
 }
 
-.sticker-placed:active {
+.sticker-placed.selected:active {
     cursor: grabbing;
+}
+
+.sticker-selection-frame {
+    position: absolute;
+    display: none;
+    border: 2px solid #40C5F1;
+    border-radius: 4px;
+    box-sizing: border-box;
+    pointer-events: none;
+    z-index: 99;
+}
+
+.sticker-selection-frame.visible {
+    display: block;
 }
 
 /* --- 贴纸旋转手柄 --- */
@@ -795,6 +851,34 @@ body {
 
 .lock-ratio-btn:hover {
     border-color: #40C5F1;
+}
+
+.sticker-variant-control-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    font-size: 12px;
+    padding: 6px 10px;
+    border: 1.5px solid rgba(64, 197, 241, 0.45);
+    border-radius: 6px;
+    background: rgba(64, 197, 241, 0.08);
+    color: #40C5F1;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+    user-select: none;
+    box-sizing: border-box;
+}
+
+.sticker-variant-control-btn:hover {
+    border-color: #40C5F1;
+    background: rgba(64, 197, 241, 0.16);
+}
+
+.sticker-variant-control-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 /* --- 滚动条 --- */
@@ -990,6 +1074,18 @@ body {
     border-left-color: #0f3460;
 }
 
+[data-theme="dark"] .btn-primary:disabled,
+[data-theme="dark"] .btn-secondary:disabled,
+[data-theme="dark"] #control-panel button:disabled,
+[data-theme="dark"] #control-panel input:disabled,
+[data-theme="dark"] #control-panel select:disabled,
+[data-theme="dark"] #control-panel textarea:disabled,
+[data-theme="dark"] .page-title-bar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+    filter: grayscale(0.6);
+}
+
 [data-theme="dark"] .btn-icon {
     color: #8899aa;
 }
@@ -1004,6 +1100,12 @@ body {
 
 [data-theme="dark"] .range-val {
     color: #8899aa;
+}
+
+[data-theme="dark"] .sticker-selection-hint {
+    color: #9fb3bf;
+    background: rgba(74, 163, 223, 0.08);
+    border-color: rgba(74, 163, 223, 0.22);
 }
 
 [data-theme="dark"] .range-unit {
@@ -1060,10 +1162,31 @@ body {
     color: #40C5F1;
 }
 
+[data-theme="dark"] .sticker-variant-toggle-btn {
+    border-color: rgba(74, 163, 223, 0.45);
+    background: rgba(22, 33, 62, 0.9);
+    color: #4aa3df;
+}
+
+[data-theme="dark"] .sticker-variant-toggle-btn:hover {
+    background: #20304f;
+}
+
 [data-theme="dark"] .lock-ratio-btn {
     border-color: #444;
     background: #2a2a3e;
     color: #666;
+}
+
+[data-theme="dark"] .sticker-variant-control-btn {
+    border-color: rgba(74, 163, 223, 0.45);
+    background: rgba(74, 163, 223, 0.08);
+    color: #4aa3df;
+}
+
+[data-theme="dark"] .sticker-variant-control-btn:hover {
+    border-color: #4aa3df;
+    background: rgba(74, 163, 223, 0.16);
 }
 
 [data-theme="dark"] .lock-ratio-btn.active {

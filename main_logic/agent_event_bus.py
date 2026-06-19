@@ -1,10 +1,25 @@
-"""
-用于 main_server <-> agent_server 通信的 ZeroMQ 事件总线。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-重要说明：这里使用 **同步** 的 zmq.Context + zmq.Socket，并通过后台
-守护线程执行 recv。原因是 zmq.asyncio.Socket.recv 依赖事件循环的
-fd 轮询（add_reader），而该机制在 Windows ProactorEventLoop 上不可用。
-发送侧使用 zmq.NOBLOCK，并在 asyncio 线程内调用（本地 TCP 延迟很低）。
+"""
+ZeroMQ event bus for main_server <-> agent_server communication.
+
+Important: this uses the **synchronous** zmq.Context + zmq.Socket, running
+recv on a background daemon thread. The reason is that zmq.asyncio.Socket.recv
+relies on the event loop's fd polling (add_reader), which is unavailable on
+the Windows ProactorEventLoop. The send side uses zmq.NOBLOCK and is called
+from the asyncio thread (local TCP latency is very low).
 """
 
 import asyncio
@@ -52,7 +67,7 @@ _ack_waiters_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 class MainServerAgentBridge:
-    """运行于 main_server 进程内，绑定 PUB、PUSH(analyze)、PULL(agent→main)。"""
+    """Runs inside the main_server process; binds PUB, PUSH(analyze), PULL(agent→main)."""
 
     def __init__(self, on_agent_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_agent_event = on_agent_event
@@ -173,7 +188,7 @@ class MainServerAgentBridge:
 # ---------------------------------------------------------------------------
 
 class AgentServerEventBridge:
-    """运行于 agent_server 进程内，连接 SUB、PULL(analyze)、PUSH(agent→main)。"""
+    """Runs inside the agent_server process; connects SUB, PULL(analyze), PUSH(agent→main)."""
 
     def __init__(self, on_session_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_session_event = on_session_event
@@ -222,6 +237,47 @@ class AgentServerEventBridge:
         )
         self._analyze_recv_thread.start()
         logger.info("[EventBus] Agent bridge started (pid=%s)", os.getpid())
+
+    async def stop(self) -> None:
+        """Shut down ZMQ resources and receiver threads."""
+        self._stop.set()
+        self.ready = False
+
+        recv_threads = [
+            thread
+            for thread in (self._recv_thread, self._analyze_recv_thread)
+            if thread is not None
+        ]
+        if recv_threads:
+            await asyncio.gather(
+                *(asyncio.to_thread(thread.join, 2.0) for thread in recv_threads),
+                return_exceptions=True,
+            )
+        self._recv_thread = None
+        self._analyze_recv_thread = None
+
+        for sock_name in ("sub", "analyze_pull", "push"):
+            sock = getattr(self, sock_name, None)
+            if sock is None:
+                continue
+            try:
+                sock.close(linger=0)
+            except Exception as exc:
+                logger.debug("[EventBus] Agent bridge socket %s close error: %s", sock_name, exc)
+            setattr(self, sock_name, None)
+
+        if self.ctx is not None:
+            ctx = self.ctx
+            self.ctx = None
+            try:
+                await asyncio.wait_for(asyncio.to_thread(ctx.term), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("[EventBus] Agent bridge ctx.term timed out, skipping")
+            except Exception as exc:
+                logger.debug("[EventBus] Agent bridge ctx.term error: %s", exc)
+
+        self._owner_loop = None
+        logger.debug("[EventBus] Agent bridge stopped")
 
     # -- 后台接收线程 -------------------------------------------------------
 
@@ -316,6 +372,107 @@ def notify_analyze_ack(event_id: str) -> None:
     loop.call_soon_threadsafe(_resolve)
 
 
+def notify_voice_bridge_result(event_id: str, result: Dict[str, Any]) -> None:
+    """Compatibility sink for old voice bridge replies.
+
+    Voice transcript plugin dispatch is best-effort telemetry now: main never
+    waits for, trusts, or applies plugin-produced actions to the current turn.
+    Late replies from an older agent are intentionally ignored.
+    """
+    if event_id:
+        logger.debug("[EventBus] ignored voice bridge result: event_id=%s", event_id)
+
+
+# ---------------------------------------------------------------------------
+#  Layering-inversion sinks: lower layers (main_logic) emit, higher layers
+#  (plugin / main_routers) register.
+#
+#  Why this exists
+#  ---------------
+#  ``main_logic.core`` used to ``import`` from ``plugin.core.state`` and
+#  ``main_routers.system_router`` to publish user utterances and to consult
+#  the mini-game-invite keyword matcher. Both are layering inversions
+#  (main_logic L2 → plugin L4 / main_routers L3) — banned by
+#  ``scripts/check_module_layering.py``.
+#
+#  Now main_logic emits via ``dispatch_*`` and the higher layers attach via
+#  ``register_*``. The CONSUMERS self-register at module-import time
+#  (plugin/core/state.py and main_routers/system_router.py), so any context
+#  that loads those modules — even directly, without going through the
+#  ``app`` entrypoint — gets its sink wired automatically. This preserves
+#  the side-effect that direct ``main_logic.core`` consumers (testbench /
+#  ad-hoc scripts) used to enjoy via the previous chained import. The
+#  registries dedupe on identity, so ``app/runtime_bindings.py`` calling
+#  ``register_*`` again after the consumer module is loaded is a no-op.
+#
+#  If nothing is registered (e.g. memory_server entrypoint doesn't ship
+#  plugin runtime), the dispatchers silently no-op.
+# ---------------------------------------------------------------------------
+
+# Fire-and-forget user-utterance sink. Plugin's user-context bus subscribes
+# here. Multiple subscribers are allowed; per-sink errors are swallowed so
+# one misbehaving consumer cannot break the chat pipeline.
+_user_utterance_sinks: list[Callable[[str, Dict[str, Any]], None]] = []
+
+
+def register_user_utterance_sink(
+    fn: Callable[[str, Dict[str, Any]], None],
+) -> None:
+    """Subscribe to user-utterance events: ``fn(bucket: str, event: dict)``.
+
+    Dedupes on identity — re-registering the same callable is a no-op.
+    Important because both ``plugin.core.state`` (self-register on import)
+    and ``app.runtime_bindings`` (explicit wiring) call this for the same
+    function; without dedup, every utterance would fire twice.
+    """
+    if fn in _user_utterance_sinks:
+        return
+    _user_utterance_sinks.append(fn)
+
+
+def dispatch_user_utterance(bucket: str, event: Dict[str, Any]) -> None:
+    """Fan a user utterance out to every registered sink."""
+    for fn in _user_utterance_sinks:
+        try:
+            fn(bucket, event)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[EventBus] user_utterance sink raised: %s", exc)
+
+
+# First-hit-wins text-message hook with optional return value.
+# main_routers' mini-game-invite keyword matcher is the canonical consumer.
+_text_user_message_hooks: list[
+    Callable[[str, str], Optional[Dict[str, Any]]]
+] = []
+
+
+def register_text_user_message_hook(
+    fn: Callable[[str, str], Optional[Dict[str, Any]]],
+) -> None:
+    """Subscribe to text user-message events: ``fn(lanlan_name, text) -> dict?``.
+
+    First hook returning a truthy value wins; later hooks are skipped.
+    Dedupes on identity (see ``register_user_utterance_sink`` rationale).
+    """
+    if fn in _text_user_message_hooks:
+        return
+    _text_user_message_hooks.append(fn)
+
+
+def dispatch_text_user_message(
+    lanlan_name: str, text: str,
+) -> Optional[Dict[str, Any]]:
+    """Run hooks in registration order; return the first truthy result."""
+    for fn in _text_user_message_hooks:
+        try:
+            result = fn(lanlan_name, text)
+            if result:
+                return result
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[EventBus] text_user_message hook raised: %s", exc)
+    return None
+
+
 async def publish_analyze_request_reliably(
     lanlan_name: str,
     trigger: str,
@@ -325,7 +482,7 @@ async def publish_analyze_request_reliably(
     retries: int = 1,
     conversation_id: Optional[str] = None,
 ) -> bool:
-    """可靠发布 analyze_request：携带 event_id + ack，并支持短重试。"""
+    """Reliably publish analyze_request: carries event_id + ack, with short retries."""
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
 
@@ -402,3 +559,58 @@ async def publish_analyze_request_reliably(
             )
 
     return False
+
+
+async def publish_voice_transcript_observed_best_effort(
+    lanlan_name: str,
+    transcript: str,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Broadcast a realtime voice transcript to agent/plugins without waiting.
+
+    This is intentionally best-effort. Main voice handling must not be blocked
+    or controlled by plugins; plugin handlers may receive the event late, not at
+    all, or after it is no longer relevant.
+    """
+    text = str(transcript or "").strip()
+    if not text:
+        return False
+    event_id = uuid.uuid4().hex
+    event = {
+        "event_type": "voice_transcript_observed",
+        "event_id": event_id,
+        "lanlan_name": lanlan_name,
+        "transcript": text,
+        "metadata": dict(metadata or {}),
+    }
+    sent = await publish_session_event(event)
+    if not sent:
+        logger.debug(
+            "[EventBus] voice_transcript_observed not sent: no main bridge lanlan=%s",
+            lanlan_name,
+        )
+    return sent
+
+
+async def publish_voice_transcript_request_reliably(
+    lanlan_name: str,
+    transcript: str,
+    *,
+    timeout_s: float = 1.2,
+    retries: int = 0,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Backward-compatible wrapper for the old request API.
+
+    The old API waited for a plugin action. Main no longer waits for or applies
+    those actions, so callers get ``None`` after the best-effort broadcast is
+    queued. ``timeout_s`` and ``retries`` are accepted only for source
+    compatibility.
+    """
+    await publish_voice_transcript_observed_best_effort(
+        lanlan_name,
+        transcript,
+        metadata=metadata,
+    )
+    return None

@@ -1,4 +1,28 @@
-# 音乐路由
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Music Router
+
+Handles music search / playback / lyric proxy endpoints.
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
+"""
 
 import asyncio
 
@@ -58,17 +82,39 @@ def _patch_pyncm_async() -> None:
             logger.error("[Music] Failed to patch pyncm_async: %s", exc)
             return
 
-_patch_pyncm_async()
+# pyncm_async 仅用于网易云 VIP 直链播放，import 偏重（~0.15s）且不在启动/greeting
+# 链上，改成首次播放时再 import（含 <3.12 兼容补丁），由 module_warmup 预热。
+pyncm_async = None  # type: ignore[assignment]
+GetTrackAudio = None  # type: ignore[assignment,misc]
+_PYNCM_AVAILABLE: bool | None = None  # None = 尚未尝试导入
 
-try:
-    import pyncm_async
-    from pyncm_async.apis.track import GetTrackAudio
-    _PYNCM_AVAILABLE = True
-except Exception as _pyncm_err:
-    pyncm_async = None  # type: ignore[assignment]
-    GetTrackAudio = None  # type: ignore[assignment,misc]
-    _PYNCM_AVAILABLE = False
-    logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
+
+def _ensure_pyncm() -> bool:
+    """On first call, apply the patch and import pyncm_async, caching the result. Returns availability."""
+    global pyncm_async, GetTrackAudio, _PYNCM_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if _PYNCM_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if pyncm_async is not None and GetTrackAudio is not None:
+        _PYNCM_AVAILABLE = True
+        return True
+    _patch_pyncm_async()
+    try:
+        import pyncm_async as _pyncm
+        from pyncm_async.apis.track import GetTrackAudio as _GetTrackAudio
+        # 只补缺失的，保住测试可能注入的 mock。
+        if pyncm_async is None:
+            pyncm_async = _pyncm
+        if GetTrackAudio is None:
+            GetTrackAudio = _GetTrackAudio
+        _PYNCM_AVAILABLE = True
+    except Exception as _pyncm_err:
+        pyncm_async = None  # type: ignore[assignment]
+        GetTrackAudio = None  # type: ignore[assignment,misc]
+        _PYNCM_AVAILABLE = False
+        logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
+    return _PYNCM_AVAILABLE
 
 # ==================== 音乐代理缓存 ====================
 # 仅缓存小文件（<10MB），大文件流式传输
@@ -83,9 +129,9 @@ STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # 10MB 以上流式传输
 @router.get("/api/music/proxy")
 async def proxy_music(url: str):
     """
-    通用音乐代理，解决跨域和 Referer 限制问题。
-    - <10MB: 完整缓存，快速返回
-    - ≥10MB: 流式传输，边下边播
+    Generic music proxy that works around CORS and Referer restrictions.
+    - <10MB: fully cached, fast response
+    - ≥10MB: streamed, play while downloading
     """
     cache_key = url
     if cache_key in MUSIC_PROXY_CACHE:
@@ -224,7 +270,7 @@ async def proxy_music(url: str):
 
 
 async def _stream_music(url, headers, max_size):
-    """流式生成器：内部创建独立 client，自己处理重定向和流式读取"""
+    """Streaming generator: creates an independent client internally and handles redirects and streamed reads itself."""
     client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
     try:
         current_url = url
@@ -264,8 +310,8 @@ async def _stream_music(url, headers, max_size):
 @router.get("/api/music/domains")
 async def get_music_domains():
     """
-    获取所有音乐源的域名列表，供前端白名单动态注册使用。
-    统一白名单池和爬虫池，自动把爬虫池加到白名单
+    Return the domain list of all music sources for the frontend to register in its dynamic whitelist.
+    Unifies the whitelist pool and crawler pool, automatically adding the crawler pool to the whitelist.
     """
     return {
         "success": True,
@@ -278,7 +324,7 @@ async def search_music(
     limit: int = Query(default=10, ge=1, le=50)
 ):
     """
-    智能音乐分发路由，统一调用 music_crawlers 中的 fetch_music_content。
+    Smart music dispatch route; uniformly calls fetch_music_content from music_crawlers.
     """
     query = query.strip()
     
@@ -328,14 +374,14 @@ async def search_music(
 @router.get("/api/music/play/netease/{song_id}")
 async def play_netease_music(song_id: str):
     """
-    网易云 VIP 音乐智能跳转路由：
-    利用后端 MUSIC_U Cookie 获取真实高音质/鉴权直链，通过 307 重定向至前端播放。
+    NetEase Cloud Music VIP smart-redirect route:
+    uses the backend MUSIC_U cookie to obtain the real high-quality / authenticated direct link, then 307-redirects the frontend to play it.
     """
     if not (song_id.isascii() and song_id.isdecimal()):
         return JSONResponse(content={"success": False, "error": "invalid song_id"}, status_code=400)
     song_id_int = int(song_id)
 
-    if not _PYNCM_AVAILABLE:
+    if not _ensure_pyncm():
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
         logger.warning("[音乐播放] pyncm_async 不可用，直接使用公开外链")
         return RedirectResponse(url=fallback_url)

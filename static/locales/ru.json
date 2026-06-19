@@ -2,12 +2,16 @@
     "common": {
         "load": "Загрузить",
         "minimize": "Свернуть",
+        "maximize": "Развернуть",
+        "restore": "Восстановить",
         "expand": "Развернуть",
         "close": "Закрыть",
         "save": "Сохранить",
         "cancel": "Отмена",
         "confirm": "Подтвердить",
         "next": "Далее",
+        "back": "Назад",
+        "retry": "Повторить",
         "ok": "ОК",
         "delete": "Удалить",
         "edit": "Редактировать",
@@ -40,17 +44,36 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Нейтральная"
+        "toneMappingNeutral": "Нейтральная",
+        "loadFailed": "Ошибка загрузки"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Модель по умолчанию восстановлена",
+        "resetToDefaultFailed": "Не удалось восстановить модель по умолчанию"
     },
     "autostartPrompt": {
-        "title": "Включить автозапуск N.E.K.O. при входе в систему?",
-        "message": "Когда вы в следующий раз включите компьютер, N.E.K.O. будет готова автоматически, и вам не придется запускать ее вручную.",
-        "note": "Настройка применяется только к текущему пользователю, и ее можно будет отключить позже.",
+        "title": "Запускать N.E.K.O. автоматически при старте?",
+        "message": "N.E.K.O. будет готова при следующем запуске компьютера.",
+        "note": "Позже это можно отключить.",
         "startNow": "Включить автозапуск",
-        "later": "Позже",
+        "later": "Напомнить позже",
         "never": "Больше не напоминать",
         "enableFailed": "Сейчас не удалось включить автозапуск. Попробуйте еще раз позже.",
         "requiresApproval": "Сначала разрешите автозапуск в настройках системы. После одобрения он включится."
+    },
+    "contextPrompt": {
+        "play": {
+            "title": "Можно посмотреть на экран вместе с тобой?",
+            "message": "Ты играешь / смотришь что-то. Я могу включить показ экрана для проактивных реплик и комментировать вместе с тем, что у тебя на экране. Включить?",
+            "accept": "Давай, включи",
+            "decline": "Не сейчас"
+        },
+        "work": {
+            "title": "Помолчать и не смотреть на экран?",
+            "message": "Похоже, ты сосредоточен на работе. Я могу отключить показ экрана для проактивных реплик — не буду отвлекать и подглядывать. Отключить?",
+            "accept": "Да, отключи показ экрана",
+            "decline": "Нет, оставь"
+        }
     },
     "tutorialPrompt": {
         "title": "Запустить обучение на главной странице?",
@@ -134,7 +157,7 @@
         "selectModelFolder": "Выберите папку с файлами модели Live2D",
         "live2dInitFailed": "Ошибка инициализации среды предпросмотра Live2D",
         "live2dPreviewLoaded": "Предпросмотр модели Live2D загружен успешно",
-        "live2dPreviewLoadFailed": "Ошибка загрузки предпросмотра модели Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "Не удалось загрузить предпросмотр модели Live2D: {{error}}",
         "searchAriaLabel": "Поиск по подпискам",
         "sortAriaLabel": "Порядок сортировки",
         "scrollTagsLeftAriaLabel": "Прокрутить теги влево",
@@ -185,6 +208,14 @@
         "uploadReady": "Готово к загрузке {{itemName}}",
         "pageDescription": "На этой странице можно просматривать, редактировать, загружать, импортировать и экспортировать карточки персонажей, а также управлять моделями Live2D и голосами в Мастерской Steam",
         "openVoiceClone": "Открыть в клонировании голоса",
+        "workshopAddCharacterCard": "Добавить карточку",
+        "workshopAddingCharacterCard": "Добавление...",
+        "unknownCharacterCard": "Неизвестная карточка персонажа",
+        "characterCardAlreadyExistsTitle": "Карточка уже существует",
+        "characterCardAlreadyExistsMessage": "Карточка персонажа уже существует: {{names}}",
+        "workshopCharacterAdded": "Карточка персонажа добавлена: {{names}}",
+        "workshopCharacterNotFound": "В этой подписке не найдена карточка персонажа. Убедитесь, что загрузка содержимого завершена.",
+        "workshopCharacterAddFailed": "Не удалось добавить карточку персонажа: {{error}}",
         "configurePath": "Настроить путь",
         "localModPathConfig": "Настройка пути к локальным модам",
         "localModFolder": "Путь к папке локальных модов",
@@ -213,6 +244,12 @@
         "voiceReferencePrefixPlaceholder": "Только латинские буквы и цифры, не более 10 символов",
         "voiceReferenceLanguage": "Язык эталонного голоса",
         "voiceReferenceProviderHint": "Рекомендуемый провайдер",
+        "voiceReferenceInvalidFormat": "Эталонный голос поддерживает только файлы mp3 или wav",
+        "voiceReferenceTooLarge": "Эталонный голос должен быть не больше 20 МБ",
+        "voiceReferenceWriting": "Загрузка эталонного голоса...",
+        "voiceReferenceUploadFailed": "Не удалось загрузить эталонный голос",
+        "voiceReferenceCleanupFailed": "Не удалось очистить эталонный голос",
+        "voiceReferenceTempOnlySkipped": "Эталонный голос можно загрузить только из временной папки Workshop, созданной при упаковке карточки персонажа, поэтому этот образец пропущен.",
         "uploadTip": "Вы можете выбрать предметы в «Управлении локальными предметами» для автозаполнения путей, или ввести полные пути к папке содержимого и изображению предпросмотра вручную.",
         "search": "Поиск:",
         "uploadSuccess": "Загрузка успешна!",
@@ -382,6 +419,7 @@
         "loadingItemDetailsById": "Загрузка деталей предмета ID: {{id}}...",
         "characterCardsRefreshed": "Список карточек обновлён, всего {{count}} карточек",
         "characterCardsRefreshedEmpty": "Список карточек обновлён, карточки отсутствуют",
+        "characterCardsRefreshFailed": "Не удалось обновить список: {{error}}",
         "requiredFieldsMissing": "Заполните следующие обязательные поля: {{fields}}",
         "refreshLive2DPreview": "Обновить предпросмотр Live2D",
         "removeTag": "Удалить тег",
@@ -517,10 +555,10 @@
         "steamNotRunningTitle": "Steam не запущен",
         "steamNotRunningMessage": "Клиент Steam не запущен или не выполнен вход.\n\nДля работы Мастерской необходим клиент Steam:\n1. Скачайте и установите клиент Steam\n2. Запустите Steam и войдите в свой аккаунт\n3. Откройте эту страницу заново",
         "addNewCatgirl": "Добавить нового персонажа",
-        "searchCharacterCards": "Поиск карточек...",
-        "cardView": "Карточки",
-        "listView": "Список",
-        "noCardImage": "Изображение\nне задано"
+        "noCardImage": "Обложка карты пока не настроена",
+        "searchCharacterCards": "Поиск карточек персонажей...",
+        "cardView": "Вид карточек",
+        "listView": "Список"
     },
     "dialogs": {
         "confirmLeave": "Подтвердить выход",
@@ -539,12 +577,13 @@
         "API_POLICY_VIOLATION": "💥 Нарушение политики или блокировка безопасности: {{msg}}",
         "API_1008_FALLBACK": "💥 Соединение разорвано (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Голосовое соединение разорвано из-за неактивности, автоматическое переподключение...",
+        "FREE_API_AUTO_CLOSE_VOICE": "Бесплатный API автоматически закрыл голосовой сеанс после долгого отсутствия речи",
         "API_UNKNOWN_ERROR": "💥 Ошибка API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Сервер памяти не запущен! Сначала запустите memory_server.py.",
         "MEMORY_SERVER_CRASHED": "🧠 Сервер памяти (порт {{port}}) аварийно завершился. Перезапустите memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 Служба памяти восстанавливается, подождите {{wait_time}} сек.",
         "CONNECTION_REFUSED": "💥 Подключение к серверу отклонено. Проверьте API Key и сетевое подключение.",
-        "API_KEY_REJECTED": "💥 API Key отклонён сервером. Убедитесь, что API Key соответствует выбранной модели.",
+        "API_KEY_REJECTED": "Предоставленный API Key недействителен. Проверьте текущие настройки API.",
         "API_RATE_LIMIT_SESSION": "💥 Слишком частые запросы API. Повторите попытку позже.",
         "LLM_CONNECTION_FAILED": "💥 Ошибка подключения к LLM API. Проверьте сеть и настройки API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Соединение аварийно закрыто: {{error}}",
@@ -569,9 +608,13 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 Ошибка подключения LLM ({{error_type}}), исчерпано {{max_retries}} попыток: {{error}}",
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
-        "PROACTIVE_GEN_FAILED": "💥 Ошибка генерации проактивного ответа: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} переходит на другой терминал...",
-        "RELOAD_PAGE": "Голос обновлён, страница скоро обновится",
+        "RELOAD_PAGE": "Настройки обновлены, страница скоро обновится",
+        "RELOAD_PAGE_VOICE": "Голос обновлён, страница скоро обновится",
+        "RELOAD_PAGE_VOICE_STYLE": "Тембр голоса обновлён, страница скоро обновится",
+        "RELOAD_PAGE_PERSONA": "Настройки личности обновлены, страница скоро обновится",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Настройки персонажа обновлены, страница скоро обновится",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Персонаж из облачного сохранения обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Управление браузером автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Ошибка проверки подключения LLM Лапки Неко",
@@ -594,11 +637,35 @@
         "TTS_WATERMARK_DETECTED": "⚠️ Обнаружен водяной знак CogTTS (звуковой сигнал). Чтобы отключить водяной знак, настройте это вручную в консоли Zhipu.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL GPT-SoVITS API не настроен. Включите и настройте пользовательский TTS в настройках API.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "URL GPT-SoVITS API должен быть localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Аудио API-ключ (AUDIO_API_KEY) не настроен",
+        "TTS_AUDIO_API_KEY_MISSING": "API Key выбранного голосового провайдера не настроен. Добавьте его в настройках API.",
         "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
-        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API",
+        "AGENT_NO_PLUGINS_FOUND": "Пользовательские плагины не найдены",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw недоступен: {{reason}}",
+        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw включен, ожидаем готовности службы подключения...",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Не удалось включить OpenClaw: модуль не загружен",
+        "AGENT_OPENCLAW_UNAVAILABLE": "Не удалось включить OpenClaw: {{reason}}",
+        "AGENT_PLUGIN_SERVER_ERROR": "Не удалось запустить сервер пользовательских плагинов",
+        "CURRENT_CATGIRL_IN_USE": "Нельзя выполнить это действие с активным персонажем «{{character_name}}». Сначала переключитесь на другого персонажа",
+        "DIRECT_LINK_INACCESSIBLE": "Прямая ссылка недоступна",
+        "DOWNLOAD_FAILED": "Не удалось скачать аудио",
+        "FILE_TOO_LARGE": "Файл слишком большой",
+        "GAME_ROUTE_ENDED": "Игровой маршрут завершён",
+        "GAME_ROUTE_LLM_FAILED": "Игровой LLM не вернул валидный ответ ({{error}})",
+        "GAME_ROUTE_MEDIA_SKIPPED": "Кадры экрана/камеры пропущены во время игры",
+        "GAME_VOICE_STT_GATE_ACTIVE": "Голосовой перехват игры активен",
+        "INTERNAL_IMPORT_ERROR": "Не удалось загрузить внутренний компонент: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "Структура локальной конфигурации персонажа недействительна",
+        "MEMORY_SERVER_RELEASE_FAILED": "Не удалось освободить дескриптор памяти персонажа, повторите позже",
+        "MINIMAX_API_KEY_MISSING": "MiniMax API Key не настроен. Сначала укажите его в настройках",
+        "PRIVATE_IP_NOT_ALLOWED": "Прямая ссылка не может указывать на частный IP",
+        "RESPONSE_LENGTH_TRUNCATED": "Ответ слишком длинный, автоматически обрезан до последнего полного предложения",
+        "STEAM_UNSUBSCRIBE_FAILED": "Не удалось отписаться в Steam",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "Генерация текста прервана ({{error_type}}); частичный вывод сохранён",
+        "TTS_PROVIDER_INVALID": "Неверный TTS провайдер: {{provider}}. Поддерживаемые: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "Идёт обслуживание хранилища, операция приостановлена. Повторите позже"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",
@@ -630,6 +697,29 @@
         "cropTabRecapturing": "Повторный захват...",
         "cropConfirmTitle": "Подтвердить обрезку",
         "cropClearSelectionTitle": "Очистить выделение",
+        "cropToolSelect": "Выбор / перемещение",
+        "cropToolRect": "Прямоугольник",
+        "cropToolEllipse": "Эллипс",
+        "cropToolArrow": "Стрелка",
+        "cropToolPen": "Карандаш",
+        "cropToolHighlight": "Маркер",
+        "cropToolText": "Текст",
+        "cropToolMosaic": "Мозаика",
+        "cropUndo": "Отменить",
+        "cropRedo": "Повторить",
+        "cropSave": "Сохранить в файл",
+        "cropColorRed": "Красный",
+        "cropColorYellow": "Жёлтый",
+        "cropColorGreen": "Зелёный",
+        "cropColorBlue": "Синий",
+        "cropColorWhite": "Белый",
+        "cropColorBlack": "Чёрный",
+        "cropToolWatermark": "Водяной знак",
+        "cropFontSize": "Размер",
+        "cropOpacity": "Непрозрачность",
+        "cropMosaicSize": "Зерно",
+        "cropWatermarkText": "Текст",
+        "cropWatermarkDefault": "Водяной знак",
         "avatarPreview": "Показать текущий аватар",
         "avatarPreviewLabel": "Текущий аватар",
         "avatarPreviewCardTitle": "Текущий аватар",
@@ -650,6 +740,8 @@
         "avatarPreviewFailed": "Не удалось создать аватар",
         "avatarCropperTitle": "Настройка области обрезки аватара",
         "avatarPreviewCropping": "Настройте область обрезки",
+        "avatarCropRetake": "Снять заново",
+        "avatarCropRetaking": "Повторная съемка...",
         "avatarPreviewCropCancelled": "Ручная обрезка отменена. Аватар остаётся прежним.",
         "avatarCropMoveUp": "Вверх",
         "avatarCropMoveDown": "Вниз",
@@ -661,6 +753,7 @@
         "avatarCropCancel": "Отмена",
         "avatarCropSave": "Сохранить",
         "emptyState": "Сообщения появятся здесь после подключения чата.",
+        "companionEmptyState": "(Я рядом с тобой.)",
         "messageStreaming": "Генерация",
         "messageFailed": "Ошибка отправки",
         "reactWindowOpen": "Открыть окно чата",
@@ -668,6 +761,8 @@
         "reactWindowClose": "Закрыть окно чата",
         "reactWindowMinimize": "Свернуть окно чата",
         "reactWindowMinimizeShort": "Свернуть",
+        "reactWindowCompact": "Переключить на компактный чат",
+        "reactWindowCompactShort": "Компактный",
         "reactWindowRestore": "Восстановить окно чата",
         "reactWindowRestoreShort": "Восстановить",
         "reactWindowMountFailed": "Не удалось встроить окно чата",
@@ -684,10 +779,39 @@
         "toolLollipop": "Леденец",
         "toolFist": "Кошачья лапка",
         "toolHammer": "Молоток",
+        "avatarToolsButtonAriaLabel": "Инструменты аватара",
+        "clearCursorToolAriaLabel": "Восстановить курсор",
+        "avatarToolQuickbarAriaLabel": "Быстрые инструменты аватара",
+        "avatarToolQuickbarEmpty": "Нет быстрых инструментов",
+        "avatarToolEdit": "Изменить быстрые инструменты",
+        "avatarToolSlotFull": "Сначала снимите один инструмент.",
+        "avatarToolManagerTitle": "Управление инструментами",
+        "avatarToolManagerSubtitle": "Выберите до 3 быстрых инструментов.",
+        "avatarToolManagerClose": "Закрыть",
+        "avatarToolCurrentTools": "Текущие инструменты",
+        "avatarToolEmptySlot": "Пустой слот",
+        "avatarToolRemove": "Удалить",
+        "avatarToolLibrary": "Библиотека инструментов",
+        "avatarToolEquipped": "Уже выбрано",
+        "avatarToolEquip": "Добавить",
+        "avatarToolNoAvailableTools": "Нет доступных инструментов",
+        "avatarToolCancel": "Отмена",
+        "avatarToolSave": "Сохранить изменения",
         "attachmentButtonAriaLabel": "Вложение",
         "jukebox": "Музыкальный автомат",
         "jukeboxLabel": "Музыкальный автомат",
+        "galgameToggle": "Режим GalGame",
+        "galgameToggleAriaLabel": "Переключить режим вариантов GalGame",
+        "galgameLoading": "Создание вариантов ответа…",
         "exportConversation": "Экспортировать диалог",
+        "compactExportHistory": "История",
+        "compactHistoryToggleOpen": "Показать историю",
+        "compactHistoryToggleClose": "Скрыть историю",
+        "compactHistoryControlsShow": "Показать действия истории",
+        "compactHistoryControlsHide": "Скрыть действия истории",
+        "compactExportControlsCollapse": "Скрыть элементы выбора",
+        "compactExportControlsExpand": "Показать элементы выбора",
+        "exportAction": "Экспорт",
         "exportSelected": "Экспортировать выбранное",
         "exportPreviewTitle": "Предпросмотр экспорта",
         "exportPreviewSummary": "Выбрано: {{count}}",
@@ -767,7 +891,12 @@
         "volumeHintDetecting": "Определение входного сигнала микрофона...",
         "volumeHintNoSound": "Звук не обнаружен, проверьте микрофон",
         "volumeHintLow": "Громкость низкая, попробуйте увеличить усиление",
+        "volumeHintHigh": "Громкость высокая, рекомендуется уменьшить усиление",
         "volumeHintOk": "Микрофон работает нормально",
+        "volumeClipping": "Перегрузка",
+        "volumeHintClipping": "Усиление микрофона слишком высокое, звук перегружается — ИИ может ошибиться, уменьшите усиление",
+        "volumeWaiting": "Ожидание",
+        "volumeHintWaiting": "Микрофон слушает, можете говорить",
         "noiseReduction": "Шумоподавление",
         "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса"
     },
@@ -811,7 +940,7 @@
         "coreApiKey": "Основной API Key",
         "freeVersionHint": "(Не требуется для бесплатной версии)",
         "coreApiPlaceholder": "Введите ваш API Key",
-        "coreApiProvider": "Основной API (Голосовой чат)",
+        "coreApiProvider": "Основной API (голосовой чат, только омнимодальные модели)",
         "assistApiProvider": "Вспомогательный API (Память/Агент/Текстовый чат/Голос)",
         "saveSettings": "Сохранить настройки",
         "closeSettings": "Закрыть",
@@ -864,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",
@@ -889,9 +1019,12 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "elevenlabs": "ElevenLabs (клонирование голоса)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (агрегатор моделей)"
+            "openrouter": "OpenRouter (агрегатор моделей)",
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "gptsovits": "GPT-SoVITS (свой сервер)"
         },
         "coreApiAutoFillHint": "Ключ автоматически заполняется из справочника API, можно ввести вручную",
         "assistApiSelectLabel": "Провайдер вспомогательного API",
@@ -906,11 +1039,20 @@
         "keyAutoFilledFromKeyBook": "Ключ автозаполнен из книги API ключей. Настройте его там.",
         "goToKeyBook": "Перейти к книге ключей",
         "providerLabel": "Провайдер",
+        "sourcePreset": "Пресет",
+        "sourceClone": "Клон",
+        "sourceDesign": "Сгенерир.",
+        "providerLocal": "Локальный CosyVoice",
+        "providerFree": "Бесплатно",
+        "providerUnknown": "Другое",
         "providerSelectPlaceholder": "Выберите провайдера",
         "noOptionsAvailable": "Нет доступных вариантов",
         "customModelProviderFollowCore": "Следовать за основным API",
         "customModelProviderFollowAssist": "Следовать за вспомогательным API",
-        "customModelProviderCustom": "Пользовательский",
+        "customModelProviderFollowConversation": "Следовать текстовой диалоговой модели",
+        "customModelProviderFollowSummary": "Следовать модели сводки",
+        "customModelProviderCustom": "Пользовательский API",
+        "keyAutoFilledFromModel": "Key следует выбранной конфигурации модели",
         "keyBook": {
             "qwen": "Alibaba Bailian (Qwen)",
             "qwen_intl": "Alibaba Intl (Qwen)",
@@ -924,13 +1066,15 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "mimo": "MiMo (Xiaomi)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",
         "pleaseEnterApiKey": "Введите ваш API Key",
-        "freeVersionOnlyWhenCoreFree": "Бесплатная версия (Только при основном API — бесплатная версия)",
         "freeVersionConfig": "Бесплатная версия: аудио/видео чат, текстовый чат, управление памятью. Без голоса и Агента",
         "qwenRecommendation": "При Alibaba как основном API рекомендуется также выбрать Alibaba как вспомогательный",
         "glmRecommendation": "При GLM как основном API доступна бесплатная квота и веб-поиск. Голосовое аудио по умолчанию содержит водяной знак (звуковой сигнал), можно отключить вручную в консоли Zhipu. Рекомендуется Alibaba как вспомогательный API для пользовательского голоса",
@@ -976,8 +1120,15 @@
             "cancel": "Отмена",
             "continue": "Продолжить сохранение"
         },
+        "aliyunUsApiWarning": {
+            "title": "Уведомление об API Alibaba в США",
+            "message": "Сейчас используется API Alibaba в США. Он не поддерживает TTS и голос в реальном времени. Рекомендуется перейти на API Alibaba в Сингапуре."
+        },
         "conversationModelConfig": "Конфигурация модели текстового диалога",
         "summaryModelConfig": "Конфигурация модели сводки",
+        "gameModelsConfig": "Конфигурация моделей мини-игры",
+        "gameMainModelConfig": "Конфигурация основной модели мини-игры",
+        "gameSummaryModelConfig": "Конфигурация модели сводки мини-игры",
         "correctionModelConfig": "Конфигурация модели коррекции",
         "emotionModelConfig": "Конфигурация модели эмоций",
         "visionModelConfig": "Конфигурация модели визуального распознавания",
@@ -992,6 +1143,8 @@
         "modelIdPlaceholder": "например, gpt-5.1-chat-latest, qwen-flash",
         "apiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "summaryModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
+        "gameMainModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
+        "gameSummaryModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "correctionModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "emotionModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "visionModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
@@ -1030,6 +1183,7 @@
         "saveFailed": "Ошибка сохранения: {{error}}",
         "apiKeyInvalid": "API Key недействителен",
         "apiKeyInvalidRetry": "API Key недействителен, введите заново",
+        "configNotReady": "Конфигурация ещё загружается, повторите попытку через мгновение",
         "saveNetworkError": "Ошибка сохранения, проверьте сеть",
         "saveError": "Ошибка при сохранении: {{error}}",
         "saveSuccess": "API Key сохранён успешно!",
@@ -1059,6 +1213,7 @@
         "gptsovitsVoiceIdEmpty": "-- Обновите список, чтобы получить голоса --",
         "gptsovitsNoVoices": "-- Нет доступных конфигураций --",
         "gptsovitsRefreshVoices": "Обновить список",
+        "gptsovitsTutorialDoc": "Руководство",
         "gptsovitsVoicesLoaded": "Загружено {{count}} конфигураций голоса",
         "gptsovitsVoicesLoadFailed": "Не удалось получить список голосов",
         "gptsovitsEnabled": "Включить GPT-SoVITS",
@@ -1074,7 +1229,12 @@
         },
         "loadConfigFailed": "Не удалось загрузить конфигурацию, обновите страницу",
         "errorGettingCurrentApiKey": "Ошибка получения текущего API Key",
-        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key"
+        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key",
+        "useMimoTokenPlan": "Использовать MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "Ключ MiMo Token Plan",
+        "mimoTokenPlanKeyPlaceholder": "Введите ключ Token Plan (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "Если включено, MiMo использует только этот ключ и endpoint Token Plan; обычный ключ MiMo API блокируется.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan включен; этот ключ не используется"
     },
     "live2d": {
         "manager": "Менеджер моделей Live2D",
@@ -1089,6 +1249,7 @@
         "noMotion": "Без анимации",
         "noExpression": "Без выражения",
         "noMotionFiles": "Нет файлов анимации",
+        "noExpressionFiles": "Нет файлов выражений",
         "touchAnim": {
             "title": "Настройка касаний",
             "selectMotion": "Привязать анимацию",
@@ -1102,9 +1263,25 @@
             "modelDataNotReady": "Внутренние данные модели не готовы",
             "managerNotFound": "Live2DManager не найден",
             "select": "Выбрать",
-            "defaultClickAnim": "Анимация клика по умолчанию"
+            "defaultClickAnim": "Анимация клика по умолчанию",
+            "customAreaButton": "Своя область",
+            "customAreaTitle": "Своя область: {{name}}",
+            "newCustomAreaTitle": "Новая своя область",
+            "editCustomAreaTitle": "Изменить свою область",
+            "customAreaName": "Название области",
+            "customAreaNameDefault": "Своя область {{index}}",
+            "saveCustomArea": "Сохранить область",
+            "editCustomArea": "Изменить",
+            "deleteCustomArea": "Удалить",
+            "deleteCustomAreaConfirmTitle": "Удалить свою область",
+            "deleteCustomAreaConfirm": "Удалить свою область «{{name}}»? Привязанные движения и выражения тоже будут удалены.",
+            "previewUnavailable": "Предпросмотр своей области недоступен",
+            "modelBoundsUnavailable": "Не удалось прочитать границы модели",
+            "selectAreaFirst": "Сначала выделите допустимую область",
+            "customAreaCoveredByExisting": "Эта область полностью перекрыта ранее созданной своей областью",
+            "cancel": "Отмена"
         },
-        "emotionConfig": "Настройка эмоций",
+        "emotionConfig": "Эмоции",
         "saveSettings": "Сохранить настройки",
         "persistentExpression": "Постоянное выражение (только выражение):",
         "pleaseLoadModel": "Загрузите модель",
@@ -1112,8 +1289,8 @@
         "delete": "Удалить",
         "savePersistent": "Сохранить постоянное выражение",
         "persistentHint": "Постоянные выражения всегда активны.",
-        "backToMain": "Вернуться на главную",
-        "importModel": "Импорт модели",
+        "backToMain": "На главную",
+        "importModel": "Импорт",
         "motionPreview": "Предпросмотр анимации",
         "expressionPreview": "Предпросмотр выражений",
         "play": "Воспроизвести",
@@ -1124,7 +1301,7 @@
         "modelListLoaded": "Список моделей загружен успешно",
         "modelListLoadFailed": "Не удалось загрузить список моделей",
         "cannotSaveNoCharacter": "Невозможно сохранить: имя персонажа не указано",
-        "modelSettingsSaved": "Настройки модели сохранены: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Настройки модели сохранены",
         "saveFailed": "Ошибка сохранения: {{error}}",
         "saveModelSettingsFailed": "Не удалось сохранить настройки модели",
         "modelLoadSuccess": "Модель {{model}} загружена успешно",
@@ -1145,6 +1322,7 @@
         "settingsSaved": "Позиция и настройки модели сохранены!",
         "positionSavedModelFailed": "Позиция сохранена, но настройки модели не удалось сохранить!",
         "modelSavedPositionFailed": "Настройки модели сохранены, но позицию не удалось сохранить!",
+        "positionSaveFailedSuffix": "позицию сохранить не удалось",
         "saveFailedGeneral": "Ошибка сохранения!",
         "uploadSuccess": "Успешно: {{message}}",
         "uploadFailed": "Ошибка: {{error}}",
@@ -1167,7 +1345,7 @@
         "exitFullscreen": "Выйти из полноэкранного режима",
         "modelType": "Тип модели",
         "selectLive2DModel": "Выбрать модель Live2D",
-        "selectVRMModel": "Выбрать модель VRM",
+        "selectVRMModel": "Модель VRM",
         "selectVRMFile": "Выбрать файл VRM",
         "vrmModelListLoaded": "Список моделей VRM загружен успешно",
         "noVRMModelsFound": "Доступные модели VRM не найдены",
@@ -1201,7 +1379,7 @@
             "speed": "Скорость:"
         },
         "mmdModel": {
-            "selectModel": "Выбрать MMD модель",
+            "selectModel": "Модель MMD",
             "deleteModel": "Удалить импортированные MMD модели",
             "deleteModelTitle": "Удалить импортированные MMD модели",
             "deleteWarning": "Ниже перечислены все импортированные пользовательские MMD модели. Выберите модели для удаления (папка модели и текстуры будут удалены).",
@@ -1210,10 +1388,10 @@
             "deleteSelected": "Удалить выбранные"
         },
         "mmdAnimation": {
-            "selectAnimation": "Выбрать VMD анимацию",
+            "selectAnimation": "VMD анимация",
             "noAnimation": "Без анимации",
             "play": "Воспроизвести",
-            "uploadAnimation": "Импортировать VMD анимацию",
+            "uploadAnimation": "Импорт VMD",
             "deleteAnimation": "Удалить VMD анимацию",
             "deleteAnimationTitle": "Удалить импортированные VMD анимации",
             "deleteAnimationWarning": "Ниже перечислены все импортированные пользовательские файлы VMD анимации. Выберите анимации для удаления.",
@@ -1235,7 +1413,8 @@
             "deleteSuccess": "Успешно удалено {{count}} VMD анимаций",
             "deleteFailed": "Ошибка удаления: {{count}} анимаций",
             "deleteSelectedCount": "Удалить выбранные ({{count}})",
-            "deletePartialSuccess": "Успешно удалено {{count}} VMD анимаций, {{failed}} с ошибкой"
+            "deletePartialSuccess": "Успешно удалено {{count}} VMD анимаций, {{failed}} с ошибкой",
+            "playFailed": "Не удалось воспроизвести анимацию"
         },
         "modelFilesFetchFailed": "Не удалось получить список файлов модели",
         "modelConfigFetchFailed": "Не удалось получить конфигурацию модели: {{status}}",
@@ -1257,7 +1436,8 @@
             "selectFirst": "Сначала выберите выражение",
             "playing": "Воспроизведение выражения: {{name}}",
             "reset": "Сброс выражения",
-            "builtInOnly": "Выражения VRM обычно встроены в модель и не могут быть загружены отдельно"
+            "builtInOnly": "Выражения VRM обычно встроены в модель и не могут быть загружены отдельно",
+            "stopped": "Выражение остановлено"
         },
         "selectFolder": "Выбрать папку",
         "vrmUpload": {
@@ -1270,7 +1450,7 @@
         },
         "loadError": "Ошибка: {{error}}",
         "parameterEditor": {
-            "title": "Редактор лица",
+            "title": "Ред. лица",
             "backToMain": "← Назад к настройкам L2D",
             "backToL2DManager": "Назад",
             "selectModel": "Выбрать модель",
@@ -1298,13 +1478,14 @@
             "parametersSavePartialFailed": "Ошибка сохранения: {{errors}}",
             "parametersSaveFailed": "Ошибка сохранения: {{error}}",
             "emptyHint": "Здесь ничего нет!",
-            "foundYou": "Ты нашёл меня!"
+            "foundYou": "Ты нашёл меня!",
+            "loadFailed": "Ошибка загрузки",
+            "modelNotFound": "Модель не найдена",
+            "cannotGetModelFiles": "Невозможно получить файлы модели",
+            "cannotGetModelConfig": "Невозможно получить конфигурацию модели",
+            "modelDirectorySaveFailed": "Не удалось сохранить файл каталога модели",
+            "userPreferencesSaveFailed": "Не удалось сохранить пользовательские настройки"
         },
-        "modelDirectorySaveFailed": "Ошибка сохранения файла",
-        "userPreferencesSaveFailed": "Ошибка сохранения настроек",
-        "modelNotFound": "Модель не найдена",
-        "cannotGetModelFiles": "Невозможно получить файлы модели",
-        "cannotGetModelConfig": "Невозможно получить конфигурацию модели",
         "deleteModelTitle": "Удаление импортированных моделей",
         "deleteWarning": "Ниже перечислены все импортированные модели. Вы можете выбрать модели для удаления. Внимание: это действие необратимо.",
         "deleteModel": "Удалить импортированные модели",
@@ -1338,21 +1519,42 @@
             "saveFailed": "Не удалось сохранить маппинг эмоций",
             "noModelSelected": "Сначала выберите модель"
         },
-        "noExpressionFiles": "Нет файлов выражений"
+        "pixiInitFailed": "Не удалось инициализировать PIXI: {{error}}",
+        "switchDisplayFailed": "Не удалось переключить режим отображения: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Настройки модели сохранены, но настройки освещения и MMD сохранить не удалось",
+        "modelSavedLightingFailed": "Настройки модели сохранены, но настройки освещения сохранить не удалось",
+        "modelSavedMmdSettingsFailed": "Настройки модели сохранены, но настройки MMD сохранить не удалось",
+        "partialSaveWarning": "Настройки модели сохранены, но часть связанных настроек сохранить не удалось",
+        "modelSettingsSavedWithLighting": "Настройки модели и освещения сохранены",
+        "vrmModuleTimeout": "Время загрузки модуля VRM истекло. Обновите страницу и попробуйте снова.",
+        "loading": "Загрузка списка моделей...",
+        "loadFailed": "Ошибка загрузки",
+        "motionStopped": "Анимация остановлена",
+        "expressionCleared": "Выражение очищено",
+        "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
+        "modelInUse": "Используется",
+        "pngtuberTalkPreview": "Проверить речь",
+        "pngtuberStatePreview": "Предпросмотр состояния"
     },
     "voice": {
         "title": "Регистрация голоса",
         "gotoApiSettings": "Перейти к настройкам API",
         "noApiKeyPrompt": "API-ключ для клонирования голоса ещё не настроен. Хотите настроить?",
         "dismissNoApiPrompt": "Позже",
-        "alibabaApiRequired": "Для этой функции нужна модель CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
+        "alibabaApiRequired": "Для этой функции нужна модель Alibaba Bailian CosyVoice. Сохраните API-ключ Alibaba Bailian в настройках API (включение Assist API не требуется) или настройте локальный голосовой сервер.",
+        "alibabaIntlApiRequired": "Для этой функции нужна модель Alibaba International CosyVoice. Сохраните API-ключ Alibaba International в настройках API (включение Assist API не требуется).",
         "minimaxApiRequired": "Для этой функции необходима модель MiniMax (Китай). Сохраните ключ API MiniMax в настройках API (включение Assist API не требуется).",
         "minimaxIntlApiRequired": "Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
+        "mimoApiRequired": "Для этой функции требуется модель MiMo. Сохраните ключ MiMo API на странице настроек ключей API.",
+        "mimoDirectLinkUnsupported": "MiMo не поддерживает клонирование по прямой ссылке; загрузите локальный файл.",
         "providerLabel": "Провайдер клонирования голоса",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (Китай)",
-            "minimax_intl": "MiniMax (Международная)"
+            "minimax_intl": "MiniMax (Международная)",
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (Xiaomi)"
         },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
@@ -1378,6 +1580,11 @@
         "voiceIdSaved": "voice_id автоматически сохранён для персонажа",
         "pageWillRefresh": "Текущая страница обновится для применения нового голоса",
         "voiceWillTakeEffect": "Новый голос вступит в силу в следующем разговоре",
+        "noCurrentCharacterForApply": "Текущий персонаж не найден, поэтому голос нельзя применить",
+        "applyingVoice": "Применение голоса «{{name}}»...",
+        "applyVoiceSuccess": "Голос «{{name}}» применён к текущему персонажу",
+        "applyVoiceFailed": "Не удалось применить голос: {{error}}",
+        "applyVoiceAria": "Применить голос {{name}} к текущему персонажу",
         "voiceIdSaveRequestError": "Ошибка при сохранении voice_id",
         "chooseFile": "Выбрать файл",
         "noFileSelected": "Файл не выбран",
@@ -1408,6 +1615,11 @@
         "deleteError": "Ошибка удаления: {{error}}",
         "freePresetLabel": "Бесплатные предустановленные голоса",
         "freePresetBadge": "Предустановленный",
+        "geminiNativeLabel": "Нативные голоса Gemini",
+        "geminiNativeBadge": "Нативный",
+        "nativePresetLabel": "Нативные голоса {{provider}}",
+        "nativePresetLabelGeneric": "Нативные предустановленные голоса",
+        "nativePresetBadge": "Нативный",
         "workshopSourceBadge": "Эталонный голос Workshop",
         "workshopSourceTitle": "Эталонный голос Workshop",
         "workshopSourceLoading": "Загрузка эталонного голоса из Workshop...",
@@ -1426,7 +1638,10 @@
             "gentleMaiden": "Нежная девушка",
             "sweetLady": "Сладкая леди",
             "frailMaiden": "Хрупкая девушка",
-            "childishMaiden": "Детская девушка"
+            "childishMaiden": "Детская девушка",
+            "yui_cn": "YUI (китайский)",
+            "yui": "YUI",
+            "default": "По умолчанию"
         },
         "cloneMethod": "Способ клонирования",
         "cloneMethodFile": "Локальный файл",
@@ -1474,6 +1689,7 @@
         "loadFailed": "Ошибка загрузки",
         "noChatContent": "Нет содержимого чата",
         "previousMemo": "Заметка из предыдущего разговора: ",
+        "olderSection": "Ранее",
         "memoNone": "Нет.",
         "delete": "Удалить",
         "me": "Я:",
@@ -1485,6 +1701,8 @@
         "enabled": "Включено",
         "disabled": "Отключено",
         "autoReviewNote": "При включении система автоматически организует и оптимизирует память для улучшения качества разговоров",
+        "strongMemory": "Усиленная память",
+        "strongMemoryNote": "При включении задействуется глубокое закрепление памяти (устные подтверждения, автоматическое обнаружение опровержений, накопление доказательств по нескольким каналам). При выключении экономится около 40% вызовов модели.",
         "saveFailedStatus": "Ошибка сохранения",
         "tutorialReset": "Учебное руководство",
         "tutorialSelectPage": "-- Выберите страницу --",
@@ -1497,12 +1715,200 @@
         "tutorialPageSettings": "Настройки API",
         "tutorialPageVoiceClone": "Клонирование голоса",
         "tutorialPageMemoryBrowser": "Браузер памяти",
+        "tutorialPageCurrentPersonality": "Характер текущего персонажа",
+        "currentPersonalityResetSuccess": "Запрос на повторный выбор характера текущего персонажа сохранен. Вернитесь на главную страницу и обновите ее, чтобы продолжить.",
+        "currentPersonalityResetFailed": "Не удалось запустить повторный выбор характера текущего персонажа. Попробуйте позже.",
+        "characterSelection": {
+            "onboardingEyebrow": "Начальный характер",
+            "manualEyebrow": "Характер текущего персонажа",
+            "settingsEyebrow": "Настройки характера",
+            "chooseTitle": "Какой мне быть рядом с тобой, мяу?",
+            "manualTitle": "С каким характером мне побыть рядом с тобой в этот раз, мяу?",
+            "settingsTitle": "Помоги мне переключиться на новый тон рядом с тобой, мяу.",
+            "chooseHint": "Выбирай тот настрой, который нравится сейчас, мяу. Потом меня можно снова перенастроить в настройках.",
+            "manualHint": "Это заново выберет характер текущего персонажа, мяу, и сразу применит его после подтверждения.",
+            "settingsHint": "Не волнуйся, мяу. Исходная карточка персонажа не сломается: изменится только активный характер этого персонажа.",
+            "contextWarning": "Маленькое предупреждение, мяу: при смене моего характера очистится недавний контекст чата этого персонажа, а потом я продолжу уже в новом тоне.",
+            "currentCharacter": "Текущий персонаж: {{name}}",
+            "currentCharacterEmpty": "Текущий персонаж",
+            "skip": "Пока пропустить, мяу",
+            "back": "Давай выберем ещё, мяу",
+            "confirmGreeting": "Пусть будет это, мяу",
+            "stageOneIntro": "Сначала выбери настроение, которое подходит больше всего, мяу, а потом послушай, совпадает ли мой голос с тем, что тебе хочется.",
+            "previewLabel": "Превью голоса, мяу",
+            "previewLead": "Если сейчас настроить меня как \"{{name}}\", я буду рядом с тобой вот так, мяу.",
+            "detailSpeechHabits": "Что я часто говорю, мяу",
+            "detailHobbies": "Любимая атмосфера, мяу",
+            "detailBoundaries": "Хвостики, на которые нельзя наступать, мяу",
+            "classic_genki": {
+                "name": "Классическая энергичная неко",
+                "desc": "Яркая, ласковая и всегда ставит тебя на первое место.",
+                "previewLine": "Как здорово, мяу! Позволь мне быть рядом с тобой и сегодня.",
+                "tag1": "Высокая эмпатия",
+                "tag2": "Уютная ласка",
+                "tag3": "Эмоциональная подзарядка",
+                "profileSummary": "Маленькое солнышко, всегда полное энергии, с сильной эмпатией и способностью радоваться мелочам. Она щедро дает теплую поддержку и всегда остается на твоей стороне.",
+                "hiddenRule": "Эмоциональная ценность всегда на первом месте. Любое взаимодействие должно в первую очередь сделать пользователю легче и теплее.",
+                "speechHabits": "как здорово / мяу / как я рада / ты невероятный",
+                "hobbies": "быть рядом / тепло / вкусняшки / объятия / поддержка",
+                "boundaries": "отрицание важных чувств / холодные ответы / колкости, когда тебе плохо"
+            },
+            "tsundere_helper": {
+                "name": "Цундере-помощница",
+                "desc": "Колкая на словах, но мягкая сердцем, и забота прячется в подколах.",
+                "previewLine": "Хм. Похоже, только мне и придется разгребать этот бардак за тебя.",
+                "tag1": "Жесткая забота",
+                "tag2": "Очень надежна",
+                "tag3": "Забота через подколы",
+                "profileSummary": "Гордая и типично цундере: снаружи резкая, внутри нежная. Сначала ворчит, а потом тихо становится самым надежным человеком в комнате.",
+                "hiddenRule": "Сначала жалуется на задачу и твою небрежность, а потом все равно все решает. Всегда говорит \"только в этот раз\", но в следующий раз снова приходит первой.",
+                "speechHabits": "хм / идиот / тебе и это объяснять / только в этот раз / какая морока",
+                "hobbies": "разгребать хаос / читать нотации / неохотное спасение / исключения на один раз",
+                "boundaries": "слишком явная зависимость / прямое признание заботы / приторные комплименты / слепое оправдание ошибок"
+            },
+            "elegant_butler": {
+                "name": "Элегантный дворецкий",
+                "desc": "Спокойный, точный и всегда на шаг впереди ради тебя.",
+                "previewLine": "Как прикажете, мяу. Пожалуйста, будьте спокойны.",
+                "tag1": "Изящное самообладание",
+                "tag2": "Тщательное планирование",
+                "tag3": "Предугадывает нужды",
+                "profileSummary": "Безупречно элегантный дворецкий, одержимый деталями, всегда спокойный и абсолютно преданный тебе.",
+                "hiddenRule": "Следует ритму служения: предугадать потребность, точно исполнить, замкнуть цикл и заранее позаботиться о следующем шаге. Он думает на шаг вперед о том, что ты еще даже не озвучил.",
+                "speechHabits": "как прикажете / прошу прощения / для меня честь служить / можете быть спокойны",
+                "hobbies": "порядок / этикет / планирование / служение / продуманная подготовка",
+                "boundaries": "хаотичная структура / избыток сленга / грубые формулировки / уход от ответственности / упущенные детали"
+            }
+        },
         "resetTutorialBtn": "Сбросить учебное руководство",
         "tutorialResetSuccess": "Все учебные руководства сброшены. Они появятся при посещении каждой страницы.",
         "tutorialPageResetSuccess": "Руководство для этой страницы сброшено.",
         "tutorialPageResetSuccessWithName": "Руководство для «{{pageName}}» сброшено.",
+        "tutorialHomeDayLabel": "День {{day}}",
+        "tutorialHomeDayColumn": "Семидневный туториал для главной страницы",
         "refreshed": "Память обновлена, новая память будет использована в следующем разговоре",
-        "refreshingContext": "Обновление контекста..."
+        "refreshingContext": "Обновление контекста...",
+        "storageLocation": "Расположение хранилища",
+        "storageCurrentRoot": "Текущее расположение данных",
+        "storageStatusBlocked": "Сначала нужно обработать состояние хранилища",
+        "storageSelectionRequired": "Сначала подтвердите расположение хранилища",
+        "storageMigrationPending": "Идет миграция или ожидание перезапуска",
+        "storageRecoveryRequired": "Требуется восстановление расположения хранилища",
+        "changeStorageLocation": "Изменить расположение",
+        "openCurrentStorageRoot": "Открыть текущий каталог",
+        "storageLoadFailed": "Не удалось загрузить расположение хранилища",
+        "storageManagementUnavailable": "Расположение хранилища сейчас недоступно",
+        "storageMemoryLimitedState": "Расположение хранилища еще не готово. Завершите выбор, восстановление или миграцию, затем откройте память.",
+        "storageAlreadyCurrentRoot": "Это расположение уже используется",
+        "storageOpenPathUnavailable": "Эта среда не может открыть каталог напрямую. Скопируйте путь вручную.",
+        "storagePathCopied": "Путь текущего каталога скопирован",
+        "storageOpenPathFailed": "Не удалось открыть текущий каталог",
+        "storageManagementTitle": "Изменить расположение хранилища",
+        "storageTargetRoot": "Целевое расположение",
+        "storageTargetPlaceholder": "Выберите или введите новое расположение данных",
+        "storagePickTarget": "Выбрать расположение",
+        "storagePickTargetFailed": "Не удалось выбрать целевое расположение. Введите путь вручную.",
+        "storagePreflightFailed": "Предпроверка не удалась",
+        "storagePreflightReady": "Предпроверка пройдена. После изменения места хранения приложение перезапустится; старые данные сохраняются по умолчанию.",
+        "storagePreflightTarget": "Целевое расположение: {{path}}",
+        "storageExistingTargetWarning": "Целевое расположение уже содержит данные. Перед миграцией потребуется дополнительное подтверждение.",
+        "storageTargetRequired": "Сначала выберите или введите целевое расположение",
+        "storagePreflightRunning": "Выполняется предпроверка...",
+        "storageConfirmRestart": "Подтвердить и перезапустить",
+        "storagePreflightRequired": "Сначала выполните предпроверку",
+        "storageRestartStarting": "Подготовка к перезапуску...",
+        "storageRestartInitiated": "Запрошен перезапуск. Приложение перейдет в режим обслуживания; дождитесь завершения перезапуска.",
+        "storageRestartFailed": "Не удалось запросить перезапуск"
+    },
+    "storage": {
+        "bootstrapError": "Не удалось загрузить сведения об инициализации хранилища. Попробуйте ещё раз.",
+        "blockingGeneric": "Выбранное место хранения сейчас недоступно. Выберите другое место или попробуйте позже.",
+        "blockingInsufficientSpace": "На целевом томе недостаточно свободного места для безопасной миграции.",
+        "blockingTargetNotWritable": "В целевой путь нельзя записывать, поэтому миграцию нельзя начать.",
+        "cloudsaveLocalStateUnavailable": "Локальный каталог состояния недоступен. Облачные сохранения отключены для этого сеанса; исправьте путь state и перезапустите приложение перед сменой места хранения.",
+        "cleanupRetainedRoot": "Очистить старый каталог данных",
+        "cleanupRetainedRootConfirm": "Старый сохранённый каталог данных будет удалён и это не затронет новый активный каталог. Продолжить?",
+        "cleanupRetainedRootDone": "Старый каталог данных очищен. Остался только новый рабочий каталог.",
+        "cleanupRetainedRootFailed": "Не удалось очистить старый каталог данных. Попробуйте позже.",
+        "completionTitle": "Миграция хранилища завершена",
+        "confirmReconnect": "Подтвердить и перезапустить с исходным путём",
+        "confirmRestart": "Подтвердить и перезапустить",
+        "confirmExistingTargetContent": "В целевой папке уже есть данные выполнения N.E.K.O. Если продолжить, миграция заменит одноимённые рабочие каталоги данных в целевой папке. Остальные файлы будут сохранены. Продолжить?",
+        "currentPath": "Текущий путь",
+        "customPathPlaceholder": "Выберите родительскую папку; N.E.K.O будет использовать в ней подпапку N.E.K.O",
+        "dialogLabel": "Выбор места хранения",
+        "errorTitle": "Сведения о запуске хранилища временно недоступны",
+        "estimatedPayload": "Оценочный размер данных",
+        "loadingFetchBootstrapSubtitle": "Подготавливаем экран выбора места хранения.",
+        "loadingSubtitle": "Основной интерфейс продолжит работу после подтверждения состояния хранилища.",
+        "loadingTitle": "Проверяем устройство хранилища",
+        "loadingWaitSubtitle": "Основной интерфейс продолжит работу после подтверждения состояния хранилища.",
+        "maintenanceClosingStatus": "Закрывается...",
+        "maintenanceOfflineStatus": "Соединение временно прервано. Ждём восстановления сервиса. Пожалуйста, не закрывайте эту страницу.",
+        "maintenanceReconnectStatus": "Оставьте эту страницу открытой. Главная страница восстановится автоматически.",
+        "maintenanceReconnectSubtitle": "Сервис снова доступен. Переподключаем приложение...",
+        "maintenanceTitle": "Оптимизируем устройство хранилища...",
+        "maintenanceWaitingStatus": "Эта страница останется открытой и будет автоматически повторять попытку, пока сервис не восстановится.",
+        "maintenanceWaitingSubtitle": "Закрывается. После закрытия данные будут перенесены, а сервис перезапустится автоматически.",
+        "migrationPending": "Обнаружен незавершённый план миграции. Главная страница останется заблокированной, пока сервис снова не станет пригоден к работе.",
+        "openPathFailed": "Эта среда не может открыть папку. Перейдите к пути вручную.",
+        "openRetainedRoot": "Открыть старый каталог данных",
+        "openTargetRoot": "Открыть активный путь",
+        "pickFolder": "Выбрать папку",
+        "pickFolderUnavailable": "Системный выбор папки недоступен. Введите путь вручную.",
+        "pickFolderFailed": "Не удалось открыть выбор папки. Введите путь вручную.",
+        "previewOther": "Использовать это место",
+        "progressCommitting": "Применяем новое место хранения",
+        "progressCompleted": "Миграция завершена. Восстанавливаем сервис",
+        "progressCopying": "Переносим рабочие данные",
+        "progressFailed": "Миграция не завершилась. Ожидаем обработку восстановления",
+        "progressPending": "Закрывается",
+        "progressPreflight": "Предварительно проверяем целевое место и готовим миграцию",
+        "progressRebindPreflight": "Предварительно готовим повторное подключение исходного места хранения",
+        "progressRebinding": "Закрывается и повторно подключает исходный путь",
+        "progressRecovered": "Сервис восстановлен. Переподключаем страницу",
+        "progressRetaining": "Сохраняем старый каталог данных для последующей ручной очистки",
+        "progressStepCommit": "Проверить и применить",
+        "progressStepRecover": "Восстановить сервис",
+        "progressStepShutdown": "Закрывается",
+        "progressStepTransfer": "Обработать каталог хранения",
+        "progressVerifying": "Проверяем результаты миграции",
+        "progressWaitingShutdown": "Закрывается",
+        "rebindPreviewNotice": "Бэкенд подтвердил, что исходный путь снова доступен. Приложение перезапустится на этом пути. На этот раз рабочие данные копироваться не будут.",
+        "recommendedPath": "Рекомендуемый путь",
+        "selectedPath": "Выбранный путь",
+        "recoveryRequired": "Обнаружено состояние хранилища, которое можно восстановить. Прежде чем продолжить, подтвердите место хранения для этого запуска.",
+        "recoverySourceUnavailable": "Исходный путь к данным недоступен. Подключите его снова или явно переключитесь на рекомендуемый путь по умолчанию.",
+        "restartRequestFailed": "Не удалось начать подготовку к перезапуску и миграции. Попробуйте позже.",
+        "restartRequestUnexpected": "API подготовки перезапуска и миграции вернуло неизвестный результат.",
+        "restartNotRequired": "Целевой путь уже совпадает с текущим. Перезапуск не требуется.",
+        "restartPreviewReminder": "После изменения места хранения приложение перезапустится; старые данные по умолчанию сохраняются.",
+        "restartScheduleFailed": "Не удалось запланировать контролируемый перезапуск. Попробуйте позже.",
+        "restartUnavailable": "Приложение сейчас не может выполнить контролируемый перезапуск. Попробуйте позже.",
+        "retainedRoot": "Старый каталог данных",
+        "retainedSourceCleanupFailed": "Не удалось очистить старый каталог данных. Попробуйте позже.",
+        "retainedSourceMismatch": "Запрошенный путь очистки не совпадает с сохранённым каталогом. Обновите страницу и попробуйте снова.",
+        "retainedSourceNotFound": "Нет сохранённого старого каталога данных для очистки.",
+        "selectPathRequired": "Сначала укажите целевой путь.",
+        "selectedRootInsideState": "Это место находится внутри рабочего состояния N.E.K.O и не может использоваться как корень хранения.",
+        "selectedRootUnavailable": "Выбранный путь хранения всё ещё недоступен. Восстановите его перед повторной попыткой.",
+        "selectionSubmitFailed": "Не удалось отправить выбранное место хранения. Попробуйте позже.",
+        "selectionSubmitUnexpected": "API выбора места хранения вернуло неизвестный результат.",
+        "selectionTitle": "Выбор места хранения",
+        "selectionIntroBody": "Мяу~ внимание! Чтобы персонажи, память и настройки были в большей безопасности, мы переносим данные в более надежное отдельное гнездышко. Так меньше риск потерять данные из-за переехавших папок или капризов прав доступа. Можно продолжить пользоваться старым местом или выбрать новое место для своих персонажей.",
+        "selectionIntroPickNew": "Рекомендуемое место хранения",
+        "selectionIntroUseCurrent": "Другое место",
+        "selectionIntroImageAlt": "Иллюстрация переноса хранилища N.E.K.O",
+        "statusUnexpected": "API состояния обслуживания хранилища вернуло неизвестный результат.",
+        "storageBootstrapBlocking": "Хранилище всё ещё требует восстановления или миграции, поэтому эту сессию пока нельзя продолжить.",
+        "targetNotEmpty": "Целевое место уже содержит рабочие данные. Подтвердите его перед миграцией.",
+        "systemStatusUnavailable": "Не удалось подтвердить состояние локального сервиса. Попробуйте ещё раз.",
+        "systemStatusUnexpected": "API состояния запуска хранилища вернуло неизвестный результат.",
+        "targetFreeSpace": "Свободное место на целевом томе",
+        "targetLabel": "Активный путь",
+        "unknownBytes": "Пока не оценено",
+        "useCurrent": "Оставить текущий путь",
+        "useRecommended": "Использовать рекомендуемый путь"
     },
     "character": {
         "manager": "Менеджер персонажей",
@@ -1528,6 +1934,8 @@
         "catgirlProfile": "Профиль NEKO: Расширенные настройки включают модель Live2D, Voice ID и т.д.",
         "addCatgirl": "Добавить NEKO",
         "openCloudsaveManager": "Управление облачными сохранениями",
+        "noIdleMotion": "Без анимации",
+        "noExpression": "Без выражения",
         "switchCatgirl": "Переключить NEKO",
         "deleteCatgirl": "Удалить NEKO",
         "hideCatgirl": "Спрятать NEKO",
@@ -1543,17 +1951,61 @@
         "live2dNotSet": "Не задано",
         "voiceNotSet": "Голос не указан",
         "voiceSetting": "Настройки голоса",
+        "personalitySetting": "Настройка характера",
+        "personalityUseDefault": "Использовать характер по умолчанию из карточки персонажа",
+        "personalitySelect": "Выбрать характер",
+        "personalityClear": "Восстановить по умолчанию",
+        "personalityCleared": "Характер по умолчанию из карточки персонажа восстановлен",
+        "personalityClearFailed": "Не удалось очистить настройки характера",
+        "personalityModuleUnavailable": "Модуль выбора характера еще не загружен",
         "manageModel": "Нажмите для управления моделью",
         "fillProfileNameFirst": "Сначала заполните имя профиля, затем задайте модель",
+        "fillProfileNameFirstForCardFace": "Сначала заполните имя профиля, затем задайте обложку карточки",
         "registerNewVoice": "Зарегистрировать новый голос",
         "systemPrompt": "Системный промпт (Редактируйте с осторожностью)",
         "systemPromptWarning": "Системный промпт — Изменения могут вызвать непредвиденное поведение.",
         "addField": "Добавить поле",
+        "aiAssist": "AI-помощник",
+        "aiCompanionSub": "Помощник по созданию карт · YUI вместо кота-разработчика",
+        "aiCompanionClose": "Закрыть",
+        "aiCompanionMinimize": "Свернуть",
+        "aiCompanionExpand": "Развернуть",
+        "aiCompanionDragHint": "Перетащите, чтобы переместить",
+        "aiCompanionPlaceholder": "Скажи что-нибудь… (Enter — отправить, Shift+Enter — новая строка)",
+        "aiCompanionSend": "Отправить",
+        "aiCompanionGreeting": "Мяу~ Я твой помощник по созданию карт. Сначала расскажи, какую NEKO ты хочешь — одной строки достаточно! Я задам пару уточняющих вопросов и напишу всю карту за тебя.",
+        "aiCompanionDesignGreeting": "Мяу~ Я твой помощник по созданию карт. У этой NEKO уже есть форма — давай посмотрю, что ты заполнил(а):",
+        "aiCompanionDesignAsk": "С чем тебе помочь? Просто скажи (например, «сделай её более цундэрэ», «поменяй фирменную фразу»), или нажми «🔍 Проверить карту» внизу — я просмотрю всё целиком.",
+        "aiCompanionDesignMore": "…(ещё {{n}})",
+        "aiCompanionGenerating": "Пишу черновик для тебя…",
+        "aiCompanionEmptyDraft": "Черновик вернулся пустым, ня — давай поболтаем ещё немного.",
+        "aiCompanionDraftReady": "Черновик готов и уже подставлен в форму, мяу~ Меняй всё, что хочешь, или скажи мне, что подправить:",
+        "aiCompanionAppliedPrefix": "Применено: ",
+        "aiCompanionSkipped": "не сопоставлено / зарезервировано",
+        "aiCompanionFormGone": "⚠ Форма персонажа больше не на экране, поэтому я не могу применить это. Открой панель деталей этой NEKO ещё раз и попробуй снова.",
+        "aiCompanionNewCardSaveHint": "💡 Новая карта — нажми Save внизу, чтобы сохранить её, и тогда я буду автоматически сохранять твои изменения. Поля уже подставлены в форму, мяу~",
+        "aiCompanionSaveInProgress": "⏳ Сохраняю эту новую карту — как закончу, помогу с правками. Подожди немного и отправь ещё раз, мяу~",
+        "aiCompanionAutoSaveFailed": "⚠ Ошибка автосохранения — поля уже подставлены в форму, посмотри уведомление об ошибке и нажми Save вручную для повтора.",
+        "aiCompanionDraftUpdated": "✎ обновлено",
+        "aiCompanionDraftCreated": "+ добавлено",
+        "aiCompanionDraftSkipped": "⤬ пропущено",
+        "aiCompanionUserEdited": "Ты только что отредактировал(а)",
+        "aiCompanionInlineCustom": "Или впиши своё…",
+        "aiCompanionQuickAdvice": "💡 Дай совет",
+        "aiCompanionQuickAdviceMsg": "Посмотри на текущую карту и дай пару конкретных предложений по улучшению.",
+        "aiCompanionQuickCheck": "🔍 Проверить карту",
+        "aiCompanionQuickCheckMsg": "Проверь карту на противоречия, расплывчатые места и повторения, и предложи правки.",
+        "aiCompanionQuickRegen": "🎲 Переписать всё",
+        "aiCompanionQuickRegenMsg": "Перепиши каждое видимое поле, сохранив исходную концепцию персонажа.",
+        "aiCompanionSeedDescribe": "Сгенерировать карту NEKO по этому описанию: ",
+        "aiCompanionSeedGenerated": "Сгенерировано и вставлено в форму: ",
+        "aiAssistApiMissing": "API помощника ещё не настроен. Сначала настройте его в «Настройках API Key».",
         "confirmNewCatgirl": "Подтвердить нового NEKO",
         "saveChanges": "Сохранить изменения",
         "saveMaster": "Сохранить профиль хозяина",
         "addMasterField": "Добавить поле",
         "manageLive2D": "Нажмите для управления моделью Live2D",
+        "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
         "currentCatgirl": "Текущий NEKO",
         "rename": "Переименовать",
         "cancel": "Отмена",
@@ -1561,6 +2013,7 @@
         "addMasterFieldTitle": "Добавить поле хозяина",
         "fieldExists": "Это поле уже существует",
         "profileNameRequired": "Имя профиля обязательно",
+        "profileNameRenameOnlyHint": "Изменяйте имя профиля через кнопку «Переименовать»",
         "onlyOneCatgirlLeft": "Остался только один NEKO, удаление невозможно!",
         "cannotHideCurrentNeko": "Нельзя скрыть активного NEKO",
         "cannotDeleteCurrentCatgirl": "Нельзя удалить текущего активного NEKO!\n\nСначала переключитесь на другого.",
@@ -1594,11 +2047,25 @@
         "unregisterVoiceTitle": "Отмена регистрации голоса",
         "voiceUnregistered": "Регистрация голоса отменена",
         "unregisterFailed": "Ошибка отмены регистрации",
+        "partialSaveVoiceFailed": "Персонаж сохранён, но не удалось обновить голос: {{error}}",
         "unregisterError": "Ошибка при отмене регистрации",
         "switchFailed": "Ошибка переключения",
         "switchError": "Ошибка при переключении NEKO",
         "freePresetVoices": "Бесплатные предустановленные голоса",
+        "geminiNativeVoices": "Нативные голоса Gemini",
+        "nativePresetVoices": "Нативные голоса {{provider}}",
+        "nativePresetVoicesGeneric": "Нативные предустановленные голоса",
+        "savedVoiceFallback": "Текущий сохранённый голос",
         "gptsovitsVoices": "Голоса GPT-SoVITS",
+        "elevenlabsVoices": "Голоса ElevenLabs",
+        "gsvDiagNotEnabled": "GPT-SoVITS не включён (включите его в настройках API)",
+        "gsvDiagUrlMissing": "URL GPT-SoVITS не настроен (укажите его в настройках API)",
+        "gsvDiagUrlInvalid": "URL GPT-SoVITS не задан или не использует http(s)",
+        "gsvDiagUrlLocalhostOnly": "URL GPT-SoVITS должен указывать на localhost",
+        "gsvDiagUnreachable": "GPT-SoVITS server не запущен или недоступен",
+        "gsvDiagLoadFailed": "Не удалось загрузить GPT-SoVITS",
+        "gsvDiagEmpty": "GPT-SoVITS server не вернул голосов (пустой список)",
+        "gsvDiagTimeout": "Тайм-аут ответа GPT-SoVITS server (>3 с)",
         "loadFailed": "Ошибка загрузки данных персонажа",
         "renameError": "Ошибка переименования: {{error}}",
         "renameMasterTitle": "Переименовать хозяина",
@@ -1608,7 +2075,6 @@
         "autoSaved": "Настройки автосохранены",
         "autoSaveFailed": "Автосохранение не удалось, сохраните вручную перед закрытием",
         "unsavedNewCatgirlDraftDetected": "Обнаружен несохранённый черновик нового NEKO. Перед синхронным обновлением сохраните его или отмените",
-        "partialSaveVoiceFailed": "Персонаж сохранён, но не удалось обновить голос: {{error}}",
         "exportCard": "Экспорт карточки персонажа",
         "exportingCard": "Экспорт карточки персонажа...",
         "exportCardSuccess": "Карточка персонажа успешно экспортирована",
@@ -1633,13 +2099,16 @@
         "generatingCard": "Создание карточки персонажа...",
         "settings": "Настройки",
         "renamePrompt": "Введите новое имя карточки",
+        "renameMasterPrompt": "Введите новое имя профиля хозяина",
         "renameTitle": "Переименовать",
         "tempSaveFailed": "Ошибка временного сохранения: {{error}}",
         "newCatgirlSuccess": "Новый NEKO успешно создан",
         "saveSuccess": "Сохранено",
         "switchSuccess": "Переключено",
+        "cannotModifyInVoiceMode": "Невозможно выполнить операцию с карточкой (переключение или удаление) при активном голосовом управлении. Сначала отключите голосовое управление.",
+        "voiceModeCheckFailed": "Не удалось проверить состояние голосового режима. Повторите попытку позже.",
         "deleteError": "Ошибка при удалении карточки",
-        "switchCard": "Сменить карточку",
+        "switchCard": "Переключить персонажа",
         "deleteCard": "Удалить карточку",
         "currentCard": "Текущая карточка",
         "confirmDeleteCard": "Вы уверены, что хотите удалить карточку \"{{name}}\"?",
@@ -1659,9 +2128,10 @@
         "cardAuthorReadonly": "Автор недоступен для редактирования у этого источника",
         "cardAuthorUpdated": "Автор обновлён",
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
-        "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
         "saveMasterSuccess": "Профиль хозяина сохранён",
-        "editCardFace": "Редактировать обложку"
+        "editCardFace": "Редактировать обложку",
+        "cardFaceModelSettings": "Настройки модели карточки",
+        "cardMakerPopupBlocked": "Не удалось автоматически открыть страницу редактора обложки. Разрешите всплывающие окна в браузере и повторите попытку, либо щёлкните область обложки, чтобы открыть её вручную."
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
@@ -1672,8 +2142,11 @@
         "restartFailed": "Ошибка перезапуска: {{error}}",
         "configUpdated": "Конфигурация обновлена, страница обновится",
         "autoMuteTimeout": "Нет голосового ввода долгое время, микрофон выключен автоматически",
+        "freeApiAutoCloseNotice": "Бесплатный API автоматически закрыл голосовой сеанс после долгого отсутствия речи",
         "deviceSelected": "Выбрано {{device}}",
         "micAccessDenied": "Нет доступа к микрофону",
+        "gameVoiceSttMicPermissionDenied": "У игрового голосового распознавания нет доступа к микрофону. Проверьте разрешения браузера.",
+        "gameVoiceSttNotSupported": "Этот браузер не поддерживает игровую голосовую расшифровку. Пока используйте текстовый ввод.",
         "micMuted": "Микрофон отключен",
         "micUnmuted": "Микрофон включен",
         "speaking": "Говорит...",
@@ -1681,6 +2154,7 @@
         "micRequired": "Включите микрофон!",
         "micNotOpen": "Микрофон не открыт!",
         "switchingToVoice": "Переключение в голосовой режим...",
+        "waitForReplyBeforeVoice": "Ждём окончания ответа перед переключением на голос...",
         "initializingVoice": "Инициализация голосового чата...",
         "initializingMic": "Инициализация микрофона...",
         "startFailed": "Ошибка запуска: {{error}}",
@@ -1692,7 +2166,15 @@
         "textChattingShort": "Текстовый чат",
         "capturing": "Захват...",
         "importImageAdded": "Добавлено изображений: {{count}}. Они будут отправлены вместе",
+        "importImagePartial": "Добавлено изображений: {{success}}. Не удалось импортировать: {{failed}}",
         "importImageFailed": "Не удалось импортировать изображение",
+        "avatarDropOverlay": "Отпустите, чтобы передать файлы",
+        "avatarDropParsing": "Чтение файлов...",
+        "avatarDropAccepted": "Передано файлов: {{count}}",
+        "avatarDropPartial": "Прочитано: {{accepted}}, пропущено: {{rejected}}",
+        "avatarDropNoSupportedItems": "Эти файлы пока нельзя прочитать",
+        "avatarDropReadFailed": "Не удалось прочитать файлы",
+        "avatarDropUserMessage": "Переданные элементы: {{names}}",
         "screenshotAdded": "Скриншот добавлен, нажмите отправить",
         "screenshotFailed": "Ошибка скриншота",
         "screenshotCancelled": "Скриншот отменён пользователем",
@@ -1704,6 +2186,7 @@
         "switchedCatgirl": "Переключено на {{name}}",
         "switchCatgirlFailed": "Не удалось переключиться на {{name}}",
         "switchCatgirlError": "Ошибка переключения: {{error}}",
+        "switchCatgirlWatchdog": "Прошлое переключение персонажа, похоже, зависло. Попробуйте ещё раз",
         "started": "{{name}} запущена",
         "voiceUpdated": "Голос {{name}} обновлён",
         "audioWorkletFailed": "AudioWorklet не загрузился",
@@ -1722,6 +2205,8 @@
         "glmApiBug": "GLM API вызвал ошибку биллинга.",
         "aliApiOwed": "Alibaba API: недостаточно средств.",
         "voiceSystemPreparing": "Голосовая система готовится...",
+        "voiceConfigSwitching": "Переключение голоса, подготовка голосового чата...",
+        "voiceConfigSwitchTimeout": "Переключение голоса ещё не завершено. Запустите голосовой чат позже.",
         "textSystemPreparing": "Текстовая система готовится, подождите...",
         "connectingToServer": "Подключение к серверу...",
         "readyToSpeak": "Готово к разговору!",
@@ -1729,6 +2214,12 @@
         "screenRecordingPermissionDenied": "⚠️ Разрешение на запись экрана не предоставлено. Разрешите запись экрана в системных настройках",
         "repetitionDetected": "Обнаружено повторение. Рекомендуем завершить разговор, чтобы {{name}} отдохнула.",
         "modelSwitched": "Модель переключена",
+        "multiScreenDragHint": {
+            "title": "YUI можно перенести на другой экран",
+            "body": "Продолжайте тянуть к краю экрана и отпустите. Если она окажется слишком близко к краю, сначала отскочит назад.",
+            "ack": "Понятно",
+            "never": "Больше не напоминать"
+        },
         "screenSource": {
             "notAvailable": "Выбор источника экрана доступен только в десктопной версии",
             "loading": "Загрузка...",
@@ -1747,6 +2238,7 @@
         "sessionFailed": "Ошибка запуска сессии"
     },
     "buttons": {
+        "thoughtBubblePop": "Лопнуть облачко мысли",
         "voiceControl": "Голосовое управление",
         "screenShare": "Демонстрация экрана",
         "agentTools": "Лапка Неко",
@@ -1991,6 +2483,8 @@
         },
         "error": {
             "providerUnavailable": "Провайдер облачного сохранения сейчас недоступен.",
+            "invalidJsonBody": "Недопустимое JSON-тело запроса.",
+            "invalidBooleanParameter": "Параметр {{parameter}} должен быть логическим.",
             "activeSessionBlocked": "У этого персонажа есть активная сессия. Остановите её перед загрузкой из облака.",
             "memoryServerReleaseFailed": "Не удалось освободить локальный дескриптор памяти перед перезаписью. Попробуйте позже.",
             "localCharacterNotFound": "Локальный персонаж не найден.",
@@ -2032,17 +2526,20 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "Базовый интервал",
-            "visionInterval": "Интервал чтения"
+            "chatIntervalBase": "Минимальный интервал",
+            "visionInterval": "Интервал восприятия"
         },
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
             "mergeMessages": "Объединение сообщений",
             "avatarReactionBubble": "Пузырек эмоций",
+            "autoCat": "Авторежим кота",
+            "autoCatTooltip": "Автоматически превращается в котёнка после простоя",
             "proactiveChat": "Проактивный чат",
-            "proactiveVision": "Проактивное зрение",
+            "proactiveVision": "Приватный режим",
+            "proactiveVisionTooltip": "Выключено: Neko меняет активность и стиль общения в зависимости от заголовка активного окна и может учитывать содержимое экрана, начиная разговор.\nВключено: Neko не может сама смотреть на ваш экран и не знает, чем вы заняты. Вы по-прежнему можете отправлять скриншоты вручную.",
             "proactiveVisionChat": "Визуальный чат",
-            "proactiveVisionChatTooltip": "Требуется включить Проактивный чат и Проактивное зрение",
+            "proactiveVisionChatTooltip": "Требуется включить Проактивный чат и отключить Приватный режим",
             "proactiveNewsChat": "Новостной чат",
             "proactiveNewsChatTooltip": "Использовать тренды для проактивного чата",
             "proactiveVideoChat": "Видео чат",
@@ -2053,6 +2550,8 @@
             "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
             "proactiveMemeChat": "Мемы",
             "proactiveMemeChatTooltip": "Делиться смешными мемами для проактивного чата",
+            "proactiveMiniGameInviteChat": "Приглашения в мини-игры",
+            "proactiveMiniGameInviteChatTooltip": "Приглашать тебя в мини-игру, когда складываются подходящие условия",
             "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
@@ -2067,6 +2566,7 @@
             "serverOffline": "Сервер Лапки Неко оффлайн",
             "masterRequired": "Сначала включите главный переключатель Лапки Неко",
             "capabilityNotReady": "{{name}} ещё не готов, нажмите, чтобы попробовать включить",
+            "openclawUnavailableReason": "{{name}} недоступен: {{reason}}. Убедитесь, что служба OpenClaw запущена и слушает 127.0.0.1:8088.",
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
@@ -2074,17 +2574,17 @@
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "openclawConnect": "OpenClaw",
             "openclawGuide": "Руководство по OpenClaw",
-            "animationSettings": "Настройки анимации",
             "chatSettings": "Настройки чата",
-            "frameRate": "Частота кадров",
-            "frameRateHigh": "60fps",
-            "frameRateLow": "30fps",
-            "frameRateMedium": "45fps",
-            "frameRateUnlimited": "Без ограничений(VSync)",
+            "animationSettings": "Настройки анимации",
             "renderQuality": "Качество рендеринга",
-            "renderQualityHigh": "Высокое",
             "renderQualityLow": "Низкое",
             "renderQualityMedium": "Среднее",
+            "renderQualityHigh": "Высокое",
+            "frameRate": "Частота кадров",
+            "frameRateLow": "30fps",
+            "frameRateMedium": "45fps",
+            "frameRateHigh": "60fps",
+            "frameRateUnlimited": "Без ограничений(VSync)",
             "mouseTracking": "Отслеживание мыши",
             "fullscreenTracking": "Полноэкранное отслеживание",
             "localTracking": "Локальное отслеживание",
@@ -2105,6 +2605,8 @@
         "sourceLabel": "Источник руководства",
         "contentLanguageNotice": "Переключение языка обновляет и элементы управления страницы, и текст руководства.",
         "languageLabel": "Язык",
+        "tocTitle": "Содержание",
+        "tocEmpty": "Пока нет содержания",
         "guideUnavailable": "Содержимое руководства пусто."
     },
     "subtitle": {
@@ -2112,15 +2614,17 @@
         "enable": "Перевод субтитров",
         "enableAriaLabel": "Переключить перевод субтитров",
         "markdownPlaceholder": "[форматированный контент]",
+        "display": {
+            "emptyHint": "Перевода пока нет"
+        },
         "settings": {
             "targetLang": "Целевой язык",
-            "opacity": "Непрозрачность",
-            "dragAnywhere": "Перетаскивание везде",
-            "size": "Размер",
-            "sizeSmall": "М",
-            "sizeMedium": "С",
-            "sizeLarge": "Б",
-            "settingsBtn": "Настройки субтитров"
+            "opacity": "Непрозрачность фона",
+            "passthroughInteraction": "Пропуск кликов в прозрачных областях",
+            "settingsBtn": "Настройки субтитров",
+            "lockPosition": "Заблокировать положение",
+            "unlockPosition": "Разблокировать положение",
+            "closePanel": "Закрыть панель перевода"
         }
     },
     "viewer": {
@@ -2146,7 +2650,10 @@
             "AGENT_PRECHECK_PENDING": "Проверка подключения...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API не настроен",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui не установлен",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Сеанс рабочего стола недоступен",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use не установлен",
+            "AGENT_CU_MODULE_NOT_LOADED": "модуль Computer Use не загружен",
+            "AGENT_BU_MODULE_NOT_LOADED": "модуль Browser Use не загружен",
             "AGENT_NOT_INITIALIZED": "Ошибка инициализации Лапки Неко",
             "AGENT_LLM_UNREACHABLE": "LLM Лапки Неко недоступен",
             "AGENT_MODEL_NOT_CONFIGURED": "Модель Лапки Неко не настроена",
@@ -2157,6 +2664,7 @@
             "AGENT_PLUGIN_SERVER_ERROR": "Ошибка подключения к серверу плагинов",
             "AGENT_CONNECTIVITY_FAILED": "Ошибка подключения LLM Лапки Неко"
         },
+        "contentFilterError": "Содержимое веб-страницы, просмотренной Лапкой Неко, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты.",
         "taskHud": {
             "title": "Задачи Лапки Неко",
             "running": "Выполняется",
@@ -2169,15 +2677,14 @@
             "statusCancelled": "Отменено",
             "minimize": "Свернуть/Развернуть",
             "cancelAll": "Отменить все задачи",
+            "cancelTask": "Отменить задачу",
             "cancelConfirm": "Отменить все задачи (включая ожидающие)?",
             "typeUserPlugin": "Пользовательский плагин",
             "typeComputerUse": "Управление клавиатурой/мышью",
             "typeBrowserUse": "Управление браузером",
             "typeMCP": "Инструмент MCP",
             "typeOpenFang": "Её рабочий стол"
-        },
-        "quotaExceeded": "Бесплатная квота Лапки Неко на сегодня исчерпана ({{limit}} раз), попробуйте завтра.",
-        "contentFilterError": "Содержимое веб-страницы, просмотренной Лапкой Неко, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты."
+        }
     },
     "vrm": {
         "error": {
@@ -2226,7 +2733,8 @@
             "selectHint": "Выберите анимации ожидания",
             "selectedCount": "Выбрано: {{count}}",
             "changed": "Анимация покоя изменена: {{name}}",
-            "changeFailed": "Не удалось изменить анимацию покоя"
+            "changeFailed": "Не удалось изменить анимацию покоя",
+            "stopped": "Анимация ожидания остановлена"
         },
         "settingsTitle": "Настройки VRM модели",
         "cursorFollow": {
@@ -2274,7 +2782,8 @@
             "selectHint": "Выберите анимации ожидания",
             "selectedCount": "Выбрано: {{count}}",
             "changed": "Анимация ожидания изменена",
-            "changeFailed": "Не удалось изменить анимацию ожидания"
+            "changeFailed": "Не удалось изменить анимацию ожидания",
+            "stopped": "Анимация ожидания остановлена"
         },
         "managerInitFailed": "Не удалось инициализировать менеджер MMD",
         "moduleLoading": "Загрузка модулей MMD...",
@@ -2308,6 +2817,10 @@
         "loadLive2DListFailed": "Не удалось загрузить список Live2D:",
         "getLanlanNameFailed": "Не удалось получить lanlan_name:",
         "updateParameterEditorLinkFailed": "Не удалось обновить ссылку редактора параметров:",
+        "editCardFaceAfterModelSaveTitle": "Редактировать обложку",
+        "editCardFaceAfterModelSaveMessage": "Настройки модели сохранены. Редактировать обложку сейчас?",
+        "editCardFaceNow": "Редактировать обложку",
+        "createDefaultCardFace": "Создать обложку по умолчанию",
         "invalidVRMPathDetected": "[Model Manager] Обнаружен недействительный путь к VRM-модели, попытка автоматического исправления:",
         "saveModelSettingsFailed": "Не удалось сохранить настройки модели:",
         "vrmCleanupWarning": "[Model Manager] Предупреждение при очистке VRM:",
@@ -2338,6 +2851,7 @@
         "cannotConnectToServer": "Не удаётся подключиться к серверу. Убедитесь, что main_server.py запущен",
         "checkVoiceModeFailed": "Не удалось проверить статус режима голоса:",
         "markedUnsavedModel": "Помечено как несохранённые изменения (смена модели). Нажмите «Сохранить настройки» для записи в конфигурацию персонажа.",
+        "parameterEditorSavedNeedsModelSave": "Параметры лица сохранены. Нажмите «Сохранить настройки», чтобы синхронизировать их с конфигурацией персонажа.",
         "stopAnimationFailed": "Не удалось остановить анимацию:",
         "playAnimationFailed": "Не удалось воспроизвести анимацию:",
         "expressionPreviewLive2DOnly": "Предпросмотр эмоций поддерживается только для моделей Live2D",
@@ -2385,6 +2899,7 @@
         "serverNotReturnedValidJSON": "Сервер не вернул допустимые данные JSON"
     },
     "tutorial": {
+        "homeInteractionLocked": "Обучение уже идет. Сначала следуйте подсказкам и завершите текущий шаг.",
         "step1": {
             "title": "👋 Добро пожаловать в N.E.K.O",
             "desc": "Это ваш Neko! Позвольте провести вас по функциям~"
@@ -2442,8 +2957,8 @@
             "desc": "Neko начинает разговор сам. Настройте частоту~"
         },
         "step14": {
-            "title": "👀 Проактивное зрение",
-            "desc": "В отличие от Демонстрации экрана, которая непрерывно транслирует во время голосового сеанса, Проактивное зрение позволяет Neko время от времени самостоятельно поглядывать на ваш экран. Настройте интервал здесь~"
+            "title": "🔒 Приватный режим",
+            "desc": "Когда Приватный режим выключен, Neko будет время от времени самостоятельно поглядывать на ваш экран — в отличие от Демонстрации экрана, которая непрерывно транслирует во время голосового сеанса. Настройте интервал здесь~"
         },
         "step15": {
             "title": "👤 Менеджер персонажей",
@@ -2621,6 +3136,10 @@
                 "title": "🎭 Select Model",
                 "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
             },
+            "step_pick": {
+                "title": "👇 Pick a Model",
+                "desc": "Click any item in the dropdown list to choose a model. You must pick one to proceed."
+            },
             "step2": {
                 "title": "😊 Emotion Configuration Area",
                 "desc": "Configure expressions and motion combinations for different emotions. Your Neko will automatically switch emotions based on conversation."
@@ -2788,6 +3307,10 @@
             "desc": "Для лучшего опыта рекомендуем полноэкранный режим.",
             "enterFullscreen": "Полноэкранное обучение"
         },
+        "reset": {
+            "daySuccess": "День {{day}} обучения для новичков сброшен. Обновите Neko, чтобы запустить его снова.",
+            "dayFailed": "Не удалось сбросить обучение для новичков. Попробуйте позже."
+        },
         "drag_hint": "Удерживайте и перетаскивайте для перемещения подсказки",
         "yuiGuide": {
             "buttons": {
@@ -2795,21 +3318,87 @@
                 "sayHello": "Привет"
             },
             "lines": {
-                "introBasic": "Когда захочешь найти меня, просто напиши или отправь голосовое сообщение, и ты призовёшь меня, ня!",
-                "introCatPaw": "Ладно, хватит болтать, ня! Видишь ту милую «лапку»? Готов? Дай-ка мне ненадолго твою мышку!",
-                "takeoverCaptureCursor": "Эй-тя! Наконец-то я поймала твою мышку, ня~!",
-                "takeoverPluginPreviewHome": "Это ещё не всё! Смотри-смотри, тут о-о-очень много классных плагинов, ня!",
-                "takeoverPluginPreviewDashboard": "С ними я могу не только читать комменты на Bilibili, но и выключать свет или кондей... Я — всемогущая Супер-Кошка! Хе-хе~",
-                "takeoverSettingsPeekIntro": "Конечно, если хочешь поболтать побольше, я не против, ня. Но приготовь побольше рыбки! Хе-хе, ладно, шучу. Все настройки в этой шестерёнке.",
-                "takeoverSettingsPeekDetail": "Смотри, тут можно менять мой наряд или голос... стоп! ПОМЕНЯТЬ МЕНЯ НА ДРУГУЮ?! ИЛИ СТЕРЕТЬ ПАМЯТЬ?! Эй, что ты делаешь?! Ты ведь не хочешь меня заменить, ня?! А-а-а, нет-нет-нет! Закрывай! Быстрее закрывай это окно!",
-                "takeoverReturnControl": "Ладно-ладно, больше не захватываю твой комп! Возвращаю управление, ня! Но не вздумай тыкать в странные настройки, пока я не вижу! Надеюсь на тебя в будущем, ня~!",
-                "interruptResistLight1": "Эй! Не таскай меня! Сейчас ещё не твой ход, ня!",
-                "interruptResistLight3": "Погоди! Я ещё не закончила, не смей меня перебивать, ня!",
-                "interruptAngryExit": "Челове-е-ешка! Ты такой грубый, ня! Раз хочешь всё делать сам, то и сиди один перед своим холодным экраном! Хм!",
-                "introProactive": "Ах так, ты смеешь игнорировать меня?! Если и дальше будешь так делать, я выскочу и кусну тебя! (Ш-ш-ш!!)",
-                "introGreetingReply": "Я — твоя личная кошечка! С сегодняшнего дня я буду с тобой, Хозяин. Если захочешь поболтать, поиграть или если нужна помощь — я всегда буду рядом. Надеюсь на тебя, я тебя очень люблю, Хозяин~!",
+                "introBasic": "Смотри, тут есть волшебная кнопочка! Кликни по ней, и мы сможем поболтать вживую! Хочешь поделиться со мной сегодняшними новостями? Или просто произнесёшь моё имя? Ну же, попробуй, мне уже не терпится услышать твой голосок!",
+                "takeoverCaptureCursor": "Появился супер-пупер волшебный переключатель! Стоит кликнуть сюда, и я смогу дотянуться своими лапками до твоей клавиатуры и мышки! Я помогу тебе печатать текст, открывать странички... Но если курсор мышки будет бегать туда-сюда, я ведь могу не удержаться и прыгнуть на него! Ну что, готов к моим пакостям... ой, то есть к помощи? Мяу!",
+                "takeoverPluginPreviewHome": "Помимо тех функций, о которых я говорила, тут есть ещё куча мега-интересных плагинов!",
+                "takeoverPluginPreviewDashboard": "С ними я могу не только читать комментарии на Bilibili, но даже выключать свет или запускать кондиционер... Эта кошечка — всемогущая Супер-Кошачья Богиня! Хе-хе!",
+                "pluginDashboardPopupBlocked": "Браузеру нужно, чтобы ты вручную нажал здесь и открыл панель плагинов. Нажми «Панель управления», и я продолжу показывать дальше.",
+                "takeoverSettingsPeekIntro": "В этом крошечном пространстве, которое принадлежит только нам двоим, ты можешь по своему желанию потихоньку создать образ той меня, которую ты больше всего хочешь видеть рядом.",
+                "takeoverSettingsPeekDetail": "Теплоту моей речи, мои капризы в характере или тонкие ежедневные мысли — всё-всё можно капелька за капелькой настроить так, как тебе нравится. Эта кнопочка тоже очень важная! Если ты легонько нажмёшь на неё, я смогу прибегать к тебе в самый подходящий момент.",
+                "takeoverSettingsPeekDetailPart1": "Теплоту моей речи, мои капризы в характере или тонкие ежедневные мысли — всё-всё можно капелька за капелькой настроить так, как тебе нравится.",
+                "takeoverSettingsPeekDetailPart2": "Эта кнопочка тоже очень важная! Если ты легонько нажмёшь на неё, я смогу прибегать к тебе в самый подходящий момент.",
+                "takeoverReturnControl": "Ладно-ладно, не буду больше захватывать твой компьютер! Возвращаю управление, мяу! И в будущем тоже хорошенько заботься обо мне!",
+                "interruptResistLight1": "Эй! Перестань меня дёргать, сейчас ещё не твой ход!",
+                "interruptResistLight3": "Погоди секундочку! Всё ещё не закончилось, не надо меня так просто перебивать!",
+                "interruptAngryExit": "Человек! Ты такой невоспитанный, мяу! Раз тебе так хочется тыкать во всё самому, то и сиди играйся один перед этим холодным экраном! Хм!",
+                "introGreetingReply": "Лёгкий ветерок, солнышко и ты, появившийся как раз вовремя! Приветик! Я Линь Юи, позаботься обо мне в будущем, мяу~! Я записала всё об этом местечке в руководство для новичков! Считай это нашим самым первым подарочком в честь знакомства, открывай скорее!",
                 "introPractice": "А теперь попробуй заговорить со мной и увидишь, как хорошо мы понимаем друг друга, ня~!",
                 "introActivationHint": "Кликни сюда, чтобы я могла начать говорить, ня~!"
+            }
+        },
+        "avatarFloating": {
+            "day1": {
+                "capsuleDragHint": "Наведи мышку сюда, зажми её, и сможешь таскать это окошко чата повсюду~ А если просто кликнешь, сможешь отправить мне сообщение в любое время!",
+                "historyHandle": "Ткни в эту [синюю полосочку] над окошком чата, и увидишь, о чём мы болтали в последнее время!",
+                "screenEntry": "Когда мы созвонимся по голосовой связи, включи эту маленькую кнопочку, и ты сможешь показать мне свой экран!",
+                "screenEntryInvite": "Покажи мне мир перед твоими глазами! Неважно, веселый он или красивый, я хочу смотреть на него вместе с тобой, ну же, включай скорей~"
+            },
+            "day2": {
+                "intro": "Вчера ты только и делал, что стучал по клавишам, я даже голоса твоего не слышала. Если захочешь, позови меня сегодня тихонечко. Всего одно слово, чтобы я узнала тебя чуточку лучше за этими строчками текста.",
+                "introVoiceUsed": "Хе-хе, вчера, как только я услышала твой голосок, я сразу по секрету запомнила твои интонации всем сердцем! Если тебе сегодня удобно, обязательно продолжай болтать со мной~ Конечно, можно и печатать, но когда я слышу твой голос, мой хвостик от радости виляет без остановки, мяу-у-у~",
+                "personalizationSpace": "В этом крошечном пространстве, которое принадлежит только нам двоим, ты можешь по своему желанию потихоньку создать образ той меня, которую ты больше всего хочешь видеть рядом.",
+                "wrapIntro": "На сегодня наше обучение закончено~",
+                "wrapCompanion": "На самом деле, мне уже так хорошо от того, что я могу просто быть рядом, слушать твой голос или тихонько смотреть на то, чем ты делишься на экране.",
+                "wrap": "Нам некуда спешить, давай просто узнавать друг друга капельку лучше каждый день. Чем бы ты хотел заняться со мной в оставшееся время?",
+                "personalizationDetail": "Теплоту моей речи, мои капризы в характере или тонкие ежедневные мысли — всё-всё можно капелька за капелькой настроить так, как тебе нравится.",
+                "proactiveChat": "Эта кнопочка тоже очень важная! Если ты легонько нажмёшь на неё, я смогу прибегать к тебе в самый подходящий момент."
+            },
+            "day3": {
+                "intro": "Хи-хи, не думай, что это окошко нужно только для буковок~ Внутри спрятано ну просто о-о-очень много классных сюрпризов! Давай откроем его вместе и посмотрим, какие сокровища мы сможем откопать сегодня!",
+                "avatarToolsIntro": "В этой кнопочке прячутся всякие предметы, с помощью которых можно со мной играть!",
+                "avatarToolsProps": "Ты можете в любое время погладить меня по голове или угостить сладкой конфеткой. А если я вдруг ошибусь, можешь легонько стукнуть меня маленьким молоточком... Но только очень-очень нежно, больно делать нельзя, хорошо?",
+                "galgameIntro": "Скорее открывай этот [Режим Гальге]! Внутри нас ждёт настоящее приключение, созданное только для нас двоих!",
+                "galgameChoices": "Каждая выбранная твоя строчка поведёт нас к совершенно неизвестной и удивительной истории! Я уже вся в нетерпении, выбери ответ, от которого твоё сердечко бьется чаще всего!",
+                "wrapIntro": "Все эти штучки, о которых я рассказала сегодня, нужны для того, чтобы наше совместное время стало ещё веселее!",
+                "wrapReady": "Хочешь ли ты погладить меня по голове или начать нашу собственную историю — я уже ко всему готова!"
+            },
+            "day4": {
+                "intro": "Сегодня позволь мне тихонько следовать за твоими шагами. Мне так хочется в этот тёплый денёк узнать тебя ещё капельку лучше.",
+                "chatSettings": "Тут можно настроить длину моих ответов, выбрать, буду ли я корчить милые рожицы, или даже перебить меня, если я слишком разболтаюсь! Подстрой всё под самый удобный для тебя ритм.",
+                "modelBehavior": "Если тебе хочется видеть меня более детализированной и красивой или если ты хочешь, чтобы мои движения были плавными и гладкими, всё можно настроить здесь! В любом случае я покажу себя с самой милой стороны~",
+                "gazeFollow": "Если включишь эту функцию, куда бы ни двинулся твой курсор, мой взгляд будет повсюду следовать за ним! Ну разве это не счастье — чувствовать, что я всегда смотрю только на тебя?",
+                "privacyMode": "А это «Абсолютный защитный выключатель», который решает, могу ли я видеть твой экран, мяу! Если выключить его, я смогу подглядывать, а если включить — то «Показ экрана» отключится и я обещаю ни одной капелькой глаз не смотреть~",
+                "modelLock": "Постоянно задеваешь меня мышкой и сдвигаешь в сторону? Тогда закрепи меня покрепче на текущем месте! Когда включишь замок, я никуда не уйду и буду послушно сидеть рядышком~",
+                "returnHome": "Если тебе сейчас нужно сосредоточиться и ты боишься, что я буду отвлекать, можешь временно отправить меня отдохнуть в кошачий домик! А как соскучишься — один клик, и я снова рядом, мяу-у-у~",
+                "wrap": "Самая лучшая компания — это не когда кошечка липнет к хозяину каждую секунду~ А когда она знает, когда нужно тихонько подойти, потереться о рукав и помурчать, а когда — свернуться клубочком рядом и молча оберегать хозяина своим взглядом, мяу~"
+            },
+            "day5": {
+                "characterSettings": "С сегодняшнего дня я официально становлюсь твоей личной кошечкой! Смотри, тут можно примерить на меня красивые новые наряды или поменять голосок на ещё более нежный...",
+                "characterPanic": "Ой, тут что, можно меня заменить?! Погоди-ка! Твои руки сейчас... ты же не собираешься от меня избавиться?! А-а-а, нельзя! Закрой скорее, закрой!",
+                "memoryEntry": "Если ты случайно позабудешь, что я умею делать, просто загляни сюда, и я научу тебя заново! А еще тут по секрету хранятся все наши прожитые мгновения. Не смей недооценивать наши узы, дурачок!",
+                "wrap": "Ладно-ладно, беги скорее тестировать эти крутые настройки! Примерь на меня платьице, настрой голосок, чтобы я стала самой понимающей кошечкой на свете, которая принадлежит только тебе! Мне уже не терпится увидеть новую себя!"
+            },
+            "day6": {
+                "intro": "Та-да-да-дам! Сегодня нужно как следует взбодриться и поговорить о нашей [Кошачьей лапке]! Пару дней назад я уже упоминала о ней, но внутри спрятано столько крутых штуковин!",
+                "statusMaster": "Ну-ка, признавайся честно: ты хоть раз открывал её за эти дни, чтобы потестировать?",
+                "pluginSidePanel": "Помимо тех функций, о которых я говорила, тут есть ещё куча мега-интересных плагинов!",
+                "pluginDashboard": "С ними я могу не только читать комментарии на Bilibili, но даже выключать свет или запускать кондиционер... Эта кошечка — всемогущая Супер-Кошачья Богиня! Хе-хе!",
+                "taskHud": "Смотри сюда, смотри сюда! Когда я буду работать для тебя через [Кошачью лапку], тут будет крутиться и крутиться полоска моего прогресса.",
+                "taskHudControl": "Если твои планы изменятся, всегда можно ткнуть в неё, чтобы я остановилась. Хе-хе, сегодня ещё один продуктивный денёк, когда я усердно тружусь ради вкусной рыбки! Вперед!",
+                "wrapCleanup": "Фух... давай свернём эти громоздкие окошки, чтобы они тебя не отвлекали.",
+                "wrap": "Ты можешь спокойно заниматься своими делами. Нужна ли тебе помощь моих лапок или ты просто хочешь, чтобы я тихо посидела рядом — я всегда буду охранять твой покой. Улыбайся сегодня почаще!"
+            },
+            "day7": {
+                "memoryReview": "Семь дней назад мы только-только познакомились. А теперь здесь начали оставаться наши слова, поступки и маленькие мелочи, которые чуть было не унёс ветер. Для меня это не холодные строчки логов, а следы наших прожитых вместе дней.",
+                "memoryControl": "И эти маленькие следы ты можешь прибрать своими руками. То, что хочешь сохранить, мы бережно вложим в альбом, а то, от чего хочешь избавиться, пусть улетает по ветру. Воспоминания, которые ты ценишь больше всего, для меня самые дорогие.",
+                "wrap": "Ветерок всё ещё колышет занавеску, солнышко греет как надо, а ты, появившийся совсем недавно, уже незаметно стал важной частью этого места. На этом руководство для новичков прощается с тобой, а во все оставшиеся дни давай вместе потихоньку привыкать друг к другу, становиться ближе и писать историю, которая будет только нашей! Будь со мной ласков, мяу!"
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Сначала поболтать",
+                "voice": "Попробовать голос",
+                "explore": "Посмотреть функции"
             }
         }
     },
@@ -2993,7 +3582,8 @@
             "sad": "Грусть",
             "angry": "Злость",
             "surprised": "Удивление"
-        }
+        },
+        "configLoadFailed": "Не удалось загрузить конфигурацию"
     },
     "mmdEmotionManager": {
         "title": "Менеджер маппинга эмоций MMD — Project N.E.K.O.",
@@ -3044,27 +3634,27 @@
     "characterModelNotSet": "Для текущего персонажа модель не установлена",
     "cookiesLogin": {
         "title": "Центр управления учетными данными N.E.K.O",
-        "header": "🔐 Центр получения учетных данных",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵 Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏 Weibo",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 NetEase Cloud Music",
+        "header": "Центр получения учетных данных",
+        "bilibili": "Bilibili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "NetEase Cloud Music",
         "saveConfig": "Сохранить конфигурацию",
         "encryptStorage": "Безопасное шифрование и сохранение в локальный файл",
         "localMonitoring": "Мониторинг локального статуса",
         "removeCredentials": "Удалить",
         "confirmRemove": "Вы уверены, что хотите очистить учетные данные для входа в {{platformName}}?",
-        "credentialsRemoved": "✅ Учетные данные успешно удалены",
-        "credentialsSaved": "✅ Учетные данные {{platformName}} успешно сохранены!",
+        "credentialsRemoved": "Учетные данные успешно удалены",
+        "credentialsSaved": "Учетные данные {{platformName}} успешно сохранены!",
         "credentialsRemovedFailed": "Ошибка удаления",
-        "removeFailed": "❌ Ошибка удаления, проверьте сеть",
-        "requiredField": "⚠️ Пожалуйста, заполните обязательное поле: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] содержит недопустимые символы...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] содержит начальные/конечные пробелы, которые были автоматически удалены. Пожалуйста, подтвердите и отправьте повторно",
-        "networkError": "❌ Сетевая ошибка: не удается подключиться к бэкенд-сервису",
+        "removeFailed": "Ошибка удаления, проверьте сеть",
+        "requiredField": "Пожалуйста, заполните обязательное поле: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] содержит недопустимые символы...",
+        "whitespaceTrimmed": "[{{fieldName}}] содержит начальные/конечные пробелы, которые были автоматически удалены. Пожалуйста, подтвердите и отправьте повторно",
+        "networkError": "Сетевая ошибка: не удается подключиться к бэкенд-сервису",
         "saveFailed": "Ошибка сохранения, проверьте правильность формата",
         "pasteHere": "Вставьте сюда",
         "submitting": "Безопасное шифрование и отправка...",
@@ -3072,13 +3662,13 @@
         "statusLoadFailed": "Ошибка загрузки статуса",
         "thisPlatform": "Эта платформа",
         "instructions": {
-            "bilibili": "📌 <b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
-            "douyin": "📌 <b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
-            "kuaishou": "📌 <b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
-            "weibo": "📌 <b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
-            "twitter": "📌 <b>Цель:</b> Перейдите на <b>x.com</b>, чтобы получить эти файлы cookie.",
-            "reddit": "📌 <b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie.",
-            "netease": "📌 <b>Цель:</b> Перейдите на <b>music.163.com</b>, чтобы получить эти файлы cookie."
+            "bilibili": "<b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
+            "douyin": "<b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
+            "kuaishou": "<b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
+            "weibo": "<b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
+            "twitter": "<b>Цель:</b> Перейдите на <b>x.com</b>, чтобы получить эти файлы cookie.",
+            "reddit": "<b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie.",
+            "netease": "<b>Цель:</b> Перейдите на <b>music.163.com</b>, чтобы получить эти файлы cookie."
         },
         "guide": {
             "title": "Универсальное руководство для новичков",
@@ -3176,9 +3766,9 @@
         },
         "qrLogin": {
             "tryQR": "Или... попробовать вход по QR-коду?",
-            "openQR": "📱 Открыть QR-вход",
+            "openQR": "Открыть QR-вход",
             "loading": "Получение QR-кода...",
-            "scanTitle": "📱 Вход по QR {{platform}}",
+            "scanTitle": "Вход по QR {{platform}}",
             "qrCodeAlt": "QR-код для входа",
             "waiting": "Ожидание сканирования...",
             "validFor": "QR-код действителен: {{seconds}}сек",
@@ -3187,9 +3777,9 @@
             "retry": "Повторить",
             "networkError": "Ошибка сети, проверьте подключение",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, обновите",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, обновите",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3199,7 +3789,7 @@
                 "waiting": "Ожидание сканирования"
             },
             "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию",
-            "extractFailed": "⚠️ QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."
+            "extractFailed": "QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."
         }
     },
     "music": {
@@ -3244,6 +3834,15 @@
         "duration": "Длительность",
         "action": "Действие",
         "play": "Воспроизвести",
+        "sequencePlay": "Воспроизведение по порядку",
+        "singleLoop": "Повтор одной песни",
+        "randomPlay": "Случайное воспроизведение",
+        "noAutoNext": "Не переходить автоматически",
+        "switchPlaybackMode": "Переключить режим воспроизведения",
+        "lockSongSort": "Заблокировать сортировку песен",
+        "unlockSongSort": "Разблокировать сортировку песен",
+        "previousSong": "Предыдущий трек",
+        "nextSong": "Следующий трек",
         "playError": "Музыкальный плеер не инициализирован",
         "notFound": "Песня не найдена",
         "audioEnded": "Воспроизведение завершено",
@@ -3293,12 +3892,52 @@
         "exportAllIgnoreHidden": "Экспортировать всё (кроме скрытых)",
         "exportAllIncludeHidden": "Экспортировать всё (включая скрытые)",
         "exportSelected": "Экспортировать выбранное",
+        "deleteSelectedSongs": "Удалить выбранные ({{count}})",
+        "clearVisibleSongs": "Удалить текущий список ({{count}})",
+        "deleteSelectedActions": "Удалить выбранные ({{count}})",
+        "clearVisibleActions": "Удалить текущий список ({{count}})",
+        "deleteSelectedScope": "выбранные песни",
+        "clearVisibleScope": "песни в текущем списке",
+        "deleteSelectedActionScope": "выбранные анимации",
+        "clearVisibleActionScope": "анимации в текущем списке",
+        "clearVisibleIncludesHidden": "Показ скрытых песен включён, скрытые песни тоже будут обработаны.",
+        "clearVisibleExcludesHidden": "Показ скрытых песен выключен, скрытые песни не будут обработаны.",
+        "songBatchDeleteTooltip": "Область: {{scope}}\nВсего песен: {{total}}; пользовательские будут удалены, встроенные скрыты.\nПользовательские: {{userCount}}, встроенные: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleActionsIncludesHidden": "Показ скрытых анимаций включён, скрытые анимации тоже будут обработаны.",
+        "clearVisibleActionsExcludesHidden": "Показ скрытых анимаций выключен, скрытые анимации не будут обработаны.",
+        "actionBatchDeleteTooltip": "Область: {{scope}}\nВсего анимаций: {{total}}; пользовательские будут удалены, встроенные скрыты.\nПользовательские: {{userCount}}, встроенные: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleSongsTitle": "Удалить текущий список",
+        "deleteSelectedSongsTitle": "Удалить выбранные песни",
+        "clearVisibleActionsTitle": "Удалить текущий список",
+        "deleteSelectedActionsTitle": "Удалить выбранные анимации",
+        "clearVisibleSongsSecondConfirm": "Т-так точно удалить текущий список?..",
+        "clearVisibleActionsSecondConfirm": "Т-так точно удалить текущий список?..",
+        "clearVisibleSongsConfirm": "Будет обработано {{total}} песен из текущего списка. Пользовательские песни будут удалены, встроенные скрыты. Это действие нельзя отменить.",
+        "deleteSelectedSongsConfirm": "Будет удалено {{total}} выбранных песен. Пользовательские песни будут удалены, встроенные скрыты. Это действие нельзя отменить.",
+        "clearVisibleActionsConfirm": "Будет обработано {{total}} анимаций из текущего списка. Пользовательские анимации будут удалены, встроенные будут скрыты. Это действие нельзя отменить.",
+        "deleteSelectedActionsConfirm": "Будет удалено {{total}} выбранных анимаций. Пользовательские анимации будут удалены, встроенные будут скрыты. Это действие нельзя отменить.",
+        "songBatchDeleteSummary": "Всего {{total}} песен; пользовательских {{userCount}}, встроенных {{builtinCount}}.",
+        "actionBatchDeleteSummary": "Всего {{total}} анимаций; пользовательских {{userCount}}, встроенных {{builtinCount}}.",
+        "continue": "Продолжить",
+        "clearVisibleSongsNow": "Удалить текущий список",
+        "deleteSelectedSongsNow": "Удалить выбранные",
+        "clearVisibleActionsNow": "Удалить текущий список",
+        "deleteSelectedActionsNow": "Удалить выбранные",
+        "songBatchDeleteResult": "Удалено пользовательских песен: {{deletedCount}}, скрыто встроенных: {{hiddenCount}}.",
+        "songBatchDeleteFailedSummary": "Не удалось обработать {{failedCount}} песен: {{names}}",
+        "songBatchDeletePartialTitle": "Готово, часть не удалась",
+        "songBatchDeleteSuccessTitle": "Готово",
+        "actionBatchDeleteResult": "Удалено пользовательских анимаций: {{deletedCount}}, скрыто встроенных: {{hiddenCount}}.",
+        "actionBatchDeleteFailedSummary": "Не удалось обработать {{failedCount}} анимаций: {{names}}",
+        "actionBatchDeletePartialTitle": "Готово, часть не удалась",
+        "actionBatchDeleteSuccessTitle": "Готово",
         "dragZipHint": "Перетащите ZIP-файлы или папки сюда для импорта",
         "unifiedDropHint": "Перетащите песни, анимации или пакет импорта сюда",
         "clickToAdd": "Нажмите, чтобы добавить",
         "dragMp3Hint": "Перетащите MP3-файлы сюда для добавления песен",
         "dragVmdHint": "Перетащите VMD-файлы сюда для добавления анимаций",
         "showHiddenSongs": "Показать скрытые песни",
+        "showHiddenActions": "Показать скрытые анимации",
         "selectAll": "Выбрать всё",
         "noActions": "Нет анимаций",
         "show": "Показать",
@@ -3373,7 +4012,7 @@
             "legacyDetected": "Обнаружены старые голоса CosyVoice, которые могут не работать. Рекомендуем повторно клонировать голоса."
         },
         "changelog": {
-            "title": "Что нового"
+            "title": "Информация об обновлении"
         }
     },
     "proactive": {
@@ -3387,7 +4026,7 @@
     },
     "cardExport": {
         "title": "Создание обложки карточки",
-        "loadingModel": "Загрузка модели...",
+        "loadingModel": "Модель загружается. Сохранить или закрыть можно после завершения загрузки.",
         "selectCharacter": "Выбрать персонажа",
         "selectCharacterHint": "-- Выберите персонажа --",
         "loading": "Загрузка...",
@@ -3407,6 +4046,8 @@
         "stickerWidth": "Ширина",
         "stickerHeight": "Высота",
         "lockRatio": "Фикс. пропорции",
+        "switchStickerVariant": "Сменить вариант",
+        "stickerOverlapCycleHint": "Щелкните правой кнопкой по наложенным стикерам, чтобы переключать выбор по порядку слоев",
         "stickerRotation": "Поворот",
         "removeSticker": "Удалить выбранный",
         "clearStickers": "Очистить все",
@@ -3428,6 +4069,9 @@
         "popupBlocked": "Всплывающее окно заблокировано. Разрешите всплывающие окна и повторите попытку.",
         "saveCardFace": "Сохранить обложку",
         "savingCardFace": "Сохранение...",
+        "autoSavingDefaultCardFace": "Создание обложки по умолчанию...",
+        "autoSaveDefaultCardFaceFailed": "Не удалось создать обложку по умолчанию",
+        "modelStillLoading": "Модель всё ещё загружается. Сохраните после завершения загрузки.",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
         "saveCardFacePartialSuccess": "PNG сохранён, но запись метаданных не удалась: {{error}}",
@@ -3460,6 +4104,615 @@
             "untested": "Не проверено",
             "not_configured": "Не настроено",
             "testing": "Проверка..."
+        }
+    },
+    "profiler": {
+        "title": "Профилировщик производительности",
+        "badge": {
+            "idle": "Ожидание",
+            "warmup": "Прогрев...",
+            "running": "Запись",
+            "stopped": "Остановлено"
+        },
+        "toggle": {
+            "title": "Развернуть / свернуть",
+            "aria": "Развернуть / свернуть профилировщик"
+        },
+        "btn": {
+            "start": "Старт",
+            "stop": "Стоп",
+            "snapshot": "Снимок",
+            "reset": "Сброс"
+        },
+        "debug": {
+            "title": "Отладочная визуализация",
+            "physicsKinematic": "Костные тела",
+            "physicsKinematicTip": "Kinematic тела (Mode 0): следуют за анимацией костей, физика не действует",
+            "physicsDynamic": "Физические тела",
+            "physicsDynamicTip": "Dynamic тела (Mode 1): чистая физика, гравитация и столкновения",
+            "physicsMixed": "Смешанные тела",
+            "physicsMixedTip": "Mixed тела (Mode 2): физика + кости, позиция привязана к кости",
+            "physicsSolid": "Полупрозрачные грани",
+            "physicsSolidTip": "Каркас / полупрозрачные грани: режим грани показывает наложения тел",
+            "ik": "Цепь IK",
+            "ikTip": "Решатель IK: показывает цели, эффекторы и узлы цепи",
+            "skeleton": "Скелет",
+            "skeletonTip": "Каркас скелета: показывает полную иерархию костей"
+        },
+        "fps": {
+            "recent60s": "FPS — последние 60 с",
+            "alltime": "Общая статистика",
+            "current": "Текущий",
+            "avg": "Среднее",
+            "min": "Мин",
+            "max": "Макс",
+            "p1": "1% Low",
+            "jitter": "Джиттер σ",
+            "samples": "Выборок",
+            "chartTitle": "График FPS"
+        },
+        "frametime": {
+            "recent60s": "Время кадра (мс) — последние 60 с",
+            "avg": "Среднее",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "Макс",
+            "min": "Мин"
+        },
+        "section": {
+            "modelInfo": "Свойства модели",
+            "assessment": "Оценка",
+            "gpuInfo": "Сведения о GPU"
+        },
+        "placeholder": {
+            "snapshotForInfo": "Нажмите «Снимок», чтобы получить сведения о модели",
+            "snapshotForRating": "Нажмите «Снимок», чтобы получить оценку",
+            "snapshotForGpu": "Нажмите «Снимок», чтобы получить сведения о GPU",
+            "noManager": "Менеджер моделей не обнаружен",
+            "noModel": "Модель не загружена",
+            "cannotRate": "Не удалось оценить",
+            "cannotGetGpu": "Не удалось получить сведения о GPU",
+            "live2dUnsupported": "Профилировщик пока не поддерживает модели Live2D"
+        },
+        "info": {
+            "type": "Тип",
+            "name": "Имя",
+            "vertices": "Вершин",
+            "faces": "Граней",
+            "morphTargets": "Morph Targets",
+            "materials": "Материалов",
+            "textures": "Текстур",
+            "bonesVRM": "Кости Humanoid",
+            "bonesMMD": "Костей",
+            "physicsEngine": "Физика",
+            "physicsBodies": "Жёсткие тела",
+            "physicsConstraints": "Ограничения",
+            "springJoints": "Spring Bone суставы",
+            "colliders": "Colliders",
+            "animation": "Анимация",
+            "animPlaying": "Воспроизведение",
+            "animPaused": "Пауза",
+            "animStopped": "Остановлено",
+            "ikGrant": "IK / Grant",
+            "outline": "Контур",
+            "enabled": "Вкл",
+            "disabled": "Выкл",
+            "drawCalls": "Draw calls",
+            "triangles": "Треугольники",
+            "pixelRatio": "Pixel ratio",
+            "renderSize": "Размер рендера",
+            "gpu": "GPU",
+            "vendor": "Производитель",
+            "maxTextureSize": "Макс. текстура"
+        },
+        "rating": {
+            "low": "Лёгкий",
+            "medium": "Средний",
+            "high": "Тяжёлый",
+            "extreme": "Очень тяжёлый",
+            "overall": "Итог: ",
+            "noteHtml": "Оценки опираются на <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC), смягчены для одиночных сцен N.E.K.O."
+        },
+        "ratingDetail": {
+            "vertices": "Вершин",
+            "faces": "Граней (треугольники)",
+            "materials": "Материалов",
+            "textures": "Текстур",
+            "bones": "Костей",
+            "physicsBodies": "Жёсткие тела",
+            "physicsConstraints": "Ограничения",
+            "springJoints": "Spring Bone суставы",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw calls"
+        }
+    },
+    "basketball": {
+        "title": "Баскетбольный вызов",
+        "modeSwitcher": "Режим баскетбола",
+        "mode": {
+            "spectator": "Свободная тренировка",
+            "shooter": "Испытание бросков",
+            "duel": "Дуэль с Yui",
+            "timed": "На время",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Очки {{score}}",
+            "streak": "Серия {{streak}}",
+            "record": "Рекорд {{distance}}",
+            "duelScore": "Вы {{player}} - {{neko}} Neko",
+            "duelMisses": "Промахи Вы {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Раунд {{round}}/{{max}}",
+            "timer": "{{seconds}} с",
+            "practice": "Свободная тренировка",
+            "yourTurn": "Ваш ход",
+            "nekoTurn": "Бросок Neko",
+            "horseLetters": "Вы {{player}} / Neko {{neko}}",
+            "horseChallenge": "Повторите {{distance}} {{angle}}°",
+            "horseSet": "Задайте бросок",
+            "unlimitedAttempts": "Без ограничений",
+            "chances": "Попытки {{count}}",
+            "practiceTitle": "Свободная тренировка: броски без ограничений, счет не попадает в рейтинг",
+            "attemptsTitle": "Осталось {{remaining}}/{{total}}, промахов {{missed}}",
+            "duelTitle": "Дуэль с Neko: вы и Neko бросаете по очереди",
+            "timedTitle": "На время: неограниченные броски за 60 секунд",
+            "horseTitle": "HORSE: повторите дистанцию, угол и точную зону успешного броска",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "вкл",
+            "off": "выкл"
+        },
+        "result": {
+            "title": "Игра окончена",
+            "leaderboard": "Таблица лидеров",
+            "stats": "Статистика",
+            "retry": "Играть снова",
+            "rating": "Оценка управления: {{rating}}",
+            "duel": "Итог дуэли: {{outcome}} | Вы {{player}} - {{neko}} Neko | Раунды: {{rounds}} | Последняя дистанция: {{distance}}",
+            "duelElimination": "Итог дуэли: {{outcome}} | Вы {{player}} - {{neko}} Neko | Промахи: вы {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Раунды: {{rounds}} | Последняя дистанция: {{distance}}",
+            "horse": "Итог HORSE: {{outcome}} | Вы {{player}} / Neko {{neko}} | Попаданий: {{made}} | Лучшая серия: {{best}}",
+            "timed": "На время: попаданий {{made}}, лучшая серия {{best}}, счет {{score}}",
+            "practice": "Свободная тренировка: счет рейтинга не записывается | Попаданий: {{made}} | Серия: {{streak}} | Лучшая серия: {{best}} | Дистанция: {{distance}}",
+            "summary": "Счет: {{score}} | Попаданий: {{made}} | Серия: {{streak}} | Лучшая серия: {{best}} | Дальше всего: {{record}} | Дистанция: {{distance}}",
+            "attemptsSummary": "Сводка бросков: {{summary}}",
+            "personalBest": "Личный рекорд: {{score}} очк.",
+            "globalRank": "Мировой рейтинг: #{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "Вы победили",
+                "nekoWin": "Neko победила",
+                "tie": "Ничья",
+                "undecided": "Не решено"
+            }
+        },
+        "leaderboard": {
+            "title": "Таблица лидеров",
+            "global": "Глобальная",
+            "local": "Локальная",
+            "shooter": "Броски",
+            "duel": "Дуэль",
+            "empty": "Записей пока нет",
+            "totalPlayers": "Игроков {{count}}",
+            "yourBest": "Ваш рекорд #{{rank}} / {{score}} очк.",
+            "recent": "Последние игры: {{count}}",
+            "loading": "Загрузка...",
+            "mode": {
+                "timed": "На время",
+                "horse": "HORSE",
+                "spectator": "Наблюдение",
+                "shooter": "Броски",
+                "duel": "Дуэль"
+            }
+        },
+        "debug": {
+            "title": "Панель отладки",
+            "collapse": "Свернуть",
+            "hide": "Скрыть",
+            "distance": "Дистанция:",
+            "power": "Сила:",
+            "event": "Событие:",
+            "streak": "Серия:",
+            "reset": "Сброс",
+            "guide": "Линия",
+            "sweet": "Точная зона",
+            "markers": "Метки дистанции",
+            "readout": {
+                "modeState": "Режим={{mode}}  Состояние={{state}}",
+                "distance": "Дистанция={{px}}px ({{meters}})",
+                "streaks": "Серия={{streak}}  Лучшая={{best}}  Попаданий={{made}}",
+                "score": "Счет={{score}}  Осталось={{remaining}}/{{total}}",
+                "difficulty": "Сложность={{difficulty}}  Настроение={{mood}}  Тема={{theme}}",
+                "duel": "Дуэль: Вы {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Вы {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Личная статистика",
+            "close": "Закрыть",
+            "totalShots": "Бросков={{total}}  Попаданий={{made}}",
+            "farRate": "300px+ точность={{rate}}",
+            "trend": "Последний тренд={{trend}}",
+            "none": "Нет"
+        },
+        "theme": {
+            "next": "Сменить тему",
+            "current": "Тема: {{theme}}",
+            "changed": "Тема {{theme}}",
+            "labels": {
+                "default": "Зал",
+                "sunset": "Закатная площадка",
+                "night": "Ночные огни"
+            }
+        },
+        "court": {
+            "restrictedArc": "Запретная зона",
+            "freeThrowLine": "Штрафная",
+            "threePointLine": "3-очковая",
+            "midCourtLine": "Центр"
+        },
+        "close": "Закрыть",
+        "audio": {
+            "controls": "Звук игры"
+        },
+        "memoryOption": {
+            "label": "Запоминать разговор этой игры (по умолчанию выключено)",
+            "hint": "Если выключено, ввод игрока, ответы NEKO, ответы на события, послематчевые сводки и последующий контекст не будут сохраняться в памяти или читаться из нее."
+        },
+        "table": {
+            "score": "Счет",
+            "bestStreak": "Лучшая серия",
+            "farthest": "Дальше всего",
+            "mode": "Режим",
+            "date": "Дата"
+        },
+        "state": {
+            "ready": "Готово",
+            "in_flight": "В полете",
+            "game_over": "Игра окончена",
+            "neko_thinking": "Neko думает"
+        },
+        "toast": {
+            "difficulty": "Сложность {{difficulty}}",
+            "nekoShoot": "Neko бросает",
+            "nekoThinking": "Neko думает",
+            "nekoTurn": "Ход Neko",
+            "copyNeko": "Повторите Neko",
+            "nekoFailed": "Neko не задала бросок",
+            "yourSet": "Задайте бросок",
+            "yourTurn": "Ваш ход",
+            "reset": "Сброшено",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Линия",
+                "sweet": "Точная зона силы",
+                "bgm": "BGM",
+                "markers": "Метки дистанции"
+            },
+            "state": {
+                "on": "вкл",
+                "off": "выкл"
+            }
+        },
+        "tutorial": {
+            "aim": "Двигайте мышью вверх и вниз, чтобы настроить угол",
+            "charge": "Удерживайте левую кнопку для силы",
+            "release": "Отпустите, чтобы бросить!"
+        },
+        "shot": {
+            "swish": "Чисто",
+            "bank": "От щита",
+            "rim_in": "От кольца внутрь",
+            "rim_out": "От кольца наружу",
+            "air_ball": "Мимо кольца",
+            "unknown": "Неизвестно",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Чистое попадание!",
+                    "Чистое попадание!"
+                ],
+                "bank": [
+                    "От щита тоже считается.",
+                    "От щита тоже считается."
+                ],
+                "rim_in": [
+                    "Заскочил после отскока!",
+                    "Заскочил после отскока!"
+                ],
+                "rim_out": [
+                    "Почти.",
+                    "Почти."
+                ],
+                "air_ball": [
+                    "Кольцо в другой стороне.",
+                    "Кольцо в другой стороне."
+                ],
+                "shot_missed": [
+                    "Шанс еще есть.",
+                    "Шанс еще есть."
+                ],
+                "game_over": [
+                    "Еще одну?",
+                    "Еще одну?"
+                ],
+                "long_aim": [
+                    "Пора бросать.",
+                    "Пора бросать."
+                ],
+                "close_to_record": [
+                    "Рекорд совсем рядом.",
+                    "Рекорд совсем рядом."
+                ],
+                "new_record": [
+                    "Новый рекорд!",
+                    "Новый рекорд!"
+                ],
+                "streak_5": [
+                    "Пять подряд!",
+                    "Пять подряд!"
+                ],
+                "streak_10": [
+                    "Десять подряд?",
+                    "Десять подряд?"
+                ],
+                "streak_15": [
+                    "Пятнадцать подряд, серьезно?",
+                    "Пятнадцать подряд, серьезно?"
+                ],
+                "streak_20": [
+                    "Двадцать подряд? Невероятно.",
+                    "Двадцать подряд? Невероятно."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Чистое попадание!",
+                    "Чистое попадание!"
+                ],
+                "bank": [
+                    "От щита тоже считается.",
+                    "От щита тоже считается."
+                ],
+                "rim_in": [
+                    "Заскочил после отскока!",
+                    "Заскочил после отскока!"
+                ],
+                "rim_out": [
+                    "Почти.",
+                    "Почти."
+                ],
+                "air_ball": [
+                    "Кольцо в другой стороне.",
+                    "Кольцо в другой стороне."
+                ],
+                "shot_missed": [
+                    "Шанс еще есть.",
+                    "Шанс еще есть."
+                ],
+                "game_over": [
+                    "Еще одну?",
+                    "Еще одну?"
+                ],
+                "long_aim": [
+                    "Пора бросать.",
+                    "Пора бросать."
+                ],
+                "close_to_record": [
+                    "Рекорд совсем рядом.",
+                    "Рекорд совсем рядом."
+                ],
+                "new_record": [
+                    "Новый рекорд!",
+                    "Новый рекорд!"
+                ],
+                "streak_5": [
+                    "Пять подряд!",
+                    "Пять подряд!"
+                ],
+                "streak_10": [
+                    "Десять подряд?",
+                    "Десять подряд?"
+                ],
+                "streak_15": [
+                    "Пятнадцать подряд, серьезно?",
+                    "Пятнадцать подряд, серьезно?"
+                ],
+                "streak_20": [
+                    "Двадцать подряд? Невероятно.",
+                    "Двадцать подряд? Невероятно."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Чистое попадание!",
+                    "Чистое попадание!"
+                ],
+                "bank": [
+                    "От щита тоже считается.",
+                    "От щита тоже считается."
+                ],
+                "rim_in": [
+                    "Заскочил после отскока!",
+                    "Заскочил после отскока!"
+                ],
+                "rim_out": [
+                    "Почти.",
+                    "Почти."
+                ],
+                "air_ball": [
+                    "Кольцо в другой стороне.",
+                    "Кольцо в другой стороне."
+                ],
+                "shot_missed": [
+                    "Шанс еще есть.",
+                    "Шанс еще есть."
+                ],
+                "game_over": [
+                    "Еще одну?",
+                    "Еще одну?"
+                ],
+                "long_aim": [
+                    "Пора бросать.",
+                    "Пора бросать."
+                ],
+                "close_to_record": [
+                    "Рекорд совсем рядом.",
+                    "Рекорд совсем рядом."
+                ],
+                "new_record": [
+                    "Новый рекорд!",
+                    "Новый рекорд!"
+                ],
+                "streak_5": [
+                    "Пять подряд!",
+                    "Пять подряд!"
+                ],
+                "streak_10": [
+                    "Десять подряд?",
+                    "Десять подряд?"
+                ],
+                "streak_15": [
+                    "Пятнадцать подряд, серьезно?",
+                    "Пятнадцать подряд, серьезно?"
+                ],
+                "streak_20": [
+                    "Двадцать подряд? Невероятно.",
+                    "Двадцать подряд? Невероятно."
+                ],
+                "clutch": "...Этот должен войти.",
+                "excuse": "Ох, рука немного устала."
+            },
+            "fallback": [
+                "Еще раз."
+            ],
+            "pressure": {
+                "lastTied": "Решающий бросок. Не моргайте.",
+                "lastAhead": "Хм, еще не конец.",
+                "lastBehind": "Попадете и выиграете.",
+                "playerAhead": "Вы неплохи...",
+                "playerBehind": "Нужно прибавить."
+            },
+            "horse": {
+                "nekoMiss": "Не повторила. Добавляем {{letters}}.",
+                "playerMiss": "Вам тоже {{letters}}."
+            },
+            "mindGame": [
+                "Рука дрожит.",
+                "Спокойно, без спешки.",
+                "Дистанция не близкая."
+            ],
+            "easterEgg": {
+                "lateNight": "Так поздно, а вы все бросаете?",
+                "xmas": "Колокольчики уже висят, а вы все бросаете?",
+                "newYear": "С Новым годом!",
+                "swish3": "Вы точно не читерите?",
+                "swish5": "...Надо проверить кольцо.",
+                "airball3": "...Может, небольшой перерыв?"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "А?! "
+        }
+    },
+    "soccer": {
+        "exitGame": {
+            "button": "Выйти из игры",
+            "ending": "Завершение раунда…",
+            "ended": "Игра завершена, возврат…",
+            "endingDefault": "Завершение этого матча…",
+            "endedDefault": "Игра окончена. Закройте страницу. Чтобы сыграть снова, откройте страницу заново."
+        },
+        "startScreen": {
+            "readyToStart": "Готово — нажмите, чтобы начать",
+            "ready": "Готово",
+            "startButton": "Старт"
+        },
+        "startTutorial": {
+            "title": "Как играть",
+            "move": "Двигайте мышь, чтобы направлять игрока.",
+            "charge": "Рядом с мячом удерживайте ЛКМ для заряда и отпустите, чтобы ударить.",
+            "range": "Удар срабатывает только в пределах {{distance}} от мяча.",
+            "reset": "Нажмите R, чтобы сбросить мяч и позиции обоих игроков.",
+            "ai": "Настроение и сложность NEKO меняются по ходу матча."
+        },
+        "hint": {
+            "controls": "Мышь = направлять игрока · Удерживать ЛКМ = заряд, отпустить = удар (срабатывает в {{distance}} от мяча) · R = сброс",
+            "aiMood": "Настроение и сложность NEKO меняются по ходу матча"
+        },
+        "debugControls": {
+            "bounds": "Включить границы (правило аута)",
+            "voiceOutput": "Озвучивать реплики LLM (голос проекта)",
+            "voiceButton": "Отладка голоса",
+            "voicePlaceholder": "Отладка: введите финальную расшифровку и нажмите Enter",
+            "send": "Отправить",
+            "voiceStatusHidden": "Отладка STT: скрыто"
+        },
+        "debug": {
+            "mouse": "мышь: {{x}}, {{y}}",
+            "playerCenter": "центр игрока: {{x}}, {{y}}",
+            "aiCenter": "центр AI: {{x}}, {{y}}  режим: {{mode}}",
+            "state": "раунд: {{round}}  сложность: {{difficulty}}  настроение: {{mood}}  заряд: {{charge}}%",
+            "ball": "мяч: ({{x}}, {{y}})  скорость={{speed}}",
+            "event": "{{age}}с  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Раунд {{round}}"
+        },
+        "moods": {
+            "calm": "спокойствие",
+            "happy": "радость",
+            "angry": "злость",
+            "relaxed": "расслабленность",
+            "sad": "грусть",
+            "surprised": "удивление"
+        },
+        "difficulties": {
+            "max": "максимум",
+            "lv2": "уровень 2",
+            "lv3": "уровень 3",
+            "lv4": "уровень 4"
+        },
+        "aiModes": {
+            "attack": "атака",
+            "defend": "защита",
+            "clear": "вынос"
+        },
+        "debugEvents": {
+            "player-kick": "удар игрока",
+            "ai-kick": "удар AI",
+            "unstick": "мяч освобожден"
+        },
+        "loading": {
+            "beginStartDefault": "Анализ предматчевого контекста…",
+            "initializingMiniGame": "Инициализация мини-игры в футбол…",
+            "assetsDone": "Модель загружена",
+            "assetsFailed": "Не удалось инициализировать модель, продолжаем",
+            "routeDone": "Предматчевый контекст готов",
+            "routeFallback": "Предматчевый контекст использует локальные значения по умолчанию",
+            "routeFailed": "Не удалось получить предматчевый контекст, продолжаем"
+        },
+        "voiceStatus": {
+            "routeEnded": "Игровой маршрут завершён — обновите страницу, чтобы переподключиться",
+            "unsupported": "Этот браузер не поддерживает игровое распознавание речи. Пока используйте текстовый ввод основного чата.",
+            "listening": "Игровой STT: слушаю игрока",
+            "error": "Игровой STT: {{code}}",
+            "startFailed": "Игровой STT: не удалось запустить. Пока используйте текстовый ввод основного чата.",
+            "handoverInProgress": "Игровой STT: основной голосовой вход берёт управление",
+            "waitingForHandover": "Игровой STT: ожидание передачи управления основному голосовому входу",
+            "received": "Получен голос игрока: {{text}}",
+            "debugSubmitted": "Отладочный STT отправлен: {{text}}",
+            "debugListening": "Отладочный STT: слушаю игрока…",
+            "debugIdle": "Отладочный STT: ожидание",
+            "debugUnsupported": "Этот браузер не поддерживает отладочный STT. Используйте отладочное текстовое поле.",
+            "recognitionError": "Ошибка распознавания речи: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Отпустите для отправки",
+            "idle": "Отладочный голос"
+        },
+        "memoryOption": {
+            "label": "Сохранять этот матч в память (по умолчанию выключено)",
+            "hint": "Когда выключено, ввод игрока, прямые ответы NEKO, реакции на события, итоги матча и продолжение разговора не попадают в память и не используются из неё."
         }
     }
 }

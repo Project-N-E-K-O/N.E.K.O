@@ -258,45 +258,6 @@
     mod.setFloatingAgentStatus = setFloatingAgentStatus;
 
     // ====================================================================
-    // Quota exceeded modal
-    // ====================================================================
-    let _agentQuotaModalOpen = false;
-    let _agentQuotaModalCooldownUntil = 0;
-
-    function _isAgentQuotaExceededMessage(text) {
-        if (!text) return false;
-        const s = String(text).toLowerCase();
-        return (
-            s.includes('\u514d\u8d39 agent \u6a21\u578b\u4eca\u65e5\u8bd5\u7528\u6b21\u6570\u5df2\u8fbe\u4e0a\u9650') ||
-            s.includes('agent quota exceeded') ||
-            (s.includes('agent') && s.includes('\u4e0a\u9650') && s.includes('\u8bd5\u7528'))
-        );
-    }
-
-    function maybeShowAgentQuotaExceededModal(rawMessage) {
-        if (!_isAgentQuotaExceededMessage(rawMessage)) return;
-        if (typeof window.showAlert !== 'function') return;
-
-        const now = Date.now();
-        if (_agentQuotaModalOpen || now < _agentQuotaModalCooldownUntil) return;
-
-        _agentQuotaModalOpen = true;
-        _agentQuotaModalCooldownUntil = now + 3000;
-
-        const title = window.t ? window.t('common.alert') : '\u63d0\u793a';
-        const msg = window.t
-            ? window.t('agent.quotaExceeded', { limit: 300 })
-            : '\u514d\u8d39 Agent \u6a21\u578b\u4eca\u65e5\u8bd5\u7528\u6b21\u6570\u5df2\u8fbe\u4e0a\u9650\uff08300\u6b21\uff09\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\u3002';
-
-        Promise.resolve(window.showAlert(msg, title))
-            .catch(() => { /* ignore */ })
-            .finally(() => {
-                _agentQuotaModalOpen = false;
-            });
-    }
-    mod.maybeShowAgentQuotaExceededModal = maybeShowAgentQuotaExceededModal;
-
-    // ====================================================================
     // Content filter modal
     // ====================================================================
     let _contentFilterModalOpen = false;
@@ -374,7 +335,8 @@
             const r = await fetch(config.url);
             if (!r.ok) return false;
             const j = await r.json();
-            if (!j.ready) {
+            const pending = kind === 'openclaw' && !!j.pending;
+            if (!j.ready && !pending) {
                 if (showError) {
                     const name = window.t ? window.t(`settings.toggles.${config.nameKey}`) : config.nameKey;
                     setFloatingAgentStatus(j.reasons?.[0] || (window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}\u4e0d\u53ef\u7528`));
@@ -1756,15 +1718,18 @@
     // ====================================================================
     // Floating buttons ready => bind agent checkbox listeners
     // ====================================================================
+    let agentReadyAutoOpenHandled = false;
     window.addEventListener('live2d-floating-buttons-ready', () => {
         console.log('[App] \u6536\u5230\u6d6e\u52a8\u6309\u94ae\u5c31\u7eea\u4e8b\u4ef6\uff0c\u5f00\u59cb\u7ed1\u5b9aAgent\u5f00\u5173');
         setupAgentCheckboxListeners();
+        if (agentReadyAutoOpenHandled) return;
+        agentReadyAutoOpenHandled = true;
         setTimeout(() => {
             if (typeof window.openAgentStatusPopupWhenEnabled === 'function') {
                 window.openAgentStatusPopupWhenEnabled();
             }
         }, 400);
-    }, { once: true });
+    });
 
     // ====================================================================
     // Expose module

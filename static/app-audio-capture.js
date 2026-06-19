@@ -21,6 +21,332 @@
     function resetSessionButton() { return document.getElementById('resetSessionButton'); }
     function statusElement()      { return document.getElementById('status'); }
 
+    // ======================== 游戏语音 STT Gate ========================
+
+    function getGameVoiceSpeechRecognition() {
+        return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    }
+
+    function gameVoiceRequestId() {
+        return `game-voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function logGameVoiceSttDiagnostics(reason) {
+        const tracks = S.stream instanceof MediaStream
+            ? S.stream.getAudioTracks().map(track => ({
+                label: track.label || '',
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            }))
+            : [];
+        console.log('[GameVoiceSTT][Diag] env:', {
+            reason,
+            speechRecognition: !!getGameVoiceSpeechRecognition(),
+            secureContext: !!window.isSecureContext,
+            protocol: window.location ? window.location.protocol : '',
+            visibility: document.visibilityState,
+            selectedMicrophoneId: S.selectedMicrophoneId || '',
+            ordinaryStreamTracks: tracks
+        });
+        if (S.selectedMicrophoneId) {
+            console.warn('[GameVoiceSTT][Diag] SpeechRecognition 不能指定 selectedMicrophoneId，会使用浏览器默认麦克风；若默认麦不是当前项目麦，可能 no-speech。');
+        }
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            navigator.permissions.query({ name: 'microphone' }).then(function (status) {
+                console.log('[GameVoiceSTT][Diag] microphone permission:', status && status.state);
+            }).catch(function (error) {
+                console.log('[GameVoiceSTT][Diag] microphone permission query unavailable:', error && error.message ? error.message : error);
+            });
+        }
+        if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
+            navigator.mediaDevices.enumerateDevices().then(function (devices) {
+                const audioInputs = devices
+                    .filter(device => device.kind === 'audioinput')
+                    .map(device => ({
+                        deviceId: device.deviceId,
+                        label: device.label || '',
+                        groupId: device.groupId || ''
+                    }));
+                console.log('[GameVoiceSTT][Diag] audio inputs:', audioInputs);
+            }).catch(function (error) {
+                console.log('[GameVoiceSTT][Diag] enumerate audio inputs failed:', error && error.message ? error.message : error);
+            });
+        }
+    }
+
+    function getGameVoiceSttRouteSnapshot() {
+        return {
+            gameType: S.gameVoiceSttGameType || 'soccer',
+            sessionId: S.gameVoiceSttSessionId || S.gameRouteSessionId || ''
+        };
+    }
+
+    async function submitGameVoiceSttTranscript(transcript, routeSnapshot) {
+        const text = String(transcript || '').trim();
+        if (!text) return;
+
+        const lanlanName = S.gameRouteLanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        if (!lanlanName) {
+            console.warn('[GameVoiceSTT] missing lanlan_name, drop transcript');
+            return;
+        }
+
+        const frozenRoute = routeSnapshot || getGameVoiceSttRouteSnapshot();
+        const gameType = frozenRoute.gameType || 'soccer';
+        const sessionId = frozenRoute.sessionId || '';
+        const requestId = gameVoiceRequestId();
+        console.log(`[GameVoiceSTT] 最终转写 | game=${gameType} request=${requestId} text="${text}"`);
+        try {
+            const response = await fetch(`/api/game/${encodeURIComponent(gameType)}/route/voice-transcript`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lanlan_name: lanlanName,
+                    session_id: sessionId,
+                    transcript: text,
+                    request_id: requestId,
+                    source: 'main_voice_stt_gate'
+                })
+            });
+            const result = await response.json().catch(() => null);
+            if (!response.ok) {
+                console.warn('[GameVoiceSTT] transcript route failed:', response.status, result);
+                return;
+            }
+            if (result && result.handled === false && result.reason === 'session_id_mismatch') {
+                console.info('[GameVoiceSTT] session mismatch, restarting hidden STT gate with the current route session');
+                stopGameVoiceSttGate({ keepActive: true, restoreOrdinaryMic: false });
+                if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted) {
+                    S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
+                }
+                return;
+            }
+            if (result && result.handled === false && result.reason === 'game_route_inactive') {
+                console.info('[GameVoiceSTT] game route inactive, stopping hidden STT gate');
+                stopGameVoiceSttGate();
+                return;
+            }
+            console.log(`[GameVoiceSTT] 已提交足球路由 | game=${gameType} request=${requestId} handled=${result ? result.handled !== false : 'unknown'} text="${text}"`);
+        } catch (error) {
+            console.warn('[GameVoiceSTT] transcript submit failed:', error);
+        }
+    }
+
+    function releaseOrdinaryMicCaptureForGameVoiceSttGate() {
+        if (S.workletNode) {
+            try { S.workletNode.disconnect(); } catch (_) { /* noop */ }
+            S.workletNode = null;
+        }
+        S.inputAnalyser = null;
+        S.micGainNode = null;
+
+        if (S.stream instanceof MediaStream) {
+            S.stream.getTracks().forEach(track => track.stop());
+            S.stream = null;
+        }
+
+        if (S.audioContext) {
+            const context = S.audioContext;
+            S.audioContext = null;
+            if (context.state !== 'closed') {
+                context.close().catch((error) => console.warn('[GameVoiceSTT] close ordinary audio context failed:', error));
+            }
+        }
+
+        stopSilenceDetection();
+    }
+
+    function restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(reason, error) {
+        console.warn('[GameVoiceSTT] restoring ordinary mic capture after STT gate failure:', reason, error || '');
+        stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (S.isRecording && typeof startMicCapture === 'function') {
+            Promise.resolve(startMicCapture()).catch(function (restoreError) {
+                console.warn('[GameVoiceSTT] restore ordinary mic capture failed:', restoreError);
+            });
+        }
+    }
+
+    function restoreOrdinaryMicCaptureAfterGameVoiceSttStop(reason) {
+        if (!S.isRecording || typeof startMicCapture !== 'function') {
+            return;
+        }
+        const ordinaryPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
+        if (ordinaryPipelineAlive) {
+            return;
+        }
+        Promise.resolve(startMicCapture()).catch(function (restoreError) {
+            console.warn(`[GameVoiceSTT] restore ordinary mic capture after ${reason || 'stop'} failed:`, restoreError);
+        });
+    }
+
+    function startGameVoiceSttGate() {
+        if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
+            return false;
+        }
+        if (S.gameVoiceSttListening) {
+            releaseOrdinaryMicCaptureForGameVoiceSttGate();
+            return true;
+        }
+
+        const SpeechRecognition = getGameVoiceSpeechRecognition();
+        if (!SpeechRecognition) {
+            if (!S.gameVoiceSttUnsupportedNotified) {
+                S.gameVoiceSttUnsupportedNotified = true;
+                console.warn('[GameVoiceSTT] 当前浏览器不支持 SpeechRecognition，无法启动游戏语音 STT gate');
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(window.t ? window.t('app.gameVoiceSttNotSupported') : '当前浏览器不支持游戏语音转写，请暂时使用文本输入。', 4000);
+                }
+            }
+            return false;
+        }
+
+        const routeSnapshot = getGameVoiceSttRouteSnapshot();
+        if (S.gameVoiceSttRecognition) {
+            try { S.gameVoiceSttRecognition.abort(); } catch (_) { /* noop */ }
+            S.gameVoiceSttRecognition = null;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = (function () {
+            const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+                || (typeof navigator !== 'undefined' && navigator.language)
+                || 'zh-CN';
+            const tag = String(raw).toLowerCase();
+            if (tag.startsWith('zh-tw') || tag === 'zh-hant' || tag.startsWith('zh-hk')) return 'zh-TW';
+            if (tag.startsWith('zh')) return 'zh-CN';
+            if (tag.startsWith('en')) return 'en-US';
+            if (tag.startsWith('ja')) return 'ja-JP';
+            if (tag.startsWith('ko')) return 'ko-KR';
+            if (tag.startsWith('ru')) return 'ru-RU';
+            if (tag.startsWith('es')) return 'es-ES';
+            if (tag.startsWith('pt')) return 'pt-BR';
+            return raw;
+        })();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition._gameVoiceRouteSnapshot = routeSnapshot;
+        recognition.onstart = function () {
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttListening = true;
+            S.gameVoiceSttStopping = false;
+            console.log('[GameVoiceSTT][Diag] recognition start');
+        };
+        recognition.onaudiostart = function () {
+            console.log('[GameVoiceSTT][Diag] audio start');
+        };
+        recognition.onsoundstart = function () {
+            console.log('[GameVoiceSTT][Diag] sound start');
+        };
+        recognition.onspeechstart = function () {
+            console.log('[GameVoiceSTT][Diag] speech start');
+        };
+        recognition.onspeechend = function () {
+            console.log('[GameVoiceSTT][Diag] speech end');
+        };
+        recognition.onsoundend = function () {
+            console.log('[GameVoiceSTT][Diag] sound end');
+        };
+        recognition.onaudioend = function () {
+            console.log('[GameVoiceSTT][Diag] audio end');
+        };
+        recognition.onnomatch = function (event) {
+            console.warn('[GameVoiceSTT][Diag] no match:', event);
+        };
+        recognition.onresult = function (event) {
+            let finalText = '';
+            const startIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
+            console.log('[GameVoiceSTT][Diag] result event:', {
+                resultIndex: startIndex,
+                resultCount: event.results ? event.results.length : 0
+            });
+            for (let i = startIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                if (!result || result.isFinal === false) continue;
+                finalText += (result[0] && result[0].transcript) || '';
+            }
+            if (finalText.trim()) {
+                void submitGameVoiceSttTranscript(finalText, recognition._gameVoiceRouteSnapshot);
+            }
+        };
+        recognition.onerror = function (event) {
+            const errorCode = (event && event.error) || 'unknown';
+            console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
+            if (errorCode === 'no-speech') {
+                console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
+            }
+            if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(window.t ? window.t('app.gameVoiceSttMicPermissionDenied') : '游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
+                }
+                restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(errorCode, event);
+            }
+        };
+        recognition.onend = function () {
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttListening = false;
+            if (S.gameVoiceSttRestartTimer) {
+                clearTimeout(S.gameVoiceSttRestartTimer);
+                S.gameVoiceSttRestartTimer = null;
+            }
+            if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted && !S.gameVoiceSttStopping) {
+                S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
+            }
+            S.gameVoiceSttStopping = false;
+        };
+        S.gameVoiceSttRecognition = recognition;
+
+        try {
+            S.gameVoiceSttStopping = false;
+            logGameVoiceSttDiagnostics('start');
+            releaseOrdinaryMicCaptureForGameVoiceSttGate();
+            S.gameVoiceSttRecognition.start();
+            S.gameVoiceSttListening = true;
+            console.log(`[GameVoiceSTT] STT gate 已启动 | game=${S.gameVoiceSttGameType || 'soccer'} recording=${!!S.isRecording} ordinary_mic=released`);
+            return true;
+        } catch (error) {
+            if (error && error.name === 'InvalidStateError') {
+                S.gameVoiceSttListening = true;
+                console.log('[GameVoiceSTT] STT gate 已在运行');
+                return true;
+            }
+            console.warn('[GameVoiceSTT] recognition start failed:', error);
+            S.gameVoiceSttListening = false;
+            restoreOrdinaryMicCaptureAfterGameVoiceSttFailure('recognition_start_failed', error);
+            return false;
+        }
+    }
+
+    function stopGameVoiceSttGate(options) {
+        const keepActive = options && options.keepActive === true;
+        const restoreOrdinaryMic = !(options && options.restoreOrdinaryMic === false);
+        if (!keepActive) {
+            S.gameVoiceSttGateActive = false;
+            S.gameVoiceSttGameType = '';
+            S.gameVoiceSttSessionId = '';
+        }
+        if (S.gameVoiceSttRestartTimer) {
+            clearTimeout(S.gameVoiceSttRestartTimer);
+            S.gameVoiceSttRestartTimer = null;
+        }
+        S.gameVoiceSttStopping = true;
+        const recognition = S.gameVoiceSttRecognition;
+        S.gameVoiceSttRecognition = null;
+        if (recognition) {
+            try {
+                recognition.stop();
+            } catch (error) {
+                try { recognition.abort(); } catch (_) { /* noop */ }
+            }
+        }
+        S.gameVoiceSttListening = false;
+        S.gameVoiceSttStopping = false;
+        if (!keepActive && restoreOrdinaryMic) {
+            restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
+        }
+    }
+
     // ======================== 麦克风设备选择 ========================
 
     async function selectMicrophone(deviceId) {
@@ -160,6 +486,7 @@
                 if (_stop) _stop.disabled = true;
 
                 // 显示文本输入区域
+                S.voiceChatActive = false;
                 const textInputArea = document.getElementById('text-input-area');
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
@@ -382,6 +709,16 @@
             return;
         }
 
+        // mute 状态下 audio 在 worklet onmessage 处被丢弃，根本没送到后端，
+        // 此时 analyser 仍连在增益链上能听到本地噪声（键盘/风扇/呼吸）。
+        // 把这部分 RMS 当 0：不读、不写 userRecentSpeechTime，避免 proactive
+        // guard 把"本地噪声"误判成"用户在说话"导致语音模式 nudge 被静默
+        // skip 卡死 (`_isUserRecentlySpeaking()` 8s 窗口拖尾)。
+        if (S.isMicMuted) {
+            requestAnimationFrame(monitorInputVolume);
+            return;
+        }
+
         const dataArray = new Uint8Array(S.inputAnalyser.fftSize);
         S.inputAnalyser.getByteTimeDomainData(dataArray);
 
@@ -506,6 +843,10 @@
                     return;
                 }
 
+                if (S.gameVoiceSttGateActive) {
+                    return;
+                }
+
                 if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
@@ -608,6 +949,9 @@
             }
 
             await startAudioWorklet(S.stream);
+            if (S.gameVoiceSttGateActive) {
+                startGameVoiceSttGate();
+            }
 
             if (_mic)    _mic.disabled = true;
             if (_mute)   _mute.disabled = false;
@@ -636,6 +980,7 @@
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
 
             // 失败时恢复文本输入区
+            S.voiceChatActive = false;
             const textInputArea = document.getElementById('text-input-area');
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');
@@ -649,6 +994,7 @@
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
             }
+            stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
         }
     }
@@ -710,6 +1056,7 @@
         if (_reset)  _reset.disabled = false;
 
         // 显示文本输入区
+        S.voiceChatActive = false;
         const textInputArea = document.getElementById('text-input-area');
         if (textInputArea) textInputArea.classList.remove('hidden');
         if (typeof window.syncVoiceChatComposerHidden === 'function') {
@@ -735,7 +1082,9 @@
     }
 
     // 停止录音（内部辅助，清理音频管道与后端通信）
-    function stopRecording() {
+    function stopRecording(options) {
+        options = options || {};
+        const notifyServer = options.notifyServer !== false;
         // 停止语音期间主动视觉定时
         if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
             window.stopProactiveVisionDuringSpeech();
@@ -748,6 +1097,7 @@
         if (typeof window.stopScreening === 'function') {
             window.stopScreening();
         }
+        stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (!S.isRecording) return;
 
         S.isRecording = false;
@@ -762,6 +1112,7 @@
         window._realisticGeminiQueue = [];
         window._realisticGeminiBuffer = '';
         window._geminiTurnFullText = '';
+        window._geminiTurnEndSealed = false;
         window._pendingMusicCommand = '';
         window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
         window.currentTurnGeminiBubbles = [];
@@ -789,7 +1140,7 @@
         }
 
         // 通知服务器暂停会话
-        if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+        if (notifyServer && S.socket && S.socket.readyState === WebSocket.OPEN) {
             S.socket.send(JSON.stringify({
                 action: 'pause_session'
             }));
@@ -808,6 +1159,9 @@
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
         let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
+        // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
+        // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
+        let timeDomainBuffer = null;
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -831,59 +1185,99 @@
 
             // 检查是否正在录音且有 analyser
             if (S.isRecording && S.inputAnalyser) {
-                // 获取音频数据
-                const dataArray = new Uint8Array(S.inputAnalyser.frequencyBinCount);
-                S.inputAnalyser.getByteFrequencyData(dataArray);
-
-                // 计算平均音量 (0-255)
-                let sum = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                    sum += dataArray[i];
+                // 用时域数据反映 worklet/AI 实际收到的线性振幅。
+                // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
+                // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
+                //
+                // 必须用 getFloatTimeDomainData 而不是 byte：byte 量化步长 1/128，
+                // byte=255 实际覆盖 [127/128, ∞) 浮点区间，loud-but-clean 信号
+                // (峰值 0.99 但 worklet 不会硬切) 也会被误判成 clip。
+                const fftSize = S.inputAnalyser.fftSize;
+                if (!timeDomainBuffer || timeDomainBuffer.length !== fftSize) {
+                    timeDomainBuffer = new Float32Array(fftSize);
                 }
-                const average = sum / dataArray.length;
+                S.inputAnalyser.getFloatTimeDomainData(timeDomainBuffer);
 
-                // 转换为百分比 (0-100)，使用对数缩放使显示更自然
-                const volumePercent = Math.min(100, (average / 128) * 100);
+                let peak = 0;
+                let sumSq = 0;
+                let clippedCount = 0;
+                for (let i = 0; i < fftSize; i++) {
+                    const val = timeDomainBuffer[i];
+                    const abs = val < 0 ? -val : val;
+                    if (abs > peak) peak = abs;
+                    sumSq += val * val;
+                    // worklet 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 只在浮点
+                    // 严格越过 ±1 时才硬切。0.999 留一点浮点比较容差。
+                    if (abs >= 0.999) clippedCount++;
+                }
+                const rms = Math.sqrt(sumSq / fftSize);
 
-                // 更新音量条
+                // 显示用 peak（更直观地反映"接近削顶"的距离），
+                // 状态判定结合 RMS：信号能量高于 noise floor 才进入分级。
+                const volumePercent = Math.min(100, peak * 100);
+                // 一帧内 >=0.5% 样本撞到 ±1 视作过载（≈10/2048）。worklet
+                // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 在这个边界硬切，
+                // 失真无关用户是否说话，所以唯一无歧义的红色告警就是 clip。
+                const isClipping = clippedCount >= fftSize * 0.005;
+                // hasSignal：RMS 高于后端 AGC noise floor（0.015）的半档，
+                // 视作"用户在说话"——只有这种情况才对偏低/正常做颜色提示，
+                // 没说话时不能用警告色把用户吓到。
+                const hasSignal = rms >= 0.008;
+                const lowVolume = hasSignal && peak < 0.15;
+                // high 必须门控 hasSignal：静默期键盘/桌面敲击等瞬态噪声
+                // peak 可能短暂 > 0.85 但 RMS 仍低于 noise floor，没有 hasSignal
+                // 守住会让"等待中"被误判为"音量较高"。
+                const high = hasSignal && !isClipping && peak > 0.85;
+
+                // 更新音量条（条宽始终跟着 peak，没说话时自然就短）
                 cachedBarFill.style.width = `${volumePercent}%`;
 
-                // 根据音量设置颜色
-                if (volumePercent < 5) {
-                    cachedBarFill.style.backgroundColor = '#dc3545'; // 红色 - 无声音
-                } else if (volumePercent < 20) {
-                    cachedBarFill.style.backgroundColor = '#ffc107'; // 黄色 - 音量偏低
-                } else if (volumePercent > 90) {
-                    cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙色 - 音量过高
+                // 根据状态设置颜色
+                if (isClipping) {
+                    cachedBarFill.style.backgroundColor = '#dc3545'; // 红 - 过载（唯一警告）
+                } else if (high) {
+                    cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙 - 接近过载
+                } else if (lowVolume) {
+                    cachedBarFill.style.backgroundColor = '#ffc107'; // 黄 - 在说话但偏低
+                } else if (hasSignal) {
+                    cachedBarFill.style.backgroundColor = '#28a745'; // 绿 - 正常
                 } else {
-                    cachedBarFill.style.backgroundColor = '#28a745'; // 绿色 - 正常
+                    cachedBarFill.style.backgroundColor = '#4f8cff'; // 蓝 - 静默/等待
                 }
 
                 // 更新状态文字
                 if (cachedStatus) {
-                    if (volumePercent < 5) {
-                        cachedStatus.textContent = window.t ? window.t('microphone.volumeNoSound') : '无声音';
+                    if (isClipping) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeClipping') : '过载';
                         cachedStatus.style.color = '#dc3545';
-                    } else if (volumePercent < 20) {
-                        cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
-                        cachedStatus.style.color = '#ffc107';
-                    } else if (volumePercent > 90) {
+                    } else if (high) {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
                         cachedStatus.style.color = '#fd7e14';
-                    } else {
+                    } else if (lowVolume) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
+                        cachedStatus.style.color = '#ffc107';
+                    } else if (hasSignal) {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
                         cachedStatus.style.color = '#28a745';
+                    } else {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeWaiting') : '等待声音';
+                        cachedStatus.style.color = 'var(--neko-popup-text-sub)';
                     }
                 }
 
-                // 更新提示文字
+                // 更新提示文字（分支顺序与上面的 status 保持一致：
+                // clipping → high → lowVolume → hasSignal → idle）
                 if (cachedHint) {
-                    if (volumePercent < 5) {
-                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintNoSound') : '检测不到声音，请检查麦克风';
-                    } else if (volumePercent < 20) {
+                    if (isClipping) {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintClipping') : '麦克风增益过高，音频被削顶，AI 可能识别异常，请调低增益';
+                    } else if (high) {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintHigh') : '音量偏高，建议调低增益';
+                    } else if (lowVolume) {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
-                    } else {
+                    } else if (hasSignal) {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
+                    } else {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintWaiting') : '麦克风正在监听，请说话';
                     }
                 }
             } else {
@@ -963,13 +1357,27 @@
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+    window.startGameVoiceSttGate = startGameVoiceSttGate;
+    window.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
     window.toggleMicMute = function(showToast = true) {
         S.isMicMuted = !S.isMicMuted;
         if (S.isMicMuted) {
             stopSilenceDetection();
+            // 立刻清掉"用户最近在说话"的时间戳。否则 mute 前最后一帧
+            // RMS 写入的 userRecentSpeechTime 会在 8s 内继续让
+            // _isUserRecentlySpeaking() 返回 true，proactive nudge
+            // 在窗口期内仍会被 skip。
+            S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
+        }
+        if (S.gameVoiceSttGateActive) {
+            if (S.isMicMuted) {
+                stopGameVoiceSttGate({ keepActive: true });
+            } else {
+                startGameVoiceSttGate();
+            }
         }
         window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
             detail: { muted: S.isMicMuted }
@@ -987,8 +1395,17 @@
         S.isMicMuted = muted;
         if (S.isMicMuted) {
             stopSilenceDetection();
+            // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
+            S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
+        }
+        if (S.gameVoiceSttGateActive) {
+            if (S.isMicMuted) {
+                stopGameVoiceSttGate({ keepActive: true });
+            } else {
+                startGameVoiceSttGate();
+            }
         }
         window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
             detail: { muted: S.isMicMuted }
@@ -1025,6 +1442,8 @@
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+    mod.startGameVoiceSttGate = startGameVoiceSttGate;
+    mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
     // ======================== 麦克风设备列表 UI ========================
 
@@ -1130,19 +1549,45 @@
             speakerHeader.appendChild(speakerValue);
             speakerContainer.appendChild(speakerHeader);
 
+            // 非线性轨道：thumb 位置走 0..SPEAKER_SLIDER_TRACK_MAX（千分比精度），
+            // 经膝点映射成 0-200% 音量，使常规的 0-100% 占满轨道前 3/4、100% 落在锚点处。
+            var SPEAKER_SLIDER_TRACK_MAX = 1000;
+            var SPEAKER_VOLUME_NORMAL_COLOR = '#4f8cff';
+            var SPEAKER_VOLUME_BOOST_COLOR = '#ff9f43';
+
+            function speakerTrackPosFromVolume(vol) {
+                return Math.round(window.appUtils.valueToKneeTrack(
+                    vol, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ) * SPEAKER_SLIDER_TRACK_MAX);
+            }
+            function speakerVolumeFromTrackPos(pos) {
+                return Math.round(window.appUtils.kneeTrackToValue(
+                    pos / SPEAKER_SLIDER_TRACK_MAX, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ));
+            }
+
             var speakerSlider = document.createElement('input');
             speakerSlider.type = 'range';
             speakerSlider.id = 'speaker-volume-slider';
             speakerSlider.min = '0';
-            speakerSlider.max = '100';
+            speakerSlider.max = String(SPEAKER_SLIDER_TRACK_MAX);
             speakerSlider.step = '1';
-            speakerSlider.value = String(S.speakerVolume);
-            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: '#4f8cff' });
+            speakerSlider.value = String(speakerTrackPosFromVolume(S.speakerVolume));
+            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: SPEAKER_VOLUME_NORMAL_COLOR });
+
+            // 超过标准音量（>100%）时数值与轨道染暖色，把增强区从常规区里区分出来
+            function applySpeakerVolumeVisual(vol) {
+                var color = vol > C.DEFAULT_SPEAKER_VOLUME ? SPEAKER_VOLUME_BOOST_COLOR : SPEAKER_VOLUME_NORMAL_COLOR;
+                speakerValue.textContent = vol + '%';
+                speakerValue.style.color = color;
+                speakerSlider.style.accentColor = color;
+            }
+            applySpeakerVolumeVisual(S.speakerVolume);
 
             speakerSlider.addEventListener('input', function (e) {
-                var newVol = parseInt(e.target.value, 10);
+                var newVol = speakerVolumeFromTrackPos(parseInt(e.target.value, 10));
                 S.speakerVolume = newVol;
-                speakerValue.textContent = newVol + '%';
+                applySpeakerVolumeVisual(newVol);
                 if (S.speakerGainNode) {
                     S.speakerGainNode.gain.setTargetAtTime(newVol / 100, S.speakerGainNode.context.currentTime, 0.05);
                 }
@@ -1150,7 +1595,19 @@
             speakerSlider.addEventListener('change', function () {
                 if (typeof window.saveSpeakerVolumeSetting === 'function') window.saveSpeakerVolumeSetting();
             });
-            speakerContainer.appendChild(speakerSlider);
+
+            // 用相对定位容器在轨道 75% 处画一条 100% 标准锚点，告诉用户「这条线以上是增强」
+            var speakerSliderWrap = document.createElement('div');
+            Object.assign(speakerSliderWrap.style, { position: 'relative', width: '100%' });
+            var speakerAnchorTick = document.createElement('div');
+            Object.assign(speakerAnchorTick.style, {
+                position: 'absolute', left: (C.SPEAKER_VOLUME_KNEE_RATIO * 100) + '%', top: '50%',
+                width: '2px', height: '12px', transform: 'translate(-50%, -50%)',
+                backgroundColor: 'var(--neko-popup-text-sub)', opacity: '0.55', borderRadius: '1px', pointerEvents: 'none'
+            });
+            speakerSliderWrap.appendChild(speakerSlider);
+            speakerSliderWrap.appendChild(speakerAnchorTick);
+            speakerContainer.appendChild(speakerSliderWrap);
 
             var speakerHint = document.createElement('div');
             speakerHint.textContent = window.t ? window.t('speaker.volumeHint') : '调节AI语音的播放音量';

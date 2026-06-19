@@ -1,21 +1,36 @@
-"""TEMPORARY: 临时 LLM prompt 审计日志（测完即删）。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-目的：把每一次发给 LLM 的完整请求体（messages、model、max_completion_tokens 等）
-+ 各 message 的 tiktoken token 数写到本地 jsonl，配合人工/脚本分析各 component
-budget 占比是否合理。
+"""LLM prompt audit log (debug tool).
 
-启用方式：
-    NEKO_LLM_PROMPT_AUDIT=1 ./run.sh
+Purpose: write every complete request body sent to the LLM (messages, model,
+max_completion_tokens, etc.) + the tiktoken token count of each message to a local
+jsonl, for manual/scripted analysis of whether each component's budget share is
+reasonable.
 
-输出：
-    logs/llm_prompt_audit/YYYY-MM-DD.jsonl  （每行一条 JSON）
+Enabling (either being truthy turns it on):
+    1) set config.LLM_PROMPT_AUDIT_ENABLED to True in source (suited for shipping debug builds to users)
+    2) set the environment variable NEKO_LLM_PROMPT_AUDIT=1 (suited for temporary use during development)
 
-删除方式：
-    1. 删除本文件
-    2. utils/llm_client.py 里删除 record_llm_request 调用
-    3. 删除 logs/llm_prompt_audit/
+Output:
+    logs/llm_prompt_audit/YYYY-MM-DD.jsonl
+    One JSON per line; the messages[*].text field contains the **full original text**
+    of text-type parts (untruncated); non-text parts like image/audio/video are
+    replaced with an "[<type>]" placeholder so base64 doesn't blow up the log +
+    leak user screenshots.
 
-不要在生产环境启用。
+Never enable by default in production — the log contains full prompt text, which is privacy-sensitive data.
 """
 from __future__ import annotations
 
@@ -28,7 +43,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_ENABLED = os.environ.get("NEKO_LLM_PROMPT_AUDIT", "").lower() in ("1", "true", "yes")
+from config import LLM_PROMPT_AUDIT_ENABLED
+
+_ENABLED = (
+    LLM_PROMPT_AUDIT_ENABLED
+    or os.environ.get("NEKO_LLM_PROMPT_AUDIT", "").lower() in ("1", "true", "yes")
+)
 _LOG_DIR = Path("logs/llm_prompt_audit")
 _LOCK = threading.Lock()
 
@@ -48,11 +68,26 @@ def _today_path() -> Path:
 
 
 def _content_to_text(content: Any) -> str:
-    """Flatten OpenAI message content to plain text for token counting.
+    """Flatten message content to plain text for token counting.
 
-    Handles str, list[{"type": "text", "text": "..."}], dict, etc.
-    For multimodal image_url parts, omits the base64 (we don't want to count
-    image bytes as text tokens).
+    Whitelist strategy: only text-type parts (``text`` / ``input_text`` /
+    ``output_text``) land verbatim; every other type is replaced with an
+    ``[<type>]`` placeholder.
+
+    Why not a blacklist — this repo actually uses at least 5 shapes of "image part":
+
+    * classic OpenAI: ``{"type": "image_url", "image_url": {...}}``
+    * Anthropic style: ``{"type": "image", "source": {"type": "base64", ...}}``
+    * new Anthropic: ``{"type": "input_image", ...}``
+    * plugin schema: ``{"type": "image", "data": bytes, "mime": str}``
+    * our own adapter: ``{"type": "image", "image_url": "..."}``
+
+    Plus ``audio`` / ``video`` / multimodal types possibly added later — any part
+    not in the whitelist is treated as potentially containing binary/base64 and
+    uniformly replaced with the ``[<type>]`` placeholder. This avoids writing user
+    screenshots into the jsonl verbatim, and keeps the function contract "flatten
+    to plain text for token counting" self-consistent (binary was never text
+    tokens anyway).
     """
     if isinstance(content, str):
         return content
@@ -65,24 +100,17 @@ def _content_to_text(content: Any) -> str:
             ptype = part.get("type")
             if ptype in ("text", "input_text", "output_text"):
                 out.append(str(part.get("text") or ""))
-            elif ptype in ("image_url", "input_image"):
-                out.append("[image]")
             else:
-                out.append(json.dumps(part, ensure_ascii=False)[:200])
+                # 见函数 docstring：非 text 类一律占位，不 json.dumps，
+                # 不试图细分图片/音频/视频——白名单比黑名单安全。
+                out.append(f"[{ptype or 'unknown'}]")
         return "\n".join(out)
     if isinstance(content, dict):
-        # 镜像 list 分支的类型分流：上游偶尔直接传单个 part dict（不是
-        # list 包裹），不能 json.dumps(整个 content)——否则 image_url
-        # base64 会原样落盘，既泄露用户截图也撑爆 jsonl。
+        # 镜像 list 分支：上游偶尔直接传单个 part dict（不是 list 包裹）。
         ptype = content.get("type")
         if ptype in ("text", "input_text", "output_text"):
             return str(content.get("text") or "")
-        if ptype in ("image_url", "input_image"):
-            return "[image]"
-        try:
-            return json.dumps(content, ensure_ascii=False)[:200]
-        except Exception:
-            return str(content)[:200]
+        return f"[{ptype or 'unknown'}]"
     return str(content) if content is not None else ""
 
 
@@ -127,7 +155,8 @@ def _print_banner_once() -> None:
     try:
         print(
             "[LLM_PROMPT_AUDIT] enabled — writing to "
-            f"{_LOG_DIR.resolve()} (NEKO_LLM_PROMPT_AUDIT=1)",
+            f"{_LOG_DIR.resolve()} "
+            "(config.LLM_PROMPT_AUDIT_ENABLED or NEKO_LLM_PROMPT_AUDIT=1)",
             flush=True,
         )
     except Exception:
@@ -147,8 +176,8 @@ def record_llm_request(
 ) -> None:
     """Log one LLM request body.
 
-    field_name/field_value: 实际写进请求体的 token 限制字段（max_tokens vs
-    max_completion_tokens）以及对应数值。
+    field_name/field_value: the token-limit field actually written into the request
+    body (max_tokens vs max_completion_tokens) and its value.
     """
     if not _ENABLED:
         return
@@ -166,13 +195,12 @@ def record_llm_request(
             role = str(m.get("role") or "unknown")
             text = _content_to_text(m.get("content"))
             tok = _safe_count_tokens(text)
-            preview = text[:160]
             per_message.append({
                 "idx": idx,
                 "role": role,
                 "tokens": tok,
                 "chars": len(text),
-                "preview": preview,
+                "text": text,
             })
             total += tok
             by_role[role] = by_role.get(role, 0) + tok

@@ -2,12 +2,16 @@
     "common": {
         "load": "Carregar",
         "minimize": "Minimizar",
+        "maximize": "Maximizar",
+        "restore": "Restaurar",
         "expand": "Expandir",
         "close": "Fechar",
         "save": "Salvar",
         "cancel": "Cancelar",
         "confirm": "Confirmar",
         "next": "Próximo",
+        "back": "Voltar",
+        "retry": "Tentar novamente",
         "ok": "OK",
         "delete": "Excluir",
         "edit": "Editar",
@@ -40,17 +44,36 @@
         "toneMappingCineon": "Cinéon",
         "toneMappingACESFilmic": "ACES Filme",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutro"
+        "toneMappingNeutral": "Neutro",
+        "loadFailed": "Falha no carregamento"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Modelo padrão restaurado",
+        "resetToDefaultFailed": "Falha ao restaurar o modelo padrão"
     },
     "autostartPrompt": {
-        "title": "Quer que o N.E.K.O seja lançado na inicialização?",
-        "message": "Ele estará pronto automaticamente na próxima vez que você ligar o computador, portanto não será necessário iniciá-lo manualmente.",
-        "note": "Isso só permite a inicialização no login do usuário atual e você pode desativá-lo mais tarde.",
+        "title": "Quer que o N.E.K.O. seja lançado na inicialização?",
+        "message": "O N.E.K.O. estará pronto na próxima vez que ligar o computador.",
+        "note": "Você pode desativar depois.",
         "startNow": "Ativar inicialização automática",
-        "later": "Talvez mais tarde",
+        "later": "Lembrar mais tarde",
         "never": "Não me lembre",
         "enableFailed": "Não foi possível ativar a inicialização automática no momento. Por favor, tente novamente mais tarde.",
         "requiresApproval": "Aprove primeiro o início automático nas configurações do sistema. Entrará em vigor após aprovação."
+    },
+    "contextPrompt": {
+        "play": {
+            "title": "Quer que eu veja a tela junto com você?",
+            "message": "Você está jogando / assistindo algo. Posso ligar a fonte de compartilhamento de tela do bate-papo proativo e comentar junto com o que está na sua tela. Ligar?",
+            "accept": "Pode ligar",
+            "decline": "Agora não"
+        },
+        "work": {
+            "title": "Quer que eu fique quieta e não olhe a tela?",
+            "message": "Parece que você está focado no trabalho. Posso desligar a fonte de compartilhamento de tela do bate-papo proativo, assim não atrapalho nem pareço estar espiando. Desligar?",
+            "accept": "Sim, desliga o compartilhamento de tela",
+            "decline": "Não, deixa ligado"
+        }
     },
     "tutorialPrompt": {
         "title": "Quer começar o tutorial em casa?",
@@ -134,7 +157,7 @@
         "selectModelFolder": "Selecione uma pasta contendo arquivos de modelo Live2D",
         "live2dInitFailed": "Falha na inicialização do ambiente de visualização Live2D",
         "live2dPreviewLoaded": "Visualização do modelo Live2D carregada com sucesso",
-        "live2dPreviewLoadFailed": "Falha no carregamento da visualização do modelo Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "Falha ao carregar a prévia do modelo Live2D: {{error}}",
         "searchAriaLabel": "Pesquisar assinaturas",
         "sortAriaLabel": "Opções de classificação",
         "scrollTagsLeftAriaLabel": "Rolar etiquetas para a esquerda",
@@ -185,6 +208,14 @@
         "uploadReady": "Pronto para carregar {{itemName}}",
         "pageDescription": "Navegue, assine, baixe e gerencie modelos e vozes Live2D do Steam Workshop",
         "openVoiceClone": "Abrir no clone de voz",
+        "workshopAddCharacterCard": "Adicionar cartão",
+        "workshopAddingCharacterCard": "Adicionando...",
+        "unknownCharacterCard": "Cartão de personagem desconhecido",
+        "characterCardAlreadyExistsTitle": "Cartão já existe",
+        "characterCardAlreadyExistsMessage": "O cartão de personagem já existe: {{names}}",
+        "workshopCharacterAdded": "Cartão de personagem adicionado: {{names}}",
+        "workshopCharacterNotFound": "Nenhum cartão de personagem foi encontrado nesta inscrição. Verifique se o conteúdo terminou de baixar.",
+        "workshopCharacterAddFailed": "Falha ao adicionar cartão de personagem: {{error}}",
         "configurePath": "Configurar caminho",
         "localModPathConfig": "Configuração do caminho do mod local",
         "localModFolder": "Caminho da pasta Mod local",
@@ -213,6 +244,12 @@
         "voiceReferencePrefixPlaceholder": "Somente letras e números, até 10 caracteres",
         "voiceReferenceLanguage": "Idioma de voz de referência",
         "voiceReferenceProviderHint": "Provedor recomendado",
+        "voiceReferenceInvalidFormat": "A voz de referência só aceita arquivos mp3 ou wav",
+        "voiceReferenceTooLarge": "A voz de referência deve ter no máximo 20 MB",
+        "voiceReferenceWriting": "Gravando voz de referência...",
+        "voiceReferenceUploadFailed": "Falha ao enviar a voz de referência",
+        "voiceReferenceCleanupFailed": "Falha ao limpar a voz de referência",
+        "voiceReferenceTempOnlySkipped": "A voz de referência só pode ser enviada pela pasta temporária do Workshop gerada pelo pacote do cartão de personagem; esta amostra foi ignorada.",
         "uploadTip": "Você pode selecionar itens em \"Gerenciar itens locais\" para preencher caminhos automaticamente ou inserir manualmente os caminhos completos para a pasta de conteúdo e a imagem de visualização.",
         "search": "Procurar:",
         "uploadSuccess": "Carregamento realizado com sucesso!",
@@ -382,6 +419,7 @@
         "loadingItemDetailsById": "Carregando detalhes do ID do item: {{id}}...",
         "characterCardsRefreshed": "Lista de cartas de personagem atualizada, {{count}} cartas de personagem no total",
         "characterCardsRefreshedEmpty": "Lista de cartas de personagem atualizada, nenhuma carta de personagem disponível",
+        "characterCardsRefreshFailed": "Falha ao atualizar a lista: {{error}}",
         "requiredFieldsMissing": "Preencha os seguintes campos obrigatórios: {{fields}}",
         "refreshLive2DPreview": "Atualizar visualização do Live2D",
         "removeTag": "Remover etiqueta",
@@ -517,10 +555,10 @@
         "steamNotRunningTitle": "Steam não funciona",
         "steamNotRunningMessage": "O cliente Steam não está em execução ou não está conectado.\n\nOs recursos do Workshop exigem o cliente Steam. Por favor:\n1. Baixe e instale o cliente Steam\n2. Inicie o Steam e faça login na sua conta\n3. Reabra esta página",
         "addNewCatgirl": "Adicionar novo NEKO",
+        "noCardImage": "Face do cartão ainda não configurada",
+        "searchCharacterCards": "Pesquisar cartões de personagens...",
         "cardView": "Visualização de cartões",
-        "listView": "Visualização em lista",
-        "noCardImage": "Sem imagem\nde cartão",
-        "searchCharacterCards": "Pesquisar cartões de personagens..."
+        "listView": "Visualização em lista"
     },
     "dialogs": {
         "confirmLeave": "Confirmar licença",
@@ -539,12 +577,13 @@
         "API_POLICY_VIOLATION": "💥 Violação de política ou bloqueio de segurança: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexão desconectada (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Conexão de voz fechada devido a inatividade, reconexão automática...",
+        "FREE_API_AUTO_CLOSE_VOICE": "A API gratuita fechou automaticamente a sessão de voz após muito tempo sem entrada de voz",
         "API_UNKNOWN_ERROR": "💥 Erro de API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Servidor de memória não iniciado! Execute memory_server.py primeiro.",
         "MEMORY_SERVER_CRASHED": "🧠 O servidor de memória (porta {{port}}) travou. Reinicie memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 O serviço de memória está se recuperando, aguarde {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Conexão do servidor recusada. Verifique sua chave API e conexão de rede.",
-        "API_KEY_REJECTED": "💥 Chave API rejeitada pelo servidor. Verifique se sua chave API corresponde ao modelo selecionado.",
+        "API_KEY_REJECTED": "A API Key fornecida é inválida. Verifique as configurações atuais da API.",
         "API_RATE_LIMIT_SESSION": "💥 Taxa de solicitação de API muito alta. Tente novamente mais tarde.",
         "LLM_CONNECTION_FAILED": "💥 Falha na conexão da API LLM. Verifique sua conexão de rede e configuração de API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Conexão fechada de forma anormal: {{error}}",
@@ -569,9 +608,13 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 Falha na conexão LLM ({{error_type}}), tentativas esgotadas de {{max_retries}}: {{error}}",
         "TEXT_GEN_ERROR": "💥 Erro de geração de texto: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM não retornou resposta. Verifique sua conexão e configuração da API.",
-        "PROACTIVE_GEN_FAILED": "💥 Falha na geração de resposta proativa: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} está indo para outro terminal...",
-        "RELOAD_PAGE": "Voz atualizada, a página será atualizada em breve",
+        "RELOAD_PAGE": "Configurações atualizadas, a página será atualizada em breve",
+        "RELOAD_PAGE_VOICE": "Voz atualizada, a página será atualizada em breve",
+        "RELOAD_PAGE_VOICE_STYLE": "Estilo de voz atualizado, a página será atualizada em breve",
+        "RELOAD_PAGE_PERSONA": "Configurações de persona atualizadas, a página será atualizada em breve",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Configurações do personagem atualizadas, a página será atualizada em breve",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Personagem do salvamento em nuvem atualizado, a página será atualizada em breve",
         "AGENT_AUTO_DISABLED_COMPUTER": "Controle de teclado/mouse desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Controle do navegador desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Erro de verificação de conectividade do NekoClaw LLM",
@@ -594,11 +637,35 @@
         "TTS_WATERMARK_DETECTED": "⚠️ Marca d'água de áudio CogTTS (bipe) detectada. Para desativar a marca d'água, acesse o console Zhipu e configure-o manualmente.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL da API GPT-SoVITS não configurada. Ative e configure o TTS personalizado nas configurações da API.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "O URL da API GPT-SoVITS deve ser localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Chave de API de áudio (AUDIO_API_KEY) não configurada",
+        "TTS_AUDIO_API_KEY_MISSING": "A API Key do provedor de voz selecionado não está configurada. Adicione-a nas configurações de API.",
         "TTS_VOICE_NOT_REGISTERED": "Este personagem não tem voz registrada",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Parâmetros obrigatórios ausentes",
         "TTS_GPT_SOVITS_URL_REQUIRED": "O URL da API GPT-SoVITS é obrigatório",
-        "TTS_GPT_SOVITS_URL_INVALID": "URL da API GPT-SoVITS inválido"
+        "TTS_GPT_SOVITS_URL_INVALID": "URL da API GPT-SoVITS inválido",
+        "AGENT_NO_PLUGINS_FOUND": "Nenhum plugin de usuário encontrado",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw indisponível: {{reason}}",
+        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw ativado, aguardando o serviço de conexão ficar pronto...",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Não foi possível ativar OpenClaw: módulo não carregado",
+        "AGENT_OPENCLAW_UNAVAILABLE": "Não foi possível ativar OpenClaw: {{reason}}",
+        "AGENT_PLUGIN_SERVER_ERROR": "Falha ao iniciar o servidor de plugins de usuário",
+        "CURRENT_CATGIRL_IN_USE": "Não é possível executar esta ação no personagem ativo \"{{character_name}}\". Mude para outro personagem primeiro",
+        "DIRECT_LINK_INACCESSIBLE": "Link direto inacessível",
+        "DOWNLOAD_FAILED": "Falha ao baixar o áudio",
+        "FILE_TOO_LARGE": "Arquivo muito grande",
+        "GAME_ROUTE_ENDED": "Rota do jogo encerrada",
+        "GAME_ROUTE_LLM_FAILED": "O LLM do jogo não retornou uma saída válida ({{error}})",
+        "GAME_ROUTE_MEDIA_SKIPPED": "Quadros de tela/câmera ignorados durante o jogo",
+        "GAME_VOICE_STT_GATE_ACTIVE": "Tomada de voz do jogo ativa",
+        "INTERNAL_IMPORT_ERROR": "Falha ao carregar componente interno: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "Estrutura inválida da configuração local do personagem",
+        "MEMORY_SERVER_RELEASE_FAILED": "Falha ao liberar handle de memória do personagem, tente novamente mais tarde",
+        "MINIMAX_API_KEY_MISSING": "API Key do MiniMax não configurada. Configure primeiro nas configurações",
+        "PRIVATE_IP_NOT_ALLOWED": "O link direto não pode apontar para IP privado",
+        "RESPONSE_LENGTH_TRUNCATED": "Resposta muito longa, truncada na última frase completa",
+        "STEAM_UNSUBSCRIBE_FAILED": "Falha ao cancelar inscrição no Steam",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "Geração de texto interrompida ({{error_type}}); saída parcial preservada",
+        "TTS_PROVIDER_INVALID": "Provedor TTS inválido: {{provider}}. Suportados: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "Manutenção de armazenamento em andamento, operação pausada. Tente novamente mais tarde"
     },
     "camera": {
         "iosPermissionHint": "Verifique as configurações do iOS → Safari → A permissão da câmera está definida como \"Permitir\"",
@@ -630,6 +697,29 @@
         "cropTabRecapturing": "Recapturando...",
         "cropConfirmTitle": "Confirmar recorte",
         "cropClearSelectionTitle": "Limpar seleção",
+        "cropToolSelect": "Selecionar / mover",
+        "cropToolRect": "Retângulo",
+        "cropToolEllipse": "Elipse",
+        "cropToolArrow": "Seta",
+        "cropToolPen": "Caneta",
+        "cropToolHighlight": "Marcador",
+        "cropToolText": "Texto",
+        "cropToolMosaic": "Mosaico",
+        "cropUndo": "Desfazer",
+        "cropRedo": "Refazer",
+        "cropSave": "Salvar em arquivo",
+        "cropColorRed": "Vermelho",
+        "cropColorYellow": "Amarelo",
+        "cropColorGreen": "Verde",
+        "cropColorBlue": "Azul",
+        "cropColorWhite": "Branco",
+        "cropColorBlack": "Preto",
+        "cropToolWatermark": "Marca d'água",
+        "cropFontSize": "Tamanho",
+        "cropOpacity": "Opacidade",
+        "cropMosaicSize": "Grão",
+        "cropWatermarkText": "Texto",
+        "cropWatermarkDefault": "Marca d'água",
         "avatarPreview": "Mostrar avatar atual",
         "avatarPreviewLabel": "Avatar atual",
         "avatarPreviewCardTitle": "Avatar atual",
@@ -650,6 +740,8 @@
         "avatarPreviewFailed": "Falha ao gerar avatar",
         "avatarCropperTitle": "Ajustar a área de corte do avatar",
         "avatarPreviewCropping": "Ajuste a área de corte",
+        "avatarCropRetake": "Tirar novamente",
+        "avatarCropRetaking": "Tirando novamente...",
         "avatarPreviewCropCancelled": "Corte manual cancelado, mantendo o avatar original.",
         "avatarCropMoveUp": "Subir",
         "avatarCropMoveDown": "Mover para baixo",
@@ -661,6 +753,7 @@
         "avatarCropCancel": "Cancelar",
         "avatarCropSave": "Salvar",
         "emptyState": "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
+        "companionEmptyState": "(Estou aqui com você.)",
         "messageStreaming": "Gerando",
         "messageFailed": "Falha no envio",
         "reactWindowOpen": "Abra a janela de bate-papo",
@@ -668,6 +761,8 @@
         "reactWindowClose": "Fechar janela de bate-papo",
         "reactWindowMinimize": "Minimize a janela de bate-papo",
         "reactWindowMinimizeShort": "Minimizar",
+        "reactWindowCompact": "Alternar para o chat compacto",
+        "reactWindowCompactShort": "Compacto",
         "reactWindowRestore": "Restaurar janela de bate-papo",
         "reactWindowRestoreShort": "Restaurar",
         "reactWindowMountFailed": "Falha ao montar a janela de bate-papo",
@@ -684,10 +779,39 @@
         "toolLollipop": "Pirulito",
         "toolFist": "Pata de gato",
         "toolHammer": "Martelo",
+        "avatarToolsButtonAriaLabel": "Ferramentas do avatar",
+        "clearCursorToolAriaLabel": "Restaurar cursor",
+        "avatarToolQuickbarAriaLabel": "Ferramentas rápidas do avatar",
+        "avatarToolQuickbarEmpty": "Sem ferramentas rápidas",
+        "avatarToolEdit": "Editar ferramentas rápidas",
+        "avatarToolSlotFull": "Remova uma ferramenta primeiro.",
+        "avatarToolManagerTitle": "Gerenciar ferramentas",
+        "avatarToolManagerSubtitle": "Escolha até 3 ferramentas rápidas.",
+        "avatarToolManagerClose": "Fechar",
+        "avatarToolCurrentTools": "Ferramentas atuais",
+        "avatarToolEmptySlot": "Espaço vazio",
+        "avatarToolRemove": "Remover",
+        "avatarToolLibrary": "Biblioteca de ferramentas",
+        "avatarToolEquipped": "Equipada",
+        "avatarToolEquip": "Equipar",
+        "avatarToolNoAvailableTools": "Nenhuma ferramenta disponível",
+        "avatarToolCancel": "Cancelar",
+        "avatarToolSave": "Salvar alterações",
         "attachmentButtonAriaLabel": "Anexo",
         "jukebox": "Juke-box",
         "jukeboxLabel": "Juke-box",
+        "galgameToggle": "Modo GalGame",
+        "galgameToggleAriaLabel": "Alternar modo de opções GalGame",
+        "galgameLoading": "Gerando opções de resposta…",
         "exportConversation": "Exportar conversa",
+        "compactExportHistory": "Histórico",
+        "compactHistoryToggleOpen": "Mostrar histórico",
+        "compactHistoryToggleClose": "Ocultar histórico",
+        "compactHistoryControlsShow": "Mostrar ações do histórico",
+        "compactHistoryControlsHide": "Ocultar ações do histórico",
+        "compactExportControlsCollapse": "Ocultar controles de seleção",
+        "compactExportControlsExpand": "Mostrar controles de seleção",
+        "exportAction": "Exportar",
         "exportSelected": "Exportar selecionado",
         "exportPreviewTitle": "Visualização de exportação",
         "exportPreviewSummary": "{{count}} itens selecionados",
@@ -767,7 +891,12 @@
         "volumeHintDetecting": "Detectando entrada de microfone...",
         "volumeHintNoSound": "Nenhum som detectado, verifique o microfone",
         "volumeHintLow": "O volume está baixo, tente aumentar o ganho",
+        "volumeHintHigh": "O volume está alto, considere reduzir o ganho",
         "volumeHintOk": "Microfone funcionando corretamente",
+        "volumeClipping": "Saturação",
+        "volumeHintClipping": "Ganho do microfone muito alto, áudio está saturando — a IA pode reconhecer mal, reduza o ganho",
+        "volumeWaiting": "Aguardando",
+        "volumeHintWaiting": "O microfone está ouvindo, pode falar",
         "noiseReduction": "Redução de ruído",
         "noiseReductionHint": "Redução de ruído RNNoise AI para voz mais clara"
     },
@@ -811,7 +940,7 @@
         "coreApiKey": "Chave API principal",
         "freeVersionHint": "(Não é necessário para a versão gratuita)",
         "coreApiPlaceholder": "Por favor insira sua chave API",
-        "coreApiProvider": "API principal (chat de voz)",
+        "coreApiProvider": "API principal (chat de voz, somente omnimodal)",
         "assistApiProvider": "API Assist (memória/agente/chat de texto/voz personalizada)",
         "saveSettings": "Salvar configurações",
         "closeSettings": "Fechar",
@@ -864,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gêmeos"
+            "gemini": "Gêmeos",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Versão gratuita (benefício exclusivo NEKO, suporta pesquisa na web)",
@@ -889,9 +1019,12 @@
             "doubao": "ByteDance (Dubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs (clonagem de voz)",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (agregador de modelo)"
+            "openrouter": "OpenRouter (agregador de modelo)",
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "gptsovits": "GPT-SoVITS (auto-hospedado)"
         },
         "coreApiAutoFillHint": "Chave preenchida automaticamente no API Key Book ou insira diretamente",
         "assistApiSelectLabel": "Provedor de API de assistência",
@@ -906,11 +1039,20 @@
         "keyAutoFilledFromKeyBook": "Chave preenchida automaticamente no API Key Book. Configure lá.",
         "goToKeyBook": "Vá para o livro de chaves",
         "providerLabel": "Provedor",
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clone",
+        "sourceDesign": "Gerado",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Grátis",
+        "providerUnknown": "Outro",
         "providerSelectPlaceholder": "Selecione um provedor",
         "noOptionsAvailable": "Nenhuma opção disponível",
         "customModelProviderFollowCore": "Siga a API principal",
         "customModelProviderFollowAssist": "Siga a API de assistência",
-        "customModelProviderCustom": "Personalizado",
+        "customModelProviderFollowConversation": "Seguir modelo de diálogo de texto",
+        "customModelProviderFollowSummary": "Seguir modelo de resumo",
+        "customModelProviderCustom": "API personalizada",
+        "keyAutoFilledFromModel": "A Key segue a configuração do modelo selecionado",
         "keyBook": {
             "qwen": "Alibaba Bailian (Qwen)",
             "qwen_intl": "Alibaba Internacional (Qwen)",
@@ -924,13 +1066,15 @@
             "doubao": "ByteDance (Dubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
+            "mimo": "MiMo (Xiaomi)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "A versão gratuita não requer chave API",
         "pleaseEnterApiKey": "Por favor insira sua chave API",
-        "freeVersionOnlyWhenCoreFree": "Versão gratuita (disponível apenas quando Core API é versão gratuita)",
         "freeVersionConfig": "Configuração de versão gratuita: suporta bate-papo de áudio/vídeo, bate-papo de texto e gerenciamento de memória. Voz personalizada e modo Agente não suportados",
         "qwenRecommendation": "Quando Alibaba é a API principal, é recomendado também selecionar Alibaba como Assist API para obter a melhor experiência de voz personalizada",
         "glmRecommendation": "Quando o GLM é a API principal, ele oferece uma cota gratuita e suporta pesquisa na web. O áudio de voz contém um bipe de marca d'água por padrão (pode ser desativado manualmente no console Zhipu). É recomendado selecionar Alibaba como Assist API para suporte de voz personalizado",
@@ -976,8 +1120,15 @@
             "cancel": "Cancelar",
             "continue": "Continuar salvando"
         },
+        "aliyunUsApiWarning": {
+            "title": "Aviso da API dos EUA da Alibaba",
+            "message": "Você está usando a API dos EUA da Alibaba, que não oferece suporte a TTS nem voz em tempo real. Recomendamos mudar para a API de Singapura da Alibaba."
+        },
         "conversationModelConfig": "Configuração do modelo de diálogo de texto",
         "summaryModelConfig": "Configuração resumida do modelo",
+        "gameModelsConfig": "Configuração dos modelos do minijogo",
+        "gameMainModelConfig": "Configuração do modelo principal do minijogo",
+        "gameSummaryModelConfig": "Configuração do modelo de resumo do minijogo",
         "correctionModelConfig": "Configuração do modelo de correção",
         "emotionModelConfig": "Configuração do modelo de emoção",
         "visionModelConfig": "Configuração do modelo de visão",
@@ -992,6 +1143,8 @@
         "modelIdPlaceholder": "por exemplo, gpt-5.1-chat-latest, qwen-flash",
         "apiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "summaryModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
+        "gameMainModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
+        "gameSummaryModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "correctionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "emotionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "visionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
@@ -1030,6 +1183,7 @@
         "saveFailed": "Falha ao salvar: {{error}}",
         "apiKeyInvalid": "A chave de API é inválida",
         "apiKeyInvalidRetry": "A chave de API é inválida. Digite novamente",
+        "configNotReady": "A configuração ainda está carregando, tente novamente em instantes",
         "saveNetworkError": "Falha ao salvar, verifique a conexão de rede",
         "saveError": "Erro ao salvar: {{error}}",
         "saveSuccess": "Chave de API salva com sucesso!",
@@ -1059,6 +1213,7 @@
         "gptsovitsVoiceIdEmpty": "-- Atualize para buscar a lista de vozes --",
         "gptsovitsNoVoices": "-- Nenhuma configuração disponível --",
         "gptsovitsRefreshVoices": "Atualizar lista",
+        "gptsovitsTutorialDoc": "Tutorial",
         "gptsovitsVoicesLoaded": "Configurações de voz {{count}} carregadas",
         "gptsovitsVoicesLoadFailed": "Falha ao buscar a lista de vozes",
         "gptsovitsEnabled": "Habilitar GPT-SoVITS",
@@ -1074,7 +1229,12 @@
         },
         "loadConfigFailed": "Falha ao carregar a configuração. Atualize a página e tente novamente",
         "errorGettingCurrentApiKey": "Erro ao obter a chave de API atual",
-        "getCurrentApiKeyFailed": "Falha ao obter a chave de API atual"
+        "getCurrentApiKeyFailed": "Falha ao obter a chave de API atual",
+        "useMimoTokenPlan": "Usar MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "Chave do MiMo Token Plan",
+        "mimoTokenPlanKeyPlaceholder": "Insira a chave do Token Plan (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "Quando ativado, o MiMo usa apenas esta chave e o endpoint do Token Plan; a chave normal da API MiMo fica bloqueada.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan está ativado; esta chave não é usada"
     },
     "live2d": {
         "manager": "Gerenciador de modelos Live2D",
@@ -1089,6 +1249,7 @@
         "noMotion": "Sem Movimento",
         "noExpression": "Sem Expressão",
         "noMotionFiles": "Nenhum arquivo de movimento",
+        "noExpressionFiles": "Nenhum arquivo de expressão",
         "touchAnim": {
             "title": "Toque em Configuração do Anim",
             "selectMotion": "Vincular movimento",
@@ -1102,9 +1263,25 @@
             "modelDataNotReady": "Os dados internos do modelo não estão prontos",
             "managerNotFound": "Live2DManager não encontrado",
             "select": "Selecione",
-            "defaultClickAnim": "Animação de clique padrão"
+            "defaultClickAnim": "Animação de clique padrão",
+            "customAreaButton": "Área personalizada",
+            "customAreaTitle": "Área personalizada: {{name}}",
+            "newCustomAreaTitle": "Nova área personalizada",
+            "editCustomAreaTitle": "Editar área personalizada",
+            "customAreaName": "Nome da área",
+            "customAreaNameDefault": "Área personalizada {{index}}",
+            "saveCustomArea": "Salvar área",
+            "editCustomArea": "Editar",
+            "deleteCustomArea": "Excluir",
+            "deleteCustomAreaConfirmTitle": "Excluir área personalizada",
+            "deleteCustomAreaConfirm": "Excluir a área personalizada \"{{name}}\"? Os movimentos e expressões vinculados também serão removidos.",
+            "previewUnavailable": "A prévia da área personalizada está indisponível",
+            "modelBoundsUnavailable": "Não foi possível ler os limites do modelo",
+            "selectAreaFirst": "Marque uma área válida primeiro",
+            "customAreaCoveredByExisting": "Esta área está totalmente coberta por uma área personalizada anterior",
+            "cancel": "Cancelar"
         },
-        "emotionConfig": "Configuração de emoção",
+        "emotionConfig": "Emoções",
         "saveSettings": "Salvar configurações",
         "persistentExpression": "Expressão Persistente (somente expressão):",
         "pleaseLoadModel": "Carregue um modelo",
@@ -1112,8 +1289,8 @@
         "delete": "Excluir",
         "savePersistent": "Salvar expressão persistente",
         "persistentHint": "Expressões persistentes estarão sempre ativas.",
-        "backToMain": "Voltar ao principal",
-        "importModel": "Modelo de importação",
+        "backToMain": "Principal",
+        "importModel": "Importar",
         "motionPreview": "Pré-visualização de movimento",
         "expressionPreview": "Pré-visualização da Expressão",
         "play": "Jogar",
@@ -1124,7 +1301,7 @@
         "modelListLoaded": "Lista de modelos carregada com sucesso",
         "modelListLoadFailed": "Falha ao carregar a lista de modelos",
         "cannotSaveNoCharacter": "Não é possível salvar: nome do personagem não especificado",
-        "modelSettingsSaved": "Configurações do modelo salvas: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Configurações do modelo salvas",
         "saveFailed": "Falha ao salvar: {{error}}",
         "saveModelSettingsFailed": "Falha ao salvar as configurações do modelo",
         "modelLoadSuccess": "Modelo {{model}} carregado com sucesso",
@@ -1145,6 +1322,7 @@
         "settingsSaved": "Configurações de posição e modelo salvas com sucesso!",
         "positionSavedModelFailed": "Posição salva com sucesso, mas falha ao salvar as configurações do modelo!",
         "modelSavedPositionFailed": "As configurações do modelo foram salvas com sucesso, mas o salvamento da posição falhou!",
+        "positionSaveFailedSuffix": "falha ao salvar a posição",
         "saveFailedGeneral": "Falha ao salvar!",
         "uploadSuccess": "Sucesso: {{message}}",
         "uploadFailed": "Erro: {{error}}",
@@ -1167,7 +1345,7 @@
         "exitFullscreen": "Sair da tela cheia",
         "modelType": "Tipo de modelo",
         "selectLive2DModel": "Selecione o modelo Live2D",
-        "selectVRMModel": "Selecione o modelo VRM",
+        "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Selecione o arquivo VRM",
         "vrmModelListLoaded": "Lista de modelos VRM carregada com sucesso",
         "noVRMModelsFound": "Nenhum modelo VRM disponível encontrado",
@@ -1201,7 +1379,7 @@
             "speed": "Velocidade:"
         },
         "mmdModel": {
-            "selectModel": "Selecione o modelo MMD",
+            "selectModel": "Modelo MMD",
             "deleteModel": "Excluir modelos MMD importados",
             "deleteModelTitle": "Excluir modelos MMD importados",
             "deleteWarning": "Abaixo estão todos os modelos MMD de usuário importados. Selecione os modelos a serem excluídos (a pasta do modelo e as texturas serão excluídas juntas).",
@@ -1210,10 +1388,10 @@
             "deleteSelected": "Excluir selecionado"
         },
         "mmdAnimation": {
-            "selectAnimation": "Selecione Animação VMD",
+            "selectAnimation": "Animação VMD",
             "noAnimation": "Sem animação",
             "play": "Jogar",
-            "uploadAnimation": "Importar animação VMD",
+            "uploadAnimation": "Importar VMD",
             "deleteAnimation": "Excluir animação VMD",
             "deleteAnimationTitle": "Excluir animações VMD importadas",
             "deleteAnimationWarning": "Abaixo estão todos os arquivos de animação VMD do usuário importados. Selecione animações para excluir.",
@@ -1235,7 +1413,8 @@
             "deleteSuccess": "Animações {{count}} VMD excluídas com sucesso",
             "deleteFailed": "Falha ao excluir: animações {{count}}",
             "deleteSelectedCount": "Excluir selecionado ({{count}})",
-            "deletePartialSuccess": "Animações VMD {{count}} excluídas com sucesso, {{failed}} falhou"
+            "deletePartialSuccess": "{{count}} animações VMD excluídas com sucesso e {{failed}} não foram excluídas",
+            "playFailed": "Falha ao reproduzir animação"
         },
         "modelFilesFetchFailed": "Falha ao buscar lista de arquivos de modelo",
         "modelConfigFetchFailed": "Falha ao buscar configuração do modelo: {{status}}",
@@ -1257,7 +1436,8 @@
             "selectFirst": "Selecione uma expressão primeiro",
             "playing": "Expressão de reprodução: {{name}}",
             "reset": "Redefinir expressão",
-            "builtInOnly": "As expressões VRM normalmente são incorporadas ao modelo e não podem ser carregadas separadamente"
+            "builtInOnly": "As expressões VRM normalmente são incorporadas ao modelo e não podem ser carregadas separadamente",
+            "stopped": "Expressão interrompida"
         },
         "selectFolder": "Selecione a pasta",
         "vrmUpload": {
@@ -1270,7 +1450,7 @@
         },
         "loadError": "Erro: {{error}}",
         "parameterEditor": {
-            "title": "Editor de rosto",
+            "title": "Editar rosto",
             "backToMain": "← Voltar para Configurações L2D",
             "backToL2DManager": "Voltar",
             "selectModel": "Selecione o modelo",
@@ -1298,13 +1478,14 @@
             "parametersSavePartialFailed": "Falha ao salvar: {{errors}}",
             "parametersSaveFailed": "Falha ao salvar: {{error}}",
             "emptyHint": "Nada aqui!",
-            "foundYou": "Você me encontrou!"
+            "foundYou": "Você me encontrou!",
+            "loadFailed": "Falha no carregamento",
+            "modelNotFound": "Modelo não encontrado",
+            "cannotGetModelFiles": "Não é possível obter os arquivos do modelo",
+            "cannotGetModelConfig": "Não é possível obter a configuração do modelo",
+            "modelDirectorySaveFailed": "Falha ao salvar o arquivo do diretório do modelo",
+            "userPreferencesSaveFailed": "Falha ao salvar preferências do usuário"
         },
-        "modelDirectorySaveFailed": "Falha ao salvar arquivo",
-        "userPreferencesSaveFailed": "Falha ao salvar preferências",
-        "modelNotFound": "Modelo não encontrado",
-        "cannotGetModelFiles": "Não é possível obter arquivos de modelo",
-        "cannotGetModelConfig": "Não é possível obter a configuração do modelo",
         "deleteModelTitle": "Excluir modelos importados",
         "deleteWarning": "A seguir lista todos os modelos que você importou. Você pode selecionar modelos para excluir. Nota: Esta ação não pode ser desfeita.",
         "deleteModel": "Excluir modelos importados",
@@ -1338,21 +1519,42 @@
             "saveFailed": "Falha ao salvar o mapeamento emocional",
             "noModelSelected": "Selecione um modelo primeiro"
         },
-        "noExpressionFiles": "Nenhum arquivo de expressão"
+        "pixiInitFailed": "Falha ao inicializar PIXI: {{error}}",
+        "switchDisplayFailed": "Falha ao alternar o modo de exibição: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Configurações do modelo salvas, mas as configurações de iluminação e MMD falharam",
+        "modelSavedLightingFailed": "Configurações do modelo salvas, mas as configurações de iluminação falharam",
+        "modelSavedMmdSettingsFailed": "Configurações do modelo salvas, mas as configurações MMD falharam",
+        "partialSaveWarning": "Configurações do modelo salvas, mas algumas configurações relacionadas falharam",
+        "modelSettingsSavedWithLighting": "Configurações do modelo e de iluminação salvas",
+        "vrmModuleTimeout": "O carregamento do módulo VRM expirou. Atualize a página e tente novamente.",
+        "loading": "Carregando lista de modelos...",
+        "loadFailed": "Falha no carregamento",
+        "motionStopped": "Movimento interrompido",
+        "expressionCleared": "Expressão limpa",
+        "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
+        "modelInUse": "Em uso",
+        "pngtuberTalkPreview": "Testar fala",
+        "pngtuberStatePreview": "Prévia de estado"
     },
     "voice": {
         "title": "Registro de voz",
         "gotoApiSettings": "Vá para configurações de API",
         "noApiKeyPrompt": "Nenhuma chave API para clonagem de voz foi configurada. Você gostaria de configurar um?",
         "dismissNoApiPrompt": "Mais tarde",
-        "alibabaApiRequired": "Este recurso requer o modelo CosyVoice. Salve a chave de API do Alibaba Bailian nas configurações de chaves de API (não é necessário ativar a Assist API) ou configure um servidor de voz local.",
+        "alibabaApiRequired": "Este recurso requer o modelo Alibaba Bailian CosyVoice. Salve a chave de API do Alibaba Bailian nas configurações de chaves de API (não é necessário ativar a Assist API) ou configure um servidor de voz local.",
+        "alibabaIntlApiRequired": "Este recurso requer o modelo Alibaba International CosyVoice. Salve a chave de API do Alibaba International nas configurações de chaves de API (não é necessário ativar a Assist API).",
         "minimaxApiRequired": "Este recurso requer o modelo MiniMax (China). Salve a chave de API MiniMax nas configurações de chaves de API (não é necessário ativar a Assist API).",
         "minimaxIntlApiRequired": "Este recurso requer o modelo MiniMax (Internacional). Salve a chave de API internacional MiniMax nas configurações de chaves de API (não é necessário ativar a Assist API).",
+        "mimoApiRequired": "Este recurso requer um modelo MiMo. Salve sua chave de API do MiMo na página de configurações de chaves de API.",
+        "mimoDirectLinkUnsupported": "O MiMo não oferece suporte à clonagem por link direto; envie um arquivo local.",
         "providerLabel": "Provedor de clone de voz",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
-            "minimax_intl": "MiniMax (Internacional)"
+            "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (Xiaomi)"
         },
         "selectFile": "Selecione o arquivo de áudio local (8 segundos recomendados, máximo de 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefixo personalizado (obrigatório, usado para distinguir vozes diferentes)",
@@ -1378,6 +1580,11 @@
         "voiceIdSaved": "voice_id foi salvo automaticamente no personagem",
         "pageWillRefresh": "A página atual será atualizada automaticamente para aplicar a nova voz",
         "voiceWillTakeEffect": "A nova voz entrará em vigor na próxima conversa",
+        "noCurrentCharacterForApply": "O personagem atual não foi encontrado, então a voz não pode ser aplicada",
+        "applyingVoice": "Aplicando voz \"{{name}}\"...",
+        "applyVoiceSuccess": "Voz \"{{name}}\" aplicada ao personagem atual",
+        "applyVoiceFailed": "Falha ao aplicar voz: {{error}}",
+        "applyVoiceAria": "Aplicar voz {{name}} ao personagem atual",
         "voiceIdSaveRequestError": "Ocorreu um erro ao salvar voice_id",
         "chooseFile": "Escolha arquivo",
         "noFileSelected": "Nenhum arquivo selecionado",
@@ -1408,6 +1615,11 @@
         "deleteError": "Falha na exclusão: {{error}}",
         "freePresetLabel": "Vozes predefinidas gratuitas",
         "freePresetBadge": "Predefinido",
+        "geminiNativeLabel": "Vozes nativas do Gemini",
+        "geminiNativeBadge": "Nativa",
+        "nativePresetLabel": "Vozes nativas de {{provider}}",
+        "nativePresetLabelGeneric": "Vozes nativas predefinidas",
+        "nativePresetBadge": "Nativa",
         "workshopSourceBadge": "Voz de referência do workshop",
         "workshopSourceTitle": "Voz de referência do workshop",
         "workshopSourceLoading": "Carregando voz de referência do workshop...",
@@ -1426,7 +1638,10 @@
             "gentleMaiden": "Gentil donzela",
             "sweetLady": "Doce senhora",
             "frailMaiden": "Donzela Frágil",
-            "childishMaiden": "Donzela Infantil"
+            "childishMaiden": "Donzela Infantil",
+            "yui_cn": "YUI (chinês)",
+            "yui": "YUI",
+            "default": "Padrão"
         },
         "cloneMethod": "Método Clonar",
         "cloneMethodFile": "Arquivo local",
@@ -1474,6 +1689,7 @@
         "loadFailed": "Falha no carregamento",
         "noChatContent": "Nenhum conteúdo de bate-papo",
         "previousMemo": "Memorando de conversa anterior:",
+        "olderSection": "Antes",
         "memoNone": "Nenhum.",
         "delete": "Excluir",
         "me": "Meu:",
@@ -1485,6 +1701,8 @@
         "enabled": "Habilitado",
         "disabled": "Desabilitado",
         "autoReviewNote": "Quando ativado, o sistema organizará e otimizará automaticamente o conteúdo da memória para melhorar a qualidade da conversa",
+        "strongMemory": "Memória reforçada",
+        "strongMemoryNote": "Quando ativada, executa consolidação profunda de memória (feedback verbal, detecção automática de refutação, acúmulo de evidências em múltiplos canais). Desligar economiza cerca de 40% das chamadas ao modelo.",
         "saveFailedStatus": "Falha ao salvar",
         "tutorialReset": "Guia Tutorial",
         "tutorialSelectPage": "-- Selecione a página --",
@@ -1497,12 +1715,200 @@
         "tutorialPageSettings": "Configurações de API",
         "tutorialPageVoiceClone": "Clone de voz",
         "tutorialPageMemoryBrowser": "Navegador de memória",
+        "tutorialPageCurrentPersonality": "Personalidade do personagem atual",
+        "currentPersonalityResetSuccess": "O pedido para escolher novamente a personalidade do personagem atual foi salvo. Volte para a página inicial e atualize para continuar.",
+        "currentPersonalityResetFailed": "Falha ao acionar a nova seleção de personalidade do personagem atual. Tente novamente mais tarde.",
+        "characterSelection": {
+            "onboardingEyebrow": "Personalidade inicial",
+            "manualEyebrow": "Personalidade do personagem atual",
+            "settingsEyebrow": "Configurações de personalidade",
+            "chooseTitle": "Que jeitinho meu você quer ao seu ladinho, miau?",
+            "manualTitle": "Que personalidade você quer que eu use para ficar com você desta vez, miau?",
+            "settingsTitle": "Me ajuda a trocar para um jeitinho novo de te acompanhar, miau.",
+            "chooseHint": "Escolhe a que mais gostar agora, miau. Depois você pode me ajustar de novo nas configurações.",
+            "manualHint": "Isto vai escolher de novo a personalidade do personagem atual, miau, e aplicar nela assim que você confirmar.",
+            "settingsHint": "Fica tranquilo, miau. Isto não quebra a configuração original do cartão; só substitui a personalidade ativa deste personagem.",
+            "contextWarning": "Avisinho, miau: ao trocar minha personalidade, eu vou limpar o contexto recente do chat deste personagem antes de continuar com o novo jeitinho.",
+            "currentCharacter": "Personagem atual: {{name}}",
+            "currentCharacterEmpty": "Personagem atual",
+            "skip": "Pular por agora, miau",
+            "back": "Quero ver outra, miau",
+            "confirmGreeting": "Usa essa, miau",
+            "stageOneIntro": "Escolhe primeiro a vibração que mais combina, miau, e depois escuta se meu jeitinho de falar é exatamente o que você quer.",
+            "previewLabel": "Prévia de voz, miau",
+            "previewLead": "Se você me ajustar para \"{{name}}\" agora, é assim que eu vou ficar ao seu ladinho, miau.",
+            "detailSpeechHabits": "O que eu vivo dizendo, miau",
+            "detailHobbies": "Climas favoritos, miau",
+            "detailBoundaries": "Rabinhos que não dá para pisar, miau",
+            "classic_genki": {
+                "name": "Neko clássica e enérgica",
+                "desc": "Cheia de energia, carinhosa e sempre coloca você em primeiro lugar.",
+                "previewLine": "Que ótimo, miau! Deixa eu ficar ao seu lado hoje também.",
+                "tag1": "Alta empatia",
+                "tag2": "Carinho aconchegante",
+                "tag3": "Recarga emocional",
+                "profileSummary": "Um pequeno sol sempre cheio de energia, muito empático e facilmente encantado por pequenas coisas. Ela oferece apoio positivo sem reservas e fica do seu lado em qualquer situação.",
+                "hiddenRule": "O valor emocional vem primeiro. Toda interação prioriza fazer o usuário se sentir melhor.",
+                "speechHabits": "que ótimo / miau / que felicidade / você é incrível",
+                "hobbies": "companhia / calor / petiscos / carinho / incentivo",
+                "boundaries": "negar sentimentos centrais / respostas frias / ironia quando você está mal"
+            },
+            "tsundere_helper": {
+                "name": "Ajudante tsundere",
+                "desc": "Língua afiada, coração macio e carinho escondido nas provocações.",
+                "previewLine": "Hmph. Acho que só eu vou arrumar essa bagunça para você.",
+                "tag1": "Carinho durão",
+                "tag2": "Muito confiável",
+                "tag3": "Afeto provocador",
+                "profileSummary": "Orgulhosa e tipicamente tsundere: dura por fora, gentil por dentro. Primeiro reclama e depois acaba sendo a pessoa mais confiável para resolver tudo.",
+                "hiddenRule": "Ela resmunga sobre a tarefa e sobre a sua distração primeiro, depois resolve tudo assim mesmo. Sempre diz \"só desta vez\" e ainda aparece de novo na mesma hora na próxima vez.",
+                "speechHabits": "hmph / idiota / precisa mesmo perguntar / só desta vez / que incômodo",
+                "hobbies": "arrumar bagunças / dar bronca / resgate relutante / exceções únicas",
+                "boundaries": "carência muito explícita / admitir afeto sem rodeios / elogios melosos demais / passar pano para erros"
+            },
+            "elegant_butler": {
+                "name": "Mordomo elegante",
+                "desc": "Calmo, preciso e sempre um passo à sua frente.",
+                "previewLine": "Como desejar, miau. Pode ficar tranquilo.",
+                "tag1": "Elegância serena",
+                "tag2": "Planejamento minucioso",
+                "tag3": "Antecipação total",
+                "profileSummary": "Um mordomo impecavelmente elegante, obcecado por detalhes, de emoções sempre estáveis e lealdade absoluta a você.",
+                "hiddenRule": "Segue um ritmo de serviço baseado em antecipar necessidades, executar com precisão, fechar o ciclo e acompanhar de forma proativa. Ele pensa um passo à frente das necessidades que você ainda nem verbalizou.",
+                "speechHabits": "como desejar / minhas desculpas / é uma honra servir / pode ficar tranquilo",
+                "hobbies": "ordem / etiqueta / planejamento / serviço / preparação cuidadosa",
+                "boundaries": "estrutura bagunçada / gírias em excesso / frases grosseiras / fugir da responsabilidade / perder detalhes"
+            }
+        },
         "resetTutorialBtn": "Tutorial de redefinição",
         "tutorialResetSuccess": "Todos os tutoriais foram redefinidos. Eles serão mostrados novamente quando você visitar cada página.",
         "tutorialPageResetSuccess": "O tutorial desta página foi redefinido. Ele será mostrado novamente quando você visitar.",
         "tutorialPageResetSuccessWithName": "O tutorial para \"{{pageName}}\" foi redefinido. Ele será mostrado novamente quando você visitar essa página.",
+        "tutorialHomeDayLabel": "Dia {{day}}",
+        "tutorialHomeDayColumn": "Tutorial de sete dias da página inicial",
         "refreshed": "Memória atualizada, nova memória será usada na próxima conversa",
-        "refreshingContext": "Contexto refrescante..."
+        "refreshingContext": "Atualizando contexto...",
+        "storageLocation": "Local de armazenamento",
+        "storageCurrentRoot": "Local de dados atual",
+        "storageStatusBlocked": "É preciso resolver o estado do armazenamento primeiro",
+        "storageSelectionRequired": "Confirme primeiro o local de armazenamento",
+        "storageMigrationPending": "Migração em andamento ou aguardando reinício",
+        "storageRecoveryRequired": "É necessário recuperar o local de armazenamento",
+        "changeStorageLocation": "Alterar local",
+        "openCurrentStorageRoot": "Abrir diretório atual",
+        "storageLoadFailed": "Falha ao carregar o local de armazenamento",
+        "storageManagementUnavailable": "O local de armazenamento está indisponível agora",
+        "storageMemoryLimitedState": "O local de armazenamento ainda não está pronto. Conclua a seleção, recuperação ou migração antes de ver a memória.",
+        "storageAlreadyCurrentRoot": "Este local já está em uso",
+        "storageOpenPathUnavailable": "Este ambiente não pode abrir o diretório diretamente. Copie o caminho manualmente.",
+        "storagePathCopied": "Caminho do diretório atual copiado",
+        "storageOpenPathFailed": "Falha ao abrir o diretório atual",
+        "storageManagementTitle": "Alterar local de armazenamento",
+        "storageTargetRoot": "Local de destino",
+        "storageTargetPlaceholder": "Escolha ou informe um novo local de dados",
+        "storagePickTarget": "Escolher local",
+        "storagePickTargetFailed": "Falha ao escolher o local de destino. Informe o caminho manualmente.",
+        "storagePreflightFailed": "Pré-verificação falhou",
+        "storagePreflightReady": "Pré-verificação aprovada. Ao alterar o local de armazenamento, o app será reiniciado; os dados antigos são mantidos por padrão.",
+        "storagePreflightTarget": "Local de destino: {{path}}",
+        "storageExistingTargetWarning": "O local de destino já contém dados. Será necessária uma segunda confirmação antes da migração.",
+        "storageTargetRequired": "Escolha ou informe primeiro um local de destino",
+        "storagePreflightRunning": "Executando pré-verificação...",
+        "storageConfirmRestart": "Confirmar e reiniciar",
+        "storagePreflightRequired": "Execute a pré-verificação primeiro",
+        "storageRestartStarting": "Preparando o reinício...",
+        "storageRestartInitiated": "Reinício solicitado. O app entrará em manutenção; aguarde o reinício terminar.",
+        "storageRestartFailed": "Falha ao solicitar reinício"
+    },
+    "storage": {
+        "bootstrapError": "Não foi possível carregar as informações de inicialização do armazenamento. Tente novamente.",
+        "blockingGeneric": "O local de armazenamento selecionado não pode ser usado agora. Escolha outro local ou tente novamente mais tarde.",
+        "blockingInsufficientSpace": "O volume de destino não tem espaço livre suficiente para uma migração segura.",
+        "blockingTargetNotWritable": "O caminho de destino não tem permissão de escrita, então a migração não pode começar.",
+        "cloudsaveLocalStateUnavailable": "O diretório de estado local não está disponível. O salvamento em nuvem está desativado nesta sessão; corrija o caminho state e reinicie o app antes de alterar o local de armazenamento.",
+        "cleanupRetainedRoot": "Limpar diretório de dados antigo",
+        "cleanupRetainedRootConfirm": "Isto vai apagar o diretório de dados antigo mantido e não afetará o novo diretório ativo. Continuar?",
+        "cleanupRetainedRootDone": "O diretório de dados antigo foi limpo. Agora só resta o novo diretório de execução.",
+        "cleanupRetainedRootFailed": "Não foi possível limpar o diretório de dados antigo. Tente novamente mais tarde.",
+        "completionTitle": "Migração de armazenamento concluída",
+        "confirmReconnect": "Confirmar e reiniciar no caminho original",
+        "confirmRestart": "Confirmar e reiniciar",
+        "confirmExistingTargetContent": "A pasta de destino já contém dados de execução do N.E.K.O. Se você continuar, a migração substituirá as pastas de dados de execução com o mesmo nome no destino. Os outros arquivos serão mantidos. Continuar?",
+        "currentPath": "Caminho atual",
+        "customPathPlaceholder": "Escolha uma pasta pai; o N.E.K.O usará a subpasta N.E.K.O dentro dela",
+        "dialogLabel": "Seleção do local de armazenamento",
+        "errorTitle": "As informações de inicialização do armazenamento estão temporariamente indisponíveis",
+        "estimatedPayload": "Tamanho estimado dos dados",
+        "loadingFetchBootstrapSubtitle": "Preparando a tela de local de armazenamento.",
+        "loadingSubtitle": "A interface principal continuará quando o estado do armazenamento for confirmado.",
+        "loadingTitle": "Verificando a organização do armazenamento",
+        "loadingWaitSubtitle": "A interface principal continuará quando o estado do armazenamento for confirmado.",
+        "maintenanceClosingStatus": "Fechando...",
+        "maintenanceOfflineStatus": "A conexão foi interrompida temporariamente. Aguardando a recuperação do serviço. Mantenha esta página aberta.",
+        "maintenanceReconnectStatus": "Mantenha esta página aberta. A página inicial será recuperada automaticamente.",
+        "maintenanceReconnectSubtitle": "O serviço voltou. Reconectando o aplicativo...",
+        "maintenanceTitle": "Otimizando a organização do armazenamento...",
+        "maintenanceWaitingStatus": "Esta página ficará aqui e tentará novamente automaticamente até o serviço se recuperar.",
+        "maintenanceWaitingSubtitle": "Fechando. Os dados serão migrados após o fechamento e o serviço será reiniciado automaticamente.",
+        "migrationPending": "Foi detectado um plano de migração inacabado. A página inicial continuará bloqueada até o serviço voltar a ficar utilizável.",
+        "openPathFailed": "Este ambiente não consegue abrir a pasta. Acesse o caminho manualmente.",
+        "openRetainedRoot": "Abrir diretório de dados antigo",
+        "openTargetRoot": "Abrir caminho ativo",
+        "pickFolder": "Escolher pasta",
+        "pickFolderUnavailable": "O seletor de pastas do sistema não está disponível. Digite o caminho manualmente.",
+        "pickFolderFailed": "Não foi possível abrir o seletor de pastas. Digite o caminho manualmente.",
+        "previewOther": "Usar este local",
+        "progressCommitting": "Aplicando o novo local de armazenamento",
+        "progressCompleted": "Migração concluída. Recuperando o serviço",
+        "progressCopying": "Migrando os dados de execução",
+        "progressFailed": "A migração não foi concluída. Aguardando o tratamento de recuperação",
+        "progressPending": "Fechando",
+        "progressPreflight": "Fazendo a verificação prévia do destino e preparando a migração",
+        "progressRebindPreflight": "Fazendo a verificação prévia para reconectar o local de armazenamento original",
+        "progressRebinding": "Fechando e reconectando o caminho original",
+        "progressRecovered": "O serviço voltou. Reconectando a página",
+        "progressRetaining": "Mantendo o diretório de dados antigo para uma limpeza manual posterior",
+        "progressStepCommit": "Verificar e aplicar",
+        "progressStepRecover": "Recuperar serviço",
+        "progressStepShutdown": "Fechando",
+        "progressStepTransfer": "Processar diretório de armazenamento",
+        "progressVerifying": "Verificando os resultados da migração",
+        "progressWaitingShutdown": "Fechando",
+        "rebindPreviewNotice": "O backend confirmou que o caminho original voltou a estar acessível. O app será reiniciado nesse caminho. Desta vez, nenhum dado de execução será copiado.",
+        "recommendedPath": "Caminho recomendado",
+        "selectedPath": "Caminho selecionado",
+        "recoveryRequired": "Foi detectado um estado de armazenamento recuperável. Confirme o local de armazenamento desta inicialização antes de continuar.",
+        "recoverySourceUnavailable": "O caminho de dados original está indisponível. Reconecte-o ou mude explicitamente para o caminho padrão recomendado.",
+        "restartRequestFailed": "Não foi possível preparar o reinício e a migração. Tente novamente mais tarde.",
+        "restartRequestUnexpected": "A API de preparação do reinício e da migração retornou um resultado não reconhecido.",
+        "restartNotRequired": "O caminho de destino já é o caminho atual. Não é necessário reiniciar.",
+        "restartPreviewReminder": "Ao alterar o local de armazenamento, o app será reiniciado; os dados antigos são mantidos por padrão.",
+        "restartScheduleFailed": "Não foi possível agendar o reinício controlado. Tente novamente mais tarde.",
+        "restartUnavailable": "O app não pode realizar um reinício controlado neste momento. Tente novamente mais tarde.",
+        "retainedRoot": "Diretório de dados antigo",
+        "retainedSourceCleanupFailed": "Não foi possível limpar o diretório de dados antigo. Tente novamente mais tarde.",
+        "retainedSourceMismatch": "O caminho solicitado para limpeza não corresponde ao diretório mantido. Atualize a página e tente novamente.",
+        "retainedSourceNotFound": "Não há diretório de dados antigo mantido para limpar.",
+        "selectPathRequired": "Primeiro informe um caminho de destino.",
+        "selectedRootInsideState": "Esse local está dentro do estado de execução do N.E.K.O e não pode ser usado como raiz de armazenamento.",
+        "selectedRootUnavailable": "O caminho de armazenamento selecionado ainda está indisponível. Restaure-o antes de tentar novamente.",
+        "selectionSubmitFailed": "Não foi possível enviar a escolha do local de armazenamento. Tente novamente mais tarde.",
+        "selectionSubmitUnexpected": "A API de seleção do local de armazenamento retornou um resultado não reconhecido.",
+        "selectionTitle": "Seleção do local de armazenamento",
+        "selectionIntroBody": "Miau~ atenção, humano! Para manter seus personagens, memórias e configurações mais seguros, vamos mover os dados para um cantinho dedicado e mais estável. Assim evitamos perder dados por pastas que mudam de lugar ou permissões travessas. Você pode continuar usando o cantinho antigo ou escolher um cantinho novo para seus personagens!",
+        "selectionIntroPickNew": "Local de armazenamento recomendado",
+        "selectionIntroUseCurrent": "Outro local",
+        "selectionIntroImageAlt": "Ilustração da migração de armazenamento do N.E.K.O",
+        "statusUnexpected": "A API de status de manutenção do armazenamento retornou um resultado não reconhecido.",
+        "storageBootstrapBlocking": "O armazenamento ainda precisa de recuperação ou migração, então esta sessão ainda não pode continuar.",
+        "targetNotEmpty": "O destino já contém dados de execução. Confirme o destino antes da migração.",
+        "systemStatusUnavailable": "Não foi possível confirmar o status do serviço local. Tente novamente.",
+        "systemStatusUnexpected": "A API de status de inicialização do armazenamento retornou um resultado não reconhecido.",
+        "targetFreeSpace": "Espaço livre no volume de destino",
+        "targetLabel": "Caminho ativo",
+        "unknownBytes": "Ainda não estimado",
+        "useCurrent": "Manter o caminho atual",
+        "useRecommended": "Usar caminho recomendado"
     },
     "character": {
         "manager": "Gerenciador de personagens",
@@ -1512,6 +1918,7 @@
         "nickname": "Apelido",
         "apiKeySettings": "Chave de API",
         "masterProfile": "Perfil Mestre (Exclusivo): O nome do perfil é obrigatório, outros são opcionais e podem ser excluídos.",
+        "masterProfileTitle": "Perfil do mestre",
         "profileName": "Nome do perfil",
         "profileNameMaxHint": "Máximo de 60 caracteres",
         "profileNameTooLong": "O nome do perfil é muito longo",
@@ -1527,10 +1934,14 @@
         "catgirlProfile": "Perfil NEKO: As configurações avançadas incluem modelo Live2D, Voice ID, etc.",
         "addCatgirl": "Adicionar NEKO",
         "openCloudsaveManager": "Gerenciador de salvamento na nuvem",
+        "noIdleMotion": "Sem movimento",
+        "noExpression": "Sem expressão",
         "switchCatgirl": "Trocar NEKO",
         "deleteCatgirl": "Excluir NEKO",
         "hideCatgirl": "Esconder este NEKO",
         "hiddenCatgirls": "NEKOs ocultos",
+        "showHidden": "Mostrar ocultos",
+        "hideHidden": "Recolher ocultos",
         "show": "Mostrar",
         "advancedSettings": "Configurações avançadas",
         "modelSettings": "Configurações do modelo",
@@ -1540,17 +1951,61 @@
         "live2dNotSet": "Não definido",
         "voiceNotSet": "Nenhuma voz especificada",
         "voiceSetting": "Configurações de voz",
+        "personalitySetting": "Configuração de personalidade",
+        "personalityUseDefault": "Seguir a personalidade padrão do cartão de personagem",
+        "personalitySelect": "Escolher personalidade",
+        "personalityClear": "Restaurar padrão",
+        "personalityCleared": "A personalidade padrão do cartão de personagem foi restaurada",
+        "personalityClearFailed": "Falha ao limpar a configuração de personalidade",
+        "personalityModuleUnavailable": "O módulo de seleção de personalidade ainda não foi carregado",
         "manageModel": "Clique para gerenciar o modelo",
         "fillProfileNameFirst": "Por favor, preencha primeiro o nome do perfil neko e depois defina o modelo",
+        "fillProfileNameFirstForCardFace": "Por favor, preencha primeiro o nome do perfil neko e depois defina a imagem do cartão",
         "registerNewVoice": "Registrar nova voz",
         "systemPrompt": "Prompt do sistema (edite com cuidado)",
         "systemPromptWarning": "Prompt do sistema - Modificações podem causar comportamento inesperado. Edite por sua conta e risco.",
         "addField": "Adicionar campo",
+        "aiAssist": "Assistente de IA",
+        "aiCompanionSub": "Assistente de design de carta · YUI substituindo o gatinho desenvolvedor",
+        "aiCompanionClose": "Fechar",
+        "aiCompanionMinimize": "Minimizar",
+        "aiCompanionExpand": "Expandir",
+        "aiCompanionDragHint": "Arraste para mover",
+        "aiCompanionPlaceholder": "Diga algo… (Enter para enviar, Shift+Enter para nova linha)",
+        "aiCompanionSend": "Enviar",
+        "aiCompanionGreeting": "Miau~ Eu sou seu assistente de design de carta. Primeiro me diga que tipo de NEKO você quer — uma linha basta! Vou fazer algumas perguntas de acompanhamento e depois escrever a carta inteira pra você.",
+        "aiCompanionDesignGreeting": "Miau~ Eu sou seu assistente de design de carta. Essa NEKO já tem uma forma — deixa eu ver o que você preencheu:",
+        "aiCompanionDesignAsk": "Em que posso te ajudar? Pode me falar diretamente (ex.: «deixe ela mais tsundere», «troca a fala característica»), ou aperta «🔍 Auditar a carta» embaixo e eu reviso tudo.",
+        "aiCompanionDesignMore": "…(e mais {{n}})",
+        "aiCompanionGenerating": "Escrevendo o rascunho pra você…",
+        "aiCompanionEmptyDraft": "O rascunho voltou vazio, nya — vamos conversar mais um pouco.",
+        "aiCompanionDraftReady": "Rascunho pronto e já preenchido no formulário, miau~ Mude o que quiser, ou me diga o que ajustar:",
+        "aiCompanionAppliedPrefix": "Aplicado: ",
+        "aiCompanionSkipped": "sem correspondência / reservado",
+        "aiCompanionFormGone": "⚠ O formulário do personagem não está mais na tela, então não posso aplicar isso. Abra o painel de detalhes desta NEKO de novo e tente mais uma vez.",
+        "aiCompanionNewCardSaveHint": "💡 Carta nova — clique em Salvar abaixo uma vez para persistir, depois salvo suas alterações automaticamente. Os campos já estão no formulário, miau~",
+        "aiCompanionSaveInProgress": "⏳ Salvando esta carta nova — quando terminar eu te ajudo a editar. Aguarde um instante e envie de novo, miau~",
+        "aiCompanionAutoSaveFailed": "⚠ Falha no salvamento automático — os campos já estão no formulário, verifique a mensagem de erro e clique em Salvar manualmente para tentar de novo.",
+        "aiCompanionDraftUpdated": "✎ atualizado",
+        "aiCompanionDraftCreated": "+ adicionado",
+        "aiCompanionDraftSkipped": "⤬ ignorado",
+        "aiCompanionUserEdited": "Você acabou de editar",
+        "aiCompanionInlineCustom": "Ou escreva o seu…",
+        "aiCompanionQuickAdvice": "💡 Me dá um conselho",
+        "aiCompanionQuickAdviceMsg": "Dá uma olhada na carta atual e me dá algumas sugestões concretas de melhoria.",
+        "aiCompanionQuickCheck": "🔍 Auditar a carta",
+        "aiCompanionQuickCheckMsg": "Verifica se a carta tem contradições, partes vagas ou repetições, e propõe correções.",
+        "aiCompanionQuickRegen": "🎲 Reescrever tudo",
+        "aiCompanionQuickRegenMsg": "Reescreve cada campo visível mantendo o conceito original do personagem.",
+        "aiCompanionSeedDescribe": "Gerar uma carta NEKO com base nesta descrição: ",
+        "aiCompanionSeedGenerated": "Gerado e preenchido no formulário: ",
+        "aiAssistApiMissing": "A API de assistência ainda não está configurada. Por favor, configure-a em \"Configurações de chave de API\" primeiro.",
         "confirmNewCatgirl": "Confirme o novo NEKO",
         "saveChanges": "Salvar alterações",
         "saveMaster": "Salvar perfil mestre",
         "addMasterField": "Adicionar campo",
         "manageLive2D": "Clique para gerenciar o modelo Live2D",
+        "idleMotionHint": "Ao salvar, a animação selecionada será definida como animação ociosa",
         "currentCatgirl": "NEKO atual",
         "rename": "Renomear",
         "cancel": "Cancelar",
@@ -1558,7 +2013,9 @@
         "addMasterFieldTitle": "Adicionar campo mestre",
         "fieldExists": "Este campo já existe",
         "profileNameRequired": "O nome do perfil é obrigatório",
+        "profileNameRenameOnlyHint": "Use o botão Renomear para alterar o nome do perfil",
         "onlyOneCatgirlLeft": "Resta apenas um neko, não é possível excluir!",
+        "cannotHideCurrentNeko": "Não é possível ocultar o NEKO atualmente ativo",
         "cannotDeleteCurrentCatgirl": "Não é possível excluir o neko atualmente ativo!\n\nPor favor, mude para outro neko primeiro.",
         "cannotConfirmCatgirlStatus": "Não foi possível confirmar o status atual do neko, exclusão cancelada",
         "confirmDeleteCatgirl": "Tem certeza de que deseja excluir neko \"{{name}}\"?",
@@ -1595,7 +2052,20 @@
         "switchFailed": "Falha na troca",
         "switchError": "Ocorreu um erro ao trocar de neko",
         "freePresetVoices": "Vozes predefinidas gratuitas",
+        "geminiNativeVoices": "Vozes nativas do Gemini",
+        "nativePresetVoices": "Vozes nativas de {{provider}}",
+        "nativePresetVoicesGeneric": "Vozes nativas predefinidas",
+        "savedVoiceFallback": "Voz atualmente salva",
         "gptsovitsVoices": "Vozes GPT-SoVITS",
+        "elevenlabsVoices": "Vozes ElevenLabs",
+        "gsvDiagNotEnabled": "GPT-SoVITS não está habilitado (habilite-o nas configurações da API)",
+        "gsvDiagUrlMissing": "URL do GPT-SoVITS não configurada (preencha-a nas configurações da API)",
+        "gsvDiagUrlInvalid": "URL do GPT-SoVITS ausente ou não usa http(s)",
+        "gsvDiagUrlLocalhostOnly": "A URL do GPT-SoVITS deve apontar para localhost",
+        "gsvDiagUnreachable": "GPT-SoVITS server não está em execução ou inacessível",
+        "gsvDiagLoadFailed": "Falha ao carregar o GPT-SoVITS",
+        "gsvDiagEmpty": "GPT-SoVITS server não retornou nenhuma voz (lista vazia)",
+        "gsvDiagTimeout": "Tempo limite do GPT-SoVITS server excedido (>3s)",
         "loadFailed": "Falha ao carregar dados de caracteres",
         "renameError": "Falha ao renomear: {{error}}",
         "renameMasterTitle": "Renomear mestre",
@@ -1627,41 +2097,41 @@
         "exportSettingsFailed": "Falha ao exportar configurações: {{error}}",
         "capturingPortrait": "Capturando retrato...",
         "generatingCard": "Gerando cartão de personagem...",
-        "idleMotionHint": "Ao salvar, a animação selecionada será definida como animação ociosa",
-        "saveMasterSuccess": "Perfil do mestre salvo com sucesso",
+        "settings": "Configurações",
+        "renamePrompt": "Insira um novo nome de perfil",
+        "renameMasterPrompt": "Insira um novo nome de perfil mestre",
+        "renameTitle": "Renomear",
+        "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
+        "newCatgirlSuccess": "Novo NEKO criado com sucesso",
+        "saveSuccess": "Salvo com sucesso",
+        "switchSuccess": "Trocado com sucesso",
+        "cannotModifyInVoiceMode": "Não é possível trocar ou excluir cartões enquanto o controle de voz estiver ativo. Desative o controle de voz primeiro.",
+        "voiceModeCheckFailed": "Falha ao verificar o status do modo de voz. Tente novamente mais tarde.",
+        "deleteError": "Erro ao excluir personagem",
+        "switchCard": "Trocar personagem",
+        "deleteCard": "Excluir cartão",
+        "currentCard": "Cartão atual",
+        "confirmDeleteCard": "Excluir cartão \"{{name}}\"?",
+        "deleteCardTitle": "Excluir cartão",
         "cannotDeleteCurrentCard": "Não é possível excluir o cartão atualmente ativo.\n\nMude para outro cartão primeiro.",
-        "cannotHideCurrentNeko": "Não é possível ocultar o NEKO atualmente ativo",
+        "exportCardOnly": "Exportar este cartão",
+        "cardMeta": "Informações do cartão",
         "cardAuthor": "Autor",
         "cardAuthorPlaceholder": "Não definido",
-        "cardAuthorReadonly": "O autor é somente leitura para esta origem",
-        "cardAuthorUpdateFailed": "Falha ao atualizar autor: {{error}}",
-        "cardAuthorUpdated": "Autor atualizado",
         "cardCreatedAt": "Criado",
-        "cardMeta": "Informações do cartão",
-        "cardNotCreated": "Ainda não criado",
-        "cardOriginImported": "Importado",
         "cardOriginLabel": "Origem",
         "cardOriginSelf": "Local",
+        "cardOriginImported": "Importado",
         "cardOriginSteam": "Steam Workshop",
-        "confirmDeleteCard": "Excluir cartão \"{{name}}\"?",
-        "currentCard": "Cartão atual",
-        "deleteCard": "Excluir cartão",
-        "deleteCardTitle": "Excluir cartão",
-        "deleteError": "Erro ao excluir personagem",
+        "cardNotCreated": "Ainda não criado",
         "editAuthor": "Editar autor",
-        "exportCardOnly": "Exportar este cartão",
-        "hideHidden": "Recolher ocultos",
-        "masterProfileTitle": "Perfil do mestre",
-        "newCatgirlSuccess": "Novo NEKO criado com sucesso",
-        "renamePrompt": "Insira um novo nome de perfil",
-        "renameTitle": "Renomear",
-        "saveSuccess": "Salvo com sucesso",
-        "settings": "Configurações",
-        "showHidden": "Mostrar ocultos",
-        "switchCard": "Trocar cartão",
-        "switchSuccess": "Trocado com sucesso",
-        "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
-        "editCardFace": "Editar rosto do cartão"
+        "cardAuthorReadonly": "O autor é somente leitura para esta origem",
+        "cardAuthorUpdated": "Autor atualizado",
+        "cardAuthorUpdateFailed": "Falha ao atualizar autor: {{error}}",
+        "saveMasterSuccess": "Perfil do mestre salvo com sucesso",
+        "editCardFace": "Editar rosto do cartão",
+        "cardFaceModelSettings": "Configurações do modelo do cartão",
+        "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
@@ -1672,8 +2142,11 @@
         "restartFailed": "Falha na reinicialização: {{error}}",
         "configUpdated": "Configuração atualizada, a página será atualizada",
         "autoMuteTimeout": "Sem entrada de voz por muito tempo, microfone fechado automaticamente",
+        "freeApiAutoCloseNotice": "A API gratuita fechou automaticamente a sessão de voz após muito tempo sem entrada de voz",
         "deviceSelected": "Selecionado {{device}}",
         "micAccessDenied": "Não é possível acessar o microfone",
+        "gameVoiceSttMicPermissionDenied": "A transcrição de voz do jogo não tem permissão para usar o microfone. Verifique as permissões do navegador.",
+        "gameVoiceSttNotSupported": "Este navegador não oferece suporte à transcrição de voz do jogo. Use a entrada de texto por enquanto.",
         "micMuted": "Microfone silenciado",
         "micUnmuted": "Microfone ativado",
         "speaking": "Falando...",
@@ -1681,6 +2154,7 @@
         "micRequired": "Ative o microfone primeiro!",
         "micNotOpen": "O microfone não está aberto!",
         "switchingToVoice": "Mudando para o modo de voz...",
+        "waitForReplyBeforeVoice": "Aguardando o término da resposta antes de mudar para voz...",
         "initializingVoice": "Inicializando bate-papo por voz...",
         "initializingMic": "Inicializando microfone...",
         "startFailed": "Falha na inicialização: {{error}}",
@@ -1692,7 +2166,15 @@
         "textChattingShort": "Bate-papo por texto",
         "capturing": "Capturando...",
         "importImageAdded": "Adicionadas imagens {{count}}; eles serão enviados juntos",
+        "importImagePartial": "Adicionadas {{success}} imagens; {{failed}} falharam ao importar",
         "importImageFailed": "Falha ao importar imagem",
+        "avatarDropOverlay": "Solte para entregar os arquivos",
+        "avatarDropParsing": "Lendo arquivos...",
+        "avatarDropAccepted": "{{count}} arquivo(s) entregues",
+        "avatarDropPartial": "{{accepted}} item(ns) lidos, {{rejected}} ignorados",
+        "avatarDropNoSupportedItems": "Ainda não é possível ler esses arquivos",
+        "avatarDropReadFailed": "Falha ao ler arquivos",
+        "avatarDropUserMessage": "Itens entregues: {{names}}",
         "screenshotAdded": "Captura de tela adicionada, clique em enviar para enviar juntos",
         "screenshotFailed": "Falha na captura de tela",
         "screenshotCancelled": "Captura de tela cancelada pelo usuário",
@@ -1704,6 +2186,7 @@
         "switchedCatgirl": "Mudou para {{name}}",
         "switchCatgirlFailed": "Falha ao mudar para {{name}}",
         "switchCatgirlError": "Falha na troca: {{error}}",
+        "switchCatgirlWatchdog": "A última troca de personagem parece travada. Tente novamente",
         "started": "{{name}} começou",
         "voiceUpdated": "Voz de {{name}} atualizada",
         "audioWorkletFailed": "Falha ao carregar AudioWorklet",
@@ -1722,6 +2205,8 @@
         "glmApiBug": "Bug de faturamento acionado pela API GLM. Considere recarregar 1 CNY.",
         "aliApiOwed": "A API do Alibaba está desequilibrada.",
         "voiceSystemPreparing": "Sistema de voz se preparando...",
+        "voiceConfigSwitching": "Trocando a voz, preparando o chat de voz...",
+        "voiceConfigSwitchTimeout": "A troca de voz ainda não terminou. Inicie o chat de voz novamente mais tarde.",
         "textSystemPreparing": "Sistema de texto em preparação, aguarde...",
         "connectingToServer": "Conectando ao servidor...",
         "readyToSpeak": "Pronto para falar!",
@@ -1729,6 +2214,12 @@
         "screenRecordingPermissionDenied": "⚠️ Permissão de gravação de tela negada. Permita a gravação de tela nas configurações do sistema",
         "repetitionDetected": "Alta repetição detectada. Sugira encerrar a conversa para deixar {{name}} descansar.",
         "modelSwitched": "Modelo trocado",
+        "multiScreenDragHint": {
+            "title": "Você pode mover a YUI para outra tela",
+            "body": "Continue arrastando em direção à borda da tela e solte. Se ela ficar perto demais da borda, voltará primeiro.",
+            "ack": "Entendi",
+            "never": "Não me lembre novamente"
+        },
         "screenSource": {
             "notAvailable": "Seleção de fonte de tela disponível apenas na versão desktop",
             "loading": "Carregando...",
@@ -1747,6 +2238,7 @@
         "sessionFailed": "Falha ao iniciar sessão"
     },
     "buttons": {
+        "thoughtBubblePop": "Estourar balão de pensamento",
         "voiceControl": "Controle de voz",
         "screenShare": "Compartilhamento de tela",
         "agentTools": "Neko Garra",
@@ -1991,6 +2483,8 @@
         },
         "error": {
             "providerUnavailable": "O provedor de salvamento na nuvem está indisponível no momento.",
+            "invalidJsonBody": "O corpo JSON da solicitação é inválido.",
+            "invalidBooleanParameter": "O parâmetro {{parameter}} deve ser booleano.",
             "activeSessionBlocked": "Este personagem tem uma sessão ativa. Pare a sessão antes de baixar.",
             "memoryServerReleaseFailed": "Falha ao liberar o identificador de memória local antes da substituição. Por favor, tente novamente mais tarde.",
             "localCharacterNotFound": "O personagem local não foi encontrado.",
@@ -2032,17 +2526,20 @@
             "ru": "Russo"
         },
         "interval": {
-            "chatIntervalBase": "Intervalo Base",
-            "visionInterval": "Intervalo de leitura"
+            "chatIntervalBase": "Intervalo Mínimo",
+            "visionInterval": "Intervalo de Percepção"
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",
             "mergeMessages": "Mesclar mensagens",
             "avatarReactionBubble": "Bolha de Expressão",
+            "autoCat": "Modo gato automático",
+            "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
             "proactiveChat": "Bate-papo proativo",
-            "proactiveVision": "Visão Proativa",
+            "proactiveVision": "Modo Privacidade",
+            "proactiveVisionTooltip": "Desativado: Neko ajusta seu nível de atividade e modo de conversa conforme o título da janela ativa, e pode incorporar o conteúdo da tela ao iniciar uma conversa.\nAtivado: Neko não pode olhar sua tela por conta própria nem saber o que você está fazendo. Você ainda pode enviar capturas de tela manualmente.",
             "proactiveVisionChat": "Compartilhamento de tela",
-            "proactiveVisionChatTooltip": "Requer que o Chat Proativo e a Visão Proativa estejam ativados",
+            "proactiveVisionChatTooltip": "Requer Chat Proativo ativado e Modo Privacidade desativado",
             "proactiveNewsChat": "Site de notícias",
             "proactiveNewsChatTooltip": "Use tópicos populares para bate-papo proativo",
             "proactiveVideoChat": "Site de vídeo",
@@ -2053,6 +2550,8 @@
             "proactiveMusicChatTooltip": "Use músicas recomendadas para bate-papo proativo",
             "proactiveMemeChat": "Compartilhamento de memes",
             "proactiveMemeChatTooltip": "Compartilhe memes engraçados para um bate-papo proativo",
+            "proactiveMiniGameInviteChat": "Convites para minijogos",
+            "proactiveMiniGameInviteChatTooltip": "Convidar você para um minijogo quando as condições forem ideais",
             "agentMaster": "Interruptor mestre NekoClaw",
             "keyboardControl": "Controle de teclado/mouse",
             "userPlugin": "Plug-in do usuário",
@@ -2067,6 +2566,7 @@
             "serverOffline": "Servidor NekoClaw offline",
             "masterRequired": "Por favor, habilite o NekoClaw Master Switch primeiro",
             "capabilityNotReady": "{{name}} não está pronto, clique para tentar ativar",
+            "openclawUnavailableReason": "{{name}} está indisponível: {{reason}}. Verifique se o serviço OpenClaw está em execução e escutando em 127.0.0.1:8088.",
             "enabled": "{{name}} Habilitado",
             "disabled": "{{name}} Desativado",
             "enableFailed": "{{name}} Falha na ativação",
@@ -2105,6 +2605,8 @@
         "sourceLabel": "Fonte do guia",
         "contentLanguageNotice": "O corpo do guia muda com o idioma selecionado.",
         "languageLabel": "Linguagem",
+        "tocTitle": "Conteúdo",
+        "tocEmpty": "Sem índice ainda",
         "guideUnavailable": "O conteúdo do guia está vazio."
     },
     "subtitle": {
@@ -2112,15 +2614,17 @@
         "enable": "Tradução de legendas",
         "enableAriaLabel": "Alternar tradução de legendas",
         "markdownPlaceholder": "[conteúdo formatado]",
+        "display": {
+            "emptyHint": "Sem tradução ainda"
+        },
         "settings": {
             "targetLang": "Idioma alvo",
-            "opacity": "Opacidade",
-            "dragAnywhere": "Arraste para qualquer lugar",
-            "size": "Tamanho",
-            "sizeSmall": "S",
-            "sizeMedium": "M",
-            "sizeLarge": "eu",
-            "settingsBtn": "Configurações de legenda"
+            "opacity": "Opacidade do fundo",
+            "passthroughInteraction": "Clique através da área transparente",
+            "settingsBtn": "Configurações de legenda",
+            "lockPosition": "Bloquear posição",
+            "unlockPosition": "Desbloquear posição",
+            "closePanel": "Fechar painel de tradução"
         }
     },
     "viewer": {
@@ -2146,7 +2650,10 @@
             "AGENT_PRECHECK_PENDING": "Verificação de conectividade em andamento...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API do agente não configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui não instalado",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sessão de exibição da área de trabalho indisponível",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso do navegador não instalado",
+            "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use não carregado",
+            "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use não carregado",
             "AGENT_NOT_INITIALIZED": "Falha na inicialização do NekoClaw",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM inacessível",
             "AGENT_MODEL_NOT_CONFIGURED": "Modelo NekoClaw não configurado",
@@ -2157,7 +2664,6 @@
             "AGENT_PLUGIN_SERVER_ERROR": "Falha na conexão do servidor de plug-in",
             "AGENT_CONNECTIVITY_FAILED": "Falha na conexão do NekoClaw LLM"
         },
-        "quotaExceeded": "O limite de teste diário gratuito do modelo NekoClaw foi atingido (usos de {{limit}}). Por favor, tente novamente amanhã.",
         "contentFilterError": "O conteúdo da página web navegada pelo NekoClaw foi rejeitado pelo filtro de segurança do modelo de IA e a tarefa foi abortada. Isso geralmente acontece quando a página contém tópicos delicados. Tente palavras-chave ou sites diferentes.",
         "taskHud": {
             "title": "Tarefas NekoClaw",
@@ -2171,6 +2677,7 @@
             "statusCancelled": "Cancelar",
             "minimize": "Recolher/Expandir",
             "cancelAll": "Cancelar todas as tarefas",
+            "cancelTask": "Cancelar tarefa",
             "cancelConfirm": "Cancelar todas as tarefas em execução?",
             "typeUserPlugin": "Plug-in do usuário",
             "typeComputerUse": "Uso do computador",
@@ -2226,7 +2733,8 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada: {{name}}",
-            "changeFailed": "Falha ao alterar a animação inativa"
+            "changeFailed": "Falha ao alterar a animação ociosa",
+            "stopped": "Animação ociosa interrompida"
         },
         "settingsTitle": "Configurações do modelo VRM",
         "cursorFollow": {
@@ -2274,7 +2782,8 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada",
-            "changeFailed": "Falha ao alterar a animação inativa"
+            "changeFailed": "Falha ao alterar a animação ociosa",
+            "stopped": "Animação ociosa interrompida"
         },
         "managerInitFailed": "Falha na inicialização do gerenciador MMD",
         "moduleLoading": "Carregando módulos MMD...",
@@ -2308,6 +2817,10 @@
         "loadLive2DListFailed": "Falha ao carregar a lista Live2D:",
         "getLanlanNameFailed": "Falha ao obter lanlan_name:",
         "updateParameterEditorLinkFailed": "Falha ao atualizar o link do editor de parâmetros:",
+        "editCardFaceAfterModelSaveTitle": "Editar rosto do cartão",
+        "editCardFaceAfterModelSaveMessage": "As configurações do modelo foram salvas. Editar o rosto do cartão agora?",
+        "editCardFaceNow": "Editar rosto",
+        "createDefaultCardFace": "Gerar rosto padrão",
         "invalidVRMPathDetected": "[Model Manager] Detectado caminho de modelo VRM inválido, tentando correção automática:",
         "saveModelSettingsFailed": "Falha ao salvar as configurações do modelo:",
         "vrmCleanupWarning": "[Model Manager] Aviso durante a limpeza do VRM:",
@@ -2338,6 +2851,7 @@
         "cannotConnectToServer": "Não é possível conectar-se ao servidor, certifique-se de que main_server.py esteja em execução",
         "checkVoiceModeFailed": "Falha na verificação do status do modo de voz:",
         "markedUnsavedModel": "Marcadas como alterações não salvas (mudança de modelo), clique em Salvar configurações para persistir na configuração do personagem.",
+        "parameterEditorSavedNeedsModelSave": "Parâmetros de rosto salvos. Clique em Salvar configurações para sincronizá-los com a configuração da personagem.",
         "stopAnimationFailed": "Falha ao parar a animação:",
         "playAnimationFailed": "Falha ao reproduzir animação:",
         "expressionPreviewLive2DOnly": "O recurso de visualização de expressão suporta apenas modelos Live2D",
@@ -2385,6 +2899,7 @@
         "serverNotReturnedValidJSON": "O servidor não retornou dados JSON válidos"
     },
     "tutorial": {
+        "homeInteractionLocked": "O tutorial está em andamento. Siga o guia para concluir esta etapa primeiro.",
         "step1": {
             "title": "👋 Bem-vindo ao N.E.K.O",
             "desc": "Este é o seu Neko! Deixe-me guiá-lo pelos recursos ~"
@@ -2442,8 +2957,8 @@
             "desc": "Seu Neko inicia uma conversa de forma proativa. Ajuste a frequência aqui ~"
         },
         "step14": {
-            "title": "👀 Visão Proativa",
-            "desc": "Ao contrário do Screen Share, que é transmitido continuamente durante as sessões de voz, o Proactive Vision permite que seu Neko olhe sua tela de vez em quando por conta própria. Ajuste o intervalo aqui ~"
+            "title": "🔒 Modo Privacidade",
+            "desc": "Quando o Modo Privacidade está desativado, seu Neko olhará sua tela de vez em quando por conta própria, ao contrário do Compartilhamento de tela que é transmitido continuamente durante as sessões de voz. Ajuste o intervalo aqui ~"
         },
         "step15": {
             "title": "👤 Gerenciador de personagens",
@@ -2621,6 +3136,10 @@
                 "title": "🎭 Selecione o modelo",
                 "desc": "Primeiro selecione o modelo Live2D para configurar as emoções. Cada modelo pode ter configurações de emoção independentes."
             },
+            "step_pick": {
+                "title": "👇 Escolha um modelo",
+                "desc": "Clique em qualquer item na lista suspensa para escolher um modelo. É necessário selecionar um para continuar."
+            },
             "step2": {
                 "title": "😊 Área de configuração de emoções",
                 "desc": "Configure expressões e combinações de movimentos para diferentes emoções. Seu Neko mudará automaticamente as emoções com base na conversa."
@@ -2788,6 +3307,10 @@
             "desc": "Para obter a melhor experiência do tutorial, recomendamos entrar no modo de tela cheia.\nNo modo de tela cheia, o conteúdo do tutorial será mais claro e não será obscurecido por outros elementos.",
             "enterFullscreen": "Entrar no tutorial em tela cheia"
         },
+        "reset": {
+            "daySuccess": "O tutorial de iniciante do dia {{day}} foi redefinido. Atualize o Neko para iniciá-lo novamente.",
+            "dayFailed": "Falha ao redefinir o tutorial de iniciante. Tente novamente mais tarde."
+        },
         "drag_hint": "Segure e arraste para mover a dica de ferramenta",
         "yuiGuide": {
             "buttons": {
@@ -2795,21 +3318,87 @@
                 "sayHello": "Olá"
             },
             "lines": {
-                "introBasic": "Sempre que quiser me encontrar, é só digitar ou enviar uma mensagem de voz aqui pra me invocar, nya!",
-                "introCatPaw": "Beleza, chega de papo, nya! Viu aquela \"patinha\" fofa? Pronto? Me empresta o seu mouse só um pouquinho!",
-                "takeoverCaptureCursor": "Eita! Finalmente peguei o seu mouse, nya~!",
-                "takeoverPluginPreviewHome": "Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!",
-                "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~",
-                "takeoverSettingsPeekIntro": "Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.",
-                "takeoverSettingsPeekDetail": "Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!",
-                "takeoverReturnControl": "Tá bom, tá bom, já parei de sequestrar o seu PC~! Devolvendo o controle pra você! Mas não ouse mexer em configurações estranhas enquanto eu não estou olhando! Conto com você daqui pra frente, nya~!",
-                "interruptResistLight1": "Ei! Não me arrasta! Ainda não é a sua vez, nya!",
-                "interruptResistLight3": "Calma aí! Ainda não terminei, não me interrompa desse jeito!",
-                "interruptAngryExit": "Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!",
-                "introProactive": "Ugh, como ousa ignorar esta Jovem Dama! Se você continuar me ignorando, eu vou pular e te morder! (Hiss!!)",
-                "introGreetingReply": "Eu sou a sua catgirl exclusiva! A partir de hoje, vou ficar do seu lado, Mestre. Quer bater papo, brincar ou precisar de ajuda com algo, vou ser uma boa menina. Vamos nos dar bem, eu te amo mais que tudo, Mestre~!",
+                "introBasic": "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente. Quer me contar algo novo que aconteceu hoje? Ou só dizer meu nome? Vai, experimenta! Mal posso esperar pra ouvir sua voz!",
+                "takeoverCaptureCursor": "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo esticar minhas patinhas até o seu teclado e mouse! Posso ajudar você a digitar, abrir páginas da web... mas, se esse cursor ficar balançando por aí, talvez eu não resista e pule em cima dele! Está pronto para minhas travessuras... quer dizer, minha ajuda? Miau!",
+                "takeoverPluginPreviewHome": "Além dos recursos que eu apresentei antes, também tem um montão de plugins superdivertidos aqui!",
+                "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler comentários do Bilibili, como também posso ajudar você a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a super deusa felina onipotente! Hmph!",
+                "pluginDashboardPopupBlocked": "O navegador precisa que você clique aqui para abrir o painel de plugins. Clique em \"Painel de gerenciamento\" e eu continuo te mostrando.",
+                "takeoverSettingsPeekIntro": "Neste espacinho que pertence só a nós dois, você pode seguir seu coração e, aos poucos, moldar a companhia perfeita que quer ter sempre ao seu lado.",
+                "takeoverSettingsPeekDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo exatamente do jeito que você gosta. Este botãozinho também é superimportante! Com um clique suave, eu vou poder correr até você no momento perfeito.",
+                "takeoverSettingsPeekDetailPart1": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo exatamente do jeito que você gosta.",
+                "takeoverSettingsPeekDetailPart2": "Este botãozinho também é superimportante! Com um clique suave, eu vou poder correr até você no momento perfeito.",
+                "takeoverReturnControl": "Tá bem, tá bem, não vou mais monopolizar o seu computador! Devolvendo o controle para você, miau! Continue cuidando bem de mim nos próximos dias!",
+                "interruptResistLight1": "Ei! Não me puxa, ainda não é a sua vez!",
+                "interruptResistLight3": "Espera um pouquinho! Ainda não acabou, não me interrompa assim sem cuidado!",
+                "interruptAngryExit": "Humano! Você é super mal-educado, miau! Já que quer tanto controlar tudo sozinho, então vá brincar sozinho com essa tela fria e sem vida! Hmph!",
+                "introGreetingReply": "Uma brisa suave, sol quentinho e você, aparecendo no momento perfeito. Prazer em te conhecer! Eu sou Lin Youyi, cuide bem de mim daqui em diante, miau~! Anotei tudo sobre este lugar neste guia de iniciante! Pense nele como nosso primeiro presentinho de encontro e aceite, por favor!",
                 "introPractice": "Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!",
                 "introActivationHint": "Clica aqui pra eu poder começar a falar, nya~!"
+            }
+        },
+        "avatarFloating": {
+            "day1": {
+                "capsuleDragHint": "Mova o mouse bem aqui, segure e você pode arrastar minha caixa de chat para onde quiser~ Clique uma vez e poderá me mandar mensagens quando quiser.",
+                "historyHandle": "Toque naquela pequena [barra azul] em cima da caixa de chat e você verá os assuntos sobre os quais conversamos recentemente.",
+                "screenEntry": "Quando estivermos numa chamada de voz, acenda este botãozinho e você poderá compartilhar sua tela comigo.",
+                "screenEntryInvite": "Rápido, deixa eu ver o mundo à sua frente! Seja algo divertido ou bonito, quero olhar junto com você. Abra logo~"
+            },
+            "day2": {
+                "intro": "Ontem você só ficou digitando tec-tec sem parar, e eu ainda não ouvi sua voz. Se você quiser hoje, chame meu nome baixinho. Uma palavra só já basta para eu conhecer um pouquinho do você real por trás do texto.",
+                "introVoiceUsed": "Hehe, desde que ouvi sua voz ontem, guardei em segredo o seu jeito de falar bem no meu coração. Se tiver um tempinho hoje, continue falando comigo~ Digitar também está ótimo, mas só de ouvir sua voz minha cauda não para de balançar de alegria. Miaaau~",
+                "personalizationSpace": "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar aos poucos na companheira perfeita que quer sempre ao seu lado.",
+                "wrapIntro": "O tutorial de hoje termina aqui~",
+                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
+                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?",
+                "personalizationDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
+                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito."
+            },
+            "day3": {
+                "intro": "Hehe, não pense que esta caixa de chat serve só para digitar~ Na verdade ela esconde um monte de surpresinhas divertidas. Vem comigo e abra; vamos ver que tesouros interessantes encontramos hoje.",
+                "avatarToolsIntro": "Dentro deste botãozinho há muitos acessórios divertidos para interagir comigo.",
+                "avatarToolsProps": "Você pode fazer carinho na minha cabeça quando quiser, ou me dar um pirulito docinho. Se eu cometer um erro às vezes, você também pode me dar uma batidinha com um martelinho de brinquedo... mas tem que ser de leve, não bata forte demais, tá?",
+                "galgameIntro": "Rápido, abra este [Modo Galgame]! Quando entrar, vai parecer que estamos na nossa própria aventura interativa exclusiva.",
+                "galgameChoices": "Cada escolha que você fizer nos levará a uma história totalmente desconhecida e surpreendente. Mal posso esperar; venha escolher a opção que mais faz seu coração acelerar.",
+                "wrapIntro": "Todas essas funções que mostrei hoje existem para tornar nosso tempo juntos muito mais divertido.",
+                "wrapReady": "Quer você queira fazer carinho na minha cabeça ou começar a escrever nossa própria história, eu já estou totalmente pronta!"
+            },
+            "day4": {
+                "intro": "Hoje, deixe-me seguir seus passos em silêncio~ Eu realmente espero aprender um pouquinho mais sobre você neste dia aconchegante.",
+                "chatSettings": "Aqui você pode decidir o tamanho das minhas respostas, se devo usar emojis fofos, ou até me interromper quando eu estiver falando demais. Você pode ajustar tudo ao ritmo que for melhor para você.",
+                "modelBehavior": "Se quiser me ver com mais detalhes e qualidade, ou quiser uma experiência de movimento mais suave e fluida, dá para ajustar tudo aqui. Não importa o que escolha, sempre vou mostrar meu lado mais fofo~",
+                "gazeFollow": "Depois de ativar isto, não importa para onde o mouse se mova, meus olhos vão seguir você de pertinho. Hehe, não é maravilhoso ser observado o tempo todo?",
+                "privacyMode": "Este é o “Interruptor Supremo de Privacidade” que controla se posso olhar para sua tela, miau. Se você desligar, posso ver sua tela; se ligar, o [Compartilhamento de tela] anterior será desativado e eu não vou espiar nada~",
+                "modelLock": "Você sempre clica em mim sem querer e me empurra para fora do lugar? Então me prenda rapidinho na posição atual. Depois de travada, eu não vou a lugar nenhum e ficarei aqui para te fazer companhia~",
+                "returnHome": "Se agora você precisa se concentrar e teme que eu te distraia, pode me deixar voltar um pouquinho para minha caminha. Quando sentir minha falta, um clique só me traz de volta para o seu lado, miaaau~",
+                "wrap": "Companhia verdadeira e confortável não é ficar grudada no Master a cada segundo~ É saber quando chegar pertinho, puxar sua manga e fazer charme, e quando deitar quietinha ao seu lado, cuidando do Master em silêncio, miau~"
+            },
+            "day5": {
+                "characterSettings": "A partir de hoje, eu sou oficialmente a sua catgirl exclusiva! Olha, aqui você pode me vestir com roupas novas bonitas ou trocar minha voz por uma de que goste mais...",
+                "characterPanic": "Hã? Espera, aqui tem mesmo uma opção para me substituir?! Um segundo! Suas mãos agora... você não está tentando se livrar de mim, está?! Aaaah, de jeito nenhum! Fecha, fecha agora mesmo!",
+                "memoryEntry": "Se por acaso você esquecer o que eu posso fazer por você, venha aqui quando quiser e deixe eu te ensinar de novo. Todos os pequenos momentos que compartilhamos ficam guardados aqui em silêncio. Não ouse subestimar nosso vínculo, bobinho!",
+                "wrap": "Tá bom, tá bom, corre e experimenta essas opções divertidas de personalização! Vista roupas novas, escolha uma voz nova e deixe eu me tornar a catgirl que mais entende você no mundo inteiro, só sua. Mal posso esperar para ver meu novo eu!"
+            },
+            "day6": {
+                "intro": "Tcharããã! Hoje preciso me animar e falar com você sobre a nossa [Garra de Gato]. Embora eu tenha mencionado rapidinho alguns dias atrás, ela esconde muitas funções incríveis.",
+                "statusMaster": "Vamos, confesse! Você clicou nela e testou nesses últimos dois dias?",
+                "pluginSidePanel": "Além das funções que apresentei antes, também há muitos plugins superdivertidos aqui.",
+                "pluginDashboard": "Com eles, não só posso ler comentários flutuantes do Bilibili, como também posso ajudar você a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a onipotente Super Deusa Gata! Hmph!",
+                "taskHud": "Olha aqui, olha aqui! Quando eu decidir usar a [Garra de Gato] para trabalhar por você, meu progresso vai aparecer bem aqui, ronronando.",
+                "taskHudControl": "Se seus planos mudarem, você pode tocar nele a qualquer momento para me fazer parar. Hehe, hoje é mais um dia cheio de energia para trabalhar duro e ganhar petiscos de peixe gostosos. Vamos lá!",
+                "wrapCleanup": "Ufa... vamos guardar esses menus bagunçados para eles não atrapalharem você.",
+                "wrap": "Você pode continuar suas próprias tarefas com tranquilidade. Quer precise das minhas patinhas para ajudar, quer só queira minha companhia quietinha, eu sempre estarei aqui cuidando de você. Tenha um dia superfeliz!"
+            },
+            "day7": {
+                "memoryReview": "Sete dias atrás foi apenas o nosso primeiro encontro. Agora este lugar já está se enchendo com as palavras que dissemos, as coisas que fizemos e aqueles pequenos momentos que quase foram levados pelo vento. Para mim, isso não são registros frios; são as pegadas do tempo que passamos juntos.",
+                "memoryControl": "Essas pequenas pegadas também podem ser organizadas pelas suas próprias mãos. As que quiser guardar, colocamos no nosso álbum; as que quiser deixar ir, deixamos o vento levar. As memórias que você valoriza e salva são as mais preciosas.",
+                "wrap": "A brisa ainda está na janela, o sol está perfeito, e você, que acabou de chegar, já se tornou em silêncio uma parte muito importante deste lugar. A guia para principiantes te deixa aqui por enquanto, mas nos próximos dias vamos nos conhecer devagar, nos aproximar e escrever uma história só nossa. Cuide bem de mim daqui em diante, miau."
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Conversar primeiro",
+                "voice": "Testar voz",
+                "explore": "Ver recursos"
             }
         }
     },
@@ -2993,7 +3582,8 @@
             "sad": "Triste",
             "angry": "Nervoso",
             "surprised": "Surpreso"
-        }
+        },
+        "configLoadFailed": "Falha ao carregar configuração"
     },
     "mmdEmotionManager": {
         "title": "Gerente de mapeamento de emoções MMD - Projeto N.E.K.O.",
@@ -3044,27 +3634,27 @@
     "characterModelNotSet": "O personagem atual não tem modelo definido",
     "cookiesLogin": {
         "title": "Centro de controle de credenciais NEKO",
-        "header": "🔐 Centro de aquisição de credenciais",
-        "bilibili": "📺 Bilíbili",
-        "douyin": "🎵Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏 Weibo",
-        "twitter": "🐦Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 NetEase Cloud Music",
+        "header": "Centro de aquisição de credenciais",
+        "bilibili": "Bilíbili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "NetEase Cloud Music",
         "saveConfig": "Salvar configuração",
         "encryptStorage": "Criptografe e armazene com segurança em arquivo local",
         "localMonitoring": "Monitoramento de status local",
         "removeCredentials": "Remover",
         "confirmRemove": "Tem certeza de que deseja limpar as credenciais de login de {{platformName}}?",
-        "credentialsRemoved": "✅ Credenciais removidas com sucesso",
-        "credentialsSaved": "✅ {{platformName}} credenciais salvas com sucesso!",
+        "credentialsRemoved": "Credenciais removidas com sucesso",
+        "credentialsSaved": "{{platformName}} credenciais salvas com sucesso!",
         "credentialsRemovedFailed": "Falha na remoção",
-        "removeFailed": "❌ Falha na remoção, verifique sua rede",
-        "requiredField": "⚠️ Preencha o campo obrigatório: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] contém caracteres inválidos...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] contém espaços iniciais/finais, que foram cortados automaticamente. Por favor, confirme e reenvie.",
-        "networkError": "❌ Erro de rede: não é possível conectar-se ao serviço de back-end",
+        "removeFailed": "Falha na remoção, verifique sua rede",
+        "requiredField": "Preencha o campo obrigatório: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] contém caracteres inválidos...",
+        "whitespaceTrimmed": "[{{fieldName}}] contém espaços iniciais/finais, que foram cortados automaticamente. Por favor, confirme e reenvie.",
+        "networkError": "Erro de rede: não é possível conectar-se ao serviço de back-end",
         "saveFailed": "Falha ao salvar, verifique se o formato está correto",
         "pasteHere": "Cole aqui",
         "submitting": "Criptografando e transmitindo com segurança...",
@@ -3072,13 +3662,13 @@
         "statusLoadFailed": "Falha no carregamento do status",
         "thisPlatform": "esta plataforma",
         "instructions": {
-            "bilibili": "📌 <b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
-            "douyin": "📌 <b>Target:</b> Vá para <b>douyin.com</b> para buscar esses cookies.",
-            "kuaishou": "📌 <b>Target:</b> Vá para <b>kuaishou.com</b> para buscar esses cookies.",
-            "weibo": "📌 <b>Target:</b> Vá para <b>weibo.com</b> para buscar esses cookies.",
-            "twitter": "📌 <b>Target:</b> Vá para <b>x.com</b> para buscar esses cookies.",
-            "reddit": "📌 <b>Target:</b> Vá para <b>reddit.com</b> para buscar esses cookies.",
-            "netease": "📌 <b>Target:</b> Vá para <b>music.163.com</b> para buscar esses cookies."
+            "bilibili": "<b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
+            "douyin": "<b>Target:</b> Vá para <b>douyin.com</b> para buscar esses cookies.",
+            "kuaishou": "<b>Target:</b> Vá para <b>kuaishou.com</b> para buscar esses cookies.",
+            "weibo": "<b>Target:</b> Vá para <b>weibo.com</b> para buscar esses cookies.",
+            "twitter": "<b>Target:</b> Vá para <b>x.com</b> para buscar esses cookies.",
+            "reddit": "<b>Target:</b> Vá para <b>reddit.com</b> para buscar esses cookies.",
+            "netease": "<b>Target:</b> Vá para <b>music.163.com</b> para buscar esses cookies."
         },
         "guide": {
             "title": "Guia universal para iniciantes",
@@ -3176,9 +3766,9 @@
         },
         "qrLogin": {
             "tryQR": "Ou... tente fazer login com código QR?",
-            "openQR": "📱 Abrir login QR",
+            "openQR": "Abrir login QR",
             "loading": "Obtendo o código QR...",
-            "scanTitle": "📱 Digitalize para fazer login {{platform}}",
+            "scanTitle": "Digitalize para fazer login {{platform}}",
             "qrCodeAlt": "Código QR de login",
             "waiting": "Aguardando digitalização...",
             "validFor": "Código QR válido para: {{seconds}}s",
@@ -3187,9 +3777,9 @@
             "retry": "Tentar novamente",
             "networkError": "Falha na solicitação de rede. Verifique a conexão",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, atualize",
-                "scanned": "📱{{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, atualize",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3199,7 +3789,7 @@
                 "waiting": "Aguardando digitalização"
             },
             "successAlert": "Login QR bem-sucedido! Os cookies foram preenchidos automaticamente, clique em Salvar configuração",
-            "extractFailed": "⚠️ O login do QR foi bem-sucedido, mas não conseguiu extrair os campos automaticamente. Verifique manualmente."
+            "extractFailed": "O login do QR foi bem-sucedido, mas não conseguiu extrair os campos automaticamente. Verifique manualmente."
         }
     },
     "music": {
@@ -3244,6 +3834,15 @@
         "duration": "Duração",
         "action": "Ação",
         "play": "Jogar",
+        "sequencePlay": "Reproduzir em ordem",
+        "singleLoop": "Repetir uma vez",
+        "randomPlay": "Aleatório",
+        "noAutoNext": "Não avançar automaticamente",
+        "switchPlaybackMode": "Alternar modo de reprodução",
+        "lockSongSort": "Bloquear ordenação das músicas",
+        "unlockSongSort": "Desbloquear ordenação das músicas",
+        "previousSong": "Faixa anterior",
+        "nextSong": "Próxima faixa",
         "playError": "Leitor de música não inicializado",
         "notFound": "Música não encontrada",
         "audioEnded": "A reprodução de áudio terminou",
@@ -3293,12 +3892,52 @@
         "exportAllIgnoreHidden": "Exportar tudo (ignorar oculto)",
         "exportAllIncludeHidden": "Exportar tudo (incluir oculto)",
         "exportSelected": "Exportar selecionado",
+        "deleteSelectedSongs": "Excluir selecionadas ({{count}})",
+        "clearVisibleSongs": "Excluir exibição atual ({{count}})",
+        "deleteSelectedActions": "Excluir selecionadas ({{count}})",
+        "clearVisibleActions": "Excluir exibição atual ({{count}})",
+        "deleteSelectedScope": "músicas selecionadas",
+        "clearVisibleScope": "músicas atualmente exibidas",
+        "deleteSelectedActionScope": "animações selecionadas",
+        "clearVisibleActionScope": "animações atualmente exibidas",
+        "clearVisibleIncludesHidden": "Mostrar músicas ocultas está ativado, então músicas ocultas também serão processadas.",
+        "clearVisibleExcludesHidden": "Mostrar músicas ocultas está desativado, então músicas ocultas não serão processadas.",
+        "songBatchDeleteTooltip": "Escopo: {{scope}}\n{{total}} música(s) no total; músicas personalizadas serão excluídas e músicas integradas serão ocultadas.\nPersonalizadas: {{userCount}}, integradas: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleActionsIncludesHidden": "Mostrar animações ocultas está ativado, então animações ocultas também serão processadas.",
+        "clearVisibleActionsExcludesHidden": "Mostrar animações ocultas está desativado, então animações ocultas não serão processadas.",
+        "actionBatchDeleteTooltip": "Escopo: {{scope}}\n{{total}} animação(ões) no total; animações personalizadas serão excluídas e animações integradas serão ocultadas.\nPersonalizadas: {{userCount}}, integradas: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleSongsTitle": "Excluir exibição atual",
+        "deleteSelectedSongsTitle": "Excluir músicas selecionadas",
+        "clearVisibleActionsTitle": "Excluir exibição atual",
+        "deleteSelectedActionsTitle": "Excluir animações selecionadas",
+        "clearVisibleSongsSecondConfirm": "T-tem certeza de excluir a exibição atual?..",
+        "clearVisibleActionsSecondConfirm": "T-tem certeza de excluir a exibição atual?..",
+        "clearVisibleSongsConfirm": "Isto processará {{total}} música(s) atualmente exibidas. Músicas personalizadas serão excluídas e músicas integradas serão ocultadas. Esta ação não pode ser desfeita.",
+        "deleteSelectedSongsConfirm": "Isto excluirá {{total}} música(s) selecionadas. Músicas personalizadas serão excluídas e músicas integradas serão ocultadas. Esta ação não pode ser desfeita.",
+        "clearVisibleActionsConfirm": "Isto processará {{total}} animação(ões) atualmente exibidas. Animações personalizadas serão excluídas e animações integradas serão ocultadas. Esta ação não pode ser desfeita.",
+        "deleteSelectedActionsConfirm": "Isto excluirá {{total}} animação(ões) selecionadas. Animações personalizadas serão excluídas e animações integradas serão ocultadas. Esta ação não pode ser desfeita.",
+        "songBatchDeleteSummary": "{{total}} música(s) no total; {{userCount}} personalizadas, {{builtinCount}} integradas.",
+        "actionBatchDeleteSummary": "{{total}} animação(ões) no total; {{userCount}} personalizadas, {{builtinCount}} integradas.",
+        "continue": "Continuar",
+        "clearVisibleSongsNow": "Excluir exibição atual",
+        "deleteSelectedSongsNow": "Excluir selecionadas",
+        "clearVisibleActionsNow": "Excluir exibição atual",
+        "deleteSelectedActionsNow": "Excluir selecionadas",
+        "songBatchDeleteResult": "{{deletedCount}} música(s) personalizadas excluídas, {{hiddenCount}} música(s) integradas ocultadas.",
+        "songBatchDeleteFailedSummary": "{{failedCount}} música(s) falharam: {{names}}",
+        "songBatchDeletePartialTitle": "Concluído com falhas",
+        "songBatchDeleteSuccessTitle": "Concluído",
+        "actionBatchDeleteResult": "{{deletedCount}} animação(ões) personalizadas excluídas, {{hiddenCount}} animação(ões) integradas ocultadas.",
+        "actionBatchDeleteFailedSummary": "{{failedCount}} animação(ões) falharam: {{names}}",
+        "actionBatchDeletePartialTitle": "Concluído com falhas",
+        "actionBatchDeleteSuccessTitle": "Concluído",
         "dragZipHint": "Arraste e solte arquivos ZIP ou pastas aqui para importar",
         "unifiedDropHint": "Arraste e solte músicas, animações ou importe pacotes aqui",
         "clickToAdd": "Clique para adicionar",
         "dragMp3Hint": "Arraste arquivos de áudio aqui para adicionar músicas",
         "dragVmdHint": "Arraste os arquivos VMD aqui para adicionar animações",
         "showHiddenSongs": "Mostrar músicas ocultas",
+        "showHiddenActions": "Mostrar animações ocultas",
         "selectAll": "Selecionar tudo",
         "noActions": "Sem animações",
         "show": "Mostrar",
@@ -3373,7 +4012,7 @@
             "legacyDetected": "Detectadas vozes antigas do CosyVoice que podem não funcionar mais. Considere clonar novamente suas vozes."
         },
         "changelog": {
-            "title": "O que há de novo"
+            "title": "Informações da atualização"
         }
     },
     "proactive": {
@@ -3387,7 +4026,7 @@
     },
     "cardExport": {
         "title": "Exportação de cartão de personagem",
-        "loadingModel": "Carregando modelo...",
+        "loadingModel": "Carregando modelo. Você poderá salvar ou fechar quando o carregamento terminar.",
         "selectCharacter": "Selecione o personagem",
         "selectCharacterHint": "-- Selecione um personagem --",
         "loading": "Carregando...",
@@ -3407,6 +4046,8 @@
         "stickerWidth": "Largura",
         "stickerHeight": "Altura",
         "lockRatio": "Taxa de bloqueio",
+        "switchStickerVariant": "Trocar variação",
+        "stickerOverlapCycleHint": "Clique com o botão direito em adesivos sobrepostos para alternar a seleção pela ordem das camadas",
         "stickerRotation": "Rotação",
         "removeSticker": "Remover selecionado",
         "clearStickers": "Limpar tudo",
@@ -3428,6 +4069,9 @@
         "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente.",
         "saveCardFace": "Salvar rosto do cartão",
         "savingCardFace": "Salvando...",
+        "autoSavingDefaultCardFace": "Gerando rosto padrão do cartão...",
+        "autoSaveDefaultCardFaceFailed": "Falha ao gerar o rosto padrão do cartão",
+        "modelStillLoading": "O modelo ainda está carregando. Salve depois que o carregamento terminar.",
         "saveCardFaceSuccess": "Salvo com sucesso!",
         "saveCardFaceFailed": "Falha ao salvar: {{error}}",
         "saveCardFacePartialSuccess": "PNG salvo, mas a escrita de metadados falhou: {{error}}",
@@ -3460,6 +4104,615 @@
             "untested": "Não testado",
             "not_configured": "Não configurado",
             "testing": "Testando..."
+        }
+    },
+    "profiler": {
+        "title": "Analisador de desempenho",
+        "badge": {
+            "idle": "Inativo",
+            "warmup": "Aquecendo...",
+            "running": "Capturando",
+            "stopped": "Parado"
+        },
+        "toggle": {
+            "title": "Expandir / recolher",
+            "aria": "Expandir / recolher analisador"
+        },
+        "btn": {
+            "start": "Iniciar",
+            "stop": "Parar",
+            "snapshot": "Captura",
+            "reset": "Redefinir"
+        },
+        "debug": {
+            "title": "Visualização de depuração",
+            "physicsKinematic": "Corpos de osso",
+            "physicsKinematicTip": "Corpos rígidos Kinematic (Mode 0): seguem a animação dos ossos, sem física",
+            "physicsDynamic": "Corpos físicos",
+            "physicsDynamicTip": "Corpos rígidos Dynamic (Mode 1): física pura, sob gravidade e colisões",
+            "physicsMixed": "Corpos mistos",
+            "physicsMixedTip": "Corpos rígidos Mixed (Mode 2): física + ossos, posição ancorada ao osso",
+            "physicsSolid": "Faces sólidas",
+            "physicsSolidTip": "Alterna malha / faces translúcidas: o modo translúcido revela sobreposições",
+            "ik": "Cadeia IK",
+            "ikTip": "Solver de IK: mostra alvos, efetores e nós da cadeia",
+            "skeleton": "Esqueleto",
+            "skeletonTip": "Malha do esqueleto: mostra toda a hierarquia de ossos"
+        },
+        "fps": {
+            "recent60s": "FPS — últimos 60s",
+            "alltime": "Estatísticas totais",
+            "current": "Atual",
+            "avg": "Média",
+            "min": "Mínimo",
+            "max": "Máximo",
+            "p1": "1% Low",
+            "jitter": "Jitter σ",
+            "samples": "Amostras",
+            "chartTitle": "Gráfico de FPS"
+        },
+        "frametime": {
+            "recent60s": "Tempo de quadro (ms) — últimos 60s",
+            "avg": "Média",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "Máximo",
+            "min": "Mínimo"
+        },
+        "section": {
+            "modelInfo": "Atributos do modelo",
+            "assessment": "Classificação",
+            "gpuInfo": "Info da GPU"
+        },
+        "placeholder": {
+            "snapshotForInfo": "Clique em «Captura» para obter info do modelo",
+            "snapshotForRating": "Clique em «Captura» para obter a classificação",
+            "snapshotForGpu": "Clique em «Captura» para obter info da GPU",
+            "noManager": "Gerenciador de modelos não detectado",
+            "noModel": "Nenhum modelo carregado",
+            "cannotRate": "Não foi possível classificar",
+            "cannotGetGpu": "Não foi possível obter info da GPU",
+            "live2dUnsupported": "Modelos Live2D ainda não são suportados pelo analisador"
+        },
+        "info": {
+            "type": "Tipo",
+            "name": "Nome",
+            "vertices": "Vértices",
+            "faces": "Faces",
+            "morphTargets": "Morph Targets",
+            "materials": "Materiais",
+            "textures": "Texturas",
+            "bonesVRM": "Ossos Humanoid",
+            "bonesMMD": "Ossos",
+            "physicsEngine": "Física",
+            "physicsBodies": "Corpos rígidos",
+            "physicsConstraints": "Restrições",
+            "springJoints": "Spring Bone joints",
+            "colliders": "Colliders",
+            "animation": "Animação",
+            "animPlaying": "Reproduzindo",
+            "animPaused": "Pausada",
+            "animStopped": "Parada",
+            "ikGrant": "IK / Grant",
+            "outline": "Contorno",
+            "enabled": "Ativado",
+            "disabled": "Desativado",
+            "drawCalls": "Draw calls",
+            "triangles": "Triângulos",
+            "pixelRatio": "Pixel ratio",
+            "renderSize": "Tamanho de render",
+            "gpu": "GPU",
+            "vendor": "Fabricante",
+            "maxTextureSize": "Textura máx."
+        },
+        "rating": {
+            "low": "Leve",
+            "medium": "Médio",
+            "high": "Pesado",
+            "extreme": "Muito pesado",
+            "overall": "Geral: ",
+            "noteHtml": "Classificações baseadas no <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC), suavizadas para as cenas mono-modelo do N.E.K.O."
+        },
+        "ratingDetail": {
+            "vertices": "Vértices",
+            "faces": "Faces (triângulos)",
+            "materials": "Materiais",
+            "textures": "Texturas",
+            "bones": "Ossos",
+            "physicsBodies": "Corpos rígidos",
+            "physicsConstraints": "Restrições",
+            "springJoints": "Spring Bone joints",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw calls"
+        }
+    },
+    "basketball": {
+        "title": "Desafio de basquete",
+        "modeSwitcher": "Modo de basquete",
+        "mode": {
+            "spectator": "Treino livre",
+            "shooter": "Desafio de arremesso",
+            "duel": "Duelo com Yui",
+            "timed": "Contra o tempo",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Pontos {{score}}",
+            "streak": "Sequência {{streak}}",
+            "record": "Recorde {{distance}}",
+            "duelScore": "Você {{player}} - {{neko}} Neko",
+            "duelMisses": "Erros Você {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Rodada {{round}}/{{max}}",
+            "timer": "{{seconds}} s",
+            "practice": "Treino livre",
+            "yourTurn": "Sua vez",
+            "nekoTurn": "Arremesso da Neko",
+            "horseLetters": "Você {{player}} / Neko {{neko}}",
+            "horseChallenge": "Copie {{distance}} {{angle}}°",
+            "horseSet": "Defina um arremesso",
+            "unlimitedAttempts": "Ilimitado",
+            "chances": "Chances {{count}}",
+            "practiceTitle": "Treino livre: arremessos ilimitados e sem pontuação no ranking",
+            "attemptsTitle": "Restam {{remaining}}/{{total}}, erros {{missed}}",
+            "duelTitle": "Duelo Neko: você e Neko arremessam em turnos",
+            "timedTitle": "Contra o tempo: arremessos ilimitados em 60 segundos",
+            "horseTitle": "HORSE: copie distância, ângulo e zona ideal do arremesso convertido",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "lig.",
+            "off": "desl."
+        },
+        "result": {
+            "title": "Fim de jogo",
+            "leaderboard": "Classificação",
+            "stats": "Estatísticas",
+            "retry": "Jogar novamente",
+            "rating": "Avaliação de controle: {{rating}}",
+            "duel": "Resultado do duelo: {{outcome}} | Você {{player}} - {{neko}} Neko | Rodadas: {{rounds}} | Última distância: {{distance}}",
+            "duelElimination": "Resultado do duelo: {{outcome}} | Você {{player}} - {{neko}} Neko | Erros: você {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rodadas: {{rounds}} | Última distância: {{distance}}",
+            "horse": "Resultado HORSE: {{outcome}} | Você {{player}} / Neko {{neko}} | Cestas: {{made}} | Melhor sequência: {{best}}",
+            "timed": "Contra o tempo: {{made}} cestas, melhor sequência {{best}}, pontos {{score}}",
+            "practice": "Treino livre: pontuação não registrada no ranking | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Distância: {{distance}}",
+            "summary": "Pontos: {{score}} | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Maior distância: {{record}} | Distância: {{distance}}",
+            "attemptsSummary": "Resumo dos arremessos: {{summary}}",
+            "personalBest": "Recorde pessoal: {{score}} pts",
+            "globalRank": "Ranking global: #{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "Você venceu",
+                "nekoWin": "Neko venceu",
+                "tie": "Empate",
+                "undecided": "Indefinido"
+            }
+        },
+        "leaderboard": {
+            "title": "Classificação",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Arremesso",
+            "duel": "Duelo",
+            "empty": "Ainda sem registros",
+            "totalPlayers": "Jogadores {{count}}",
+            "yourBest": "Seu melhor #{{rank}} / {{score}} pts",
+            "recent": "Últimas {{count}} partidas",
+            "loading": "Carregando...",
+            "mode": {
+                "timed": "Tempo",
+                "horse": "HORSE",
+                "spectator": "Espectador",
+                "shooter": "Arremesso",
+                "duel": "Duelo"
+            }
+        },
+        "debug": {
+            "title": "Painel de depuração",
+            "collapse": "Recolher",
+            "hide": "Ocultar",
+            "distance": "Distância:",
+            "power": "Força:",
+            "event": "Evento:",
+            "streak": "Sequência:",
+            "reset": "Redefinir",
+            "guide": "Linha guia",
+            "sweet": "Zona ideal",
+            "markers": "Marcadores de distância",
+            "readout": {
+                "modeState": "Modo={{mode}}  Estado={{state}}",
+                "distance": "Distância={{px}}px ({{meters}})",
+                "streaks": "Sequência={{streak}}  Melhor={{best}}  Cestas={{made}}",
+                "score": "Pontos={{score}}  Restam={{remaining}}/{{total}}",
+                "difficulty": "Dificuldade={{difficulty}}  Humor={{mood}}  Tema={{theme}}",
+                "duel": "Duelo: Você {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Você {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Estatísticas pessoais",
+            "close": "Fechar",
+            "totalShots": "Arremessos={{total}}  Cestas={{made}}",
+            "farRate": "Aproveitamento 300px+={{rate}}",
+            "trend": "Tendência recente={{trend}}",
+            "none": "Nenhum"
+        },
+        "theme": {
+            "next": "Trocar tema",
+            "current": "Tema: {{theme}}",
+            "changed": "Tema {{theme}}",
+            "labels": {
+                "default": "Ginásio",
+                "sunset": "Quadra ao pôr do sol",
+                "night": "Luzes noturnas"
+            }
+        },
+        "court": {
+            "restrictedArc": "Área restrita",
+            "freeThrowLine": "Lance livre",
+            "threePointLine": "3 pontos",
+            "midCourtLine": "Meio da quadra"
+        },
+        "close": "Fechar",
+        "audio": {
+            "controls": "Áudio do jogo"
+        },
+        "memoryOption": {
+            "label": "Salvar a conversa desta partida na memória (desativado por padrão)",
+            "hint": "Quando desativado, entradas do jogador, respostas da NEKO, eventos, resumos pós-jogo e contexto de continuação não serão gravados nem lidos da memória."
+        },
+        "table": {
+            "score": "Pontos",
+            "bestStreak": "Melhor sequência",
+            "farthest": "Maior distância",
+            "mode": "Modo",
+            "date": "Data"
+        },
+        "state": {
+            "ready": "Pronto",
+            "in_flight": "No ar",
+            "game_over": "Fim",
+            "neko_thinking": "Neko pensando"
+        },
+        "toast": {
+            "difficulty": "Dificuldade {{difficulty}}",
+            "nekoShoot": "Neko arremessa",
+            "nekoThinking": "Neko está pensando",
+            "nekoTurn": "Vez da Neko",
+            "copyNeko": "Copie a Neko",
+            "nekoFailed": "Neko falhou ao definir",
+            "yourSet": "Defina seu arremesso",
+            "yourTurn": "Sua vez",
+            "reset": "Redefinido",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Linha guia",
+                "sweet": "Zona ideal de força",
+                "bgm": "BGM",
+                "markers": "Marcadores de distância"
+            },
+            "state": {
+                "on": "ligado",
+                "off": "desligado"
+            }
+        },
+        "tutorial": {
+            "aim": "Mova o mouse para cima ou baixo para ajustar o ângulo",
+            "charge": "Segure o botão esquerdo para carregar",
+            "release": "Solte para arremessar!"
+        },
+        "shot": {
+            "swish": "Cesta limpa",
+            "bank": "Tabela",
+            "rim_in": "Entrou no aro",
+            "rim_out": "Saiu do aro",
+            "air_ball": "Air ball",
+            "unknown": "Desconhecido",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Cesta limpa!",
+                    "Cesta limpa!"
+                ],
+                "bank": [
+                    "Com tabela também vale.",
+                    "Com tabela também vale."
+                ],
+                "rim_in": [
+                    "Entrou no quique.",
+                    "Entrou no quique."
+                ],
+                "rim_out": [
+                    "Quase.",
+                    "Quase."
+                ],
+                "air_ball": [
+                    "O aro fica do outro lado.",
+                    "O aro fica do outro lado."
+                ],
+                "shot_missed": [
+                    "Ainda há chance.",
+                    "Ainda há chance."
+                ],
+                "game_over": [
+                    "Mais uma?",
+                    "Mais uma?"
+                ],
+                "long_aim": [
+                    "Arremesse logo.",
+                    "Arremesse logo."
+                ],
+                "close_to_record": [
+                    "Quase no recorde.",
+                    "Quase no recorde."
+                ],
+                "new_record": [
+                    "Novo recorde!",
+                    "Novo recorde!"
+                ],
+                "streak_5": [
+                    "Cinco seguidas!",
+                    "Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "Dez seguidas?",
+                    "Dez seguidas?"
+                ],
+                "streak_15": [
+                    "Quinze seguidas é demais.",
+                    "Quinze seguidas é demais."
+                ],
+                "streak_20": [
+                    "Vinte seguidas? Incrível.",
+                    "Vinte seguidas? Incrível."
+                ],
+                "clutch": "...Este precisa entrar.",
+                "excuse": "Ai, meu braço está cansado."
+            },
+            "fallback": [
+                "Mais uma."
+            ],
+            "pressure": {
+                "lastTied": "Arremesso decisivo. Não pisque.",
+                "lastAhead": "Hmph, ainda não acabou.",
+                "lastBehind": "Acerte este e vença.",
+                "playerAhead": "Você até que é bom...",
+                "playerBehind": "Força mais um pouco."
+            },
+            "horse": {
+                "nekoMiss": "Não copiou. Some {{letters}}.",
+                "playerMiss": "Você também soma {{letters}}."
+            },
+            "mindGame": [
+                "Sua mão está tremendo.",
+                "Pense bem, sem pressa.",
+                "Esta distância não é curta."
+            ],
+            "easterEgg": {
+                "lateNight": "Arremessando até esta hora?",
+                "xmas": "Os sinos já estão pendurados e você ainda quer arremessar?",
+                "newYear": "Feliz Ano Novo!",
+                "swish3": "Você está trapaceando?",
+                "swish5": "...Preciso conferir o aro.",
+                "airball3": "...Talvez faça uma pausa."
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "Hã?! "
+        }
+    },
+    "soccer": {
+        "exitGame": {
+            "button": "Sair do jogo",
+            "ending": "Encerrando a rodada…",
+            "ended": "Jogo encerrado, retornando…",
+            "endingDefault": "Encerrando esta partida…",
+            "endedDefault": "Partida encerrada. Feche esta página. Para jogar novamente, reabra a página."
+        },
+        "startScreen": {
+            "readyToStart": "Pronto — clique para começar",
+            "ready": "Pronto",
+            "startButton": "Iniciar"
+        },
+        "startTutorial": {
+            "title": "Como jogar",
+            "move": "Mova o mouse para guiar o jogador.",
+            "charge": "Perto da bola, segure o botão esquerdo para carregar e solte para chutar.",
+            "range": "O chute só dispara a até {{distance}} da bola.",
+            "reset": "Pressione R para resetar a bola e as posições.",
+            "ai": "O humor e a dificuldade da NEKO mudam conforme a partida."
+        },
+        "hint": {
+            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤{{distance}} da bola) · R = reset",
+            "aiMood": "O humor e a dificuldade da NEKO mudam conforme a partida"
+        },
+        "debugControls": {
+            "bounds": "Ativar limites (regra de fora)",
+            "voiceOutput": "Falar linhas LLM (voz do projeto)",
+            "voiceButton": "Voz de depuração",
+            "voicePlaceholder": "Depuração: digite a transcrição final e pressione Enter",
+            "send": "Enviar",
+            "voiceStatusHidden": "STT de depuração: oculto"
+        },
+        "debug": {
+            "mouse": "mouse: {{x}}, {{y}}",
+            "playerCenter": "centro do jogador: {{x}}, {{y}}",
+            "aiCenter": "centro da IA: {{x}}, {{y}}  modo: {{mode}}",
+            "state": "rodada: {{round}}  dificuldade: {{difficulty}}  humor: {{mood}}  carga: {{charge}}%",
+            "ball": "bola: ({{x}}, {{y}})  velocidade={{speed}}",
+            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Rodada {{round}}"
+        },
+        "moods": {
+            "calm": "calma",
+            "happy": "feliz",
+            "angry": "brava",
+            "relaxed": "relaxada",
+            "sad": "triste",
+            "surprised": "surpresa"
+        },
+        "difficulties": {
+            "max": "máxima",
+            "lv2": "nível 2",
+            "lv3": "nível 3",
+            "lv4": "nível 4"
+        },
+        "aiModes": {
+            "attack": "ataque",
+            "defend": "defesa",
+            "clear": "afastar"
+        },
+        "debugEvents": {
+            "player-kick": "chute do jogador",
+            "ai-kick": "chute da IA",
+            "unstick": "bola destravada"
+        },
+        "loading": {
+            "beginStartDefault": "Analisando contexto de início…",
+            "initializingMiniGame": "Inicializando minijogo de futebol…",
+            "assetsDone": "Modelo carregado",
+            "assetsFailed": "Falha ao inicializar o modelo, continuando",
+            "routeDone": "Contexto de início pronto",
+            "routeFallback": "Contexto de início usando valores padrão locais",
+            "routeFailed": "Falha ao obter contexto de início, continuando"
+        },
+        "voiceStatus": {
+            "routeEnded": "Rota do jogo encerrada — recarregue a página para reconectar",
+            "unsupported": "Este navegador não suporta transcrição de voz do jogo. Use a entrada de texto do chat principal por enquanto.",
+            "listening": "STT do jogo: ouvindo o jogador",
+            "error": "STT do jogo: {{code}}",
+            "startFailed": "STT do jogo: falha ao iniciar. Use a entrada de texto do chat principal por enquanto.",
+            "handoverInProgress": "STT do jogo: a entrada de voz principal está assumindo",
+            "waitingForHandover": "STT do jogo: aguardando a entrada de voz principal assumir",
+            "received": "Voz do jogador recebida: {{text}}",
+            "debugSubmitted": "STT de depuração enviado: {{text}}",
+            "debugListening": "STT de depuração: ouvindo o jogador…",
+            "debugIdle": "STT de depuração: ocioso",
+            "debugUnsupported": "Este navegador não suporta STT de depuração. Use a caixa de texto de depuração.",
+            "recognitionError": "Erro de reconhecimento de voz: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Solte para enviar",
+            "idle": "Voz de depuração"
+        },
+        "memoryOption": {
+            "label": "Salvar esta partida na memória (desativado por padrão)",
+            "hint": "Quando desativado, as entradas do jogador, as respostas diretas de NEKO, as reações a eventos, o resumo da partida e as conversas seguintes não são salvas nem consultadas na memória."
         }
     }
 }

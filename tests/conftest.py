@@ -1,3 +1,68 @@
+import os as _os
+import sys as _sys
+import tempfile as _tempfile
+from pathlib import Path as _Path
+
+# Project root must be on sys.path before importing `utils.*` — works even when
+# the project isn't installed as a wheel (e.g. bare `python -m pytest tests/`).
+_project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..'))
+if _project_root not in _sys.path:
+    _sys.path.insert(0, _project_root)
+
+
+def _ensure_yui_origin_unpacked():
+    # Some tests read static/yui-origin/* directly (Live2D model). The model is
+    # shipped as assets/yui-origin.tar.gz; auto-unpack so pytest works without
+    # requiring build_frontend to have been run.
+    archive = _Path(_project_root) / "assets" / "yui-origin.tar.gz"
+    target_root = _Path(_project_root) / "static"
+    target_dir = target_root / "yui-origin"
+    marker = target_dir / "yui-origin.moc3"
+    if not archive.exists():
+        return
+    if marker.exists() and marker.stat().st_mtime >= archive.stat().st_mtime:
+        return
+    import shutil
+    import sys
+    import tarfile
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    with tarfile.open(archive, "r:gz") as tf:
+        # filter='data' added in Python 3.12; archive ships in-repo (trusted).
+        if sys.version_info >= (3, 12):
+            tf.extractall(target_root, filter="data")
+        else:
+            tf.extractall(target_root)
+    # tarfile preserves archived member mtimes by default, so the marker would
+    # stay older than the archive's filesystem mtime → freshness gate above
+    # would re-extract on every session. Refresh marker so subsequent runs skip.
+    marker.touch()
+
+
+_ensure_yui_origin_unpacked()
+
+# Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
+# Without this, every pytest session — including ones that intentionally inject
+# OSError / 坏 JSON / mock-driven failures via patches — dumps ERROR lines into
+# the user's Documents tree.
+#
+# We override RobustLoggerConfig._get_log_directory directly (rather than going
+# through NEKO_STORAGE_SELECTED_ROOT) because that env var also drives
+# ConfigManager / cloudsave_runtime layout, and pointing those at the temp dir
+# triggers a legacy-app-root migration scan that rmtrees the temp dir mid-test.
+# Loggers are constructed at module import time, so the patch must happen here
+# in conftest BEFORE any project module is imported.
+_NEKO_TEST_LOG_ROOT = _Path(_tempfile.gettempdir()) / f"neko_test_logs_{_os.getpid()}"
+_NEKO_TEST_LOG_ROOT.mkdir(parents=True, exist_ok=True)
+from utils import logger_config as _logger_config_module
+# Override only the Documents-fallback hook (priority 2 in _get_log_directory).
+# Env-var-based override (priority 1) and the cascade through application/system
+# data dirs stay intact — so tests that use monkeypatch.setenv on
+# NEKO_STORAGE_SELECTED_ROOT still see the override they expect.
+_logger_config_module.RobustLoggerConfig._get_documents_directory = (
+    lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
+)
+
 import asyncio
 import asyncio.runners
 import asyncio.coroutines
@@ -36,20 +101,22 @@ def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
 asyncio.runners.Runner.run = _nested_runner_run
 asyncio.run = _compat_asyncio_run
 
-import pytest
 import os
+import sys
 import threading
 import time
-import uvicorn
 import json
 import logging
 import socket
 from unittest.mock import patch
 from pathlib import Path
 
-# Add project root to sys.path if needed, or rely on pytest pythonpath
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import uvicorn
+
+# (Project root was already inserted into sys.path at the top of this file
+# so the early `from utils import logger_config` works without `uv sync`.)
+
+import pytest
 
 from tests.utils.llm_judger import LLMJudger
 
@@ -67,7 +134,9 @@ KEY_MAPPING = {
     "assistApiKeyStep": "ASSIST_API_KEY_STEP",
     "assistApiKeySilicon": "ASSIST_API_KEY_SILICON",
     "assistApiKeyGemini": "ASSIST_API_KEY_GEMINI",
-    "assistApiKeyKimi": "ASSIST_API_KEY_KIMI"
+    "assistApiKeyKimi": "ASSIST_API_KEY_KIMI",
+    "assistApiKeyMimo": "ASSIST_API_KEY_MIMO",
+    "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }
 
 def pytest_addoption(parser):
@@ -392,6 +461,22 @@ def clean_user_data_dir(tmp_path_factory):
     cm.project_config_dir = cm.config_dir
     cm.project_memory_dir = cm.memory_dir
 
+    # Keep browser/e2e tests isolated from the developer machine's real
+    # storage bootstrap state. The session temp root should start as a ready
+    # app root unless a test explicitly mocks a blocked storage state.
+    from utils.storage_policy import save_storage_policy
+
+    save_storage_policy(
+        None,
+        selected_root=cm.app_docs_dir,
+        anchor_root=cm.anchor_root,
+        selection_source="test",
+    )
+    cm.save_root_state(cm.build_default_root_state())
+    storage_migration_path = cm.local_state_dir / "storage_migration.json"
+    if storage_migration_path.exists():
+        storage_migration_path.unlink()
+
     # Also patch the class method for any NEW instances that might be created
     patcher = patch("utils.config_manager.ConfigManager._get_documents_directory", return_value=tmp_path)
     legacy_patcher = patch("utils.config_manager.ConfigManager.get_legacy_app_root_candidates", return_value=[])
@@ -504,8 +589,7 @@ def running_server(clean_user_data_dir, mock_memory_server):
     """
     test_port = _get_runtime_test_port("MAIN_SERVER_PORT")
 
-    from main_server import app
-
+    from app.main_server import app
     config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
     server = uvicorn.Server(config)
 

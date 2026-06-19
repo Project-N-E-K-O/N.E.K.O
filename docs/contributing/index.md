@@ -1,6 +1,6 @@
 # Contributing
 
-Project N.E.K.O. is open source under the MIT License. Contributions are welcome from developers, creators, and community members worldwide.
+Project N.E.K.O. is open source under the Apache License 2.0. Contributions are welcome from developers, creators, and community members worldwide.
 
 ## How to contribute
 
@@ -13,6 +13,13 @@ Project N.E.K.O. is open source under the MIT License. Contributions are welcome
 
 ::: tip AI-Assisted Development
 The project includes built-in configurations for AI coding assistants (Claude Code, Cursor, etc.). If you develop with these tools, they will automatically load the project's rules and skills. See [AI-Assisted Dev](./ai-assisted-dev) for details and how to adapt them for other AI tools.
+:::
+
+::: warning Nuitka packaging
+If you add directories holding Python code or new dynamic imports, read
+[Nuitka Packaging Caveats](./nuitka-packaging) first. Nuitka silently drops
+`.py` files from `--include-data-dir`, and the wrong directory naming
+breaks the standalone build without breaking source-mode tests.
 :::
 
 ## What we need
@@ -31,4 +38,4 @@ The project includes built-in configurations for AI coding assistants (Claude Co
 
 ## License
 
-The core engine is licensed under **MIT** and will remain open source. Your contributions may be included in official Steam and App Store releases.
+The core engine is licensed under **Apache License 2.0** and will remain open source. Your contributions may be included in official Steam and App Store releases.

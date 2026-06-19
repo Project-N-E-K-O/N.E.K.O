@@ -1,25 +1,44 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Storage-location bootstrap API for the main web app.
 
 Stage 3 keeps the same homepage bootstrap entry, adds the shutdown/restart
 checkpoint flow, and exposes maintenance-state diagnostics for the web UI.
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import sys
 import inspect
 import subprocess
-import shutil as shell_shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from config import APP_NAME
@@ -28,12 +47,20 @@ from main_routers.shared_state import (
     get_request_app_shutdown,
     get_release_storage_startup_barrier,
 )
-from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, ROOT_MODE_NORMAL, set_root_mode
+from utils.cloudsave_runtime import (
+    ROOT_MODE_MAINTENANCE_READONLY,
+    ROOT_MODE_NORMAL,
+    cloudsave_disabled_reason,
+    is_cloudsave_disabled_due_to_local_state_unavailable,
+    set_root_mode,
+)
 from utils.storage_location_bootstrap import (
+    STORAGE_STARTUP_BLOCKING_REASONS,
     STORAGE_STATUS_POLL_INTERVAL_MS,
     build_storage_location_bootstrap_payload,
 )
 from utils.storage_migration import (
+    MIGRATED_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     create_pending_storage_migration,
@@ -56,18 +83,8 @@ from utils.storage_policy import (
 from utils.config_manager import get_config_manager as get_runtime_config_manager
 
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
+logger = logging.getLogger(__name__)
 _storage_mutation_lock = asyncio.Lock()
-_MIGRATED_RUNTIME_ENTRY_NAMES = (
-    "config",
-    "memory",
-    "plugins",
-    "live2d",
-    "vrm",
-    "mmd",
-    "workshop",
-    "character_cards",
-    "jukebox",
-)
 
 
 class StorageLocationSelectionRequest(BaseModel):
@@ -92,7 +109,7 @@ class StorageLocationDirectoryPickerRequest(BaseModel):
     start_path: str = Field(default="", min_length=0, max_length=4096)
 
 
-class _DirectoryPickerCancelled(RuntimeError):
+class _DirectoryPickerCancelled(Exception):
     pass
 
 
@@ -103,10 +120,30 @@ class _DirectoryPickerUnavailable(RuntimeError):
         self.message = str(message or "当前环境暂不支持系统目录选择，请手动输入路径。").strip() or "当前环境暂不支持系统目录选择，请手动输入路径。"
 
 
+class _OpenStorageRootUnavailable(RuntimeError):
+    def __init__(self, error_code: str, message: str):
+        super().__init__(message)
+        self.error_code = str(error_code or "open_storage_root_unavailable").strip() or "open_storage_root_unavailable"
+        self.message = str(message or "当前环境暂不支持直接打开目录。").strip() or "当前环境暂不支持直接打开目录。"
+
+
 def _set_no_cache_headers(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+
+
+def _reject_storage_mutation_when_cloudsave_disabled(response: Response) -> dict[str, Any] | None:
+    if not is_cloudsave_disabled_due_to_local_state_unavailable():
+        return None
+    response.status_code = 409
+    return {
+        "ok": False,
+        "error_code": "cloudsave_local_state_unavailable",
+        "error": "本机状态目录不可用，当前会话已禁用云存档。请先修复本机 state 路径后重启应用，再进行存储位置变更。",
+        "cloudsave_disabled": True,
+        "cloudsave_disabled_reason": cloudsave_disabled_reason(),
+    }
 
 
 def _normalize_optional_path(value: Any) -> str:
@@ -199,7 +236,9 @@ async def _release_storage_startup_barrier_or_rollback(
         try:
             _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)
         except Exception:
-            pass
+            logger.exception(
+                "failed to rollback storage mutation state after startup barrier release failed",
+            )
         raise
 
 
@@ -238,7 +277,7 @@ def _safe_path_size(path: Path) -> int:
 
 def _estimate_runtime_payload_bytes(source_root: Path) -> int:
     total = 0
-    for name in _MIGRATED_RUNTIME_ENTRY_NAMES:
+    for name in MIGRATED_RUNTIME_ENTRY_NAMES:
         total += _safe_path_size(source_root / name)
     return total
 
@@ -282,12 +321,43 @@ def _path_chain_has_symlink(path: Path) -> bool:
         candidate = parent
 
 
+def _path_segments(path: Path) -> list[str]:
+    return [
+        segment.strip().lower()
+        for segment in str(path).replace("\\", "/").split("/")
+        if segment.strip()
+    ]
+
+
+def _is_cloud_sync_path_segment(segment: str) -> bool:
+    normalized_segment = str(segment or "").strip().lower()
+
+    def matches_client_folder(prefix: str) -> bool:
+        if normalized_segment == prefix:
+            return True
+        if not normalized_segment.startswith(prefix):
+            return False
+        suffix = normalized_segment[len(prefix) :].lstrip()
+        return bool(suffix) and suffix[0] in {"(", "-", "["}
+
+    if any(
+        matches_client_folder(prefix)
+        for prefix in ("icloud drive", "google drive", "googledrive", "dropbox")
+    ):
+        return True
+    return (
+        normalized_segment == "onedrive"
+        or normalized_segment.startswith("onedrive - ")
+        or normalized_segment.startswith("onedrive (")
+    )
+
+
 def _collect_warning_codes(current_root: Path, target_root: Path) -> list[str]:
     warning_codes: list[str] = []
     raw_target = str(target_root)
     normalized_target = raw_target.replace("\\", "/").lower()
 
-    if any(token in normalized_target for token in ("onedrive", "icloud drive", "googledrive", "google drive", "dropbox")):
+    if any(_is_cloud_sync_path_segment(segment) for segment in _path_segments(target_root)):
         warning_codes.append("sync_folder")
     if raw_target.startswith("\\\\") or normalized_target.startswith("//"):
         warning_codes.append("network_share")
@@ -441,7 +511,7 @@ def _resolve_executable_name(*candidates: str) -> str:
             continue
         if os.path.isabs(candidate) and os.path.exists(candidate):
             return candidate
-        resolved = shell_shutil.which(candidate)
+        resolved = shutil.which(candidate)
         if resolved:
             return resolved
     return candidates[0]
@@ -514,7 +584,7 @@ def _pick_directory_via_powershell(*, start_path: str) -> str:
         "pwsh.exe",
         "pwsh",
     )
-    if not os.path.isabs(powershell_executable) and not shell_shutil.which(powershell_executable):
+    if not os.path.isabs(powershell_executable) and not shutil.which(powershell_executable):
         raise _DirectoryPickerUnavailable(
             "directory_picker_unavailable",
             "当前系统未找到 PowerShell，无法打开目录选择器。",
@@ -523,13 +593,26 @@ def _pick_directory_via_powershell(*, start_path: str) -> str:
     escaped_start_path = start_path.replace("'", "''")
     script = """
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'N.E.K.O'
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
+$owner.ShowInTaskbar = $false
+$owner.Opacity = 0
+$owner.TopMost = $true
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = '请选择存储位置目录'
 $dialog.ShowNewFolderButton = $true
 if ('{start_path}') {{
     $dialog.SelectedPath = '{start_path}'
 }}
-$result = $dialog.ShowDialog()
+$owner.Show()
+$owner.Activate()
+$owner.BringToFront()
+[System.Windows.Forms.Application]::DoEvents()
+$result = $dialog.ShowDialog($owner)
 if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{
     Write-Output $dialog.SelectedPath
     exit 0
@@ -574,19 +657,19 @@ exit 2
 def _pick_directory_via_linux_dialog(*, start_path: str) -> str:
     commands: list[list[str]] = []
     zenity_executable = _resolve_executable_name("/usr/bin/zenity", "/bin/zenity", "zenity")
-    if os.path.isabs(zenity_executable) and os.path.exists(zenity_executable) or shell_shutil.which(zenity_executable):
+    if os.path.isabs(zenity_executable) and os.path.exists(zenity_executable) or shutil.which(zenity_executable):
         command = [zenity_executable, "--file-selection", "--directory", "--title=请选择存储位置目录"]
         if start_path:
             command.append(f"--filename={start_path.rstrip('/')}/")
         commands.append(command)
     kdialog_executable = _resolve_executable_name("/usr/bin/kdialog", "/bin/kdialog", "kdialog")
-    if os.path.isabs(kdialog_executable) and os.path.exists(kdialog_executable) or shell_shutil.which(kdialog_executable):
+    if os.path.isabs(kdialog_executable) and os.path.exists(kdialog_executable) or shutil.which(kdialog_executable):
         command = [kdialog_executable, "--getexistingdirectory"]
         if start_path:
             command.append(start_path)
         commands.append(command)
     yad_executable = _resolve_executable_name("/usr/bin/yad", "/bin/yad", "yad")
-    if os.path.isabs(yad_executable) and os.path.exists(yad_executable) or shell_shutil.which(yad_executable):
+    if os.path.isabs(yad_executable) and os.path.exists(yad_executable) or shutil.which(yad_executable):
         command = [yad_executable, "--file-selection", "--directory", "--title=请选择存储位置目录"]
         if start_path:
             command.append(f"--filename={start_path.rstrip('/')}/")
@@ -627,64 +710,52 @@ def _pick_directory_via_linux_dialog(*, start_path: str) -> str:
     )
 
 
-def _pick_directory_via_tkinter(*, start_path: str) -> str:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前环境暂不支持系统目录选择，请手动输入路径。",
-        ) from exc
-
-    root = None
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        root.update_idletasks()
-        selected_root = filedialog.askdirectory(
-            parent=root,
-            initialdir=start_path or None,
-            title="请选择存储位置目录",
-            mustexist=False,
-        )
-    except Exception as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {exc}",
-        ) from exc
-    finally:
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
-
-    if not selected_root:
-        raise _DirectoryPickerCancelled()
-    return str(selected_root)
-
-
 def _pick_storage_location_directory(*, start_path: str) -> str:
+    # 项目策略：不带 Tk/Tcl。每个平台只信任其原生桥（osascript / PowerShell /
+    # zenity-kdialog-yad），原生桥失败就直接 _DirectoryPickerUnavailable，让前端
+    # 提示用户手填路径——而不是落到 tkinter 兜底（Nuitka 不带 tk-inter 时
+    # tk.Tk() 抛 SystemExit 拖死后端）。检查由 scripts/check_no_tkinter.py 守门。
     normalized_start_path = _normalize_directory_picker_start_path(start_path)
     if sys.platform == "darwin":
-        try:
-            return _pick_directory_via_osascript(start_path=normalized_start_path)
-        except _DirectoryPickerUnavailable:
-            return _pick_directory_via_tkinter(start_path=normalized_start_path)
+        return _pick_directory_via_osascript(start_path=normalized_start_path)
     if sys.platform == "win32":
-        try:
-            return _pick_directory_via_powershell(start_path=normalized_start_path)
-        except _DirectoryPickerUnavailable:
-            return _pick_directory_via_tkinter(start_path=normalized_start_path)
+        return _pick_directory_via_powershell(start_path=normalized_start_path)
+    return _pick_directory_via_linux_dialog(start_path=normalized_start_path)
+
+
+def _open_path_in_file_manager(path: Path | str) -> None:
+    target_path = normalize_runtime_root(path)
+    if not target_path.exists() or not target_path.is_dir():
+        raise _OpenStorageRootUnavailable(
+            "storage_root_unavailable",
+            "当前数据目录不存在或不可访问。",
+        )
+
     try:
-        return _pick_directory_via_linux_dialog(start_path=normalized_start_path)
-    except _DirectoryPickerUnavailable:
-        return _pick_directory_via_tkinter(start_path=normalized_start_path)
+        if sys.platform == "win32":
+            os.startfile(str(target_path))  # type: ignore[attr-defined]
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(target_path)])
+            return
+
+        opener = shutil.which("xdg-open") or shutil.which("gio")
+        if not opener:
+            raise _OpenStorageRootUnavailable(
+                "open_storage_root_unavailable",
+                "当前系统未找到可用的文件管理器打开命令。",
+            )
+        if os.path.basename(opener) == "gio":
+            subprocess.Popen([opener, "open", str(target_path)])
+        else:
+            subprocess.Popen([opener, str(target_path)])
+    except _OpenStorageRootUnavailable:
+        raise
+    except Exception as exc:
+        raise _OpenStorageRootUnavailable(
+            "open_storage_root_failed",
+            f"打开当前数据目录失败: {exc}",
+        ) from exc
 
 
 def _build_status_payload(config_manager) -> dict[str, Any]:
@@ -985,7 +1056,7 @@ def _cleanup_retained_runtime_root(
         raise ValueError("保留目录当前不满足安全清理条件。")
 
     if paths_equal(retained_path, anchor_root):
-        for entry_name in _MIGRATED_RUNTIME_ENTRY_NAMES:
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
             entry_path = retained_path / entry_name
             if entry_path.is_dir() and not entry_path.is_symlink():
                 shutil.rmtree(entry_path)
@@ -1029,6 +1100,63 @@ async def get_storage_location_status(response: Response):
 
     config_manager = _get_storage_config_manager()
     return _build_status_payload(config_manager)
+
+
+@router.post("/exit")
+async def post_storage_location_exit(request: Request, response: Response):
+    _set_no_cache_headers(response)
+
+    if request.headers.get("X-Neko-Storage-Action") != "exit":
+        response.status_code = 403
+        return {
+            "ok": False,
+            "error_code": "storage_exit_forbidden",
+            "error": "缺少存储退出确认标记。",
+        }
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
+
+    config_manager = _get_storage_config_manager()
+    bootstrap_payload = build_storage_location_bootstrap_payload(config_manager)
+    blocking_reason = str(bootstrap_payload.get("blocking_reason") or "").strip()
+    root_mode = str((config_manager.load_root_state() or {}).get("mode") or "").strip()
+    if (
+        blocking_reason not in STORAGE_STARTUP_BLOCKING_REASONS
+        and root_mode != ROOT_MODE_MAINTENANCE_READONLY
+    ):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "storage_exit_not_required",
+            "error": "当前没有需要阻断启动的存储状态。",
+            "blocking_reason": blocking_reason,
+        }
+
+    request_app_shutdown = get_request_app_shutdown()
+    if not callable(request_app_shutdown):
+        response.status_code = 503
+        return {
+            "ok": False,
+            "error_code": "restart_unavailable",
+            "error": "当前实例暂时无法执行受控关闭，请稍后重试。",
+        }
+
+    try:
+        await _request_app_shutdown(request_app_shutdown)
+    except Exception as exc:
+        response.status_code = 500
+        return {
+            "ok": False,
+            "error_code": "restart_schedule_failed",
+            "error": f"受控关闭启动失败: {exc}",
+        }
+
+    return {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
 
 
 @router.get("/diagnostics")
@@ -1087,6 +1215,29 @@ async def post_storage_location_pick_directory(
     }
 
 
+@router.post("/open-current")
+async def post_storage_location_open_current(response: Response):
+    _set_no_cache_headers(response)
+
+    config_manager = _get_storage_config_manager()
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    try:
+        await asyncio.to_thread(_open_path_in_file_manager, current_root)
+    except _OpenStorageRootUnavailable as exc:
+        response.status_code = 503
+        return {
+            "ok": False,
+            "error_code": exc.error_code,
+            "error": exc.message,
+            "current_root": str(current_root),
+        }
+
+    return {
+        "ok": True,
+        "current_root": str(current_root),
+    }
+
+
 @router.post("/retained-source/cleanup")
 async def post_storage_location_retained_source_cleanup(
     payload: StorageLocationCleanupRequest,
@@ -1101,6 +1252,10 @@ async def _post_storage_location_retained_source_cleanup_locked(
     response: Response,
 ):
     _set_no_cache_headers(response)
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
 
     config_manager = _get_storage_config_manager()
     notice = _build_completed_migration_notice(
@@ -1185,6 +1340,10 @@ async def _post_storage_location_select_locked(
     response: Response,
 ):
     _set_no_cache_headers(response)
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
 
     config_manager = _get_storage_config_manager()
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
@@ -1387,6 +1546,81 @@ async def _post_storage_location_select_locked(
     }
 
 
+@router.post("/preflight")
+async def post_storage_location_preflight(
+    payload: StorageLocationSelectionRequest,
+    response: Response,
+):
+    _set_no_cache_headers(response)
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
+
+    config_manager = _get_storage_config_manager()
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
+
+    blocking_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+    blocking_reason = str(blocking_bootstrap.get("blocking_reason") or "").strip()
+    root_state = config_manager.load_root_state()
+    root_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL).strip() or ROOT_MODE_NORMAL
+    if blocking_reason or root_mode == ROOT_MODE_MAINTENANCE_READONLY:
+        response.status_code = 409
+        if blocking_reason == "migration_pending" or root_mode == ROOT_MODE_MAINTENANCE_READONLY:
+            return {
+                "ok": False,
+                "error_code": "migration_already_pending",
+                "error": "当前存储状态仍需恢复或迁移，暂时不能发起新的存储位置变更。",
+                "blocking_reason": blocking_reason or "maintenance_readonly",
+            }
+        return {
+            "ok": False,
+            "error_code": "storage_bootstrap_blocking",
+            "error": "当前存储状态仍需恢复或迁移，暂时不能发起新的存储位置变更。",
+            "blocking_reason": blocking_reason,
+        }
+
+    try:
+        normalized_selected_root = validate_selected_root(
+            config_manager,
+            payload.selected_root,
+            current_root=current_root,
+            anchor_root=anchor_root,
+            selection_source=payload.selection_source,
+        )
+    except StorageSelectionValidationError as exc:
+        response.status_code = 400
+        return {
+            "ok": False,
+            "error_code": exc.error_code,
+            "error": exc.message,
+        }
+
+    if paths_equal(normalized_selected_root, current_root):
+        return {
+            "ok": True,
+            "result": "restart_not_required",
+            "selected_root": str(normalized_selected_root),
+            "target_root": str(normalized_selected_root),
+            "selection_source": payload.selection_source,
+        }
+
+    restart_preflight = _build_restart_preflight(
+        current_root,
+        normalized_selected_root,
+        config_manager=config_manager,
+    )
+    return {
+        "ok": True,
+        "result": "restart_required",
+        "restart_mode": "migrate_after_shutdown",
+        "selected_root": str(normalized_selected_root),
+        "selection_source": payload.selection_source,
+        **restart_preflight,
+    }
+
+
 @router.post("/restart")
 async def post_storage_location_restart(
     payload: StorageLocationSelectionRequest,
@@ -1401,6 +1635,10 @@ async def _post_storage_location_restart_locked(
     response: Response,
 ):
     _set_no_cache_headers(response)
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
 
     config_manager = _get_storage_config_manager()
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
@@ -1510,7 +1748,9 @@ async def _post_storage_location_restart_locked(
             try:
                 _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
             except Exception:
-                pass
+                logger.exception(
+                    "failed to rollback storage mutation state after restart scheduling failed",
+                )
 
             response.status_code = 500
             return {

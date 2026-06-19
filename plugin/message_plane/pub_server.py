@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from typing import Any, Dict
 
 import zmq
 from plugin.logging_config import logger
+
+
+def _json_default(obj: Any) -> Any:
+    """Make the PUB JSON serialiser tolerate non-JSON-native values.
+
+    The message_plane wire payload carries a legacy ``binary_data`` field as
+    raw ``bytes`` (the canonical image already rides in ``parts[].binary_base64``).
+    Plain ``json.dumps`` raises on ``bytes``, and that failure was swallowed
+    upstream — silently dropping every image-bearing push_message before it
+    reached any subscriber. Base64-encode bytes; stringify anything else so a
+    single unexpected field can never drop the whole message.
+    """
+    if isinstance(obj, (bytes, bytearray)):
+        return base64.b64encode(bytes(obj)).decode("ascii")
+    logger.debug("pub server: stringifying unexpected non-JSON value of type {}", type(obj).__name__)
+    return str(obj)
 
 
 @dataclass
@@ -28,11 +45,11 @@ class MessagePlanePubServer:
         if self._sock is None:
             raise RuntimeError("Socket is not bound")
         t = str(topic).encode("utf-8")
-        body = json.dumps(event, ensure_ascii=False).encode("utf-8")
         try:
+            body = json.dumps(event, ensure_ascii=False, default=_json_default).encode("utf-8")
             self._sock.send_multipart([t, body])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pub server publish failed (topic={}): {}", topic, exc)
 
     def close(self) -> None:
         if self._sock is not None:

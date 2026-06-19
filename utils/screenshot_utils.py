@@ -1,6 +1,20 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-截图分析工具库
-提供截图分析功能，包括前端浏览器发送的截图和屏幕分享数据流处理
+Screenshot analysis utility library
+Provides screenshot analysis, including screenshots sent from the frontend browser and screen-share data stream handling
 """
 import base64
 import sys
@@ -10,7 +24,7 @@ from utils.token_tracker import set_call_type
 import asyncio
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
-from utils.llm_client import create_chat_llm
+from utils.llm_client import create_chat_llm_async
 
 logger = get_module_logger(__name__)
 
@@ -18,18 +32,21 @@ logger = get_module_logger(__name__)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_BASE64_SIZE = MAX_IMAGE_SIZE_BYTES * 4 // 3 + 100
 
-# 截图压缩默认参数（供 computer_use 等模块复用）
-COMPRESS_TARGET_HEIGHT = 1080
-COMPRESS_JPEG_QUALITY = 75
+# 截图压缩默认参数：与前端手动截图 / 屏幕分享口径对齐（720p, JPEG quality 80）。
+# 前端已统一把发给后端的画面压到 720p，这里的 vision 分析、后端 pyautogui 兜底
+# 等再压也保持同一档位，避免一边 720 一边 1080 的不一致。
+COMPRESS_TARGET_HEIGHT = 720
+COMPRESS_JPEG_QUALITY = 80
 _LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
 
 LOCAL_MAX_PIXELS = 100_000_000
 
 def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
-    """验证图片数据有效性
+    """Validate image data integrity
 
-    先用 verify() 做格式校验, 再重新打开并调用 load() 强制解码全部像素,
-    确保图片数据完整且可用于后续处理 (verify 之后的 Image 对象不可再使用).
+    First verify() checks the format, then the image is reopened and load() forces full
+    pixel decoding, ensuring the data is complete and usable for later processing (the
+    Image object after verify cannot be reused).
     """
     try:
         # 第一遍: 轻量格式校验
@@ -91,13 +108,13 @@ def decode_and_compress_screenshot_b64(
 
 async def process_screen_data(data: str) -> Optional[str]:
     """
-    处理前端发送的屏幕分享数据流
-    前端已统一压缩到720p JPEG，此方法只做验证，不再二次缩放
+    Handle the screen-share data stream sent by the frontend
+    The frontend already compresses uniformly to 720p JPEG; this method only validates, with no second downscale
     
-    参数:
-        data: 前端发送的屏幕数据，格式为 'data:image/jpeg;base64,...'
+    Args:
+        data: screen data sent by the frontend, in the form 'data:image/jpeg;base64,...'
     
-    返回: 验证后的base64字符串（不含data:前缀），如果验证失败则返回None
+    Returns: the validated base64 string (without the data: prefix), or None when validation fails
     """
     try:
         if not isinstance(data, str) or not data.startswith('data:image/jpeg;base64,'):
@@ -138,15 +155,15 @@ async def analyze_image_with_vision_model(
     window_title: str = '',
 ) -> Optional[str]:
     """
-    使用视觉模型分析图片
+    Analyze an image with the vision model
 
-    参数:
-        image_b64: 图片的base64编码（不含data:前缀）
-        max_completion_tokens: 最大输出 token 数；None 时取
-            config.VISION_ANALYSIS_MAX_TOKENS 默认值
-        window_title: 可选的窗口标题，提供时会加入提示词以丰富上下文
+    Args:
+        image_b64: base64 of the image (without the data: prefix)
+        max_completion_tokens: maximum output tokens; None takes the
+            config.VISION_ANALYSIS_MAX_TOKENS default
+        window_title: optional window title; when given it is added to the prompt to enrich context
 
-    返回: 图片描述文本，失败则返回 None
+    Returns: the image description text, or None on failure
     """
     if max_completion_tokens is None:
         from config import VISION_ANALYSIS_MAX_TOKENS
@@ -174,28 +191,31 @@ async def analyze_image_with_vision_model(
         else:
             logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
-        from config.prompts_sys import (
+        from config.prompts.prompts_sys import (
             _loc, VISION_WATERMARK,
             VISION_SYSTEM_WITH_TITLE, VISION_SYSTEM_NO_TITLE,
             VISION_USER_WITH_TITLE, VISION_USER_NO_TITLE,
+            get_avatar_annotation_ignore_hint,
         )
         from utils.language_utils import get_global_language
         lang = get_global_language()
 
+        ignore_hint = get_avatar_annotation_ignore_hint(lang)
         if window_title:
-            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang)
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_WITH_TITLE, lang).format(window_title=window_title)
         else:
-            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang)
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_NO_TITLE, lang)
 
         set_call_type("vision")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model=vision_model,
             base_url=vision_base_url or None,
             api_key=vision_api_key,
             max_retries=0,
             max_completion_tokens=max_completion_tokens,
+            timeout=30,  # hang-guard for vision/screenshot analysis
         )
         messages = [
             {
@@ -237,8 +257,8 @@ async def analyze_image_with_vision_model(
 
 async def analyze_screenshot_from_data_url(data_url: str, window_title: str = '') -> Optional[str]:
     """
-    分析前端发送的截图DataURL
-    只支持JPEG格式，其他格式会自动转换为JPEG
+    Analyze a screenshot DataURL sent by the frontend
+    Only JPEG is supported; other formats are converted to JPEG automatically
     """
     try:
         if not data_url.startswith('data:image/'):
@@ -307,7 +327,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
 # Avatar annotation overlay — 在截图上叠加 Avatar 文字注解
 # ============================================================================
 
-from config.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
+from config.prompts.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
 
 # Lazy-loaded CJK font cache
 _avatar_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
@@ -380,16 +400,16 @@ def overlay_avatar_annotation(
     language: str = 'zh',
 ) -> str:
     """
-    在截图的 Avatar 区域叠加文字注解，返回新的 base64 字符串（不含 data: 前缀）。
+    Overlay a text annotation on the screenshot's Avatar area; returns a new base64 string (without the data: prefix).
 
     Parameters:
-        image_b64:       纯 base64 编码的 JPEG 图片（不含 data:image/... 前缀）
-        avatar_position: 前端传来的归一化坐标 {centerX, centerY, width, height}，值域 0-1
-        lanlan_name:     角色名称，用于填充文字模板
-        language:        语言代码 ('zh', 'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru')
+        image_b64:       plain base64-encoded JPEG (without the data:image/... prefix)
+        avatar_position: normalized coordinates from the frontend {centerX, centerY, width, height}, range 0-1
+        lanlan_name:     character name, used to fill the text template
+        language:        language code ('zh', 'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru')
 
     Returns:
-        叠加后的 base64 字符串（不含前缀），如果无法叠加则返回原始 image_b64
+        The overlaid base64 string (without prefix); returns the original image_b64 when overlay is impossible
     """
     if not avatar_position or not lanlan_name:
         return image_b64

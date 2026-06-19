@@ -17,6 +17,34 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
+    // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
+    // 「1」，branch 决议后清掉。用 marker 在不在判断「是否仍在等待首次决议」，避免拿
+    // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
+    // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
+    const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
+    const _SHARED_SETTINGS_KEYS = [
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled',
+        'mergeMessagesEnabled',
+        'focusModeEnabled',
+        'avatarReactionBubbleEnabled',
+        'proactiveChatInterval',
+        'proactiveVisionInterval',
+        'textGuardMaxLength',
+        'renderQuality',
+        'targetFrameRate'
+    ];
+
+    function getDefaultRenderQuality() {
+        return S.renderQuality || 'medium';
+    }
 
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
@@ -31,6 +59,8 @@
             proactiveVideoChatEnabled: S.proactiveVideoChatEnabled,
             proactivePersonalChatEnabled: S.proactivePersonalChatEnabled,
             proactiveMusicEnabled: S.proactiveMusicEnabled,
+            proactiveMemeEnabled: S.proactiveMemeEnabled,
+            proactiveMiniGameInviteEnabled: S.proactiveMiniGameInviteEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
@@ -46,6 +76,77 @@
         return settings;
     }
 
+    function applySharedRuntimeSettings(settings) {
+        if (!settings || typeof settings !== 'object') return false;
+        let changed = false;
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+            if (S[key] !== settings[key]) {
+                S[key] = settings[key];
+                changed = true;
+            }
+        });
+        if (
+            Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
+            S.userLanguage !== settings.userLanguage
+        ) {
+            S.userLanguage = settings.userLanguage;
+            changed = true;
+        }
+        if (changed && S.renderQuality) {
+            window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
+        }
+        return changed;
+    }
+
+    function isManualScreenShareActive() {
+        try {
+            const button = document.getElementById('screenButton');
+            return !!(button && button.classList.contains('active'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function stopVisionAfterPrivacyEnabled() {
+        if (S.proactiveVisionEnabled !== false) return;
+
+        try {
+            if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                window.stopProactiveVisionDuringSpeech();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 停止语音主动视觉失败:', error);
+        }
+
+        if (isManualScreenShareActive()) return;
+
+        try {
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 停止屏幕发送循环失败:', error);
+        }
+
+        try {
+            if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
+                S.screenCaptureStream.getTracks().forEach((track) => {
+                    try { track.stop(); } catch (_) { }
+                });
+            }
+        } catch (error) {
+            console.warn('[app-settings] 释放隐私模式屏幕流失败:', error);
+        } finally {
+            S.screenCaptureStream = null;
+            S.screenCaptureStreamLastUsed = null;
+            if (S.screenCaptureStreamIdleTimer) {
+                clearTimeout(S.screenCaptureStreamIdleTimer);
+                S.screenCaptureStreamIdleTimer = null;
+            }
+        }
+    }
+
     /**
      * 从服务器加载对话设置（异步）
      * 成功时返回设置对象，失败时返回 null
@@ -58,9 +159,14 @@
             });
             if (!response.ok) return null;
             const data = await response.json();
-            if (data.success && data.settings && Object.keys(data.settings).length > 0) {
-                return data.settings;
-            }
+            if (!data.success) return null;
+            const hasSettings = data.settings && Object.keys(data.settings).length > 0;
+            const telemetryBranch = (typeof data.telemetryBranch === 'string' && data.telemetryBranch) || null;
+            if (!hasSettings && !telemetryBranch) return null;
+            return {
+                settings: hasSettings ? data.settings : null,
+                telemetryBranch
+            };
         } catch (e) {
             console.warn('[app-settings] 从服务器加载设置失败:', e);
         }
@@ -72,6 +178,15 @@
      * 用于定期备份和跨会话持久化
      */
     async function syncSettingsToServer() {
+        try {
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                console.log('[app-settings] home tutorial suppression active, skip conversation settings sync');
+                return;
+            }
+        } catch (_) {
+            // keep settings sync best-effort if the tutorial controller is unavailable
+        }
         const settings = getConversationSettings();
         try {
             const response = await fetch('/api/config/conversation-settings', {
@@ -94,10 +209,20 @@
 
     /**
      * 启动定期同步到服务器
+     *
+     * 首启 settings/telemetry 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic
+     * POST：否则会把首启本地默认值抢先推到服务器，下次 GET 读到自家 echo 误判「云端已有
+     * 偏好」、干扰设置合并与首启决议时序。用户主动改设置走的 saveSettings 不受影响（那条
+     * 路径就是要持久化用户显式选择）。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
         _syncTimerId = setInterval(() => {
+            try {
+                if (localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1') {
+                    return;
+                }
+            } catch (_) { /* localStorage 不可用就当 pending 没 set，照常 sync */ }
             syncSettingsToServer();
         }, SYNC_INTERVAL_MS);
         console.log('[app-settings] 已启动定期同步到服务器，间隔', SYNC_INTERVAL_MS / 1000, '秒');
@@ -133,8 +258,13 @@
     /**
      * 将当前设置保存到 localStorage
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
+     *
+     * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
+     *   首启用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前就把首启本地
+     *   默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」，干扰首启决议时序
      */
-    function saveSettings() {
+    function saveSettings(options) {
+        const skipServerSync = !!(options && options.skipServerSync);
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -172,6 +302,9 @@
         const currentMemeChat = typeof window.proactiveMemeEnabled !== 'undefined'
             ? window.proactiveMemeEnabled
             : S.proactiveMemeEnabled;
+        const currentMiniGameInviteChat = typeof window.proactiveMiniGameInviteEnabled !== 'undefined'
+            ? window.proactiveMiniGameInviteEnabled
+            : S.proactiveMiniGameInviteEnabled;
         const currentAvatarReactionBubble = typeof window.avatarReactionBubbleEnabled !== 'undefined'
             ? window.avatarReactionBubbleEnabled
             : S.avatarReactionBubbleEnabled;
@@ -218,6 +351,7 @@
             proactivePersonalChatEnabled: currentPersonalChat,
             proactiveMusicEnabled: currentMusicChat,
             proactiveMemeEnabled: currentMemeChat,
+            proactiveMiniGameInviteEnabled: currentMiniGameInviteChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
@@ -244,6 +378,7 @@
         S.proactivePersonalChatEnabled = currentPersonalChat;
         S.proactiveMusicEnabled = currentMusicChat;
         S.proactiveMemeEnabled = currentMemeChat;
+        S.proactiveMiniGameInviteEnabled = currentMiniGameInviteChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
@@ -252,6 +387,7 @@
         S.textGuardMaxLength = currentTextGuardMaxLength;
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
+        stopVisionAfterPrivacyEnabled();
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
@@ -264,8 +400,10 @@
             });
         }
 
-        // 同步到服务器（异步，不阻塞）
-        syncSettingsToServer();
+        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST
+        if (!skipServerSync) {
+            syncSettingsToServer();
+        }
     }
 
     // ======================== loadSettings ========================
@@ -291,7 +429,8 @@
                     settings.proactiveVideoChatEnabled !== undefined ||
                     settings.proactivePersonalChatEnabled !== undefined ||
                     settings.proactiveMusicEnabled !== undefined ||
-                    settings.proactiveMemeEnabled !== undefined;
+                    settings.proactiveMemeEnabled !== undefined ||
+                    settings.proactiveMiniGameInviteEnabled !== undefined;
                     if (!hasNewFlags) {
                         // 根据旧的视觉偏好决定迁移策略
                         if (settings.proactiveVisionEnabled === false) {
@@ -330,6 +469,7 @@
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
+                S.proactiveMiniGameInviteEnabled = settings.proactiveMiniGameInviteEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
@@ -339,7 +479,7 @@
                 S.textGuardMaxLength = settings.textGuardMaxLength ?? 300;
                 window.textGuardMaxLength = S.textGuardMaxLength;
                 // 画质设置
-                S.renderQuality = settings.renderQuality ?? 'medium';
+                S.renderQuality = settings.renderQuality ?? getDefaultRenderQuality();
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 // 帧率设置（0 = 不限帧 / VSync）
                 S.targetFrameRate = settings.targetFrameRate ?? 60;
@@ -399,15 +539,18 @@
                     focusModeDesc: S.focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 首次启动：检查用户地区，中国用户自动开启自主视觉
+                // 首次启动：隐私模式按用户地区分流（仅中国地区默认关闭隐私 / vision 开）。
+                // 历史上这里挂过隐私默认值实验（privacy_default_off_v2，已退役）和屏幕分享
+                // 来源默认值实验（vision_chat_default_off，已合并进 main、默认回到「开」），
+                // 现都不再做首启覆写，仅保留地区分流。
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
-                    console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
                 }
 
-                // 首次启动默认开启音乐/meme搭话
+                // 首次启动默认开启音乐/meme搭话 + mini-game 邀请
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
+                S.proactiveMiniGameInviteEnabled = true;
                 // 首次启动默认 token 上限 300（tiktoken o200k_base）
                 S.textGuardMaxLength = 300;
                 window.textGuardMaxLength = 300;
@@ -419,8 +562,14 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
 
-                // 持久化首次启动设置，避免每次重新检测
-                saveSettings();
+                // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
+                // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
+                try { localStorage.setItem(_FIRST_LAUNCH_PENDING_KEY, '1'); } catch (_) {}
+                // 持久化首次启动设置到 localStorage，避免每次重新检测。注意：故意跳过
+                // 服务器 POST——loadSettingsFromServer GET 还没拿到 telemetryBranch，
+                // 这时把首启本地默认值上行会被自家 GET 当作「云端已有偏好」回读、干扰设置
+                // 合并与首启决议时序。等 branch 解析后再做一次完整 saveSettings 推送
+                saveSettings({ skipServerSync: true });
             }
 
         } catch (error) {
@@ -446,11 +595,34 @@
         S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
+        const _firstLaunchPending = (() => {
+            try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
+        })();
         try {
-            loadSettingsFromServer().then(serverSettings => {
+            loadSettingsFromServer().then(serverResult => {
+                if (!serverResult) return;
+                const serverSettings = serverResult.settings;
+                const telemetryBranch = serverResult.telemetryBranch;
+                let hasUpdate = false;
+
+                // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
+                // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
+                // 对实验组 vision_chat_default_off 把屏幕分享来源（proactiveVisionChatEnabled）
+                // 首启默认翻成「关」，现该实验已合并进 main、默认回到控制组「开」（见
+                // app-state.js / loadSettings 的 ?? true），故不再做首启覆写；仅保留 marker
+                // 决议时序——情境弹窗 app-context-prompt.js 靠下方 neko:telemetry-branch-resolved
+                // 广播判断 settings 已就绪。
+                const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
+                if (branchResolutionFinalized) {
+                    try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
+                    // 首启决议完后强制 POST 一次：没有 server merge 时 hasUpdate 仍是 false，
+                    // 若用户在 60s periodic 之前关掉 app，首启的本地默认值就永远到不了服务器。
+                    // 这里 hasUpdate=true 让下方 saveSettings 走完整路径推一次
+                    hasUpdate = true;
+                }
+
                 if (serverSettings) {
                     // 用服务器设置覆盖本地设置
-                    let hasUpdate = false;
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
@@ -464,42 +636,76 @@
                     if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
-                    if (hasUpdate) {
-                        console.log('[app-settings] 已从服务器合并对话设置');
-                        // 同步 window 镜像变量，防止 saveSettings() 回滚
-                        window.proactiveChatEnabled = S.proactiveChatEnabled;
-                        window.proactiveVisionEnabled = S.proactiveVisionEnabled;
-                        window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
-                        window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
-                        window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
-                        window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
-                        window.proactiveMusicEnabled = S.proactiveMusicEnabled;
-                        window.mergeMessagesEnabled = S.mergeMessagesEnabled;
-                        window.focusModeEnabled = S.focusModeEnabled;
-                        window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
-                        window.proactiveChatInterval = S.proactiveChatInterval;
-                        window.proactiveVisionInterval = S.proactiveVisionInterval;
-                        window.textGuardMaxLength = S.textGuardMaxLength;
-                        // 同步回 localStorage
-                        saveSettings();
-                        // 重新初始化主动搭话调度器（使用最新标志）
-                        if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
-                            window.appProactive.scheduleProactiveChat();
-                        } else if (typeof window.scheduleProactiveChat === 'function') {
-                            window.scheduleProactiveChat();
-                        }
+                }
+
+                if (hasUpdate) {
+                    console.log('[app-settings] 已从服务器合并对话设置');
+                    // 同步 window 镜像变量，防止 saveSettings() 回滚
+                    window.proactiveChatEnabled = S.proactiveChatEnabled;
+                    window.proactiveVisionEnabled = S.proactiveVisionEnabled;
+                    window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
+                    window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
+                    window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
+                    window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
+                    window.proactiveMusicEnabled = S.proactiveMusicEnabled;
+                    window.proactiveMemeEnabled = S.proactiveMemeEnabled;
+                    window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
+                    window.mergeMessagesEnabled = S.mergeMessagesEnabled;
+                    window.focusModeEnabled = S.focusModeEnabled;
+                    window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
+                    window.proactiveChatInterval = S.proactiveChatInterval;
+                    window.proactiveVisionInterval = S.proactiveVisionInterval;
+                    window.textGuardMaxLength = S.textGuardMaxLength;
+                    // 同步回 localStorage
+                    saveSettings();
+                    // 重新初始化主动搭话调度器（使用最新标志）
+                    if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
+                        window.appProactive.scheduleProactiveChat();
+                    } else if (typeof window.scheduleProactiveChat === 'function') {
+                        window.scheduleProactiveChat();
                     }
                 }
-            });
 
-            // 启动定期同步到服务器
-            startPeriodicSync();
+                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播 settings-ready
+                // 信号——必须放在所有设置合并（server merge + saveSettings）之后。否则被缓存的
+                // context 在重放时，_isActionable 会读到合并前的旧 proactiveVisionChatEnabled，
+                // 误判该不该弹（Codex P2）。GET 失败 telemetryBranch 为 null 时不挂、不广播，弹窗
+                // 模块拿不到「就绪」信号默认不弹（fail-closed，宁可漏弹也不拿未合并设置误弹）。
+                if (telemetryBranch) {
+                    window.nekoTelemetryBranch = telemetryBranch;
+                    window.dispatchEvent(new CustomEvent('neko:telemetry-branch-resolved', {
+                        detail: { branch: telemetryBranch },
+                    }));
+                }
+            }).finally(() => {
+                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能比 GET 先到，
+                // 把首启本地默认值写到服务器；GET 回来读到自家 echo 误判「云端已有偏好」、干扰
+                // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
+                startPeriodicSync();
+            });
         } catch (error) {
             console.error('服务器设置同步启动失败:', error);
+            // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
+            // 避免用户的本地修改永远上不了服务器
+            startPeriodicSync();
         }
     }
 
     // ======================== 初始化调用 ========================
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== 'project_neko_settings' || !event.newValue) return;
+        try {
+            const settings = JSON.parse(event.newValue);
+            const changed = applySharedRuntimeSettings(settings);
+            stopVisionAfterPrivacyEnabled();
+            if (changed && typeof window.scheduleProactiveChat === 'function') {
+                window.scheduleProactiveChat();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 跨窗口设置同步失败:', error);
+        }
+    });
 
     // 加载设置
     loadSettings();
@@ -545,7 +751,7 @@
         }
 
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
-        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled)) {
+        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled)) {
             // 主动搭话启动自检
             console.log('========== 主动搭话启动自检 ==========');
             console.log('[自检] proactiveChatEnabled: ' + S.proactiveChatEnabled);
@@ -555,6 +761,7 @@
             console.log('[自检] proactivePersonalChatEnabled: ' + S.proactivePersonalChatEnabled);
             console.log('[自检] proactiveMusicEnabled: ' + S.proactiveMusicEnabled);
             console.log('[自检] proactiveMemeEnabled: ' + S.proactiveMemeEnabled);
+            console.log('[自检] proactiveMiniGameInviteEnabled: ' + S.proactiveMiniGameInviteEnabled);
             console.log('[自检] localStorage设置: ' + (localStorage.getItem('project_neko_settings') ? '已存在' : '不存在'));
 
             // 检查WebSocket连接状态
@@ -570,7 +777,7 @@
         } else {
             console.log('[App] 主动搭话未满足启动条件，跳过调度器启动:');
             console.log('  - proactiveChatEnabled: ' + S.proactiveChatEnabled);
-            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled));
+            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled));
         }
 
         // 所有步骤完成后，最后才设置初始化成功的标志

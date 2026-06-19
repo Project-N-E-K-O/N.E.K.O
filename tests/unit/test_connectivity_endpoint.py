@@ -23,8 +23,11 @@ import pytest
 from main_routers.config_router import (
     ConnectivityTestRequest,
     ConnectivityTestResponse,
+    _auto_resolve_provider_urls_for_save,
+    _get_save_provider_api_key,
     _test_openai_compatible,
     _test_websocket,
+    _test_vllm_omni_ws_handshake,
     _classify_openai_error,
     test_connectivity as _endpoint_test_connectivity,
 )
@@ -155,6 +158,435 @@ class TestSchemaValidation:
             result = await _endpoint_test_connectivity(req)
             mock_ws.assert_awaited_once()
             assert result["success"] is True
+
+    async def test_builtin_assist_accepts_any_successful_candidate_url(self):
+        """内置辅助 provider 有多个候选 URL 时，任一通过即返回可用 URL。"""
+        calls = []
+
+        async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
+            calls.append(url)
+            if "dashscope-us.aliyuncs.com" in url:
+                return {"success": True}
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+        fake_config = {
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            side_effect=fake_test,
+        ):
+            req = ConnectivityTestRequest(
+                provider_key="qwen_intl",
+                provider_scope="assist",
+                api_key="sk-region-key",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert result["resolved_url"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        assert "https://dashscope-us.aliyuncs.com/compatible-mode/v1" in calls
+
+    async def test_builtin_mimo_assist_accepts_token_plan_url_override(self):
+        """MiMo Token Plan may override the built-in MiMo assist endpoint."""
+        calls = []
+
+        async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
+            calls.append((url, api_key, model))
+            return {"success": True}
+
+        fake_config = {
+            "assist_api_providers": {
+                "mimo": {
+                    "name": "MiMo",
+                    "openrouter_url": "https://api.xiaomimimo.com/v1",
+                    "conversation_model": "mimo-v2.5",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            side_effect=fake_test,
+        ):
+            req = ConnectivityTestRequest(
+                provider_key="mimo",
+                provider_scope="assist",
+                url="https://token-plan-sgp.xiaomimimo.com/v1",
+                api_key="tp-token-plan",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert result["resolved_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+        assert calls == [("https://token-plan-sgp.xiaomimimo.com/v1", "tp-token-plan", "mimo-v2.5")]
+
+    async def test_builtin_non_mimo_assist_rejects_token_plan_url_override(self):
+        """MiMo Token Plan override must not affect other built-in assist APIs."""
+        fake_config = {
+            "assist_api_providers": {
+                "qwen": {
+                    "name": "Qwen",
+                    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "conversation_model": "qwen-plus",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_http:
+            req = ConnectivityTestRequest(
+                provider_key="qwen",
+                provider_scope="assist",
+                url="https://token-plan-sgp.xiaomimimo.com/v1",
+                api_key="sk-qwen",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        mock_http.assert_not_awaited()
+        assert result["success"] is False
+        assert result["error_code"] == "missing_params"
+
+    async def test_builtin_core_accepts_any_successful_candidate_url(self):
+        """内置核心 provider 若配置多个候选 URL，任一通过即返回可用 URL。"""
+        calls = []
+
+        async def fake_test(url, api_key, model=""):
+            calls.append((url, api_key, model))
+            if "realtime-b.example.com" in url:
+                return {"success": True}
+            return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+
+        fake_config = {
+            "core_api_providers": {
+                "dual_ws": {
+                    "name": "双核心候选测试",
+                    "core_url": "wss://realtime-a.example.com/v1",
+                    "core_urls": [
+                        "wss://realtime-a.example.com/v1",
+                        "wss://realtime-b.example.com/v1",
+                    ],
+                    "core_model": "test-realtime-model",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_websocket",
+            side_effect=fake_test,
+        ):
+            req = ConnectivityTestRequest(
+                provider_key="dual_ws",
+                provider_scope="core",
+                api_key="sk-region-key",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert result["resolved_url"] == "wss://realtime-b.example.com/v1"
+        assert calls[-1][1] == "sk-region-key"
+
+    async def test_save_auto_resolve_core_prefers_provider_keybook_key(self):
+        """核心 provider 有专属 Key 时，保存前检测优先使用专属 Key 而非旧 coreApiKey。"""
+        calls = []
+
+        async def fake_test(url, api_key, model=""):
+            calls.append((url, api_key, model))
+            return {"success": True}
+
+        fake_config = {
+            "core_api_providers": {
+                "qwen_intl": {
+                    "name": "Qwen-Omni（阿里国际版）",
+                    "core_url": "wss://realtime-a.example.com/v1",
+                    "core_urls": [
+                        "wss://realtime-a.example.com/v1",
+                        "wss://realtime-b.example.com/v1",
+                    ],
+                    "core_model": "qwen3.5-omni-flash-realtime-2026-03-15",
+                }
+            },
+            "assist_api_providers": {},
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "coreApi": "qwen_intl",
+            "assistApi": "qwen",
+            "coreApiKey": "sk-old-core",
+            "assistApiKeyQwenIntl": "sk-intl-key",
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_websocket",
+            side_effect=fake_test,
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["success"] == 1
+        assert calls[0][1] == "sk-intl-key"
+        assert _get_save_provider_api_key(core_cfg, fake_config, "qwen_intl") == "sk-intl-key"
+
+    async def test_save_auto_resolves_builtin_candidate_url(self):
+        """保存配置时会自动检测候选 URL，并写入通过的 URL。"""
+        calls = []
+
+        async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
+            calls.append((url, api_key, model))
+            if "dashscope-us.aliyuncs.com" in url:
+                return {"success": True}
+            return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "coreApi": "qwen",
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            side_effect=fake_test,
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["total"] == 1
+        assert result["success"] == 1
+        assert result["resolved_urls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        assert core_cfg["resolvedProviderUrls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        assert calls[-1][1] == "sk-intl"
+
+    async def test_save_auto_resolve_reuses_frontend_checked_url(self):
+        """前端本轮已检测通过的 URL 会被复用，避免保存时重复检测。"""
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_test:
+            result = await _auto_resolve_provider_urls_for_save(
+                core_cfg,
+                {"assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"},
+            )
+
+        mock_test.assert_not_awaited()
+        assert result["success"] == 1
+        assert core_cfg["resolvedProviderUrls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+
+    async def test_save_auto_resolve_drops_stale_url_when_detection_fails(self):
+        """保存前检测失败时不能继续保留旧的地域 URL。"""
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+            },
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+            return_value={"success": False, "error": "auth_failed", "error_code": "auth_failed"},
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["total"] == 1
+        assert result["failed"] == 1
+        assert core_cfg["resolvedProviderUrls"] == {}
+
+    async def test_save_auto_resolve_keeps_unrelated_when_target_fails(self):
+        """target 测失败时丢掉它自己的旧 resolved，但不该误伤同一份 dict 里
+        其它 provider 的记忆。覆盖 CodeRabbit #3258131687 (失败丢旧值) 和
+        Codex #3258589662 (保留无关 provider) 的组合语义。
+        """
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {"config_field": "assistApiKeyQwenIntl"},
+            },
+        }
+        core_cfg = {
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                "assist:custom_unrelated": "https://example.com/v1",
+            },
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+            return_value={"success": False, "error": "auth_failed", "error_code": "auth_failed"},
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["failed"] == 1
+        assert core_cfg["resolvedProviderUrls"] == {
+            "assist:custom_unrelated": "https://example.com/v1",
+        }
+
+    async def test_save_auto_resolve_skips_assist_provider_with_empty_key(self):
+        """assist provider 的 key 缺失时不应该回退到 coreApiKey 去 probe：
+        core/assist 是不同 provider 时 coreApiKey 是 OpenAI 的，拿去打 qwen_intl
+        必然 401 → 误判失败 → 顺手 pop 掉之前测通的 region pin
+        (Codex P2 #3258802582)。target 应该被 _build_save_connectivity_targets
+        过滤掉，resolved 旧值保留。
+        """
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {"config_field": "assistApiKeyQwenIntl"},
+            },
+        }
+        core_cfg = {
+            "coreApi": "openai",
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-openai-not-qwen",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+            },
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_test:
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        mock_test.assert_not_awaited()
+        assert result["total"] == 0
+        assert core_cfg["resolvedProviderUrls"] == {
+            "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        }
+
+    async def test_save_auto_resolve_keeps_unrelated_resolved_when_no_targets(self):
+        """没有候选目标时保留历史 resolved URL：本次 save 没动 qwen_intl，
+        别把 CosyVoice intl runtime 还要用的 US 端点记忆顺手清掉
+        (Codex P1 #3258589662)。
+        """
+        core_cfg = {
+            "coreApi": "openai",
+            "assistApi": "openai",
+            "coreApiKey": "sk-core",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+            },
+        }
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {},
+            "api_key_registry": {},
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["total"] == 0
+        assert core_cfg["resolvedProviderUrls"] == {
+            "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        }
 
 
 # ===========================================================================
@@ -742,3 +1174,238 @@ class TestEndpointExceptionHandling:
             mock_http.assert_awaited_once_with(
                 "https://api.example.com/v1", "sk-free", model="gpt-3.5-turbo", is_free=True
             )
+
+
+# ===========================================================================
+# 12. vLLM-Omni TTS handshake-only probe (#1764 review 第六轮)
+#     验证 sub_type='vllm_omni_tts' 路径不发 OpenAI Realtime session.update
+# ===========================================================================
+
+class TestVllmOmniWsHandshake:
+    """vLLM-Omni's /v1/audio/speech/stream uses the Qwen custom protocol
+    (session.config / input.text / input.done) and does not understand the
+    OpenAI Realtime session.update message. _test_vllm_omni_ws_handshake only
+    performs the WebSocket handshake and immediately closes — it never sends
+    any application-layer frame."""
+
+    async def test_handshake_succeeds_without_sending_session_update(self):
+        """Handshake succeeds and ws.send is never called (core assertion: no session.update)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.send = AsyncMock()
+        mock_conn.recv = AsyncMock()
+
+        with patch("websockets.connect", return_value=mock_conn):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is True
+        # 关键断言：握手探测路径绝不发任何应用层帧（session.update / 任何 send）
+        mock_conn.send.assert_not_called()
+        mock_conn.recv.assert_not_called()
+
+    async def test_handshake_with_api_key_sets_authorization_header(self):
+        """When api_key is provided, the Authorization header is set (matches _test_websocket behaviour)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", "sk-test"
+            )
+            headers = mock_connect.call_args[1].get("additional_headers", {})
+            assert headers.get("Authorization") == "Bearer sk-test"
+
+    async def test_handshake_empty_api_key_no_authorization_header(self):
+        """When api_key is empty, no Authorization header is sent (vLLM self-hosted deployments commonly run without auth)."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", ""
+            )
+            headers = mock_connect.call_args[1].get("additional_headers", {})
+            assert "Authorization" not in headers
+
+    async def test_handshake_url_passed_through_unchanged(self):
+        """URL is passed through unchanged; unlike _test_websocket it does NOT append a ?model= query parameter."""
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("websockets.connect", return_value=mock_conn) as mock_connect:
+            await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", "sk-test"
+            )
+            ws_url = mock_connect.call_args[0][0]
+            assert ws_url == "ws://10.0.1.92:8091/v1/audio/speech/stream"
+            assert "?model=" not in ws_url
+
+    async def test_handshake_auth_failed_401(self):
+        """A 401 during handshake → auth_failed (matches _test_websocket's error_code)."""
+        exc = Exception("HTTP 401")
+        exc.status_code = 401
+        with patch("websockets.connect", side_effect=exc):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://example.com/v1/audio/speech/stream", "wrong-key"
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed"
+
+    async def test_handshake_dns_error(self):
+        """OSError 'getaddrinfo' → dns_error。"""
+        with patch(
+            "websockets.connect",
+            side_effect=OSError("[Errno 11001] getaddrinfo failed"),
+        ):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://nonexistent.example.com/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "dns_error"
+
+    async def test_handshake_connection_refused(self):
+        """OSError 'connection refused' → connection_refused。"""
+        with patch(
+            "websockets.connect",
+            side_effect=OSError("[Errno 111] Connection refused"),
+        ):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://localhost:9999/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "connection_refused"
+
+    async def test_handshake_timeout(self):
+        """asyncio.TimeoutError → timeout。"""
+        with patch("websockets.connect", side_effect=asyncio.TimeoutError()):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://10.0.1.92:8091/v1/audio/speech/stream", ""
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "timeout"
+
+    async def test_endpoint_dispatches_sub_type_to_handshake(self):
+        """End-to-end: sub_type='vllm_omni_tts' must dispatch to
+        _test_vllm_omni_ws_handshake instead of _test_websocket. This is the
+        core contract behind the connectivity-mis-detection fix."""
+        with patch(
+            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            req = ConnectivityTestRequest(
+                url="ws://10.0.1.92:8091/v1/audio/speech/stream",
+                api_key="",
+                model="Qwen3-TTS",
+                provider_type="websocket",
+                sub_type="vllm_omni_tts",
+            )
+            await _endpoint_test_connectivity(req)
+
+        mock_handshake.assert_awaited_once()
+        mock_realtime_ws.assert_not_called()
+
+    async def test_endpoint_websocket_without_sub_type_uses_realtime_probe(self):
+        """End-to-end inverse contract: when sub_type is omitted, the request
+        still routes to _test_websocket (the OpenAI Realtime path) so genuine
+        Realtime providers like Qwen Realtime / Step are not hit by mistake."""
+        with patch(
+            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            req = ConnectivityTestRequest(
+                url="wss://realtime.example.com",
+                api_key="sk-test",
+                model="step-audio-2",
+                provider_type="websocket",
+            )
+            await _endpoint_test_connectivity(req)
+
+        mock_realtime_ws.assert_awaited_once()
+        mock_handshake.assert_not_called()
+
+    async def test_handshake_auth_failed_via_invalidstatus_response_status_code(self):
+        """Real websockets >=15 raises InvalidStatus with status code at e.response.status_code,
+        NOT at e.status_code. Production code's second-layer fallback (getattr(e, 'response', None)
+        → getattr(_resp, 'status_code', None)) must catch it. The earlier test (test_handshake_auth_failed_401)
+        used a bare Exception with .status_code attribute and only exercises the FIRST fallback layer."""
+        # Build a fake exception that mimics websockets.exceptions.InvalidStatus shape:
+        # bare attribute lookup `e.status_code` returns None; `e.response.status_code` returns 401.
+        class _FakeResponse:
+            status_code = 401
+
+        class _FakeInvalidStatus(Exception):
+            def __init__(self):
+                super().__init__("server rejected WebSocket connection: HTTP 401")
+                self.response = _FakeResponse()
+
+        with patch("websockets.connect", side_effect=_FakeInvalidStatus()):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://example.com/v1/audio/speech/stream", "wrong-key"
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed", (
+            f"Expected auth_failed via InvalidStatus.response.status_code path, got {result}"
+        )
+
+    async def test_handshake_forbidden_via_invalidstatus_403(self):
+        """403 via InvalidStatus.response.status_code → auth_failed (same bucket as 401)."""
+        class _FakeResponse:
+            status_code = 403
+
+        class _FakeInvalidStatus(Exception):
+            def __init__(self):
+                super().__init__("server rejected WebSocket connection: HTTP 403")
+                self.response = _FakeResponse()
+
+        with patch("websockets.connect", side_effect=_FakeInvalidStatus()):
+            result = await _test_vllm_omni_ws_handshake(
+                "ws://example.com/v1/audio/speech/stream", "expired-key"
+            )
+
+        assert result["success"] is False
+        assert result["error_code"] == "auth_failed"
+
+    async def test_endpoint_mode1_ignores_sub_type_injection(self):
+        """Security gating contract: when both provider_key and provider_scope are set (Mode 1
+        built-in provider), sub_type is dropped and Mode 1's resolved provider_type drives the
+        probe. A malicious frontend cannot force handshake-only probe on a non-vllm-omni
+        built-in provider via sub_type injection.
+        (#1764 review round 6 - gating at config_router.py line ~1937-1942)"""
+        with patch(
+            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            # Mode 1 built-in: qwen + scope=core resolves to provider_type="websocket"
+            # from api_providers.json. sub_type='vllm_omni_tts' would be a malicious
+            # injection attempt, but the gating (line 1941-1943) sets sub_type="" for Mode 1.
+            req = ConnectivityTestRequest(
+                provider_key="qwen",
+                provider_scope="core",
+                sub_type="vllm_omni_tts",
+            )
+            await _endpoint_test_connectivity(req)
+
+        # Mode 1 must use _test_websocket regardless of sub_type. Handshake probe must NEVER fire.
+        mock_handshake.assert_not_called()
+        # _test_websocket should be called (Mode 1 resolved provider_type="websocket" from api_providers.json).
+        mock_realtime_ws.assert_awaited_once()

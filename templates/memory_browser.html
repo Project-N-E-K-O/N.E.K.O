@@ -7,20 +7,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="memory.title">记忆浏览 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
-    <link rel="stylesheet" href="/static/css/memory_browser.css">
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css">
-    <script src="/static/theme-manager.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/memory_browser.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
     <div class="container">
-        <div class="container-header">
+        <div class="container-header page-title-bar">
             <h2 data-i18n="memory.title" data-text="Memory Browser">记忆浏览</h2>
-            <button class="close-page-btn" onclick="closeMemoryBrowser()" data-i18n-title="common.close">
-                <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
-            </button>
+            <div class="neko-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                    <span class="neko-window-minimize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                    <span class="neko-window-maximize-icon"></span>
+                </button>
+                <button class="close-page-btn" onclick="closeMemoryBrowser()" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭">
+                    <img src="/static/icons/close_button.png" alt="" data-i18n-alt="common.close" draggable="false">
+                </button>
+            </div>
         </div>
         <div class="container-content">
             <div class="tips-container">
@@ -45,11 +56,24 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="review-toggle">
+                            <div class="review-toggle-title" data-i18n="memory.strongMemory">强力记忆</div>
+                            <div class="auto-review-toggle-wrapper">
+                                <input type="checkbox" id="strong-memory-toggle-checkbox">
+                                <label for="strong-memory-toggle-checkbox" class="auto-review-toggle-btn">
+                                    <span class="auto-review-toggle-icon"></span>
+                                    <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                </label>
+                                <div class="auto-review-toggle-note" data-i18n="memory.strongMemoryNote">
+                                    开启时启用深度记忆固化（口头反馈、自动反驳检测、多通道证据累加），关闭后约可节省 40% 模型调用
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="file-list tutorial-section">
                         <div class="file-list-title" data-i18n="memory.tutorialReset">新手引导</div>
-                        <div class="tutorial-reset-wrapper">
-                            <select id="tutorial-reset-select">
+                        <div class="tutorial-reset-wrapper tutorial-reset-cascade">
+                            <select id="tutorial-reset-select" hidden aria-hidden="true" tabindex="-1">
                                 <option value="" data-i18n="memory.tutorialSelectPage">-- 选择页面 --</option>
                                 <option value="all" data-i18n="memory.tutorialAllPages">全部页面</option>
                                 <option value="home" data-i18n="memory.tutorialPageHome">主页</option>
@@ -60,9 +84,55 @@
                                 <option value="settings" data-i18n="memory.tutorialPageSettings">API设置</option>
                                 <option value="voice_clone" data-i18n="memory.tutorialPageVoiceClone">语音克隆</option>
                                 <option value="memory_browser" data-i18n="memory.tutorialPageMemoryBrowser">记忆浏览</option>
+                                <option value="current_personality" data-i18n="memory.tutorialPageCurrentPersonality">当前角色性格</option>
                             </select>
-                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetTutorialForPage(document.getElementById('tutorial-reset-select').value)" disabled>
+                            <div class="tutorial-cascader" id="tutorial-reset-cascader">
+                                <button type="button" class="tutorial-cascader-trigger" aria-haspopup="listbox" aria-expanded="false">
+                                    <span class="tutorial-reset-value">-- 选择页面 --</span>
+                                    <span class="tutorial-cascader-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div class="tutorial-cascader-popup" hidden>
+                                    <div class="tutorial-cascader-column tutorial-cascader-page-column" role="listbox" aria-label="选择页面" data-i18n-aria="memory.tutorialSelectPage">
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="all" data-i18n="memory.tutorialAllPages">全部页面</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="home" data-i18n="memory.tutorialPageHome">主页</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="model_manager" data-i18n="memory.tutorialPageModelManager">模型设置</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="parameter_editor" data-i18n="memory.tutorialPageParameterEditor">捏脸系统</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="emotion_manager" data-i18n="memory.tutorialPageEmotionManager">情感管理</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="chara_manager" data-i18n="memory.tutorialPageCharaManager">角色管理</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="settings" data-i18n="memory.tutorialPageSettings">API设置</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="voice_clone" data-i18n="memory.tutorialPageVoiceClone">语音克隆</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="memory_browser" data-i18n="memory.tutorialPageMemoryBrowser">记忆浏览</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-page="current_personality" data-i18n="memory.tutorialPageCurrentPersonality">当前角色性格</button>
+                                    </div>
+                                    <div class="tutorial-cascader-column tutorial-cascader-day-column" role="listbox" aria-label="主页七日新手教程" data-i18n-aria="memory.tutorialHomeDayColumn" hidden>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="1">第 1 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="2">第 2 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="3">第 3 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="4">第 4 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="5">第 5 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="6">第 6 天</button>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-day="7">第 7 天</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetSelectedTutorial()" disabled>
                                 <span data-i18n="memory.resetTutorialBtn">重置引导</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="file-list storage-location-section">
+                        <div class="file-list-title" data-i18n="memory.storageLocation">存储位置</div>
+                        <div class="storage-location-card-mini">
+                            <div class="storage-location-mini-row">
+                                <span class="storage-location-mini-label" data-i18n="memory.storageCurrentRoot">当前数据位置</span>
+                                <span class="storage-location-mini-value" id="storage-current-root">加载中...</span>
+                            </div>
+                            <div class="storage-location-mini-status" id="storage-location-status"></div>
+                            <button type="button" class="storage-location-manage-btn" id="storage-location-manage-btn" disabled>
+                                <span data-i18n="memory.changeStorageLocation">更改存储位置</span>
+                            </button>
+                            <button type="button" class="storage-location-open-btn" id="storage-location-open-btn" disabled>
+                                <span data-i18n="memory.openCurrentStorageRoot">打开当前目录</span>
                             </button>
                         </div>
                     </div>
@@ -85,18 +155,78 @@
             </div>
         </div>
     </div>
-    <script src="/static/js/memory_browser.js"></script>
+    <div class="storage-location-modal-backdrop" id="storage-location-modal" hidden>
+        <div class="storage-location-modal-card" role="dialog" aria-modal="true" aria-labelledby="storage-location-modal-title">
+            <div class="storage-location-modal-head">
+                <h3 id="storage-location-modal-title" data-i18n="memory.storageManagementTitle">更改存储位置</h3>
+                <button type="button" class="storage-location-modal-close" id="storage-location-modal-close" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭">×</button>
+            </div>
+            <div class="storage-location-modal-body">
+                <div class="storage-location-modal-field">
+                    <span class="storage-location-modal-label" data-i18n="memory.storageCurrentRoot">当前数据位置</span>
+                    <span class="storage-location-modal-value" id="storage-modal-current-root">-</span>
+                </div>
+                <label class="storage-location-modal-field" for="storage-target-root-input">
+                    <span class="storage-location-modal-label" data-i18n="memory.storageTargetRoot">目标位置</span>
+                    <input type="text" id="storage-target-root-input" class="storage-location-target-input" data-i18n-placeholder="memory.storageTargetPlaceholder" placeholder="选择或输入新的数据位置">
+                </label>
+                <div class="storage-location-modal-actions">
+                    <button type="button" class="storage-location-open-btn" id="storage-location-pick-btn">
+                        <span data-i18n="memory.storagePickTarget">选择位置</span>
+                    </button>
+                    <button type="button" class="storage-location-restart-btn" id="storage-location-restart-btn">
+                        <span data-i18n="memory.storageConfirmRestart">确认并重启</span>
+                    </button>
+                </div>
+                <div class="storage-location-preflight-result" id="storage-location-preflight-result"></div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/app-storage-location.js?v={{ static_asset_version }}" data-storage-location-auto-start="false"></script>
+    <script src="/static/js/memory_browser.js?v={{ static_asset_version }}"></script>
 
     <!-- Driver.js 库 -->
-    <script src="/static/libs/driver.min.js"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
 
-    <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
-    <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260422-9"></script>
-    <script src="/static/yui-guide-director.js?v=20260422-7"></script>
+    <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scoped-resources.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/bridge-command-bus.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/target-geometry-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/chat-window-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/command-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/script-normalizer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day1-home-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day2-screen-voice-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day3-interaction-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day4-companion-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day5-personalization-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/standin-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/spotlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/ghost-cursor-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/petal-transition-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/highlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/resistance-controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js?v=12"></script>
+    <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>

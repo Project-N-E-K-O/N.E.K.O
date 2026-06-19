@@ -147,6 +147,7 @@ class PluginContextProtocol(Protocol):
         description: str | None = None,
         label: str | None = None,
         metadata: dict[str, object] | None = None,
+        delivery: str | bool | None = None,
         reply: bool | None = None,
         timeout: float = 5.0,
     ) -> object: ...
@@ -155,7 +156,8 @@ class PluginContextProtocol(Protocol):
         self,
         *,
         data: object = None,
-        reply: bool = True,
+        delivery: str | bool | None = None,
+        reply: bool | None = None,
         message: str = "",
         trace_id: str | None = None,
         meta: dict[str, object] | None = None,
@@ -164,17 +166,27 @@ class PluginContextProtocol(Protocol):
     def push_message(
         self,
         *,
-        source: str,
-        message_type: str,
-        description: str = "",
+        # v2 schema:
+        visibility: list[str] | None = None,
+        ai_behavior: str | None = None,
+        parts: list[dict[str, object]] | None = None,
+        # common:
+        source: str = "",
+        target_lanlan: str | None = None,
+        metadata: dict[str, object] | None = None,
         priority: int = 0,
+        coalesce_key: str | None = None,
+        # legacy (deprecated; translated by host adapter):
+        message_type: str | None = None,
+        description: str | None = None,
         content: str | None = None,
         binary_data: bytes | None = None,
         binary_url: str | None = None,
-        metadata: dict[str, object] | None = None,
+        mime: str | None = None,
         unsafe: bool = False,
         fast_mode: bool = False,
-        target_lanlan: str | None = None,
+        delivery: str | bool | None = None,
+        reply: bool | None = None,
     ) -> object: ...
 
     def update_status(self, status: dict[str, object]) -> None: ...

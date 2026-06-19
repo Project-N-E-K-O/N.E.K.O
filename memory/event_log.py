@@ -1,33 +1,54 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-EventLog — per-character append-only 审计 + 重放日志（P2 基础设施）。
+EventLog — per-character append-only audit + replay log (P2 infrastructure).
 
-为什么存在（对应 docs/design/memory-event-log-rfc.md）：
-  P0 持久化了 rebuttal 游标；P1 加了 outbox 让后台 task 被 kill 后可以
-  补跑。剩下的结构性问题是：视图（facts.json / reflections.json /
-  persona.json）是"状态转移"的唯一记录——没有有序历史，所以"写视图一半
-  崩"是不可见的，跨文件不变量也无法核查。
+Why it exists (see docs/design/memory-event-log-rfc.md):
+  P0 persisted the rebuttal cursor; P1 added the outbox so background tasks
+  killed mid-flight can be re-run. The remaining structural problem: the
+  views (facts.json / reflections.json / persona.json) are the only record
+  of "state transitions" — there is no ordered history, so "crashed halfway
+  through a view write" is invisible and cross-file invariants cannot be
+  checked.
 
-  本模块加 events.ndjson（per character）：每次状态转移**先**写事件、
-  再写视图。启动期 reconciler 对比 log tail 与哨兵
-  (events_applied.json)，把 view 没落盘的事件重放到视图里。
+  This module adds events.ndjson (per character): every state transition
+  writes the event **first**, then the view. At startup the reconciler
+  compares the log tail against the sentinel (events_applied.json) and
+  replays into the views any events the views never persisted.
 
-非目标：
-  - 不是完整的 event sourcing（视图仍是可手写的"真相源"）。
-  - 不是规则引擎或状态机 DSL。
-  - 不是跨角色的（per character 文件；架构假设单写者）。
+Non-goals:
+  - Not full event sourcing (views remain the hand-editable "source of truth").
+  - Not a rule engine or state-machine DSL.
+  - Not cross-character (per-character files; the architecture assumes a
+    single writer).
 
-写入纪律（RFC §3.4）：
-  所有会发事件的写点必须走 record_and_save，它把
-  load → append → mutate → save → sentinel-advance 五步放进一把
-  per-character threading.Lock 里，整体包在一个 asyncio.to_thread
-  worker 中。不跨 await 持锁——延续 outbox / cursors 的模式。
+Write discipline (RFC §3.4):
+  Every write site that emits events must go through record_and_save, which
+  puts the five steps load → append → mutate → save → sentinel-advance
+  inside one per-character threading.Lock, the whole wrapped in one
+  asyncio.to_thread worker. Never hold the lock across an await — continuing
+  the outbox / cursors pattern.
 
-  append 先于 mutate 的原因：load 返回的 view 常是 manager 持有的共享
-  cache；若先 mutate 后 append 而 append 抛错（例如 fsync OSError），
-  cache 会留下"无事件对应的脏改动"，后续任一次正常 save 都会把它刷
-  盘，破坏 event↔view 对应关系。先 append 成功再 mutate 保证 cache
-  只在事件已耐久落盘后才被改动。
+  Why append precedes mutate: the view returned by load is often a shared
+  cache held by the manager; if we mutated first and append then threw
+  (e.g. an fsync OSError), the cache would keep "dirty changes with no
+  corresponding event", and any later normal save would flush them to
+  disk, breaking the event↔view correspondence. Appending successfully
+  before mutating guarantees the cache only changes after the event is
+  durably on disk.
 """
 from __future__ import annotations
 
@@ -165,10 +186,12 @@ class EventLog:
     # ── low-level append (no lock — caller must hold it) ────────
 
     def _write_line_unlocked(self, path: str, line: str) -> None:
-        """Append + flush + fsync. fsync 失败需上抛——record_and_save 的
-        耐久性合同是"事件先落盘再推进 view"，若 fsync 静默失败，后续
-        view.save 仍成功即破坏 event↔view 对应关系、reconciler 也无从补救。
-        由调用方（record_and_save）负责处理异常，保证 view 不会被错误推进。"""
+        """Append + flush + fsync. fsync failures must propagate — record_and_save's
+        durability contract is "the event hits disk before the view advances"; if
+        fsync failed silently while the later view.save succeeded, the event↔view
+        correspondence would break and the reconciler couldn't repair it.
+        The caller (record_and_save) handles the exception, guaranteeing the view
+        is never wrongly advanced."""
         with open(path, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
             f.flush()
@@ -177,10 +200,12 @@ class EventLog:
     def _append_unlocked(self, name: str, event_type: str, payload: dict) -> str:
         """Write one event record under an already-held lock. Returns event_id.
 
-        Fails fast on unknown event_type. 若放行未登记类型，一旦 record_and_save
-        在 event append 后、view save 前崩溃，重启后 Reconciler 没有 handler
-        只能跳过（且若反推到 pause-on-unknown，整条 tail 都 stuck），
-        修复路径昂贵。写入点挡住是最便宜的防线。
+        Fails fast on unknown event_type. If unregistered types were let through and
+        record_and_save crashed after the event append but before the view save, the
+        Reconciler would have no handler on restart and could only skip it (and if
+        it were pushed toward pause-on-unknown instead, the whole tail would be
+        stuck) — an expensive repair path. Blocking at the write site is the
+        cheapest line of defense.
         """
         if event_type not in ALL_EVENT_TYPES:
             raise ValueError(

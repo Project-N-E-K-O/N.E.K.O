@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import asyncio
 import ssl
 import httpx
@@ -55,6 +69,12 @@ except ImportError:
             logger.debug(f"获取区域设置失败: {e}")
         return False
 
+try:
+    from utils.source_locale import source_region_from_locale
+except ImportError:
+    def source_region_from_locale(source_locale: str | None) -> str | None:
+        return None
+
 # 更广泛且现代的 User-Agent 池
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -68,19 +88,19 @@ USER_AGENTS = [
 ]
 
 def get_random_user_agent() -> str:
-    """随机获取一个User-Agent"""
+    """Get a random User-Agent"""
     return random.choice(USER_AGENTS)
 
 
 def _clean_imgflip_title(raw: str) -> str:
     """
-    清洗 Imgflip 搜索结果的标题/alt 文本。
-    原始文本可能是 get_text(separator=' ') 产出的拼接文本, 例如
+    Clean title/alt text from Imgflip search results.
+    The raw text may be concatenation produced by get_text(separator=' '), e.g.
       '(Daffy Duck Meme) user-captioned meme, 114 views WHAT'S WRONG WITH YOU?'
-    或 img.alt 里的
+    or from img.alt:
       'WHAT'S WRONG WITH YOU? | image tagged in daffy duck | made w/ Imgflip meme maker'
 
-    清洗策略：剥离元数据，只保留对用户有意义的部分。
+    Cleaning strategy: strip the metadata, keeping only the parts meaningful to users.
     """
     s = raw.strip()
     # 去掉 "| image tagged in ..." 及其后所有内容
@@ -107,9 +127,9 @@ def _clean_imgflip_title(raw: str) -> str:
 
 class MemeFetcher:
     """
-    Imgflip 表情包爬取类
-    优化了反爬虫策略，支持通过关键词搜索普通表情包（meme）和动图（gif）
-    支持异步上下文管理器以复用 Session
+    Imgflip meme crawler class
+    Optimized anti-crawling strategy; supports keyword search for regular memes and GIFs
+    Supports async context manager for Session reuse
     """
     def __init__(self):
         self.base_url = "https://imgflip.com"
@@ -117,24 +137,24 @@ class MemeFetcher:
         self._session: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self) -> "MemeFetcher":
-        """进入异步上下文，初始化持久 Session"""
+        """Enter the async context, initializing a persistent Session"""
         if self._session is None:
             self._session = httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """退出异步上下文，关闭 Session"""
+        """Exit the async context, closing the Session"""
         await self.close()
 
     async def close(self):
-        """关闭持久 Session"""
+        """Close the persistent Session"""
         session = self._session
         if session:
             await session.aclose()
             self._session = None
 
     def _get_random_headers(self) -> Dict[str, str]:
-        """生成随机且真实的浏览器请求头，包含 Referer 和其他防爬字段"""
+        """Generate random, realistic browser request headers, including Referer and other anti-crawl fields"""
         referers = [
             f"{self.base_url}/",
             f"{self.base_url}/memegenerator",
@@ -161,7 +181,7 @@ class MemeFetcher:
         return headers
 
     async def _fetch_html(self, url: str, params: Optional[Dict[str, str]] = None, max_retries: int = 3) -> str:
-        """异步获取 HTML 内容，带指数退避重试和随机抖动。支持复用 self._session"""
+        """Fetch HTML content asynchronously, with exponential-backoff retries and random jitter. Supports reusing self._session"""
         for attempt in range(max_retries):
             try:
                 # 指数退避 (Exponential Backoff): 1s, 2s, 4s...
@@ -213,7 +233,7 @@ class MemeFetcher:
 
     async def search(self, keyword: str, limit: int = 10, search_type: str = "all") -> List[Dict[str, Any]]:
         """
-        在 Imgflip 搜索表情包和动图，采用防爬虫优化的请求逻辑
+        Search memes and GIFs on Imgflip, using anti-crawler-optimized request logic
         """
         if not keyword:
             return []
@@ -223,9 +243,10 @@ class MemeFetcher:
             html = await self._fetch_html(self.search_url, params=params)
             if not html:
                 return []
-                
-            soup = BeautifulSoup(html, 'html.parser')
-            
+
+            # BS4 解析放线程池，避免阻塞 event loop
+            soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
+
             # Imgflip 的搜索结果
             target_links = soup.find_all('a', href=re.compile(r'^/(i|gif)/[a-zA-Z0-9]+$'))
             
@@ -298,11 +319,11 @@ class MemeFetcher:
             return []
 
     async def search_memes(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """搜索图片表情包"""
+        """Search image memes"""
         return await self.search(keyword, limit, search_type="meme")
 
     async def search_gifs(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """搜索 GIF 表情包"""
+        """Search GIF memes"""
         return await self.search(keyword, limit, search_type="gif")
 
 MEME_HOT_KEYWORDS = [
@@ -346,7 +367,7 @@ MEME_HOT_KEYWORDS_CN = [
 
 
 def _is_valid_meme_url(url: str) -> bool:
-    """检查URL是否为有效的表情包图片URL"""
+    """Check whether a URL is a valid meme image URL"""
     if not url:
         return False
     invalid_patterns = [
@@ -364,8 +385,8 @@ def _is_valid_meme_url(url: str) -> bool:
 # 如斗图吧启用新域名再行恢复，务必同步更新 MEME_ALLOWED_HOSTS 和 referer_map。
 class DoutubFetcher:
     """
-    斗图吧 (doutub.com) 表情包爬取类
-    国内网站，无需代理即可访问
+    Doutuba (doutub.com) meme crawler class
+    Chinese site, accessible without a proxy
     """
     def __init__(self):
         self.base_url = "https://www.doutub.com"
@@ -373,7 +394,7 @@ class DoutubFetcher:
         self._session: Optional[httpx.AsyncClient] = None
 
     def _add_meme_item(self, results: list, found_urls: set, url: str, title_raw: str, id_raw: str, search_url: str):
-        """统一的数据装配和过滤私有辅助方法，践行 DRY 原则"""
+        """Unified private helper for data assembly and filtering, following DRY"""
         if not url or not isinstance(url, str) or not _is_valid_meme_url(url):
             return
         
@@ -419,7 +440,7 @@ class DoutubFetcher:
         }
 
     def _create_client(self, seclevel1: bool = False) -> httpx.AsyncClient:
-        """根据需求创建 AsyncClient，支持 SECLEVEL=1 降级"""
+        """Create an AsyncClient on demand, supporting SECLEVEL=1 downgrade"""
         if seclevel1:
             context = ssl.create_default_context()
             try:
@@ -523,34 +544,40 @@ class DoutubFetcher:
             html = await self._fetch_html(search_url)
             if not html:
                 return []
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            results = []
-            
-            # 优先嗅探 SSR 静态数据块
-            ssr_data = None
+
             import re
             import json
-            
-            nuxt_match = re.search(r'window\.__NUXT__\s*=\s*({.*?});', html, re.DOTALL)
-            next_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
-            init_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
-            
-            if next_match:
-                try:
-                    ssr_data = json.loads(next_match.group(1))
-                except json.JSONDecodeError:
-                    pass
-            elif nuxt_match:
-                try:
-                    ssr_data = json.loads(nuxt_match.group(1))
-                except json.JSONDecodeError:
-                    pass
-            elif init_match:
-                try:
-                    ssr_data = json.loads(init_match.group(1))
-                except json.JSONDecodeError:
-                    pass
+
+            # BS4 + DOTALL 正则 + JSON 解析整体放线程池，full HTML 上的 .*?
+            # 全文扫描在 event loop 里能阻塞百毫秒级。
+            def _parse_html_blob(_html: str) -> tuple:
+                _soup = BeautifulSoup(_html, 'lxml')
+                # 三种框架的 SSR 注入格式按优先级尝试：Next.js → Nuxt.js → 通用 INITIAL_STATE。
+                # 任一格式 JSON 解析失败都静默吞异常（页面脚本可能被压缩/截断/混淆），
+                # _ssr 保持 None，调用方会回退到下方 XHR API 抓取，无需中断流程。
+                _ssr = None
+                _nuxt = re.search(r'window\.__NUXT__\s*=\s*({.*?});', _html, re.DOTALL)
+                _next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', _html, re.DOTALL)
+                _init = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', _html, re.DOTALL)
+                if _next:
+                    try:
+                        _ssr = json.loads(_next.group(1))
+                    except json.JSONDecodeError:
+                        pass  # 见上方 SSR 降级注释
+                elif _nuxt:
+                    try:
+                        _ssr = json.loads(_nuxt.group(1))
+                    except json.JSONDecodeError:
+                        pass  # 见上方 SSR 降级注释
+                elif _init:
+                    try:
+                        _ssr = json.loads(_init.group(1))
+                    except json.JSONDecodeError:
+                        pass  # 见上方 SSR 降级注释
+                return _soup, _ssr
+
+            soup, ssr_data = await asyncio.to_thread(_parse_html_blob, html)
+            results = []
 
             found_urls = set()
             
@@ -637,8 +664,8 @@ class DoutubFetcher:
 
 class DoutupkFetcher:
     """
-    斗图啦 (doutupk.com) 表情包爬取类
-    国内网站，HTML 直出 + 图片懒加载。2026-04-16 接入以替代已停用的斗图吧。
+    Doutula (doutupk.com) meme crawler class
+    Chinese site, server-rendered HTML + lazy-loaded images. Adopted on 2026-04-16 to replace the defunct Doutuba.
     """
     def __init__(self):
         self.base_url = "https://www.doutupk.com"
@@ -763,7 +790,8 @@ class DoutupkFetcher:
             if not html:
                 return []
 
-            soup = BeautifulSoup(html, 'html.parser')
+            # BS4 解析放线程池
+            soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results: List[Dict[str, Any]] = []
 
             # 懒加载结构：img.image_dtb[data-original=真实URL]，src 是 loader 占位图
@@ -813,8 +841,8 @@ class DoutupkFetcher:
 
 class FabiaoqingFetcher:
     """
-    发表情 (fabiaoqing.com) 表情包爬取类
-    国内网站，无需代理即可访问
+    Fabiaoqing (fabiaoqing.com) meme crawler class
+    Chinese site, accessible without a proxy
     """
     def __init__(self):
         self.base_url = "https://fabiaoqing.com"
@@ -850,7 +878,7 @@ class FabiaoqingFetcher:
         }
 
     def _create_client(self, seclevel1: bool = False) -> httpx.AsyncClient:
-        """根据需求创建 AsyncClient，支持 SECLEVEL=1 降级"""
+        """Create an AsyncClient on demand, supporting SECLEVEL=1 downgrade"""
         if seclevel1:
             # 针对国内某些旧 SSL 协议站点，强制降级到 SECLEVEL=1 
             # 这里的 verify=False 虽然不安全，但对于表情包爬取这种公开非敏感数据是必要的折中
@@ -958,10 +986,11 @@ class FabiaoqingFetcher:
             html = await self._fetch_html(search_url)
             if not html:
                 return []
-            
-            soup = BeautifulSoup(html, 'html.parser')
+
+            # BS4 解析放线程池
+            soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results = []
-            
+
             img_items = soup.select('img.bqppsearch')
             
             for img in img_items:
@@ -1003,22 +1032,26 @@ class FabiaoqingFetcher:
             return []
 
 
-async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
+async def fetch_meme_content(keyword: str = '', limit: int = 5, source_locale: str | None = None) -> dict:
     """
-    高层封装：搜索表情包并返回结构化数据及格式化内容。
-    用于主动搭话流程。
-    根据用户区域选择表情包源：
-    - 中文区域：优先使用国内网站（斗图吧、发表情）
-    - 非中文区域：直接使用 Imgflip
+    High-level wrapper: search memes and return structured data plus formatted content.
+    Used by the proactive-chat flow.
+    Picks meme sources by user region:
+    - Chinese region: prefer Chinese sites (Doutuba, Fabiaoqing)
+    - non-Chinese region: use Imgflip directly
+    The source order defaults to runtime region detection. When source_locale is
+    provided, that content locale controls the source order instead.
     
     Args:
-        keyword: 搜索关键词，为空时随机选择热门关键词
-        limit: 返回结果数量限制
+        keyword: search keyword; a random hot keyword is picked when empty
+        limit: max number of results
+        source_locale: optional content/source locale. When omitted, runtime region detection is used.
     
     Returns:
-        dict: 包含 success, data, formatted_content, raw_data, keyword_used, source, region
+        dict: contains success, data, formatted_content, raw_data, keyword_used, source, region
     """
-    china_region = is_china_region()
+    source_region = source_region_from_locale(source_locale)
+    china_region = is_china_region() if source_region is None else source_region == "china"
     
     actual_keyword = keyword
     
@@ -1040,7 +1073,7 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
     ]
     
     async def try_fetch_concurrent(fetcher_list):
-        """并发尝试一组源，处理好任务生命周期，避免泄露"""
+        """Try a group of sources concurrently, managing task lifecycles properly to avoid leaks"""
         tasks = []
         for f_class, name in fetcher_list:
             async def wrap(fc=f_class, nm=name):
@@ -1116,7 +1149,7 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
 # ==========================================
 
 async def main():
-    """单元测试功能"""
+    """Unit-test functionality"""
     test_keywords_cn = ["搞笑", "猫", "熊猫头"]
     
     # 2026-04-16: doutub.com 域名易主挂黑产，注释掉斗图吧测试

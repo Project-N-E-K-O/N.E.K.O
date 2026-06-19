@@ -100,6 +100,111 @@ def test_heartbeat_route_rejects_request_with_wrong_csrf_token(unauthenticated_p
 
 
 @pytest.mark.unit
+def test_tutorial_prompt_reset_route_clears_completed_state(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+
+    started = client.post("/api/tutorial-prompt/tutorial-started", json={
+        "page": "home",
+        "source": "manual",
+    })
+    assert started.status_code == 200
+    completed = client.post("/api/tutorial-prompt/tutorial-completed", json={
+        "page": "home",
+        "source": "manual",
+        "tutorial_run_token": started.json()["tutorial_run_token"],
+    })
+    assert completed.status_code == 200
+
+    response = client.post("/api/tutorial-prompt/reset", json={
+        "reason": "manual_home_tutorial_reset",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["state"]["status"] == "observing"
+    assert body["state"]["home_tutorial_completed"] is False
+    assert body["state"]["manual_home_tutorial_viewed"] is False
+
+    state = load_tutorial_prompt_state(config)
+    assert state["completed_at"] == 0
+    assert state["started_at"] == 0
+
+
+@pytest.mark.unit
+def test_tutorial_prompt_reset_route_rejects_request_without_csrf_and_origin(unauthenticated_prompt_client):
+    client, _config = unauthenticated_prompt_client
+
+    response = client.post("/api/tutorial-prompt/reset", json={
+        "reason": "manual_home_tutorial_reset",
+    })
+
+    assert response.status_code == 403
+    assert response.json().get("error_code") == "csrf_validation_failed"
+
+
+@pytest.mark.unit
+def test_yui_guide_handoff_token_is_backend_authoritative_and_single_use(tutorial_prompt_client):
+    client, _config = tutorial_prompt_client
+
+    created = client.post("/api/yui-guide/handoff/create", json={
+        "target_page": "memory_browser",
+        "target_path": "/memory_browser",
+        "resume_scene": "memory_browser_intro",
+        "source_page": "home",
+        "source_path": "/",
+    })
+    assert created.status_code == 200
+    token = created.json()["token"]
+    assert token["authority"] == "server"
+    assert token["signature"]
+    assert token["consumed"] is False
+
+    consumed = client.post("/api/yui-guide/handoff/consume", json={
+        "token": token["token"],
+        "signature": token["signature"],
+        "expected_page": "memory_browser",
+        "consumer_id": "unit-test-consumer",
+    })
+    assert consumed.status_code == 200
+    consumed_token = consumed.json()["token"]
+    assert consumed_token["consumed"] is True
+    assert consumed_token["consumed_by"] == "unit-test-consumer"
+
+    replay = client.post("/api/yui-guide/handoff/consume", json={
+        "token": token["token"],
+        "signature": token["signature"],
+        "expected_page": "memory_browser",
+        "consumer_id": "unit-test-consumer",
+    })
+    assert replay.status_code == 409
+    assert replay.json()["error_code"] == "handoff_token_consumed"
+
+
+@pytest.mark.unit
+def test_yui_guide_handoff_consume_requires_expected_page(tutorial_prompt_client):
+    client, _config = tutorial_prompt_client
+
+    created = client.post("/api/yui-guide/handoff/create", json={
+        "target_page": "memory_browser",
+        "target_path": "/memory_browser",
+        "resume_scene": "memory_browser_intro",
+        "source_page": "home",
+        "source_path": "/",
+    })
+    assert created.status_code == 200
+    token = created.json()["token"]
+
+    consumed = client.post("/api/yui-guide/handoff/consume", json={
+        "token": token["token"],
+        "signature": token["signature"],
+        "consumer_id": "unit-test-consumer",
+    })
+    assert consumed.status_code == 400
+    assert consumed.json()["error_code"] == "invalid_expected_page"
+
+
+@pytest.mark.unit
 def test_heartbeat_route_prompts_immediately_on_first_open(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 
@@ -296,6 +401,29 @@ def test_manual_tutorial_started_route_persists_started_state(tutorial_prompt_cl
     state = load_tutorial_prompt_state(config)
     assert state["started_at"] > 0
     assert state["manual_home_tutorial_viewed"] is True
+    assert state["active_tutorial_run_token"] == body["tutorial_run_token"]
+
+
+@pytest.mark.unit
+def test_auto_tutorial_started_route_persists_started_state(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+
+    response = client.post("/api/tutorial-prompt/tutorial-started", json={
+        "page": "home",
+        "source": "auto",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["ignored"] is False
+    assert body["state"]["status"] == "started"
+    assert body["tutorial_run_token"]
+
+    state = load_tutorial_prompt_state(config)
+    assert state["started_at"] > 0
+    assert state["manual_home_tutorial_viewed"] is True
+    assert state["active_tutorial_run_source"] == "auto"
     assert state["active_tutorial_run_token"] == body["tutorial_run_token"]
 
 

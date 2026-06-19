@@ -6,6 +6,889 @@
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
+    let storageLocationState = {
+        bootstrap: null,
+        blockingReason: '',
+        loadFailed: false,
+        limited: false
+    };
+    let memorySidebarResizeObserver = null;
+    let memoryChatPanelHeightResizeBound = false;
+    let storagePreflightState = null;
+    let storagePreflightBusy = false;
+    const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
+    // 单一来源：app-storage-location.js 在 memory_browser.html 里先于本文件加载并把常量
+    // 挂到 window.appStorageLocation 上；这里直接复用，避免两份字面量随时间漂移。
+    const STORAGE_RESTART_MESSAGE_TYPE = (window.appStorageLocation && window.appStorageLocation.STORAGE_RESTART_MESSAGE_TYPE)
+        || 'storage_location_restart_initiated';
+    const STORAGE_RESTART_CHANNEL = (window.appStorageLocation && window.appStorageLocation.STORAGE_RESTART_CHANNEL)
+        || 'neko_storage_location_channel';
+    const STORAGE_RESTART_SENDER_ID = window.__nekoStorageLocationPageId || (
+        'memory-browser-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+    );
+
+    const STORAGE_BLOCKING_STATUS_KEYS = {
+        selection_required: 'memory.storageSelectionRequired',
+        migration_pending: 'memory.storageMigrationPending',
+        recovery_required: 'memory.storageRecoveryRequired'
+    };
+
+    // selection_required / recovery_required 这两种阻断态本身就需要用户在存储管理弹窗里
+    // 完成确认或重连。如果这里也禁用入口就会变成死锁：主内容被 limited-mode 挡着、
+    // 但唯一能解锁的按钮也按不动。
+    const RECOVERABLE_STORAGE_BLOCKING_REASONS = new Set([
+        'selection_required',
+        'recovery_required'
+    ]);
+
+    function interpolateText(text, options) {
+        const values = options && typeof options === 'object' ? options : {};
+        return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, function (match, name) {
+            if (!Object.prototype.hasOwnProperty.call(values, name)) return match;
+            const value = values[name];
+            return value === undefined || value === null ? '' : String(value);
+        });
+    }
+
+    function translate(key, fallback, options) {
+        let text = fallback;
+        if (window.t) {
+            const translated = window.t(key, options || {});
+            if (typeof translated === 'string' && translated && translated !== key) {
+                text = translated;
+            }
+        }
+        return interpolateText(text, options);
+    }
+
+    function setElementText(id, text) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = text;
+        }
+    }
+
+    function syncMemoryChatPanelHeight() {
+        const main = document.querySelector('.main');
+        const sidebar = document.querySelector('.left-column');
+        if (!main || !sidebar) return;
+        const sidebarHeight = Math.ceil(sidebar.getBoundingClientRect().height);
+        if (sidebarHeight > 0) {
+            main.style.setProperty('--memory-sidebar-height', sidebarHeight + 'px');
+        }
+    }
+
+    function initMemoryChatPanelHeightSync() {
+        const sidebar = document.querySelector('.left-column');
+        teardownMemoryChatPanelHeightSync();
+        if (!sidebar) return;
+
+        syncMemoryChatPanelHeight();
+        requestAnimationFrame(syncMemoryChatPanelHeight);
+        window.setTimeout(syncMemoryChatPanelHeight, 300);
+        window.addEventListener('resize', syncMemoryChatPanelHeight);
+        memoryChatPanelHeightResizeBound = true;
+
+        if (typeof ResizeObserver === 'function') {
+            memorySidebarResizeObserver = new ResizeObserver(syncMemoryChatPanelHeight);
+            memorySidebarResizeObserver.observe(sidebar);
+        }
+    }
+
+    function teardownMemoryChatPanelHeightSync() {
+        if (memorySidebarResizeObserver) {
+            memorySidebarResizeObserver.disconnect();
+            memorySidebarResizeObserver = null;
+        }
+        if (memoryChatPanelHeightResizeBound) {
+            window.removeEventListener('resize', syncMemoryChatPanelHeight);
+            memoryChatPanelHeightResizeBound = false;
+        }
+    }
+
+    function displayPath(path) {
+        const normalized = String(path || '').trim();
+        return normalized || '-';
+    }
+
+    function parentPath(path) {
+        const normalized = String(path || '').trim();
+        if (!normalized) return '';
+        const trimmed = normalized.replace(/[\\/]+$/, '');
+        const separatorIndex = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+        if (separatorIndex <= 0) return '';
+        return trimmed.slice(0, separatorIndex);
+    }
+
+    function pathEndsWithAppFolder(path) {
+        const normalized = String(path || '').trim().replace(/[\\/]+$/, '');
+        if (!normalized) return false;
+        const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+        const lastSegment = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+        return lastSegment === STORAGE_APP_FOLDER_NAME;
+    }
+
+    function normalizeStorageRootForDisplay(pathText) {
+        const original = String(pathText || '').trim();
+        if (original === '/') {
+            return '/' + STORAGE_APP_FOLDER_NAME;
+        }
+        if (/^[A-Za-z]:\\$/.test(original)) {
+            return original + STORAGE_APP_FOLDER_NAME;
+        }
+        const normalized = original.replace(/[\\/]+$/, '');
+        if (!normalized || pathEndsWithAppFolder(original)) {
+            return normalized;
+        }
+        const separator = normalized.lastIndexOf('\\') > normalized.lastIndexOf('/') ? '\\' : '/';
+        return normalized + separator + STORAGE_APP_FOLDER_NAME;
+    }
+
+    function applyStorageTargetRootDisplay(pathText) {
+        const normalized = normalizeStorageRootForDisplay(pathText);
+        const input = document.getElementById('storage-target-root-input');
+        if (input) {
+            input.value = normalized;
+        }
+        return normalized;
+    }
+
+    function getStorageDirectoryPickerStartPath() {
+        const input = document.getElementById('storage-target-root-input');
+        const inputPath = input ? String(input.value || '').trim() : '';
+        if (inputPath) return inputPath;
+
+        const bootstrap = storageLocationState.bootstrap || {};
+        const recommendedRoot = String(bootstrap.recommended_root || '').trim();
+        const currentRoot = String(bootstrap.current_root || '').trim();
+        if (recommendedRoot && recommendedRoot !== currentRoot) {
+            return parentPath(recommendedRoot) || recommendedRoot;
+        }
+        return parentPath(currentRoot) || currentRoot;
+    }
+
+    async function readJsonResponse(resp) {
+        try {
+            return await resp.json();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function storageErrorMessage(payload, fallback) {
+        if (!payload || typeof payload !== 'object') {
+            return fallback;
+        }
+        return String(
+            payload.error
+            || payload.blocking_error_message
+            || payload.error_code
+            || fallback
+        );
+    }
+
+    function getStorageBlockingReason(bootstrapPayload) {
+        if (!bootstrapPayload || typeof bootstrapPayload !== 'object') {
+            return '';
+        }
+        const explicitReason = String(bootstrapPayload.blocking_reason || '').trim();
+        if (explicitReason) {
+            return explicitReason;
+        }
+        if (bootstrapPayload.selection_required) {
+            return 'selection_required';
+        }
+        if (bootstrapPayload.migration_pending) {
+            return 'migration_pending';
+        }
+        if (bootstrapPayload.recovery_required) {
+            return 'recovery_required';
+        }
+        return '';
+    }
+
+    function describeStorageState(state) {
+        if (!state || state.loadFailed) {
+            return translate('memory.storageLoadFailed', '存储位置加载失败');
+        }
+        const blockingReason = state.blockingReason || '';
+        if (!blockingReason) {
+            return '';
+        }
+        const statusKey = STORAGE_BLOCKING_STATUS_KEYS[blockingReason] || 'memory.storageStatusBlocked';
+        return translate(statusKey, '当前需要先处理存储位置状态');
+    }
+
+    function setReviewControlsEnabled(enabled) {
+        const checkbox = document.getElementById('review-toggle-checkbox');
+        const label = document.querySelector("label[for='review-toggle-checkbox']");
+        if (checkbox) {
+            checkbox.disabled = !enabled;
+            if (!enabled) {
+                checkbox.checked = false;
+            }
+        }
+        if (label) {
+            label.classList.toggle('is-disabled', !enabled);
+        }
+        if (!enabled) {
+            updateToggleText(false);
+        }
+    }
+
+    function renderStorageLocationPanel() {
+        const state = storageLocationState || {};
+        const bootstrap = state.bootstrap || {};
+        setElementText('storage-current-root', state.loadFailed ? '-' : displayPath(bootstrap.current_root));
+        setElementText('storage-location-status', describeStorageState(state));
+
+        const manageBtn = document.getElementById('storage-location-manage-btn');
+        if (manageBtn) {
+            const blockingReason = String(state.blockingReason || '').trim();
+            const blockingNonRecoverable = blockingReason && !RECOVERABLE_STORAGE_BLOCKING_REASONS.has(blockingReason);
+            manageBtn.disabled = state.loadFailed || blockingNonRecoverable || !String(bootstrap.current_root || '').trim();
+            manageBtn.title = manageBtn.disabled
+                ? translate('memory.storageManagementUnavailable', '当前存储位置暂不可用')
+                : '';
+        }
+
+        const openBtn = document.getElementById('storage-location-open-btn');
+        if (openBtn) {
+            openBtn.disabled = state.loadFailed || !String(bootstrap.current_root || '').trim();
+        }
+    }
+
+    async function initStorageLocationPanel() {
+        try {
+            const resp = await fetch('/api/storage/location/bootstrap', {
+                headers: { 'Cache-Control': 'no-cache' }
+            });
+            if (!resp.ok) {
+                throw new Error('storage bootstrap failed: ' + resp.status);
+            }
+            const bootstrap = await resp.json();
+            const blockingReason = getStorageBlockingReason(bootstrap);
+            storageLocationState = {
+                bootstrap,
+                blockingReason,
+                loadFailed: false,
+                limited: !!blockingReason
+            };
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage location bootstrap failed:', e);
+            storageLocationState = {
+                bootstrap: null,
+                blockingReason: 'bootstrap_failed',
+                loadFailed: true,
+                limited: true
+            };
+        }
+        renderStorageLocationPanel();
+        return storageLocationState;
+    }
+
+    function setStoragePreflightResult(message, type) {
+        const resultEl = document.getElementById('storage-location-preflight-result');
+        if (!resultEl) return;
+        resultEl.textContent = message || '';
+        resultEl.classList.toggle('is-error', type === 'error');
+        resultEl.classList.toggle('is-success', type === 'success');
+    }
+
+    function renderStorageRestartButton() {
+        const restartBtn = document.getElementById('storage-location-restart-btn');
+        if (!restartBtn) return;
+        const input = document.getElementById('storage-target-root-input');
+        const restartAccepted = !!(input && input.disabled);
+        restartBtn.hidden = restartAccepted;
+        restartBtn.disabled = storagePreflightBusy || restartAccepted;
+    }
+
+    let selectedTutorialDay = 0;
+
+    const TUTORIAL_CASCADER_PAGE_LABELS = {
+        all: '全部页面',
+        home: '主页',
+        model_manager: '模型设置',
+        parameter_editor: '捏脸系统',
+        emotion_manager: '情感管理',
+        chara_manager: '角色管理',
+        settings: 'API设置',
+        voice_clone: '语音克隆',
+        memory_browser: '记忆浏览',
+        current_personality: '当前角色性格'
+    };
+
+    function getTutorialPageLabel(pageKey) {
+        const option = document.querySelector('#tutorial-reset-select option[value="' + pageKey + '"]');
+        return option ? String(option.textContent || '').trim() : (TUTORIAL_CASCADER_PAGE_LABELS[pageKey] || pageKey);
+    }
+
+    function getTutorialDayLabel(day) {
+        const fallback = '第 ' + day + ' 天';
+        if (!window.t || typeof window.t !== 'function') {
+            return fallback;
+        }
+        const translated = window.t('memory.tutorialHomeDayLabel', { day: day });
+        return translated && translated !== 'memory.tutorialHomeDayLabel' ? translated : fallback;
+    }
+
+    function refreshTutorialCascaderDayLabels() {
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
+            const day = Number(option.dataset.tutorialDay || 0);
+            if (day > 0) {
+                option.textContent = getTutorialDayLabel(day);
+            }
+        });
+    }
+
+    function resolveSelectedTutorialReset() {
+        const tutorialSelect = document.getElementById('tutorial-reset-select');
+        const pageKey = tutorialSelect ? String(tutorialSelect.value || '') : '';
+        if (pageKey !== 'home') {
+            return { type: pageKey ? 'page' : '', pageKey: pageKey };
+        }
+        return {
+            type: selectedTutorialDay ? 'home-day' : '',
+            pageKey: 'home',
+            day: selectedTutorialDay
+        };
+    }
+
+    function setTutorialCascaderOpen(open) {
+        const popup = document.querySelector('.tutorial-cascader-popup');
+        const trigger = document.querySelector('.tutorial-cascader-trigger');
+        if (popup) {
+            popup.hidden = !open;
+        }
+        if (trigger) {
+            trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            trigger.classList.toggle('is-open', !!open);
+        }
+    }
+
+    function syncTutorialResetCascader() {
+        const tutorialSelect = document.getElementById('tutorial-reset-select');
+        const tutorialResetBtn = document.getElementById('tutorial-reset-btn');
+        const dayColumn = document.querySelector('.tutorial-cascader-day-column');
+        const valueEl = document.querySelector('.tutorial-reset-value');
+        if (!tutorialSelect || !tutorialResetBtn) return;
+
+        const pageKey = String(tutorialSelect.value || '');
+        if (pageKey !== 'home') {
+            selectedTutorialDay = 0;
+        }
+        if (dayColumn) {
+            dayColumn.hidden = pageKey !== 'home';
+        }
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-page]').forEach(function (option) {
+            option.classList.toggle('is-selected', option.dataset.tutorialPage === pageKey);
+        });
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
+            option.classList.toggle('is-selected', Number(option.dataset.tutorialDay) === selectedTutorialDay);
+        });
+        if (valueEl) {
+            if (!pageKey) {
+                valueEl.textContent = getTutorialPageLabel('');
+            } else if (pageKey === 'home' && selectedTutorialDay) {
+                valueEl.textContent = getTutorialPageLabel('home') + ' / ' + getTutorialDayLabel(selectedTutorialDay);
+            } else {
+                valueEl.textContent = getTutorialPageLabel(pageKey);
+            }
+        }
+
+        const selection = resolveSelectedTutorialReset();
+        tutorialResetBtn.disabled = selection.type !== 'page' && selection.type !== 'home-day';
+    }
+
+    async function resetSelectedTutorial() {
+        const selection = resolveSelectedTutorialReset();
+        if (selection.type === 'home-day') {
+            if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
+                await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
+                    source: 'memory_browser_reset_select',
+                });
+            } else if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetHomeTutorialDay === 'function') {
+                await window.AvatarFloatingGuideReset.resetHomeTutorialDay(selection.day, {
+                    source: 'memory_browser_reset_select',
+                });
+            } else if (typeof window.resetHomeTutorialDay === 'function') {
+                await window.resetHomeTutorialDay(selection.day, {
+                    source: 'memory_browser_reset_select',
+                });
+            }
+            return;
+        }
+        if (selection.type === 'page' && typeof window.resetTutorialForPage === 'function') {
+            if (selection.pageKey === 'all') {
+                if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAllAvatarFloatingGuideDays === 'function') {
+                    await window.AvatarFloatingGuideReset.resetAllAvatarFloatingGuideDays({
+                        source: 'memory_browser_reset_all',
+                    });
+                } else if (typeof window.resetAllAvatarFloatingGuideDays === 'function') {
+                    await window.resetAllAvatarFloatingGuideDays({
+                        source: 'memory_browser_reset_all',
+                    });
+                }
+            }
+            await window.resetTutorialForPage(selection.pageKey);
+        }
+    }
+
+    function sleep(ms) {
+        return new Promise(function (resolve) {
+            window.setTimeout(resolve, ms);
+        });
+    }
+
+    function setStoragePreflightBusy(busy) {
+        storagePreflightBusy = !!busy;
+        const pickBtn = document.getElementById('storage-location-pick-btn');
+        if (pickBtn) {
+            pickBtn.disabled = !!busy;
+        }
+        renderStorageRestartButton();
+    }
+
+    function openStorageLocationManager() {
+        const state = storageLocationState || {};
+        const bootstrap = state.bootstrap || {};
+        const blockingReason = String(state.blockingReason || '').trim();
+        const blockingNonRecoverable = blockingReason && !RECOVERABLE_STORAGE_BLOCKING_REASONS.has(blockingReason);
+        if (state.loadFailed || blockingNonRecoverable || !String(bootstrap.current_root || '').trim()) {
+            setElementText('storage-location-status', translate('memory.storageManagementUnavailable', '当前存储位置暂不可用'));
+            return;
+        }
+
+        const modal = document.getElementById('storage-location-modal');
+        if (!modal) return;
+        setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
+
+        const input = document.getElementById('storage-target-root-input');
+        if (input) {
+            input.value = '';
+            input.placeholder = translate('memory.storageTargetPlaceholder', '选择或输入新的数据位置');
+        }
+        storagePreflightState = null;
+        setStoragePreflightBusy(false);
+        setStoragePreflightResult('', '');
+        renderStorageRestartButton();
+        modal.hidden = false;
+        document.body.classList.add('storage-location-memory-modal-open');
+    }
+
+    function closeStorageLocationManager() {
+        const modal = document.getElementById('storage-location-modal');
+        if (modal) {
+            modal.hidden = true;
+        }
+        document.body.classList.remove('storage-location-memory-modal-open');
+        const input = document.getElementById('storage-target-root-input');
+        if (input) {
+            input.disabled = false;
+        }
+    }
+
+    async function pickStorageTargetDirectory() {
+        const startPath = getStorageDirectoryPickerStartPath();
+        setStoragePreflightBusy(true);
+        try {
+            let payload = null;
+            const host = window.nekoHost;
+            if (host && typeof host.pickDirectory === 'function') {
+                try {
+                    const result = await host.pickDirectory({
+                        startPath,
+                        title: translate('memory.storagePickTarget', '选择位置')
+                    });
+                    if (!result || typeof result !== 'object') {
+                        console.warn('[MemoryBrowser] host directory picker returned invalid result, falling back to backend:', result);
+                    } else {
+                        payload = result;
+                    }
+                } catch (e) {
+                    console.warn('[MemoryBrowser] host directory picker failed, falling back to backend:', e);
+                }
+            }
+            if (!payload) {
+                const resp = await fetch('/api/storage/location/pick-directory', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_path: startPath })
+                });
+                payload = await readJsonResponse(resp);
+                if (!resp.ok || !payload || payload.ok !== true) {
+                    throw new Error(storageErrorMessage(payload, translate('memory.storagePickTargetFailed', '选择目标位置失败，请手动输入路径')));
+                }
+            }
+            if (payload.cancelled) {
+                return;
+            }
+            const selectedRoot = String(payload.selected_root || '').trim();
+            if (!selectedRoot) {
+                throw new Error('empty selected_root');
+            }
+            applyStorageTargetRootDisplay(selectedRoot);
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        } catch (e) {
+            console.warn('[MemoryBrowser] pick storage target failed:', e);
+            setStoragePreflightResult(translate('memory.storagePickTargetFailed', '选择目标位置失败，请手动输入路径'), 'error');
+        } finally {
+            setStoragePreflightBusy(false);
+        }
+    }
+
+    function formatPreflightResult(payload) {
+        if (!payload || payload.ok !== true) {
+            return translate('memory.storagePreflightFailed', '预检失败');
+        }
+        if (payload.blocking_error_code || payload.blocking_error_message) {
+            return storageErrorMessage(payload, translate('memory.storagePreflightFailed', '预检失败'));
+        }
+        if (payload.result === 'restart_not_required') {
+            return translate('memory.storageAlreadyCurrentRoot', '当前已在该位置');
+        }
+
+        const lines = [
+            translate('memory.storagePreflightReady', '预检通过。更改存储位置后会重启，旧数据默认保留。'),
+            translate('memory.storagePreflightTarget', '目标位置：{{path}}', {
+                path: String(payload.target_root || payload.selected_root || '')
+            })
+        ];
+        if (payload.requires_existing_target_confirmation) {
+            lines.push(payload.existing_target_confirmation_message || translate('memory.storageExistingTargetWarning', '目标位置已经包含现有数据，后续确认迁移前需要二次确认。'));
+        }
+        return lines.filter(Boolean).join('\n');
+    }
+
+    async function runStorageLocationPreflight(options) {
+        const keepBusy = !!(options && options.keepBusy);
+        const input = document.getElementById('storage-target-root-input');
+        let selectedRoot = input ? String(input.value || '').trim() : '';
+        if (!selectedRoot) {
+            setStoragePreflightResult(translate('memory.storageTargetRequired', '请先选择或输入目标位置'), 'error');
+            return null;
+        }
+        selectedRoot = applyStorageTargetRootDisplay(selectedRoot);
+        setStoragePreflightBusy(true);
+        setStoragePreflightResult(translate('memory.storagePreflightRunning', '正在预检...'), 'success');
+        try {
+            const resp = await fetch('/api/storage/location/preflight', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    selected_root: selectedRoot,
+                    selection_source: 'custom'
+                })
+            });
+            const payload = await readJsonResponse(resp);
+            if (!resp.ok || !payload || payload.ok !== true) {
+                throw new Error(storageErrorMessage(payload, translate('memory.storagePreflightFailed', '预检失败')));
+            }
+            storagePreflightState = payload;
+            const isBlocked = !!(payload.blocking_error_code || payload.blocking_error_message);
+            setStoragePreflightResult(formatPreflightResult(payload), isBlocked ? 'error' : 'success');
+            renderStorageRestartButton();
+            return payload;
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage location preflight failed:', e);
+            storagePreflightState = null;
+            setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storagePreflightFailed', '预检失败')), 'error');
+            renderStorageRestartButton();
+            return null;
+        } finally {
+            if (!keepBusy) {
+                setStoragePreflightBusy(false);
+            }
+        }
+    }
+
+    async function restartWithStorageLocation(options) {
+        const keepBusy = !!(options && options.keepBusy);
+        if (!storagePreflightState || storagePreflightState.result !== 'restart_required') {
+            setStoragePreflightResult(translate('memory.storagePreflightRequired', '请先完成预检'), 'error');
+            renderStorageRestartButton();
+            return false;
+        }
+        const selectedRoot = String(storagePreflightState.selected_root || storagePreflightState.target_root || '').trim();
+        if (!selectedRoot) {
+            setStoragePreflightResult(translate('memory.storagePreflightFailed', '预检失败'), 'error');
+            return false;
+        }
+
+        let confirmExistingTargetContent = false;
+        if (storagePreflightState.requires_existing_target_confirmation) {
+            const message = storagePreflightState.existing_target_confirmation_message
+                || translate('memory.storageExistingTargetWarning', '目标位置已经包含现有数据，后续确认迁移前需要二次确认。');
+            if (!window.confirm(message)) {
+                return false;
+            }
+            confirmExistingTargetContent = true;
+        }
+
+        const restartBtn = document.getElementById('storage-location-restart-btn');
+        if (restartBtn) {
+            restartBtn.disabled = true;
+        }
+        let restartAccepted = false;
+        setStoragePreflightBusy(true);
+        setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备重启...'), 'success');
+        try {
+            const resp = await fetch('/api/storage/location/restart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    selected_root: selectedRoot,
+                    selection_source: storagePreflightState.selection_source || 'custom',
+                    confirm_existing_target_content: confirmExistingTargetContent
+                })
+            });
+            const payload = await readJsonResponse(resp);
+            if (!resp.ok || !payload || payload.ok !== true) {
+                throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '重启请求失败')));
+            }
+            restartAccepted = true;
+            setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求重启。应用即将进入维护状态，请等待重启完成。'), 'success');
+            notifyStorageRestartInitiated(payload, selectedRoot);
+            storagePreflightState = null;
+            const input = document.getElementById('storage-target-root-input');
+            if (input) {
+                input.disabled = true;
+            }
+            renderStorageRestartButton();
+            await closeStorageManagerAfterRestartNotice(payload);
+            return true;
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage location restart failed:', e);
+            setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '重启请求失败')), 'error');
+            renderStorageRestartButton();
+            return false;
+        } finally {
+            if (!restartAccepted && !keepBusy) {
+                setStoragePreflightBusy(false);
+            }
+        }
+    }
+
+    async function preflightAndRestartWithStorageLocation() {
+        const payload = await runStorageLocationPreflight({ keepBusy: true });
+        if (
+            !payload
+            || payload.result !== 'restart_required'
+            || payload.blocking_error_code
+            || payload.blocking_error_message
+        ) {
+            setStoragePreflightBusy(false);
+            return;
+        }
+
+        const restartAccepted = await restartWithStorageLocation({ keepBusy: true });
+        if (!restartAccepted) {
+            setStoragePreflightBusy(false);
+        }
+    }
+
+    function buildStorageRestartMessage(payload, selectedRoot) {
+        const normalizedPayload = payload && typeof payload === 'object' ? payload : {};
+        return {
+            type: STORAGE_RESTART_MESSAGE_TYPE,
+            sender_id: STORAGE_RESTART_SENDER_ID,
+            payload: Object.assign({}, normalizedPayload, {
+                selected_root: String(normalizedPayload.selected_root || selectedRoot || '').trim(),
+                target_root: String(normalizedPayload.target_root || normalizedPayload.selected_root || selectedRoot || '').trim()
+            })
+        };
+    }
+
+    function notifyStorageRestartInitiated(payload, selectedRoot) {
+        const message = buildStorageRestartMessage(payload, selectedRoot);
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                const channel = new BroadcastChannel(STORAGE_RESTART_CHANNEL);
+                channel.postMessage(message);
+                channel.close();
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage restart broadcast failed:', e);
+        }
+
+        try {
+            if (window.opener && !window.opener.closed) {
+                window.opener.postMessage(message, PARENT_ORIGIN);
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage restart opener notification failed:', e);
+        }
+
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage(message, PARENT_ORIGIN);
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage restart parent notification failed:', e);
+        }
+    }
+
+    async function closeStorageManagerAfterRestartNotice(payload) {
+        await sleep(250);
+        const host = window.nekoHost;
+        if (host && typeof host.closeWindow === 'function') {
+            try {
+                const result = await host.closeWindow();
+                if (!result || result.ok !== false) {
+                    return;
+                }
+            } catch (e) {
+                console.warn('[MemoryBrowser] host closeWindow failed after storage restart:', e);
+            }
+        }
+
+        const hasExternalOwner = !!(
+            (window.opener && !window.opener.closed)
+            || (window.parent && window.parent !== window)
+        );
+        if (hasExternalOwner) {
+            try {
+                window.close();
+                await sleep(150);
+                if (window.closed) {
+                    return;
+                }
+            } catch (_) {}
+        }
+        document.body.classList.remove('storage-location-memory-modal-open');
+        await showStandaloneStorageMaintenanceOverlay(payload);
+    }
+
+    function ensureStylesheet(href) {
+        if (document.querySelector('link[href="' + href + '"]')) {
+            return;
+        }
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = href;
+        document.head.appendChild(link);
+    }
+
+    function loadScriptOnce(src, configureScript) {
+        return new Promise(function (resolve, reject) {
+            const existing = document.querySelector('script[src="' + src + '"]');
+            if (existing) {
+                resolve();
+                return;
+            }
+            const script = document.createElement('script');
+            script.src = src;
+            if (typeof configureScript === 'function') {
+                configureScript(script);
+            }
+            script.onload = function () { resolve(); };
+            script.onerror = function () { reject(new Error('failed to load ' + src)); };
+            document.body.appendChild(script);
+        });
+    }
+
+    async function showStandaloneStorageMaintenanceOverlay(payload) {
+        try {
+            ensureStylesheet('/static/css/storage-location.css');
+            await loadScriptOnce('/static/app-storage-location.js', function (script) {
+                script.setAttribute('data-storage-location-auto-start', 'false');
+            });
+            if (
+                window.appStorageLocation
+                && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
+            ) {
+                window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);
+        }
+    }
+
+    function renderMemoryBrowserLimitedState(state) {
+        currentMemoryFile = null;
+        currentCatName = '';
+        chatData = [];
+        memoryFileRequestId++;
+
+        const list = document.getElementById('memory-file-list');
+        if (list) {
+            list.innerHTML = '';
+            const item = document.createElement('li');
+            item.style.cssText = 'color:#40C5F1; padding: 8px; line-height: 1.5;';
+            item.textContent = describeStorageState(state);
+            list.appendChild(item);
+        }
+
+        const editDiv = document.getElementById('memory-chat-edit');
+        if (editDiv) {
+            editDiv.textContent = '';
+            const placeholder = document.createElement('div');
+            placeholder.className = 'memory-limited-state';
+            placeholder.textContent = translate(
+                'memory.storageMemoryLimitedState',
+                '当前存储位置还未就绪。请先完成存储位置选择、恢复或等待迁移完成，然后再查看记忆。'
+            );
+            editDiv.appendChild(placeholder);
+        }
+
+        const saveRow = document.getElementById('save-row');
+        if (saveRow) {
+            saveRow.style.display = 'none';
+        }
+        setReviewControlsEnabled(false);
+    }
+
+    async function openCurrentStorageRoot() {
+        const currentRoot = String(storageLocationState.bootstrap && storageLocationState.bootstrap.current_root || '').trim();
+        if (!currentRoot) {
+            setElementText('storage-location-status', translate('memory.storageManagementUnavailable', '当前存储位置暂不可用'));
+            return;
+        }
+        const openBtn = document.getElementById('storage-location-open-btn');
+        if (openBtn) {
+            openBtn.disabled = true;
+        }
+        try {
+            const host = window.nekoHost;
+            if (host && typeof host.openPath === 'function') {
+                try {
+                    const result = await host.openPath({ path: currentRoot });
+                    if (result && result.ok === false) {
+                        throw new Error(result.error || 'openPath failed');
+                    }
+                    setElementText('storage-location-status', '');
+                    return;
+                } catch (hostError) {
+                    console.warn('[MemoryBrowser] host openPath failed, falling back to backend:', hostError);
+                }
+            }
+            const resp = await fetch('/api/storage/location/open-current', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const payload = await readJsonResponse(resp);
+            if (resp.ok && payload && payload.ok === true) {
+                setElementText('storage-location-status', '');
+                return;
+            }
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                await navigator.clipboard.writeText(currentRoot);
+                setElementText('storage-location-status', translate('memory.storagePathCopied', '已复制当前目录路径'));
+                return;
+            }
+            setElementText('storage-location-status', translate('memory.storageOpenPathUnavailable', '当前环境无法直接打开目录，请手动复制路径'));
+        } catch (e) {
+            console.warn('[MemoryBrowser] open current storage root failed:', e);
+            setElementText('storage-location-status', translate('memory.storageOpenPathFailed', '打开当前目录失败'));
+        } finally {
+            if (openBtn) {
+                openBtn.disabled = storageLocationState.loadFailed || !currentRoot;
+            }
+        }
+    }
 
     /** Normalize message body from recent_*.json (string or OpenAI-style content blocks). */
     function extractDataContent(data) {
@@ -83,6 +966,8 @@
             }
         } catch (e) {
             ul.innerHTML = `<li style="color:#e74c3c; padding: 8px;">${window.t ? window.t('memory.loadFailed') : '加载失败'}</li>`;
+        } finally {
+            requestAnimationFrame(syncMemoryChatPanelHeight);
         }
     }
 
@@ -127,11 +1012,43 @@
                 label.textContent = memoPrefix;
                 contentWrapper.appendChild(label);
 
+                // LLM 在压缩时按 SUMMARY_STALE_HINT 要求，把"较久前"段用单独
+                // 一行 `---` 与主体分隔。这里识别该分隔符并拆成两块独立 textarea
+                // 渲染，让阅读 / 编辑时能清楚区分"当前进行中"和"已归档"。
+                // 保存时再用 composeMemo 拼回 `\n\n---\n\n` 单一规范形式。
+                let bodyValue;
+                let olderValue;
+                ({ body: bodyValue, older: olderValue } = splitMemoOnDivider(text));
+                const commitMemo = function () {
+                    updateSystemContent(i, composeMemo(bodyValue, olderValue));
+                };
+
                 const ta = document.createElement('textarea');
                 ta.className = 'memo-textarea';
-                ta.value = text;
-                ta.addEventListener('change', function () { updateSystemContent(i, this.value); });
+                ta.value = bodyValue;
+                ta.addEventListener('change', function () {
+                    bodyValue = this.value;
+                    commitMemo();
+                });
                 contentWrapper.appendChild(ta);
+
+                if (olderValue) {
+                    const olderLabel = document.createElement('span');
+                    olderLabel.className = 'memo-older-label';
+                    olderLabel.textContent = window.t
+                        ? window.t('memory.olderSection', '较久前')
+                        : '较久前';
+                    contentWrapper.appendChild(olderLabel);
+
+                    const olderTa = document.createElement('textarea');
+                    olderTa.className = 'memo-textarea memo-textarea--older';
+                    olderTa.value = olderValue;
+                    olderTa.addEventListener('change', function () {
+                        olderValue = this.value;
+                        commitMemo();
+                    });
+                    contentWrapper.appendChild(olderTa);
+                }
             } else if (msg.role === 'ai') {
                 // 提取时间戳和正文，健壮处理
                 const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
@@ -211,6 +1128,34 @@
             chatData[idx].text = value;
         }
     }
+    // 备忘录正文里 LLM 按 SUMMARY_STALE_HINT 约定，用 `---` 单独占行的分隔符
+    // 把"较久前"尾段从主体切开。这里识别"`---` 单独成行（前后都换行了）"——
+    // 前后空行数量都不强求，吃下 LLM 漏空行 / 多空行 / 多输几个连字符的常见漂移；
+    // 切成 body / older 两段后 composeMemo 再统一拼回规范 `\n\n---\n\n`。
+    // 整段里出现多次匹配（违反 prompt 约束）只取第一次。
+    const MEMO_DIVIDER_RE = /(?:\r?\n)+[ \t]*-{3,}[ \t]*(?:\r?\n)+/;
+
+    function splitMemoOnDivider(text) {
+        const src = String(text == null ? '' : text);
+        const m = MEMO_DIVIDER_RE.exec(src);
+        if (!m) return { body: src, older: '' };
+        return {
+            body: src.slice(0, m.index),
+            older: src.slice(m.index + m[0].length),
+        };
+    }
+
+    function composeMemo(body, older) {
+        // body 的尾部 / older 的首部都只去掉"整行空白"——也就是 trailing blank
+        // lines / leading blank lines——保留段内有意义的前导缩进（用户在 older
+        // textarea 里手写嵌套列表 / 代码片段时不被吃）。
+        // 拼回时再用规范 `\n\n---\n\n` 形式，splitter 端会容忍换行漂移。
+        const cleanBody = String(body == null ? '' : body).replace(/(?:[ \t]*\r?\n)+$/, '');
+        const cleanOlder = String(older == null ? '' : older).replace(/^(?:[ \t]*\r?\n)+/, '');
+        if (!cleanOlder) return cleanBody;
+        return cleanBody + '\n\n---\n\n' + cleanOlder;
+    }
+
     function updateSystemContent(idx, value) {
         // 存储时先移除任何现有的前缀，然后加上当前语言的前缀
         // 定义已知的备忘录前缀列表
@@ -379,6 +1324,7 @@
         }
     }
     function closeMemoryBrowser() {
+        teardownMemoryChatPanelHeightSync();
         if (window.opener) {
             // 如果是通过 window.open() 打开的，直接关闭
             window.close();
@@ -405,10 +1351,20 @@
     }
     // 将函数暴露到全局作用域，供 HTML onclick 调用
     window.closeMemoryBrowser = closeMemoryBrowser;
+    window.addEventListener('pagehide', teardownMemoryChatPanelHeightSync);
+    window.addEventListener('beforeunload', teardownMemoryChatPanelHeightSync);
     // 页面加载时隐藏保存按钮
-    document.addEventListener('DOMContentLoaded', function () {
-        loadMemoryFileList();
-        loadReviewConfig();
+    document.addEventListener('DOMContentLoaded', async function () {
+        initMemoryChatPanelHeightSync();
+        const storagePanelState = await initStorageLocationPanel();
+        if (storagePanelState && storagePanelState.limited) {
+            renderMemoryBrowserLimitedState(storagePanelState);
+        } else {
+            setReviewControlsEnabled(true);
+            loadMemoryFileList();
+            loadReviewConfig();
+            loadPowerfulMemoryConfig();
+        }
         document.getElementById('save-row').style.display = 'none';
 
         // 监听checkbox变化
@@ -418,28 +1374,122 @@
                 toggleReview(this.checked);
             });
         }
+        const strongCheckbox = document.getElementById('strong-memory-toggle-checkbox');
+        if (strongCheckbox) {
+            strongCheckbox.addEventListener('change', function () {
+                togglePowerfulMemory(this.checked);
+            });
+        }
 
         // 监听i18n语言变化
         if (window.i18n) {
             window.i18n.on('languageChanged', function () {
                 const checkbox = document.getElementById('review-toggle-checkbox');
+                renderStorageLocationPanel();
                 if (checkbox) {
                     updateToggleText(checkbox.checked);
                 }
+                const strongCheckbox = document.getElementById('strong-memory-toggle-checkbox');
+                if (strongCheckbox) {
+                    updatePowerfulMemoryToggleText(strongCheckbox.checked);
+                }
+                if (storageLocationState && storageLocationState.limited) {
+                    renderMemoryBrowserLimitedState(storageLocationState);
+                }
+                refreshTutorialCascaderDayLabels();
+                syncTutorialResetCascader();
+            });
+        }
+        window.addEventListener('localechange', function () {
+            refreshTutorialCascaderDayLabels();
+            syncTutorialResetCascader();
+        });
+
+        const openStorageBtn = document.getElementById('storage-location-open-btn');
+        if (openStorageBtn) {
+            openStorageBtn.addEventListener('click', function () {
+                openCurrentStorageRoot();
+            });
+        }
+        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
+        if (manageStorageBtn) {
+            manageStorageBtn.addEventListener('click', function () {
+                openStorageLocationManager();
+            });
+        }
+        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
+        if (closeStorageModalBtn) {
+            closeStorageModalBtn.addEventListener('click', function () {
+                closeStorageLocationManager();
+            });
+        }
+        const storageModal = document.getElementById('storage-location-modal');
+        if (storageModal) {
+            storageModal.addEventListener('click', function (event) {
+                if (event.target === storageModal) {
+                    closeStorageLocationManager();
+                }
+            });
+        }
+        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
+        if (pickStorageBtn) {
+            pickStorageBtn.addEventListener('click', function () {
+                pickStorageTargetDirectory();
+            });
+        }
+        const storageTargetInput = document.getElementById('storage-target-root-input');
+        if (storageTargetInput) {
+            storageTargetInput.addEventListener('input', function () {
+                storagePreflightState = null;
+                setStoragePreflightResult('', '');
+                renderStorageRestartButton();
+            });
+        }
+        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
+        if (restartStorageBtn) {
+            restartStorageBtn.addEventListener('click', function () {
+                preflightAndRestartWithStorageLocation();
             });
         }
 
-        // 监听新手引导重置下拉框变化
+        // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');
         const tutorialResetBtn = document.getElementById('tutorial-reset-btn');
         if (tutorialSelect && tutorialResetBtn) {
-            // 根据下拉框当前值初始化按钮状态（支持浏览器恢复的表单状态）
-            tutorialResetBtn.disabled = !tutorialSelect.value;
-
-            // 监听下拉框变化
-            tutorialSelect.addEventListener('change', function() {
-                // 当选择非空值时启用按钮，否则禁用
-                tutorialResetBtn.disabled = !this.value;
+            refreshTutorialCascaderDayLabels();
+            syncTutorialResetCascader();
+            const trigger = document.querySelector('.tutorial-cascader-trigger');
+            const popup = document.querySelector('.tutorial-cascader-popup');
+            if (trigger) {
+                trigger.addEventListener('click', function () {
+                    setTutorialCascaderOpen(!(popup && !popup.hidden));
+                });
+            }
+            if (popup) {
+                popup.addEventListener('click', function (event) {
+                    const pageOption = event.target.closest('[data-tutorial-page]');
+                    if (pageOption) {
+                        tutorialSelect.value = pageOption.dataset.tutorialPage || '';
+                        if (tutorialSelect.value !== 'home') {
+                            selectedTutorialDay = 0;
+                            setTutorialCascaderOpen(false);
+                        }
+                        syncTutorialResetCascader();
+                        return;
+                    }
+                    const dayOption = event.target.closest('[data-tutorial-day]');
+                    if (dayOption) {
+                        selectedTutorialDay = Number(dayOption.dataset.tutorialDay || 0);
+                        syncTutorialResetCascader();
+                        setTutorialCascaderOpen(false);
+                    }
+                });
+            }
+            document.addEventListener('click', function (event) {
+                const cascader = document.getElementById('tutorial-reset-cascader');
+                if (cascader && !cascader.contains(event.target)) {
+                    setTutorialCascaderOpen(false);
+                }
             });
         }
 
@@ -516,5 +1566,63 @@
             updateToggleText(!enabled);
         }
     }
+
+    // ── 强力记忆开关（与 review 开关对偶，仿同样 load/update/toggle 模板） ──
+
+    async function loadPowerfulMemoryConfig() {
+        try {
+            const resp = await fetch('/api/memory/powerful_memory_config');
+            const data = await resp.json();
+            const checkbox = document.getElementById('strong-memory-toggle-checkbox');
+            if (checkbox) {
+                checkbox.checked = data.enabled;
+            }
+            updatePowerfulMemoryToggleText(data.enabled);
+        } catch (e) {
+            console.error('加载强力记忆配置失败:', e);
+        }
+    }
+
+    function updatePowerfulMemoryToggleText(enabled) {
+        const textSpan = document.getElementById('strong-memory-toggle-text');
+        if (!textSpan) return;
+        if (enabled) {
+            textSpan.setAttribute('data-i18n', 'memory.enabled');
+            textSpan.textContent = window.t ? window.t('memory.enabled') : '已开启';
+        } else {
+            textSpan.setAttribute('data-i18n', 'memory.disabled');
+            textSpan.textContent = window.t ? window.t('memory.disabled') : '已关闭';
+        }
+    }
+
+    async function togglePowerfulMemory(enabled) {
+        try {
+            const resp = await fetch('/api/memory/powerful_memory_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            });
+            const data = await resp.json();
+
+            if (data.success) {
+                updatePowerfulMemoryToggleText(enabled);
+            } else {
+                const checkbox = document.getElementById('strong-memory-toggle-checkbox');
+                if (checkbox) {
+                    checkbox.checked = !enabled;
+                }
+                updatePowerfulMemoryToggleText(!enabled);
+            }
+        } catch (e) {
+            console.error('更新强力记忆配置失败:', e);
+            const checkbox = document.getElementById('strong-memory-toggle-checkbox');
+            if (checkbox) {
+                checkbox.checked = !enabled;
+            }
+            updatePowerfulMemoryToggleText(!enabled);
+        }
+    }
+
+    window.resetSelectedTutorial = resetSelectedTutorial;
 
 })();

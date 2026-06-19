@@ -210,15 +210,748 @@
         .modal-btn-danger:active {
             background: #c0392b;
         }
+
+        .modal-overlay-autostart-retention {
+            background: rgba(245, 248, 255, 0.62);
+        }
+
+        .modal-dialog-autostart-retention {
+            position: relative;
+            min-width: 0;
+            width: min(520px, calc(100vw - 40px));
+            max-width: min(520px, calc(100vw - 40px));
+            margin-top: 62px;
+            padding-top: 78px;
+            overflow: visible;
+            border: 1px solid rgba(255, 255, 255, 0.88);
+            border-radius: 34px;
+            background: linear-gradient(180deg, #fff9fb 0%, #eef7ff 100%);
+            box-shadow: 0 24px 58px rgba(95, 135, 190, 0.24), inset 0 1px 0 rgba(255,255,255,0.9);
+        }
+
+        .autostart-retention-bunny {
+            position: absolute;
+            top: -84px;
+            left: 50%;
+            width: 160px;
+            height: 146px;
+            transform: translateX(-50%);
+            transition: transform 0.36s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none !important;
+        }
+
+        .autostart-retention-bunny-heart {
+            position: absolute;
+            top: 48px;
+            left: 50%;
+            z-index: 4;
+            color: #ff8fb2;
+            font-size: 24px;
+            font-weight: 900;
+            opacity: 0;
+            transform: translateX(-50%) translateY(12px) scale(0.4);
+            transition: opacity 0.3s ease, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .autostart-retention-bunny-glow {
+            position: absolute;
+            left: 50%;
+            bottom: 3px;
+            width: 190px;
+            height: 80px;
+            border-radius: 999px;
+            background: rgba(163, 217, 255, 0.34);
+            filter: blur(18px);
+            transform: translateX(-50%);
+        }
+
+        .autostart-retention-bunny-ear {
+            position: absolute;
+            top: 0;
+            z-index: 1;
+            width: 42px;
+            height: 92px;
+            border-radius: 999px 999px 24px 24px;
+            background: linear-gradient(160deg, #ffffff, #dcefff);
+            box-shadow: inset -5px -8px 14px rgba(125, 169, 212, 0.18), inset 4px 5px 10px rgba(255,255,255,0.9);
+            transform-origin: bottom center;
+            transition: transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .autostart-retention-bunny-ear::after {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 16px;
+            width: 22px;
+            height: 58px;
+            border-radius: 999px;
+            background: linear-gradient(180deg, #ffd5e3, #ffc2d4);
+            opacity: 0.82;
+        }
+
+        .autostart-retention-bunny-ear-left {
+            left: 31px;
+            transform: rotate(-18deg);
+        }
+
+        .autostart-retention-bunny-ear-right {
+            right: 31px;
+            transform: rotate(18deg);
+        }
+
+        .autostart-retention-bunny-head {
+            position: absolute;
+            left: 50%;
+            bottom: 0;
+            z-index: 2;
+            width: 126px;
+            height: 102px;
+            border-radius: 58px 58px 48px 48px;
+            background: linear-gradient(145deg, #ffffff, #e4f2ff);
+            box-shadow: 0 15px 28px rgba(93, 131, 180, 0.20), inset -8px -10px 18px rgba(142, 187, 230, 0.16), inset 8px 8px 18px rgba(255,255,255,0.95);
+            transform: translateX(-50%);
+            transform-origin: bottom center;
+            transition: transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+            animation: autostartRetentionBreathe 2.6s ease-in-out infinite;
+        }
+
+        .autostart-retention-bunny-eye {
+            position: absolute;
+            top: 40px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #2c3a4a;
+            transition: all 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .autostart-retention-bunny-eye::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            right: 3px;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: #ffffff;
+            transition: all 0.3s ease;
+        }
+
+        .autostart-retention-bunny-eye-left { left: 35px; }
+        .autostart-retention-bunny-eye-right { right: 35px; }
+
+        .autostart-retention-bunny-blush {
+            position: absolute;
+            top: 56px;
+            width: 24px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ffc2d4;
+            filter: blur(4px);
+            opacity: 0.58;
+            transition: all 0.34s ease;
+        }
+
+        .autostart-retention-bunny-blush-left { left: 23px; }
+        .autostart-retention-bunny-blush-right { right: 23px; }
+
+        .autostart-retention-bunny-mouth {
+            position: absolute;
+            top: 58px;
+            left: 50%;
+            display: flex;
+            justify-content: center;
+            width: 22px;
+            height: 10px;
+            transform: translateX(-50%);
+            transition: all 0.34s ease;
+        }
+
+        .autostart-retention-bunny-mouth::before,
+        .autostart-retention-bunny-mouth::after {
+            content: '';
+            width: 11px;
+            height: 9px;
+            border-bottom: 3px solid #2c3a4a;
+            border-radius: 50%;
+            transition: all 0.34s ease;
+        }
+
+        .autostart-retention-bunny-mouth::before {
+            margin-right: -2px;
+            border-right: 3px solid #2c3a4a;
+            border-bottom-right-radius: 12px;
+            transform: rotate(15deg);
+        }
+
+        .autostart-retention-bunny-mouth::after {
+            margin-left: -2px;
+            border-left: 3px solid #2c3a4a;
+            border-bottom-left-radius: 12px;
+            transform: rotate(-15deg);
+        }
+
+        .autostart-retention-bunny-paw {
+            position: absolute;
+            bottom: -10px;
+            z-index: 3;
+            width: 34px;
+            height: 42px;
+            border-radius: 999px;
+            background: linear-gradient(145deg, #ffffff, #e4f2ff);
+            box-shadow: inset -4px -5px 10px rgba(142, 187, 230, 0.16), inset 4px 4px 10px rgba(255,255,255,0.9);
+        }
+
+        .autostart-retention-bunny-paw-left {
+            left: 34px;
+            transform: rotate(18deg);
+        }
+
+        .autostart-retention-bunny-paw-right {
+            right: 34px;
+            transform: rotate(-18deg);
+        }
+
+        .modal-dialog-autostart-retention .modal-header {
+            padding: 4px 36px 8px;
+            border-bottom: 0;
+            text-align: center;
+        }
+
+        .modal-dialog-autostart-retention .modal-title {
+            color: #26374d;
+            font-size: 25px;
+            font-weight: 900;
+            line-height: 1.25;
+        }
+
+        .modal-dialog-autostart-retention .modal-body {
+            padding: 10px 42px 8px;
+            color: #61718a;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.65;
+            text-align: center;
+            white-space: normal;
+        }
+
+        .modal-dialog-autostart-retention .modal-note {
+            padding: 0 42px 24px !important;
+            color: #8795aa !important;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .modal-dialog-autostart-retention .modal-footer {
+            justify-content: center;
+            gap: 18px;
+            padding: 2px 28px 34px;
+            border-top: 0;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn {
+            min-width: 132px;
+            min-height: 46px;
+            border-radius: 999px;
+            font-weight: 900;
+            box-shadow: inset 0 4px 8px rgba(255,255,255,0.48);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-primary {
+            background: linear-gradient(135deg, #6bb0f2, #9dcbff);
+            box-shadow: 0 14px 28px rgba(107,176,242,0.32), inset 0 4px 8px rgba(255,255,255,0.46);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-primary:hover {
+            background: linear-gradient(135deg, #5fa8ee, #8ec2ff);
+            transform: translateY(-3px);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-secondary {
+            color: #8fa3c0;
+            background: rgba(255, 255, 255, 0.78);
+            box-shadow: 0 10px 20px rgba(95,135,190,0.12), inset 0 4px 8px rgba(255,255,255,0.72);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-secondary:hover {
+            background: #ffffff;
+            transform: translateY(-3px);
+        }
+
+        .modal-dialog-autostart-retention {
+            --exit-yui-blue: #6bb0f2;
+            --exit-yui-pink: #ffc2d4;
+            --exit-cat-main: linear-gradient(145deg, #ffffff, #e4f2ff);
+            --exit-cat-shadow: rgba(142, 187, 230, 0.18);
+            --exit-cat-face: #2c3a4a;
+            --exit-text-main: #26374d;
+            --exit-text-sub: #61718a;
+            --exit-card-border: rgba(255,255,255,0.88);
+            --exit-card-bg: linear-gradient(180deg, rgba(255,249,251,0.96) 0%, rgba(238,247,255,0.96) 100%);
+            --exit-card-shadow: rgba(95,135,190,0.24);
+            --exit-button-stay: linear-gradient(135deg, #6bb0f2, #9dcbff);
+            --exit-button-leave: rgba(255, 255, 255, 0.78);
+            width: min(620px, calc(100vw - 72px));
+            max-width: min(620px, calc(100vw - 72px));
+            min-height: 220px;
+            margin-top: 120px;
+            padding: 46px 46px 32px;
+            border: 2px solid var(--exit-card-border);
+            border-radius: 45px;
+            background: var(--exit-card-bg);
+            box-shadow: 0 40px 80px var(--exit-card-shadow), inset 0 10px 20px rgba(255,255,255,0.78);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--exit-text-main);
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-backglow {
+            position: absolute;
+            top: -116px;
+            left: 50%;
+            z-index: 4;
+            width: 220px;
+            height: 150px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.76);
+            filter: blur(30px);
+            transform: translateX(-50%);
+            transition: opacity 0.6s ease, transform 0.72s cubic-bezier(0.23, 1, 0.32, 1), background 0.35s ease;
+            pointer-events: none !important;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-character {
+            position: absolute;
+            top: -132px;
+            left: 50%;
+            z-index: 22;
+            width: 190px;
+            height: 160px;
+            transform: translateX(-50%);
+            transition: opacity 0.54s ease, transform 0.56s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none !important;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-heart {
+            position: absolute;
+            top: -16px;
+            left: 50%;
+            color: #ff85a2;
+            font-size: 24px;
+            font-weight: 900;
+            opacity: 0;
+            transform: translateX(-50%) translateY(10px) scale(0.4);
+            transition: opacity 0.3s ease, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none !important;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-head-group {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            animation: exitRetentionCatBreathe 3.5s infinite ease-in-out;
+            transform-origin: bottom center;
+            transition: transform 0.46s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none !important;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-head {
+            position: absolute;
+            bottom: 0;
+            z-index: 2;
+            width: 100%;
+            height: 140px;
+            border-radius: 45% 45% 40% 40% / 60% 60% 40% 40%;
+            background: var(--exit-cat-main);
+            box-shadow: inset -8px -12px 25px var(--exit-cat-shadow), inset 8px 8px 20px rgba(255,255,255,0.95), 0 -5px 20px rgba(163,217,255,0.15);
+            pointer-events: none !important;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-ear {
+            position: absolute;
+            top: -10px;
+            z-index: 1;
+            width: 55px;
+            height: 65px;
+            background: var(--exit-cat-main);
+            box-shadow: inset -4px -4px 10px var(--exit-cat-shadow), inset 4px 4px 10px rgba(255,255,255,0.95);
+            transition: transform 0.46s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none !important;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-ear--left { left: 8px; border-radius: 12px 40px 10px 10px; transform: rotate(-22deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-ear--right { right: 8px; border-radius: 40px 12px 10px 10px; transform: rotate(22deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-ear::after {
+            content: '';
+            position: absolute;
+            bottom: 8px;
+            width: 32px;
+            height: 40px;
+            border-radius: inherit;
+            background: linear-gradient(180deg, #ffcce5, var(--exit-yui-pink));
+            box-shadow: inset 0 2px 6px rgba(0,0,0,0.05);
+            opacity: 0.9;
+        }
+
+        .modal-dialog-autostart-retention .exit-retention-cat-ear--left::after { left: 12px; transform: rotate(10deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-ear--right::after { right: 12px; transform: rotate(-10deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-face { position: absolute; top: 65px; left: 0; z-index: 3; width: 100%; height: 50px; transition: transform 0.35s ease; pointer-events: none !important; }
+        .modal-dialog-autostart-retention .exit-retention-cat-eye { position: absolute; top: 10px; width: 16px; height: 16px; border-radius: 50%; background: var(--exit-cat-face); transition: all 0.36s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .modal-dialog-autostart-retention .exit-retention-cat-eye--left { left: 48px; }
+        .modal-dialog-autostart-retention .exit-retention-cat-eye--right { right: 48px; }
+        .modal-dialog-autostart-retention .exit-retention-cat-eye::after { content: ''; position: absolute; top: 2px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: #ffffff; transition: all 0.3s ease; }
+        .modal-dialog-autostart-retention .exit-retention-cat-mouth { position: absolute; top: 22px; left: 50%; display: flex; justify-content: center; width: 22px; height: 10px; transform: translateX(-50%); transition: all 0.36s ease; }
+        .modal-dialog-autostart-retention .exit-retention-cat-mouth::before,
+        .modal-dialog-autostart-retention .exit-retention-cat-mouth::after { content: ''; width: 11px; height: 9px; border-bottom: 3.5px solid var(--exit-cat-face); border-radius: 50%; transition: all 0.36s ease; }
+        .modal-dialog-autostart-retention .exit-retention-cat-mouth::before { margin-right: -2px; border-right: 3.5px solid var(--exit-cat-face); border-bottom-right-radius: 12px; transform: rotate(15deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-mouth::after { margin-left: -2px; border-left: 3.5px solid var(--exit-cat-face); border-bottom-left-radius: 12px; transform: rotate(-15deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-blush { position: absolute; top: 20px; width: 24px; height: 12px; border-radius: 50%; background: var(--exit-yui-pink); filter: blur(4px); opacity: 0.72; transition: all 0.36s ease; }
+        .modal-dialog-autostart-retention .exit-retention-cat-blush--left { left: 25px; }
+        .modal-dialog-autostart-retention .exit-retention-cat-blush--right { right: 25px; }
+        .modal-dialog-autostart-retention .exit-retention-cat-paw { position: absolute; bottom: -15px; z-index: 25; width: 40px; height: 50px; border-radius: 25px; background: var(--exit-cat-main); box-shadow: 0 6px 10px rgba(0,0,0,0.06), inset -4px -4px 10px var(--exit-cat-shadow), inset 4px 4px 10px rgba(255,255,255,0.95); transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.36s ease; pointer-events: none !important; }
+        .modal-dialog-autostart-retention .exit-retention-cat-paw--left { left: 35px; transform: rotate(20deg); }
+        .modal-dialog-autostart-retention .exit-retention-cat-paw--right { right: 35px; transform: rotate(-20deg); }
+
+        .modal-dialog-autostart-retention .modal-header {
+            padding: 22px 0 0;
+        }
+
+        .modal-dialog-autostart-retention .modal-title {
+            margin: 0 0 10px;
+            color: var(--exit-text-main);
+            font-size: 29px;
+            font-weight: 900;
+            line-height: 1.22;
+            letter-spacing: 0;
+            overflow-wrap: anywhere;
+        }
+
+        .modal-dialog-autostart-retention .modal-body {
+            padding: 0;
+            color: var(--exit-text-sub);
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1.45;
+            overflow-wrap: anywhere;
+        }
+
+        .modal-dialog-autostart-retention .modal-note {
+            padding: 8px 0 0 !important;
+            color: var(--exit-text-sub) !important;
+            font-size: 13px;
+            font-weight: 800;
+            line-height: 1.45;
+            opacity: 0.78;
+        }
+
+        .modal-dialog-autostart-retention .modal-footer {
+            position: relative;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 22px;
+            padding: 38px 0 34px;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn {
+            min-width: 188px;
+            min-height: 0;
+            padding: 15px 36px;
+            border: 0;
+            border-radius: 999px;
+            font-size: 17px;
+            font-weight: 900;
+            line-height: 1.2;
+            letter-spacing: 0;
+            white-space: nowrap;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease, background 0.18s ease;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-primary {
+            color: #ffffff;
+            background: linear-gradient(135deg, #52aaf3 0%, #85c8ff 100%);
+            box-shadow: 0 14px 26px rgba(82,170,243,0.34), inset 0 3px 8px rgba(255,255,255,0.42);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-secondary {
+            color: #8798ad;
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid rgba(174, 200, 226, 0.42);
+            box-shadow: 0 12px 22px rgba(95,135,190,0.10), inset 0 3px 8px rgba(255,255,255,0.76);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-link {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            min-width: 0;
+            padding: 4px 2px;
+            border-radius: 0;
+            color: #5f6d7f;
+            background: transparent;
+            box-shadow: none;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link):hover,
+        .modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link):focus-visible {
+            transform: translateY(-2px);
+            outline: none;
+            filter: brightness(1.03);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-link:hover,
+        .modal-dialog-autostart-retention .modal-btn-link:focus-visible {
+            color: #314158;
+            text-decoration: underline;
+            outline: none;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn:active {
+            transform: translateY(1px) scale(0.98);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-link:active {
+            transform: none;
+        }
+
+        @media (max-width: 560px) {
+            .modal-dialog-autostart-retention .modal-footer {
+                gap: 12px;
+                padding-bottom: 26px;
+            }
+
+            .modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link) {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .modal-dialog-autostart-retention .modal-btn-link {
+                right: 50%;
+                bottom: -6px;
+                transform: translateX(50%);
+            }
+
+            .modal-dialog-autostart-retention .modal-btn-link:active {
+                transform: translateX(50%);
+            }
+        }
+
+        .modal-dialog-autostart-retention.state-curious .exit-retention-cat-head-group { transform: rotate(10deg) translateY(2px); }
+        .modal-dialog-autostart-retention.state-curious .exit-retention-cat-ear--left { transform: rotate(-8deg); }
+        .modal-dialog-autostart-retention.state-curious .exit-retention-cat-eye { transform: scale(1.13); }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-character { transform: translateX(-50%) translateY(18px); }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-eye { top: 16px; height: 5px; border-radius: 10px; transform: scaleX(1.2); }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-eye::after { opacity: 0; }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-mouth::before,
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-mouth::after { border-bottom: 0; border-top: 3.5px solid var(--exit-cat-face); }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-blush { background: #ff7e5f; transform: scale(1.4); opacity: 0.92; }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-paw { transform: translateY(-8px) rotate(0deg); }
+        .modal-dialog-autostart-retention.state-happy .exit-retention-cat-heart { opacity: 1; transform: translateX(-50%) translateY(-34px) scale(1); }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-head-group { transform: translateY(12px); animation: exitRetentionSadTremble 0.3s infinite; }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-ear--left { transform: rotate(-65deg) translateY(8px) translateX(-5px); }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-ear--right { transform: rotate(65deg) translateY(8px) translateX(5px); }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-eye { transform: scale(1.2); background: #2c3a4a; box-shadow: inset 0 -4px 6px rgba(163,217,255,0.8); }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-eye::after { top: 5px; right: 2px; width: 9px; height: 9px; box-shadow: -3px -3px 0 rgba(255,255,255,0.6); }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-mouth::before,
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-mouth::after { border-bottom: 0; border-top: 3.5px solid var(--exit-cat-face); }
+        .modal-dialog-autostart-retention.state-sad .exit-retention-cat-backglow { background: rgba(163,217,255,0.45); }
+
+        .modal-dialog-autostart-retention.state-curious .autostart-retention-bunny-head {
+            animation: none;
+            transform: translateX(-50%) rotate(8deg) translateY(3px);
+        }
+
+        .modal-dialog-autostart-retention.state-curious .autostart-retention-bunny-ear-left {
+            transform: rotate(-8deg);
+        }
+
+        .modal-dialog-autostart-retention.state-curious .autostart-retention-bunny-eye {
+            transform: scale(1.12);
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny {
+            transform: translateX(-50%) translateY(14px);
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-eye {
+            top: 46px;
+            height: 5px;
+            border-radius: 10px;
+            transform: scaleX(1.2);
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-eye::after {
+            opacity: 0;
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-mouth::before,
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-mouth::after {
+            border-bottom: 0;
+            border-top: 3px solid #2c3a4a;
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-blush {
+            background: #ff8fb2;
+            opacity: 0.88;
+            transform: scale(1.25);
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-paw {
+            transform: translateY(-7px) rotate(0deg);
+        }
+
+        .modal-dialog-autostart-retention.state-happy .autostart-retention-bunny-heart {
+            opacity: 1;
+            transform: translateX(-50%) translateY(-34px) scale(1);
+        }
+
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-head {
+            animation: autostartRetentionSadTremble 0.3s infinite;
+        }
+
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-ear-left {
+            transform: rotate(-58deg) translateY(8px) translateX(-4px);
+        }
+
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-ear-right {
+            transform: rotate(58deg) translateY(8px) translateX(4px);
+        }
+
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-eye {
+            transform: scale(1.16);
+            box-shadow: inset 0 -4px 6px rgba(163,217,255,0.8);
+        }
+
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-eye::after {
+            top: 5px;
+            right: 2px;
+            width: 8px;
+            height: 8px;
+            box-shadow: -3px -3px 0 rgba(255,255,255,0.6);
+        }
+
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-mouth::before,
+        .modal-dialog-autostart-retention.state-sad .autostart-retention-bunny-mouth::after {
+            border-bottom: 0;
+            border-top: 3px solid #2c3a4a;
+        }
+
+        @keyframes autostartRetentionBreathe {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(4px); }
+        }
+
+        @keyframes autostartRetentionSadTremble {
+            0%, 100% { transform: translateX(-50%) translateY(9px); }
+            50% { transform: translateX(calc(-50% + 1px)) translateY(9px); }
+        }
+
+        @keyframes exitRetentionCatBreathe {
+            0%, 100% { transform: scaleY(1); }
+            50% { transform: scaleY(0.97) translateY(3px); }
+        }
+
+        @keyframes exitRetentionSadTremble {
+            0%, 100% { transform: translateY(12px) translateX(0); }
+            50% { transform: translateY(12px) translateX(1px); }
+        }
+
+        [data-theme="dark"] .modal-overlay-autostart-retention {
+            background: rgba(8, 13, 22, 0.62);
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention {
+            border-color: rgba(255, 255, 255, 0.08);
+            background: linear-gradient(180deg, #1f2837 0%, #121b27 100%);
+            box-shadow: 0 24px 58px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.08);
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-title {
+            color: #f5f7fb;
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-body {
+            color: #c8d4e5;
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-note {
+            color: #9dafc6 !important;
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-secondary {
+            color: #d2deee;
+            background: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255,255,255,0.12);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.22), inset 0 4px 8px rgba(255,255,255,0.10);
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-link {
+            color: #9dafc6;
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-link:hover,
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-link:focus-visible {
+            color: #d8e6f7;
+        }
     `;
     document.head.appendChild(style);
 
     /**
      * 创建模态对话框
      */
+    function emitDecisionPromptLifecycleEvent(type, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(type, {
+                detail: Object.assign({ source: 'common-dialogs' }, detail || {})
+            }));
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    function temporarilyHideReactChatOverlayForModal(modalConfig) {
+        if (!modalConfig || modalConfig.skin !== 'autostart-retention') {
+            return function noop() {};
+        }
+        const overlay = document.getElementById('react-chat-window-overlay');
+        if (!overlay || overlay.hidden) {
+            return function noop() {};
+        }
+
+        const body = document.body;
+        const hadOpenClass = !!(
+            body
+            && body.classList
+            && typeof body.classList.contains === 'function'
+            && body.classList.contains('react-chat-window-open')
+        );
+        overlay.hidden = true;
+        if (body && body.classList && typeof body.classList.remove === 'function') {
+            body.classList.remove('react-chat-window-open');
+        }
+
+        return function restoreReactChatOverlay() {
+            if (overlay.hidden) {
+                overlay.hidden = false;
+            }
+            if (hadOpenClass && body && body.classList && typeof body.classList.add === 'function') {
+                body.classList.add('react-chat-window-open');
+            }
+        };
+    }
+
     function createModal(config) {
         return new Promise((resolve) => {
             const modalConfig = config || {};
+            const isAutostartRetentionSkin = modalConfig.skin === 'autostart-retention';
+            const isDecisionPrompt = modalConfig.type === 'decision';
+            const restoreObscuredUi = temporarilyHideReactChatOverlayForModal(modalConfig);
             let settled = false;
             const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
                 ? modalConfig.dismissValue
@@ -229,10 +962,16 @@
             // 创建遮罩层
             const overlay = document.createElement('div');
             overlay.className = 'modal-overlay';
+            if (isAutostartRetentionSkin) {
+                overlay.classList.add('modal-overlay-autostart-retention');
+            }
 
             // 创建对话框
             const dialog = document.createElement('div');
             dialog.className = 'modal-dialog';
+            if (isAutostartRetentionSkin) {
+                dialog.classList.add('modal-dialog-autostart-retention');
+            }
             dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
             dialog.setAttribute('aria-label', modalConfig.title || 'Dialog');
@@ -240,9 +979,60 @@
                 dialog.style.maxWidth = String(modalConfig.maxWidth);
             }
 
+            if (isAutostartRetentionSkin) {
+                const backglow = document.createElement('div');
+                backglow.className = 'exit-retention-cat-backglow';
+                backglow.setAttribute('aria-hidden', 'true');
+                dialog.appendChild(backglow);
+
+                const catCharacter = document.createElement('div');
+                catCharacter.className = 'exit-retention-cat-character';
+                catCharacter.setAttribute('aria-hidden', 'true');
+                catCharacter.innerHTML = [
+                    '<div class="exit-retention-cat-heart">♥</div>',
+                    '<div class="exit-retention-cat-head-group">',
+                    '  <div class="exit-retention-cat-ear exit-retention-cat-ear--left"></div>',
+                    '  <div class="exit-retention-cat-ear exit-retention-cat-ear--right"></div>',
+                    '  <div class="exit-retention-cat-head">',
+                    '    <div class="exit-retention-cat-face">',
+                    '      <div class="exit-retention-cat-blush exit-retention-cat-blush--left"></div>',
+                    '      <div class="exit-retention-cat-eye exit-retention-cat-eye--left"></div>',
+                    '      <div class="exit-retention-cat-mouth"></div>',
+                    '      <div class="exit-retention-cat-eye exit-retention-cat-eye--right"></div>',
+                    '      <div class="exit-retention-cat-blush exit-retention-cat-blush--right"></div>',
+                    '    </div>',
+                    '  </div>',
+                    '</div>',
+                    '<div class="exit-retention-cat-paw exit-retention-cat-paw--left"></div>',
+                    '<div class="exit-retention-cat-paw exit-retention-cat-paw--right"></div>',
+                ].join('');
+                dialog.appendChild(catCharacter);
+            }
+
+            function setAutostartRetentionState(nextState) {
+                if (!isAutostartRetentionSkin) {
+                    return;
+                }
+                dialog.classList.remove('state-curious', 'state-happy', 'state-sad');
+                if (nextState) {
+                    dialog.classList.add(nextState);
+                }
+            }
+
+            function bindAutostartRetentionState(target, nextState) {
+                if (!isAutostartRetentionSkin || !target) {
+                    return;
+                }
+                target.addEventListener('mouseenter', () => setAutostartRetentionState(nextState));
+                target.addEventListener('mouseleave', () => setAutostartRetentionState(''));
+                target.addEventListener('focus', () => setAutostartRetentionState(nextState));
+                target.addEventListener('blur', () => setAutostartRetentionState(''));
+            }
+
             // 创建标题
+            let header = null;
             if (modalConfig.title) {
-                const header = document.createElement('div');
+                header = document.createElement('div');
                 header.className = 'modal-header';
                 const title = document.createElement('h3');
                 title.className = 'modal-title';
@@ -323,12 +1113,17 @@
             }
 
             dialog.appendChild(body);
+            bindAutostartRetentionState(header, 'state-curious');
+            bindAutostartRetentionState(body, 'state-curious');
 
+            let note = null;
             if (modalConfig.note) {
-                const note = document.createElement('div');
+                note = document.createElement('div');
+                note.className = 'modal-note';
                 note.style.cssText = 'padding:0 24px 20px;color:#64748b;font-size:13px;line-height:1.6;';
                 applyModalTextContent(note, modalConfig.note, modalConfig.noteFormat);
                 dialog.appendChild(note);
+                bindAutostartRetentionState(note, 'state-curious');
             }
 
             // 创建按钮区域
@@ -338,12 +1133,29 @@
             function finish(value) {
                 if (settled) return;
                 settled = true;
+                if (typeof modalConfig.onResolve === 'function') {
+                    try {
+                        modalConfig.onResolve(value, {
+                            overlay: overlay,
+                            dialog: dialog,
+                        });
+                    } catch (error) {
+                        console.warn('[Dialog] onResolve failed:', error);
+                    }
+                }
                 document.removeEventListener('keydown', escHandler);
                 overlay.style.animation = 'fadeOut 0.2s ease-out';
                 setTimeout(() => {
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);
                     }
+                    if (isDecisionPrompt) {
+                        emitDecisionPromptLifecycleEvent('neko:decision-prompt-closed', {
+                            skin: modalConfig.skin || '',
+                            type: modalConfig.type || ''
+                        });
+                    }
+                    restoreObscuredUi();
                     resolve(value);
                 }, 200);
             }
@@ -458,9 +1270,18 @@
                     const button = document.createElement('button');
                     const variant = buttonConfig.variant === 'danger'
                         ? 'modal-btn-danger'
-                        : (buttonConfig.variant === 'primary' ? 'modal-btn-primary' : 'modal-btn-secondary');
+                        : (buttonConfig.variant === 'primary'
+                            ? 'modal-btn-primary'
+                            : (buttonConfig.variant === 'link' ? 'modal-btn-link' : 'modal-btn-secondary'));
                     button.className = 'modal-btn ' + variant;
                     button.textContent = String(buttonConfig.text || ('Button ' + (index + 1)));
+                    if (isAutostartRetentionSkin) {
+                        if (buttonConfig.value === 'accept') {
+                            bindAutostartRetentionState(button, 'state-happy');
+                        } else if (buttonConfig.value === 'later' || buttonConfig.value === 'never') {
+                            bindAutostartRetentionState(button, 'state-sad');
+                        }
+                    }
                     button.onclick = () => {
                         finish(buttonConfig.value);
                     };
@@ -493,6 +1314,12 @@
 
             // 添加到页面
             document.body.appendChild(overlay);
+            if (isDecisionPrompt) {
+                emitDecisionPromptLifecycleEvent('neko:decision-prompt-opened', {
+                    skin: modalConfig.skin || '',
+                    type: modalConfig.type || ''
+                });
+            }
 
             if (typeof modalConfig.onShown === 'function') {
                 const notifyShown = function () {
@@ -703,6 +1530,9 @@
     if (!window._openedWindows) {
         window._openedWindows = {};
     }
+    const SHARED_NAMED_WINDOW_PREFIX = 'neko:named-window:';
+    const SHARED_NAMED_WINDOW_FOCUS_PREFIX = 'neko:named-window-focus:';
+    const SHARED_NAMED_WINDOW_TTL_MS = 5000;
     
     /**
      * 打开或聚焦窗口
@@ -712,39 +1542,238 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
+     * @param {{navigateOnReuse?: boolean}} [options] - 复用同名窗口时是否强制导航
      * @returns {Window|null} - 返回窗口对象
      */
-    window.openOrFocusWindow = function(url, windowName, features) {
+    window.openOrFocusWindow = function(url, windowName, features, options) {
         // 默认窗口特性（移除 noopener 以便获取窗口引用）
         const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no';
         features = features || defaultFeatures;
+        const targetUrl = resolveOpenedWindowUrl(url);
+        const normalizedOptions = options && typeof options === 'object' ? options : {};
 
         // 检查窗口是否已打开且未关闭
         const existingWindow = window._openedWindows[windowName];
         if (existingWindow && !existingWindow.closed) {
+            if (normalizedOptions.navigateOnReuse) {
+                navigateOpenedWindow(existingWindow, targetUrl, !!normalizedOptions.navigateOnReuse);
+            }
+            applyOpenedWindowFeatures(existingWindow, features);
+            requestOpenedWindowRestore(existingWindow);
             existingWindow.focus();
             return existingWindow;
         }
 
-        // 打开新窗口并存储引用
-        const newWindow = window.open(url, windowName, features);
-        if (newWindow) {
-            window._openedWindows[windowName] = newWindow;
+        if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(windowName)) {
+            requestSharedNamedWindowFocus(windowName);
+            return createSharedNamedWindowProxy(windowName);
+        }
 
-            // 监听窗口关闭事件，清理引用
-            const checkClosed = setInterval(() => {
-                if (newWindow.closed) {
-                    clearInterval(checkClosed);
-                    // 只有当缓存的引用仍然是这个窗口时才删除
-                    // 防止在1秒内重新打开同名窗口时误删新窗口的引用
-                    if (window._openedWindows[windowName] === newWindow) {
-                        delete window._openedWindows[windowName];
-                    }
-                }
-            }, 1000);
+        // 没有本地 handle 且目标页未登记为活跃时，直接按 URL 打开。
+        // 避免先打开 about:blank；部分 Electron/window.open handler 会因此卡住。
+        const newWindow = window.open(targetUrl, windowName, features);
+        if (newWindow) {
+            cacheOpenedWindow(windowName, newWindow);
+            applyOpenedWindowFeatures(newWindow, features);
+            requestOpenedWindowRestore(newWindow);
         }
         return newWindow;
     };
+
+    function isReusableNamedWindowName(windowName) {
+        if (!windowName) return false;
+        const name = String(windowName).toLowerCase();
+        return name !== '_blank' && name !== '_self' && name !== '_parent' && name !== '_top';
+    }
+
+    function resolveOpenedWindowUrl(url) {
+        try {
+            return new URL(url, window.location.href).toString();
+        } catch (_) {
+            return url;
+        }
+    }
+
+    function getSharedNamedWindowKey(windowName) {
+        return SHARED_NAMED_WINDOW_PREFIX + String(windowName || '');
+    }
+
+    function getSharedNamedWindowFocusKey(windowName) {
+        return SHARED_NAMED_WINDOW_FOCUS_PREFIX + String(windowName || '');
+    }
+
+    function isSharedNamedWindowActive(windowName) {
+        if (!isReusableNamedWindowName(windowName)) return false;
+        try {
+            const storage = window.localStorage;
+            if (!storage) return false;
+            const raw = storage.getItem(getSharedNamedWindowKey(windowName));
+            if (!raw) return false;
+            const data = JSON.parse(raw);
+            const timestamp = Number(data && data.timestamp);
+            return Number.isFinite(timestamp) && (Date.now() - timestamp) < SHARED_NAMED_WINDOW_TTL_MS;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function requestSharedNamedWindowFocus(windowName, payload) {
+        if (!isReusableNamedWindowName(windowName)) return;
+        const message = {
+            type: payload ? 'neko:named-window-message' : 'neko:named-window-focus',
+            windowName: windowName,
+            payload: payload || null,
+            timestamp: Date.now()
+        };
+        try {
+            if ('BroadcastChannel' in window) {
+                const channel = new BroadcastChannel('neko:named-window');
+                channel.postMessage(message);
+                channel.close();
+            }
+        } catch (_) {}
+        try {
+            window.localStorage.setItem(getSharedNamedWindowFocusKey(windowName), JSON.stringify(message));
+        } catch (_) {}
+    }
+
+    function createSharedNamedWindowProxy(windowName) {
+        const proxy = {
+            focus: function() {
+                requestSharedNamedWindowFocus(windowName);
+            },
+            close: function() {},
+            postMessage: function(message) {
+                requestSharedNamedWindowFocus(windowName, message);
+            }
+        };
+        Object.defineProperty(proxy, 'closed', {
+            get: function() {
+                return !isSharedNamedWindowActive(windowName);
+            }
+        });
+        return proxy;
+    }
+
+    function cacheOpenedWindow(windowName, targetWindow) {
+        if (!windowName || !targetWindow) return;
+        window._openedWindows[windowName] = targetWindow;
+
+        // 监听窗口关闭事件，清理引用
+        const checkClosed = setInterval(() => {
+            if (targetWindow.closed) {
+                clearInterval(checkClosed);
+                // 只有当缓存的引用仍然是这个窗口时才删除
+                // 防止在1秒内重新打开同名窗口时误删新窗口的引用
+                if (window._openedWindows[windowName] === targetWindow) {
+                    delete window._openedWindows[windowName];
+                }
+            }
+        }, 1000);
+    }
+
+    function navigateOpenedWindow(targetWindow, url, replace) {
+        if (!targetWindow || targetWindow.closed || !url) return;
+        try {
+            if (replace && targetWindow.location && typeof targetWindow.location.replace === 'function') {
+                targetWindow.location.replace(url);
+            } else {
+                targetWindow.location.href = url;
+            }
+        } catch (_) {
+            try {
+                targetWindow.location.href = url;
+            } catch (_) {}
+        }
+    }
+
+    function getOpenedWindowFeatureNumber(features, name) {
+        if (!features || !name) return null;
+        const pattern = new RegExp('(?:^|,)\\s*' + name + '\\s*=\\s*(-?\\d+)', 'i');
+        const match = String(features).match(pattern);
+        if (!match) return null;
+        const value = Number(match[1]);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    function applyOpenedWindowFeatures(targetWindow, features) {
+        if (!targetWindow || targetWindow.closed || !features) return;
+        const width = getOpenedWindowFeatureNumber(features, 'width');
+        const height = getOpenedWindowFeatureNumber(features, 'height');
+        const left = getOpenedWindowFeatureNumber(features, 'left');
+        const top = getOpenedWindowFeatureNumber(features, 'top');
+        try {
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                targetWindow.resizeTo(width, height);
+            }
+        } catch (_) {}
+        try {
+            if (Number.isFinite(left) && Number.isFinite(top)) {
+                targetWindow.moveTo(left, top);
+            }
+        } catch (_) {}
+    }
+
+    function requestOpenedWindowRestore(targetWindow) {
+        if (!targetWindow || targetWindow.closed) return;
+        try {
+            targetWindow.postMessage({ type: 'neko:restore-window' }, window.location.origin);
+        } catch (error) {
+            // 目标窗口可能跨域或正在关闭，聚焦兜底即可
+        }
+    }
+
+    window.requestOpenedWindowRestore = requestOpenedWindowRestore;
+
+    /**
+     * 计算「在当前所在显示器可用区域内居中」的 window.open features 字符串。
+     * 多显示器下 window.open 的 left/top 是相对整个虚拟桌面原点的坐标，必须叠加当前屏幕
+     * 偏移（screen.availLeft/availTop，回退 window.screenX/screenY），否则副屏打开会按主屏
+     * 原点居中、跳回主屏。调用方负责把尺寸 clamp 好后传入最终窗口尺寸。
+     *
+     * @param {number} windowWidth - 最终窗口宽度
+     * @param {number} windowHeight - 最终窗口高度
+     * @returns {string}
+     */
+    function buildCenteredPopupFeatures(windowWidth, windowHeight) {
+        const screenRef = window.screen || {};
+        const width = Math.max(1, Math.floor(Number(windowWidth)) || 1);
+        const height = Math.max(1, Math.floor(Number(windowHeight)) || 1);
+        const availableWidth = Math.max(width, Number(screenRef.availWidth || screenRef.width) || width);
+        const availableHeight = Math.max(height, Number(screenRef.availHeight || screenRef.height) || height);
+        const screenLeft = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : (Number(window.screenX) || 0);
+        const screenTop = Number.isFinite(screenRef.availTop) ? screenRef.availTop : (Number(window.screenY) || 0);
+        const left = Math.round(screenLeft + Math.max(0, (availableWidth - width) / 2));
+        const top = Math.round(screenTop + Math.max(0, (availableHeight - height) / 2));
+        return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+    }
+
+    window.buildCenteredPopupFeatures = buildCenteredPopupFeatures;
+
+    function buildApiKeySettingsWindowFeatures(width = 1240, height = 940) {
+        const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+        const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+        const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+        const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+        if (typeof window.buildCenteredPopupFeatures === 'function') {
+            return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+        }
+        const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+        const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+        return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+    }
+
+    window.buildApiKeySettingsWindowFeatures = buildApiKeySettingsWindowFeatures;
+
+    window.addEventListener('message', function(event) {
+        if (event.origin !== window.location.origin) return;
+        if (!event.data || event.data.type !== 'neko:restore-window') return;
+        const api = window.nekoWindowControl;
+        if (!api || typeof api.restore !== 'function') return;
+        Promise.resolve(api.restore()).catch(function() {
+            // 非 Electron 环境下忽略
+        });
+    });
     
     /**
      * 关闭指定名称的窗口

@@ -18,12 +18,14 @@ class ModelProfilerUI {
      * @param {HTMLElement} opts.container - 挂载容器
      * @param {() => object} opts.getManager - 获取当前模型管理器的函数
      * @param {() => THREE.WebGLRenderer} opts.getRenderer - 获取渲染器的函数
+     * @param {() => ({key: string, fallback: string}|null)} [opts.getUnsupportedReason] - 返回 {key, fallback} 则三个快照面板都显示该提示并跳过实际采样（用于 Live2D 等不支持类型）；key 用于 _refreshI18n 重渲染，fallback 是 i18n 未就绪时的兜底文本
      * @param {boolean} [opts.collapsed=true] - 初始是否折叠
      */
     constructor(opts) {
         this.container = opts.container;
         this.getManager = opts.getManager;
         this.getRenderer = opts.getRenderer;
+        this.getUnsupportedReason = opts.getUnsupportedReason;
         this.collapsed = opts.collapsed !== false;
 
         this.profiler = new ModelProfiler({ historySize: 300 });
@@ -32,6 +34,21 @@ class ModelProfilerUI {
         this._chartCtx = null;
         this._mounted = false;
         this._elements = {};
+        this._badgeKey = 'profiler.badge.idle';
+        this._lastSnapshot = null;
+        this._lastAssessment = null;
+        this._onLocaleChange = () => this._refreshI18n();
+    }
+
+    // i18n helper：window.t 不可用时回退到中文
+    _t(key, fallback) {
+        if (typeof window !== 'undefined' && typeof window.t === 'function') {
+            try {
+                const v = window.t(key);
+                if (v && v !== key) return v;
+            } catch (e) { /* swallow */ }
+        }
+        return fallback;
     }
 
     // ═══════════════════ 生命周期 ═══════════════════
@@ -41,6 +58,10 @@ class ModelProfilerUI {
         this._mounted = true;
         this._buildDOM();
         this._bindEvents();
+        window.addEventListener('localechange', this._onLocaleChange);
+        if (window.i18n && typeof window.i18n.on === 'function') {
+            window.i18n.on('languageChanged', this._onLocaleChange);
+        }
     }
 
     unmount() {
@@ -54,6 +75,10 @@ class ModelProfilerUI {
             this._resizeObserver.disconnect();
             this._resizeObserver = null;
         }
+        window.removeEventListener('localechange', this._onLocaleChange);
+        if (window.i18n && typeof window.i18n.off === 'function') {
+            window.i18n.off('languageChanged', this._onLocaleChange);
+        }
         if (this.container) {
             this.container.innerHTML = '';
         }
@@ -63,88 +88,115 @@ class ModelProfilerUI {
     // ═══════════════════ DOM 构建 ═══════════════════
 
     _buildDOM() {
+        const t = (k, fb) => this._t(k, fb);
         const panel = document.createElement('div');
         panel.className = 'profiler-panel' + (this.collapsed ? ' collapsed' : '');
         panel.innerHTML = `
             <div class="profiler-header">
-                <span class="profiler-title">📊 性能分析器</span>
+                <span class="profiler-title" data-i18n-key="profiler.title">📊 ${t('profiler.title','性能分析器')}</span>
                 <div class="profiler-header-right">
-                    <span class="profiler-badge profiler-badge-idle">待机</span>
-                    <button class="profiler-toggle-btn" title="展开/折叠" aria-label="展开/折叠性能分析器">▼</button>
+                    <span class="profiler-badge profiler-badge-idle" data-i18n-key="profiler.badge.idle">${t('profiler.badge.idle','待机')}</span>
+                    <button class="profiler-toggle-btn"
+                            data-i18n-title-key="profiler.toggle.title"
+                            data-i18n-aria-key="profiler.toggle.aria"
+                            title="${t('profiler.toggle.title','展开/折叠')}"
+                            aria-label="${t('profiler.toggle.aria','展开/折叠性能分析器')}">▼</button>
                 </div>
             </div>
             <div class="profiler-body">
                 <div class="profiler-controls">
-                    <button class="profiler-btn profiler-start-btn">▶ 开始采集</button>
-                    <button class="profiler-btn profiler-stop-btn" disabled>⏹ 停止</button>
-                    <button class="profiler-btn profiler-snapshot-btn">📷 快照</button>
-                    <button class="profiler-btn profiler-reset-btn">🔄 重置</button>
+                    <button class="profiler-btn profiler-start-btn" data-i18n-key="profiler.btn.start" data-i18n-prefix="▶ ">▶ ${t('profiler.btn.start','开始采集')}</button>
+                    <button class="profiler-btn profiler-stop-btn" disabled data-i18n-key="profiler.btn.stop" data-i18n-prefix="⏹ ">⏹ ${t('profiler.btn.stop','停止')}</button>
+                    <button class="profiler-btn profiler-snapshot-btn" data-i18n-key="profiler.btn.snapshot" data-i18n-prefix="📷 ">📷 ${t('profiler.btn.snapshot','快照')}</button>
+                    <button class="profiler-btn profiler-reset-btn" data-i18n-key="profiler.btn.reset" data-i18n-prefix="🔄 ">🔄 ${t('profiler.btn.reset','重置')}</button>
                 </div>
 
                 <!-- 调试可视化 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">调试可视化</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.debug.title">${t('profiler.debug.title','调试可视化')}</div>
                     <div class="profiler-controls">
-                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-kinematic" title="Kinematic 刚体 (Mode 0)：跟随骨骼动画，不受物理影响" style="border-color:#FF6B35;color:#FF6B35;">⬤ 骨骼刚体</button>
-                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-dynamic" title="Dynamic 刚体 (Mode 1)：纯物理驱动，受重力和碰撞影响" style="border-color:#E040FB;color:#E040FB;">⬤ 物理刚体</button>
-                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-mixed" title="Mixed 刚体 (Mode 2)：物理+骨骼混合，位置锚定到骨骼" style="border-color:#448AFF;color:#448AFF;">⬤ 混合刚体</button>
+                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-kinematic"
+                                data-i18n-key="profiler.debug.physicsKinematic" data-i18n-prefix="⬤ "
+                                data-i18n-title-key="profiler.debug.physicsKinematicTip"
+                                title="${t('profiler.debug.physicsKinematicTip','Kinematic 刚体 (Mode 0)：跟随骨骼动画，不受物理影响')}"
+                                style="border-color:#FF6B35;color:#FF6B35;">⬤ ${t('profiler.debug.physicsKinematic','骨骼刚体')}</button>
+                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-dynamic"
+                                data-i18n-key="profiler.debug.physicsDynamic" data-i18n-prefix="⬤ "
+                                data-i18n-title-key="profiler.debug.physicsDynamicTip"
+                                title="${t('profiler.debug.physicsDynamicTip','Dynamic 刚体 (Mode 1)：纯物理驱动，受重力和碰撞影响')}"
+                                style="border-color:#E040FB;color:#E040FB;">⬤ ${t('profiler.debug.physicsDynamic','物理刚体')}</button>
+                        <button class="profiler-btn profiler-toggle-physics" data-debug="physics-mixed"
+                                data-i18n-key="profiler.debug.physicsMixed" data-i18n-prefix="⬤ "
+                                data-i18n-title-key="profiler.debug.physicsMixedTip"
+                                title="${t('profiler.debug.physicsMixedTip','Mixed 刚体 (Mode 2)：物理+骨骼混合，位置锚定到骨骼')}"
+                                style="border-color:#448AFF;color:#448AFF;">⬤ ${t('profiler.debug.physicsMixed','混合刚体')}</button>
                     </div>
                     <div class="profiler-controls" style="margin-top:4px;">
-                        <button class="profiler-btn" data-debug="physics-solid" title="切换线框/半透明面：半透明面模式可观察刚体堆叠关系和重叠程度" style="border-color:#999;color:#999;">🔲 半透明面</button>
-                        <button class="profiler-btn profiler-toggle-ik" data-debug="ik" title="IK 求解器：显示 IK 目标、效应器和链节点">🦴 IK 链</button>
-                        <button class="profiler-btn profiler-toggle-skeleton" data-debug="skeleton" title="骨骼线框：显示完整骨骼层级结构">🩻 骨骼</button>
+                        <button class="profiler-btn" data-debug="physics-solid"
+                                data-i18n-key="profiler.debug.physicsSolid" data-i18n-prefix="🔲 "
+                                data-i18n-title-key="profiler.debug.physicsSolidTip"
+                                title="${t('profiler.debug.physicsSolidTip','切换线框/半透明面：半透明面模式可观察刚体堆叠关系和重叠程度')}"
+                                style="border-color:#999;color:#999;">🔲 ${t('profiler.debug.physicsSolid','半透明面')}</button>
+                        <button class="profiler-btn profiler-toggle-ik" data-debug="ik"
+                                data-i18n-key="profiler.debug.ik" data-i18n-prefix="🦴 "
+                                data-i18n-title-key="profiler.debug.ikTip"
+                                title="${t('profiler.debug.ikTip','IK 求解器：显示 IK 目标、效应器和链节点')}">🦴 ${t('profiler.debug.ik','IK 链')}</button>
+                        <button class="profiler-btn profiler-toggle-skeleton" data-debug="skeleton"
+                                data-i18n-key="profiler.debug.skeleton" data-i18n-prefix="🩻 "
+                                data-i18n-title-key="profiler.debug.skeletonTip"
+                                title="${t('profiler.debug.skeletonTip','骨骼线框：显示完整骨骼层级结构')}">🩻 ${t('profiler.debug.skeleton','骨骼')}</button>
                     </div>
                 </div>
 
                 <!-- FPS 实时数据 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">帧率 (FPS) — 最近 60s</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.fps.recent60s">${t('profiler.fps.recent60s','帧率 (FPS) — 最近 60s')}</div>
                     <div class="profiler-fps-grid">
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">当前</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.current">${t('profiler.fps.current','当前')}</span>
                             <span class="profiler-stat-value" data-stat="fps-current">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">平均</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.avg">${t('profiler.fps.avg','平均')}</span>
                             <span class="profiler-stat-value" data-stat="fps-avg">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最低</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.min">${t('profiler.fps.min','最低')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="fps-min">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最高</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.max">${t('profiler.fps.max','最高')}</span>
                             <span class="profiler-stat-value" data-stat="fps-max">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">1% Low</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.p1">${t('profiler.fps.p1','1% Low')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="fps-p1">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">抖动σ</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.jitter">${t('profiler.fps.jitter','抖动σ')}</span>
                             <span class="profiler-stat-value" data-stat="fps-jitter">--</span>
                         </div>
                     </div>
-                    <div class="profiler-section-title profiler-alltime-title">全程统计</div>
+                    <div class="profiler-section-title profiler-alltime-title" data-i18n-key="profiler.fps.alltime">${t('profiler.fps.alltime','全程统计')}</div>
                     <div class="profiler-fps-grid">
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">平均</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.avg">${t('profiler.fps.avg','平均')}</span>
                             <span class="profiler-stat-value" data-stat="at-fps-avg">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最低</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.min">${t('profiler.fps.min','最低')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="at-fps-min">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最高</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.max">${t('profiler.fps.max','最高')}</span>
                             <span class="profiler-stat-value" data-stat="at-fps-max">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">1% Low</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.p1">${t('profiler.fps.p1','1% Low')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="at-fps-p1">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">采样数</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.fps.samples">${t('profiler.fps.samples','采样数')}</span>
                             <span class="profiler-stat-value" data-stat="at-fps-samples">--</span>
                         </div>
                     </div>
@@ -152,7 +204,7 @@ class ModelProfilerUI {
 
                 <!-- FPS 图表 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">帧率曲线</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.fps.chartTitle">${t('profiler.fps.chartTitle','帧率曲线')}</div>
                     <div class="profiler-chart-container">
                         <canvas class="profiler-chart" width="400" height="120"></canvas>
                     </div>
@@ -160,37 +212,37 @@ class ModelProfilerUI {
 
                 <!-- 帧时间 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">帧时间 (ms) — 最近 60s</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.frametime.recent60s">${t('profiler.frametime.recent60s','帧时间 (ms) — 最近 60s')}</div>
                     <div class="profiler-fps-grid">
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">平均</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.avg">${t('profiler.frametime.avg','平均')}</span>
                             <span class="profiler-stat-value" data-stat="ft-avg">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">P95</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.p95">${t('profiler.frametime.p95','P95')}</span>
                             <span class="profiler-stat-value" data-stat="ft-p95">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">P99</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.p99">${t('profiler.frametime.p99','P99')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="ft-p99">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最大</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.max">${t('profiler.frametime.max','最大')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="ft-max">--</span>
                         </div>
                     </div>
-                    <div class="profiler-section-title profiler-alltime-title">全程统计</div>
+                    <div class="profiler-section-title profiler-alltime-title" data-i18n-key="profiler.fps.alltime">${t('profiler.fps.alltime','全程统计')}</div>
                     <div class="profiler-fps-grid">
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">平均</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.avg">${t('profiler.frametime.avg','平均')}</span>
                             <span class="profiler-stat-value" data-stat="at-ft-avg">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最小</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.min">${t('profiler.frametime.min','最小')}</span>
                             <span class="profiler-stat-value" data-stat="at-ft-min">--</span>
                         </div>
                         <div class="profiler-stat">
-                            <span class="profiler-stat-label">最大</span>
+                            <span class="profiler-stat-label" data-i18n-key="profiler.frametime.max">${t('profiler.frametime.max','最大')}</span>
                             <span class="profiler-stat-value profiler-stat-warn" data-stat="at-ft-max">--</span>
                         </div>
                     </div>
@@ -198,25 +250,25 @@ class ModelProfilerUI {
 
                 <!-- 模型属性 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">模型属性</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.section.modelInfo">${t('profiler.section.modelInfo','模型属性')}</div>
                     <div class="profiler-model-info" data-section="model-info">
-                        <div class="profiler-placeholder">点击「快照」获取模型信息</div>
+                        <div class="profiler-placeholder" data-i18n-key="profiler.placeholder.snapshotForInfo">${t('profiler.placeholder.snapshotForInfo','点击「快照」获取模型信息')}</div>
                     </div>
                 </div>
 
                 <!-- 性能评级 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">性能评级</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.section.assessment">${t('profiler.section.assessment','性能评级')}</div>
                     <div class="profiler-assessment" data-section="assessment">
-                        <div class="profiler-placeholder">点击「快照」获取评级</div>
+                        <div class="profiler-placeholder" data-i18n-key="profiler.placeholder.snapshotForRating">${t('profiler.placeholder.snapshotForRating','点击「快照」获取评级')}</div>
                     </div>
                 </div>
 
                 <!-- GPU 信息 -->
                 <div class="profiler-section">
-                    <div class="profiler-section-title">GPU 信息</div>
+                    <div class="profiler-section-title" data-i18n-key="profiler.section.gpuInfo">${t('profiler.section.gpuInfo','GPU 信息')}</div>
                     <div class="profiler-gpu-info" data-section="gpu-info">
-                        <div class="profiler-placeholder">点击「快照」获取 GPU 信息</div>
+                        <div class="profiler-placeholder" data-i18n-key="profiler.placeholder.snapshotForGpu">${t('profiler.placeholder.snapshotForGpu','点击「快照」获取 GPU 信息')}</div>
                     </div>
                 </div>
             </div>
@@ -237,6 +289,45 @@ class ModelProfilerUI {
         this._elements.modelInfo = panel.querySelector('[data-section="model-info"]');
         this._elements.assessment = panel.querySelector('[data-section="assessment"]');
         this._elements.gpuInfo = panel.querySelector('[data-section="gpu-info"]');
+    }
+
+    // 语言切换：重设所有静态文本节点 + 重渲染快照面板
+    _refreshI18n() {
+        const panel = this._elements?.panel;
+        if (!panel) return;
+        panel.querySelectorAll('[data-i18n-key]').forEach(el => {
+            const key = el.dataset.i18nKey;
+            const prefix = el.dataset.i18nPrefix || '';
+            el.textContent = prefix + this._t(key, el.textContent.replace(prefix, ''));
+        });
+        panel.querySelectorAll('[data-i18n-title-key]').forEach(el => {
+            el.title = this._t(el.dataset.i18nTitleKey, el.title);
+        });
+        panel.querySelectorAll('[data-i18n-aria-key]').forEach(el => {
+            el.setAttribute('aria-label', this._t(el.dataset.i18nAriaKey, el.getAttribute('aria-label') || ''));
+        });
+        // badge 当前状态文本（不在 [data-i18n-key] 范围内的 fallback）
+        if (this._elements.badge && this._badgeKey) {
+            this._elements.badge.textContent = this._t(this._badgeKey, this._elements.badge.textContent);
+            this._elements.badge.dataset.i18nKey = this._badgeKey;
+        }
+        // 快照面板：如果有上次的数据则重渲染，否则重设 placeholder
+        if (this._lastSnapshot) {
+            this._renderModelInfo(this._lastSnapshot);
+            this._renderGPUInfo(this._lastSnapshot);
+        }
+        if (this._lastAssessment) {
+            this._renderAssessment(this._lastAssessment);
+        }
+    }
+
+    _setBadge(key, fallback, cls) {
+        this._badgeKey = key;
+        if (this._elements.badge) {
+            this._elements.badge.textContent = this._t(key, fallback);
+            this._elements.badge.className = 'profiler-badge ' + cls;
+            this._elements.badge.dataset.i18nKey = key;
+        }
     }
 
     _bindEvents() {
@@ -450,8 +541,7 @@ class ModelProfilerUI {
     _onStart() {
         const renderer = this.getRenderer?.();
         this.profiler.start(renderer);
-        this._elements.badge.textContent = '预热中...';
-        this._elements.badge.className = 'profiler-badge profiler-badge-warmup';
+        this._setBadge('profiler.badge.warmup', '预热中...', 'profiler-badge-warmup');
 
         const startBtn = this._elements.panel.querySelector('.profiler-start-btn');
         const stopBtn = this._elements.panel.querySelector('.profiler-stop-btn');
@@ -461,9 +551,8 @@ class ModelProfilerUI {
         // 定时刷新 UI
         this._updateTimer = setInterval(() => {
             // warmup 结束后切换 badge
-            if (this.profiler._warmupDone && this._elements.badge.textContent !== '采集中') {
-                this._elements.badge.textContent = '采集中';
-                this._elements.badge.className = 'profiler-badge profiler-badge-running';
+            if (this.profiler._warmupDone && this._badgeKey !== 'profiler.badge.running') {
+                this._setBadge('profiler.badge.running', '采集中', 'profiler-badge-running');
             }
             this._updateDisplay();
         }, 500);
@@ -471,8 +560,7 @@ class ModelProfilerUI {
 
     _onStop() {
         this.profiler.stop();
-        this._elements.badge.textContent = '已停止';
-        this._elements.badge.className = 'profiler-badge profiler-badge-stopped';
+        this._setBadge('profiler.badge.stopped', '已停止', 'profiler-badge-stopped');
 
         const startBtn = this._elements.panel.querySelector('.profiler-start-btn');
         const stopBtn = this._elements.panel.querySelector('.profiler-stop-btn');
@@ -488,36 +576,62 @@ class ModelProfilerUI {
     }
 
     _onSnapshot() {
+        this._lastSnapshot = null;
+        this._lastAssessment = null;
+        const reason = this.getUnsupportedReason?.();
+        if (reason && reason.key) {
+            const text = this._t(reason.key, reason.fallback || reason.key);
+            this._fillPlaceholder(this._elements.modelInfo, text, reason.key);
+            this._fillPlaceholder(this._elements.assessment, text, reason.key);
+            this._fillPlaceholder(this._elements.gpuInfo, text, reason.key);
+            return;
+        }
         const manager = this.getManager?.();
         if (!manager) {
-            this._elements.modelInfo.innerHTML = '<div class="profiler-placeholder">未检测到模型管理器</div>';
+            this._fillPlaceholder(
+                this._elements.modelInfo,
+                this._t('profiler.placeholder.noManager', '未检测到模型管理器'),
+                'profiler.placeholder.noManager'
+            );
             return;
         }
         const snap = this.profiler.snapshot(manager);
+        this._lastSnapshot = snap;
+        this._lastAssessment = this.profiler.assess(snap);
         this._renderModelInfo(snap);
-        this._renderAssessment(this.profiler.assess(snap));
+        this._renderAssessment(this._lastAssessment);
         this._renderGPUInfo(snap);
+    }
+
+    _fillPlaceholder(el, text, key) {
+        if (!el) return;
+        el.innerHTML = '';
+        const div = document.createElement('div');
+        div.className = 'profiler-placeholder';
+        div.textContent = text;
+        if (key) div.dataset.i18nKey = key;
+        el.appendChild(div);
     }
 
     _onReset() {
         this.profiler.reset();
+        this._lastSnapshot = null;
+        this._lastAssessment = null;
 
         // 如果正在采集，badge 切回预热状态
         if (this.profiler.isRunning) {
-            this._elements.badge.textContent = '预热中...';
-            this._elements.badge.className = 'profiler-badge profiler-badge-warmup';
+            this._setBadge('profiler.badge.warmup', '预热中...', 'profiler-badge-warmup');
         } else {
-            this._elements.badge.textContent = '待机';
-            this._elements.badge.className = 'profiler-badge profiler-badge-idle';
+            this._setBadge('profiler.badge.idle', '待机', 'profiler-badge-idle');
         }
 
         // 重置所有 stat 显示
         for (const el of Object.values(this._elements.stats)) {
             el.textContent = '--';
         }
-        this._elements.modelInfo.innerHTML = '<div class="profiler-placeholder">点击「快照」获取模型信息</div>';
-        this._elements.assessment.innerHTML = '<div class="profiler-placeholder">点击「快照」获取评级</div>';
-        this._elements.gpuInfo.innerHTML = '<div class="profiler-placeholder">点击「快照」获取 GPU 信息</div>';
+        this._fillPlaceholder(this._elements.modelInfo, this._t('profiler.placeholder.snapshotForInfo', '点击「快照」获取模型信息'), 'profiler.placeholder.snapshotForInfo');
+        this._fillPlaceholder(this._elements.assessment, this._t('profiler.placeholder.snapshotForRating', '点击「快照」获取评级'), 'profiler.placeholder.snapshotForRating');
+        this._fillPlaceholder(this._elements.gpuInfo, this._t('profiler.placeholder.snapshotForGpu', '点击「快照」获取 GPU 信息'), 'profiler.placeholder.snapshotForGpu');
         this._clearChart();
     }
 
@@ -708,67 +822,75 @@ class ModelProfilerUI {
 
     _renderModelInfo(snap) {
         const el = this._elements.modelInfo;
+        const t = (k, fb) => this._t(k, fb);
         if (!snap || !snap.loaded) {
-            el.innerHTML = '<div class="profiler-placeholder">未加载模型</div>';
+            this._fillPlaceholder(el, t('profiler.placeholder.noModel', '未加载模型'), 'profiler.placeholder.noModel');
             return;
         }
 
         let html = `<div class="profiler-info-grid">`;
-        html += `<div class="profiler-info-row"><span class="profiler-info-key">类型</span><span class="profiler-info-val">${snap.type?.toUpperCase()}</span></div>`;
+        html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.type','类型')}</span><span class="profiler-info-val">${snap.type?.toUpperCase()}</span></div>`;
 
         if (snap.name) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">名称</span><span class="profiler-info-val profiler-info-name">${this._escapeHtml(snap.name)}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.name','名称')}</span><span class="profiler-info-val profiler-info-name">${this._escapeHtml(snap.name)}</span></div>`;
         }
 
         if (snap.geometry) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">顶点数</span><span class="profiler-info-val">${this._formatNum(snap.geometry.vertices)}</span></div>`;
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">面数</span><span class="profiler-info-val">${this._formatNum(snap.geometry.faces)}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.vertices','顶点数')}</span><span class="profiler-info-val">${this._formatNum(snap.geometry.vertices)}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.faces','面数')}</span><span class="profiler-info-val">${this._formatNum(snap.geometry.faces)}</span></div>`;
             if (snap.geometry.morphTargetCount) {
-                html += `<div class="profiler-info-row"><span class="profiler-info-key">Morph Targets</span><span class="profiler-info-val">${snap.geometry.morphTargetCount}</span></div>`;
+                html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.morphTargets','Morph Targets')}</span><span class="profiler-info-val">${snap.geometry.morphTargetCount}</span></div>`;
             }
         }
 
         if (snap.materials) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">材质数</span><span class="profiler-info-val">${snap.materials.count}</span></div>`;
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">纹理数</span><span class="profiler-info-val">${snap.materials.textureCount}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.materials','材质数')}</span><span class="profiler-info-val">${snap.materials.count}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.textures','纹理数')}</span><span class="profiler-info-val">${snap.materials.textureCount}</span></div>`;
         }
 
         if (snap.skeleton) {
-            const boneLabel = snap.type === 'vrm' ? 'Humanoid 骨骼' : '骨骼数';
+            const boneLabel = snap.type === 'vrm'
+                ? t('profiler.info.bonesVRM', 'Humanoid 骨骼')
+                : t('profiler.info.bonesMMD', '骨骼数');
             const boneCount = snap.skeleton.boneCount || snap.skeleton.humanBoneCount || 0;
             html += `<div class="profiler-info-row"><span class="profiler-info-key">${boneLabel}</span><span class="profiler-info-val">${boneCount}</span></div>`;
         }
 
         if (snap.physics) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">物理引擎</span><span class="profiler-info-val">${snap.physics.enabled ? '启用' : '禁用'}</span></div>`;
+            const enabledTxt = snap.physics.enabled ? t('profiler.info.enabled','启用') : t('profiler.info.disabled','禁用');
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.physicsEngine','物理引擎')}</span><span class="profiler-info-val">${enabledTxt}</span></div>`;
             if (snap.physics.bodyCount !== undefined) {
-                html += `<div class="profiler-info-row"><span class="profiler-info-key">物理刚体</span><span class="profiler-info-val">${snap.physics.bodyCount} (K:${snap.physics.kinematicBodies || 0} / D:${snap.physics.dynamicBodies || 0})</span></div>`;
+                html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.physicsBodies','物理刚体')}</span><span class="profiler-info-val">${snap.physics.bodyCount} (K:${snap.physics.kinematicBodies || 0} / D:${snap.physics.dynamicBodies || 0})</span></div>`;
             }
             if (snap.physics.constraintCount !== undefined) {
-                html += `<div class="profiler-info-row"><span class="profiler-info-key">物理约束</span><span class="profiler-info-val">${snap.physics.constraintCount}</span></div>`;
+                html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.physicsConstraints','物理约束')}</span><span class="profiler-info-val">${snap.physics.constraintCount}</span></div>`;
             }
         }
 
         if (snap.springBones) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">Spring Joints</span><span class="profiler-info-val">${snap.springBones.jointCount}</span></div>`;
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">Colliders</span><span class="profiler-info-val">${snap.springBones.colliderCount}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.springJoints','Spring Joints')}</span><span class="profiler-info-val">${snap.springBones.jointCount}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.colliders','Colliders')}</span><span class="profiler-info-val">${snap.springBones.colliderCount}</span></div>`;
         }
 
         if (snap.animation) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">动画</span><span class="profiler-info-val">${snap.animation.isPlaying ? '播放中' : snap.animation.isPaused ? '暂停' : '停止'}</span></div>`;
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">IK / Grant</span><span class="profiler-info-val">${snap.animation.hasIK ? '✓' : '✗'} / ${snap.animation.hasGrant ? '✓' : '✗'}</span></div>`;
+            const animTxt = snap.animation.isPlaying
+                ? t('profiler.info.animPlaying','播放中')
+                : (snap.animation.isPaused ? t('profiler.info.animPaused','暂停') : t('profiler.info.animStopped','停止'));
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.animation','动画')}</span><span class="profiler-info-val">${animTxt}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.ikGrant','IK / Grant')}</span><span class="profiler-info-val">${snap.animation.hasIK ? '✓' : '✗'} / ${snap.animation.hasGrant ? '✓' : '✗'}</span></div>`;
         }
 
         if (snap.outlineEffect !== undefined) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">描边效果</span><span class="profiler-info-val">${snap.outlineEffect ? '启用' : '禁用'}</span></div>`;
+            const outlineTxt = snap.outlineEffect ? t('profiler.info.enabled','启用') : t('profiler.info.disabled','禁用');
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.outline','描边效果')}</span><span class="profiler-info-val">${outlineTxt}</span></div>`;
         }
 
         if (snap.renderer) {
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">Draw Calls</span><span class="profiler-info-val">${snap.renderer.drawCalls}</span></div>`;
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">三角形</span><span class="profiler-info-val">${this._formatNum(snap.renderer.triangles)}</span></div>`;
-            html += `<div class="profiler-info-row"><span class="profiler-info-key">Pixel Ratio</span><span class="profiler-info-val">${snap.renderer.pixelRatio}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.drawCalls','Draw Calls')}</span><span class="profiler-info-val">${snap.renderer.drawCalls}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.triangles','三角形')}</span><span class="profiler-info-val">${this._formatNum(snap.renderer.triangles)}</span></div>`;
+            html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.pixelRatio','Pixel Ratio')}</span><span class="profiler-info-val">${snap.renderer.pixelRatio}</span></div>`;
             if (snap.renderer.size) {
-                html += `<div class="profiler-info-row"><span class="profiler-info-key">渲染尺寸</span><span class="profiler-info-val">${snap.renderer.size.width}×${snap.renderer.size.height}</span></div>`;
+                html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.renderSize','渲染尺寸')}</span><span class="profiler-info-val">${snap.renderer.size.width}×${snap.renderer.size.height}</span></div>`;
             }
         }
 
@@ -778,48 +900,51 @@ class ModelProfilerUI {
 
     _renderAssessment(assessment) {
         const el = this._elements.assessment;
+        const t = (k, fb) => this._t(k, fb);
         if (!assessment || assessment.overall === 'N/A') {
-            el.innerHTML = '<div class="profiler-placeholder">无法评级</div>';
+            this._fillPlaceholder(el, t('profiler.placeholder.cannotRate', '无法评级'), 'profiler.placeholder.cannotRate');
             return;
         }
 
         const ratingLabels = {
-            'low': { text: '轻量', cls: 'profiler-rating-low' },
-            'medium': { text: '中等', cls: 'profiler-rating-medium' },
-            'high': { text: '较重', cls: 'profiler-rating-high' },
-            'extreme': { text: '极重', cls: 'profiler-rating-extreme' }
+            'low':     { text: t('profiler.rating.low','轻量'),     cls: 'profiler-rating-low' },
+            'medium':  { text: t('profiler.rating.medium','中等'),   cls: 'profiler-rating-medium' },
+            'high':    { text: t('profiler.rating.high','较重'),     cls: 'profiler-rating-high' },
+            'extreme': { text: t('profiler.rating.extreme','极重'),  cls: 'profiler-rating-extreme' }
         };
 
         const overall = ratingLabels[assessment.overall] || { text: assessment.overall, cls: '' };
 
-        let html = `<div class="profiler-overall-rating ${overall.cls}">总评：${overall.text}</div>`;
+        let html = `<div class="profiler-overall-rating ${overall.cls}">${t('profiler.rating.overall','总评：')}${overall.text}</div>`;
         html += `<div class="profiler-rating-grid">`;
 
         for (const [key, detail] of Object.entries(assessment.details)) {
             const r = ratingLabels[detail.rating] || { text: detail.rating, cls: '' };
+            const label = detail.labelKey ? t(detail.labelKey, detail.label) : detail.label;
             html += `<div class="profiler-rating-item ${r.cls}">
-                <span class="profiler-rating-label">${detail.label}</span>
+                <span class="profiler-rating-label">${label}</span>
                 <span class="profiler-rating-value">${this._formatNum(detail.value)}</span>
                 <span class="profiler-rating-tag">${r.text}</span>
             </div>`;
         }
 
         html += `</div>`;
-        html += `<div class="profiler-rating-note">评级参考 <a href="https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking" target="_blank" rel="noopener noreferrer" style="color:#40C5F1;">VRChat Avatar Performance Ranking</a> (PC 端)，因 N.E.K.O 为单模型场景已适当放宽。</div>`;
+        html += `<div class="profiler-rating-note">${t('profiler.rating.noteHtml','评级参考 <a href="https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking" target="_blank" rel="noopener noreferrer" style="color:#40C5F1;">VRChat Avatar Performance Ranking</a> (PC 端)，因 N.E.K.O 为单模型场景已适当放宽。')}</div>`;
         el.innerHTML = html;
     }
 
     _renderGPUInfo(snap) {
         const el = this._elements.gpuInfo;
+        const t = (k, fb) => this._t(k, fb);
         if (!snap?.gpu) {
-            el.innerHTML = '<div class="profiler-placeholder">无法获取 GPU 信息</div>';
+            this._fillPlaceholder(el, t('profiler.placeholder.cannotGetGpu', '无法获取 GPU 信息'), 'profiler.placeholder.cannotGetGpu');
             return;
         }
 
         let html = `<div class="profiler-info-grid">`;
-        html += `<div class="profiler-info-row"><span class="profiler-info-key">GPU</span><span class="profiler-info-val profiler-info-name">${this._escapeHtml(snap.gpu.renderer)}</span></div>`;
-        html += `<div class="profiler-info-row"><span class="profiler-info-key">厂商</span><span class="profiler-info-val">${this._escapeHtml(snap.gpu.vendor)}</span></div>`;
-        html += `<div class="profiler-info-row"><span class="profiler-info-key">最大纹理尺寸</span><span class="profiler-info-val">${snap.gpu.maxTextureSize}</span></div>`;
+        html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.gpu','GPU')}</span><span class="profiler-info-val profiler-info-name">${this._escapeHtml(snap.gpu.renderer)}</span></div>`;
+        html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.vendor','厂商')}</span><span class="profiler-info-val">${this._escapeHtml(snap.gpu.vendor)}</span></div>`;
+        html += `<div class="profiler-info-row"><span class="profiler-info-key">${t('profiler.info.maxTextureSize','最大纹理尺寸')}</span><span class="profiler-info-val">${snap.gpu.maxTextureSize}</span></div>`;
         html += `</div>`;
         el.innerHTML = html;
     }

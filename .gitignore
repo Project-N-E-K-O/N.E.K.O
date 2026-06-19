@@ -5,8 +5,13 @@ mcp_server/servers.json
 tests/api_keys.json
 tests/test_inputs/
 
+# scripts/check_i18n.py 偶尔会被人 redirect 到这里，别再次入库
+/i18n_check_output.txt
+
 # 忽略日志文件
 *.log
+/logs/
+/data/
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe
@@ -30,7 +35,6 @@ utils/cache/
 config/api.py
 config/*.json
 !config/api_providers.json
-!config/characters.*.json
 env/*
 lanlan_frd.exe
 
@@ -54,11 +58,15 @@ __pycache__/
 .venv_monitor/
 .matplotlib/
 .pyinstaller-config/
+.hypothesis/
+.agent-logs/
+.kiro/
 # Local Windows Nuitka build script — maintainer-only, not for repo
 build_nuitka.bat
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
 .playwright-browsers/
+.playwright-cli/
 # Local embedding model cache (downloaded by scripts/prepare_embedding_model.py)
 data/embedding_models/
 .env
@@ -69,6 +77,8 @@ data/embedding_models/
 .ruff_cache
 *.code-workspace
 .claude
+.trae/
+plans/
 CLAUDE.md
 /.workbuddy/
 
@@ -87,6 +97,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+docs/.vitepress/cache/
 static/react/neko-chat/
 
 # Python venvs and wheels
@@ -116,13 +127,14 @@ backup/
 build*
 !build_frontend.bat
 !build_frontend.sh
+!build-desktop*.yml
 metadata.package.json
 version_info.txt
 
 # 复原Steam
-!steam_api64.dll
-!steam_api64.lib
-!SteamworksPy64.dll
+!steamworks/steam_api64.dll
+!steamworks/steam_api64.lib
+!steamworks/SteamworksPy64.dll
 
 start_servers.bat
 start.sh
@@ -140,10 +152,19 @@ tests/testbench_data/
 latest_report.json
 sendText.js
 tmp/
+output/
 data/browser_use_prompts/*.md
 data/browser_use_extensions/
 .coverage
 .VSCodeCounter
+
+# Local galgame vision training data/checkpoints. Keep runtime ONNX and reports in git.
+plugin/plugins/galgame_plugin/training/data/train.jsonl
+plugin/plugins/galgame_plugin/training/data/val.jsonl
+plugin/plugins/galgame_plugin/training/data/raw/
+plugin/plugins/galgame_plugin/models/vision/screen_classifier/best.pth
+plugin/plugins/galgame_plugin/models/vision/screen_classifier/live_validation_v1.json
+plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json
 
 # 插件服务器运行时生成的凭证文件
 plugin/.plugin_server_admin_code
@@ -165,6 +186,10 @@ plugin/plugins/web_radio/
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
 
+# QQ 自动回复 测试数据
+plugin/plugins/qq_auto_reply/static/cache/
+plugin/plugins/qq_auto_reply/data/
+
 # bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
 plugin/plugins/bilibili_danmaku/data/bili_credential.*
 plugin/plugins/bilibili_danmaku/data/user_profiles/
@@ -184,3 +209,6 @@ static/jukebox/*.bvh
 static/jukebox/*.fbx
 tests/prompt_dump.json
 tests/testbench/docs/dev_note.txt
+
+# yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
+/static/yui-origin/

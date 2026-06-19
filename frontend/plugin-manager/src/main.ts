@@ -17,45 +17,78 @@ import ptLocale from 'element-plus/dist/locale/pt.mjs'
 import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 import { initDarkMode } from './composables/useDarkMode'
-import { useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
 import { i18n, getLocale } from './i18n'
 import router from './router'
 import { useConnectionStore } from './stores/connection'
 import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 
-// 初始化深色模式（在应用挂载前）
-// 这样可以避免页面闪烁，并确保状态在应用启动时就正确初始化
 initDarkMode()
+initPluginDashboardYuiGuideRuntime()
 
-// 初始化 Yui 教程桥（检测 URL 中的 handoff 参数）
-const tutorialBridge = useYuiTutorialBridge()
-tutorialBridge.init()
+function initNativeDragGuard() {
+  const markNativeDragSource = (element: HTMLAnchorElement | HTMLImageElement) => {
+    element.draggable = false
+    element.setAttribute('draggable', 'false')
+  }
 
-console.log('🚀 Starting N.E.K.O Plugin Management System...')
+  const markNativeDragSources = (root: ParentNode | HTMLAnchorElement | HTMLImageElement = document) => {
+    if (root instanceof HTMLAnchorElement || root instanceof HTMLImageElement) {
+      markNativeDragSource(root)
+      return
+    }
+    root.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img').forEach(markNativeDragSource)
+  }
+
+  const handleDragStart = (event: DragEvent) => {
+    const rawTarget = event.target
+    let target: Element | null = null
+    if (rawTarget instanceof Element) {
+      target = rawTarget
+    } else if (rawTarget instanceof Node) {
+      target = rawTarget.parentElement
+    }
+
+    if (
+      target instanceof HTMLAnchorElement
+      || target instanceof HTMLImageElement
+      || target?.closest('a[href], img')
+    ) {
+      event.preventDefault()
+    }
+  }
+
+  markNativeDragSources(document)
+  document.addEventListener('dragstart', handleDragStart, true)
+
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (node instanceof Element) {
+          markNativeDragSources(node)
+        }
+      })
+    })
+  })
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+}
+
+initNativeDragGuard()
 
 const app = createApp(App)
 
-// 注册所有图标
-console.log('📦 Registering Element Plus icons...')
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
 
-console.log('✅ Setting up Pinia...')
 const pinia = createPinia()
 app.use(pinia)
 
-console.log('✅ Setting up Router...')
 app.use(router)
 
-console.log('✅ Setting up i18n...')
 app.use(i18n)
 
-console.log('✅ Setting up Motion...')
 app.use(MotionPlugin)
 
-console.log('✅ Setting up Element Plus...')
-// 根据当前语言设置 Element Plus 的 locale
 const currentLocale = getLocale()
 const elLocaleMap: Record<string, typeof zhCn> = {
   'zh-CN': zhCn,
@@ -68,17 +101,15 @@ const elLocaleMap: Record<string, typeof zhCn> = {
   'pt': ptLocale
 }
 app.use(ElementPlus, {
-  locale: elLocaleMap[currentLocale] ?? zhCn
+  locale: elLocaleMap[currentLocale] ?? zhCn,
+  zIndex: 12000,
+  message: {
+    offset: 54
+  }
 })
 
-console.log('✅ Mounting app to #app...')
 app.mount('#app')
 
-console.log('✅ App mounted successfully!')
-initPluginDashboardYuiGuideRuntime()
-
-// 启动连接健康检查
 const connectionStore = useConnectionStore()
 connectionStore.startHealthCheck()
 window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
-console.log('✅ Health check started!')

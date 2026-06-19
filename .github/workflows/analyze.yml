@@ -7,22 +7,28 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Static-check job only needs to read the checked-out source.
+# Static-check jobs only need to read the checked-out source.
 permissions:
   contents: read
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Two parallel jobs — split for blast-radius clarity:
+#
+#   python-lint        → "the code itself is wrong" (semantic / async / leaks)
+#   python-conventions → "the project's architecture / i18n / API rules"
+#
+# When one fails, the failure name immediately tells you whether to look at the
+# code change itself or at how it intersects project conventions. Both jobs run
+# in parallel, both block merge, neither needs the other's setup.
+# ─────────────────────────────────────────────────────────────────────────────
+
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru + no-temperature + prompt-hygiene + i18n-sync)
+    name: Python lint (ruff + async-blocking + no-loguru + no-tkinter + no-temperature + prompt-hygiene + llm-budget)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # i18n-sync needs full history to diff against the merge-base of
-          # origin/main. Other lint steps don't care, but fetch-depth: 0 has
-          # negligible cost on this repo.
-          fetch-depth: 0
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -59,6 +65,20 @@ jobs:
         # plugin/main parity. This check fails the build on any such import.
         run: python scripts/check_no_loguru.py
 
+      - name: Forbid `tkinter` imports
+        # Architecture rule: frontend/backend are split, ALL GUI operations
+        # belong on the Electron frontend (Node.js renderer/main), not the
+        # Python backend. The backend is a headless HTTP/async service —
+        # it must stay relocatable (remote deployment, headless CI) and
+        # not own a Tcl/Tk event loop. Past incident: PR #1014's Windows
+        # tk screenshot overlay crashed the whole app under Nuitka builds
+        # without `--enable-plugin=tk-inter` (SystemExit from tk.Tk()
+        # escaped the asyncio worker, killed uvicorn). For dialogs use
+        # Electron's `dialog` (or platform-native shell bridges in
+        # storage_location_router.py); for screenshot framing use
+        # Electron's desktopCapturer region path.
+        run: python scripts/check_no_tkinter.py
+
       - name: Forbid `temperature=` kwargs on LLM client calls (memory + utils)
         # Project policy: do NOT pass `temperature=` to create_chat_llm /
         # ChatOpenAI / wrappers in memory_server.py + memory/ + utils/. The
@@ -80,6 +100,48 @@ jobs:
         # the reference incident that motivated this lint.
         run: python scripts/check_prompt_hygiene.py
 
+      - name: Enforce LLM budget/timeout discipline (output budget + timeout + input budget)
+        # Project policy: every LLM call must be bounded.
+        #   - LLM_OUTPUT_BUDGET: every create_chat_llm() / ChatOpenAI()
+        #     construction must set a token budget (max_completion_tokens= /
+        #     max_tokens=) AND a timeout=. Without a budget the reply can run
+        #     away (cost + latency + context blow-up); without a timeout a hung
+        #     upstream wedges the async pipeline — neither has a safe default in
+        #     utils/llm_client.py. Sites that set budget/timeout per-call (via
+        #     invoke/ainvoke/..(**overrides)) opt out with a justified
+        #     `# noqa: LLM_OUTPUT_BUDGET`.
+        #   - LLM_INPUT_BUDGET (heuristic): every dynamic LLM call must be
+        #     input-budget-aware (truncate_to_tokens / *_MAX_TOKENS in the
+        #     enclosing function). Intentionally-uncapped sites (user-config /
+        #     OS window title etc., cf. docs/design/llm-prompt-budget.md §6)
+        #     opt out with `# noqa: LLM_INPUT_BUDGET`.
+        # See docs/design/llm-prompt-budget.md for the full contract.
+        run: python scripts/check_llm_budget.py
+
+  python-conventions:
+    name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # i18n-sync needs full history to diff against the merge-base of
+          # origin/main. Other steps don't care, but fetch-depth: 0 has
+          # negligible cost on this repo.
+          #
+          # The checkout@v5 bump is the actual fix here: the old @v4 tripped a
+          # credential-handling regression against the runner's git 2.54 on the
+          # full-history fetch ("could not read Username", git exit 128), which
+          # broke this job on every PR. (fetch-tags has no effect under
+          # fetch-depth: 0 — checkout fetches tags regardless — so we don't set
+          # it; the fix is purely the version bump.)
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Verify i18n locale files move in lockstep (PR-only)
         # Diff-based: when ANY static/locales/*.json or
         # frontend/plugin-manager/src/i18n/locales/*.ts changes, ALL files
@@ -87,4 +149,71 @@ jobs:
         # ranges across all languages. Skipped on direct push to main —
         # there's nothing to diff against.
         if: github.event_name == 'pull_request'
-        run: python scripts/check_i18n_sync.py --base "origin/${{ github.base_ref }}"
+        env:
+          # Indirection instead of inlining ${{ github.base_ref }} into the
+          # shell line: with the `pull_request: branches: [main]` trigger the
+          # ref is always `main`, but zizmor flags the inline form as
+          # template-injection, and env-var expansion is inert either way.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_i18n_sync.py --base "origin/${BASE_REF}"
+
+      - name: Forbid CJK in new/modified Python docstrings (PR-only)
+        # Convention: docstrings in the main program are written in English.
+        # The repo carries a large legacy stock of CJK docstrings, so this is
+        # a diff-ratchet: only docstrings whose line span overlaps lines
+        # added/modified in this PR (vs the merge-base) are checked — touch
+        # it, translate it. plugin/ and local_server/ are policy-exempt
+        # (plugin internals follow their own conventions; local_server is a
+        # semi-independent unit). `--full` exists for local migration sweeps.
+        # Suppress a single docstring with `# noqa: DOCSTRING_CJK` (e.g.
+        # fixtures whose CJK content is itself under test). Skipped on direct
+        # push to main — nothing to diff against.
+        if: github.event_name == 'pull_request'
+        env:
+          # Same zizmor template-injection indirection as the i18n-sync step.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_docstring_no_cjk.py --base "origin/${BASE_REF}"
+
+      - name: Forbid relative-up markdown links inside docs/
+        # docs/ ships through VitePress with itself as the deploy root;
+        # any markdown link target starting with '..' resolves outside the
+        # site and breaks deploy. We've shipped this regression more than
+        # once — this check fails the build before the next attempt lands.
+        # Fix is to inline the path as code (`foo/bar.js`) instead of a
+        # link, or move the referenced content into docs/.
+        run: python scripts/check_docs_no_relative_paths.py
+
+      - name: Forbid trailing-slash route paths on FastAPI decorators (backend)
+        # Project convention: every backend HTTP/WebSocket endpoint is
+        # declared WITHOUT a trailing slash. Avoids Starlette's absolute-URL
+        # 307 redirect under reverse proxies — root cause of the PR #938
+        # chara_manager regression: nginx/etc that don't transparently
+        # forward Host send the redirect Location to 127.0.0.1:<internal>,
+        # which the LAN browser can't reach (ERR_CONNECTION_REFUSED).
+        # The lint exempts the literal '/' root page and explicit alias pairs
+        # (same function carrying both '/foo' and '/foo/'). See
+        # .agent/rules/neko-guide.md (§"API URL 末尾不带斜杠") and
+        # main_routers/characters_router.py docstring.
+        run: python scripts/check_api_trailing_slash.py
+
+      - name: Forbid trailing-slash /api/... URL literals (frontend)
+        # Counterpart to check_api_trailing_slash.py: the backend may declare
+        # /api/foo without trailing slash, but if frontend code calls
+        # fetch('/api/foo/') the same 307 → ERR_CONNECTION_REFUSED happens.
+        # Regex sniffer over static/, frontend/, templates/. Recognises
+        # prefix builders ('/api/foo/' + id, `/api/foo/${id}`) and exempts
+        # them; flags only standalone literals ending in '/'. Suppress with
+        # // noqa: API_TRAILING_SLASH if calling a third-party API that
+        # genuinely requires the slash.
+        run: python scripts/check_frontend_api_trailing_slash.py
+
+      - name: Enforce top-level module layering (no inversions, no cycles)
+        # Top-level packages have a strict ordering — only higher layers may
+        # depend on lower ones (config/steamworks → utils → memory/main_logic
+        # → main_routers → plugin → brain → app). The walker descends into
+        # function bodies and string-form dynamic imports
+        # (importlib.import_module / __import__), so deferred / conditional
+        # imports cannot smuggle in a layer inversion or cycle. Run
+        # `python scripts/check_module_layering.py --show-layers` to print
+        # the hierarchy. Companion unit test: tests/unit/test_module_layering.py.
+        run: python scripts/check_module_layering.py

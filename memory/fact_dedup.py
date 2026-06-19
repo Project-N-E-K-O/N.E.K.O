@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 FactDedupResolver — vector-aware deduplication of newly-written facts.
 
@@ -19,19 +33,21 @@ threshold:
 
 Why an LLM is in the loop:
 
-  * Cosine alone can't distinguish "主人喜欢猫" from "主人讨厌猫".
+  * Cosine alone can't distinguish "主人喜欢猫" (the user likes cats) from
+    "主人讨厌猫" (the user hates cats).
     Both surface forms vary by 1 token but ride opposite poles.
   * Hash-based dedup remains the first line of defence (catches exact
     repeats, no LLM cost) and the FTS5 lightweight near-dup check
     handles strong textual overlap.  This module addresses the
-    *paraphrase* class — "对猫咪很感兴趣" / "最近养了只猫" — that
-    legacy dedup misses entirely.
+    *paraphrase* class — "对猫咪很感兴趣" / "最近养了只猫" ("very
+    interested in cats" / "recently got a cat") — that legacy dedup
+    misses entirely.
 
 When the EmbeddingService is disabled, no candidates are ever
 enqueued, so ``aresolve`` always sees an empty queue and the legacy
 hash + FTS5 dedup path is the entire dedup pipeline — exactly the
 behaviour pre-P2.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import asyncio
@@ -42,7 +58,16 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from memory.embeddings import cosine_similarity
+try:
+    from memory.embeddings import cosine_similarity
+except ImportError:
+    # See ``embedding_worker`` for context on the fallback path. With a
+    # 0.0-cosine stub the resolver's pending queue stays empty and the
+    # legacy hash + FTS5 dedup is the entire pipeline — same shape as
+    # ``is_available() == False`` in the real module.
+    from memory.embeddings_fallback import cosine_similarity, _warn_once
+    _warn_once(__name__)
+from memory.facts import safe_int_field
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
     atomic_write_json_async,
@@ -250,16 +275,17 @@ class FactDedupResolver:
         to repeatedly scan the entire history on every sweep, only
         check the new arrivals against existing rows.
 
-        Pairs are entity-scoped: ``主人喜欢猫`` (entity=master) should
-        not collide with ``关系融洽`` (entity=relationship) even if
-        the embeddings happen to be close. Cross-entity overlap is
-        weird enough that we'd rather defer it to manual review.
+        Pairs are entity-scoped: ``主人喜欢猫`` ("the user likes cats",
+        entity=master) should not collide with ``关系融洽`` ("harmonious
+        relationship", entity=relationship) even if the embeddings happen
+        to be close. Cross-entity overlap is weird enough that we'd rather
+        defer it to manual review.
 
         Pairs are absorbed-aware on the existing side: an existing
         fact already absorbed into a reflection is skipped. Re-merging
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
-        """
+        """  # noqa: DOCSTRING_CJK
         results: list[dict] = []
         # Pre-bucket by entity so the inner loop only walks relevant rows.
         by_entity: dict[str, list[dict]] = {}
@@ -375,16 +401,28 @@ class FactDedupResolver:
             return await self._aresolve_locked(name)
 
     async def _aresolve_locked(self, name: str) -> int:
-        from config.prompts_memory import get_fact_dedup_prompt
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from config.prompts.prompts_memory import get_fact_dedup_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         pending = await self.aload_pending(name)
         if not pending:
             return 0
 
-        batch = pending[:FACT_DEDUP_BATCH_LIMIT]
+        # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
+        # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
+        # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
+        batch: list[dict] = []
+        for it in pending:
+            if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                continue
+            batch.append(it)
+            if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
+                break
+        if not batch:
+            return 0
         pairs_text = "\n".join(
             f"[{i}] candidate: {item.get('candidate_text', '')}"
             f" | existing: {item.get('existing_text', '')}"
@@ -403,13 +441,15 @@ class FactDedupResolver:
             # timeout=60: 持 FactDedup 锁但只阻 embedding worker enqueue
             # （background→background），用户路径无感。
             # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
-            llm = create_chat_llm(
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so the dedup-decisions JSON isn't truncated
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # dedup prompt assembled from FACT_DEDUP_BATCH_LIMIT-capped fact pairs.
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -421,14 +461,37 @@ class FactDedupResolver:
                     "[FactDedup] %s: LLM 返回非数组 (%s)，跳过本轮",
                     name, type(results).__name__,
                 )
+                # Parse 失败也算 attempt（same input → same parse failure）；
+                # 跟 Exception 分支同治。
+                await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
                 return 0
         except Exception as e:
             logger.warning("[FactDedup] %s: LLM 调用失败: %s", name, e)
+            # Liveness 兜底：给本批 pair bump resolve_attempts；达
+            # MEMORY_LIVENESS_MAX_ATTEMPTS 的 entry 从 queue dead-letter
+            # 丢弃。否则毒 pair（safety filter / prompt 过长 / 永远 parse
+            # 不出来）一直占队头让 dedup 永久卡死。caller (aresolve) 已持
+            # 着 _get_alock，这里走 _locked 变体不再重复获取。
+            await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
             return 0
 
         applied, processed_keys = await self._aapply_decisions(
             name, batch, results,
         )
+
+        # CodeRabbit: LLM 返了 list 但 ``_aapply_decisions`` 没消费任何 pair
+        # （所有 action 都被 reject = unknown action / missing index / invalid
+        # format 等），processed_keys 为空 → 下面的 ``remaining`` filter 不会
+        # 删任何东西 → 队头同一批 pair 下次 tick 重新喂 LLM 同样输出垃圾 →
+        # 永久卡死。算 attempts 一次（跟 LLM Exception / 非 list 同治）。
+        if not processed_keys:
+            logger.warning(
+                "[FactDedup] %s: LLM 输出 %d 条 action 全部无效（unknown action / "
+                "invalid index / conflict）, batch 无任何 pair 消费，按 attempt 失败计",
+                name, len(results),
+            )
+            await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
+            return 0
 
         # Read-modify-write the queue so concurrent enqueue calls
         # that landed during the LLM call survive — same shape as
@@ -462,6 +525,57 @@ class FactDedupResolver:
                 name, applied, len(remaining),
             )
         return applied
+
+    async def _abump_dedup_attempts_and_dead_letter_locked(
+        self, name: str, batch_items: list[dict],
+    ) -> None:
+        """Liveness fallback when the aresolve LLM fails (caller MUST hold _get_alock).
+
+        Bumps ``resolve_attempts`` for this batch's pending pairs; pairs whose
+        total reaches ``MEMORY_LIVENESS_MAX_ATTEMPTS`` are removed from the queue
+        with a WARN.
+
+        Why: a poison pair (LLM can never parse it / safety filter / oversized
+        prompt) sends the queue head into the same prompt with the same failure
+        every tick → the whole dedup pipeline deadlocks for that character
+        forever. The caller already holds _get_alock, so no `async with` here;
+        this matches ``_aapply_decisions`` / ``aload_pending`` /
+        ``_asave_pending`` all running inside the lock in ``_aresolve_locked``.
+        """
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        if not batch_items:
+            return
+        bumped_keys = {
+            (it.get('candidate_id'), it.get('existing_id')) for it in batch_items
+        }
+        bumped_keys.discard((None, None))
+        if not bumped_keys:
+            return
+        current = await self.aload_pending(name)
+        kept: list[dict] = []
+        dropped = 0
+        for it in current:
+            key = (it.get('candidate_id'), it.get('existing_id'))
+            if key in bumped_keys:
+                new_attempts = safe_int_field(it, 'resolve_attempts') + 1
+                if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                    dropped += 1
+                    logger.warning(
+                        "[FactDedup] %s: dead-letter pair (%s, %s) resolve %d 次失败 ≥ %d，丢弃",
+                        name, key[0], key[1], new_attempts, MEMORY_LIVENESS_MAX_ATTEMPTS,
+                    )
+                    continue
+                it['resolve_attempts'] = new_attempts
+            kept.append(it)
+        if not await self._asave_pending(name, kept):
+            logger.debug(
+                "[FactDedup] %s: 维护态跳过 dedup attempts 写盘", name,
+            )
+        elif dropped:
+            logger.info(
+                "[FactDedup] %s: dead-letter 丢弃 %d 对 dedup pair，剩余队列 %d 条",
+                name, dropped, len(kept),
+            )
 
     # Whitelist of action vocabulary the LLM may return. Anything
     # outside this set (case mismatch, trailing whitespace, localised

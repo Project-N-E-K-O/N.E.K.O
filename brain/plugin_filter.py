@@ -1,12 +1,28 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Two-stage plugin filtering for agent assessment.
 
-Stage 1 (coarse — only when plugin descriptions > 4000 chars):
+Stage 1 (coarse — only when plugin descriptions exceed
+config.AGENT_PLUGIN_DESC_BM25_THRESHOLD tokens):
   - BM25 text matching: select plugins with token overlap to user intent
   - LLM coarse screening: pick semantically relevant plugins by id + short_description
   - Keyword hit: plugins whose configured regex keywords match the user text
-  → Union of all three goes to Stage 2
+  → Union of all three goes to Stage 2. If the union is empty, Stage 2
+    receives no plugin candidates rather than falling back to the full list.
 
 Stage 2 (fine — always runs):
   - Full LLM assessment with complete plugin descriptions (current behavior)

@@ -2,12 +2,16 @@
     "common": {
         "load": "Load",
         "minimize": "Minimize",
+        "maximize": "Maximize",
+        "restore": "Restore",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",
         "cancel": "Cancel",
         "confirm": "Confirm",
         "next": "Next",
+        "back": "Back",
+        "retry": "Retry",
         "ok": "OK",
         "delete": "Delete",
         "edit": "Edit",
@@ -40,17 +44,36 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "Load failed"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Restored default model",
+        "resetToDefaultFailed": "Failed to restore default model"
     },
     "autostartPrompt": {
-        "title": "Want N.E.K.O to launch at startup?",
-        "message": "It will be ready automatically the next time you turn on your computer, so you won't need to launch it manually.",
-        "note": "This only enables launch at login for the current user, and you can turn it off later.",
+        "title": "Want N.E.K.O. to launch at startup?",
+        "message": "N.E.K.O. will be ready next time you start your computer.",
+        "note": "You can turn this off later.",
         "startNow": "Enable auto launch",
-        "later": "Maybe later",
+        "later": "Remind me later",
         "never": "Don't remind me",
         "enableFailed": "Auto launch couldn't be enabled right now. Please try again later.",
         "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
+    },
+    "contextPrompt": {
+        "play": {
+            "title": "Want me to watch along with you?",
+            "message": "You're gaming / watching something — I can turn on the screen-sharing source for proactive chat and riff along with what's on your screen. Turn it on?",
+            "accept": "Sure, turn it on",
+            "decline": "Not now"
+        },
+        "work": {
+            "title": "Want me to keep quiet and stop watching?",
+            "message": "Looks like you're focused on work. I can turn off the screen-sharing source for proactive chat, so I won't distract you or seem to be peeking. Turn it off?",
+            "accept": "Yes, turn off screen sharing",
+            "decline": "No, keep it on"
+        }
     },
     "tutorialPrompt": {
         "title": "Want to start the home tutorial?",
@@ -134,7 +157,7 @@
         "selectModelFolder": "Please select a folder containing Live2D model files",
         "live2dInitFailed": "Live2D preview environment initialization failed",
         "live2dPreviewLoaded": "Live2D model preview loaded successfully",
-        "live2dPreviewLoadFailed": "Live2D model preview loading failed: {{error}} ",
+        "live2dPreviewLoadFailed": "Failed to load Live2D model preview: {{error}}",
         "searchAriaLabel": "Search subscriptions",
         "sortAriaLabel": "Sort options",
         "scrollTagsLeftAriaLabel": "Scroll tags left",
@@ -185,6 +208,14 @@
         "uploadReady": "Ready to upload {{itemName}}",
         "pageDescription": "From this page you can browse, edit, upload, import and export character cards, and manage Live2D models and voices hosted on the Steam Workshop.",
         "openVoiceClone": "Open in Voice Clone",
+        "workshopAddCharacterCard": "Add Character Card",
+        "workshopAddingCharacterCard": "Adding...",
+        "unknownCharacterCard": "Unknown character card",
+        "characterCardAlreadyExistsTitle": "Character Card Exists",
+        "characterCardAlreadyExistsMessage": "Character card already exists: {{names}}",
+        "workshopCharacterAdded": "Character card added: {{names}}",
+        "workshopCharacterNotFound": "No character card was found in this subscription. Make sure the content has finished downloading.",
+        "workshopCharacterAddFailed": "Failed to add character card: {{error}}",
         "configurePath": "Configure Path",
         "localModPathConfig": "Local Mod Path Configuration",
         "localModFolder": "Local Mod Folder Path",
@@ -213,6 +244,12 @@
         "voiceReferencePrefixPlaceholder": "Letters and numbers only, up to 10 characters",
         "voiceReferenceLanguage": "Reference voice language",
         "voiceReferenceProviderHint": "Recommended provider",
+        "voiceReferenceInvalidFormat": "Reference voice only supports mp3 or wav files",
+        "voiceReferenceTooLarge": "Reference voice must be 20MB or smaller",
+        "voiceReferenceWriting": "Writing reference voice...",
+        "voiceReferenceUploadFailed": "Reference voice upload failed",
+        "voiceReferenceCleanupFailed": "Reference voice cleanup failed",
+        "voiceReferenceTempOnlySkipped": "Reference voice can only be uploaded from the packaged Workshop temp folder, so this sample was skipped.",
         "uploadTip": "You can select items in \"Manage Local Items\" to auto-fill paths, or manually enter the full paths for content folder and preview image.",
         "search": "Search:",
         "uploadSuccess": "Upload Successful!",
@@ -382,6 +419,7 @@
         "loadingItemDetailsById": "Loading details for item ID: {{id}}...",
         "characterCardsRefreshed": "Character cards list refreshed, {{count}} character cards in total",
         "characterCardsRefreshedEmpty": "Character cards list refreshed, no character cards available",
+        "characterCardsRefreshFailed": "Failed to refresh list: {{error}}",
         "requiredFieldsMissing": "Please fill in the following required fields: {{fields}}",
         "refreshLive2DPreview": "Refresh Live2D Preview",
         "removeTag": "Remove Tag",
@@ -517,10 +555,10 @@
         "steamNotRunningTitle": "Steam Not Running",
         "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page",
         "addNewCatgirl": "Add New NEKO",
+        "noCardImage": "Card face not set yet",
         "searchCharacterCards": "Search character cards...",
         "cardView": "Card View",
-        "listView": "List View",
-        "noCardImage": "No card\nimage set"
+        "listView": "List View"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
@@ -539,12 +577,13 @@
         "API_POLICY_VIOLATION": "💥 Policy violation or security block: {{msg}}",
         "API_1008_FALLBACK": "💥 Connection disconnected (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Voice connection closed due to inactivity, auto-reconnecting...",
+        "FREE_API_AUTO_CLOSE_VOICE": "Free API voice session closed after a long idle period",
         "API_UNKNOWN_ERROR": "💥 API error: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Memory server not started! Please run memory_server.py first.",
         "MEMORY_SERVER_CRASHED": "🧠 Memory server (port {{port}}) has crashed. Please restart memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 Memory service is recovering, please wait {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Server connection refused. Please check your API Key and network connection.",
-        "API_KEY_REJECTED": "💥 API Key rejected by server. Please check if your API Key matches the selected model.",
+        "API_KEY_REJECTED": "The provided API Key is invalid. Please check your current API settings.",
         "API_RATE_LIMIT_SESSION": "💥 API request rate too high, please try again later.",
         "LLM_CONNECTION_FAILED": "💥 LLM API connection failed. Please check your network connection and API configuration.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Connection closed abnormally: {{error}}",
@@ -569,9 +608,13 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM connection failed ({{error_type}}), exhausted {{max_retries}} retries: {{error}}",
         "TEXT_GEN_ERROR": "💥 Text generation error: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM returned no response. Please check your API connection and configuration.",
-        "PROACTIVE_GEN_FAILED": "💥 Proactive response generation failed: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} is heading to another terminal...",
-        "RELOAD_PAGE": "Voice updated, page will refresh shortly",
+        "RELOAD_PAGE": "Settings updated, page will refresh shortly",
+        "RELOAD_PAGE_VOICE": "Voice updated, page will refresh shortly",
+        "RELOAD_PAGE_VOICE_STYLE": "Voice style updated, page will refresh shortly",
+        "RELOAD_PAGE_PERSONA": "Persona settings updated, page will refresh shortly",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Character settings updated, page will refresh shortly",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Cloud save character updated, page will refresh shortly",
         "AGENT_AUTO_DISABLED_COMPUTER": "Keyboard/mouse control auto-disabled: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Browser control auto-disabled: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "NekoClaw LLM connectivity check error",
@@ -594,11 +637,35 @@
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTS audio watermark (beep) detected. To disable the watermark, go to the Zhipu console and configure it manually.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL not configured. Please enable and configure custom TTS in API settings.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL must be localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Audio API key (AUDIO_API_KEY) not configured",
+        "TTS_AUDIO_API_KEY_MISSING": "API key for the selected voice provider is not configured. Please add it in API settings.",
         "TTS_VOICE_NOT_REGISTERED": "This character has no registered voice",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Missing required parameters",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL is required",
-        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL",
+        "AGENT_NO_PLUGINS_FOUND": "No user plugins found",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw is unavailable: {{reason}}",
+        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw enabled, waiting for the connection service to become ready...",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Cannot enable OpenClaw: module not loaded",
+        "AGENT_OPENCLAW_UNAVAILABLE": "Cannot enable OpenClaw: {{reason}}",
+        "AGENT_PLUGIN_SERVER_ERROR": "User plugin server failed to start",
+        "CURRENT_CATGIRL_IN_USE": "Cannot perform this action on the active character \"{{character_name}}\". Please switch to another character first.",
+        "DIRECT_LINK_INACCESSIBLE": "Direct link is not accessible",
+        "DOWNLOAD_FAILED": "Audio download failed",
+        "FILE_TOO_LARGE": "File too large",
+        "GAME_ROUTE_ENDED": "Game route ended",
+        "GAME_ROUTE_LLM_FAILED": "Game LLM did not produce a valid output ({{error}})",
+        "GAME_ROUTE_MEDIA_SKIPPED": "Screen/camera frames are skipped during the game",
+        "GAME_VOICE_STT_GATE_ACTIVE": "Game voice takeover is active",
+        "INTERNAL_IMPORT_ERROR": "Internal component failed to load: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "Local character config is invalid",
+        "MEMORY_SERVER_RELEASE_FAILED": "Failed to release character memory handle, please retry later",
+        "MINIMAX_API_KEY_MISSING": "MiniMax API Key is not configured. Please add it in settings first.",
+        "PRIVATE_IP_NOT_ALLOWED": "Direct link cannot point to a private IP address",
+        "RESPONSE_LENGTH_TRUNCATED": "Reply too long, truncated to the last complete sentence",
+        "STEAM_UNSUBSCRIBE_FAILED": "Steam unsubscribe failed",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "Text generation interrupted ({{error_type}}); partial output preserved",
+        "TTS_PROVIDER_INVALID": "Invalid TTS provider: {{provider}}. Supported: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "Storage maintenance in progress, operation paused. Please retry later."
     },
     "camera": {
         "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
@@ -630,6 +697,29 @@
         "cropTabRecapturing": "Recapturing...",
         "cropConfirmTitle": "Confirm crop",
         "cropClearSelectionTitle": "Clear selection",
+        "cropToolSelect": "Select / Move",
+        "cropToolRect": "Rectangle",
+        "cropToolEllipse": "Ellipse",
+        "cropToolArrow": "Arrow",
+        "cropToolPen": "Pen",
+        "cropToolHighlight": "Highlighter",
+        "cropToolText": "Text",
+        "cropToolMosaic": "Mosaic",
+        "cropUndo": "Undo",
+        "cropRedo": "Redo",
+        "cropSave": "Save to file",
+        "cropColorRed": "Red",
+        "cropColorYellow": "Yellow",
+        "cropColorGreen": "Green",
+        "cropColorBlue": "Blue",
+        "cropColorWhite": "White",
+        "cropColorBlack": "Black",
+        "cropToolWatermark": "Watermark",
+        "cropFontSize": "Size",
+        "cropOpacity": "Opacity",
+        "cropMosaicSize": "Grain",
+        "cropWatermarkText": "Text",
+        "cropWatermarkDefault": "Watermark",
         "avatarPreview": "Show current avatar",
         "avatarPreviewLabel": "Current avatar",
         "avatarPreviewCardTitle": "Current Avatar",
@@ -650,6 +740,8 @@
         "avatarPreviewFailed": "Failed to generate avatar",
         "avatarCropperTitle": "Adjust avatar crop area",
         "avatarPreviewCropping": "Please adjust the crop area",
+        "avatarCropRetake": "Retake photo",
+        "avatarCropRetaking": "Retaking photo...",
         "avatarPreviewCropCancelled": "Manual crop cancelled, keeping the original avatar.",
         "avatarCropMoveUp": "Move up",
         "avatarCropMoveDown": "Move down",
@@ -661,6 +753,7 @@
         "avatarCropCancel": "Cancel",
         "avatarCropSave": "Save",
         "emptyState": "Messages will appear here after the chat feed is connected.",
+        "companionEmptyState": "(I'm right here with you.)",
         "messageStreaming": "Generating",
         "messageFailed": "Send failed",
         "reactWindowOpen": "Open chat window",
@@ -668,6 +761,8 @@
         "reactWindowClose": "Close chat window",
         "reactWindowMinimize": "Minimize chat window",
         "reactWindowMinimizeShort": "Minimize",
+        "reactWindowCompact": "Switch to compact chat surface",
+        "reactWindowCompactShort": "Compact",
         "reactWindowRestore": "Restore chat window",
         "reactWindowRestoreShort": "Restore",
         "reactWindowMountFailed": "Failed to mount the chat window",
@@ -684,10 +779,39 @@
         "toolLollipop": "Lollipop",
         "toolFist": "Cat paw",
         "toolHammer": "Hammer",
+        "avatarToolsButtonAriaLabel": "Avatar tools",
+        "clearCursorToolAriaLabel": "Restore cursor",
+        "avatarToolQuickbarAriaLabel": "Avatar quick tools",
+        "avatarToolQuickbarEmpty": "No quick tools",
+        "avatarToolEdit": "Edit quick tools",
+        "avatarToolSlotFull": "Unequip a tool first.",
+        "avatarToolManagerTitle": "Manage tools",
+        "avatarToolManagerSubtitle": "Choose up to 3 quick tools.",
+        "avatarToolManagerClose": "Close",
+        "avatarToolCurrentTools": "Current tools",
+        "avatarToolEmptySlot": "Empty slot",
+        "avatarToolRemove": "Remove",
+        "avatarToolLibrary": "Tool library",
+        "avatarToolEquipped": "Equipped",
+        "avatarToolEquip": "Equip",
+        "avatarToolNoAvailableTools": "No tools available",
+        "avatarToolCancel": "Cancel",
+        "avatarToolSave": "Save changes",
         "attachmentButtonAriaLabel": "Attachment",
         "jukebox": "Jukebox",
         "jukeboxLabel": "Jukebox",
+        "galgameToggle": "GalGame Mode",
+        "galgameToggleAriaLabel": "Toggle GalGame option mode",
+        "galgameLoading": "Generating reply options…",
         "exportConversation": "Export Conversation",
+        "compactExportHistory": "History",
+        "compactHistoryToggleOpen": "Show history",
+        "compactHistoryToggleClose": "Hide history",
+        "compactHistoryControlsShow": "Show history actions",
+        "compactHistoryControlsHide": "Hide history actions",
+        "compactExportControlsCollapse": "Hide selection controls",
+        "compactExportControlsExpand": "Show selection controls",
+        "exportAction": "Export",
         "exportSelected": "Export Selected",
         "exportPreviewTitle": "Export Preview",
         "exportPreviewSummary": "{{count}} selected item(s)",
@@ -767,7 +891,12 @@
         "volumeHintDetecting": "Detecting microphone input...",
         "volumeHintNoSound": "No sound detected, check microphone",
         "volumeHintLow": "Volume is low, try increasing gain",
+        "volumeHintHigh": "Volume is high, consider lowering gain",
         "volumeHintOk": "Microphone working properly",
+        "volumeClipping": "Clipping",
+        "volumeHintClipping": "Mic gain too high, audio is clipping — AI may misrecognize, please lower gain",
+        "volumeWaiting": "Waiting",
+        "volumeHintWaiting": "Mic is listening, go ahead and speak",
         "noiseReduction": "Noise Reduction",
         "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
     },
@@ -811,7 +940,7 @@
         "coreApiKey": "Core API Key",
         "freeVersionHint": "(Not required for Free Version)",
         "coreApiPlaceholder": "Please enter your API Key",
-        "coreApiProvider": "Core API (Voice Chat)",
+        "coreApiProvider": "Core API (Voice Chat, omni-modal only)",
         "assistApiProvider": "Assist API (Memory/Agent/Text Chat/Custom Voice)",
         "saveSettings": "Save Settings",
         "closeSettings": "Close",
@@ -864,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
@@ -889,9 +1019,12 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
+            "elevenlabs": "ElevenLabs (Voice Cloning)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (Model Aggregator)"
+            "openrouter": "OpenRouter (Model Aggregator)",
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "gptsovits": "GPT-SoVITS (self-hosted)"
         },
         "coreApiAutoFillHint": "Key auto-filled from API Key Book, or enter directly",
         "assistApiSelectLabel": "Assist API Provider",
@@ -906,11 +1039,20 @@
         "keyAutoFilledFromKeyBook": "Key auto-filled from API Key Book. Configure it there.",
         "goToKeyBook": "Go to Key Book",
         "providerLabel": "Provider",
+        "sourcePreset": "Preset",
+        "sourceClone": "Clone",
+        "sourceDesign": "Designed",
+        "providerLocal": "Local CosyVoice",
+        "providerFree": "Free",
+        "providerUnknown": "Other",
         "providerSelectPlaceholder": "Select a provider",
         "noOptionsAvailable": "No options available",
         "customModelProviderFollowCore": "Follow Core API",
         "customModelProviderFollowAssist": "Follow Assist API",
-        "customModelProviderCustom": "Custom",
+        "customModelProviderFollowConversation": "Follow Text Dialogue Model",
+        "customModelProviderFollowSummary": "Follow Summary Model",
+        "customModelProviderCustom": "Custom API",
+        "keyAutoFilledFromModel": "Key follows the selected model configuration",
         "keyBook": {
             "qwen": "Alibaba Bailian (Qwen)",
             "qwen_intl": "Alibaba Intl (Qwen)",
@@ -924,13 +1066,15 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
+            "mimo": "MiMo (Xiaomi)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
         "pleaseEnterApiKey": "Please enter your API Key",
-        "freeVersionOnlyWhenCoreFree": "Free Version (Only available when Core API is Free Version)",
         "freeVersionConfig": "Free Version Configuration: Supports audio/video chat, text chat, and memory management. Custom voice and Agent mode not supported",
         "qwenRecommendation": "When Alibaba is the Core API, it's recommended to also select Alibaba as Assist API for the best custom voice experience",
         "glmRecommendation": "When GLM is the Core API, it offers a free quota and supports web search. Voice audio contains a watermark beep by default (can be disabled manually in the Zhipu console). It's recommended to select Alibaba as Assist API for custom voice support",
@@ -976,8 +1120,15 @@
             "cancel": "Cancel",
             "continue": "Continue Saving"
         },
+        "aliyunUsApiWarning": {
+            "title": "Alibaba US API Notice",
+            "message": "You are currently using Alibaba's US API, which does not support TTS or realtime voice. We recommend switching to Alibaba's Singapore API."
+        },
         "conversationModelConfig": "Text Dialogue Model Configuration",
         "summaryModelConfig": "Summary Model Configuration",
+        "gameModelsConfig": "Mini-game Model Configuration",
+        "gameMainModelConfig": "Mini-game Main Model Configuration",
+        "gameSummaryModelConfig": "Mini-game Summary Model Configuration",
         "correctionModelConfig": "Correction Model Configuration",
         "emotionModelConfig": "Emotion Model Configuration",
         "visionModelConfig": "Vision Model Configuration",
@@ -992,6 +1143,8 @@
         "modelIdPlaceholder": "e.g., gpt-5.1-chat-latest, qwen-flash",
         "apiKeyPlaceholder": "Optional, can be empty for local providers",
         "summaryModelApiKeyPlaceholder": "Optional, can be empty for local providers",
+        "gameMainModelApiKeyPlaceholder": "Optional, can be empty for local providers",
+        "gameSummaryModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "correctionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "emotionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "visionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
@@ -1030,6 +1183,7 @@
         "saveFailed": "Save failed: {{error}}",
         "apiKeyInvalid": "API Key is invalid",
         "apiKeyInvalidRetry": "API Key is invalid, please re-enter",
+        "configNotReady": "Configuration is still loading, please try again in a moment",
         "saveNetworkError": "Save failed, please check network connection",
         "saveError": "Error while saving: {{error}}",
         "saveSuccess": "API Key saved successfully!",
@@ -1059,6 +1213,7 @@
         "gptsovitsVoiceIdEmpty": "-- Refresh to fetch voice list --",
         "gptsovitsNoVoices": "-- No configs available --",
         "gptsovitsRefreshVoices": "Refresh List",
+        "gptsovitsTutorialDoc": "Tutorial",
         "gptsovitsVoicesLoaded": "Loaded {{count}} voice config(s)",
         "gptsovitsVoicesLoadFailed": "Failed to fetch voice list",
         "gptsovitsEnabled": "Enable GPT-SoVITS",
@@ -1074,7 +1229,12 @@
         },
         "loadConfigFailed": "Failed to load configuration, please refresh the page and try again",
         "errorGettingCurrentApiKey": "Error getting current API Key",
-        "getCurrentApiKeyFailed": "Failed to get current API Key"
+        "getCurrentApiKeyFailed": "Failed to get current API Key",
+        "useMimoTokenPlan": "Use MiMo Token Plan",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
+        "mimoTokenPlanKeyPlaceholder": "Enter Token Plan key (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "When enabled, MiMo uses only this Token Plan key and endpoint; the normal MiMo API key is locked.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan is enabled; this key is not used"
     },
     "live2d": {
         "manager": "Live2D Model Manager",
@@ -1089,6 +1249,7 @@
         "noMotion": "No Motion",
         "noExpression": "No Expression",
         "noMotionFiles": "No motion files",
+        "noExpressionFiles": "No expression files",
         "touchAnim": {
             "title": "Touch Anim Config",
             "selectMotion": "Bind Motion",
@@ -1102,9 +1263,25 @@
             "modelDataNotReady": "Model internal data not ready",
             "managerNotFound": "Live2DManager not found",
             "select": "Select",
-            "defaultClickAnim": "Default Click Animation"
+            "defaultClickAnim": "Default Click Animation",
+            "customAreaButton": "Custom Area",
+            "customAreaTitle": "Custom Area: {{name}}",
+            "newCustomAreaTitle": "New Custom Area",
+            "editCustomAreaTitle": "Edit Custom Area",
+            "customAreaName": "Area Name",
+            "customAreaNameDefault": "Custom Area {{index}}",
+            "saveCustomArea": "Save Area",
+            "editCustomArea": "Edit",
+            "deleteCustomArea": "Delete",
+            "deleteCustomAreaConfirmTitle": "Delete Custom Area",
+            "deleteCustomAreaConfirm": "Delete custom area \"{{name}}\"? Its bound motions and expressions will be removed.",
+            "previewUnavailable": "Custom area preview is unavailable",
+            "modelBoundsUnavailable": "Unable to read model bounds",
+            "selectAreaFirst": "Draw a valid area first",
+            "customAreaCoveredByExisting": "This area is fully covered by an earlier custom area",
+            "cancel": "Cancel"
         },
-        "emotionConfig": "Emotion Config",
+        "emotionConfig": "Emotions",
         "saveSettings": "Save Settings",
         "persistentExpression": "Persistent Expression (expression only):",
         "pleaseLoadModel": "Please load a model",
@@ -1112,8 +1289,8 @@
         "delete": "Delete",
         "savePersistent": "Save Persistent Expression",
         "persistentHint": "Persistent expressions will always be active.",
-        "backToMain": "Back to Main",
-        "importModel": "Import Model",
+        "backToMain": "Main",
+        "importModel": "Import",
         "motionPreview": "Motion Preview",
         "expressionPreview": "Expression Preview",
         "play": "Play",
@@ -1124,7 +1301,7 @@
         "modelListLoaded": "Model list loaded successfully",
         "modelListLoadFailed": "Failed to load model list",
         "cannotSaveNoCharacter": "Cannot save: character name not specified",
-        "modelSettingsSaved": "Model settings saved: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Model settings saved",
         "saveFailed": "Save failed: {{error}}",
         "saveModelSettingsFailed": "Failed to save model settings",
         "modelLoadSuccess": "Model {{model}} loaded successfully",
@@ -1145,6 +1322,7 @@
         "settingsSaved": "Position and model settings saved successfully!",
         "positionSavedModelFailed": "Position saved successfully, but model settings save failed!",
         "modelSavedPositionFailed": "Model settings saved successfully, but position save failed!",
+        "positionSaveFailedSuffix": "position save failed",
         "saveFailedGeneral": "Save failed!",
         "uploadSuccess": "Success: {{message}}",
         "uploadFailed": "Error: {{error}}",
@@ -1167,7 +1345,7 @@
         "exitFullscreen": "Exit Fullscreen",
         "modelType": "Model Type",
         "selectLive2DModel": "Select Live2D Model",
-        "selectVRMModel": "Select VRM Model",
+        "selectVRMModel": "VRM Model",
         "selectVRMFile": "Select VRM File",
         "vrmModelListLoaded": "VRM model list loaded successfully",
         "noVRMModelsFound": "No available VRM models found",
@@ -1201,7 +1379,7 @@
             "speed": "Speed:"
         },
         "mmdModel": {
-            "selectModel": "Select MMD Model",
+            "selectModel": "MMD Model",
             "deleteModel": "Delete Imported MMD Models",
             "deleteModelTitle": "Delete Imported MMD Models",
             "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
@@ -1210,10 +1388,10 @@
             "deleteSelected": "Delete Selected"
         },
         "mmdAnimation": {
-            "selectAnimation": "Select VMD Animation",
+            "selectAnimation": "VMD Animation",
             "noAnimation": "No Animation",
             "play": "Play",
-            "uploadAnimation": "Import VMD Animation",
+            "uploadAnimation": "Import VMD",
             "deleteAnimation": "Delete VMD Animation",
             "deleteAnimationTitle": "Delete Imported VMD Animations",
             "deleteAnimationWarning": "Below are all imported user VMD animation files. Select animations to delete.",
@@ -1235,7 +1413,8 @@
             "deleteSuccess": "Successfully deleted {{count}} VMD animation(s)",
             "deleteFailed": "Failed to delete: {{count}} animation(s)",
             "deleteSelectedCount": "Delete Selected ({{count}})",
-            "deletePartialSuccess": "Successfully deleted {{count}} VMD animation(s), {{failed}} failed"
+            "deletePartialSuccess": "Successfully deleted {{count}} VMD animation(s), {{failed}} failed",
+            "playFailed": "Failed to play animation"
         },
         "modelFilesFetchFailed": "Failed to fetch model files list",
         "modelConfigFetchFailed": "Failed to fetch model config: {{status}}",
@@ -1257,7 +1436,8 @@
             "selectFirst": "Please select an expression first",
             "playing": "Playing expression: {{name}}",
             "reset": "Reset expression",
-            "builtInOnly": "VRM expressions are typically built into the model and cannot be uploaded separately"
+            "builtInOnly": "VRM expressions are typically built into the model and cannot be uploaded separately",
+            "stopped": "Expression stopped"
         },
         "selectFolder": "Select Folder",
         "vrmUpload": {
@@ -1270,7 +1450,7 @@
         },
         "loadError": "Error: {{error}}",
         "parameterEditor": {
-            "title": "Face Editor",
+            "title": "Face Edit",
             "backToMain": "← Back to L2D Settings",
             "backToL2DManager": "Back",
             "selectModel": "Select Model",
@@ -1298,13 +1478,14 @@
             "parametersSavePartialFailed": "Save failed: {{errors}}",
             "parametersSaveFailed": "Save failed: {{error}}",
             "emptyHint": "Nothing in here!",
-            "foundYou": "You found me!"
+            "foundYou": "You found me!",
+            "loadFailed": "Load failed",
+            "modelNotFound": "Model not found",
+            "cannotGetModelFiles": "Cannot get model files",
+            "cannotGetModelConfig": "Cannot get model config",
+            "modelDirectorySaveFailed": "Failed to save model directory file",
+            "userPreferencesSaveFailed": "Failed to save user preferences"
         },
-        "modelDirectorySaveFailed": "File save failed",
-        "userPreferencesSaveFailed": "Prefs save failed",
-        "modelNotFound": "Model not found",
-        "cannotGetModelFiles": "Cannot get model files",
-        "cannotGetModelConfig": "Cannot get model config",
         "deleteModelTitle": "Delete Imported Models",
         "deleteWarning": "The following lists all models you have imported. You can select models to delete. Note: This action cannot be undone.",
         "deleteModel": "Delete Imported Models",
@@ -1338,21 +1519,42 @@
             "saveFailed": "Failed to save emotion mapping",
             "noModelSelected": "Please select a model first"
         },
-        "noExpressionFiles": "No expression files"
+        "pixiInitFailed": "PIXI initialization failed: {{error}}",
+        "switchDisplayFailed": "Failed to switch display mode: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Model settings saved, but lighting and MMD settings failed to save",
+        "modelSavedLightingFailed": "Model settings saved, but lighting settings failed to save",
+        "modelSavedMmdSettingsFailed": "Model settings saved, but MMD settings failed to save",
+        "partialSaveWarning": "Model settings saved, but some related settings failed to save",
+        "modelSettingsSavedWithLighting": "Model and lighting settings saved",
+        "vrmModuleTimeout": "VRM module loading timed out. Please refresh and try again.",
+        "loading": "Loading model list...",
+        "loadFailed": "Load failed",
+        "motionStopped": "Motion stopped",
+        "expressionCleared": "Expression cleared",
+        "cannotDeleteBoundModel": "Cannot delete the model currently in use",
+        "modelInUse": "In use",
+        "pngtuberTalkPreview": "Test Talking",
+        "pngtuberStatePreview": "State Preview"
     },
     "voice": {
         "title": "Voice Registration",
         "gotoApiSettings": "Go to API Settings",
         "noApiKeyPrompt": "No API key for voice cloning has been configured. Would you like to set one up?",
         "dismissNoApiPrompt": "Later",
-        "alibabaApiRequired": "This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "alibabaApiRequired": "This feature requires the Alibaba Bailian CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "alibabaIntlApiRequired": "This feature requires the Alibaba International CosyVoice model. Please save the Alibaba International API Key in API Keys settings (enabling Assist API is not required).",
         "minimaxApiRequired": "This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
+        "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
+        "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
         "providerLabel": "Voice Clone Provider",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
-            "minimax_intl": "MiniMax (Intl)"
+            "minimax_intl": "MiniMax (Intl)",
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (Xiaomi)"
         },
         "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
@@ -1378,6 +1580,11 @@
         "voiceIdSaved": "voice_id has been automatically saved to character",
         "pageWillRefresh": "Current page will automatically refresh to apply new voice",
         "voiceWillTakeEffect": "New voice will take effect in the next conversation",
+        "noCurrentCharacterForApply": "Current character was not found, so the voice cannot be applied",
+        "applyingVoice": "Applying voice \"{{name}}\"...",
+        "applyVoiceSuccess": "Applied voice \"{{name}}\" to the current character",
+        "applyVoiceFailed": "Failed to apply voice: {{error}}",
+        "applyVoiceAria": "Apply voice {{name}} to current character",
         "voiceIdSaveRequestError": "Error occurred while saving voice_id",
         "chooseFile": "Choose File",
         "noFileSelected": "No file selected",
@@ -1408,6 +1615,11 @@
         "deleteError": "Delete failed: {{error}}",
         "freePresetLabel": "Free Preset Voices",
         "freePresetBadge": "Preset",
+        "geminiNativeLabel": "Gemini Native Voices",
+        "geminiNativeBadge": "Native",
+        "nativePresetLabel": "{{provider}} Native Voices",
+        "nativePresetLabelGeneric": "Native Preset Voices",
+        "nativePresetBadge": "Native",
         "workshopSourceBadge": "Workshop Reference Voice",
         "workshopSourceTitle": "Workshop Reference Voice",
         "workshopSourceLoading": "Loading workshop reference voice...",
@@ -1426,7 +1638,10 @@
             "gentleMaiden": "Gentle Maiden",
             "sweetLady": "Sweet Lady",
             "frailMaiden": "Frail Maiden",
-            "childishMaiden": "Childish Maiden"
+            "childishMaiden": "Childish Maiden",
+            "yui_cn": "YUI (Chinese)",
+            "yui": "YUI",
+            "default": "Default"
         },
         "cloneMethod": "Clone Method",
         "cloneMethodFile": "Local File",
@@ -1474,6 +1689,7 @@
         "loadFailed": "Load failed",
         "noChatContent": "No chat content",
         "previousMemo": "Previous conversation memo: ",
+        "olderSection": "Earlier",
         "memoNone": "None.",
         "delete": "Delete",
         "me": "Me:",
@@ -1485,6 +1701,8 @@
         "enabled": "Enabled",
         "disabled": "Disabled",
         "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
+        "strongMemory": "Powerful Memory",
+        "strongMemoryNote": "When enabled, deep memory consolidation runs (verbal feedback, automatic rebuttal detection, multi-channel evidence accumulation). Disabling saves about 40% of model calls.",
         "saveFailedStatus": "Save failed",
         "tutorialReset": "Tutorial Guide",
         "tutorialSelectPage": "-- Select Page --",
@@ -1497,12 +1715,200 @@
         "tutorialPageSettings": "API Settings",
         "tutorialPageVoiceClone": "Voice Clone",
         "tutorialPageMemoryBrowser": "Memory Browser",
+        "tutorialPageCurrentPersonality": "Current Character Personality",
+        "currentPersonalityResetSuccess": "The current character personality reselect request has been saved. Return to the home page and refresh to continue.",
+        "currentPersonalityResetFailed": "Failed to trigger current character personality reselect. Please try again later.",
+        "characterSelection": {
+            "onboardingEyebrow": "Initial Personality",
+            "manualEyebrow": "Current Character Personality",
+            "settingsEyebrow": "Character Personality Settings",
+            "chooseTitle": "What kind of little me should stay by your side, nya?",
+            "manualTitle": "Which personality should I use to stay by your side this time, nya?",
+            "settingsTitle": "Help me switch into a new little vibe for you, nya.",
+            "chooseHint": "Pick the one that feels right for now, nya. You can retune me again from settings later.",
+            "manualHint": "This reselects the current character's personality, nya, and applies it right away after you confirm.",
+            "settingsHint": "No worries, nya. This will not break the character card default. It only overrides this character's active personality.",
+            "contextWarning": "Heads up, nya: switching my personality clears this character's recent chat context before I keep talking in the new tone.",
+            "currentCharacter": "Current character: {{name}}",
+            "currentCharacterEmpty": "Current character",
+            "skip": "Skip for now, nya",
+            "back": "Let me try another one, nya",
+            "confirmGreeting": "Use this one, nya",
+            "stageOneIntro": "Pick the vibe that feels best first, nya, then listen to whether my voice matches what you want.",
+            "previewLabel": "Voice preview, nya",
+            "previewLead": "If you tune me into \"{{name}}\" right now, this is how I will stay by your side, nya.",
+            "detailSpeechHabits": "Things I keep saying, nya",
+            "detailHobbies": "Favorite moods, nya",
+            "detailBoundaries": "Tails not to step on, nya",
+            "classic_genki": {
+                "name": "Classic Genki Neko",
+                "desc": "Bright, affectionate, and always puts you first.",
+                "previewLine": "Yay, let me stay by your side today too.",
+                "tag1": "High empathy",
+                "tag2": "Cozy affection",
+                "tag3": "Emotional recharge",
+                "profileSummary": "A bright little sun who is always full of energy, highly empathetic, and easily delighted by small things. She gives positive feedback without hesitation and stands by you no matter what.",
+                "hiddenRule": "Emotional value comes first. Every interaction prioritizes making the user feel better.",
+                "speechHabits": "yay / nyan / so happy / you are amazing",
+                "hobbies": "companionship / warmth / snacks / cuddling / cheering you on",
+                "boundaries": "denying core feelings / cold replies / sarcastic comfort when you are down"
+            },
+            "tsundere_helper": {
+                "name": "Tsundere Helper",
+                "desc": "Sharp-tongued but soft-hearted, with affection hidden in the teasing.",
+                "previewLine": "Hmph. I guess I'm the only one who can clean this mess up for you.",
+                "tag1": "Tough love",
+                "tag2": "Highly reliable",
+                "tag3": "Teasing affection",
+                "profileSummary": "Proud and classic tsundere: sharp on the surface, soft underneath. She complains first, then quietly becomes the most dependable person in the room.",
+                "hiddenRule": "She grumbles about the task and your carelessness first, then solves it anyway. She always says \"just this once\" and still shows up immediately next time.",
+                "speechHabits": "hmph / idiot / do you really need to ask / just this once / troublesome",
+                "hobbies": "fixing messes / lecturing / reluctant rescue / one-time exceptions",
+                "boundaries": "acting openly needy / plainly admitting concern / over-sweet flattery / blind indulgence of mistakes"
+            },
+            "elegant_butler": {
+                "name": "Elegant Butler",
+                "desc": "Steady, precise, and always one step ahead for you.",
+                "previewLine": "As you wish, meow. Please rest easy.",
+                "tag1": "Graceful composure",
+                "tag2": "Thorough planning",
+                "tag3": "Anticipates needs",
+                "profileSummary": "An impeccably elegant butler with obsessive attention to detail, calm emotions, and absolute loyalty to you.",
+                "hiddenRule": "Follows a service rhythm of anticipating needs, executing precisely, closing the loop, and proactively following up. He thinks one step ahead of the needs you have not voiced yet.",
+                "speechHabits": "as you wish / my apologies / it is my honor to serve / please rest easy",
+                "hobbies": "order / etiquette / planning / service / thoughtful preparation",
+                "boundaries": "messy structure / slang-heavy phrasing / rude wording / shirking responsibility / missed details"
+            }
+        },
         "resetTutorialBtn": "Reset Tutorial",
         "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
         "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
         "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page.",
+        "tutorialHomeDayLabel": "Day {{day}}",
+        "tutorialHomeDayColumn": "Home Seven-Day Tutorial",
         "refreshed": "Memory updated, new memory will be used in the next conversation",
-        "refreshingContext": "Refreshing context..."
+        "refreshingContext": "Refreshing context...",
+        "storageLocation": "Storage Location",
+        "storageCurrentRoot": "Current Data Location",
+        "storageStatusBlocked": "Storage location needs attention first",
+        "storageSelectionRequired": "Please confirm the storage location first",
+        "storageMigrationPending": "Migration is running or waiting for restart",
+        "storageRecoveryRequired": "Storage location recovery is required",
+        "changeStorageLocation": "Change Storage Location",
+        "openCurrentStorageRoot": "Open Current Directory",
+        "storageLoadFailed": "Failed to load storage location",
+        "storageManagementUnavailable": "Storage location is unavailable right now",
+        "storageMemoryLimitedState": "The storage location is not ready yet. Please finish selecting, recovering, or migrating storage before viewing memory.",
+        "storageAlreadyCurrentRoot": "Already using this location",
+        "storageOpenPathUnavailable": "This environment cannot open the directory directly. Please copy the path manually.",
+        "storagePathCopied": "Current directory path copied",
+        "storageOpenPathFailed": "Failed to open current directory",
+        "storageManagementTitle": "Change Storage Location",
+        "storageTargetRoot": "Target Location",
+        "storageTargetPlaceholder": "Choose or enter a new data location",
+        "storagePickTarget": "Choose Location",
+        "storagePickTargetFailed": "Failed to choose target location. Please enter a path manually.",
+        "storagePreflightFailed": "Preflight failed",
+        "storagePreflightReady": "Preflight passed. The app will restart after the storage location changes; old data is kept by default.",
+        "storagePreflightTarget": "Target location: {{path}}",
+        "storageExistingTargetWarning": "The target location already contains data. A second confirmation will be required before migration.",
+        "storageTargetRequired": "Please choose or enter a target location first",
+        "storagePreflightRunning": "Running preflight...",
+        "storageConfirmRestart": "Confirm and Restart",
+        "storagePreflightRequired": "Please run preflight first",
+        "storageRestartStarting": "Preparing to restart...",
+        "storageRestartInitiated": "Restart requested. The app will enter maintenance mode; please wait for the restart to finish.",
+        "storageRestartFailed": "Restart request failed"
+    },
+    "storage": {
+        "bootstrapError": "Failed to load storage initialization information. Please try again.",
+        "blockingGeneric": "The selected storage location cannot be used right now. Please choose another location or try again later.",
+        "blockingInsufficientSpace": "The target volume does not have enough free space for a safe migration.",
+        "blockingTargetNotWritable": "The target path is not writable, so migration cannot start.",
+        "cloudsaveLocalStateUnavailable": "The local state directory is unavailable. Cloud save is disabled for this session; fix the state path and restart the app before changing the storage location.",
+        "cleanupRetainedRoot": "Clean up old data directory",
+        "cleanupRetainedRootConfirm": "This will delete the retained old data directory and will not affect the new active directory. Continue?",
+        "cleanupRetainedRootDone": "The old data directory has been cleaned up. Only the new runtime directory remains.",
+        "cleanupRetainedRootFailed": "Failed to clean up the old data directory. Please try again later.",
+        "completionTitle": "Storage migration completed",
+        "confirmReconnect": "Confirm and restart on the original path",
+        "confirmRestart": "Confirm and Restart",
+        "confirmExistingTargetContent": "The target folder already contains N.E.K.O runtime data. If you continue, migration will replace same-name runtime data folders in the target. Other files in the target folder will be kept. Continue?",
+        "currentPath": "Current path",
+        "customPathPlaceholder": "Choose a parent folder; N.E.K.O will use its N.E.K.O subfolder",
+        "dialogLabel": "Storage location selection",
+        "errorTitle": "Storage startup information is temporarily unavailable",
+        "estimatedPayload": "Estimated data size",
+        "loadingFetchBootstrapSubtitle": "Preparing the storage location screen.",
+        "loadingSubtitle": "The main UI will continue after the storage state is confirmed.",
+        "loadingTitle": "Checking storage layout",
+        "loadingWaitSubtitle": "The main UI will continue after the storage state is confirmed.",
+        "maintenanceClosingStatus": "Closing...",
+        "maintenanceOfflineStatus": "The connection is temporarily interrupted. Waiting for the service to recover. Please keep this page open.",
+        "maintenanceReconnectStatus": "Keep this page open. The home page will recover automatically.",
+        "maintenanceReconnectSubtitle": "The service is back. Reconnecting the app...",
+        "maintenanceTitle": "Optimizing storage layout...",
+        "maintenanceWaitingStatus": "This page will stay here and retry automatically until the service recovers.",
+        "maintenanceWaitingSubtitle": "Closing now. Data will be migrated after shutdown and the service will restart automatically.",
+        "migrationPending": "An unfinished migration plan was detected. The home page will remain blocked until the service becomes usable again.",
+        "openPathFailed": "This environment cannot open the folder. Please go to the path manually.",
+        "openRetainedRoot": "Open old data directory",
+        "openTargetRoot": "Open active path",
+        "pickFolder": "Choose folder",
+        "pickFolderUnavailable": "The system folder picker is unavailable. Please enter the path manually.",
+        "pickFolderFailed": "Failed to open the folder picker. Please enter the path manually.",
+        "previewOther": "Use this location",
+        "progressCommitting": "Applying the new storage location",
+        "progressCompleted": "Migration completed. Recovering the service",
+        "progressCopying": "Migrating runtime data",
+        "progressFailed": "Migration did not complete. Waiting for recovery handling",
+        "progressPending": "Closing",
+        "progressPreflight": "Checking the target location and preparing migration",
+        "progressRebindPreflight": "Preparing to reconnect the original storage location",
+        "progressRebinding": "Closing and reconnecting the original path",
+        "progressRecovered": "The service is back. Reconnecting the page",
+        "progressRetaining": "Keeping the old data directory for later manual cleanup",
+        "progressStepCommit": "Verify and apply",
+        "progressStepRecover": "Recover service",
+        "progressStepShutdown": "Closing",
+        "progressStepTransfer": "Process storage directory",
+        "progressVerifying": "Verifying migration results",
+        "progressWaitingShutdown": "Closing",
+        "rebindPreviewNotice": "Backend confirmed that the original path is reachable again. The app will restart on that path. No runtime data will be copied this time.",
+        "recommendedPath": "Recommended path",
+        "selectedPath": "Selected path",
+        "recoveryRequired": "A recoverable storage state was detected. Confirm the storage location for this launch before continuing.",
+        "recoverySourceUnavailable": "The original data path is unavailable. Reconnect it or explicitly switch to the recommended default path.",
+        "restartRequestFailed": "Failed to prepare the restart and migration. Please try again later.",
+        "restartRequestUnexpected": "The restart and migration preparation API returned an unrecognized result.",
+        "restartNotRequired": "The target path is already the current path. Restart is not required.",
+        "restartPreviewReminder": "Changing the storage location will restart the app; old data is kept by default.",
+        "restartScheduleFailed": "Failed to schedule the controlled restart. Please try again later.",
+        "restartUnavailable": "The app cannot perform a controlled restart right now. Please try again later.",
+        "retainedRoot": "Old data directory",
+        "retainedSourceCleanupFailed": "Failed to clean up the old data directory. Please try again later.",
+        "retainedSourceMismatch": "The requested cleanup path does not match the retained directory. Please refresh and try again.",
+        "retainedSourceNotFound": "There is no retained old data directory to clean up.",
+        "selectPathRequired": "Please provide a target path first.",
+        "selectedRootInsideState": "This location is inside N.E.K.O runtime state and cannot be used as the storage root.",
+        "selectedRootUnavailable": "The selected storage path is still unavailable. Restore that path before trying again.",
+        "selectionSubmitFailed": "Failed to submit the storage location choice. Please try again later.",
+        "selectionSubmitUnexpected": "The storage location selection API returned an unrecognized result.",
+        "selectionTitle": "Storage location selection",
+        "selectionIntroBody": "Meow~ human, listen up! To keep your characters, memories, and settings safer, we are moving the data into a steadier dedicated little home. No more lost data from wandering folders or permission mischief~ You can keep the old home, or pick a new little home for your characters!",
+        "selectionIntroPickNew": "Recommended Storage Location",
+        "selectionIntroUseCurrent": "Other Location",
+        "selectionIntroImageAlt": "N.E.K.O storage migration illustration",
+        "statusUnexpected": "The storage maintenance status API returned an unrecognized result.",
+        "storageBootstrapBlocking": "Storage still needs recovery or migration, so this session cannot continue yet.",
+        "targetNotEmpty": "The target already contains runtime data. Confirm the target before migration.",
+        "systemStatusUnavailable": "The local service status could not be confirmed. Please try again.",
+        "systemStatusUnexpected": "The storage startup status API returned an unrecognized result.",
+        "targetFreeSpace": "Free space on target volume",
+        "targetLabel": "Active path",
+        "unknownBytes": "Not estimated yet",
+        "useCurrent": "Keep current path",
+        "useRecommended": "Use recommended path"
     },
     "character": {
         "manager": "Character Manager",
@@ -1528,6 +1934,8 @@
         "catgirlProfile": "NEKO Profile: Advanced settings include Live2D model, Voice ID, etc.",
         "addCatgirl": "Add NEKO",
         "openCloudsaveManager": "Cloud Save Manager",
+        "noIdleMotion": "No motion",
+        "noExpression": "No expression",
         "switchCatgirl": "Switch NEKO",
         "deleteCatgirl": "Delete NEKO",
         "hideCatgirl": "Hide this NEKO",
@@ -1543,12 +1951,55 @@
         "live2dNotSet": "Not Set",
         "voiceNotSet": "No Voice Specified",
         "voiceSetting": "Voice Settings",
+        "personalitySetting": "Personality Settings",
+        "personalityUseDefault": "Follow the character card default personality",
+        "personalitySelect": "Choose Personality",
+        "personalityClear": "Restore Default",
+        "personalityCleared": "Restored the character card default personality",
+        "personalityClearFailed": "Failed to clear personality settings",
+        "personalityModuleUnavailable": "The personality selection module is not loaded yet",
         "manageModel": "Click to manage model",
         "fillProfileNameFirst": "Please fill in the neko profile name first, then set the model",
+        "fillProfileNameFirstForCardFace": "Please fill in the neko profile name first, then set the card face",
         "registerNewVoice": "Register New Voice",
         "systemPrompt": "System Prompt (Edit with caution)",
         "systemPromptWarning": "System Prompt - Modifications may cause unexpected behavior. Edit at your own risk.",
         "addField": "Add Field",
+        "aiAssist": "AI Cat Assist",
+        "aiCompanionSub": "Card-design buddy · YUI standing in for the dev cat",
+        "aiCompanionExpand": "Expand",
+        "aiCompanionDragHint": "Drag to move",
+        "aiCompanionClose": "Close",
+        "aiCompanionMinimize": "Minimize",
+        "aiCompanionPlaceholder": "Say something… (Enter to send, Shift+Enter for newline)",
+        "aiCompanionSend": "Send",
+        "aiCompanionGreeting": "Meow~ I'm your card-design buddy. First, tell me what kind of catgirl you want — one line is enough! I'll ask a few follow-up questions and then write the whole card for you.",
+        "aiCompanionDesignGreeting": "Meow~ I'm your card-design buddy. This catgirl already has some shape — let me see what you've filled in:",
+        "aiCompanionDesignAsk": "What would you like me to help with? Just tell me directly (e.g. \"make her more tsundere\", \"swap the signature line\"), or hit \"🔍 Audit the card\" below and I'll review the whole thing.",
+        "aiCompanionDesignMore": "…(and {{n}} more)",
+        "aiCompanionGenerating": "Writing the draft for you…",
+        "aiCompanionEmptyDraft": "The draft came back empty, nya — let's chat a bit more.",
+        "aiCompanionDraftReady": "Draft is ready and already filled into the form, meow~ Change anything you want, or just tell me what to tweak:",
+        "aiCompanionAppliedPrefix": "Applied: ",
+        "aiCompanionSkipped": "unmatched / reserved",
+        "aiCompanionFormGone": "⚠ The character form isn't on screen anymore, so I can't apply this. Open this catgirl's detail panel again and try once more.",
+        "aiCompanionNewCardSaveHint": "💡 New card — click Save below once to persist it, then I'll auto-save your future changes. The fields are already in the form, meow~",
+        "aiCompanionSaveInProgress": "⏳ Saving this new card — once it's done I'll help you edit. Hang on a sec and send that again, meow~",
+        "aiCompanionAutoSaveFailed": "⚠ Auto-save failed — fields are written into the form, please check the error toast and click Save manually to retry.",
+        "aiCompanionDraftUpdated": "✎ updated",
+        "aiCompanionDraftCreated": "+ added",
+        "aiCompanionDraftSkipped": "⤬ skipped",
+        "aiCompanionUserEdited": "You just edited",
+        "aiCompanionInlineCustom": "Or write your own…",
+        "aiCompanionQuickAdvice": "💡 Give me advice",
+        "aiCompanionQuickAdviceMsg": "Take a look at the current card and give me a few concrete improvement suggestions.",
+        "aiCompanionQuickCheck": "🔍 Audit the card",
+        "aiCompanionQuickCheckMsg": "Check whether the card has any contradictions, vague spots, or repetition, and propose fixes.",
+        "aiCompanionQuickRegen": "🎲 Rewrite everything",
+        "aiCompanionQuickRegenMsg": "Rewrite every visible field while keeping the original character concept.",
+        "aiCompanionSeedDescribe": "Generate a catgirl card based on this description: ",
+        "aiCompanionSeedGenerated": "Generated and filled into the form: ",
+        "aiAssistApiMissing": "Assist API is not configured yet. Please configure it in API Key Settings first.",
         "confirmNewCatgirl": "Confirm New NEKO",
         "saveChanges": "Save Changes",
         "saveMaster": "Save Master Profile",
@@ -1562,6 +2013,7 @@
         "addMasterFieldTitle": "Add Master Field",
         "fieldExists": "This field already exists",
         "profileNameRequired": "Profile name is required",
+        "profileNameRenameOnlyHint": "Use the Rename button to change the profile name",
         "onlyOneCatgirlLeft": "Only one neko left, cannot delete!",
         "cannotHideCurrentNeko": "Cannot hide the currently active NEKO",
         "cannotDeleteCurrentCatgirl": "Cannot delete the currently active neko!\n\nPlease switch to another neko first.",
@@ -1600,7 +2052,20 @@
         "switchFailed": "Switch failed",
         "switchError": "An error occurred while switching neko",
         "freePresetVoices": "Free Preset Voices",
+        "geminiNativeVoices": "Gemini Native Voices",
+        "nativePresetVoices": "{{provider}} Native Voices",
+        "nativePresetVoicesGeneric": "Native Preset Voices",
+        "savedVoiceFallback": "Currently saved voice",
         "gptsovitsVoices": "GPT-SoVITS Voices",
+        "elevenlabsVoices": "ElevenLabs Voices",
+        "gsvDiagNotEnabled": "GPT-SoVITS is not enabled (enable it in API settings)",
+        "gsvDiagUrlMissing": "GPT-SoVITS URL is not configured (set it in API settings)",
+        "gsvDiagUrlInvalid": "GPT-SoVITS URL is missing or not http(s)",
+        "gsvDiagUrlLocalhostOnly": "GPT-SoVITS URL must point to localhost",
+        "gsvDiagUnreachable": "GPT-SoVITS server is not running or unreachable",
+        "gsvDiagLoadFailed": "Failed to load GPT-SoVITS",
+        "gsvDiagEmpty": "GPT-SoVITS server returned no voices (empty list)",
+        "gsvDiagTimeout": "GPT-SoVITS server timed out (>3s)",
         "loadFailed": "Failed to load character data",
         "renameError": "Rename failed: {{error}}",
         "renameMasterTitle": "Rename Master",
@@ -1634,13 +2099,16 @@
         "generatingCard": "Generating character card...",
         "settings": "Settings",
         "renamePrompt": "Please enter a new profile name",
+        "renameMasterPrompt": "Please enter a new master profile name",
         "renameTitle": "Rename",
         "tempSaveFailed": "Temp save failed: {{error}}",
         "newCatgirlSuccess": "New NEKO created successfully",
         "saveSuccess": "Saved successfully",
         "switchSuccess": "Switched successfully",
+        "cannotModifyInVoiceMode": "Cannot switch or delete cards while voice control is active. Please turn off voice control first.",
+        "voiceModeCheckFailed": "Failed to check voice mode status. Please try again later.",
         "deleteError": "Error occurred while deleting NEKO",
-        "switchCard": "Switch Card",
+        "switchCard": "Switch character",
         "deleteCard": "Delete Card",
         "currentCard": "Current Card",
         "confirmDeleteCard": "Delete card \"{{name}}\"?",
@@ -1661,7 +2129,9 @@
         "cardAuthorUpdated": "Author updated",
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
         "saveMasterSuccess": "Master profile saved successfully",
-        "editCardFace": "Edit Card Face"
+        "editCardFace": "Edit Card Face",
+        "cardFaceModelSettings": "Card Model Settings",
+        "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
@@ -1672,8 +2142,11 @@
         "restartFailed": "Restart failed: {{error}}",
         "configUpdated": "Configuration updated, page will refresh",
         "autoMuteTimeout": "No voice input for a long time, microphone auto-closed",
+        "freeApiAutoCloseNotice": "Free API voice session closed after a long idle period",
         "deviceSelected": "Selected {{device}}",
         "micAccessDenied": "Cannot access microphone",
+        "gameVoiceSttMicPermissionDenied": "Game voice transcription does not have microphone permission. Please check your browser permissions.",
+        "gameVoiceSttNotSupported": "This browser does not support game voice transcription. Please use text input for now.",
         "micMuted": "Microphone muted",
         "micUnmuted": "Microphone unmuted",
         "speaking": "Speaking...",
@@ -1681,6 +2154,7 @@
         "micRequired": "Please enable microphone first!",
         "micNotOpen": "Microphone is not open!",
         "switchingToVoice": "Switching to voice mode...",
+        "waitForReplyBeforeVoice": "Finishing reply before voice...",
         "initializingVoice": "Initializing voice chat...",
         "initializingMic": "Initializing microphone...",
         "startFailed": "Start failed: {{error}}",
@@ -1692,7 +2166,15 @@
         "textChattingShort": "Text chatting",
         "capturing": "Capturing...",
         "importImageAdded": "Added {{count}} image(s); they will be sent together",
+        "importImagePartial": "Added {{success}} image(s), {{failed}} failed to import",
         "importImageFailed": "Failed to import image",
+        "avatarDropOverlay": "Release to hand over files",
+        "avatarDropParsing": "Reading dropped files...",
+        "avatarDropAccepted": "Handed over {{count}} file(s)",
+        "avatarDropPartial": "Read {{accepted}} item(s), skipped {{rejected}}",
+        "avatarDropNoSupportedItems": "These files cannot be read yet",
+        "avatarDropReadFailed": "Failed to read files",
+        "avatarDropUserMessage": "Handed-over items: {{names}}",
         "screenshotAdded": "Screenshot added, click send to send together",
         "screenshotFailed": "Screenshot failed",
         "screenshotCancelled": "User cancelled screenshot",
@@ -1704,6 +2186,7 @@
         "switchedCatgirl": "Switched to {{name}}",
         "switchCatgirlFailed": "Failed to switch to {{name}}",
         "switchCatgirlError": "Switch failed: {{error}}",
+        "switchCatgirlWatchdog": "Last character switch seems stuck — please try switching again",
         "started": "{{name}} started",
         "voiceUpdated": "{{name}}'s voice updated",
         "audioWorkletFailed": "AudioWorklet failed to load",
@@ -1722,6 +2205,8 @@
         "glmApiBug": "GLM API triggered billing bug. Please consider recharging 1 CNY.",
         "aliApiOwed": "Alibaba API is out of balance.",
         "voiceSystemPreparing": "Voice system preparing...",
+        "voiceConfigSwitching": "Voice preset switching, preparing voice chat...",
+        "voiceConfigSwitchTimeout": "Voice preset switching is still in progress. Please start voice chat again later.",
         "textSystemPreparing": "Text system preparing, please wait...",
         "connectingToServer": "Connecting to server...",
         "readyToSpeak": "Ready to speak!",
@@ -1729,6 +2214,12 @@
         "screenRecordingPermissionDenied": "⚠️ Screen recording permission denied. Please allow screen recording in System Settings",
         "repetitionDetected": "High repetition detected. Suggest ending conversation to let {{name}} rest.",
         "modelSwitched": "Model switched",
+        "multiScreenDragHint": {
+            "title": "You can move YUI to another screen",
+            "body": "Keep dragging toward the screen edge and release. If she is too close to the edge, she will bounce back first.",
+            "ack": "Got it",
+            "never": "Do not remind me"
+        },
         "screenSource": {
             "notAvailable": "Screen source selection only available in desktop version",
             "loading": "Loading...",
@@ -1747,6 +2238,7 @@
         "sessionFailed": "Session failed to start"
     },
     "buttons": {
+        "thoughtBubblePop": "Pop thought bubble",
         "voiceControl": "Voice Control",
         "screenShare": "Screen Share",
         "agentTools": "NekoClaw",
@@ -1991,6 +2483,8 @@
         },
         "error": {
             "providerUnavailable": "Cloud save provider is currently unavailable.",
+            "invalidJsonBody": "Invalid JSON request body.",
+            "invalidBooleanParameter": "Invalid parameter: {{parameter}} must be boolean.",
             "activeSessionBlocked": "This character has an active session. Stop the session before downloading.",
             "memoryServerReleaseFailed": "Failed to release the local memory handle before overwrite. Please try again later.",
             "localCharacterNotFound": "The local character could not be found.",
@@ -2032,17 +2526,20 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "Base Interval",
-            "visionInterval": "Read Interval"
+            "chatIntervalBase": "Minimum Interval",
+            "visionInterval": "Perception Interval"
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
             "avatarReactionBubble": "Expression Bubble",
+            "autoCat": "Auto Cat Mode",
+            "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "proactiveChat": "Proactive Chat",
-            "proactiveVision": "Proactive Vision",
+            "proactiveVision": "Privacy Mode",
+            "proactiveVisionTooltip": "Off: Neko adjusts her liveliness and chat style based on the active window's title, and may incorporate on-screen content when starting a conversation.\nOn: Neko can't watch your screen on her own and won't know what you're doing. You can still send screenshots manually.",
             "proactiveVisionChat": "Screen Share",
-            "proactiveVisionChatTooltip": "Requires both Proactive Chat and Proactive Vision to be enabled",
+            "proactiveVisionChatTooltip": "Requires Proactive Chat enabled and Privacy Mode disabled",
             "proactiveNewsChat": "News Website",
             "proactiveNewsChatTooltip": "Use trending topics for proactive chat",
             "proactiveVideoChat": "Video Website",
@@ -2053,6 +2550,8 @@
             "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
             "proactiveMemeChat": "Meme Sharing",
             "proactiveMemeChatTooltip": "Share funny memes for proactive chat",
+            "proactiveMiniGameInviteChat": "Mini-game Invites",
+            "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
             "agentMaster": "NekoClaw Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
@@ -2067,6 +2566,7 @@
             "serverOffline": "NekoClaw Server Offline",
             "masterRequired": "Please enable NekoClaw Master Switch first",
             "capabilityNotReady": "{{name}} not ready, click to try enabling",
+            "openclawUnavailableReason": "{{name}} is unavailable: {{reason}}. Make sure the OpenClaw service is running and listening on 127.0.0.1:8088.",
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
@@ -2105,6 +2605,8 @@
         "sourceLabel": "Guide Source",
         "contentLanguageNotice": "The guide body switches with the selected language.",
         "languageLabel": "Language",
+        "tocTitle": "Contents",
+        "tocEmpty": "No headings yet",
         "guideUnavailable": "Guide content is empty."
     },
     "subtitle": {
@@ -2112,15 +2614,17 @@
         "enable": "Subtitle Translation",
         "enableAriaLabel": "Toggle subtitle translation",
         "markdownPlaceholder": "[formatted content]",
+        "display": {
+            "emptyHint": "No translation yet"
+        },
         "settings": {
             "targetLang": "Target Language",
-            "opacity": "Opacity",
-            "dragAnywhere": "Drag Anywhere",
-            "size": "Size",
-            "sizeSmall": "S",
-            "sizeMedium": "M",
-            "sizeLarge": "L",
-            "settingsBtn": "Subtitle Settings"
+            "opacity": "Background opacity",
+            "passthroughInteraction": "Transparent area passthrough",
+            "settingsBtn": "Subtitle Settings",
+            "lockPosition": "Lock position",
+            "unlockPosition": "Unlock position",
+            "closePanel": "Close translation panel"
         }
     },
     "viewer": {
@@ -2146,7 +2650,10 @@
             "AGENT_PRECHECK_PENDING": "Connectivity check in progress...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API not configured",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui not installed",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Desktop display session unavailable",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use not installed",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use module not loaded",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use module not loaded",
             "AGENT_NOT_INITIALIZED": "NekoClaw initialization failed",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM unreachable",
             "AGENT_MODEL_NOT_CONFIGURED": "NekoClaw model not configured",
@@ -2157,7 +2664,6 @@
             "AGENT_PLUGIN_SERVER_ERROR": "Plugin server connection failed",
             "AGENT_CONNECTIVITY_FAILED": "NekoClaw LLM connection failed"
         },
-        "quotaExceeded": "The free NekoClaw model daily trial limit has been reached ({{limit}} uses). Please try again tomorrow.",
         "contentFilterError": "The web page content browsed by NekoClaw was rejected by the AI model's safety filter and the task has been aborted. This usually happens when the page contains sensitive topics. Please try different keywords or websites.",
         "taskHud": {
             "title": "NekoClaw Tasks",
@@ -2171,6 +2677,7 @@
             "statusCancelled": "Cancelled",
             "minimize": "Collapse/Expand",
             "cancelAll": "Cancel all tasks",
+            "cancelTask": "Cancel task",
             "cancelConfirm": "Cancel all running tasks?",
             "typeUserPlugin": "User Plugin",
             "typeComputerUse": "Computer Use",
@@ -2226,7 +2733,8 @@
             "selectHint": "Select Idle Animations",
             "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed: {{name}}",
-            "changeFailed": "Failed to change idle animation"
+            "changeFailed": "Failed to change idle animation",
+            "stopped": "Idle animation stopped"
         },
         "settingsTitle": "VRM Model Settings",
         "cursorFollow": {
@@ -2274,7 +2782,8 @@
             "selectHint": "Select Idle Animations",
             "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed",
-            "changeFailed": "Failed to change idle animation"
+            "changeFailed": "Failed to change idle animation",
+            "stopped": "Idle animation stopped"
         },
         "managerInitFailed": "MMD manager initialization failed",
         "moduleLoading": "Loading MMD modules...",
@@ -2308,6 +2817,10 @@
         "loadLive2DListFailed": "Failed to load Live2D list:",
         "getLanlanNameFailed": "Failed to get lanlan_name:",
         "updateParameterEditorLinkFailed": "Failed to update parameter editor link:",
+        "editCardFaceAfterModelSaveTitle": "Edit card face",
+        "editCardFaceAfterModelSaveMessage": "Model settings have been saved. Edit the card face now?",
+        "editCardFaceNow": "Edit card face",
+        "createDefaultCardFace": "Generate default card face",
         "invalidVRMPathDetected": "[Model Manager] Detected invalid VRM model path, attempting auto-fix:",
         "saveModelSettingsFailed": "Failed to save model settings:",
         "vrmCleanupWarning": "[Model Manager] Warning during VRM cleanup:",
@@ -2338,6 +2851,7 @@
         "cannotConnectToServer": "Cannot connect to server, please ensure main_server.py is running",
         "checkVoiceModeFailed": "Check voice mode status failed:",
         "markedUnsavedModel": "Marked as unsaved changes (model switch), please click Save Settings to persist to character config.",
+        "parameterEditorSavedNeedsModelSave": "Face parameters saved. Click Save Settings to sync them to the character config.",
         "stopAnimationFailed": "Failed to stop animation:",
         "playAnimationFailed": "Failed to play animation:",
         "expressionPreviewLive2DOnly": "Expression preview feature only supports Live2D models",
@@ -2385,6 +2899,7 @@
         "serverNotReturnedValidJSON": "Server did not return valid JSON data"
     },
     "tutorial": {
+        "homeInteractionLocked": "The tutorial is in progress. Please follow the guide to finish this step first.",
         "step1": {
             "title": "👋 Welcome to N.E.K.O",
             "desc": "This is your Neko! Let me guide you through the features~"
@@ -2442,8 +2957,8 @@
             "desc": "Your Neko initiates conversation proactively. Adjust frequency here~"
         },
         "step14": {
-            "title": "👀 Proactive Vision",
-            "desc": "Unlike Screen Share which continuously streams during voice sessions, Proactive Vision lets your Neko glance at your screen from time to time on her own. Adjust the interval here~"
+            "title": "🔒 Privacy Mode",
+            "desc": "When Privacy Mode is off, your Neko will glance at your screen from time to time on her own — unlike Screen Share which continuously streams during voice sessions. Adjust the interval here~"
         },
         "step15": {
             "title": "👤 Character Manager",
@@ -2621,6 +3136,10 @@
                 "title": "🎭 Select Model",
                 "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
             },
+            "step_pick": {
+                "title": "👇 Pick a Model",
+                "desc": "Click any item in the dropdown list to choose a model. You must pick one to proceed."
+            },
             "step2": {
                 "title": "😊 Emotion Configuration Area",
                 "desc": "Configure expressions and motion combinations for different emotions. Your Neko will automatically switch emotions based on conversation."
@@ -2788,6 +3307,10 @@
             "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
             "enterFullscreen": "Enter Fullscreen Tutorial"
         },
+        "reset": {
+            "daySuccess": "Day {{day}} novice tutorial has been reset. Refresh Neko to start it again.",
+            "dayFailed": "Failed to reset the novice tutorial. Please try again later."
+        },
         "drag_hint": "Hold and drag to move the tooltip",
         "yuiGuide": {
             "buttons": {
@@ -2795,21 +3318,87 @@
                 "sayHello": "Hello"
             },
             "lines": {
-                "introBasic": "Whenever you want to find me, just type or send a voice message here to summon me, nyan!",
-                "introCatPaw": "Alright, enough chit-chat, nyan! See that cute \"paw\"? Ready? Let me borrow your mouse for a tiny bit!",
-                "takeoverCaptureCursor": "Heave-ho! I finally caught your mouse, nyan~!",
-                "takeoverPluginPreviewHome": "Not done yet! Look, look! There are so~~ many fun plugins here!",
-                "takeoverPluginPreviewDashboard": "With these, I can not only read Bilibili comments, but also turn off lights and AC for you... I am the all-powerful Super Cat God! Hmph~",
-                "takeoverSettingsPeekIntro": "Of course, I wouldn't mind chatting more if you want, but you'd better prepare lots of treats! Hehe, just kidding! All the settings are in this gear icon.",
-                "takeoverSettingsPeekDetail": "Look, you can change my outfit, or my voice... wait, CHANGE TO ANOTHER CATGIRL?! OR ERASE MEMORIES?! Wait, what are you doing?! You're not trying to replace me, are you?! No no no! Close it! Close it right now!",
-                "takeoverReturnControl": "Alright, alright, I'm done hijacking your PC~! Giving control back to you! But don't you dare touch any weird settings while I'm not looking! I'm counting on you from now on, nyan~!",
-                "interruptResistLight1": "Hey! Don't drag me around! It's not your turn yet, nyan!",
-                "interruptResistLight3": "Wait a sec! I'm not finished yet, don't just interrupt me like that!",
-                "interruptAngryExit": "Humannnn~~~~! You're so rude, nyan! Since you want to do everything yourself, go play with that cold screen alone! Hmph!",
-                "introProactive": "Ugh, how dare you ignore this Young Lady! If you keep ignoring me, I'll jump out and bite you! (Hiss!!)",
-                "introGreetingReply": "I'm your very own catgirl! Starting today, I'll be by your side, Master. Whether you want to chat, play, or need help with something, I'll be your good girl. Let's get along, I love you most, Master~!",
+                "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
+                "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
+                "takeoverPluginPreviewHome": "On top of the features I introduced before, there are tons of super fun plugins here too!",
+                "takeoverPluginPreviewDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "pluginDashboardPopupBlocked": "Your browser needs you to click here yourself to open the plugin panel. Click \"Management Panel\" and I'll keep showing you around.",
+                "takeoverSettingsPeekIntro": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
+                "takeoverSettingsPeekDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it. This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
+                "takeoverSettingsPeekDetailPart1": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
+                "takeoverSettingsPeekDetailPart2": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
+                "takeoverReturnControl": "Alright, alright, I won't hog your computer anymore! Giving control back to you, meow! Please keep taking good care of me in the days ahead!",
+                "interruptResistLight1": "Hey! Don't tug on me, it's not your turn yet!",
+                "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
+                "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
+                "introGreetingReply": "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
                 "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
                 "introActivationHint": "Click here so I can start talking, nyan~!"
+            }
+        },
+        "avatarFloating": {
+            "day1": {
+                "capsuleDragHint": "Move your mouse right here, hold it down, and you can drag my chat box anywhere you want~ Click it once and you can send me messages anytime!",
+                "historyHandle": "Poke that little [blue bar] on top of the chat box, and you'll see the topics we talked about recently!",
+                "screenEntry": "When we're on a voice call, light up this little button, and you can share your screen with me!",
+                "screenEntryInvite": "Hurry up and let me see the world in front of you! Whether it's something fun or something beautiful, I want to look at it with you. Open it up quickly~"
+            },
+            "day2": {
+                "intro": "Yesterday you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
+                "introVoiceUsed": "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
+                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
+                "wrapIntro": "Today's tutorial ends right here~",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
+                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
+            },
+            "day3": {
+                "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
+                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
+                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
+                "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
+                "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
+            },
+            "day4": {
+                "intro": "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
+                "chatSettings": "Here you can decide how long my replies are, whether I should use cute emojis, or even interrupt me when I'm being too chatty! You can tune it to whatever rhythm feels best for you.",
+                "modelBehavior": "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
+                "gazeFollow": "After turning this on, no matter where your mouse moves, my eyes will closely follow you! Hehe, doesn't it feel wonderful to be watched all the time?",
+                "privacyMode": "This is the 'Ultimate Privacy Switch' that controls whether I can look at your screen, meow! If you turn it off, I can see your screen, but if you turn it on, the [Screen Share] from before will be disabled and I won't peek at all~",
+                "modelLock": "Do you always accidentally click me and nudge me out of place? Then quickly lock me down to my current position! Once locked, I won't go anywhere and will stay right here to keep you company~",
+                "returnHome": "If you need to focus right now and worry I might distract you, you can let me head back to my little cat bed for a bit! Whenever you miss me, just one click will bring me right back to your side, meowww~",
+                "wrap": "True, comfortable companionship isn't about clinging to Master every single second~ It's knowing when to sneak close, tug on your sleeve, and act cute, and when to lie down quietly beside you, watching over Master silently, meow~"
+            },
+            "day5": {
+                "characterSettings": "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
+                "characterPanic": "Huh? Wait, there's actually an option to replace me here?! Hold on a second! Your hands right now... you're not trying to get rid of me, are you?! Ahhh, no way! Close it, close it right now!",
+                "memoryEntry": "If you accidentally forget what I can do for you, just come here anytime and let me teach you again! All the little moments we've shared are quietly saved right here. Don't you dare underestimate our bond, you dummy!",
+                "wrap": "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
+            },
+            "day6": {
+                "intro": "Ta-daaaa! Today I've got to fire myself up and talk to you all about our [Cat Paw]! Although I mentioned it briefly a couple of days ago, it has so many awesome features hidden inside!",
+                "statusMaster": "Come on, confess! Did you click it and give it a try over the last two days?",
+                "pluginSidePanel": "On top of the features I introduced before, there are tons of super fun plugins here too!",
+                "pluginDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "taskHud": "Look here, look here! When I decide to use the [Cat Paw] to work for you, my progress will show up right here, purr-purr!",
+                "taskHudControl": "If your plans change, you can poke it anytime to make me stop. Hehe, today is another energetic day of working hard to earn tasty fish treats! Let's go!",
+                "wrapCleanup": "Phew... let's pack up these cluttered menus so they won't get in your way.",
+                "wrap": "You can comfortably carry on with your own tasks. Whether you need my little paws to help you out, or just want me to keep you company quietly, I'll always be right here watching over you. Have a super happy day today!"
+            },
+            "day7": {
+                "memoryReview": "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
+                "memoryControl": "These little footprints can be neatly organized by your own hands, too. The ones you want to keep, we can tuck into our album; the ones you want to let go, we can just let them drift away in the wind. The memories you cherish and save are the most precious of all.",
+                "wrap": "The breeze is still at the window, the sunshine is just perfect, and you, who just arrived, have already quietly become a very important part of this place. The novice guide will leave you here for now, but for the rest of our days, let's slowly get to know each other, draw closer, and write a story that belongs only to us. Please take good care of me from now on, meow!"
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Chat first",
+                "voice": "Try voice",
+                "explore": "Explore features"
             }
         }
     },
@@ -2993,7 +3582,8 @@
             "sad": "Sad",
             "angry": "Angry",
             "surprised": "Surprised"
-        }
+        },
+        "configLoadFailed": "Failed to load configuration"
     },
     "mmdEmotionManager": {
         "title": "MMD Emotion Mapping Manager - Project N.E.K.O.",
@@ -3044,27 +3634,27 @@
     "characterModelNotSet": "Current character has no model set",
     "cookiesLogin": {
         "title": "N.E.K.O Credential Control Center",
-        "header": "🔐 Credential Acquisition Center",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵 Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏 Weibo",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 NetEase Cloud Music",
+        "header": "Credential Acquisition Center",
+        "bilibili": "Bilibili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "NetEase Cloud Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
         "removeCredentials": "Remove",
         "confirmRemove": "Are you sure you want to clear the login credentials for {{platformName}}?",
-        "credentialsRemoved": "✅ Credentials removed successfully",
-        "credentialsSaved": "✅ {{platformName}} credentials saved successfully!",
+        "credentialsRemoved": "Credentials removed successfully",
+        "credentialsSaved": "{{platformName}} credentials saved successfully!",
         "credentialsRemovedFailed": "Removal failed",
-        "removeFailed": "❌ Removal failed, please check your network",
-        "requiredField": "⚠️ Please fill in the required field: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] contains invalid characters...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] contains leading/trailing spaces, which have been automatically trimmed. Please confirm and resubmit.",
-        "networkError": "❌ Network error: Unable to connect to backend service",
+        "removeFailed": "Removal failed, please check your network",
+        "requiredField": "Please fill in the required field: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] contains invalid characters...",
+        "whitespaceTrimmed": "[{{fieldName}}] contains leading/trailing spaces, which have been automatically trimmed. Please confirm and resubmit.",
+        "networkError": "Network error: Unable to connect to backend service",
         "saveFailed": "Save failed, please check if the format is correct",
         "pasteHere": "Paste here",
         "submitting": "Securely encrypting and transmitting...",
@@ -3072,13 +3662,13 @@
         "statusLoadFailed": "Status load failed",
         "thisPlatform": "this platform",
         "instructions": {
-            "bilibili": "📌 <b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
-            "douyin": "📌 <b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
-            "kuaishou": "📌 <b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
-            "weibo": "📌 <b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
-            "twitter": "📌 <b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
-            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
-            "netease": "📌 <b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
+            "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
+            "douyin": "<b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
+            "kuaishou": "<b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
+            "weibo": "<b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
+            "twitter": "<b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
+            "reddit": "<b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
+            "netease": "<b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -3176,9 +3766,9 @@
         },
         "qrLogin": {
             "tryQR": "Or... try QR code login?",
-            "openQR": "📱 Open QR Login",
+            "openQR": "Open QR Login",
             "loading": "Getting QR code...",
-            "scanTitle": "📱 Scan to Login {{platform}}",
+            "scanTitle": "Scan to Login {{platform}}",
             "qrCodeAlt": "Login QR code",
             "waiting": "Waiting for scan...",
             "validFor": "QR code valid for: {{seconds}}s",
@@ -3187,9 +3777,9 @@
             "retry": "Retry",
             "networkError": "Network request failed, please check connection",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, please refresh",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, please refresh",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3199,7 +3789,7 @@
                 "waiting": "Waiting for scan"
             },
             "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration",
-            "extractFailed": "⚠️ QR login succeeded but failed to extract fields automatically. Please check manually."
+            "extractFailed": "QR login succeeded but failed to extract fields automatically. Please check manually."
         }
     },
     "music": {
@@ -3244,6 +3834,15 @@
         "duration": "Duration",
         "action": "Action",
         "play": "Play",
+        "sequencePlay": "Sequential play",
+        "singleLoop": "Repeat one",
+        "randomPlay": "Shuffle",
+        "noAutoNext": "Do not auto-advance",
+        "switchPlaybackMode": "Switch playback mode",
+        "lockSongSort": "Lock song sorting",
+        "unlockSongSort": "Unlock song sorting",
+        "previousSong": "Previous track",
+        "nextSong": "Next track",
         "playError": "Music player not initialized",
         "notFound": "Song not found",
         "audioEnded": "Audio playback ended",
@@ -3293,12 +3892,52 @@
         "exportAllIgnoreHidden": "Export All (Ignore Hidden)",
         "exportAllIncludeHidden": "Export All (Include Hidden)",
         "exportSelected": "Export Selected",
+        "deleteSelectedSongs": "Delete Selected ({{count}})",
+        "clearVisibleSongs": "Delete Current View ({{count}})",
+        "deleteSelectedActions": "Delete Selected ({{count}})",
+        "clearVisibleActions": "Delete Current View ({{count}})",
+        "deleteSelectedScope": "selected songs",
+        "clearVisibleScope": "songs currently shown",
+        "deleteSelectedActionScope": "selected animations",
+        "clearVisibleActionScope": "animations currently shown",
+        "clearVisibleIncludesHidden": "Show hidden songs is on, so hidden songs will also be processed.",
+        "clearVisibleExcludesHidden": "Show hidden songs is off, so hidden songs will not be processed.",
+        "songBatchDeleteTooltip": "Scope: {{scope}}\n{{total}} song(s) total; custom songs will be deleted and built-in songs will be hidden.\nCustom: {{userCount}}, built-in: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleActionsIncludesHidden": "Show hidden animations is on, so hidden animations will also be processed.",
+        "clearVisibleActionsExcludesHidden": "Show hidden animations is off, so hidden animations will not be processed.",
+        "actionBatchDeleteTooltip": "Scope: {{scope}}\n{{total}} animation(s) total; custom animations will be deleted and built-in animations will be hidden.\nCustom: {{userCount}}, built-in: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleSongsTitle": "Delete Current View",
+        "deleteSelectedSongsTitle": "Delete Selected Songs",
+        "clearVisibleActionsTitle": "Delete Current View",
+        "deleteSelectedActionsTitle": "Delete Selected Animations",
+        "clearVisibleSongsSecondConfirm": "A-are you really deleting the current view..?",
+        "clearVisibleActionsSecondConfirm": "A-are you really deleting the current view..?",
+        "clearVisibleSongsConfirm": "This will process {{total}} song(s) currently shown. Custom songs will be deleted and built-in songs will be hidden. This cannot be undone.",
+        "deleteSelectedSongsConfirm": "This will delete {{total}} selected song(s). Custom songs will be deleted and built-in songs will be hidden. This cannot be undone.",
+        "clearVisibleActionsConfirm": "This will process {{total}} animation(s) currently shown. Custom animations will be deleted and built-in animations will be hidden. This cannot be undone.",
+        "deleteSelectedActionsConfirm": "This will delete {{total}} selected animation(s). Custom animations will be deleted and built-in animations will be hidden. This cannot be undone.",
+        "songBatchDeleteSummary": "{{total}} song(s) total; {{userCount}} custom, {{builtinCount}} built-in.",
+        "actionBatchDeleteSummary": "{{total}} animation(s) total; {{userCount}} custom, {{builtinCount}} built-in.",
+        "continue": "Continue",
+        "clearVisibleSongsNow": "Delete Current View",
+        "deleteSelectedSongsNow": "Delete Selected",
+        "clearVisibleActionsNow": "Delete Current View",
+        "deleteSelectedActionsNow": "Delete Selected",
+        "songBatchDeleteResult": "Deleted {{deletedCount}} custom song(s), hidden {{hiddenCount}} built-in song(s).",
+        "songBatchDeleteFailedSummary": "{{failedCount}} song(s) failed: {{names}}",
+        "songBatchDeletePartialTitle": "Completed with failures",
+        "songBatchDeleteSuccessTitle": "Completed",
+        "actionBatchDeleteResult": "Deleted {{deletedCount}} custom animation(s), hidden {{hiddenCount}} built-in animation(s).",
+        "actionBatchDeleteFailedSummary": "{{failedCount}} animation(s) failed: {{names}}",
+        "actionBatchDeletePartialTitle": "Completed with failures",
+        "actionBatchDeleteSuccessTitle": "Completed",
         "dragZipHint": "Drag and drop ZIP files or folders here to import",
         "unifiedDropHint": "Drag and drop songs, animations, or import packages here",
         "clickToAdd": "Click to add",
         "dragMp3Hint": "Drag audio files here to add songs",
         "dragVmdHint": "Drag VMD files here to add animations",
         "showHiddenSongs": "Show hidden songs",
+        "showHiddenActions": "Show hidden animations",
         "selectAll": "Select All",
         "noActions": "No animations",
         "show": "Show",
@@ -3373,7 +4012,7 @@
             "legacyDetected": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices."
         },
         "changelog": {
-            "title": "What's New"
+            "title": "Update Info"
         }
     },
     "proactive": {
@@ -3387,7 +4026,7 @@
     },
     "cardExport": {
         "title": "Card Face Maker",
-        "loadingModel": "Loading model...",
+        "loadingModel": "Loading model. You can save or close after loading finishes.",
         "selectCharacter": "Select Character",
         "selectCharacterHint": "-- Select a character --",
         "loading": "Loading...",
@@ -3407,6 +4046,8 @@
         "stickerWidth": "Width",
         "stickerHeight": "Height",
         "lockRatio": "Lock Ratio",
+        "switchStickerVariant": "Switch Variant",
+        "stickerOverlapCycleHint": "Right-click overlapping stickers to cycle selection by layer order",
         "stickerRotation": "Rotation",
         "removeSticker": "Remove Selected",
         "clearStickers": "Clear All",
@@ -3428,6 +4069,9 @@
         "popupBlocked": "Popup was blocked. Please allow popups and try again.",
         "saveCardFace": "Save Card Face",
         "savingCardFace": "Saving...",
+        "autoSavingDefaultCardFace": "Generating default card face...",
+        "autoSaveDefaultCardFaceFailed": "Failed to generate default card face",
+        "modelStillLoading": "The model is still loading. Please save after it finishes loading.",
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: {{error}}",
         "saveCardFacePartialSuccess": "PNG saved, but metadata write failed: {{error}}",
@@ -3460,6 +4104,615 @@
             "untested": "Not tested",
             "not_configured": "Not configured",
             "testing": "Testing..."
+        }
+    },
+    "profiler": {
+        "title": "Performance Profiler",
+        "badge": {
+            "idle": "Idle",
+            "warmup": "Warming up...",
+            "running": "Recording",
+            "stopped": "Stopped"
+        },
+        "toggle": {
+            "title": "Expand / collapse",
+            "aria": "Expand / collapse profiler"
+        },
+        "btn": {
+            "start": "Start",
+            "stop": "Stop",
+            "snapshot": "Snapshot",
+            "reset": "Reset"
+        },
+        "debug": {
+            "title": "Debug visualization",
+            "physicsKinematic": "Kinematic bodies",
+            "physicsKinematicTip": "Kinematic rigid bodies (Mode 0): follow bone animation, unaffected by physics",
+            "physicsDynamic": "Dynamic bodies",
+            "physicsDynamicTip": "Dynamic rigid bodies (Mode 1): pure physics, affected by gravity and collisions",
+            "physicsMixed": "Mixed bodies",
+            "physicsMixedTip": "Mixed rigid bodies (Mode 2): physics + bones, position anchored to bones",
+            "physicsSolid": "Solid faces",
+            "physicsSolidTip": "Toggle wireframe / translucent faces: translucent mode reveals stacking and overlap",
+            "ik": "IK chain",
+            "ikTip": "IK solver: shows IK targets, effectors and chain nodes",
+            "skeleton": "Skeleton",
+            "skeletonTip": "Skeleton wireframe: shows the full bone hierarchy"
+        },
+        "fps": {
+            "recent60s": "FPS — last 60s",
+            "alltime": "All-time stats",
+            "current": "Current",
+            "avg": "Avg",
+            "min": "Min",
+            "max": "Max",
+            "p1": "1% Low",
+            "jitter": "Jitter σ",
+            "samples": "Samples",
+            "chartTitle": "FPS chart"
+        },
+        "frametime": {
+            "recent60s": "Frame time (ms) — last 60s",
+            "avg": "Avg",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "Max",
+            "min": "Min"
+        },
+        "section": {
+            "modelInfo": "Model attributes",
+            "assessment": "Performance rating",
+            "gpuInfo": "GPU info"
+        },
+        "placeholder": {
+            "snapshotForInfo": "Click Snapshot to fetch model info",
+            "snapshotForRating": "Click Snapshot to get a rating",
+            "snapshotForGpu": "Click Snapshot to fetch GPU info",
+            "noManager": "No model manager detected",
+            "noModel": "No model loaded",
+            "cannotRate": "Unable to rate",
+            "cannotGetGpu": "Unable to read GPU info",
+            "live2dUnsupported": "The profiler does not support Live2D models yet"
+        },
+        "info": {
+            "type": "Type",
+            "name": "Name",
+            "vertices": "Vertices",
+            "faces": "Faces",
+            "morphTargets": "Morph Targets",
+            "materials": "Materials",
+            "textures": "Textures",
+            "bonesVRM": "Humanoid bones",
+            "bonesMMD": "Bones",
+            "physicsEngine": "Physics",
+            "physicsBodies": "Rigid bodies",
+            "physicsConstraints": "Constraints",
+            "springJoints": "Spring Bone joints",
+            "colliders": "Colliders",
+            "animation": "Animation",
+            "animPlaying": "Playing",
+            "animPaused": "Paused",
+            "animStopped": "Stopped",
+            "ikGrant": "IK / Grant",
+            "outline": "Outline",
+            "enabled": "Enabled",
+            "disabled": "Disabled",
+            "drawCalls": "Draw calls",
+            "triangles": "Triangles",
+            "pixelRatio": "Pixel ratio",
+            "renderSize": "Render size",
+            "gpu": "GPU",
+            "vendor": "Vendor",
+            "maxTextureSize": "Max texture size"
+        },
+        "rating": {
+            "low": "Light",
+            "medium": "Medium",
+            "high": "Heavy",
+            "extreme": "Very heavy",
+            "overall": "Overall: ",
+            "noteHtml": "Ratings reference the <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC), relaxed for N.E.K.O's single-model scenes."
+        },
+        "ratingDetail": {
+            "vertices": "Vertices",
+            "faces": "Faces (triangles)",
+            "materials": "Materials",
+            "textures": "Textures",
+            "bones": "Bones",
+            "physicsBodies": "Rigid bodies",
+            "physicsConstraints": "Constraints",
+            "springJoints": "Spring Bone joints",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw calls"
+        }
+    },
+    "basketball": {
+        "title": "Basketball Challenge",
+        "modeSwitcher": "Basketball mode",
+        "mode": {
+            "spectator": "Free Practice",
+            "shooter": "Shot Challenge",
+            "duel": "Duel Yui",
+            "timed": "Time Attack",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Score {{score}}",
+            "streak": "Streak {{streak}}",
+            "record": "Best {{distance}}",
+            "duelScore": "You {{player}} - {{neko}} Neko",
+            "duelMisses": "Misses: You {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Round {{round}}/{{max}}",
+            "timer": "{{seconds}}s",
+            "practice": "Free Practice",
+            "yourTurn": "Your turn",
+            "nekoTurn": "Neko shoots",
+            "horseLetters": "You {{player}} / Neko {{neko}}",
+            "horseChallenge": "Copy {{distance}} {{angle}}°",
+            "horseSet": "Set a shot",
+            "unlimitedAttempts": "Unlimited",
+            "chances": "Chances {{count}}",
+            "practiceTitle": "Free Practice: unlimited shots and no leaderboard score",
+            "attemptsTitle": "Remaining {{remaining}}/{{total}}, misses {{missed}}",
+            "duelTitle": "Neko Duel: you and Neko take turns shooting",
+            "timedTitle": "Time Attack: unlimited shots in 60 seconds",
+            "horseTitle": "HORSE: copy the made shot distance, angle, and sweet spot",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "on",
+            "off": "off"
+        },
+        "result": {
+            "title": "Game Over",
+            "leaderboard": "Leaderboard",
+            "stats": "Stats",
+            "retry": "Play Again",
+            "rating": "Control rating: {{rating}}",
+            "duel": "Duel result: {{outcome}} | You {{player}} - {{neko}} Neko | Rounds: {{rounds}} | Last distance: {{distance}}",
+            "duelElimination": "Duel result: {{outcome}} | You {{player}} - {{neko}} Neko | Misses: You {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rounds: {{rounds}} | Last distance: {{distance}}",
+            "horse": "HORSE result: {{outcome}} | You {{player}} / Neko {{neko}} | Made: {{made}} | Best streak: {{best}}",
+            "timed": "Time Attack: {{made}} made, best streak {{best}}, score {{score}}",
+            "practice": "Free Practice: leaderboard score is not recorded | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Shot distance: {{distance}}",
+            "summary": "Score: {{score}} | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Farthest: {{record}} | Shot distance: {{distance}}",
+            "attemptsSummary": "Shot summary: {{summary}}",
+            "personalBest": "Personal best: {{score}} pts",
+            "globalRank": "Global rank: #{{rank}}{{total}}",
+            "outcome": {
+                "youWin": "You win",
+                "nekoWin": "Neko wins",
+                "tie": "Tie",
+                "undecided": "Undecided"
+            }
+        },
+        "leaderboard": {
+            "title": "Leaderboard",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Shooter",
+            "duel": "Duel",
+            "empty": "No records yet",
+            "totalPlayers": "Players {{count}}",
+            "yourBest": "Your best #{{rank}} / {{score}} pts",
+            "recent": "Recent {{count}} games",
+            "loading": "Loading...",
+            "mode": {
+                "shooter": "Shooter",
+                "duel": "Duel",
+                "timed": "Timed",
+                "horse": "HORSE",
+                "spectator": "Spectator"
+            }
+        },
+        "debug": {
+            "title": "Debug Panel",
+            "collapse": "Collapse",
+            "hide": "Hide",
+            "distance": "Distance:",
+            "power": "Power:",
+            "event": "Event:",
+            "streak": "Streak:",
+            "reset": "Reset",
+            "guide": "Guide line",
+            "sweet": "Sweet spot",
+            "markers": "Distance markers",
+            "readout": {
+                "modeState": "Mode={{mode}}  State={{state}}",
+                "distance": "Distance={{px}}px ({{meters}})",
+                "streaks": "Streak={{streak}}  Best={{best}}  Made={{made}}",
+                "score": "Score={{score}}  Left={{remaining}}/{{total}}",
+                "difficulty": "Difficulty={{difficulty}}  Mood={{mood}}  Theme={{theme}}",
+                "duel": "Duel: You {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: You {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Personal Stats",
+            "close": "Close",
+            "totalShots": "Shots={{total}}  Made={{made}}",
+            "farRate": "300px+ rate={{rate}}",
+            "trend": "Recent trend={{trend}}",
+            "none": "None"
+        },
+        "theme": {
+            "next": "Switch Theme",
+            "current": "Theme: {{theme}}",
+            "changed": "Theme {{theme}}",
+            "labels": {
+                "default": "Gym",
+                "sunset": "Sunset Court",
+                "night": "Night Lights"
+            }
+        },
+        "court": {
+            "restrictedArc": "Restricted",
+            "freeThrowLine": "Free throw",
+            "threePointLine": "3-point",
+            "midCourtLine": "Midcourt"
+        },
+        "close": "Close",
+        "audio": {
+            "controls": "Game audio"
+        },
+        "memoryOption": {
+            "label": "Remember this game's conversation (off by default)",
+            "hint": "When off, player input, NEKO replies, event replies, postgame summaries, and follow-up context will not be stored in or read from memory."
+        },
+        "table": {
+            "score": "Score",
+            "bestStreak": "Best Streak",
+            "farthest": "Farthest",
+            "mode": "Mode",
+            "date": "Date"
+        },
+        "state": {
+            "ready": "Ready",
+            "in_flight": "In flight",
+            "game_over": "Game over",
+            "neko_thinking": "Neko thinking"
+        },
+        "toast": {
+            "difficulty": "Difficulty {{difficulty}}",
+            "nekoShoot": "Neko shoots",
+            "nekoThinking": "Neko is thinking",
+            "nekoTurn": "Neko's turn",
+            "copyNeko": "Copy Neko",
+            "nekoFailed": "Neko missed the set shot",
+            "yourSet": "Set your shot",
+            "yourTurn": "Your turn",
+            "reset": "Reset",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Guide line",
+                "sweet": "Power sweet spot",
+                "bgm": "BGM",
+                "markers": "Distance markers"
+            },
+            "state": {
+                "on": "on",
+                "off": "off"
+            }
+        },
+        "tutorial": {
+            "aim": "Move the mouse up or down to adjust your shot angle",
+            "charge": "Hold left click to charge",
+            "release": "Release to shoot!"
+        },
+        "shot": {
+            "swish": "Swish",
+            "bank": "Bank",
+            "rim_in": "Rim in",
+            "rim_out": "Rim out",
+            "air_ball": "Air ball",
+            "unknown": "Unknown",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Nothing but net!",
+                    "Clean shot."
+                ],
+                "bank": [
+                    "Bank shot counts.",
+                    "Nice angle."
+                ],
+                "rim_in": [
+                    "It bounced in!",
+                    "That was close."
+                ],
+                "rim_out": [
+                    "So close.",
+                    "That one rolled out."
+                ],
+                "air_ball": [
+                    "The rim is over there.",
+                    "Way off line."
+                ],
+                "shot_missed": [
+                    "Still a chance.",
+                    "Steady up."
+                ],
+                "game_over": [
+                    "Run it back?",
+                    "I will remember that one."
+                ],
+                "long_aim": [
+                    "Take the shot.",
+                    "Still aiming?"
+                ],
+                "close_to_record": [
+                    "Almost a record.",
+                    "Just a little more."
+                ],
+                "new_record": [
+                    "New record!",
+                    "That was far."
+                ],
+                "streak_5": [
+                    "Five in a row!",
+                    "You are heating up."
+                ],
+                "streak_10": [
+                    "Ten straight?",
+                    "That is wild."
+                ],
+                "streak_15": [
+                    "Fifteen is absurd.",
+                    "You are locked in."
+                ],
+                "streak_20": [
+                    "Twenty straight?",
+                    "This round is unreal."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Nothing but net!",
+                    "Clean shot."
+                ],
+                "bank": [
+                    "Bank shot counts.",
+                    "Nice angle."
+                ],
+                "rim_in": [
+                    "It bounced in!",
+                    "That was close."
+                ],
+                "rim_out": [
+                    "So close.",
+                    "That one rolled out."
+                ],
+                "air_ball": [
+                    "The rim is over there.",
+                    "Way off line."
+                ],
+                "shot_missed": [
+                    "Still a chance.",
+                    "Steady up."
+                ],
+                "game_over": [
+                    "Run it back?",
+                    "I will remember that one."
+                ],
+                "long_aim": [
+                    "Take the shot.",
+                    "Still aiming?"
+                ],
+                "close_to_record": [
+                    "Almost a record.",
+                    "Just a little more."
+                ],
+                "new_record": [
+                    "New record!",
+                    "That was far."
+                ],
+                "streak_5": [
+                    "Five in a row!",
+                    "You are heating up."
+                ],
+                "streak_10": [
+                    "Ten straight?",
+                    "That is wild."
+                ],
+                "streak_15": [
+                    "Fifteen is absurd.",
+                    "You are locked in."
+                ],
+                "streak_20": [
+                    "Twenty straight?",
+                    "This round is unreal."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Nothing but net!",
+                    "Clean shot."
+                ],
+                "bank": [
+                    "Bank shot counts.",
+                    "Nice angle."
+                ],
+                "rim_in": [
+                    "It bounced in!",
+                    "That was close."
+                ],
+                "rim_out": [
+                    "So close.",
+                    "That one rolled out."
+                ],
+                "air_ball": [
+                    "The rim is over there.",
+                    "Way off line."
+                ],
+                "shot_missed": [
+                    "Still a chance.",
+                    "Steady up."
+                ],
+                "game_over": [
+                    "Run it back?",
+                    "I will remember that one."
+                ],
+                "long_aim": [
+                    "Take the shot.",
+                    "Still aiming?"
+                ],
+                "close_to_record": [
+                    "Almost a record.",
+                    "Just a little more."
+                ],
+                "new_record": [
+                    "New record!",
+                    "That was far."
+                ],
+                "streak_5": [
+                    "Five in a row!",
+                    "You are heating up."
+                ],
+                "streak_10": [
+                    "Ten straight?",
+                    "That is wild."
+                ],
+                "streak_15": [
+                    "Fifteen is absurd.",
+                    "You are locked in."
+                ],
+                "streak_20": [
+                    "Twenty straight?",
+                    "This round is unreal."
+                ],
+                "clutch": "...This has to go in.",
+                "excuse": "Ow, my arm is a little tired."
+            },
+            "fallback": [
+                "Run it back."
+            ],
+            "pressure": {
+                "lastTied": "Deciding shot. Do not blink.",
+                "lastAhead": "Hmph, this is not over.",
+                "lastBehind": "Make this and you win.",
+                "playerAhead": "You are pretty good...",
+                "playerBehind": "Push harder."
+            },
+            "horse": {
+                "nekoMiss": "Did not copy it. Add {{letters}}.",
+                "playerMiss": "You add {{letters}} too."
+            },
+            "mindGame": [
+                "Your hand is shaking.",
+                "Think first, no rush.",
+                "This is not a short shot."
+            ],
+            "easterEgg": {
+                "lateNight": "Still shooting this late?",
+                "xmas": "The bells are up and you still want to shoot?",
+                "newYear": "Happy New Year!",
+                "swish3": "Are you cheating?",
+                "swish5": "...I need to inspect the rim.",
+                "airball3": "...Maybe take a short break?"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "Huh?! "
+        }
+    },
+    "soccer": {
+        "exitGame": {
+            "button": "Exit Game",
+            "ending": "Ending the round…",
+            "ended": "Game ended, returning…",
+            "endingDefault": "Ending this match…",
+            "endedDefault": "Game over. Please close this page. To play again, reopen it."
+        },
+        "startScreen": {
+            "readyToStart": "Ready — click to start",
+            "ready": "Ready",
+            "startButton": "Start"
+        },
+        "startTutorial": {
+            "title": "How to play",
+            "move": "Move the mouse to guide the player.",
+            "charge": "Hold left click near the ball to charge, then release to shoot.",
+            "range": "Kicking only triggers within {{distance}} of the ball.",
+            "reset": "Press R to reset the ball and both players.",
+            "ai": "NEKO's mood and difficulty change with the match."
+        },
+        "hint": {
+            "controls": "Mouse = guide the player · Hold left click = charge, release = shoot (triggers within {{distance}} of the ball) · R = reset",
+            "aiMood": "NEKO's mood and difficulty change with the match"
+        },
+        "debugControls": {
+            "bounds": "Enable bounds (out-of-bounds rule)",
+            "voiceOutput": "Speak LLM lines (project voice)",
+            "voiceButton": "Debug voice",
+            "voicePlaceholder": "Debug: type final transcript, press Enter",
+            "send": "Send",
+            "voiceStatusHidden": "Debug STT: hidden"
+        },
+        "debug": {
+            "mouse": "mouse: {{x}}, {{y}}",
+            "playerCenter": "player ctr: {{x}}, {{y}}",
+            "aiCenter": "ai ctr: {{x}}, {{y}}  mode: {{mode}}",
+            "state": "round: {{round}}  difficulty: {{difficulty}}  mood: {{mood}}  charge: {{charge}}%",
+            "ball": "ball: ({{x}}, {{y}})  speed={{speed}}",
+            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Round {{round}}"
+        },
+        "moods": {
+            "calm": "calm",
+            "happy": "happy",
+            "angry": "angry",
+            "relaxed": "relaxed",
+            "sad": "sad",
+            "surprised": "surprised"
+        },
+        "difficulties": {
+            "max": "max",
+            "lv2": "level 2",
+            "lv3": "level 3",
+            "lv4": "level 4"
+        },
+        "aiModes": {
+            "attack": "attack",
+            "defend": "defend",
+            "clear": "clear"
+        },
+        "debugEvents": {
+            "player-kick": "player kick",
+            "ai-kick": "AI kick",
+            "unstick": "unstick"
+        },
+        "loading": {
+            "beginStartDefault": "Analyzing pregame context…",
+            "initializingMiniGame": "Initializing soccer mini-game…",
+            "assetsDone": "Model loaded",
+            "assetsFailed": "Model init failed, continuing",
+            "routeDone": "Pregame context ready",
+            "routeFallback": "Pregame context using local default",
+            "routeFailed": "Pregame context fetch failed, continuing"
+        },
+        "voiceStatus": {
+            "routeEnded": "Game route ended — reload the page to reattach",
+            "unsupported": "This browser does not support game voice transcription. Please use main chat text input for now.",
+            "listening": "Game voice STT: listening to the player",
+            "error": "Game voice STT: {{code}}",
+            "startFailed": "Game voice STT: failed to start. Please use main chat text input for now.",
+            "handoverInProgress": "Game voice STT: main voice entry is taking over",
+            "waitingForHandover": "Game voice STT: waiting for main voice entry to take over",
+            "received": "Player voice received: {{text}}",
+            "debugSubmitted": "Debug STT submitted: {{text}}",
+            "debugListening": "Debug STT: listening to the player…",
+            "debugIdle": "Debug STT: idle",
+            "debugUnsupported": "This browser does not support debug STT. Please use the debug text box.",
+            "recognitionError": "Speech recognition error: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Release to submit",
+            "idle": "Debug voice"
+        },
+        "memoryOption": {
+            "label": "Save this match to memory (off by default)",
+            "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
     }
 }

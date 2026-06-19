@@ -1,28 +1,26 @@
 <div align="center">
 
-![Logo](assets/neko_logo.jpg)
+![Logo](assets/neko_logo_new.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# Project N.E.K.O. :kissing_cat: <br>**主动式AI伙伴——具备24/7环境感知、自主执行力与具身情感引擎。**
+# Project N.E.K.O. :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
 >
 > N.E.K.O，一个渴望理解、建立连接、并与我们共同成长的数字生命。
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: 零配置开箱即用，我奶奶都能玩转的赛博猫娘！**
+**:older_woman: 零配置开箱即用，我奶奶也能轻松唤醒的赛博猫娘！**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)已上架！UI完全改版、并添加开箱即用的专属免费模型（感谢阶跃星辰赞助）。快点加入愿望单吧~**
-
-*Project N.E.K.O.，喵宇宙！*
+:newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎喜加一，顺手给个好评~**
 
 </div>
 
@@ -32,24 +30,33 @@
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>全模态对话</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
-<td align="center" width="25%">🧠<br><b>三层记忆系统</b><br>事实记忆 / 反思记忆 / 人格记忆，她真的会"记住"你</td>
-<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控、键鼠操控、OpenClaw A2A调用，她能帮你干活</td>
+<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，分享你喜欢的新鲜事</td>
+<td align="center" width="25%">🎙️<br><b>实时语音、文字与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
+<td align="center" width="25%">🧠<br><b>五维记忆系统</b><br>工作记忆 / 近期记忆 / 事实记忆 / 反思记忆 / 人格记忆，让她越聊越懂你</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK 与商城，支持自定义扩展功能，可陪玩MC/杀戮尖塔/嘎啦给木</td>
+<td align="center">🤖<br><b>Agent 工具执行</b><br>可操作浏览器与电脑，调用 CUA / OpenClaw A2A / 插件完成任务</td>
+<td align="center">🔌<br><b>插件生态</b><br>SDK + 插件商城，支持联机游戏陪玩、社交媒体互动、直播互动、智能家居等扩展场景</td>
 <td align="center">🌐<br><b>14+ AI 服务商</b><br>OpenAI / Gemini / Qwen / DeepSeek 等，含免费模型开箱即用</td>
-<td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天</td>
 <td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>
 </tr>
 </table>
+
+## 实机展示
+
+支持文本、语音、窥屏、鼠标点击、拖拽等一系列交互方式，既可以在闲暇的时候陪你聊天，也可以游戏娱乐时观战吐槽，还会叼着网络梗图来找你~~
+
+<img width="422.4" height="278.4" alt="Image" src="https://github.com/user-attachments/assets/71e9ed4c-f332-4db5-bc13-ca0d05049142" />
+<img width="363.6" height="278.4" alt="6 15-主动搭话" src="https://github.com/user-attachments/assets/50f61732-996b-41cb-9dba-d85f17734d8c" />
+
+当你需要学习工作等专注的空间时，她还会真的变成一只小猫咪安静地陪着你哦~ 就像这样→ <img width="115.5" height="86.1" alt="Image" src="https://github.com/user-attachments/assets/40379c53-398e-43ab-b027-70b31837f01d" />
 
 ---
 
 # 猫娘计划 (Project N.E.K.O.)
 
-`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于MIT许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
+`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于Apache 2.0许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
 
 ---
 
@@ -68,7 +75,7 @@
 * **创作者：** 画师、Live2D/3D建模师、配音演员、文案写手——你们赋予"她"灵魂。
 * **梦想家：** 你的反馈和传播也是宝贵的贡献。
 
-**QQ群**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW) | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
+**QQ群**：995414391 | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
 
 ## 快速开始
 
@@ -458,15 +465,25 @@ uv sync
 # cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. 启动服务（至少需要 main_server 和 memory_server）
-uv run python memory_server.py
-uv run python main_server.py
+uv run python app/memory_server.py
+uv run python app/main_server.py
 # 可选：启动 Agent 服务
-uv run python agent_server.py
+uv run python app/agent_server.py
 
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
-开发者建议加入企鹅群 1022939659 交流。
+**调试聊天界面形态（full / compact）**：Web 端默认 `full`（完整聊天窗口），Electron 端默认 `compact`（悬浮对话条）。在浏览器控制台用 localStorage 切换测试（硬刷新生效）：
+
+```js
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','full');    location.reload(); // 进 full
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','compact'); location.reload(); // 进 compact
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode');        location.reload(); // 回默认
+```
+
+形态说明、各形态自测点与三端验证详见 [`docs/design/compact-chat-mode-design.md`](docs/design/compact-chat-mode-design.md) 的「形态切换与本地测试」。
+
+开发者建议加入企鹅群 995414391 交流。
 
 </details>
 
@@ -478,7 +495,7 @@ uv run python agent_server.py
 
 当你想要通过配置自己的API来获得额外功能时，您可以配置第三方AI服务。
 
-- **核心 API**（实时语音对话）：必须支持 Realtime API。推荐使用 *阶跃星辰* 或 *阿里云*。
+- **核心 API**（实时语音对话）：必须支持 Realtime API。推荐使用 *阿里云*。
 - **辅助 API**（记忆/情感/视觉等）：支持标准 ChatCompletion 接口。支持 14+ 服务商。
 
 通过访问`http://localhost:48911/api_key`可以在Web界面中直接配置。
@@ -523,8 +540,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Computer Use Agent 子系统
 ├── 📁 config/                   # ⚙️ 配置管理模块 
 │   ├── api_providers.json       # API服务商配置
-│   ├── prompts_chara.py         # 角色提示词
-│   └── prompts_sys.py           # 系统提示词
+│   └── 📁 prompts/              # 角色、系统和功能提示词
+│       ├── prompts_chara.py     # 角色提示词
+│       └── prompts_sys.py       # 系统提示词
 ├── 📁 main_logic/               # 🔧 核心逻辑模块
 │   ├── core.py                  # 核心对话模块
 │   ├── cross_server.py          # 跨服务器通信
@@ -532,7 +550,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # 文本API客户端（ChatCompletion）
 │   └── tts_client.py            # 🔊 TTS引擎适配器
 ├── 📁 main_routers/             # 🌐 API路由模块（14个路由）
-├── 📁 memory/                   # 🧠 三层记忆系统
+├── 📁 memory/                   # 🧠 五维记忆系统（部分示例）
 │   ├── facts/                   # 事实记忆
 │   ├── reflection/              # 反思记忆
 │   └── persona/                 # 人格记忆
@@ -545,9 +563,12 @@ N.E.K.O/
 ├── 📁 static/                   # 🌐 前端静态资源（含构建产物）
 ├── 📁 templates/                # 📄 前端HTML模板（14个页面）
 ├── 📁 utils/                    # 🛠️ 工具模块
-├── main_server.py               # 🌐 主服务器
-├── agent_server.py              # 🤖 AI智能体服务器
-└── memory_server.py             # 🧠 记忆服务器
+├── 📁 app/                      # 🚀 服务器入口模块
+│   ├── main_server.py           # 🌐 主服务器
+│   ├── agent_server.py          # 🤖 AI智能体服务器
+│   ├── memory_server.py         # 🧠 记忆服务器
+│   └── monitor.py               # 📺 独立观看端
+└── launcher.py                  # 🎬 一键启动入口（打包入口）
 ```
 
 > **AI 辅助开发**：`.agent/` 目录遵循 Google Antigravity 开放规范，包含项目的开发规范和技能集。只有 Antigravity 自动读取，其他 AI 工具（含 Claude Code）需手动导入，详见[适配指引](https://project-neko.online/contributing/ai-assisted-dev)。
@@ -564,11 +585,34 @@ N.E.K.O/
 
 v0.7: ✅ 完善Agent相关功能。**已完成。**
 
-v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计2026年3月完成。
+v0.8: ✅ 完善记忆相关功能，完善OpenClaw类似功能。**已完成（2026年4月）。**
 
-v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年4月完成。
+v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年6月完成。
 
-v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年6月完成。
+v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年8月完成。
+
+### 遥测说明 (Telemetry)
+
+N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性、模型用量分布与异常率。我们认同"用数据改进产品"的合理性，但更认同"不偷不藏"。
+
+**一键关闭 (Opt-out)**：设置环境变量 `DO_NOT_TRACK=1`（或 `NEKO_DO_NOT_TRACK=1`）即可完全禁用遥测，无需重新构建，立刻生效。这是开源界通用的约定，我们也遵守。
+
+**我们收集 / 不收集什么**：
+
+| ✅ 收集 | ❌ 不收集 |
+| --- | --- |
+| LLM Token 用量（prompt / cached / completion） | 对话内容、文本、语音、图片 |
+| 模型名称、调用类型（conversation / memory 等） | 用户名、API Key、GitHub ID |
+| 调用次数 / 错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
+| 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
+| 假名化设备标识：主路径 `SHA256(OS_machine_id ‖ namespace)`，回退路径 `SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`；迁移期同时上报新旧两个 ID，以便服务端把同一设备在新旧算法下产生的两个标识归并为一个用户队列 | 任何能反推到个人的 PII |
+| **当 Steamworks SDK 在运行时能初始化成功 + 你已登录 Steam 客户端时**：Steam64 user ID（可在 Steam 个人页查到的公开数字 ID） | 上述以外的任何账号体系 ID（GitHub / Google / OpenAI 等） |
+
+> **关于"假名化设备标识"**：单向 SHA-256，不可逆、不含用户信息。同一台机器（同一 OS 安装）会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。仅用于去重 DAU 计数与版本兼容性归因。
+>
+> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server.py`](app/main_server.py) 启动时无条件调用 `initialize_steamworks()`，[`utils/token_tracker.py`](utils/token_tracker.py) 的 `_get_telemetry_steam_user_id()` 只要 SDK 起来且 `Users.GetSteamID()` 返回非零就上报，并不区分 source / release / steam 这三种 distribution 渠道。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样会带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
+
+完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
 
 </details>
 

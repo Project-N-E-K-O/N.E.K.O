@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import re
 import shutil
 import time as time_module
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib  # type: ignore[no-redef]
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,16 +16,19 @@ from typing import Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError
-from plugin.core.host import PluginProcessHost
+from plugin.core.host import PluginProcessHost, _import_plugin_module
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
+    _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
+    _ensure_python_requirement_paths,
     _extract_entries_preview,
     _find_missing_python_requirements,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
     scan_static_metadata,
 )
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
@@ -35,7 +40,10 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
+from plugin.server.messaging.llm_tool_registry import (
+    clear_plugin_tools as clear_plugin_llm_tools,
+)
+from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
@@ -378,6 +386,7 @@ class PluginLifecycleService:
         restore_state: bool = False,
         *,
         refresh_registry: bool = True,
+        persist_user_intent: bool = False,
     ) -> dict[str, object]:
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
@@ -386,6 +395,8 @@ class PluginLifecycleService:
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
             if existing_host_obj.is_alive():
+                if persist_user_intent:
+                    await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
                 _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=current_plugin_id)
                 return {
                     "success": True,
@@ -552,7 +563,11 @@ class PluginLifecycleService:
                     plugin_id=current_plugin_id,
                     error_type="InvalidEntryPoint",
                 )
-            entry = entry_obj
+            entry = normalize_plugin_entry_point(
+                entry_obj,
+                config_path=config_path,
+                builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
+            )
 
             resolved_id = _resolve_plugin_id_conflict(
                 current_plugin_id,
@@ -577,13 +592,17 @@ class PluginLifecycleService:
                 logger,
                 current_plugin_id,
             )
-            unsatisfied_python_requirements = _find_missing_python_requirements(python_requirements)
+            python_requirement_paths = _collect_plugin_python_requirement_paths(config_path)
+            unsatisfied_python_requirements = _find_missing_python_requirements(
+                python_requirements,
+                search_paths=python_requirement_paths,
+            )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(
                     code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",
                     message=(
                         f"Plugin '{current_plugin_id}' has unsatisfied Python dependencies: "
-                        f"{unsatisfied_python_requirements}. Install compatible packages in the current runtime environment."
+                        f"{unsatisfied_python_requirements}. Install compatible packages into the plugin vendor/ directory."
                     ),
                     status_code=400,
                     plugin_id=current_plugin_id,
@@ -639,8 +658,18 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
+            # Mirror the startup loader: ensure the plugin's vendor/ entries
+            # are on sys.path before we import its entry module here, so a
+            # plugin whose top-level imports use vendored packages doesn't
+            # fail this parent-process metadata scan even though the child
+            # process would import it just fine.
+            _ensure_python_requirement_paths(
+                python_requirement_paths,
+                logger,
+                current_plugin_id,
+            )
             module_path, class_name = entry.split(":", 1)
-            module_obj = await asyncio.to_thread(importlib.import_module, module_path)
+            module_obj = await asyncio.to_thread(_import_plugin_module, module_path, config_path, logger)
             cls_obj = getattr(module_obj, class_name)
             if not isinstance(cls_obj, type):
                 raise _to_domain_error(
@@ -670,6 +699,8 @@ class PluginLifecycleService:
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id
 
+            if persist_user_intent:
+                await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
                 "success": True,
@@ -733,7 +764,12 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
-    async def stop_plugin(self, plugin_id: str) -> dict[str, object]:
+    async def stop_plugin(
+        self,
+        plugin_id: str,
+        *,
+        persist_user_intent: bool = False,
+    ) -> dict[str, object]:
         host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
         if host_obj is None:
             raise _to_domain_error(
@@ -758,6 +794,25 @@ class PluginLifecycleService:
             await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
+            # Clear any LLM tools the plugin had registered with
+            # ``main_server``. Best-effort: a transient HTTP failure
+            # here shouldn't block the rest of plugin teardown — the
+            # registration helper logs the error itself. Without this
+            # call, a stopped plugin's tools would linger in
+            # main_server's registry until process restart, and the
+            # model could still pick them only to hit a 404 on
+            # dispatch.
+            try:
+                await clear_plugin_llm_tools(plugin_id)
+            except Exception as exc:
+                logger.debug(
+                    "clear_plugin_llm_tools failed (best-effort): plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            if persist_user_intent:
+                await asyncio.to_thread(set_runtime_override, plugin_id, False)
             _emit_lifecycle_event(event_type="plugin_stopped", plugin_id=plugin_id)
             return {
                 "success": True,
@@ -1053,16 +1108,15 @@ class PluginLifecycleService:
             )
 
         prefix = ""
-        config_path_obj = ext_meta.get("config_path")
-        if isinstance(config_path_obj, str) and config_path_obj:
-            config_path = Path(config_path_obj)
+        resolved_config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, ext_meta)
+        if resolved_config_path is not None:
             try:
-                prefix = await asyncio.to_thread(_read_extension_prefix_sync, config_path)
+                prefix = await asyncio.to_thread(_read_extension_prefix_sync, resolved_config_path)
             except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
                 logger.warning(
                     "failed to read extension prefix: ext_id={}, config_path={}, err_type={}, err={}",
                     ext_id,
-                    str(config_path),
+                    str(resolved_config_path),
                     type(exc).__name__,
                     str(exc),
                 )
@@ -1081,6 +1135,7 @@ class PluginLifecycleService:
                         "ext_id": ext_id,
                         "ext_entry": ext_entry_obj,
                         "prefix": prefix,
+                        "config_path": str(resolved_config_path) if resolved_config_path is not None else "",
                     },
                     timeout=10.0,
                 )

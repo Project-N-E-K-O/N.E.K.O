@@ -668,7 +668,7 @@ def test_fact_dedup_prompt_has_all_five_locales_with_placeholders():
     resolver substitutes (PAIRS, COUNT). A missing locale would silently
     fall back to zh via _loc; a missing placeholder would let the LLM
     see literal {PAIRS} / {COUNT} text and produce garbage."""
-    from config.prompts_memory import FACT_DEDUP_PROMPT, get_fact_dedup_prompt
+    from config.prompts.prompts_memory import FACT_DEDUP_PROMPT, get_fact_dedup_prompt
     expected_locales = {"zh", "en", "ja", "ko", "ru"}
     assert set(FACT_DEDUP_PROMPT.keys()) >= expected_locales
     for lang in expected_locales:

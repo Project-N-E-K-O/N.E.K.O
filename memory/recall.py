@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 MemoryRecallReranker — vector pre-rank + LLM rerank for memory recall.
 
@@ -35,24 +49,39 @@ whole pipeline degrades to "evidence_score DESC + top ``budget``" —
 exactly the current behaviour, no LLM call cost added.
 
 Why vectors are a *prefilter*, not a replacement: cosine alone can't
-tell ``主人喜欢猫`` from ``主人讨厌猫`` (≈0.78), and "semantically
-near" entries that the user didn't actually mean to bring up trigger
-false positives in Stage-2 signal detection (which would either
-reinforce or negate the wrong observation).  Keeping the LLM as the
-arbiter means we save *prompt tokens* (smaller candidate set in the
-Stage-2 prompt), not *LLM calls* — RFC §3.4 stays unchanged in
-shape.
-"""
+tell ``主人喜欢猫`` ("the user likes cats") from ``主人讨厌猫`` ("the user
+hates cats") (≈0.78), and "semantically near" entries that the user
+didn't actually mean to bring up trigger false positives in Stage-2
+signal detection (which would either reinforce or negate the wrong
+observation).  Keeping the LLM as the arbiter means we save *prompt
+tokens* (smaller candidate set in the Stage-2 prompt), not *LLM
+calls* — RFC §3.4 stays unchanged in shape.
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import logging
 import re
 
-from memory.embeddings import (
-    cosine_similarity,
-    get_embedding_service,
-    is_cached_embedding_valid,
-)
+try:
+    from memory.embeddings import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+    )
+except ImportError:
+    # See ``embedding_worker`` for context. With the disabled-service
+    # stub, ``MemoryRecallReranker`` keeps working but skips the cosine
+    # prefilter (decode_embedding returns None for every candidate) —
+    # callers already handle that path via ``rerank=False`` semantics.
+    from memory.embeddings_fallback import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+        _warn_once,
+    )
+    _warn_once(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +128,25 @@ class MemoryRecallReranker:
         directly.
         """
         if not observations:
+            # 即使空召回也算一次 invoke，差值 = "想 recall 但没素材"，对
+            # 评估 memory pipeline 健康度有意义。
+            try:
+                from utils.instrument import counter as _instr_counter
+                _instr_counter("memory_recall_invoke", returned_empty=True)
+            except Exception:
+                # 埋点失败不能让 recall 路径报错 —— memory pipeline 是
+                # response 关键路径，宁可少一条统计也不让它 crash。
+                pass
             return []
+        # Telemetry：每次 recall 算一次 invoke，无论后续是 coarse-only 还是
+        # 走 LLM rerank。histogram 记返回 fact 数量分布；对比 invoke 次数和
+        # 返回 0 的比例可看 memory pipeline 是否在"起作用"。
+        try:
+            from utils.instrument import counter as _instr_counter
+            _instr_counter("memory_recall_invoke", returned_empty=False)
+        except Exception:
+            # 同上：埋点失败静默，不影响 recall 主路径。
+            pass
 
         # Normalise query_texts up-front so phase 2 (coarse) and phase 3
         # (LLM rerank) see the same shape: drop None/empty/whitespace
@@ -141,7 +188,7 @@ class MemoryRecallReranker:
         # judgment. Below the budget, every candidate makes the cut
         # anyway, so the LLM call would be wasted tokens.
         try:
-            from config.prompts_memory import get_memory_recall_rerank_prompt
+            from config.prompts.prompts_memory import get_memory_recall_rerank_prompt
             from utils.language_utils import get_global_language
         except ImportError:
             # Prompt not available yet — degrade to coarse rank.
@@ -201,25 +248,45 @@ class MemoryRecallReranker:
         These are the same exclusions the render path already uses,
         consolidated into one function so callers don't duplicate the
         list.
+
+        Per-entry try/except: observations usually come from JSON files
+        (facts.json / reflections.json / persona.json) across a serialize/
+        deserialize boundary. In theory we wrote them ourselves so the shape
+        should be right, but manual edits / legacy leftovers / migration bugs
+        can make ``text`` a list/int (breaking ``.strip()``) or ``score`` a
+        string (breaking the ``< 0`` comparison). A single bad row must not
+        take the whole filter down — both existing callers (hybrid_recall and
+        Stage-2 signal detection) benefit. Codex review on PR #1385.
         """
         out: list[dict] = []
         for o in observations:
             if not isinstance(o, dict):
                 continue
-            score = o.get('score')
-            if score is not None and score < 0:
-                continue
-            if o.get('suppress') or o.get('suppressed'):
-                continue
-            if o.get('protected'):
-                continue
-            target_type = o.get('target_type')
-            status = o.get('status')
-            if (target_type == 'reflection'
-                    and status in MemoryRecallReranker._REFLECTION_DROP_STATUSES):
-                continue
-            text = o.get('text', '')
-            if not text or not text.strip():
+            try:
+                score = o.get('score')
+                if score is not None and score < 0:
+                    continue
+                if o.get('suppress') or o.get('suppressed'):
+                    continue
+                if o.get('protected'):
+                    continue
+                target_type = o.get('target_type')
+                status = o.get('status')
+                if (target_type == 'reflection'
+                        and status in MemoryRecallReranker._REFLECTION_DROP_STATUSES):
+                    continue
+                text = o.get('text', '')
+                if not text or not text.strip():
+                    continue
+            except (TypeError, AttributeError) as exc:
+                # 单条 entry 字段类型不对（list/int/etc.）→ skip 这一行，
+                # 继续过滤其余。仅 log 到 DEBUG 不刷屏（malformed 通常会
+                # 连续命中很多条）。
+                logger.debug(
+                    "MemoryRecallReranker._hard_filter: skipping malformed "
+                    "entry id=%r: %s: %s",
+                    o.get('id'), type(exc).__name__, exc,
+                )
                 continue
             out.append(o)
         return out
@@ -276,24 +343,82 @@ class MemoryRecallReranker:
         # unembedded one fell off the cliff before reaching the LLM
         # rerank, even though the docstring promised they'd "fall
         # through to the LLM rerank below the cosine-ranked rows".
-        embedded_scored: list[tuple[float, dict]] = []
+        #
+        # Decoding strategy: build a stacked candidate matrix once and
+        # multiply against the query matrix in a single numpy call.
+        # The pre-int8 path used a per-pair Python cosine loop; for N
+        # candidates × Q queries × D dims that grew as N·Q·D Python
+        # ops. With base64+int8 storage we'd otherwise pay a base64
+        # decode per pair too. Stacking amortises decode to one pass
+        # and pushes the dot product into BLAS — at 5k entries × 256d
+        # that drops the coarse rank from hundreds of ms to a few.
+        # Derive target_dim from the running service's model_id rather
+        # than from the first decoded candidate. Codex review PR #1147
+        # P2: if the first valid-on-paper row decoded to the wrong
+        # length, the old "first wins" rule would push every correctly
+        # sized candidate to the unembedded pool and silently lose the
+        # cosine ranking. model_id encodes dim by construction (see
+        # build_model_id), so it's the authoritative source.
+        # If the id is unparseable (custom model_id from a fixture or
+        # future profile), fall back to the first decoded row's dim —
+        # better than dropping every candidate to unembedded.
+        target_dim = parse_dim_from_model_id(model_id)
+
+        embedded_obs: list[dict] = []
+        embedded_decoded: list = []
         unembedded: list[dict] = []
         for o in observations:
             # ``observations`` already passed through ``_hard_filter``,
             # which guarantees every entry is a dict with non-empty
             # text — no need for a defensive isinstance check here.
             text = o.get('text', '')
-            cvec = o.get('embedding')
-            if is_cached_embedding_valid(o, text, model_id):
-                # Max-cosine across query vectors. Candidates with
-                # equal cosine fall back to evidence_score for tie-
-                # breaking — covered in the unit test.
-                best = max(
-                    cosine_similarity(cvec, qv) for qv in query_vectors
-                )
-                embedded_scored.append((best, o))
-            else:
+            if not is_cached_embedding_valid(o, text, model_id):
                 unembedded.append(o)
+                continue
+            cvec = decode_embedding(o.get('embedding'))
+            # A row that passes is_cached_embedding_valid but fails to
+            # decode (corrupt base64, or a future format we don't
+            # know) falls through to the unembedded pool rather than
+            # crashing the rerank.  is_cached_embedding_valid already
+            # tries to decode and checks dim, so this branch is mainly
+            # defence-in-depth for racey writes between validity check
+            # and rerank.
+            if cvec is None or cvec.size == 0:
+                unembedded.append(o)
+                continue
+            if target_dim is None:
+                target_dim = int(cvec.size)
+            elif cvec.size != target_dim:
+                # Mixed dims under a single model_id should be
+                # impossible (model_id encodes dim), but defend
+                # against it: drop to unembedded so the matmul stays
+                # rectangular.
+                unembedded.append(o)
+                continue
+            embedded_obs.append(o)
+            embedded_decoded.append(cvec)
+
+        embedded_scored: list[tuple[float, dict]] = []
+        if embedded_decoded:
+            import numpy as np
+            candidate_matrix = np.stack(embedded_decoded)
+            query_rows = []
+            for qv in query_vectors:
+                qvec = decode_embedding(qv)
+                if qvec is not None and qvec.size == target_dim:
+                    query_rows.append(qvec)
+            if query_rows:
+                query_matrix = np.stack(query_rows)
+                # (N, D) @ (D, Q) → (N, Q); max across queries → (N,)
+                scores_arr = (candidate_matrix @ query_matrix.T).max(axis=1)
+                embedded_scored = list(
+                    zip((float(s) for s in scores_arr), embedded_obs),
+                )
+            else:
+                # All query vectors failed dim check — degrade to 0
+                # cosine for every embedded candidate; evidence_score
+                # tie-break still gives a deterministic order below.
+                embedded_scored = [(0.0, o) for o in embedded_obs]
         # Sort embedded by cosine DESC, evidence_score DESC tie-break.
         embedded_scored.sort(
             key=lambda pair: (pair[0], pair[1].get('score', 0.0)),
@@ -322,6 +447,154 @@ class MemoryRecallReranker:
             result.extend(tail)
         return result[:k]
 
+    # ── per-query top-K recall（reflection synthesis 用） ────────────────
+
+    async def aretrieve_per_query_topk(
+        self,
+        observations: list[dict],
+        query_texts: list[str],
+        *,
+        per_query_k: int,
+        total_cap: int,
+    ) -> list[dict]:
+        """Per-query top-K cosine recall, union+dedup capped at ``total_cap``.
+
+        Unlike the global max-pool top-K of ``aretrieve_candidates``: here
+        **each query gets its own independent quota of ``per_query_k``**;
+        results are merged with id dedup and truncated to ``total_cap``.
+
+        Use case: reflection synthesis's ``{RELATED_CONTEXT_BLOCK}`` — when 20
+        unabsorbed facts span scattered topics, max-pool lets hot topics crowd
+        out cold ones; the per-query quota avoids that (decided in the PR #1401
+        thread).
+
+        Perf: one ``embed_batch`` packs all queries; candidates are decoded once
+        into an (N, D) matrix, a single ``candidate_matrix @ query_matrix.T``
+        yields the (N, Q) score matrix, and a per-column ``argpartition`` takes
+        the top-K. Overall complexity O(N·D·Q + N·Q·log K); BLAS brings its own
+        SIMD/multithreading — equivalent to "parallel" per-query calls without
+        paying N round-trips to the embedding service.
+
+        The fallback differs from the main path: embedding unavailable / no
+        model_id / no candidate with a valid embedding → **return []
+        directly**, with **no** degradation to evidence_score ordering.
+        Rationale: the consumer (``_build_related_context_block``) injects the
+        results into the LLM prompt as "semantic anchors"; a "high-score
+        historical fact" with no real semantic link is attention pollution as
+        an anchor — better an empty anchor.
+
+        ⚠️ Code reuse: the candidate-matrix build / query decode largely mirror
+        ``_coarse_rank``; we accept the small duplication for now and will
+        extract a private ``_build_score_matrix`` helper once a third caller
+        appears.
+        """
+        if not observations or not query_texts:
+            return []
+
+        survivors = self._hard_filter(observations)
+        if not survivors:
+            return []
+
+        if not self._service.is_available():
+            return []
+        model_id = self._service.model_id()
+        if model_id is None:
+            return []
+
+        cleaned_queries = [
+            t.strip() for t in query_texts
+            if isinstance(t, str) and t.strip()
+        ]
+        if not cleaned_queries:
+            return []
+
+        query_vectors_raw = await self._service.embed_batch(cleaned_queries)
+        query_vectors_raw = [v for v in query_vectors_raw if v is not None]
+        if not query_vectors_raw:
+            return []
+
+        target_dim = parse_dim_from_model_id(model_id)
+
+        # Decode candidate embeddings once, build (N, D)
+        indexed_decoded: list[tuple[int, "np.ndarray"]] = []
+        for i, o in enumerate(survivors):
+            text = o.get('text', '')
+            if not is_cached_embedding_valid(o, text, model_id):
+                continue
+            cvec = decode_embedding(o.get('embedding'))
+            if cvec is None or cvec.size == 0:
+                continue
+            if target_dim is None:
+                target_dim = int(cvec.size)
+            elif cvec.size != target_dim:
+                continue
+            indexed_decoded.append((i, cvec))
+
+        if not indexed_decoded:
+            return []
+
+        import numpy as np
+        candidate_matrix = np.stack([cvec for _, cvec in indexed_decoded])
+        cand_survivor_indices = [i for i, _ in indexed_decoded]
+
+        query_rows = []
+        for qv in query_vectors_raw:
+            qvec = decode_embedding(qv)
+            if qvec is not None and qvec.size == target_dim:
+                query_rows.append(qvec)
+        if not query_rows:
+            return []
+        query_matrix = np.stack(query_rows)  # (Q, D)
+
+        # (N, D) @ (D, Q) → (N, Q)
+        scores_mat = candidate_matrix @ query_matrix.T
+
+        n_candidates = scores_mat.shape[0]
+        effective_k = max(0, min(per_query_k, n_candidates))
+        if effective_k == 0 or total_cap <= 0:
+            return []
+
+        # Stage A：先把每条 query 的 top-K 候选 doc index 列表算出来——只算不截断，
+        # 不参与 cap 决策（cap 留给 stage B round-robin 时统一执行）。
+        per_query_picks: list[list[int]] = []  # 每元素是 list[survivor_idx]
+        for q_idx in range(scores_mat.shape[1]):
+            col = scores_mat[:, q_idx]
+            if effective_k >= n_candidates:
+                top_idx = np.argsort(-col)
+            else:
+                # argpartition O(N) 拿无序 top-K，再对这 K 个 argsort
+                unsorted_top = np.argpartition(-col, effective_k - 1)[:effective_k]
+                top_idx = unsorted_top[np.argsort(-col[unsorted_top])]
+            per_query_picks.append([cand_survivor_indices[int(i)] for i in top_idx])
+
+        # Stage B：round-robin 取每轮每个 query 的第 r 名 → dedup 入池 → 满 cap
+        # 退出。fairness 关键点：cap 截断**只能发生在 round-robin 之后**，绝不
+        # 在 per-query 内部 early-return——否则前几个 query 会吃光全部 slot、
+        # 后面 query 一条 anchor 都拿不到，退化成 max-pool 那种 cold-topic
+        # 饥饿（PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜了先
+        # 判定的 fact"）。
+        #
+        # round-robin 之后 dedup 入池的 ordering（query 内 #1 → query 间 #1 →
+        # query 内 #2 → ...）也跟"first-seen = query 顺序 × within-query rank"
+        # 的老语义不一样：现在的 ordering 是 "每条 query 的 #1 先于任何 query
+        # 的 #2"，更贴近 prompt 里"每条 unabsorbed 平等享有 anchor"的设计意图。
+        seen_ids: set[str] = set()
+        result: list[dict] = []
+        for rank in range(effective_k):
+            for picks in per_query_picks:
+                if rank >= len(picks):
+                    continue
+                doc = survivors[picks[rank]]
+                doc_id = doc.get('id')
+                if not doc_id or doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
+                result.append(doc)
+                if len(result) >= total_cap:
+                    return result
+
+        return result
+
     # ── phase 3: LLM rerank ──────────────────────────────────────────
 
     async def _fine_rank(
@@ -348,7 +621,7 @@ class MemoryRecallReranker:
         """
         from utils.file_utils import robust_json_loads
         from utils.token_tracker import set_call_type
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
@@ -389,10 +662,12 @@ class MemoryRecallReranker:
         # 默认 5s 截断；本地 8s 给 connect + 一次失败裕度。超时即抛
         # APITimeoutError，外层 try/except 已会降级到 coarse rank。
         # max_retries=0: 禁 SDK 自动重试，超时直接降级。
-        llm = create_chat_llm(
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+        llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
             timeout=8, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so the rerank-decisions array isn't truncated
         )
         try:
             resp = await llm.ainvoke(prompt)

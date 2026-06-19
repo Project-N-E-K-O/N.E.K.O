@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-N.E.K.O. 统一启动器
-启动所有服务器，等待它们准备就绪后启动主程序，并监控主程序状态
+N.E.K.O. unified launcher
+Starts all servers, waits until they are ready, then starts the main program and monitors its state
 """
 from __future__ import annotations
 
@@ -13,9 +27,10 @@ import signal
 def _configure_stdio_utf8() -> None:
     """Normalize stdio encoding when running the launcher on Windows.
 
-    优先 stream.reconfigure（保留 stream 对象），失败再兜底换 TextIOWrapper。
-    保留原对象是为了兼容 pytest capture / IDE 控制台 / 其他 embedded host —
-    替换 sys.stdout 会断掉这些上游的 redirector。
+    Prefer stream.reconfigure (keeps the stream object); fall back to swapping in a
+    TextIOWrapper on failure. Keeping the original object preserves compatibility
+    with pytest capture / IDE consoles / other embedded hosts — replacing sys.stdout
+    would break those upstream redirectors.
     """
     if sys.platform != 'win32':
         return
@@ -42,6 +57,61 @@ _configure_stdio_utf8()
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
+
+def _ensure_utf8_filesystem_encoding() -> None:
+    """Restart once with PYTHONUTF8=1 when Linux fs encoding is not UTF-8.
+
+    Embedded Python builds in AppImage or minimal Linux runtimes can fall back
+    to ``ascii`` under a C/POSIX locale when C.UTF-8 is unavailable and PEP 538
+    locale coercion fails. Any non-ASCII path then raises UnicodeEncodeError
+    during calls such as os.makedirs or open, preventing the backend from
+    starting even if the host shell has a UTF-8 LANG that was not propagated.
+
+    Filesystem encoding is fixed at interpreter startup, so the only reliable
+    repair is setting PYTHONUTF8=1 (PEP 540 UTF-8 Mode) and execv-restarting
+    the current process. execv preserves the PID for Electron process tracking,
+    and the environment is inherited by later server subprocesses. Windows
+    already defaults to a UTF-8 filesystem encoding, so it is skipped.
+    """
+    if sys.platform == 'win32':
+        return
+    enc = (sys.getfilesystemencoding() or '').lower().replace('-', '')
+    if enc == 'utf8':
+        return
+    # 已经重启过一次：即便仍非 utf-8（例如 PYTHONUTF8 未被尊重）也放行，
+    # 绝不二次 execv，避免无限重启。
+    if os.environ.get('_NEKO_FS_UTF8_REEXEC') == '1':
+        return
+    os.environ['PYTHONUTF8'] = '1'
+    os.environ['_NEKO_FS_UTF8_REEXEC'] = '1'
+    if IS_FROZEN:
+        argv = [sys.executable, *sys.argv[1:]]
+    else:
+        argv = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+    try:
+        sys.stderr.write(
+            f'[launcher] filesystem encoding is {enc!r}; '
+            're-exec with PYTHONUTF8=1 to support non-ASCII paths\n'
+        )
+    except Exception:
+        # stderr may be closed or unwritable in embedded launchers; losing this
+        # diagnostic is harmless, and the re-exec attempt below is still useful.
+        pass
+    try:
+        os.execv(argv[0], argv)
+    except Exception:
+        # execv 失败（极少见）就放行：本进程仍是 ascii，但 PYTHONUTF8 已留在
+        # os.environ 里，后续 Popen 的子进程仍能拿到 utf-8。好过完全起不来。
+        pass
+
+
+# 仅在作为入口运行时才可能 re-exec：被 tests 当模块 import 时（__name__ !=
+# '__main__'）跳过，否则 ascii-fs 环境下的一次 import 会用 execv 把 pytest
+# 进程顶替掉。__name__ 在模块体执行前即确定，放这里能赶在任何中文路径操作之前。
+if __name__ == '__main__':
+    _ensure_utf8_filesystem_encoding()
+
+
 # 处理 PyInstaller 和 Nuitka 打包后的路径
 if IS_FROZEN:
     # 运行在打包后的环境
@@ -59,6 +129,143 @@ if IS_FROZEN:
 else:
     # 运行在正常 Python 环境
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
+
+
+def _configure_ssl_cert_bundle() -> None:
+    """Explicitly feed certifi's CA bundle to OpenSSL, only in frozen distributions.
+
+    Nuitka / PyInstaller copy `libssl`, but its compile-time hard-coded OPENSSLDIR
+    points at a build-machine path that doesn't exist on user machines; if the
+    SSL_CERT_FILE env var isn't set either, `ssl.create_default_context()` gets no
+    root certificates and all external TLS fails. build-desktop.yml already packs
+    `certifi/cacert.pem` as package data; this merely points OpenSSL at it
+    explicitly.
+
+    In source mode we do **not** touch SSL_CERT_FILE: the system Python's OpenSSL
+    default trust chain is whatever the OS / venv uses, possibly carrying private
+    enterprise CAs (corporate TLS MITM proxies, internal PKI, etc.). The static
+    certifi bundle lacks those roots, and a hard override would suddenly break
+    previously working intranet HTTPS with `certificate verify failed`. Frozen
+    builds don't carry that risk (libssl's OPENSSLDIR points at nothing anyway),
+    so the fallback only runs in the IS_FROZEN branch.
+
+    If the user already set either variable explicitly and the file exists, the
+    original value is respected whether frozen or not; we only override variables
+    that are missing or point at no-longer-existing paths (e.g. stale paths
+    inherited from the packaging build machine).
+    """
+    var_names = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+    def _existing_is_valid(name: str) -> bool:
+        value = os.environ.get(name)
+        if not value:
+            return False
+        # 各变量对"有效"的定义不同：
+        # - REQUESTS_CA_BUNDLE: requests 文档明确允许 PEM 文件 *或* c_rehash
+        #   过的 CA 目录（capath 模式），把目录当失效值覆盖会破坏企业 PKI 的
+        #   capath 配置。
+        # - SSL_CERT_FILE / CURL_CA_BUNDLE: OpenSSL / curl 都只接受 PEM 文件，
+        #   目录由各自的 SSL_CERT_DIR / CURL_CA_PATH 单独表达。
+        if name == "REQUESTS_CA_BUNDLE":
+            return os.path.isfile(value) or os.path.isdir(value)
+        return os.path.isfile(value)
+
+    # 三个变量都已经指向有效文件 → 完全不动。
+    if all(_existing_is_valid(name) for name in var_names):
+        return
+
+    # 源码模式：保持系统默认信任链，不强行换 certifi（避免破坏企业 CA 场景）。
+    # 即便某个变量目前指向失效路径，源码模式也由用户/上游脚本负责修——我们
+    # 没法区分"用户故意指向坏路径调试"和"误继承坏路径"。
+    if not IS_FROZEN:
+        return
+
+    ca_path: str | None = None
+    try:
+        import certifi  # noqa: WPS433 — 故意放在函数内，保持模块导入开销可控
+        candidate = certifi.where()
+        if candidate and os.path.isfile(candidate):
+            ca_path = candidate
+    except Exception:
+        ca_path = None
+
+    if ca_path is None:
+        # 冻结环境兜底：build-desktop.yml 把 certifi/cacert.pem 落到 bundle_dir 下；
+        # PyInstaller onefile 模式下 bundle_dir == sys._MEIPASS（见文件顶部
+        # IS_FROZEN 分支），所以这一份候选覆盖了主流冻结布局。
+        candidate = os.path.join(bundle_dir, "certifi", "cacert.pem")
+        if os.path.isfile(candidate):
+            ca_path = candidate
+
+    if ca_path is None:
+        # 冻结环境下找不到任何 CA bundle —— 外网 TLS 注定挂，给运维一个明确的
+        # 根因提示，避免下游只看到二手的 "certificate verify failed"。
+        print(
+            "[Launcher] Warning: failed to locate CA bundle in frozen build "
+            f"(certifi.where() unavailable, no certifi/cacert.pem under {bundle_dir}); "
+            "external HTTPS / WSS will fail with certificate verify failed.",
+            flush=True,
+        )
+        return
+
+    # 每个失效变量按"自身语义最贴近的 fallback 顺序"挑来源，保持各库自己
+    # 的查找语义不变；都没拿到再用 certifi 兜底。
+    #
+    # 关键场景：用户故意分流 SSL_CERT_FILE=/etc/openssl.pem 给 OpenSSL、
+    # CURL_CA_BUNDLE=/etc/curl.pem 给 curl/requests，没设 REQUESTS_CA_BUNDLE
+    # 想让 requests 走文档里的 fallback (REQUESTS → CURL → default)。如果
+    # 我们对所有失效变量都 break 在第一个找到的有效文件（顺序为 SSL → REQUESTS
+    # → CURL），REQUESTS_CA_BUNDLE 会被错填成 SSL 的 PEM，requests 看不到
+    # 用户预期的 CURL_CA_BUNDLE，HTTPS 行为偏离文档。
+    #
+    # 偏好顺序设计依据：
+    # - SSL_CERT_FILE: OpenSSL 没 documented fallback，但 REQUESTS / CURL 的
+    #   PEM 都是 OpenSSL 兼容文件，任选其一无大差异；REQUESTS 排前因为更可能
+    #   是用户业务侧的 trust bundle，CURL 排后留给系统级 curl 配置。
+    # - REQUESTS_CA_BUNDLE: requests 文档明确 fallback 到 CURL_CA_BUNDLE，
+    #   所以 CURL 必须排第一；SSL 作为最后兜底（仍是有效 PEM）。
+    # - CURL_CA_BUNDLE: curl 没 documented fallback，按"系统全局信任 → 业务
+    #   信任"的直觉：SSL 排前，REQUESTS 兜底。
+    #
+    # 只看 file：REQUESTS_CA_BUNDLE 允许的目录（capath）不能喂给 OpenSSL /
+    # curl，跨变量传播一律走文件。
+    propagation_sources = {
+        "SSL_CERT_FILE": ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"),
+        "REQUESTS_CA_BUNDLE": ("CURL_CA_BUNDLE", "SSL_CERT_FILE"),
+        "CURL_CA_BUNDLE": ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"),
+    }
+
+    def _pick_fallback(target: str) -> str:
+        for src in propagation_sources[target]:
+            value = os.environ.get(src)
+            if value and os.path.isfile(value):
+                return value
+        return ca_path
+
+    # 三个变量统一处理：已存在且有效 → 保留；否则 → 按 propagation_sources
+    # 顺序找一个有效 PEM 文件填，找不到才用 certifi。`setdefault` 不够：
+    # 继承自打包构建机 / 旧路径的失效值会让 requests / curl 仍然报 verify
+    # failed，本函数要避免的恰恰就是这个症状。
+    for name in var_names:
+        if not _existing_is_valid(name):
+            os.environ[name] = _pick_fallback(name)
+
+
+# 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
+# import 时就会通过 OpenSSL 把默认 verify paths 锁住，之后再设环境变量
+# 对已有 SSLContext 不生效。下面 from utils.* import ... 已经会拉起 httpx /
+# openai SDK 链路，所以这里抢在前面跑。
+#
+# 用显式判断而非 `assert`：`python -O` 会剥离 assert，把检查变成静默通过。
+# 这里希望任何在本函数之前 import ssl 的回归都能被运维直接看到。
+if "ssl" in sys.modules:
+    print(
+        "[Launcher] Warning: `ssl` was imported before _configure_ssl_cert_bundle() ran; "
+        "SSL_CERT_FILE override won't affect the already-initialized default SSLContext. "
+        "Move SSL bootstrap higher in launcher.py.",
+        flush=True,
+    )
+_configure_ssl_cert_bundle()
 
 
 def _get_project_venv_python(project_dir: str) -> str | None:
@@ -133,6 +340,8 @@ from utils.port_utils import (
     set_port_probe_reuse,
 )
 from utils.cloudsave_runtime import (
+    CLOUDSAVE_DISABLED_ENV,
+    CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
     ROOT_MODE_MAINTENANCE_READONLY,
     ROOT_MODE_NORMAL,
@@ -319,7 +528,7 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
 
 
 def _show_error_dialog(message: str):
-    """在 Windows 打包场景显示错误弹窗。"""
+    """Show an error dialog in the Windows packaged scenario."""
     if sys.platform != 'win32':
         return
     try:
@@ -329,9 +538,10 @@ def _show_error_dialog(message: str):
 
 
 def emit_frontend_event(event_type: str, payload: dict | None = None):
-    """向 Electron stdout 发送机器可读事件。
+    """Emit a machine-readable event to Electron via stdout.
 
-    每个事件都带有 *launch_id*，前端可据此忽略历史（僵尸）进程事件。
+    Every event carries a *launch_id* so the frontend can ignore events from stale
+    (zombie) processes.
     """
     envelope = {
         "source": "neko_launcher",
@@ -527,7 +737,7 @@ def _persist_post_startup_root_state(config_manager) -> None:
 
 
 def report_startup_failure(message: str, show_dialog: bool = True):
-    """统一报告启动失败信息：终端 + （可选）弹窗。"""
+    """Uniformly report startup failure: terminal + (optional) dialog."""
     normalized_message = str(message or "").strip().lower()
     if _is_expected_launcher_shutdown() and normalized_message.startswith(("start failed", "startup failed", "startup timeout", "startup aborted")):
         print(f"[Launcher] Suppressed startup failure during expected shutdown: {message}", flush=True)
@@ -539,7 +749,7 @@ def report_startup_failure(message: str, show_dialog: bool = True):
 
 
 def _get_last_error() -> int:
-    """获取最近一次 Win32 错误码。"""
+    """Get the most recent Win32 error code."""
     if sys.platform != 'win32':
         return 0
     return ctypes.windll.kernel32.GetLastError()
@@ -570,10 +780,10 @@ def _iter_servers_for_shutdown():
 
 def setup_job_object():
     """
-    创建 Windows Job Object 并将当前进程加入其中。
-    设置 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 标志，
-    这样当主进程被 kill 时，OS 会自动终止所有子进程，
-    防止孤儿进程悬挂。
+    Create a Windows Job Object and add the current process to it.
+    Sets the JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE flag so that when the main
+    process is killed, the OS automatically terminates all child processes,
+    preventing orphaned processes from lingering.
     """
     global JOB_HANDLE
     if sys.platform != 'win32':
@@ -715,7 +925,7 @@ SERVERS = [
 # 每个服务仍然监听自己的端口，前端 / 服务间 HTTP 调用零改动。
 
 def run_merged_servers() -> int:
-    """单进程合并模式：3 个 uvicorn.Server 共享一个 asyncio event loop。"""
+    """Single-process merged mode: 3 uvicorn.Server instances share one asyncio event loop."""
     import asyncio
     import uvicorn
 
@@ -743,11 +953,11 @@ def run_merged_servers() -> int:
 
     # 分步 import（控制峰值内存 & 提供进度反馈）
     print("[Merged] Importing memory_server...", flush=True)
-    import memory_server
+    from app import memory_server
     print("[Merged] Importing agent_server...", flush=True)
-    import agent_server
+    from app import agent_server
     print("[Merged] Importing main_server...", flush=True)
-    import main_server
+    from app import main_server
 
     _apps = [
         (memory_server.app, MEMORY_SERVER_PORT, "Memory"),
@@ -873,7 +1083,7 @@ def run_memory_server(
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
 ):
-    """运行 Memory Server"""
+    """Run the Memory Server"""
     try:
         _detach_child_process_session()
         _reload_runtime_config_from_env()
@@ -896,11 +1106,11 @@ def run_memory_server(
             except: # noqa
                 pass
         
-        import memory_server
+        from app import memory_server
         import uvicorn
         if import_event:
             import_event.set()
-        
+
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
         
         _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
@@ -970,7 +1180,7 @@ def run_agent_server(
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
 ):
-    """运行 Agent Server (不需要等待初始化)"""
+    """Run the Agent Server (no need to wait for initialization)"""
     try:
         _detach_child_process_session()
         _reload_runtime_config_from_env()
@@ -993,11 +1203,11 @@ def run_agent_server(
             except: # noqa
                 pass
         
-        import agent_server
+        from app import agent_server
         import uvicorn
         if import_event:
             import_event.set()
-        
+
         print(f"[Agent Server] Starting on port {TOOL_SERVER_PORT}")
         
         # Agent Server 不需要等待，立即通知就绪
@@ -1044,7 +1254,7 @@ def run_main_server(
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
 ):
-    """运行 Main Server"""
+    """Run the Main Server"""
     try:
         _detach_child_process_session()
         _reload_runtime_config_from_env()
@@ -1058,7 +1268,7 @@ def run_main_server(
                 os.chdir(os.path.dirname(os.path.abspath(__file__)))
         
         print("[Main Server] Importing main_server module...")
-        import main_server
+        from app import main_server
         import uvicorn
         if import_event:
             import_event.set()
@@ -1136,7 +1346,7 @@ def run_main_server(
             shutdown_complete_event.set()
 
 def check_port(port: int, timeout: float = 0.5) -> bool:
-    """检查端口是否已开放"""
+    """Check whether the port is open"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -1148,7 +1358,7 @@ def check_port(port: int, timeout: float = 0.5) -> bool:
 
 
 def get_port_owners(port: int) -> list[int]:
-    """查询监听指定端口的进程 PID 列表（尽力而为）。"""
+    """Query the PIDs of processes listening on the given port (best-effort)."""
     pids: set[int] = set()
     try:
         if sys.platform == 'win32':
@@ -1228,14 +1438,14 @@ def _classify_port_conflict(
     port: int,
     excluded_ranges: list[tuple[int, int]] | None = None,
 ) -> tuple[str, list]:
-    """对端口不可用原因进行分类。
+    """Classify why a port is unavailable.
 
-    返回 ``(reason, owners)``，其中 reason 为以下之一：
-    - ``"neko"``            已有 N.E.K.O 服务占用
-    - ``"hyperv_excluded"`` 位于 Hyper-V / WSL 保留端口范围
-    - ``"other_process"``   被非 N.E.K.O 进程监听
-    - ``"unknown"``         无法绑定但原因不明确
-    owners 为监听该端口的进程 ID 列表。
+    Returns ``(reason, owners)`` where reason is one of:
+    - ``"neko"``            already taken by an existing N.E.K.O service
+    - ``"hyperv_excluded"`` inside a Hyper-V / WSL reserved port range
+    - ``"other_process"``   listened on by a non-N.E.K.O process
+    - ``"unknown"``         cannot bind but the reason is unclear
+    owners is the list of process IDs listening on the port.
     """
     health = probe_neko_health(port)
     if health is not None:
@@ -1251,16 +1461,16 @@ def _classify_port_conflict(
 
 
 def apply_port_strategy() -> bool | str:
-    """优先使用默认端口，必要时自动规避冲突。
+    """Prefer the default ports, automatically dodging conflicts when necessary.
 
-    返回值：
-        ``True``      端口规划完成，可继续启动服务。
-        ``False``     发生致命错误，需中止启动。
-        ``"attach"`` 默认端口已由现有 N.E.K.O 后端完整占用。
+    Return value:
+        ``True``      port planning done; server startup can proceed.
+        ``False``     fatal error; startup must abort.
+        ``"attach"`` the default ports are fully owned by an existing N.E.K.O backend.
 
-    策略：
-    1. 默认端口若已是 N.E.K.O 服务，则视为可复用。
-    2. 若被 Hyper-V/WSL 保留或其他进程占用，则选择 fallback 端口。
+    Strategy:
+    1. If a default port is already a N.E.K.O service, treat it as reusable.
+    2. If reserved by Hyper-V/WSL or taken by another process, pick a fallback port.
     """
     global MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
     chosen: dict[str, int] = {}
@@ -1420,7 +1630,7 @@ def apply_port_strategy() -> bool | str:
     return True
 
 def show_spinner(stop_event: threading.Event, message: str = "正在启动服务器"):
-    """显示转圈圈动画"""
+    """Show a spinner animation"""
     spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
     while not stop_event.is_set():
         sys.stdout.write(f'\r{message}... {next(spinner)} ')
@@ -1431,7 +1641,7 @@ def show_spinner(stop_event: threading.Event, message: str = "正在启动服务
     sys.stdout.flush()
 
 def start_server(server: Dict) -> bool:
-    """启动单个服务器"""
+    """Start a single server"""
     try:
         port = server.get('port')
 
@@ -1489,7 +1699,7 @@ def start_server(server: Dict) -> bool:
         return False
 
 def wait_for_servers(timeout: int = 60) -> bool | str:
-    """等待所有服务器启动完成"""
+    """Wait for all servers to finish starting"""
     print("\n等待服务器准备就绪...", flush=True)
     
     # 启动动画线程
@@ -1578,7 +1788,7 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
 
 
 def cleanup_servers():
-    """清理所有服务器进程"""
+    """Clean up all server processes"""
     global _cleanup_done
     with _cleanup_lock:
         if _cleanup_done:
@@ -1678,7 +1888,7 @@ def cleanup_servers():
 
 
 def _handle_termination_signal(signum, _frame):
-    """处理终止信号，尽量保证清理逻辑被触发。"""
+    """Handle termination signals, doing our best to ensure cleanup logic runs."""
     _mark_expected_launcher_shutdown()
     print(f"\n收到终止信号 ({signum})，正在关闭...", flush=True)
     cleanup_servers()
@@ -1686,7 +1896,7 @@ def _handle_termination_signal(signum, _frame):
 
 
 def register_shutdown_hooks():
-    """注册退出钩子，覆盖更多退出路径。"""
+    """Register shutdown hooks to cover more exit paths."""
     atexit.register(cleanup_servers)
     try:
         signal.signal(signal.SIGTERM, _handle_termination_signal)
@@ -1770,6 +1980,12 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     reset_config_manager_cache()
     config_manager = get_config_manager(APP_NAME, migrate=False)
 
+    if not config_manager.ensure_local_state_directory():
+        diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
+        if diagnostic is not None:
+            raise diagnostic
+        raise OSError("failed to ensure local state directory")
+
     with cloud_apply_fence(
         config_manager,
         mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
@@ -1819,8 +2035,20 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     }
 
 
+def _is_local_state_directory_error(exc) -> bool:
+    if bool(getattr(exc, "local_state_directory_error", False)):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        return _is_local_state_directory_error(cause)
+    context = getattr(exc, "__context__", None)
+    if context is not None and context is not exc:
+        return _is_local_state_directory_error(context)
+    return False
+
+
 def main():
-    """主函数"""
+    """Main entry point"""
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
 
@@ -1857,17 +2085,24 @@ def main():
         try:
             _prepare_cloudsave_runtime_for_launch()
         except Exception as e:
-            try:
-                _config_manager = get_config_manager(APP_NAME)
-                set_root_mode(
-                    _config_manager,
-                    ROOT_MODE_MAINTENANCE_READONLY,
-                    last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
-                )
-            except Exception:
-                pass
-            report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
-            return 1
+            if not _is_local_state_directory_error(e):
+                try:
+                    _config_manager = get_config_manager(APP_NAME)
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_MAINTENANCE_READONLY,
+                        last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
+                    )
+                except Exception:
+                    pass
+                report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
+                return 1
+            os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+            print(
+                "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
+                f"{e}",
+                flush=True,
+            )
 
         # 自动安装 Playwright Chromium（browser-use 依赖）
         _ensure_playwright_browsers()

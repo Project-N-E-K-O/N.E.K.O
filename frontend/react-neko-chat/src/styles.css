@@ -19,8 +19,10 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -54,6 +56,15 @@ button * {
   user-select: none;
 }
 
+img,
+svg {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
 .app-shell {
   width: 100%;
   height: 100%;
@@ -64,7 +75,7 @@ button * {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 9998;
+  z-index: 100006;
   pointer-events: none;
   will-change: transform;
 }
@@ -75,11 +86,9 @@ button * {
 
 .avatar-cursor-overlay-stage {
   opacity: 0;
-  transform: scale(calc(var(--avatar-cursor-overlay-scale) * 0.84));
+  transform: scale(var(--avatar-cursor-overlay-scale));
   will-change: transform, opacity;
-  transition:
-    opacity 180ms cubic-bezier(0.22, 0.78, 0.2, 1),
-    transform 180ms cubic-bezier(0.2, 0.82, 0.22, 1);
+  transition: opacity 120ms cubic-bezier(0.22, 0.78, 0.2, 1);
 }
 
 .avatar-cursor-overlay.is-visible .avatar-cursor-overlay-stage {
@@ -101,8 +110,8 @@ button * {
 }
 
 .avatar-cursor-overlay-image-fist {
-  width: 100px;
-  height: 102px;
+  width: 78px;
+  height: 80px;
 }
 
 .fist-floating-drop {
@@ -112,8 +121,8 @@ button * {
   --drop-scale: 1;
   --drop-delay: 0ms;
   position: fixed;
-  left: 0;
-  top: 0;
+  left: calc(100% - 30px);
+  top: 33px;
   z-index: 10000;
   pointer-events: none;
   opacity: 1;
@@ -249,7 +258,7 @@ button * {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 9999;
+  z-index: 100006;
   pointer-events: none;
   will-change: transform;
 }
@@ -538,20 +547,25 @@ button * {
   pointer-events: none;
 }
 
+.message-list-shell {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+
 .message-list {
   height: 100%;
   overflow: auto;
-  padding: 50px 12px 16px;
+  padding: 50px 24px 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* 滚动条：细线 + 半透明，参考 Discord / Slack */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(140, 152, 172, 0.25) transparent;
+  scrollbar-width: none;
 }
 
 .message-list::-webkit-scrollbar {
-  width: 5px;
+  width: 0;
+  height: 0;
 }
 
 .message-list::-webkit-scrollbar-track {
@@ -559,12 +573,25 @@ button * {
 }
 
 .message-list::-webkit-scrollbar-thumb {
-  background: rgba(140, 152, 172, 0.25);
-  border-radius: 3px;
+  background: transparent;
 }
 
-.message-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(140, 152, 172, 0.45);
+.message-list-scroll-thumb {
+  position: absolute;
+  top: 0;
+  right: 7px;
+  width: 4px;
+  min-height: 28px;
+  border-radius: 999px;
+  background: rgba(140, 152, 172, 0.38);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 3;
+  transition: opacity 0.16s ease;
+}
+
+.message-list-scroll-thumb[data-message-list-scrollbar-visible="true"] {
+  opacity: 1;
 }
 
 .message-empty-state {
@@ -600,6 +627,10 @@ button * {
 .message-row-assistant {
   justify-content: flex-start;
   animation: slideFromLeft 0.25s ease-out both;
+}
+
+.message-row[data-guide-message="true"] {
+  animation: none !important;
 }
 
 .message-row-user .avatar {
@@ -727,6 +758,10 @@ button * {
 
 .text-chunk-reveal {
   animation: textChunkReveal 0.18s ease-out both;
+}
+
+.message-row[data-guide-message="true"] .text-chunk-reveal {
+  animation: none !important;
 }
 
 .message-block-text {
@@ -1064,36 +1099,90 @@ button * {
 
 .composer-panel {
   display: grid;
+  /* 显式 1 列、min 边为 0：阻断 grid item 默认 min-width: auto 把内部
+     nowrap 文本的 min-content 一路向上撑宽（galgame 选项过长时会让整个
+     panel 抗拒收缩，进而被 chat-window overflow: hidden 截断）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding: 6px;
   position: relative;
   z-index: 15;
   background: rgba(255, 255, 255, 0.91);
+  min-width: 0;
 }
 
-/* Hide empty music-player-mount so it doesn't occupy a grid row */
+/* 空播放器挂载点不占用布局行。 */
 #music-player-mount:empty {
   display: none;
 }
 
+.composer-attachment-viewport {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(127, 144, 170, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 248, 255, 0.66));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 6px 16px rgba(65, 91, 130, 0.08);
+  backdrop-filter: blur(18px) saturate(1.16);
+  -webkit-backdrop-filter: blur(18px) saturate(1.16);
+}
+
+.composer-attachment-viewport-compact {
+  width: 100%;
+  max-width: var(--compact-surface-active-width);
+  margin-top: 6px;
+  padding: 7px 8px 6px;
+  border-color: rgba(255, 255, 255, 0.5);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(239, 248, 255, 0.56));
+  box-shadow:
+    0 0 0 1px rgba(208, 233, 255, 0.12),
+    0 8px 20px rgba(42, 89, 132, 0.08);
+}
+
 .composer-attachments {
   display: flex;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-height: 74px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 1px 1px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(96, 127, 166, 0.28) transparent;
+}
+
+.composer-attachments::-webkit-scrollbar {
+  height: 5px;
+}
+
+.composer-attachments::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer-attachments::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(96, 127, 166, 0.28);
 }
 
 .composer-attachment-card {
   position: relative;
-  width: 90px;
-  height: 90px;
+  width: 68px;
+  height: 68px;
   margin: 0;
   flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(127, 144, 170, 0.28);
   border-radius: 8px;
-  overflow: visible;
-  border: 2px solid #d7dde6;
-  box-shadow: 0 4px 10px rgba(89, 108, 140, 0.08);
-  background: #fff;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 4px 12px rgba(65, 91, 130, 0.1);
 }
 
 .composer-attachment-image {
@@ -1105,30 +1194,66 @@ button * {
 
 .composer-attachment-remove {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 20px;
-  height: 20px;
-  border: 0;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 999px;
   color: #fff;
-  background: #dc3545;
+  background: rgba(34, 47, 66, 0.72);
   cursor: pointer;
-  font-size: 0.92rem;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 3px 8px rgba(25, 38, 58, 0.22);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.composer-attachment-remove::before,
+.composer-attachment-remove::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.composer-attachment-remove::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.composer-attachment-remove::after {
+  transform: translateY(-50%) rotate(-45deg);
+}
+
+.composer-attachment-remove:hover:not(:disabled) {
+  background: rgba(220, 53, 69, 0.9);
+  transform: scale(1.06);
+}
+
+.composer-attachment-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 /* ===== 输入框统一容器 ===== */
 .composer {
   display: block;
+  /* 作为 .composer-panel 的 grid item，显式 min-width: 0
+     让窗口收缩时跟随 panel 一起收，而不被自身 min-content 卡住。 */
+  min-width: 0;
 }
 
 .composer-input-shell {
   display: flex;
   flex-direction: column;
   min-height: 98px;
+  min-width: 0;
   padding: 0 16px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.91);
@@ -1215,6 +1340,7 @@ button * {
   justify-content: center;
   width: 32px;
   height: 32px;
+  box-sizing: border-box;
   padding: 0;
   margin: 0;
   border: 0;
@@ -1248,11 +1374,29 @@ button * {
   background: #44b7fe;
   color: #fff;
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
   box-shadow: 0 2px 6px rgba(35, 116, 190, 0.28);
   transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-tool-clear-btn::before,
+.composer-tool-clear-btn::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.composer-tool-clear-btn::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.composer-tool-clear-btn::after {
+  transform: translateY(-50%) rotate(-45deg);
 }
 
 .composer-tool-clear-btn:hover {
@@ -1261,18 +1405,19 @@ button * {
   box-shadow: 0 3px 8px rgba(35, 116, 190, 0.34);
 }
 
-.composer-tool-clear-btn span {
-  transform: translateY(-0.5px);
-}
-
 .composer-tool-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
+.compact-input-tool-fan .composer-tool-btn:disabled {
+  cursor: inherit;
+}
+
 .composer-tool-btn img {
   width: 24px;
   height: 24px;
+  display: block;
   object-fit: contain;
   pointer-events: none;
 }
@@ -1285,47 +1430,50 @@ button * {
   padding: 0 2px;
 }
 
-/* ===== Composer overflow ··· menu (compact 模式下右 3 按钮折叠) ===== */
+/* ===== Composer overflow ··· menu (compact 模式下右 4 按钮折叠) ===== */
 
-/* normal 模式的右 3 按钮容器：宽屏 → compact 切换或反之时整体淡入。
-   用 flex 包装保持原 gap 间距与 normal 模式视觉一致。 */
+/* expanded 态下右 4 按钮容器：整体作为一个单位伸缩。
+   transform-origin 锁在左边——展开时右边缘向右拉开，
+   折叠时右边缘向左压回 ··· 所在的位置（视觉像窗帘从右往左拉到左边）。 */
 .composer-tools-right {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  animation: composerToolsExpand 0.26s cubic-bezier(0.2, 0.85, 0.2, 1.05) both;
+  transform-origin: left center;
+  animation: composerToolsExpand 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.0) both;
 }
 
-/* 内部 3 个按钮叠加微小入场延迟，营造序列展开感 */
-.composer-tools-right > .composer-translate-btn {
-  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.04s both;
-}
-.composer-tools-right > .composer-tool-btn:not(.composer-translate-btn):not(.composer-emoji-btn) {
-  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.08s both;
-}
-.composer-tools-right > .composer-tool-menu {
-  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.12s both;
+/* 离场：scaleX 1 → 0 整体向左折叠。
+   关键：同时动画 width，让 layout 也跟着收缩，否则 transform 不影响布局，
+   发送按钮在动画期间会被原宽度的元素一直顶住直到动画结束。
+   --collapse-from-width 由 React 在 expanded → collapsing 切换瞬间写入。
+   .is-leaving 特异性比上面基础规则高，安全覆盖入场 keyframes。 */
+.composer-tools-right.is-leaving {
+  overflow: hidden;
+  animation: composerToolsCollapse 0.26s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes composerToolsExpand {
   from {
     opacity: 0;
-    transform: translateX(-4px);
+    transform: scaleX(0);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: scaleX(1);
   }
 }
 
-@keyframes composerToolItemEnter {
+@keyframes composerToolsCollapse {
   from {
-    opacity: 0;
-    transform: scale(0.7);
+    opacity: 1;
+    width: var(--collapse-from-width, auto);
+    transform: scaleX(1);
   }
   to {
-    opacity: 1;
-    transform: scale(1);
+    opacity: 0;
+    width: 0;
+    transform: scaleX(0);
   }
 }
 
@@ -1335,6 +1483,11 @@ button * {
   align-items: center;
   /* 切到 compact 时 ··· 按钮的入场动画 */
   animation: composerOverflowBtnEnter 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.1) both;
+}
+
+/* expanding 阶段 ··· 按钮的退场动画（特异性比基础规则高，覆盖入场 keyframes） */
+.composer-overflow-menu.is-leaving {
+  animation: composerOverflowBtnLeave 0.20s cubic-bezier(0.4, 0, 0.6, 1) both;
 }
 
 @keyframes composerOverflowBtnEnter {
@@ -1352,12 +1505,27 @@ button * {
   }
 }
 
+@keyframes composerOverflowBtnLeave {
+  from {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.5) rotate(45deg);
+  }
+}
+
 /* 用户偏好减少动画时跳过过渡 */
 @media (prefers-reduced-motion: reduce) {
   .composer-tools-right,
   .composer-tools-right > *,
+  .composer-tools-right.is-leaving,
+  .composer-tools-right.is-leaving > *,
   .composer-overflow-menu,
-  .composer-overflow-popover {
+  .composer-overflow-menu.is-leaving,
+  .composer-overflow-popover,
+  .composer-galgame-options.is-loading .composer-galgame-option {
     animation: none !important;
   }
 }
@@ -1377,7 +1545,7 @@ button * {
 }
 
 /* 折叠面板：从 ··· 按钮上方弹出（输入栏在底部，向下会出窗口）。
-   3 个按钮垂直堆叠，保持 32×32 尺寸，hover 区域不变。 */
+   4 个按钮垂直堆叠，保持 32×32 尺寸，hover 区域不变。 */
 .composer-overflow-popover {
   position: absolute;
   right: 0;
@@ -1437,6 +1605,7 @@ button * {
 .composer-icon-button {
   --composer-icon-bubble-scale: 1;
   position: relative;
+  isolation: isolate;
   width: 46px;
   height: 46px;
   border: 0;
@@ -1464,6 +1633,7 @@ button * {
 .composer-icon-button::after {
   content: '';
   position: absolute;
+  z-index: 1;
   pointer-events: none;
 }
 
@@ -1489,6 +1659,8 @@ button * {
 }
 
 .composer-icon-button-image {
+  position: relative;
+  z-index: 2;
   width: 30px;
   height: 30px;
   object-fit: contain;
@@ -1529,11 +1701,13 @@ button * {
 .composer-icon-button.is-active {
   --composer-icon-bubble-scale: 1.12;
   background:
-    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.7) 22%, rgba(223, 241, 255, 0.66) 70%, rgba(200, 232, 255, 0.56) 100%);
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.86) 34%, rgba(238, 248, 255, 0.76) 72%, rgba(218, 239, 255, 0.64) 100%);
   box-shadow:
-    0 12px 24px rgba(63, 168, 235, 0.22),
-    0 3px 8px rgba(96, 177, 230, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+    0 0 0 2px rgba(126, 204, 245, 0.54),
+    0 12px 24px rgba(63, 168, 235, 0.18),
+    0 4px 12px rgba(107, 164, 215, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -10px 18px rgba(177, 220, 247, 0.18);
 }
 
 .composer-icon-button.is-active:hover {
@@ -1558,7 +1732,7 @@ button * {
   opacity: 1;
 }
 
-.composer-translate-btn.is-active::after {
+.composer-translate-btn.is-active:not(.compact-input-tool-item)::after {
   content: '';
   position: absolute;
   bottom: 2px;
@@ -1568,6 +1742,177 @@ button * {
   height: 3px;
   border-radius: 2px;
   background: #2497d9;
+}
+
+/* ===== GalGame 模式开关 + 内嵌 A/B/C 选项 ===== */
+/* default/hover/active 三档对齐 .composer-translate-btn img 的 0.45 / 0.7 / 1
+   opacity 节奏；同色系，避免之前那个蓝灰冷灰看着像"未启用"的灰按钮。
+   border 从 1.5px 收到 1px，避免 active 时边框 + 700 字重双层勾画显得过重。 */
+.composer-galgame-btn {
+  position: relative;
+  color: rgba(36, 151, 217, 0.45);
+}
+
+.composer-galgame-btn-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.composer-galgame-btn:hover {
+  color: rgba(36, 151, 217, 0.78);
+}
+
+.composer-galgame-btn.is-active {
+  color: #2497d9;
+}
+
+.composer-galgame-btn.is-active:not(.compact-input-tool-item)::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: #2497d9;
+}
+
+/* Slot 包住选项区，开/关靠 max-height + opacity 过渡。
+   collapsed 态自然占 0 高，输入壳跟着内容回到原本的紧凑高度，
+   下边缘和 PR 之前一样贴合面板底；展开时 shell 跟着 slot 长高，
+   bottom-bar 锚在 panel 底不动，textarea 顶端被往上推 → 视觉
+   是从下往上拉开。 */
+.composer-galgame-slot {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 180ms ease;
+}
+
+.composer-galgame-slot.is-open {
+  /* 上限给到 3 个 30px 按钮 + 间距 + margin 余量；超出会被 overflow
+     裁掉，但实际内容只有 ~104px 用不到这么多。 */
+  max-height: 160px;
+  opacity: 1;
+}
+
+.composer-galgame-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+  /* 让选项列在窄窗口下能跟随 input-shell 收缩，而不被内部 nowrap 文本顶宽。 */
+  min-width: 0;
+}
+
+.composer-galgame-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  /* 关键：默认 min-width: auto 会让长文本沿 flex 链向上传染，把整个输入壳撑宽；
+     置 0 后按钮严格遵循 width:100%，长文本走下面的 ellipsis 路径。 */
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 144, 170, 0.22);
+  background: rgba(244, 248, 254, 0.78);
+  color: #1f2329;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+  min-height: 30px;
+}
+
+.composer-galgame-option:hover:not(:disabled) {
+  background: rgba(220, 236, 252, 0.92);
+  border-color: rgba(64, 197, 241, 0.55);
+}
+
+.composer-galgame-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.composer-galgame-option:disabled,
+.composer-galgame-option.is-placeholder {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.composer-galgame-option-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: #2497d9;
+  font-size: 0.9em;
+}
+
+.composer-galgame-option-text {
+  flex: 1 1 auto;
+  /* min-width: 0 是 ellipsis 在 flex row 里真正生效的前置条件，
+     否则 flex item 默认 min-width:auto = 内容固有宽度，永远不会被裁。 */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9em;
+  line-height: 1.3;
+}
+
+.composer-galgame-option-text-inner {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: inherit;
+}
+
+.composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: composer-option-marquee var(--composer-option-marquee-duration, 4800ms) linear forwards;
+  will-change: transform;
+}
+
+@keyframes composer-option-marquee {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
+    animation: none;
+    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+  }
+}
+
+.composer-galgame-options.is-loading .composer-galgame-option {
+  animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes composerGalgameLoadingPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.85; }
 }
 
 /* ===== 圆形发送按钮 ===== */
@@ -1603,6 +1948,2960 @@ button * {
   pointer-events: none;
 }
 
+.composer-choice-layer {
+  min-width: 0;
+}
+
+.chat-window.chat-surface-mode-compact {
+  height: auto;
+  grid-template-rows: auto auto;
+  overflow: visible;
+  background: transparent;
+}
+
+.app-shell.chat-surface-mode-compact {
+  --compact-music-player-offset-y: 12px;
+  --compact-music-player-reserved-block-size: 88px;
+  --compact-music-player-history-gap: 14px;
+  height: auto;
+  position: relative;
+  overflow: visible;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+  position: fixed;
+  left: calc(var(--compact-choice-surface-left, var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw))) + (var(--compact-choice-surface-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px))) / 2));
+  width: min(var(--compact-choice-surface-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px))), 420px);
+  max-height: min(240px, calc(100vh - 96px));
+  height: max-content;
+  transform: translateX(-50%);
+  overflow-y: auto;
+  overflow-x: visible;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  z-index: 100002;
+  pointer-events: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
+  display: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+  pointer-events: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  pointer-events: auto;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+  width: calc(100% - 76px);
+  max-width: 100%;
+  margin-right: auto;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  min-height: 38px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 16px 0 0 16px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(206, 229, 252, 0.68) 0%,
+      rgba(232, 244, 255, 0.46) 52%,
+      rgba(247, 252, 255, 0.14) 82%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  box-shadow: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option:hover:not(:disabled) {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(190, 220, 249, 0.76) 0%,
+      rgba(224, 240, 255, 0.54) 52%,
+      rgba(244, 250, 255, 0.18) 82%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  border-color: transparent;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option-text {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
+  display: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
+  top: auto;
+  bottom: calc(100vh - var(--compact-choice-surface-top, var(--desktop-compact-surface-top, var(--compact-surface-top, 0px))) + 16px);
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
+  top: calc(var(--compact-choice-surface-top, var(--desktop-compact-surface-top, var(--compact-surface-top, 0px))) + var(--compact-choice-surface-height, var(--desktop-compact-surface-height, var(--compact-surface-height, 58px))) + 16px);
+  bottom: auto;
+}
+
+body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+  max-height: 240px;
+}
+
+.chat-window.chat-surface-mode-compact .window-topbar {
+  display: none;
+}
+
+.chat-window.chat-surface-mode-compact .chat-body {
+  background: transparent;
+  pointer-events: none;
+  display: block;
+  min-height: 0;
+}
+
+.chat-window.chat-surface-mode-compact .compact-chat-stage {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.chat-window.chat-surface-mode-compact .composer-panel {
+  padding: 0;
+  background: transparent;
+  gap: 0;
+}
+
+.chat-window.chat-surface-mode-compact .composer {
+  min-width: 0;
+}
+
+.compact-chat-surface-shell {
+  --compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 4px;
+  width: var(--compact-surface-active-width);
+  overflow: visible;
+  z-index: 4;
+  margin: 0 auto;
+  -webkit-app-region: no-drag;
+}
+
+.compact-chat-surface-shell[data-compact-tool-layer-open="true"] {
+  z-index: 100003;
+}
+
+body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
+  position: fixed;
+  left: var(--desktop-compact-surface-left, var(--compact-surface-left, 0px));
+  top: var(--desktop-compact-surface-top, var(--compact-surface-top, 0px));
+  margin: 0;
+}
+
+.compact-chat-surface-frame {
+  --compact-chat-minimize-ball-size: 41px;
+  --compact-chat-minimize-ball-inset: 2px;
+  --compact-chat-minimize-ball-gap: 8px;
+  --compact-chat-minimize-ball-slot: calc(
+    var(--compact-chat-minimize-ball-size)
+    + var(--compact-chat-minimize-ball-inset)
+    + var(--compact-chat-minimize-ball-gap)
+  );
+  --compact-chat-surface-bg:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(247, 251, 255, 0.6) 58%, rgba(232, 243, 255, 0.54));
+  --compact-chat-surface-edge: rgba(255, 255, 255, 0.5);
+  --compact-chat-surface-glow: rgba(255, 255, 255, 0.22);
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
+  box-sizing: border-box;
+  padding: 0 20px 0 var(--compact-chat-minimize-ball-slot);
+  border: 1px solid var(--compact-chat-surface-edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 0 0 1px rgba(208, 233, 255, 0.14),
+    0 6px 18px rgba(42, 89, 132, 0.05);
+  backdrop-filter: blur(18px) saturate(1.22) brightness(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.22) brightness(1.08);
+}
+
+.compact-chat-surface-frame[data-compact-chat-state="input"] {
+  gap: 0;
+  padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
+}
+
+/* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
+   按住拖>6px=拖动整个 surface（与右侧工具轮盘原点对偶的 origin-drag 手势）。
+   平时低调、hover/active 提亮微放大，沿用「平时低调、靠近才显形」手感。 */
+.compact-chat-minimize-ball {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--compact-chat-minimize-ball-size);
+  height: var(--compact-chat-minimize-ball-size);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+
+.compact-chat-minimize-ball:active {
+  cursor: grabbing;
+}
+
+.compact-chat-minimize-ball:disabled {
+  cursor: default;
+}
+
+.compact-chat-minimize-ball-icon {
+  width: 37px;
+  height: 37px;
+  object-fit: contain;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.compact-chat-surface-shell:hover .compact-chat-minimize-ball-icon,
+.compact-chat-minimize-ball:hover .compact-chat-minimize-ball-icon,
+.compact-chat-minimize-ball:active .compact-chat-minimize-ball-icon {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
+  padding-right: 62px;
+  padding-left: var(--compact-chat-minimize-ball-slot);
+}
+
+.compact-chat-surface-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: var(--compact-chat-surface-bg);
+  pointer-events: none;
+}
+
+.compact-chat-surface-frame::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, var(--compact-chat-surface-glow), transparent 42%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+
+.compact-chat-surface-frame > * {
+  position: relative;
+  z-index: 2;
+}
+
+.compact-chat-surface-frame .compact-chat-minimize-ball {
+  position: absolute;
+  left: var(--compact-chat-minimize-ball-inset);
+  top: 50%;
+  z-index: 5;
+  transform: translateY(-50%);
+}
+
+.compact-chat-capsule-button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 1 1 auto;
+  width: auto;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.compact-chat-capsule-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.compact-chat-capsule-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.compact-chat-capsule-text {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  scrollbar-width: none;
+  font-size: 1.04rem;
+  font-weight: 500;
+  line-height: 1.35;
+  color: #34536c;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.64);
+}
+
+.compact-chat-capsule-text[data-compact-preview-scrollable="true"],
+.compact-chat-capsule-text[data-compact-preview-streaming="true"] {
+  text-overflow: clip;
+}
+
+.compact-chat-capsule-glyph {
+  display: inline;
+  white-space: pre;
+  will-change: opacity;
+  animation: compact-caption-glyph-in 90ms ease-out both;
+}
+
+@keyframes compact-caption-glyph-in {
+  from {
+    opacity: 0.58;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-capsule-glyph {
+    animation: none;
+  }
+}
+
+.compact-chat-capsule-text::-webkit-scrollbar {
+  display: none;
+}
+
+.compact-chat-surface-shell[data-compact-chat-state="input"] {
+  min-height: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  transition: none;
+}
+
+.compact-chat-surface-shell[data-compact-chat-state="input"]:focus-within {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.compact-chat-resize-handle {
+  position: absolute;
+  top: 4px;
+  width: 12px;
+  height: 54px;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  opacity: 0;
+  pointer-events: auto;
+  touch-action: none;
+  z-index: 100004;
+  -webkit-app-region: no-drag;
+}
+
+.compact-chat-resize-handle-left {
+  left: -4px;
+}
+
+.compact-chat-resize-handle-right {
+  right: -4px;
+}
+
+.compact-chat-surface-shell:hover > .compact-chat-resize-handle,
+.compact-chat-resize-handle:hover,
+.compact-chat-resize-handle:active {
+  opacity: 1;
+}
+
+.compact-export-history-anchor {
+  position: fixed;
+  --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 2px);
+  /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
+  --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
+  --compact-export-controls-border-width: 1px;
+  --compact-export-controls-action-height: clamp(26px, calc(var(--compact-export-surface-width) * 0.0651), 30px);
+  --compact-export-controls-collapsed-toggle-height: clamp(12px, calc(var(--compact-export-surface-width) * 0.0326), 16px);
+  --compact-export-controls-collapsed-width: clamp(82px, calc(var(--compact-export-surface-width) * 0.2093), 112px);
+  --compact-export-controls-expanded-block-size: calc(
+    var(--compact-export-controls-action-height) + (var(--compact-export-controls-padding-y) * 2) +
+      (var(--compact-export-controls-border-width) * 2)
+  );
+  --compact-export-controls-collapsed-block-size: calc(
+    var(--compact-export-controls-collapsed-toggle-height) + (var(--compact-export-controls-border-width) * 2)
+  );
+  --compact-export-controls-collapse-delta: 0px;
+  --compact-export-history-region-height: var(
+    --compact-history-slot-height,
+    min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
+  );
+  --compact-export-history-viewport-gutter: 24px;
+  --compact-export-history-width-ratio: 1;
+  --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
+  --compact-export-history-inline-size: min(
+    calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
+    var(--compact-export-history-max-inline-size)
+  );
+  --compact-export-history-bubble-max-ratio: 86%;
+  --compact-export-history-system-bubble-max-ratio: 94%;
+  --compact-export-preview-bubble-max-ratio: 90%;
+  --compact-export-preview-system-bubble-max-ratio: 95%;
+  width: var(--compact-export-history-inline-size);
+  /* 与 JS getCompactHistorySlotMaxHeight 对齐：高度上限只受屏幕(78vh)约束、不再挂对话条宽度，
+     否则窄宽+高屏时 JS 允许的 slot 高 > CSS anchor 高，hit region 会被裁出死区(Codex P2)。 */
+  max-height: 78vh;
+  transform: translateX(-50%);
+  z-index: 100001;
+  pointer-events: none;
+  overflow: visible;
+  -webkit-app-region: no-drag;
+}
+
+.compact-export-history-anchor.controls-collapsed {
+  --compact-export-controls-collapse-delta: var(--compact-export-controls-expanded-block-size);
+}
+
+.app-shell[data-compact-tool-layer-open="true"][data-compact-export-controls-open="true"] .compact-export-history-anchor:not(.under-choice-prompt),
+.app-shell[data-compact-tool-layer-open="true"][data-compact-export-preview-open="true"] .compact-export-history-anchor:not(.under-choice-prompt) {
+  z-index: 100006;
+}
+
+body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
+  --compact-export-history-region-height: var(
+    --compact-history-slot-height,
+    min(calc(var(--compact-export-surface-width) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
+  );
+  --compact-export-history-max-inline-size: calc(
+    var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)
+  );
+  max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
+}
+
+.compact-export-history-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-height: inherit;
+  pointer-events: none;
+}
+
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-scrollbar-hit,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
+.compact-export-history-anchor.under-choice-prompt .compact-export-preview-region {
+  opacity: 0.32;
+  filter: blur(1.5px);
+  pointer-events: none;
+  transition: opacity 0.22s ease, filter 0.22s ease;
+}
+
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-empty {
+  pointer-events: none;
+}
+
+.compact-export-history-scroll {
+  /* display:block（不是 flex）：scroll 盒的底部 padding 只有在 block 容器里才会被算进可滚区(scrollHeight)，
+     钉底后给最下方气泡的 box-shadow(下沿~25px)留出真实空间、不被 overflow-y:auto 裁。
+     flex/grid column 容器的「末端 padding」会被 Chromium 排除出 scroll overflow（实测 scrollHeight 不含它、
+     钉底后最下气泡贴裁剪边、阴影被切——这是之前 padding 一直没生效的真因，与「落在容器还是子元素」无关）。
+     单个直接子元素 scroll-content 自带 min-height:100% 撑满高度 + 内部 flex 列做底部对齐，无需此处 flex。 */
+  display: block;
+  height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
+  max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
+  min-height: 0;
+  overflow-anchor: none;
+  overflow-y: auto;
+  overflow-x: visible;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  /* 底部 padding 给最下方气泡的 box-shadow 留空间，block 容器下它被算进可滚区、钉底后阴影不被 overflow 裁；
+     border-box 下不增 scroll 盒总高(=region)，只让出底部内容区，不额外增整体留白。
+     取 16px：box-shadow(0 7px 18px)数学下沿~25px，但实测(canvas 阴影衰减,白底最大对比)其视觉可见
+     下沿只到气泡实体底以下~16px(此处 alpha≈3/255≈1.2%,再往下不可察)；清晰可见段(alpha≥8)仅~9px、
+     可感知段(alpha≥5)~13px,均落在 16px 内。压到 16 让气泡实体底更贴输入框(实体底到输入框由~28px→~18px)、
+     同时可见阴影完整不裁。再小(如12)会切到可感知段,不取。 */
+  padding: 4px 24px 16px 6px;
+  scrollbar-width: none;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
+  mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
+}
+
+.compact-export-history-scroll-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  /* 稳态：撑到 scroll 盒高度，配合 first-child margin-top:auto 让内容底部对齐、内容少时不产生可滚空白。 */
+  min-height: 100%;
+  overflow-anchor: none;
+  pointer-events: none;
+}
+
+/* 拖 resize bar 调整高度期间：把内容布局高度锚定在「最大高度」上（而非随 slot 收缩的 100%），
+   于是缩小 scroll 盒高度时内容不再 reflow 重排，只由 scroll 盒裁剪可视窗口（上端被顶部 mask
+   渐隐折起、下端最新消息靠钉底锚定）——卷帘从上往下收。拖动结束回落 100%、内容重新贴合（单次 reflow，
+   不抖动）。仅在拖动中切换，避免稳态下 content>scroll 多出的空白可滚区。 */
+.compact-export-history-anchor[data-compact-export-history-content-locked="true"] .compact-export-history-scroll-content {
+  min-height: var(--compact-history-slot-max-height, 100%);
+}
+
+.compact-export-history-scroll-content > .compact-export-history-message:first-child {
+  margin-top: auto;
+}
+
+.compact-export-history-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.compact-export-history-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.compact-export-history-scrollbar-hit {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 20px;
+  height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
+  max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
+  cursor: ns-resize;
+  pointer-events: auto;
+  touch-action: none;
+  background: transparent;
+  z-index: 2;
+  -webkit-app-region: no-drag;
+}
+
+.compact-export-history-scrollbar-hit::before {
+  content: "";
+  position: absolute;
+  top: var(--compact-history-scroll-thumb-top, 0px);
+  right: 7px;
+  width: 4px;
+  height: var(--compact-history-scroll-thumb-height, 24px);
+  min-height: 24px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42));
+  pointer-events: none;
+}
+
+.compact-export-history-message {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  --compact-history-motion-x: 46px;
+  margin-top: var(--compact-history-gap-before, 8px);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  pointer-events: none;
+  outline: none;
+  transition: opacity 0.16s ease, filter 0.16s ease;
+  -webkit-app-region: no-drag;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
+  pointer-events: none;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-controls,
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-preview-region {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+@keyframes compact-history-message-enter {
+  from {
+    opacity: 0;
+    translate: var(--compact-history-motion-x) 0;
+  }
+
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes compact-history-message-exit {
+  from {
+    opacity: 1;
+    translate: 0 0;
+  }
+
+  to {
+    opacity: 0;
+    translate: var(--compact-history-motion-x) 0;
+  }
+}
+
+.compact-export-history-message.is-user {
+  --compact-history-motion-x: -46px;
+  justify-content: flex-end;
+}
+
+.compact-export-history-message.is-assistant,
+.compact-export-history-message.is-system {
+  --compact-history-motion-x: 46px;
+  justify-content: flex-start;
+}
+
+.compact-export-history-message.is-disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.compact-export-history-message.is-unselected {
+  opacity: 0.85;
+}
+
+.compact-export-history-bubble {
+  position: relative;
+  max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1.5px solid transparent;
+  border-radius: 8px 16px 16px 16px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #273042;
+  box-shadow: 0 7px 18px rgba(22, 48, 84, 0.08);
+  backdrop-filter: blur(8px) saturate(1.08);
+  -webkit-backdrop-filter: blur(8px) saturate(1.08);
+  /* 历史气泡文本可被鼠标正常选中复制（拖到 avatar 子系统已移除，不再捕获指针）。
+     选择模式下气泡是 role="button"，styles 里 [role="button"] 有 user-select:none，
+     这里用更高特异度的 class 规则覆盖回 text，确保选择/勾选两态都能选中文本。 */
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+  pointer-events: auto;
+  transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message .compact-export-history-bubble {
+  animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
+  animation-delay: var(--compact-history-enter-delay, 0ms);
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
+  animation: compact-history-message-exit 0.2s ease-in both;
+  animation-delay: var(--compact-history-exit-delay, 0ms);
+  pointer-events: none;
+}
+
+.compact-export-history-message.is-disabled .compact-export-history-bubble {
+  cursor: default;
+}
+
+.compact-export-history-message.is-user .compact-export-history-bubble {
+  border-radius: 16px 8px 16px 16px;
+  background: rgba(208, 231, 255, 0.88);
+  color: #142033;
+}
+
+.compact-export-history-message.is-system .compact-export-history-bubble {
+  max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));
+  background: rgba(131, 148, 175, 0.18);
+  color: #607086;
+}
+
+.compact-export-history-message[data-compact-history-complexity="rich"] .compact-export-history-bubble {
+  --compact-history-rotate: 0deg;
+}
+
+.compact-export-history-bubble .message-block-image img {
+  height: auto;
+  object-fit: contain;
+}
+
+.compact-export-history-message.is-selected .compact-export-history-bubble {
+  border-color: rgba(36, 151, 217, 0.82);
+  box-shadow:
+    0 0 0 1px rgba(36, 151, 217, 0.22),
+    0 8px 20px rgba(36, 151, 217, 0.14);
+}
+
+.compact-export-history-bubble:focus-visible {
+  border-color: rgba(36, 151, 217, 0.72);
+  box-shadow:
+    0 0 0 3px rgba(36, 151, 217, 0.18),
+    0 8px 20px rgba(36, 151, 217, 0.12);
+}
+
+/* 堆砌区顶部的高度 resize bar：视觉抓手平时透明，hover 整个历史区 / 拖动中（is-active）半透明显现。
+   与左右宽度 handle 一致采用「平时低调、靠近才显形」手感（opacity 切换，无过渡）。
+   注意：透明只施加在 ::after 伪元素上，bar 本体保持不透明——宿主几何收集器
+   （app-react-chat-window.js）会按 computed opacity <= 0.01 丢弃 hit-region，
+   若 bar 本体透明则 Electron 下整条会鼠标穿透、永远 hover/点不到、无法发起拖拽。 */
+.compact-export-history-resize-bar {
+  flex: 0 0 auto;
+  height: 12px;
+  margin: 0 8px 2px;
+  cursor: ns-resize;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.compact-export-history-resize-bar::after {
+  content: "";
+  display: block;
+  width: 80px;
+  height: 4px;
+  margin: 4px auto 0;
+  border-radius: 999px;
+  background: rgba(120, 142, 170, 0.75);
+  opacity: 0;
+}
+
+/* hover 整个历史区即浮现顶部高度 bar（含直接 hover bar 本体 / 拖动中 is-active），
+   让整个历史记录气泡区域都能唤出 resize bar。 */
+.compact-export-history-anchor:hover .compact-export-history-resize-bar::after,
+.compact-export-history-resize-bar:hover::after,
+.compact-export-history-resize-bar.is-active::after {
+  opacity: 0.55;
+}
+
+.compact-export-history-check {
+  position: absolute;
+  top: -5px;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  background: #2497d9;
+  box-shadow: 0 2px 7px rgba(36, 151, 217, 0.3);
+  opacity: 0;
+  transform: scale(0.68);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+
+.compact-export-history-check::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 3px;
+  width: 5px;
+  height: 8px;
+  border-right: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(42deg);
+}
+
+.compact-export-history-message.is-assistant .compact-export-history-check,
+.compact-export-history-message.is-system .compact-export-history-check {
+  left: -5px;
+}
+
+.compact-export-history-message.is-user .compact-export-history-check {
+  right: -5px;
+}
+
+.compact-export-history-message.is-selected .compact-export-history-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.compact-export-history-empty {
+  align-self: center;
+  max-width: min(82%, 320px);
+  margin: 8px auto 2px;
+  padding: 10px 14px;
+  border: 1px solid rgba(207, 232, 255, 0.48);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.26);
+  color: #5d7797;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 8px 18px rgba(22, 48, 84, 0.06);
+  backdrop-filter: blur(8px) saturate(1.08);
+  -webkit-backdrop-filter: blur(8px) saturate(1.08);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.compact-export-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  color: rgba(89, 101, 121, 0.78);
+  font-size: 0.74rem;
+  line-height: 1.2;
+}
+
+.compact-export-history-message.is-user .compact-export-history-meta {
+  justify-content: flex-end;
+}
+
+.compact-export-history-author {
+  font-weight: 700;
+}
+
+.compact-export-history-time,
+.compact-export-history-status {
+  font-size: 0.72rem;
+}
+
+.compact-export-history-content {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-size: 0.92rem;
+  line-height: 1.48;
+}
+
+.compact-export-history-controls,
+.compact-export-preview-region {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 5px 6px;
+  border: 1px solid rgba(207, 232, 255, 0.42);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 8px 18px rgba(22, 48, 84, 0.06);
+  backdrop-filter: blur(8px) saturate(1.08);
+  -webkit-backdrop-filter: blur(8px) saturate(1.08);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+#music-player-mount.compact-music-player-mount {
+  --compact-music-player-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  position: fixed;
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-music-player-surface-width) / 2));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + var(--compact-music-player-offset-y, 12px));
+  box-sizing: border-box;
+  display: block;
+  width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));
+  max-width: min(calc(var(--compact-music-player-surface-width) - 16px), calc(100vw - 24px));
+  min-width: 0;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0s;
+  z-index: 8;
+  -webkit-app-region: no-drag;
+}
+
+/* 音量弹层展开时滑块会向上伸进 history 区域：播放器常驻 z-index:8 低于
+   history-anchor(100001)，重叠处 history 会盖住滑块上半部并抢走点击。展开态
+   把播放器整体提到 history 之上，但仍低于工具轮盘展开态的 surface-shell(100003)，
+   不影响工具轮盘对表情按钮的让位。 */
+#music-player-mount.compact-music-player-mount:has(.music-bar-volume-container.expanded) {
+  z-index: 100002;
+}
+
+#music-player-mount.compact-music-player-mount:empty {
+  display: none;
+}
+
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(8px);
+}
+
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
+}
+
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *,
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] * {
+  pointer-events: none;
+}
+
+.app-shell:has(> .compact-music-player-mount:not(:empty)) .compact-export-history-anchor {
+  bottom: calc(
+    100vh
+    - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh))
+    + var(--compact-music-player-offset-y, 12px)
+    + var(--compact-music-player-reserved-block-size, 88px)
+    + var(--compact-music-player-history-gap, 14px)
+  );
+}
+
+/* 紧凑独立播放器：覆盖独立播放器的深色样式，贴合聊天记录的玻璃质感。 */
+#music-player-mount.compact-music-player-mount > .music-player-bar {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  max-inline-size: 100%;
+  margin: 0;
+  padding: 7px 8px;
+  gap: 8px;
+  border: 1px solid rgba(100, 184, 255, 0.2);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(237, 248, 255, 0.74));
+  color: #273042;
+  box-shadow: 0 8px 18px rgba(22, 48, 84, 0.1);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-cover {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 8px;
+  box-shadow: 0 4px 10px rgba(52, 100, 148, 0.18);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-cover img {
+  border-radius: 8px;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-info {
+  flex: 1 1 0;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: left;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-title-wrap {
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 1px;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-title-seg {
+  color: #273042;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-artist,
+#music-player-mount.compact-music-player-mount .music-bar-time {
+  min-width: 0;
+  max-width: 100%;
+  color: #5d7797;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-artist {
+  font-size: 0.68rem;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-time {
+  font-size: 0.64rem;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-progress-container {
+  min-width: 0;
+  max-width: 100%;
+  height: 4px;
+  margin: 4px 0 2px;
+  background: rgba(101, 136, 176, 0.16);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-progress-fill {
+  background: linear-gradient(90deg, rgba(76, 176, 255, 0.88), rgba(112, 205, 239, 0.76));
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-play,
+#music-player-mount.compact-music-player-mount .music-bar-volume-btn {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  color: #eaf7ff;
+  background: linear-gradient(135deg, #2f8fcd, #56c5e8);
+  box-shadow: 0 5px 12px rgba(44, 122, 184, 0.2);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-container {
+  flex: 0 0 28px;
+  min-width: 28px;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-btn {
+  color: #2f6f9f;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(100, 184, 255, 0.16);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-close {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  color: rgba(93, 119, 151, 0.76);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-close:hover {
+  color: #2f6f9f;
+  background: rgba(220, 242, 255, 0.94);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-slider-wrapper {
+  bottom: 36px;
+  border: 1px solid rgba(100, 184, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 10px 22px rgba(22, 48, 84, 0.14);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-slider {
+  background: rgba(101, 136, 176, 0.18);
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-slider-fill {
+  background: linear-gradient(to top, rgba(76, 176, 255, 0.9), rgba(112, 205, 239, 0.8));
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-slider-handle {
+  background: #f8fcff;
+  box-shadow: 0 0 0 1px rgba(72, 152, 220, 0.2), 0 3px 8px rgba(22, 48, 84, 0.16);
+}
+
+.compact-export-history-controls {
+  box-sizing: border-box;
+  padding: var(--compact-export-controls-padding-y) 6px;
+  border-width: var(--compact-export-controls-border-width);
+  overflow: hidden;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.compact-export-history-controls-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.compact-history-visibility-handle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  --compact-history-handle-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  --compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);
+  width: clamp(96px, calc(var(--compact-history-handle-surface-width) * 0.24), 132px);
+  height: clamp(22px, calc(var(--compact-history-handle-surface-width) * 0.052), 28px);
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(0, 196, 255, 0.88);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, transform 0.14s ease;
+}
+
+.compact-history-visibility-handle {
+  position: fixed;
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2));
+  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  z-index: 100002;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.compact-history-visibility-handle.is-open {
+  --compact-history-handle-line-width: 100%;
+  width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);
+}
+
+/* #2 折叠时蓝条（历史区开关）淡出：App.tsx 点最小化置 compactCollapsing→加 .is-collapsing，
+   ~0.22s 淡掉，与折叠擦除同步消失。 */
+.compact-history-visibility-handle.is-collapsing {
+  opacity: 0;
+  transition: opacity 0.18s ease 0.08s; /* 略延 0.08s 再淡 0.18s，~0.26s 内消失（在 host 折叠 280ms 窗口内） */
+  pointer-events: none;
+}
+
+/* 折叠/展开方向性擦除 + 毛绒球按下挤压动画。这些 class 由 React 组件（App.tsx）发出，
+   但动画规则原本只在 host 的 static/css/index.css。Vite dev / 独立 React bundle 路径下没有
+   index.css，class 会失效、擦除/挤压不跑（Codex P2）。这里在 bundle 自带的 styles.css 里镜像
+   同一套规则，保证组件自带动画 CSS。两份保持一致。 */
+@keyframes neko-compact-minimize-press {
+  0%   { transform: scale(1, 1); }
+  30%  { transform: scale(1.12, 0.74); }
+  58%  { transform: scale(0.94, 1.08); }
+  80%  { transform: scale(1.03, 0.97); }
+  100% { transform: scale(1, 1); }
+}
+.compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+  transform-origin: center bottom;
+  animation: neko-compact-minimize-press 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
+}
+@keyframes neko-compact-collapse-wipe {
+  from { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
+  to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+}
+@keyframes neko-compact-expand-wipe {
+  from { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+  to   { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
+}
+.compact-chat-surface-shell.neko-compact-collapsing,
+.compact-chat-surface-shell.neko-compact-expanding {
+  -webkit-mask-image: linear-gradient(to right, #000 33%, transparent 50%);
+  mask-image: linear-gradient(to right, #000 33%, transparent 50%);
+  -webkit-mask-size: 300% 100%; mask-size: 300% 100%;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.compact-chat-surface-shell.neko-compact-collapsing {
+  animation: neko-compact-collapse-wipe 280ms ease forwards;
+}
+.compact-chat-surface-shell.neko-compact-expanding {
+  animation: neko-compact-expand-wipe 300ms ease forwards;
+}
+/* reduced-motion 禁用上面这些动画。必须放在动画规则之后：同特异性下 CSS 后定义者胜、
+   media query 不加特异性（与 index.css 同样处理，Codex P2）。 */
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+    animation: none;
+  }
+  .compact-chat-surface-shell.neko-compact-collapsing,
+  .compact-chat-surface-shell.neko-compact-expanding {
+    animation: none;
+  }
+}
+
+.compact-history-visibility-handle::before,
+.compact-history-visibility-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  border-radius: 999px;
+}
+
+.compact-history-visibility-handle::before {
+  left: 50%;
+  z-index: 1;
+  width: var(--compact-history-handle-line-width);
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
+  clip-path: polygon(0 50%, 18% 26%, 36% 0, 64% 0, 82% 26%, 100% 50%, 82% 74%, 64% 100%, 36% 100%, 18% 74%);
+  filter:
+    drop-shadow(0 0 4px rgba(118, 220, 255, 0.4))
+    drop-shadow(0 0 9px rgba(118, 220, 255, 0.2));
+  opacity: 0.92;
+  transform: translate(-50%, -50%);
+  animation: compact-history-handle-breathe 2.35s ease-in-out infinite;
+  transition: width 0.16s ease, background 0.16s ease;
+}
+
+.compact-history-visibility-handle::after {
+  left: 50%;
+  z-index: 0;
+  width: var(--compact-history-handle-line-width);
+  height: 8px;
+  background: linear-gradient(
+    90deg,
+    rgba(116, 220, 255, 0) 0%,
+    rgba(116, 220, 255, 0.22) 22%,
+    rgba(154, 232, 255, 0.5) 50%,
+    rgba(116, 220, 255, 0.22) 78%,
+    rgba(116, 220, 255, 0) 100%
+  );
+  filter: blur(3px);
+  opacity: 0.42;
+  transform: translate(-50%, -50%) scaleX(1.16);
+  animation: compact-history-handle-glow-breathe 2.35s ease-in-out infinite;
+  transition: width 0.16s ease, opacity 0.16s ease;
+}
+
+.compact-history-visibility-handle:hover {
+  background: transparent;
+  color: rgba(0, 210, 255, 0.96);
+}
+
+@keyframes compact-history-handle-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+    filter:
+      drop-shadow(0 0 3px rgba(118, 220, 255, 0.28))
+      drop-shadow(0 0 7px rgba(118, 220, 255, 0.12));
+  }
+
+  50% {
+    opacity: 1;
+    filter:
+      drop-shadow(0 0 7px rgba(118, 220, 255, 0.72))
+      drop-shadow(0 0 16px rgba(118, 220, 255, 0.36));
+  }
+}
+
+@keyframes compact-history-handle-glow-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: translate(-50%, -50%) scaleX(1.08);
+  }
+
+  50% {
+    opacity: 0.64;
+    transform: translate(-50%, -50%) scaleX(1.18);
+  }
+}
+
+.compact-history-visibility-handle-triangle {
+  display: none;
+}
+
+.compact-history-visibility-handle.is-open .compact-history-visibility-handle-triangle {
+  display: none;
+}
+
+.compact-export-history-count {
+  min-width: 34px;
+  padding: 0 5px;
+  color: #5d7797;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.compact-export-history-control {
+  min-width: 0;
+  height: var(--compact-export-controls-action-height);
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #2f6f9f;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+}
+
+.compact-export-history-control:hover:not(:disabled) {
+  background: rgba(220, 242, 255, 0.94);
+  color: #1f83bd;
+}
+
+.compact-export-history-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.compact-export-preview-region[hidden] {
+  display: none;
+}
+
+.compact-export-preview-region {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  height: var(--compact-export-history-region-height);
+  max-height: var(--compact-export-history-region-height);
+  border-radius: 18px;
+  padding: 9px;
+  overflow: hidden;
+}
+
+.compact-export-preview-header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.compact-export-preview-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.compact-export-preview-title,
+.compact-export-preview-subtitle,
+.compact-export-preview-empty {
+  color: #5d7797;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.compact-export-preview-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-export-preview-subtitle {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.compact-export-preview-back {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  color: #4e6c8d;
+  line-height: 0;
+  cursor: pointer;
+}
+
+.compact-export-preview-back-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.compact-export-preview-format-strip,
+.compact-export-preview-actions,
+.compact-export-preview-options,
+.compact-export-preview-option-row {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.compact-export-preview-options {
+  flex-direction: column;
+  align-items: flex-start;
+  max-height: 72px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.compact-export-preview-chip,
+.compact-export-preview-action {
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.54);
+  color: #4e6c8d;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.compact-export-preview-chip.is-active {
+  background: rgba(219, 242, 255, 0.86);
+  color: #1f83bd;
+}
+
+.compact-export-preview-action-primary {
+  background: rgba(219, 242, 255, 0.86);
+  color: #1f83bd;
+}
+
+.compact-export-preview-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.compact-export-preview-empty {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 7px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.34);
+  line-height: 1.35;
+  text-align: center;
+}
+
+.compact-export-preview-placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.34);
+  color: #5d7797;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.compact-export-preview-stage {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+
+.compact-export-preview-stage.is-fallback {
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.compact-export-preview-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.compact-export-preview-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+}
+
+.compact-export-preview-messages {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1px 2px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
+  mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
+}
+
+.compact-export-preview-fallback {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1px 2px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.compact-export-preview-messages:hover,
+.compact-export-preview-messages:focus-within,
+.compact-export-preview-fallback:hover,
+.compact-export-preview-fallback:focus-within {
+  scrollbar-color: rgba(70, 160, 255, 0.42) transparent;
+}
+
+.compact-export-preview-messages::-webkit-scrollbar,
+.compact-export-preview-fallback::-webkit-scrollbar {
+  width: 6px;
+}
+
+.compact-export-preview-messages::-webkit-scrollbar-track,
+.compact-export-preview-fallback::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.compact-export-preview-messages::-webkit-scrollbar-thumb,
+.compact-export-preview-fallback::-webkit-scrollbar-thumb {
+  border: 1.5px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: padding-box;
+}
+
+.compact-export-preview-messages:hover::-webkit-scrollbar-thumb,
+.compact-export-preview-messages:focus-within::-webkit-scrollbar-thumb,
+.compact-export-preview-fallback:hover::-webkit-scrollbar-thumb,
+.compact-export-preview-fallback:focus-within::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42))
+    padding-box;
+}
+
+.compact-export-preview-messages:hover::-webkit-scrollbar-thumb:hover,
+.compact-export-preview-messages:focus-within::-webkit-scrollbar-thumb:hover,
+.compact-export-preview-fallback:hover::-webkit-scrollbar-thumb:hover,
+.compact-export-preview-fallback:focus-within::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, rgba(103, 202, 255, 0.82), rgba(36, 151, 217, 0.62))
+    padding-box;
+}
+
+.compact-export-preview-message {
+  display: flex;
+  min-width: 0;
+}
+
+.compact-export-preview-message.is-user {
+  justify-content: flex-end;
+}
+
+.compact-export-preview-message.is-assistant,
+.compact-export-preview-message.is-system {
+  justify-content: flex-start;
+}
+
+.compact-export-preview-bubble {
+  max-width: var(--compact-export-preview-bubble-max-ratio);
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 8px 14px 14px 14px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #273042;
+  box-shadow: 0 6px 15px rgba(22, 48, 84, 0.06);
+}
+
+.compact-export-preview-message.is-user .compact-export-preview-bubble {
+  border-radius: 14px 8px 14px 14px;
+  background: rgba(208, 231, 255, 0.7);
+}
+
+.compact-export-preview-message.is-system .compact-export-preview-bubble {
+  max-width: var(--compact-export-preview-system-bubble-max-ratio);
+  background: rgba(131, 148, 175, 0.16);
+  color: #607086;
+}
+
+.compact-export-preview-meta {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 3px;
+  color: rgba(89, 101, 121, 0.72);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.compact-export-preview-message.is-user .compact-export-preview-meta {
+  justify-content: flex-end;
+}
+
+.compact-export-preview-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.84rem;
+  line-height: 1.42;
+}
+
+.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 42px;
+  min-height: 42px;
+  max-height: 42px;
+  padding: 10px 8px 10px 0;
+  border: 0;
+  background: transparent;
+  color: #2f526b;
+  font-weight: 500;
+  line-height: 22px;
+  overflow-y: auto;
+}
+
+.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder {
+  font-size: 1em;
+  line-height: 22px;
+  color: rgba(70, 96, 122, 0.66);
+}
+
+.compact-chat-surface-shell[data-compact-chat-state="input"] .composer-bottom-bar {
+  display: none;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle img {
+  width: 46px;
+  height: 46px;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle {
+  --compact-tool-toggle-hover-outset: 14px;
+  position: absolute;
+  top: 5px;
+  right: 9px;
+  z-index: 5;
+  isolation: isolate;
+  -webkit-app-region: no-drag;
+  /* Long-press grabs the surface for dragging; keep touch gestures from being
+     reinterpreted as a pan/scroll (which would pointercancel the hold). */
+  touch-action: none;
+  transform: none;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle:hover {
+  transform: none;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--compact-tool-toggle-hover-outset) * -1);
+  z-index: -1;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(circle at 50% 50%,
+      rgba(68, 183, 254, 0.24) 0%,
+      rgba(68, 183, 254, 0.16) 42%,
+      rgba(68, 183, 254, 0) 72%);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"] {
+  background: rgba(160, 220, 255, 0.26);
+  box-shadow:
+    0 0 0 1px rgba(193, 236, 255, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"]::before {
+  opacity: 1;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"]:hover::before,
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"].is-open::before {
+  transform: scale(1.08);
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle-icon {
+  position: relative;
+  z-index: 1;
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle.is-open .compact-input-tool-toggle-icon {
+  transform: rotate(-90deg);
+}
+
+.compact-input-tool-fan {
+  --compact-tool-button-size: 38px;
+  --compact-tool-fan-hit-outset: 52px;
+  --compact-tool-wheel-hover-radius: 116px;
+  /* Orbit radius = how far the tool icons sit from the arrow center (visual
+     only). 45.96px (a straight halving of the original 91.92px) packed the icons
+     in too tight, so it's dialed back to 80px. The drag-rotate sensitivity
+     scalar in App.tsx is intentionally left at 91.92 so rotate-by-drag feel is
+     unchanged. */
+  --compact-tool-wheel-orbit-radius: 80px;
+  --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-wheel-center-y: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-toggle-center-x: calc(100% - 31px);
+  --compact-tool-toggle-center-y: 31px;
+  --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
+  --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
+  --compact-tool-button-shadow:
+    0 8px 18px rgba(20, 36, 64, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  --compact-tool-button-active-fill:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.88) 34%, rgba(238, 248, 255, 0.78) 72%, rgba(218, 239, 255, 0.66) 100%);
+  --compact-tool-button-active-shadow:
+    0 0 0 2px rgba(126, 204, 245, 0.54),
+    0 10px 22px rgba(63, 168, 235, 0.18),
+    0 4px 12px rgba(107, 164, 215, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -10px 18px rgba(177, 220, 247, 0.18);
+  --compact-tool-wheel-transform-duration: 0.22s;
+  --compact-tool-wheel-transform-easing: cubic-bezier(0.2, 0.9, 0.22, 1.12);
+  --compact-tool-wheel-drag-angle: 0deg;
+  --compact-tool-wheel-drag-counter-angle: 0deg;
+  --compact-tool-wheel-charge-first-angle: 0deg;
+  --compact-tool-wheel-charge-second-angle: 0deg;
+  --compact-tool-wheel-charge-third-angle: 0deg;
+  --compact-tool-wheel-selection-angle: 45deg;
+  --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
+  --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
+  position: absolute;
+  left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));
+  top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));
+  width: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  height: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  pointer-events: none;
+  z-index: 100003;
+  overflow: visible;
+  touch-action: none;
+  cursor: grab;
+  -webkit-app-region: no-drag;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="false"] {
+  visibility: hidden;
+  pointer-events: none !important;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="false"] .compact-input-tool-item {
+  pointer-events: none !important;
+}
+
+.compact-chat-surface-shell *,
+.compact-input-tool-fan * {
+  -webkit-app-region: no-drag;
+}
+
+.compact-input-tool-fan-hit-region {
+  position: absolute;
+  left: calc(var(--compact-tool-wheel-center-x) - var(--compact-tool-wheel-hover-radius));
+  top: calc(var(--compact-tool-wheel-center-y) - var(--compact-tool-wheel-hover-radius));
+  width: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  height: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  border-radius: 999px;
+  background: transparent;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.compact-input-tool-wheel-charge {
+  position: absolute;
+  left: calc(var(--compact-tool-wheel-center-x) - 27px);
+  top: calc(var(--compact-tool-wheel-center-y) - 27px);
+  width: 54px;
+  height: 54px;
+  border-radius: 999px;
+  background:
+    conic-gradient(
+      rgba(34, 134, 224, 0.96) 0deg,
+      rgba(34, 134, 224, 0.96) var(--compact-tool-wheel-charge-first-angle),
+      rgba(36, 151, 217, 0.12) var(--compact-tool-wheel-charge-first-angle),
+      rgba(36, 151, 217, 0.14) 360deg
+    );
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.88);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  -webkit-mask-image: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  mask-image: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  z-index: 2;
+}
+
+.compact-input-tool-wheel-charge::before,
+.compact-input-tool-wheel-charge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.compact-input-tool-wheel-charge::before {
+  background:
+    conic-gradient(
+      rgba(245, 150, 45, 0.98) 0deg,
+      rgba(245, 150, 45, 0.98) var(--compact-tool-wheel-charge-second-angle),
+      transparent var(--compact-tool-wheel-charge-second-angle),
+      transparent 360deg
+    );
+}
+
+.compact-input-tool-wheel-charge::after {
+  background:
+    conic-gradient(
+      rgba(236, 64, 58, 0.98) 0deg,
+      rgba(236, 64, 58, 0.98) var(--compact-tool-wheel-charge-third-angle),
+      transparent var(--compact-tool-wheel-charge-third-angle),
+      transparent 360deg
+    );
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge {
+  background:
+    conic-gradient(
+      rgba(36, 151, 217, 0.12) 0deg,
+      rgba(36, 151, 217, 0.14) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
+      rgba(34, 134, 224, 0.96) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
+      rgba(34, 134, 224, 0.96) 360deg
+    );
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge::before {
+  background:
+    conic-gradient(
+      transparent 0deg,
+      transparent calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
+      rgba(245, 150, 45, 0.98) calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
+      rgba(245, 150, 45, 0.98) 360deg
+    );
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge::after {
+  background:
+    conic-gradient(
+      transparent 0deg,
+      transparent calc(360deg - var(--compact-tool-wheel-charge-third-angle)),
+      rgba(236, 64, 58, 0.98) calc(360deg - var(--compact-tool-wheel-charge-third-angle)),
+      rgba(236, 64, 58, 0.98) 360deg
+    );
+}
+
+.compact-input-tool-wheel-selection-pointer {
+  position: absolute;
+  left: var(--compact-tool-wheel-center-x);
+  top: var(--compact-tool-wheel-center-y);
+  width: 14px;
+  height: 12px;
+  border-radius: 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 48%),
+    #42c5ff;
+  clip-path: polygon(100% 50%, 0 0, 0 100%);
+  filter:
+    drop-shadow(0 1px 0 rgba(255, 255, 255, 0.78))
+    drop-shadow(0 2px 5px rgba(26, 120, 184, 0.28));
+  opacity: 0;
+  pointer-events: none;
+  transform:
+    translate(-1px, -50%)
+    rotate(var(--compact-tool-wheel-selection-angle))
+    translateX(48px);
+  transform-origin: 1px 50%;
+  transition: opacity 0.16s ease;
+  z-index: 4;
+}
+
+.compact-input-tool-fan .compact-input-tool-item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin-top: calc(var(--compact-tool-button-size) / -2);
+  margin-left: calc(var(--compact-tool-button-size) / -2);
+  width: var(--compact-tool-button-size);
+  height: var(--compact-tool-button-size);
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(0px) rotate(-45deg) scale(0.72);
+  transition:
+    opacity 0.18s ease,
+    transform var(--compact-tool-wheel-transform-duration) var(--compact-tool-wheel-transform-easing),
+    background 0.15s ease;
+  pointer-events: none;
+  isolation: isolate;
+  z-index: 1;
+}
+
+.compact-input-tool-fan .compact-input-tool-item::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.compact-input-tool-fan .compact-input-tool-item::after {
+  inset: 0;
+  width: auto;
+  height: auto;
+  transform: none;
+  border-radius: inherit;
+  background: var(--compact-tool-button-fill);
+  box-shadow: var(--compact-tool-button-shadow);
+  filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
+  z-index: 1;
+  transition: background 0.15s ease, filter 0.15s ease;
+}
+
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):hover::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover::after {
+  background: var(--compact-tool-button-hover-fill);
+}
+
+.compact-input-tool-fan .compact-input-tool-tooltip {
+  position: absolute;
+  left: calc(100% + 5px);
+  top: calc(100% - 6px);
+  z-index: 4;
+  max-width: 104px;
+  padding: 2px 5px;
+  border: 1px solid #6b7280;
+  border-radius: 0;
+  background: #ffffff;
+  color: #111827;
+  font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  transform: translate(0, -1px);
+  transition: opacity 0.08s ease, transform 0.08s ease;
+  transform-origin: 0 0;
+  box-shadow: none;
+}
+
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):hover,
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover,
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within {
+  z-index: 12;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-within > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within > .compact-input-tool-tooltip {
+  opacity: 1;
+  transform: translate(0, 0);
+}
+
+.compact-input-tool-fan .compact-input-tool-item > img,
+.compact-input-tool-fan .compact-input-tool-item > svg,
+.compact-input-tool-fan .compact-input-tool-item > .composer-galgame-btn-glyph,
+.compact-input-tool-fan .compact-input-tool-item > .composer-tool-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+}
+
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  width: var(--compact-tool-button-size);
+  height: var(--compact-tool-button-size);
+  background: transparent;
+  border-radius: 999px;
+}
+
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:disabled {
+  opacity: 1;
+  cursor: inherit;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-wheel-selection-pointer {
+  opacity: 1;
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-active="true"] .compact-input-tool-wheel-charge {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"] {
+  animation: compactToolWheelChargeRattleWeak 148ms steps(2, end) infinite;
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"] {
+  animation: compactToolWheelChargeRattleStrong 96ms steps(2, end) infinite;
+}
+
+@keyframes compactToolWheelChargeRattleWeak {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+
+  25% {
+    transform: translate(-1.2px, 0.7px) rotate(-0.46deg);
+  }
+
+  50% {
+    transform: translate(1px, -0.8px) rotate(0.42deg);
+  }
+
+  75% {
+    transform: translate(-0.7px, -0.5px) rotate(-0.32deg);
+  }
+}
+
+@keyframes compactToolWheelChargeRattleStrong {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+
+  25% {
+    transform: translate(-2.2px, 1.2px) rotate(-0.86deg);
+  }
+
+  50% {
+    transform: translate(1.9px, -1.5px) rotate(0.78deg);
+  }
+
+  75% {
+    transform: translate(-1.3px, -0.9px) rotate(-0.58deg);
+  }
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"] {
+  --compact-tool-wheel-transform-duration: 0.07s;
+  --compact-tool-wheel-transform-easing: cubic-bezier(0.18, 0.72, 0.24, 1);
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-drag-active="true"] .compact-input-tool-item {
+  transition:
+    opacity 0.18s ease,
+    background 0.15s ease;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]:active {
+  cursor: grabbing;
+}
+
+.compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::after {
+  background: var(--compact-tool-button-active-fill);
+  box-shadow: var(--compact-tool-button-active-shadow);
+}
+
+.compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::before {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
+  border: 3px solid rgba(255, 255, 255, 0.98);
+  border-radius: 999px;
+  background: #2497d9;
+  box-shadow:
+    0 0 0 1px rgba(126, 204, 245, 0.34),
+    0 2px 7px rgba(36, 151, 217, 0.28);
+  z-index: 3;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item {
+  opacity: 0;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+  opacity: 1;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(107.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-107.35deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+  pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn {
+  -webkit-mask-image: var(--compact-tool-preview-fade-left);
+  mask-image: var(--compact-tool-preview-fade-left);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after {
+  box-shadow: var(--compact-tool-button-shadow);
+  filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+  opacity: 1;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(75.82deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-75.82deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+  opacity: 1;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(45deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-45deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+  opacity: 1;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(14.18deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(-14.18deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  opacity: 1;
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-17.35deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(17.35deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+  pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
+  -webkit-mask-image: var(--compact-tool-preview-fade-right);
+  mask-image: var(--compact-tool-preview-fade-right);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after {
+  box-shadow: var(--compact-tool-button-shadow);
+  filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(calc(var(--compact-tool-wheel-orbit-radius) * 0.2)) rotate(-45deg) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-48.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(48.51deg) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg) scale(0.56);
+}
+
+.compact-input-tool-fan .composer-tool-btn img {
+  width: 26px;
+  height: 26px;
+}
+
+.compact-input-tool-fan .composer-translate-btn img,
+.compact-input-tool-fan .composer-translate-btn:hover img,
+.compact-input-tool-fan .composer-translate-btn.is-active img {
+  opacity: 1;
+}
+
+.compact-input-tool-fan .composer-galgame-btn,
+.compact-input-tool-fan .composer-galgame-btn:hover,
+.compact-input-tool-fan .composer-galgame-btn.is-active {
+  color: #2497d9;
+}
+
+.compact-input-tool-fan .composer-galgame-btn-glyph {
+  width: 24px;
+  height: 24px;
+}
+
+.compact-input-tool-fan .compact-input-tool-item-export {
+  color: #2497d9;
+}
+
+.compact-input-tool-fan .composer-icon-popover {
+  left: 0;
+  top: calc(var(--compact-tool-wheel-center-y) - 118px);
+  width: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  height: 62px;
+  box-sizing: border-box;
+  bottom: auto;
+  display: block;
+  padding: 0;
+  animation: none;
+  transform: none;
+  z-index: 13;
+  pointer-events: none;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button {
+  position: absolute;
+  margin: 0;
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(1) {
+  left: calc(var(--compact-tool-wheel-center-x) - 77px);
+  top: 8px;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(2) {
+  left: calc(var(--compact-tool-wheel-center-x) - 23px);
+  top: -2px;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(3) {
+  left: calc(var(--compact-tool-wheel-center-x) + 31px);
+  top: 8px;
+}
+
+.compact-input-tool-fan .composer-tool-menu {
+  justify-content: center;
+}
+
+.compact-input-tool-fan .avatar-tool-quickbar {
+  position: absolute;
+  left: 0;
+  top: calc(var(--compact-tool-wheel-center-y) - 118px);
+  z-index: 14;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(310px, calc(100vw - 28px));
+  min-height: 62px;
+  box-sizing: border-box;
+  padding: 9px 12px 9px 14px;
+  border: 1px solid rgba(89, 188, 230, 0.32);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(232, 247, 253, 0.78)),
+    rgba(255, 255, 255, 0.66);
+  box-shadow:
+    0 16px 30px rgba(54, 151, 203, 0.18),
+    0 4px 12px rgba(71, 126, 162, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+  overflow: visible;
+  pointer-events: auto;
+  transform-origin: center center;
+  animation: bubblePopoverAppear 0.18s cubic-bezier(0.2, 0.9, 0.2, 1.08) both;
+}
+
+.avatar-tool-quickbar-scroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  scrollbar-width: none;
+}
+
+.avatar-tool-quickbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.avatar-tool-quickbar .composer-icon-button {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  margin: 0;
+  padding: 0;
+  top: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  animation: none;
+  overflow: visible;
+  transform: scale(var(--composer-icon-bubble-scale, 1));
+}
+
+.avatar-tool-quickbar .composer-icon-button::before,
+.avatar-tool-quickbar .composer-icon-button::after {
+  display: none;
+}
+
+.avatar-tool-quickbar .composer-icon-button:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow:
+    0 7px 16px rgba(70, 143, 190, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.44);
+}
+
+.avatar-tool-quickbar .composer-icon-button.is-active {
+  background:
+    radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.62), rgba(205, 236, 252, 0.38) 74%);
+  box-shadow:
+    0 0 0 2px rgba(36, 151, 217, 0.2),
+    0 8px 18px rgba(45, 137, 194, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.avatar-tool-quickbar .composer-icon-button-image {
+  width: 31px;
+  height: 31px;
+}
+
+.avatar-tool-quickbar .avatar-tool-quickbar-image {
+  max-width: 38px;
+  max-height: 38px;
+}
+
+.avatar-tool-quickbar-empty {
+  display: inline-flex;
+  align-items: center;
+  min-height: 46px;
+  max-width: 116px;
+  color: rgba(56, 88, 112, 0.78);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.avatar-tool-quickbar::after {
+  content: "";
+  flex: 0 0 1px;
+  width: 1px;
+  height: 34px;
+  order: 1;
+  border-radius: 999px;
+  background: rgba(67, 151, 194, 0.18);
+  box-shadow: 1px 0 0 rgba(255, 255, 255, 0.68);
+}
+
+.avatar-tool-quickbar-edit {
+  --avatar-tool-edit-scale: 1;
+  position: relative;
+  z-index: 2;
+  order: 2;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #12304f;
+  cursor: pointer;
+  isolation: auto;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+  transform: scale(var(--avatar-tool-edit-scale));
+  transition: opacity 0.16s ease, transform 0.16s ease, filter 0.16s ease;
+}
+
+.avatar-tool-quickbar-edit::before,
+.avatar-tool-quickbar-edit::after {
+  display: none;
+}
+
+.avatar-tool-quickbar-edit:hover {
+  --avatar-tool-edit-scale: 1.1;
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 5px 8px rgba(54, 151, 203, 0.22));
+}
+
+.avatar-tool-quickbar-edit:active {
+  --avatar-tool-edit-scale: 1.04;
+}
+
+.avatar-tool-quickbar .composer-icon-button:disabled,
+.avatar-tool-quickbar-edit:disabled {
+  cursor: default;
+  opacity: 0.58;
+  transform: scale(1);
+}
+
+.avatar-tool-quickbar .composer-icon-button:disabled {
+  background: transparent;
+  box-shadow: none;
+}
+
+.avatar-tool-quickbar-edit-image {
+  position: relative;
+  z-index: 2;
+  display: block;
+  width: 52px;
+  height: 43px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.avatar-tool-manager-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: clamp(18px, 5vh, 42px) clamp(14px, 4vw, 52px);
+  background: rgba(8, 22, 36, 0.16);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.avatar-tool-manager-overlay.is-desktop {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: none;
+}
+
+.avatar-tool-manager-dialog {
+  position: fixed;
+  z-index: 100101;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - 28px));
+  height: min(600px, 85vh);
+  max-height: 85vh;
+  box-sizing: border-box;
+  padding: 24px 28px;
+  border: 1px solid rgba(115, 195, 229, 0.46);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(250, 254, 255, 0.96), rgba(235, 247, 253, 0.92));
+  color: #1b3347;
+  box-shadow:
+    0 18px 42px rgba(43, 95, 127, 0.24),
+    0 4px 16px rgba(33, 82, 114, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.avatar-tool-manager-dialog:not(.is-positioned) {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.avatar-tool-manager-dialog.is-positioned {
+  position: fixed;
+  left: var(--avatar-tool-manager-left);
+  top: var(--avatar-tool-manager-top);
+}
+
+.avatar-tool-manager-dialog.is-dragging {
+  user-select: none;
+}
+
+.avatar-tool-manager-dialog img {
+  object-fit: contain;
+}
+
+.avatar-tool-manager-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 9px;
+  border-bottom: 1px solid rgba(81, 132, 164, 0.18);
+  cursor: grab;
+  touch-action: pan-y;
+}
+
+.avatar-tool-manager-dialog.is-dragging .avatar-tool-manager-header {
+  cursor: grabbing;
+  touch-action: none;
+}
+
+.avatar-tool-manager-header > div {
+  position: relative;
+  min-width: 0;
+  padding-left: 12px;
+}
+
+.avatar-tool-manager-header > div::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #55cdf1, #2497d9);
+  box-shadow: 0 0 10px rgba(64, 197, 241, 0.36);
+}
+
+.avatar-tool-manager-header h2 {
+  margin: 0;
+  color: #183247;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.12;
+}
+
+.avatar-tool-manager-header p {
+  margin: 2px 0 0;
+  color: rgba(49, 78, 100, 0.7);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.avatar-tool-manager-icon-button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.72;
+  transition: opacity 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.avatar-tool-manager-icon-button:hover {
+  background: rgba(36, 151, 217, 0.1);
+  opacity: 1;
+  transform: scale(1.04);
+}
+
+.avatar-tool-manager-icon-button img {
+  width: 16px;
+  height: 16px;
+}
+
+.avatar-tool-manager-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px 0 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(36, 151, 217, 0.42) transparent;
+}
+
+.avatar-tool-manager-section + .avatar-tool-manager-section {
+  margin-top: 12px;
+}
+
+.avatar-tool-manager-section h3 {
+  margin: 0 0 7px;
+  color: #20384d;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.avatar-tool-manager-slots,
+.avatar-tool-manager-library {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-flow: row;
+  gap: 16px;
+  padding: 7px 8px 0;
+}
+
+.avatar-tool-manager-slot {
+  position: relative;
+  min-width: 0;
+}
+
+.avatar-tool-manager-slot-card,
+.avatar-tool-manager-library-card,
+.avatar-tool-manager-empty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.avatar-tool-manager-slot-card,
+.avatar-tool-manager-library-card {
+  border: 1px solid rgba(117, 146, 175, 0.22);
+  background:
+    linear-gradient(180deg, rgba(231, 241, 250, 0.96), rgba(203, 219, 235, 0.9));
+  color: #253d51;
+  cursor: pointer;
+  box-shadow:
+    0 7px 14px rgba(39, 83, 116, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.avatar-tool-manager-dialog.is-dragging .avatar-tool-manager-slot-card,
+.avatar-tool-manager-dialog.is-dragging .avatar-tool-manager-library-card {
+  touch-action: none;
+}
+
+.avatar-tool-manager-slot-card {
+  flex-direction: column;
+  gap: 4px;
+  min-height: 75px;
+  padding: 7px 5px 6px;
+}
+
+.avatar-tool-manager-slot-card:hover,
+.avatar-tool-manager-library-card:hover {
+  border-color: rgba(36, 151, 217, 0.4);
+  background:
+    linear-gradient(180deg, rgba(239, 248, 255, 0.98), rgba(211, 229, 243, 0.94));
+  box-shadow:
+    0 9px 18px rgba(39, 83, 116, 0.17),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  transform: translateY(-1px);
+}
+
+.avatar-tool-manager-empty-slot {
+  min-height: 75px;
+  padding: 8px 6px;
+  border: 1px dashed rgba(73, 130, 167, 0.32);
+  background: rgba(220, 234, 244, 0.56);
+  color: rgba(45, 74, 96, 0.62);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.avatar-tool-manager-tool-image {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  max-width: 42px;
+  max-height: 42px;
+  pointer-events: none;
+}
+
+.avatar-tool-manager-slot-card > span,
+.avatar-tool-manager-library-label,
+.avatar-tool-manager-library-status {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avatar-tool-manager-slot-card > span,
+.avatar-tool-manager-library-label {
+  color: #294055;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.avatar-tool-manager-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 999px;
+  background: rgba(105, 118, 132, 0.86);
+  color: #fff;
+  cursor: pointer;
+  font-size: 0;
+  line-height: 1;
+  box-shadow: 0 3px 7px rgba(33, 54, 75, 0.24);
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.avatar-tool-manager-remove::before,
+.avatar-tool-manager-remove::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.avatar-tool-manager-remove::before {
+  transform: rotate(45deg);
+}
+
+.avatar-tool-manager-remove::after {
+  transform: rotate(-45deg);
+}
+
+.avatar-tool-manager-remove:hover {
+  background: rgba(36, 151, 217, 0.9);
+  transform: scale(1.06);
+}
+
+.avatar-tool-manager-library-card {
+  flex-direction: column;
+  gap: 3px;
+  min-height: 85px;
+  padding: 7px 5px 6px;
+}
+
+.avatar-tool-manager-library-card.is-equipped {
+  cursor: default;
+  opacity: 0.68;
+}
+
+.avatar-tool-manager-library-card.is-equipped:hover {
+  border-color: rgba(117, 146, 175, 0.22);
+  background:
+    linear-gradient(180deg, rgba(231, 241, 250, 0.96), rgba(203, 219, 235, 0.9));
+  box-shadow:
+    0 7px 14px rgba(39, 83, 116, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transform: none;
+}
+
+.avatar-tool-manager-library-status {
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+  color: rgba(49, 78, 100, 0.7);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.avatar-tool-manager-library-card:not(.is-equipped) .avatar-tool-manager-library-status {
+  background: rgba(36, 151, 217, 0.12);
+  color: #167eb9;
+}
+
+.avatar-tool-manager-empty-library {
+  margin: 0;
+  padding: 14px 10px;
+  border: 1px dashed rgba(73, 130, 167, 0.28);
+  border-radius: 8px;
+  color: rgba(45, 74, 96, 0.64);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.avatar-tool-manager-notice {
+  margin: 10px 0 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(36, 151, 217, 0.22);
+  border-radius: 8px;
+  background: rgba(36, 151, 217, 0.1);
+  color: #166994;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.avatar-tool-manager-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.avatar-tool-manager-action {
+  min-width: 86px;
+  min-height: 36px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.avatar-tool-manager-action:hover {
+  transform: translateY(-1px);
+}
+
+.avatar-tool-manager-action.primary {
+  background: linear-gradient(180deg, #49c4ee, #2294d0);
+  color: #fff;
+  box-shadow: 0 8px 16px rgba(36, 151, 217, 0.28);
+}
+
+.avatar-tool-manager-action.secondary {
+  background: linear-gradient(180deg, rgba(153, 163, 174, 0.9), rgba(115, 126, 138, 0.9));
+  color: #fff;
+  box-shadow: 0 8px 16px rgba(67, 81, 97, 0.18);
+}
+
+.avatar-tool-manager-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 100101;
+  width: 52px;
+  height: 52px;
+  margin-left: -26px;
+  margin-top: -26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(235, 246, 255, 0.9);
+  box-shadow: 0 12px 24px rgba(25, 59, 88, 0.28);
+  pointer-events: none;
+}
+
+.avatar-tool-manager-drag-ghost img {
+  width: 44px;
+  height: 44px;
+}
+
+.avatar-tool-manager-tool-image.avatar-tool-icon-hammer,
+.avatar-tool-manager-drag-ghost .avatar-tool-icon-hammer {
+  transform: scale(1.38) translate(-14%, 10%);
+  transform-origin: center center;
+}
+
+@media (max-width: 640px) {
+  .compact-input-tool-fan .avatar-tool-quickbar {
+    left: calc(var(--compact-tool-wheel-center-x) - 105px);
+    top: calc(var(--compact-tool-wheel-center-y) - 116px);
+    gap: 7px;
+    max-width: min(286px, calc(100vw - 22px));
+    min-height: 58px;
+    padding: 8px 10px 8px 12px;
+  }
+
+  .avatar-tool-quickbar-scroll {
+    gap: 7px;
+  }
+
+  .avatar-tool-quickbar .composer-icon-button,
+  .avatar-tool-quickbar-edit {
+    width: 43px;
+    height: 43px;
+  }
+
+  .avatar-tool-quickbar .composer-icon-button-image {
+    width: 29px;
+    height: 29px;
+  }
+
+  .avatar-tool-quickbar-edit-image {
+    width: 48px;
+    height: 40px;
+  }
+
+  .avatar-tool-quickbar::after {
+    height: 30px;
+  }
+
+  .avatar-tool-manager-overlay {
+    justify-content: center;
+    padding: 12px;
+  }
+
+  .avatar-tool-manager-dialog {
+    width: calc(100vw - 24px);
+    height: auto;
+    min-height: min(600px, calc(100vh - 24px));
+    max-height: calc(100vh - 24px);
+    padding: 20px 22px;
+  }
+
+}
+
+@media (max-width: 380px) {
+  .avatar-tool-manager-slots,
+  .avatar-tool-manager-library {
+    gap: 12px;
+    padding-right: 7px;
+    padding-left: 7px;
+  }
+
+  .avatar-tool-manager-action {
+    min-width: 0;
+    flex: 1 1 0;
+    padding: 0 10px;
+  }
+}
+
 @media (max-width: 820px) {
   .chat-window {
     min-height: 100%;
@@ -1618,6 +4917,81 @@ button * {
 
   .composer-panel {
     padding: 6px;
+  }
+
+  .compact-chat-surface-frame {
+    width: 100%;
+  }
+
+  .compact-chat-surface-frame[data-compact-chat-state="default"],
+  .compact-chat-surface-frame[data-compact-chat-state="options"] {
+    min-height: 54px;
+    padding: 0 18px 0 var(--compact-chat-minimize-ball-slot);
+  }
+
+  /* 工具轮盘按钮在字幕/选项态依旧绝对定位在右侧，需保留右侧内边距，
+     避免上面的 padding 简写把字幕文字挤到按钮下方喵 */
+  .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="default"],
+  .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="options"] {
+    padding-right: 62px;
+  }
+
+  .compact-chat-surface-frame[data-compact-chat-state="input"] {
+    padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
+  }
+
+  /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
+    --compact-tool-wheel-selection-angle: -140deg;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    opacity: 1;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    pointer-events: none;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-170deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(170deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-110deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(110deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-80deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(80deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 }
 
@@ -1703,15 +5077,11 @@ button * {
 
 /* --- 消息列表滚动条 --- */
 [data-theme="dark"] .message-list {
-  scrollbar-color: rgba(200, 210, 230, 0.15) transparent;
+  scrollbar-width: none;
 }
 
-[data-theme="dark"] .message-list::-webkit-scrollbar-thumb {
-  background: rgba(200, 210, 230, 0.15);
-}
-
-[data-theme="dark"] .message-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(200, 210, 230, 0.3);
+[data-theme="dark"] .message-list-scroll-thumb {
+  background: rgba(200, 210, 230, 0.32);
 }
 
 /* --- 消息列表 --- */
@@ -1896,9 +5266,40 @@ button * {
   background: rgba(28, 28, 46, 0.91);
 }
 
+[data-theme="dark"] .composer-attachment-viewport {
+  border-color: rgba(116, 187, 255, 0.18);
+  background: linear-gradient(180deg, rgba(38, 48, 68, 0.72), rgba(23, 35, 50, 0.62));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] .composer-attachment-viewport-compact {
+  border-color: rgba(177, 216, 255, 0.24);
+  background: linear-gradient(180deg, rgba(31, 48, 66, 0.68), rgba(15, 29, 46, 0.6));
+  box-shadow:
+    0 0 0 1px rgba(132, 184, 236, 0.1),
+    0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dark"] .composer-attachments {
+  scrollbar-color: rgba(95, 199, 255, 0.38) transparent;
+}
+
+[data-theme="dark"] .composer-attachments::-webkit-scrollbar-thumb {
+  background: rgba(95, 199, 255, 0.38);
+}
+
 [data-theme="dark"] .composer-attachment-card {
-  border-color: #444;
-  background: #2a2a3a;
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(33, 45, 62, 0.82);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .composer-attachment-remove {
+  border-color: rgba(222, 240, 255, 0.26);
+  background: rgba(10, 18, 30, 0.72);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.34);
 }
 
 [data-theme="dark"] .composer-tool-btn:hover {
@@ -1907,6 +5308,12 @@ button * {
 
 [data-theme="dark"] .composer-emoji-btn.is-active {
   background: rgba(68, 183, 254, 0.26);
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  background: transparent;
 }
 
 [data-theme="dark"] .composer-tool-clear-btn {
@@ -1940,10 +5347,14 @@ button * {
 
 [data-theme="dark"] .composer-icon-popover {
   background: transparent;
+  opacity: 1 !important;
+  filter: none !important;
 }
 
 [data-theme="dark"] .composer-icon-button {
   border: 0;
+  opacity: 1 !important;
+  filter: none !important;
   background:
     radial-gradient(circle at 30% 28%, rgba(104, 127, 179, 0.56) 0%, rgba(79, 100, 146, 0.46) 22%, rgba(50, 61, 93, 0.52) 72%, rgba(35, 43, 66, 0.44) 100%);
   color: #d8eaff;
@@ -1968,15 +5379,81 @@ button * {
 
 [data-theme="dark"] .composer-icon-button.is-active {
   background:
-    radial-gradient(circle at 30% 28%, rgba(130, 166, 232, 0.72) 0%, rgba(101, 132, 191, 0.62) 22%, rgba(73, 98, 150, 0.68) 72%, rgba(62, 83, 130, 0.62) 100%);
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.96) 0%, rgba(235, 248, 255, 0.86) 34%, rgba(198, 226, 246, 0.76) 72%, rgba(156, 201, 232, 0.66) 100%);
+  color: #1b4f73;
   box-shadow:
-    0 12px 26px rgba(11, 24, 47, 0.42),
-    0 2px 8px rgba(37, 86, 160, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    0 0 0 2px rgba(126, 204, 245, 0.48),
+    0 12px 26px rgba(11, 24, 47, 0.34),
+    0 4px 12px rgba(107, 164, 215, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset 0 -10px 18px rgba(86, 151, 198, 0.18);
 }
 
-[data-theme="dark"] .composer-translate-btn.is-active::after {
+[data-theme="dark"] .composer-icon-button-image {
+  opacity: 1 !important;
+  mix-blend-mode: normal !important;
+  image-rendering: auto;
+  filter: none !important;
+}
+
+[data-theme="dark"] .composer-translate-btn.is-active:not(.compact-input-tool-item)::after {
   background: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-btn {
+  color: rgba(68, 183, 254, 0.5);
+}
+
+[data-theme="dark"] .composer-galgame-btn:hover {
+  color: rgba(68, 183, 254, 0.82);
+}
+
+[data-theme="dark"] .composer-galgame-btn.is-active {
+  color: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-btn.is-active:not(.compact-input-tool-item)::after {
+  background: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-option {
+  background: rgba(54, 64, 90, 0.6);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .composer-galgame-option:hover:not(:disabled) {
+  background: rgba(72, 96, 142, 0.78);
+  border-color: rgba(64, 197, 241, 0.45);
+}
+
+[data-theme="dark"] .composer-galgame-option-label {
+  color: #44b7fe;
+}
+
+[data-theme="dark"] body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(55, 113, 164, 0.58) 0%,
+      rgba(43, 83, 124, 0.38) 52%,
+      rgba(25, 54, 84, 0.14) 82%,
+      rgba(8, 17, 30, 0) 100%
+    );
+  border-color: transparent;
+  color: #e8f3ff;
+}
+
+[data-theme="dark"] body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option:hover:not(:disabled) {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(66, 132, 188, 0.66) 0%,
+      rgba(50, 98, 145, 0.46) 52%,
+      rgba(30, 65, 100, 0.18) 82%,
+      rgba(8, 17, 30, 0) 100%
+    );
+  border-color: transparent;
 }
 
 [data-theme="dark"] .composer-input-shell {
@@ -2008,7 +5485,359 @@ button * {
   opacity: 0.85;
 }
 
+[data-theme="dark"] .compact-chat-surface-frame {
+  --compact-chat-surface-bg:
+    linear-gradient(180deg, rgba(31, 48, 66, 0.72), rgba(15, 29, 46, 0.68) 58%, rgba(8, 17, 30, 0.62));
+  --compact-chat-surface-edge: rgba(177, 216, 255, 0.28);
+  --compact-chat-surface-glow: rgba(176, 219, 255, 0.08);
+  background: rgba(12, 22, 35, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(132, 184, 236, 0.14),
+    0 6px 18px rgba(0, 0, 0, 0.16);
+  border-color: var(--compact-chat-surface-edge);
+}
+
+[data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"],
+[data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"]:focus-within {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .compact-chat-capsule-text {
+  color: #e5f2ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.34);
+}
+
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {
+  color: #e9f4ff;
+}
+
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder {
+  color: rgba(202, 222, 244, 0.66);
+}
+
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle {
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item {
+  --compact-tool-button-fill: rgba(20, 31, 46, 0.94);
+  --compact-tool-button-hover-fill: rgba(30, 47, 68, 0.98);
+  --compact-tool-button-shadow:
+    0 8px 18px rgba(5, 12, 24, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:hover {
+  background: transparent;
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {
+  border-color: #8b949e;
+  background: #202124;
+  color: #f3f4f6;
+}
+
+[data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {
+  border-color: rgba(176, 219, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(38, 54, 73, 0.86), rgba(17, 30, 46, 0.88)),
+    rgba(18, 28, 42, 0.84);
+  box-shadow:
+    0 14px 28px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .avatar-tool-quickbar-empty {
+  color: rgba(226, 240, 255, 0.84);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .avatar-tool-quickbar::after {
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow: 1px 0 0 rgba(3, 10, 20, 0.28);
+}
+
+[data-theme="dark"] .avatar-tool-quickbar .composer-icon-button {
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .avatar-tool-quickbar .composer-icon-button:not(:disabled):hover {
+  background: rgba(177, 221, 255, 0.12);
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 1px rgba(190, 229, 255, 0.16);
+}
+
+[data-theme="dark"] .avatar-tool-quickbar .composer-icon-button.is-active {
+  background:
+    radial-gradient(circle at 35% 30%, rgba(138, 189, 243, 0.28), rgba(62, 101, 151, 0.22) 74%);
+  box-shadow:
+    0 0 0 2px rgba(92, 196, 255, 0.22),
+    0 8px 18px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .avatar-tool-manager-overlay {
+  background: rgba(2, 8, 18, 0.34);
+}
+
+[data-theme="dark"] .avatar-tool-manager-overlay.is-desktop {
+  background: none;
+}
+
+[data-theme="dark"] .avatar-tool-manager-dialog {
+  border-color: rgba(118, 190, 242, 0.22);
+  background:
+    linear-gradient(180deg, rgba(31, 48, 66, 0.96), rgba(16, 29, 44, 0.94));
+  color: #e7f3ff;
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .avatar-tool-manager-header {
+  border-bottom-color: rgba(183, 221, 255, 0.13);
+}
+
+[data-theme="dark"] .avatar-tool-manager-header h2,
+[data-theme="dark"] .avatar-tool-manager-section h3 {
+  color: #e6f3ff;
+}
+
+[data-theme="dark"] .avatar-tool-manager-header p {
+  color: rgba(202, 222, 244, 0.7);
+}
+
+[data-theme="dark"] .avatar-tool-manager-icon-button:hover {
+  background: rgba(68, 183, 254, 0.14);
+}
+
+[data-theme="dark"] .avatar-tool-manager-slot-card,
+[data-theme="dark"] .avatar-tool-manager-library-card {
+  border-color: rgba(183, 221, 255, 0.12);
+  background:
+    radial-gradient(circle at 28% 20%, rgba(120, 147, 186, 0.42), rgba(50, 70, 99, 0.58) 72%),
+    rgba(39, 54, 78, 0.84);
+  color: #e7f3ff;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .avatar-tool-manager-empty-slot,
+[data-theme="dark"] .avatar-tool-manager-empty-library {
+  border-color: rgba(183, 221, 255, 0.14);
+  background: rgba(43, 61, 85, 0.52);
+  color: rgba(219, 236, 255, 0.66);
+}
+
+[data-theme="dark"] .avatar-tool-manager-library-status {
+  color: rgba(225, 239, 255, 0.74);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .avatar-tool-manager-library-card:not(.is-equipped) .avatar-tool-manager-library-status {
+  color: #8bd8ff;
+  background: rgba(68, 183, 254, 0.13);
+}
+
+[data-theme="dark"] .avatar-tool-manager-notice {
+  border-color: rgba(68, 183, 254, 0.2);
+  background: rgba(68, 183, 254, 0.12);
+  color: #a9e2ff;
+}
+
+[data-theme="dark"] .compact-export-history-scroll {
+  scrollbar-width: none;
+}
+
+[data-theme="dark"] .compact-export-history-scrollbar-hit::before {
+  background:
+    linear-gradient(180deg, rgba(95, 199, 255, 0.68), rgba(47, 145, 224, 0.48));
+}
+
+[data-theme="dark"] .compact-export-history-bubble {
+  background: rgba(33, 45, 62, 0.88);
+  color: #e8f0fb;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .compact-export-history-message.is-user .compact-export-history-bubble {
+  background: rgba(33, 72, 118, 0.9);
+  color: #dceaff;
+}
+
+[data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-bubble {
+  background: rgba(80, 90, 110, 0.24);
+  color: #b9c4d6;
+}
+
+[data-theme="dark"] .compact-export-history-meta {
+  color: rgba(210, 225, 244, 0.72);
+}
+
+[data-theme="dark"] .compact-export-history-controls,
+[data-theme="dark"] .compact-export-preview-region {
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(23, 35, 50, 0.28);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] #music-player-mount.compact-music-player-mount {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] #music-player-mount.compact-music-player-mount > .music-player-bar {
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(33, 45, 62, 0.88);
+  color: #e8f0fb;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-title-seg {
+  color: #e8f0fb;
+}
+
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-artist,
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-time {
+  color: rgba(210, 225, 244, 0.72);
+}
+
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-progress-container,
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-volume-slider {
+  background: rgba(202, 224, 248, 0.16);
+}
+
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-volume-btn,
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-close,
+[data-theme="dark"] #music-player-mount.compact-music-player-mount .music-bar-volume-slider-wrapper {
+  border-color: rgba(116, 187, 255, 0.18);
+  background: rgba(26, 48, 70, 0.86);
+  color: #bfe2ff;
+}
+
+[data-theme="dark"] .compact-export-history-count,
+[data-theme="dark"] .compact-export-preview-title,
+[data-theme="dark"] .compact-export-preview-subtitle,
+[data-theme="dark"] .compact-export-preview-empty {
+  color: #cfe5ff;
+}
+
+[data-theme="dark"] .compact-export-history-control {
+  background: rgba(26, 48, 70, 0.82);
+  color: #bfe2ff;
+}
+
+[data-theme="dark"] .compact-history-visibility-handle {
+  background: transparent;
+  color: rgba(0, 196, 255, 0.88);
+}
+
+[data-theme="dark"] .compact-history-visibility-handle::before {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
+}
+
+[data-theme="dark"] .compact-history-visibility-handle::after {
+  background: linear-gradient(
+    90deg,
+    rgba(116, 220, 255, 0) 0%,
+    rgba(116, 220, 255, 0.24) 22%,
+    rgba(164, 236, 255, 0.54) 50%,
+    rgba(116, 220, 255, 0.24) 78%,
+    rgba(116, 220, 255, 0) 100%
+  );
+}
+
+[data-theme="dark"] .compact-export-history-empty {
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(23, 35, 50, 0.28);
+  color: #cfe5ff;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] .compact-export-preview-subtitle,
+[data-theme="dark"] .compact-export-preview-back,
+[data-theme="dark"] .compact-export-preview-chip,
+[data-theme="dark"] .compact-export-preview-action,
+[data-theme="dark"] .compact-export-preview-empty,
+[data-theme="dark"] .compact-export-preview-placeholder,
+[data-theme="dark"] .compact-export-preview-stage {
+  background: rgba(26, 48, 70, 0.72);
+  color: #cfe5ff;
+}
+
+[data-theme="dark"] .compact-export-preview-stage {
+  box-shadow: inset 0 0 0 1px rgba(116, 187, 255, 0.14);
+}
+
+[data-theme="dark"] .compact-export-preview-chip.is-active {
+  background: rgba(38, 85, 122, 0.86);
+  color: #e0f2ff;
+}
+
+[data-theme="dark"] .compact-export-preview-bubble {
+  background: rgba(33, 45, 62, 0.72);
+  color: #e8f0fb;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .compact-export-preview-message.is-user .compact-export-preview-bubble {
+  background: rgba(33, 72, 118, 0.74);
+}
+
+[data-theme="dark"] .compact-export-preview-message.is-system .compact-export-preview-bubble {
+  background: rgba(80, 90, 110, 0.22);
+  color: #b9c4d6;
+}
+
+[data-theme="dark"] .compact-export-preview-meta {
+  color: rgba(210, 225, 244, 0.68);
+}
+
+[data-theme="dark"] .compact-export-history-control:hover:not(:disabled) {
+  background: rgba(40, 77, 108, 0.94);
+  color: #e0f2ff;
+}
+
+[data-theme="dark"] .compact-history-visibility-handle:hover {
+  background: transparent;
+  color: #e0f2ff;
+}
+
+
 @media (prefers-reduced-motion: reduce) {
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"],
+  .compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"] {
+    animation: none !important;
+  }
+
+  .compact-input-tool-fan .compact-input-tool-tooltip {
+    transition: none !important;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+    transform: translate(0, 0);
+  }
+
+  .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {
+    opacity: 0 !important;
+    visibility: hidden !important;
+  }
+
   .avatar-cursor-overlay-stage,
   .hammer-cursor-overlay-stage,
   .fist-floating-drop,
@@ -2018,9 +5847,24 @@ button * {
   .hammer-cursor-overlay-visual.is-active,
   .message-row-user,
   .message-row-assistant,
+  .compact-export-history-message,
+  .compact-export-history-bubble,
+  .compact-music-player-mount,
+  .compact-history-visibility-handle::before,
+  .compact-history-visibility-handle::after,
   .text-chunk-reveal,
   .composer-icon-popover,
-  .composer-icon-button {
+  .composer-icon-button,
+  .avatar-tool-quickbar,
+  .avatar-tool-quickbar-edit,
+  .avatar-tool-manager-dialog,
+  .avatar-tool-manager-icon-button,
+  .avatar-tool-manager-slot-card,
+  .avatar-tool-manager-library-card,
+  .avatar-tool-manager-remove,
+  .avatar-tool-manager-action,
+  .composer-galgame-slot,
+  .composer-galgame-option {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;

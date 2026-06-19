@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 CredentialProvider = Callable[[], Awaitable[Optional[object]]]
@@ -25,6 +26,7 @@ class BiliAuthService:
         self._credential_reloader = credential_reloader
         self._cleanup_callback = cleanup_callback
         self._login_session = None
+        self._login_generated_at: float = 0.0
 
     def _require_login_sdk(self):
         try:
@@ -75,6 +77,7 @@ class BiliAuthService:
         QrCodeLogin, _ = self._require_login_sdk()
         self._login_session = QrCodeLogin()
         await self._login_session.generate_qrcode()
+        self._login_generated_at = time.time()
         pic = self._login_session.get_qrcode_picture()
         png_bytes = pic.content
         img_base64 = base64.b64encode(png_bytes).decode("utf-8")
@@ -101,11 +104,29 @@ class BiliAuthService:
 
         _, QrCodeLoginEvents = self._require_login_sdk()
         state = await self._login_session.check_state()
-        if state == QrCodeLoginEvents.SCAN:
+        # 防误报：check_state() 可能返回 SCAN（枚举值 0）作为"无事件"默认值
+        # bilibili_api >= 16.x 新增了 NONE 枚举用于区分"无事件"与"已扫码"
+        none_event = getattr(QrCodeLoginEvents, "NONE", None)
+        if none_event is not None and state == none_event:
             return {
-                "status": "scanning",
-                "message": "已扫码，等待用户在手机上确认...",
-                "next_step": "请等待3秒后再次调用 bili_login_check",
+                "status": "waiting",
+                "message": "等待扫码...",
+                "next_step": "请用B站App扫描二维码",
+            }
+        if state == QrCodeLoginEvents.SCAN:
+            # 新 SDK（有 NONE 枚举）: SCAN 是真正的扫码事件
+            if none_event is not None:
+                return {
+                    "status": "scanning",
+                    "message": "已扫码，等待用户在手机上确认...",
+                    "next_step": "请等待3秒后再次调用 bili_login_check",
+                }
+            # 旧 SDK 无 NONE: SCAN=0 无法区分"无事件"与"已扫码"
+            # 保守处理为 waiting，等待 CONF/DONE/TIMEOUT 事件
+            return {
+                "status": "waiting",
+                "message": "等待扫码...",
+                "next_step": "请用B站App扫描二维码",
             }
         if state == QrCodeLoginEvents.CONF:
             return {
@@ -132,10 +153,26 @@ class BiliAuthService:
                 raise RuntimeError("登录成功，但保存加密凭据失败。")
             await self._credential_reloader()
             self.clear_qr_session()
+
+            # Fetch user info to return username
+            username = ""
+            try:
+                from bilibili_api import user as user_module
+                uid = int(getattr(cred, "dedeuserid", 0) or 0)
+                if uid > 0:
+                    # Reload credential to get fresh one
+                    fresh_cred = await self._credential_provider()
+                    user_info = await user_module.User(uid=uid, credential=fresh_cred).get_user_info()
+                    username = user_info.get("name", "")
+            except Exception as exc:
+                if self.logger:
+                    self.logger.warning(f"登录后获取用户信息失败: {exc}")
+
             return {
                 "status": "done",
                 "message": "登录成功！凭据已加密保存，现在可以使用所有B站功能了",
                 "uid": payload["DedeUserID"],
+                "username": username,
                 "has_buvid3": bool(payload["buvid3"]),
             }
         return {

@@ -18,6 +18,7 @@ import threading
 import functools
 import itertools
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,41 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
+
+
+def _synthesize_legacy_message_type(canonical: Dict[str, Any]) -> str:
+    """Best-effort legacy ``message_type`` for v1 consumers.
+
+    Inspects ``canonical['parts']`` for ui_action shapes that map onto the
+    deprecated music_* discriminators; otherwise classifies the call by
+    visibility/ai_behavior so query_service still has a non-empty type.
+    """
+    parts = canonical.get("parts") or []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "ui_action":
+            action = p.get("action")
+            if action == "media_play_url":
+                return "music_play_url"
+            if action == "media_allowlist_add":
+                return "music_allowlist_add"
+    if canonical.get("ai_behavior") in ("respond", "read"):
+        return "proactive_notification"
+    return "text"
+
+
+def _synthesize_legacy_content(parts: list) -> Optional[str]:
+    """Concatenate text parts so query_service has a non-empty ``content``."""
+    pieces: list[str] = []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            t = p.get("text")
+            if isinstance(t, str) and t:
+                pieces.append(t)
+    return "\n".join(pieces) if pieces else None
 
 
 class _BusHub:
@@ -219,6 +255,73 @@ class PluginContext:
             self.close()
         except Exception:
             pass
+
+    def _refresh_instance_runtime_config(self, effective_config: Dict[str, Any]) -> None:
+        instance = getattr(self, "_instance", None)
+        refresh = getattr(instance, "refresh_runtime_config", None)
+        if not callable(refresh):
+            return
+        try:
+            refresh(effective_config)
+        except Exception as exc:
+            try:
+                self.logger.warning(
+                    "[PluginContext] Failed to refresh runtime config: plugin_id={}, err_type={}, err={}",
+                    self.plugin_id,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            except Exception:
+                pass
+
+    def _set_effective_config_cache(self, config_obj: object) -> Dict[str, Any] | None:
+        if not isinstance(config_obj, dict):
+            self._effective_config = None
+            return None
+        config_copy = copy.deepcopy(config_obj)
+        self._effective_config = config_copy
+        self._refresh_instance_runtime_config(config_copy)
+        return config_copy
+
+    @staticmethod
+    def _merge_config_copy(base: object, updates: Dict[str, Any]) -> Dict[str, Any]:
+        merged = copy.deepcopy(base) if isinstance(base, dict) else {}
+        for key, value in updates.items():
+            if not isinstance(key, str):
+                continue
+            if value == "__DELETE__":
+                merged.pop(key, None)
+                continue
+            if isinstance(value, Mapping):
+                value_mapping = {
+                    nested_key: nested_value
+                    for nested_key, nested_value in value.items()
+                    if isinstance(nested_key, str)
+                }
+                if value_mapping.get("__replace__") is True:
+                    merged[key] = {
+                        nested_key: copy.deepcopy(nested_value)
+                        for nested_key, nested_value in value_mapping.items()
+                        if nested_key != "__replace__"
+                    }
+                    continue
+                current = merged.get(key)
+                if isinstance(current, Mapping):
+                    current_mapping = {
+                        nested_key: nested_value
+                        for nested_key, nested_value in current.items()
+                        if isinstance(nested_key, str)
+                    }
+                    merged[key] = (
+                        PluginContext._merge_config_copy(current_mapping, value_mapping)
+                        if value_mapping
+                        else {}
+                    )
+                else:
+                    merged[key] = copy.deepcopy(value_mapping)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
 
     def _get_sync_call_in_handler_policy(self) -> str:
         """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
@@ -742,9 +845,9 @@ class PluginContext:
 
     def push_message(
         self,
-        source: str,
-        message_type: str,
-        description: str = "",
+        source: str = "",
+        message_type: Optional[str] = None,
+        description: Optional[str] = None,
         priority: int = 0,
         content: Optional[str] = None,
         binary_data: Optional[bytes] = None,
@@ -753,25 +856,164 @@ class PluginContext:
         unsafe: bool = False,
         fast_mode: bool = False,
         target_lanlan: Optional[str] = None,
+        *,
+        # ── v2 schema (preferred; see push_message_schema.py) ─────────
+        visibility: Optional[list] = None,
+        ai_behavior: Optional[str] = None,
+        parts: Optional[list] = None,
+        # Optional proactive-delivery coalescing key (keyword-only, OPT-IN).
+        # Queued proactive cues sharing the SAME key collapse to the newest;
+        # unset = never coalesce. Use distinct keys per cue category.
+        coalesce_key: Optional[str] = None,
+        # ── v1 legacy aliases — emit DeprecationWarning on use ────────
+        mime: Optional[str] = None,
+        delivery: Any = None,
+        reply: Optional[bool] = None,
     ) -> None:
-        """
-        子进程 / 插件内部调用：推送消息到主进程的消息队列。
+        """Push a message from a plugin to the host.
 
-        Args:
-            source: 插件自己标明的来源
-            message_type: 消息类型，可选值: "text", "url", "binary", "binary_url"
-            description: 插件自己标明的描述
-            priority: 插件自己设定的优先级，数字越大优先级越高
-            content: 文本内容或URL（当message_type为text或url时）
-            binary_data: 二进制数据（当message_type为binary时，仅用于小文件）
-            binary_url: 二进制文件的URL（当message_type为binary_url时）
-            metadata: 额外的元数据
-            unsafe: 为 True 时，允许主进程跳过严格 schema 校验（用于高性能场景，默认 False）
-            target_lanlan: 目标角色名，用于将消息路由到指定 session（可选）
+        The v2 (canonical) parameters are ``visibility`` (list of
+        ``"chat"`` / ``"hud"`` channels where the user sees the parts
+        verbatim), ``ai_behavior`` (one of ``"respond"`` / ``"read"`` /
+        ``"blind"``), and ``parts`` (ordered list of content parts).
+        See :mod:`plugin.sdk.shared.core.push_message_schema` for the full
+        schema and example part shapes.
+
+        All other parameters (``message_type``, ``content``, ``binary_data``,
+        ``binary_url``, ``mime``, ``delivery``, ``reply``, ``description``,
+        ``unsafe``) are deprecated.  They still work for the deprecation
+        window but emit ``DeprecationWarning`` and are scheduled for
+        removal in v0.9 (see ``docs/changelog``).
         """
-        if target_lanlan:
-            metadata = dict(metadata or {})
-            metadata["target_lanlan"] = target_lanlan
+        from plugin.sdk.shared.core.push_message_schema import (
+            translate_push_message,
+        )
+
+        canonical = translate_push_message(
+            visibility=visibility,
+            ai_behavior=ai_behavior,
+            parts=parts,
+            message_type=message_type,
+            description=description,
+            content=content,
+            binary_data=binary_data,
+            binary_url=binary_url,
+            mime=mime,
+            delivery=delivery,
+            reply=reply,
+            unsafe=unsafe if unsafe else None,
+            source=source,
+            metadata=metadata,
+            target_lanlan=target_lanlan,
+            priority=priority,
+            coalesce_key=coalesce_key,
+        )
+        # Stamp target_lanlan into metadata too — proactive_bridge and
+        # main_server's session router still read ``metadata.target_lanlan``
+        # and we keep that contract through the deprecation window.
+        canonical_metadata = dict(canonical.get("metadata") or {})
+        if target_lanlan and "target_lanlan" not in canonical_metadata:
+            canonical_metadata["target_lanlan"] = target_lanlan
+        # Synthesize legacy fields for downstream readers that haven't
+        # migrated to v2 yet (notably plugin/server/application/messages/
+        # query_service.py).  These are derived, not authoritative — the
+        # v2 fields (parts/visibility/ai_behavior) own the real meaning.
+        legacy_message_type = (
+            message_type
+            if isinstance(message_type, str) and message_type
+            else _synthesize_legacy_message_type(canonical)
+        )
+        legacy_content = content if isinstance(content, str) else _synthesize_legacy_content(canonical.get("parts") or [])
+        legacy_binary_url: Optional[str] = binary_url if isinstance(binary_url, str) else None
+        legacy_binary_data: Optional[bytes] = bytes(binary_data) if isinstance(binary_data, (bytes, bytearray)) else None
+        legacy_mime: Optional[str] = mime if isinstance(mime, str) else None
+        if legacy_binary_url is None or legacy_binary_data is None or legacy_mime is None:
+            for part in canonical.get("parts") or []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") not in ("image", "audio", "video"):
+                    continue
+                if legacy_binary_url is None:
+                    url_obj = part.get("url")
+                    if isinstance(url_obj, str) and url_obj:
+                        legacy_binary_url = url_obj
+                if legacy_binary_data is None:
+                    b64_obj = part.get("binary_base64")
+                    if isinstance(b64_obj, str) and b64_obj:
+                        try:
+                            legacy_binary_data = base64.b64decode(b64_obj, validate=False)
+                        except Exception:
+                            legacy_binary_data = None
+                if legacy_mime is None:
+                    mime_obj = part.get("mime")
+                    if isinstance(mime_obj, str) and mime_obj:
+                        legacy_mime = mime_obj
+                if legacy_binary_url is not None and legacy_binary_data is not None and legacy_mime is not None:
+                    break
+        # ``description`` has no role in v2 (no semantic consumer; only
+        # surfaces as a human label in legacy log lines and the
+        # query_service messages-bus response).  Synthesised here purely
+        # so v1 readers don't see ``None`` during the deprecation window.
+        # Sources, in priority order:
+        #   1. explicit ``description=`` kwarg (legacy v1 callers)
+        #   2. ``metadata["description"]`` (already-migrated v2 callers
+        #      that moved the label there during the migration)
+        #   3. empty string (native v2 callers that never set a label)
+        # TODO(v0.9): drop this field, the kwarg, the metadata fallback,
+        # and the query_service fallback together; new callers should put
+        # any human label in ``metadata`` if they want it surfaced.
+        if isinstance(description, str):
+            legacy_description = description
+        else:
+            md_description = canonical_metadata.get("description")
+            legacy_description = md_description if isinstance(md_description, str) else ""
+        # Resolve the legacy delivery/reply pair from the v2 axes so v1
+        # consumers that branch on these fields still see a coherent value
+        # during the deprecation window.
+        if canonical["ai_behavior"] == "respond":
+            legacy_delivery = "proactive"
+        elif canonical["ai_behavior"] == "read":
+            legacy_delivery = "passive"
+        else:
+            legacy_delivery = "silent"
+        legacy_reply = legacy_delivery != "silent"
+
+        def _build_wire_payload(*, message_id: str, ts: Any) -> Dict[str, Any]:
+            """Construct the message_plane envelope (v2 + legacy compat fields).
+
+            Used by all three send paths (fast batcher / slow per-call / fallback
+            queue).  Keeps the wire shape identical regardless of transport.
+            """
+            return {
+                "type": "MESSAGE_PUSH",
+                "message_id": message_id,
+                "plugin_id": self.plugin_id,
+                "time": ts,
+                # v2 schema (canonical):
+                "schema": canonical["schema"],
+                "source": canonical["source"],
+                "priority": canonical["priority"],
+                "coalesce_key": canonical.get("coalesce_key", ""),
+                "visibility": canonical["visibility"],
+                "ai_behavior": canonical["ai_behavior"],
+                "parts": canonical["parts"],
+                "metadata": canonical_metadata,
+                "target_lanlan": canonical.get("target_lanlan"),
+                # Legacy compat fields for downstream consumers that have not
+                # migrated to v2 yet (query_service, _types/models.py, etc.).
+                # All derived from the canonical v2 payload so a v2-only
+                # caller still surfaces something meaningful here.
+                "message_type": legacy_message_type,
+                "content": legacy_content,
+                "binary_data": legacy_binary_data,
+                "binary_url": legacy_binary_url,
+                "mime": legacy_mime,
+                "description": legacy_description,
+                "unsafe": bool(unsafe),
+                "delivery": legacy_delivery,
+                "reply": legacy_reply,
+            }
+
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         if zmq is not None:
@@ -849,26 +1091,33 @@ class PluginContext:
                                 except Exception:
                                     self._msg_counter = msg_counter
                             
-                            # Ultra-fast path: minimize allocations
-                            payload = {
-                                "type": "MESSAGE_PUSH",
-                                "message_id": f"{self.plugin_id}:{next(msg_counter)}",
-                                "plugin_id": self.plugin_id,
-                                "source": source,
-                                "description": description,
-                                "priority": priority,
-                                "message_type": message_type,
-                                "content": content,
-                                "binary_data": binary_data,
-                                "binary_url": binary_url,
-                                "metadata": metadata if metadata is not None else {},
-                                "unsafe": unsafe,
-                                "time": time.time(),
-                            }
+                            payload = _build_wire_payload(
+                                message_id=f"{self.plugin_id}:{next(msg_counter)}",
+                                ts=time.time(),
+                            )
                             item = {"store": "messages", "topic": "all", "payload": payload}
                             try:
                                 batcher.enqueue(item)
                             except Exception:
+                                # [ISSUE4-DIAG] An important proactive cue
+                                # (ai_behavior!="read": respond completion /
+                                # keep-going self-prompt / alert) must never
+                                # vanish silently — log every such drop loudly.
+                                # High-freq "read" (screenshots/logs) stay on the
+                                # rate-limited aggregate below.
+                                try:
+                                    if canonical.get("ai_behavior") != "read":
+                                        self.logger.error(
+                                            "[PluginContext] message_plane DROP (fast batcher): plugin_id={} source={} ai_behavior={} priority={} — important cue lost to backpressure",
+                                            self.plugin_id, canonical.get("source"),
+                                            canonical.get("ai_behavior"), canonical.get("priority"),
+                                        )
+                                except Exception:
+                                    # This is a best-effort diagnostic on the hot
+                                    # backpressure path; a logging failure (rotation
+                                    # race, bad arg) must never propagate and turn a
+                                    # dropped-cue observation into a real crash.
+                                    pass
                                 # Backpressure: do not fall back to control-plane (it will amplify overload).
                                 try:
                                     last_ts = float(getattr(self, "_mp_backpressure_last_ts", 0.0) or 0.0)
@@ -941,21 +1190,10 @@ class PluginContext:
                         except Exception:
                             pass
 
-                    payload = {
-                        "type": "MESSAGE_PUSH",
-                        "message_id": str(uuid.uuid4()),
-                        "plugin_id": self.plugin_id,
-                        "source": source,
-                        "description": description,
-                        "priority": priority,
-                        "message_type": message_type,
-                        "content": content,
-                        "binary_data": binary_data,
-                        "binary_url": binary_url,
-                        "metadata": metadata or {},
-                        "unsafe": bool(unsafe),
-                        "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    }
+                    payload = _build_wire_payload(
+                        message_id=str(uuid.uuid4()),
+                        ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
                     msg = {
                         "v": 1,
                         "kind": "delta_batch",
@@ -983,10 +1221,17 @@ class PluginContext:
                     return
             except Exception as e:
                 # Catch all ZMQ/Batcher errors to prevent plugin crash
+                # [ISSUE4-DIAG] Enrich so we can tell WHAT got dropped on
+                # backpressure. ai_behavior!="read" → an important proactive cue
+                # (respond completion / keep-going self-prompt / alert) was
+                # silently dropped — that's the "猫娘 goes silent" mechanism.
                 try:
-                    self.logger.warning(
-                        "[PluginContext] message_plane error: plugin_id={} error={}",
-                        self.plugin_id, e
+                    _beh = canonical.get("ai_behavior")
+                    _lvl = self.logger.error if _beh != "read" else self.logger.warning
+                    _lvl(
+                        "[PluginContext] message_plane DROP (slow PUSH): plugin_id={} source={} ai_behavior={} priority={} err={}: {}",
+                        self.plugin_id, canonical.get("source"), _beh,
+                        canonical.get("priority"), type(e).__name__, e,
                     )
                 except Exception:
                     pass
@@ -996,21 +1241,10 @@ class PluginContext:
         # message_plane 不可用时，尝试回退到 message_queue（如果可用）
         if self.message_queue is not None:
             try:
-                payload = {
-                    "type": "MESSAGE_PUSH",
-                    "message_id": str(uuid.uuid4()),
-                    "plugin_id": self.plugin_id,
-                    "source": source,
-                    "description": description,
-                    "priority": priority,
-                    "message_type": message_type,
-                    "content": content,
-                    "binary_data": binary_data,
-                    "binary_url": binary_url,
-                    "metadata": metadata or {},
-                    "unsafe": bool(unsafe),
-                    "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                }
+                payload = _build_wire_payload(
+                    message_id=str(uuid.uuid4()),
+                    ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
                 self.message_queue.put_nowait(payload)
                 if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                     try:
@@ -1035,38 +1269,13 @@ class PluginContext:
         except Exception:
             pass
 
-    async def push_message_async(
-        self,
-        source: str,
-        message_type: str,
-        description: str = "",
-        priority: int = 0,
-        content: Optional[str] = None,
-        binary_data: Optional[bytes] = None,
-        binary_url: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        unsafe: bool = False,
-        fast_mode: bool = False,
-        target_lanlan: Optional[str] = None,
-    ) -> None:
+    async def push_message_async(self, *args: Any, **kwargs: Any) -> None:
         """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
 
-        Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。
+        Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。新签名见
+        :meth:`push_message`。本方法仅做参数透传，不在此处做兼容翻译。
         """
-        await asyncio.to_thread(
-            self.push_message,
-            source=source,
-            message_type=message_type,
-            description=description,
-            priority=priority,
-            content=content,
-            binary_data=binary_data,
-            binary_url=binary_url,
-            metadata=metadata,
-            unsafe=unsafe,
-            fast_mode=fast_mode,
-            target_lanlan=target_lanlan,
-        )
+        await asyncio.to_thread(self.push_message, *args, **kwargs)
 
     def _send_request_and_wait(
         self,
@@ -1456,7 +1665,7 @@ class PluginContext:
                 )
                 config_obj = payload.get("config")
                 if isinstance(config_obj, dict):
-                    self._effective_config = copy.deepcopy(config_obj)
+                    self._set_effective_config_cache(config_obj)
                 return payload
             if payload_type == "base":
                 return await asyncio.wait_for(
@@ -1597,7 +1806,7 @@ class PluginContext:
         if isinstance(local_payload, dict):
             effective_obj = local_payload.get("config")
             if isinstance(effective_obj, dict) and profile_name is None:
-                self._effective_config = copy.deepcopy(effective_obj)
+                self._set_effective_config_cache(effective_obj)
             return local_payload
 
         try:
@@ -1672,6 +1881,11 @@ class PluginContext:
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
+        old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        optimistic_config = self._merge_config_copy(old_effective_config, updates)
+        self._set_effective_config_cache(optimistic_config)
+        # Keep config writes from blocking plugin actions; timeouts fall back to the optimistic in-memory config.
+        request_timeout = min(float(timeout), 4.5)
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="update_own_config",
@@ -1680,12 +1894,39 @@ class PluginContext:
                     "plugin_id": self.plugin_id,
                     "updates": updates,
                 },
-                timeout=timeout,
+                timeout=request_timeout,
                 wrap_result=True,
                 error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
-            self._effective_config = copy.deepcopy(config_obj) if isinstance(config_obj, dict) else None
+            if isinstance(config_obj, dict):
+                if payload.get("persisted") is False:
+                    self._set_effective_config_cache(optimistic_config)
+                    payload = dict(payload)
+                    payload["config"] = copy.deepcopy(optimistic_config)
+                else:
+                    self._set_effective_config_cache(config_obj)
             return payload
         except TimeoutError as e:
-            raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e
+            return {
+                "success": False,
+                "plugin_id": self.plugin_id,
+                "config": copy.deepcopy(optimistic_config),
+                "requires_reload": False,
+                "persisted": False,
+                "message": "Config persistence timed out; update is applied in plugin memory only",
+            }
+        except asyncio.CancelledError:
+            if isinstance(old_effective_config, dict):
+                self._set_effective_config_cache(old_effective_config)
+            else:
+                self._effective_config = None
+                self._refresh_instance_runtime_config({})
+            raise
+        except Exception:
+            if isinstance(old_effective_config, dict):
+                self._set_effective_config_cache(old_effective_config)
+            else:
+                self._effective_config = None
+                self._refresh_instance_runtime_config({})
+            raise

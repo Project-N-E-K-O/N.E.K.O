@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 import os
@@ -9,6 +23,14 @@ from utils.storage_policy import compute_anchor_root, load_storage_policy, norma
 NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
 NEKO_STORAGE_ANCHOR_ROOT_ENV = "NEKO_STORAGE_ANCHOR_ROOT"
 NEKO_STORAGE_CLOUDSAVE_ROOT_ENV = "NEKO_STORAGE_CLOUDSAVE_ROOT"
+
+
+def _set_or_clear_env(target_env: dict[str, str], key: str, value: Any) -> None:
+    normalized_value = str(value or "").strip()
+    if normalized_value:
+        target_env[key] = normalized_value
+    else:
+        target_env.pop(key, None)
 
 
 def build_storage_layout(
@@ -33,9 +55,9 @@ def export_storage_layout_to_env(
     environ: dict[str, str] | None = None,
 ) -> dict[str, str]:
     target_env = environ if environ is not None else os.environ
-    target_env[NEKO_STORAGE_SELECTED_ROOT_ENV] = str(layout.get("selected_root") or "").strip()
-    target_env[NEKO_STORAGE_ANCHOR_ROOT_ENV] = str(layout.get("anchor_root") or "").strip()
-    target_env[NEKO_STORAGE_CLOUDSAVE_ROOT_ENV] = str(layout.get("cloudsave_root") or "").strip()
+    _set_or_clear_env(target_env, NEKO_STORAGE_SELECTED_ROOT_ENV, layout.get("selected_root"))
+    _set_or_clear_env(target_env, NEKO_STORAGE_ANCHOR_ROOT_ENV, layout.get("anchor_root"))
+    _set_or_clear_env(target_env, NEKO_STORAGE_CLOUDSAVE_ROOT_ENV, layout.get("cloudsave_root"))
     return target_env
 
 

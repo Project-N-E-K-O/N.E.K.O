@@ -10,10 +10,10 @@ Do not store the concrete upstream model name in config or memory cache fields. 
 
 ## Development Setup
 
-Install the optional runtime dependencies:
+Install project dependencies (includes `onnxruntime` and `tokenizers`; CPU SIMD capability is read from numpy's `__cpu_features__`, so no `py-cpuinfo` is needed):
 
 ```bash
-uv sync --extra embeddings
+uv sync
 ```
 
 Download model files into the anonymous profile folder. This example mirrors a Hugging Face ONNX repository into `data/embedding_models/local-text-retrieval-v1/`:

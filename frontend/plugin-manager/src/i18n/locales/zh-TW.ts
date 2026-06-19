@@ -1,8 +1,6 @@
 /**
  * 繁體中文語言包
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: '載入中...',
@@ -19,6 +17,10 @@ export default {
     back: '返回',
     submit: '提交',
     close: '關閉',
+    minimize: '最小化',
+    maximize: '最大化',
+    restore: '恢復',
+    toggleSelection: '切換選取狀態',
     success: '成功',
     error: '錯誤',
     warning: '警告',
@@ -41,7 +43,107 @@ export default {
     serverLogs: '伺服器日誌',
     adapters: '適配器',
     adapterUI: '適配器介面',
-    packageManager: '包管理'
+    packageManager: '包管理',
+    market: '外掛市集'
+  },
+  market: {
+    title: '取得新外掛',
+    subtitle: '從外掛市集瀏覽與安裝外掛',
+    getNewPlugins: '取得新外掛',
+    openMarket: '開啟外掛市集',
+    closeMarket: '收起外掛市集',
+    openInBrowser: '在瀏覽器開啟',
+    account: 'Market 帳號',
+    accountConnected: '已連線: {name}',
+    login: '登入',
+    loginStarted: '已開啟瀏覽器，請在 Market 完成授權。',
+    loginSuccess: 'Market 登入已連線',
+    loginFailed: 'Market 登入失敗',
+    loginPending: 'Market 授權逾時，請重試',
+    logoutSuccess: '已退出 Market 登入',
+    searchPlaceholder: '搜尋外掛...',
+    notConfigured: '外掛市集未設定',
+    configHint: '請在環境變數中設定 NEKO_MARKET_URL',
+    noResults: '找不到外掛',
+    loadFailed: '外掛市集載入失敗，請稍後再試',
+    retry: '重試',
+    install: '安裝',
+    installed: '已安裝',
+    installing: '安裝中...',
+    installSuccess: '安裝工作已建立: {name}',
+    installFailed: '安裝失敗',
+    installPreparing: '正在準備安裝...',
+    installDialogTitle: '正在安裝 {name}',
+    installDialogTitleUpgrade: '正在升級 {name}',
+    installCompleted: '安裝完成',
+    installCompletedUpgrade: '升級完成',
+    rollbackRunning: '安裝失敗，正在回復...',
+    rollbackCompleted: '已回復到先前版本',
+    installStage: {
+      pending: '準備中',
+      download: '下載中',
+      verify: '驗證中',
+      install: '安裝中',
+      stop_old: '停止舊版本',
+      backup_old: '備份中',
+      restart: '啟動新版本',
+      rollback: '回復中',
+      completed: '完成',
+      failed: '失敗',
+    },
+    noDownloadUrl: '此外掛沒有可用的下載網址',
+    pairRequired: '需要配對 Bridge Token',
+    recommended: '推薦',
+    allPlugins: '全部外掛',
+    noDescription: '暫無說明',
+    unknownAuthor: '未知',
+    filterRules: '篩選規則',
+    filterRulesTitle: '搜尋語法',
+    filterRulesHint: '點擊規則插入搜尋框，支援 key:value 組合，加 - 前綴表示排除',
+    filterGroups: {
+      state: '狀態',
+      zone: '專區',
+      meta: '元資料'
+    },
+    filterLabels: {
+      recommended: '推薦外掛',
+      installed: '已安裝',
+      uninstalled: '未安裝',
+      tag: '標籤',
+      author: '作者',
+      name: '名稱',
+      versionGte: '版本 ≥',
+      hasRepo: '含倉庫',
+      hasTags: '含標籤'
+    },
+    zones: {
+      game: '遊戲',
+      companion: '夥伴',
+      function: '功能',
+      entertainment: '娛樂',
+      tool: '工具'
+    },
+    sortNewest: '最新',
+    sortMostDownloads: '下載量',
+    sortTopRated: '評分',
+    sortName: '名稱',
+    upgrading: '升級中...',
+    upgradeTo: '升級到 v{version}',
+    upgradeSuccess: '升級成功: {name}',
+    yanked: '已撤回',
+    yankedDefault: '此版本已被作者撤回',
+    noVersionAvailable: '暫無可用版本',
+    upgradeRollback: '升級失敗，已回復到舊版本',
+    upgradeAlreadyAtTarget: '目前已是目標版本',
+    upgradeTargetNotGreater: '升級目標版本不高於已裝版本',
+    pluginNotInstalled: '此外掛尚未安裝，無法升級',
+    lockWriteFailed: '安裝記錄寫入失敗'
+  },
+  settings: {
+    channel: '更新通道',
+    channelStable: '穩定版',
+    channelBeta: '測試版',
+    channelHint: '切換後所有外掛列表將依所選通道更新；不影響已安裝外掛運行'
   },
   auth: {
     unauthorized: '未授權存取',
@@ -74,7 +176,9 @@ export default {
     sdkVersion: 'SDK 版本',
     updateTime: '更新時間',
     noMetricsData: '暫無效能資料',
-    failedToLoadServerInfo: '無法載入伺服器資訊'
+    failedToLoadServerInfo: '無法載入伺服器資訊',
+    startTutorial: '教程引導',
+    tutorialHint: '第一次使用外掛管理器？點這裡讓我帶你快速認識一下。'
   },
   plugins: {
     title: '外掛列表',
@@ -112,6 +216,34 @@ export default {
     noEntries: '暫無進入點',
     showMetrics: '顯示效能指標',
     hideMetrics: '隱藏效能指標',
+    showSourceDetail: '顯示來源詳情',
+    hideSourceDetail: '隱藏來源詳情',
+    installSource: {
+      channel: {
+        builtin: '內建',
+        manual: '手動',
+        imported: '匯入',
+        market: '市集',
+        unknown: '未知',
+      },
+      // v2: Market release channel values displayed on SourceDetailRow.
+      channelLabels: {
+        stable: '穩定版',
+        beta: '測試版',
+        unknown: '未知',
+      },
+      updateAvailable: '有新版本',
+      labels: {
+        installedAt: '安裝時間',
+        packageFilename: '安裝包',
+        sha256: 'SHA-256',
+        marketId: '市集 ID',
+        version: '目前版本',
+        previousVersion: '上一版本',
+        latestAvailable: '最新版本',
+        channel: '通道',
+      },
+    },
     filterPlaceholder: '篩選外掛（支援文字、拼音與 is:/type:/has: 規則）',
     filterRules: '規則',
     filterRulesTitle: '篩選規則',
@@ -165,6 +297,10 @@ export default {
     typePlugin: '外掛',
     typeAdapter: '適配器',
     typeExtension: '擴充功能',
+    layoutList: '列表',
+    layoutSingle: '單排',
+    layoutDouble: '雙排',
+    layoutCompact: '緊湊',
     openPackageManager: '包管理',
     closePackageManager: '收起包管理',
     packageManagerOpened: '包管理已展開',
@@ -189,12 +325,12 @@ export default {
     batchNoReloadable: '選取的外掛中沒有執行中的',
     import: '匯入',
     importing: '匯入中…',
-    importSuccess: '已匯入 {name}，解包了 {count} 個外掛',
+    importSuccess: '已匯入 {name}，安裝了 {count} 個外掛',
     importFailed: '匯入失敗',
     export: '匯出',
     exportSuccess: '已匯出 {count} 個套件',
     exportFailed: '匯出失敗',
-    exportPackFailed: '打包失敗，無法匯出',
+    exportBuildFailed: '構建失敗，無法匯出',
     filterRuleGroups: {
       state: '狀態',
       type: '類型',
@@ -225,7 +361,7 @@ export default {
       runtime: '執行',
       plugin: '擴充功能'
     },
-    pack: '打包外掛',
+    build: '構建外掛',
     delete: '刪除外掛',
     disableExtension: '停用擴充功能',
     enableExtension: '啟用擴充功能',
@@ -240,9 +376,104 @@ export default {
     },
     ui: {
       open: '開啟介面',
+      title: '介面',
+      panel: '面板',
+      guide: '教程',
       loading: '載入外掛介面中...',
       loadError: '載入外掛介面失敗',
-      noUI: '該外掛沒有自訂介面'
+      noUI: '該外掛沒有自訂介面',
+      hostedTsxPending: 'Hosted TSX 渲染即將支援',
+      markdownPending: 'Markdown 教程渲染即將支援',
+      autoPending: '自動生成面板即將支援',
+      surfaceUnavailable: 'Surface 暫不可用',
+      surfaceEntryMissing: '該 Surface 宣告的入口檔案不存在，請檢查 plugin.toml 中的 entry 路徑。',
+      surfaceWarnings: '外掛 UI 宣告存在需要處理的問題',
+      controlError: '外掛介面控制項錯誤',
+      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
+    }
+  },
+  package: {
+    dialog: {
+      title: '包管理執行記錄',
+      subtitle: '保留最近 {count} 條執行結果'
+    },
+    empty: '執行包管理操作後，這裡會顯示記錄',
+    viewDetail: '查看詳情',
+    detail: {
+      title: '結果詳情',
+      field: {
+        packageId: '包 ID',
+        kind: '類型',
+        version: '版本',
+        schema: 'Schema',
+        hashCheck: 'Hash 校驗',
+        profiles: 'Profiles'
+      },
+      list: '明細',
+      warning: '注意',
+      rawJson: '原始結果 JSON'
+    },
+    hash: {
+      notVerified: '未校驗',
+      passed: '通過',
+      failed: '失敗'
+    },
+    kind: {
+      build: '建置',
+      inspect: '檢查',
+      verify: '校驗',
+      install: '安裝',
+      analyze: '分析'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: '類型',
+        success: '成功',
+        failed: '失敗',
+        included: '包含外掛',
+        status: '狀態',
+        completed: '完成',
+        partialFailure: '部分失敗',
+        pluginCount: '外掛數',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: '已處理外掛',
+        conflictStrategy: '衝突策略',
+        commonDeps: '共同依賴',
+        sharedDeps: '共享依賴'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: '整合包 ID',
+        bundleName: '整合包名稱',
+        bundleVersion: '整合包版本',
+        outputPath: '輸出路徑',
+        firstPlugin: '首個外掛',
+        latestPath: '最新包路徑',
+        packageId: '包 ID',
+        packageType: '包類型',
+        version: '版本',
+        pluginsRoot: '外掛目錄',
+        profilesRoot: 'Profiles 目錄',
+        currentSdk: '目前 SDK 支援',
+        recommendedIntersection: '建議交集'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: '整合包',
+        plugin: '外掛包',
+        sdkAllSupported: '{version} 全部支援',
+        sdkPartiallyIncompatible: '{version} 存在不相容'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: '整合包通常應至少包含兩個外掛',
+        verifyHashFailed: '包未通過 hash 校驗，請不要直接匯入執行環境',
+        inspectHashFailed: '目前包 hash 校驗失敗，內容可能已被修改',
+        sdkNotSupportedByAll: '目前 SDK 版本不被所有外掛共同支援',
+        sharedDepsDetected: '偵測到 {count} 個共享依賴，整合時需要重點檢查版本約束'
+      }
     }
   },
   metrics: {
@@ -344,14 +575,13 @@ export default {
     pluginStarted: '外掛啟動成功',
     pluginStopped: '外掛已停止',
     pluginReloaded: '外掛重新載入成功',
-    pluginPacked: '外掛已打包：{packageName}',
+    pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
     startFailed: '啟動失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
-    packFailed: '打包外掛失敗',
+    buildFailed: '構建外掛失敗',
     deleteFailed: '刪除外掛失敗',
-    pluginDisabled: '外掛已停用，請先啟用',
     pluginLoadFailed: '外掛載入失敗，目前不可啟動',
     confirmDisableExt: '確認停用此擴充功能？宿主外掛中的擴充功能將被卸載。',
     extensionDisabled: '擴充功能已停用',
@@ -410,13 +640,114 @@ export default {
     titleSuffix: 'N.E.K.O 外掛管理'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales['zh-TW']
+    yuiGuide: {
+      buttons: {
+        skipChat: '暫時不聊天',
+        sayHello: '你好',
+      },
+      lines: {
+        introActivationHint: '點一下這裡，我就能開始說話啦～',
+        introGreetingReply: "微風、陽光，還有剛剛好出現的你。初次見面，我是林悠怡，未來的日子請多關照喵！我把關於這裡的一切都寫進新手指南裡啦！就當作是我們相遇的第一份小禮物，請查收吧！",
+        introBasic: "這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者就只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！",
+        takeoverCaptureCursor: "超級魔法開關出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！",
+        takeoverPluginPreviewHome: "除了之前介紹的功能，這裡還有超多好玩的外掛程式呢。",
+        takeoverPluginPreviewDashboard: "有了它們，我不光能看 B 站彈幕，還能幫你關燈開冷氣…… 本喵就是無所不能的超級貓貓神！哼哼！",
+        takeoverSettingsPeekIntro: "在這個只屬於我們的小空間裡，你可以由著自己的心意，慢慢描繪出最希望能一直陪著你的那個我。",
+        takeoverSettingsPeekDetail: "不管是說話的溫度、相處的小脾氣，還是我每天那些細膩的小心思，都可以一點一點調成你喜歡的樣子。這個小按鈕也很重要哦，只要你輕輕點一下，我就能在合適的時候跑過去找你啦。",
+        takeoverSettingsPeekDetailPart1: "不管是說話的溫度、相處的小脾氣，還是我每天那些細膩的小心思，都可以一點一點調成你喜歡的樣子。",
+        takeoverSettingsPeekDetailPart2: "這個小按鈕也很重要哦，只要你輕輕點一下，我就能在合適的時候跑過去找你啦。",
+        takeoverReturnControl: "好啦好啦，不霸占你的電腦啦！控制權還給你了喵！之後的日子，也請你多多關照啦！",
+        interruptResistLight1: "喂！不要拽我啦，現在還沒輪到你的回合呢！",
+        interruptResistLight3: "等一下啦！還沒結束呢，不要這麼隨便打斷我啦！",
+        interruptAngryExit: "人類！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！",
+        introPractice: '現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～',
+      },
+    }
   },
   yuiTutorial: {
     title: '喵～歡迎來到外掛管理面板！',
     welcome: '這裡就是管理所有外掛的地方啦！你可以查看、啟動、配置各種外掛，讓我變得更厲害哦～',
     hint: '隨便看看吧，看完了點下面的按鈕告訴我～',
     complete: '看完了喵～',
-    dismiss: '先不看'
+    dismiss: '先不看',
+    keyboardSkipHint: '按 Enter 或空格進入下一步，每步開始後 0.5 秒生效。',
+    steps: {
+      start: {
+        title: '從這裡開始',
+        body: '點這個按鈕就可以隨時重新播放外掛管理器的教程，不會自動打擾你喵。'
+      },
+      stats: {
+        title: '外掛總覽',
+        body: '這裡會顯示外掛總數、執行中、已停止和崩潰數量，讓你一眼看出目前狀態。'
+      },
+      metrics: {
+        title: '效能監控',
+        body: '這裡展示外掛服務整體的 CPU、記憶體、執行緒和活躍外掛情況，排查問題時很有用。'
+      },
+      server: {
+        title: '伺服器資訊',
+        body: '這裡可以看到 SDK 版本、外掛數量和更新時間，用來確認目前外掛服務是否正常。'
+      },
+      plugins: {
+        title: '外掛列表入口',
+        body: '要啟動、停止、配置外掛，或者查看單個外掛日誌，就從左側的外掛管理進入。'
+      },
+      pluginWorkbench: {
+        title: '外掛管理工作台',
+        body: '這裡集中展示外掛、適配器和擴展，是日常管理外掛的主要頁面。'
+      },
+      pluginFilters: {
+        title: '篩選和搜尋',
+        body: '可以按名稱、狀態、類型或進階規則篩選外掛，外掛很多時會特別好用。'
+      },
+      pluginLayout: {
+        title: '視圖佈局',
+        body: '這裡可以切換列表、單排、雙排和緊湊佈局，按你的螢幕空間調整顯示方式。'
+      },
+      pluginContextMenu: {
+        title: '右鍵操作',
+        body: '對外掛右鍵可以快速開啟詳情、配置、日誌，也能執行啟停、重載等常用操作。'
+      },
+      packageManager: {
+        title: '包管理側欄',
+        body: '包管理會復用目前篩選和選擇結果，用來構建、檢查、校驗或安裝外掛包。'
+      },
+      packageOperations: {
+        title: '包管理操作區',
+        body: '這裡可以選擇構建模式、檢查外掛包、安裝或分析整合包；本指南不會自動執行危險操作。'
+      },
+      pluginDetail: {
+        title: '外掛詳情頁',
+        body: '進入詳情頁後可以查看外掛元資訊、入口點、效能、配置和日誌。'
+      },
+      pluginDetailActions: {
+        title: '詳情頁操作',
+        body: '右上角保留了針對目前外掛的快捷操作，適合在確認詳情後再啟動、停止或重載。'
+      },
+      runs: {
+        title: '運行記錄',
+        body: '運行記錄會展示外掛入口任務的執行歷史和即時狀態。'
+      },
+      runsList: {
+        title: '運行列表',
+        body: '左側列表用於選擇某次運行，重新整理按鈕可以同步最新記錄。'
+      },
+      runsDetail: {
+        title: '運行詳情',
+        body: '右側會顯示階段、進度、錯誤和導出物；取消按鈕只對可取消任務出現。'
+      },
+      logs: {
+        title: '伺服器日誌',
+        body: '伺服器日誌可以幫助你查看外掛服務本身的輸出和錯誤。'
+      },
+      logToolbar: {
+        title: '日誌篩選工具',
+        body: '這裡可以按級別、關鍵字和行數篩選日誌，也可以控制是否自動捲動。'
+      },
+      logList: {
+        title: '日誌列表',
+        body: '日誌列表按時間展示來源、級別和訊息，是排查外掛問題的第一站。'
+      }
+    }
   }
 }

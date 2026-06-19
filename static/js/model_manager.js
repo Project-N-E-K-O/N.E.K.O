@@ -543,6 +543,168 @@ function sendMessageToMainPage(action, payload = {}) {
 
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
+window._modelManagerParameterEditedSinceSave = false;
+window._modelManagerParameterSaveNoticeShown = false;
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX = 'neko_model_manager_parameter_save_pending:';
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MODEL_MANAGER_LANLAN_NAME_SESSION_KEY = 'neko_model_manager_lanlan_name';
+
+function normalizeModelManagerLanlanName(value) {
+    return String(value || '').trim();
+}
+
+function getModelManagerLanlanNameFromUrl() {
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        return normalizeModelManagerLanlanName(urlParams.get('lanlan_name'));
+    } catch (_) {
+        return '';
+    }
+}
+
+function rememberModelManagerLanlanNameFallback(lanlanName) {
+    const normalizedName = normalizeModelManagerLanlanName(lanlanName);
+    if (!normalizedName) return;
+    try {
+        sessionStorage.setItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY, normalizedName);
+    } catch (_) {}
+}
+
+function getModelManagerLanlanNameFromSession() {
+    try {
+        return normalizeModelManagerLanlanName(sessionStorage.getItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY));
+    } catch (_) {
+        return '';
+    }
+}
+
+async function resolveModelManagerParameterSaveLanlanName() {
+    let lanlanName = getModelManagerLanlanNameFromUrl();
+    if (lanlanName) {
+        rememberModelManagerLanlanNameFallback(lanlanName);
+        return lanlanName;
+    }
+
+    lanlanName = getModelManagerLanlanNameFromSession();
+    if (lanlanName) return lanlanName;
+
+    if (typeof resolveModelManagerLanlanName === 'function') {
+        try {
+            lanlanName = normalizeModelManagerLanlanName(await resolveModelManagerLanlanName());
+        } catch (_) {
+            lanlanName = '';
+        }
+    }
+    if (lanlanName) {
+        rememberModelManagerLanlanNameFallback(lanlanName);
+    }
+    return lanlanName;
+}
+
+async function getModelManagerParameterSaveMarkKey(lanlanName) {
+    const normalizedName = normalizeModelManagerLanlanName(lanlanName || await resolveModelManagerParameterSaveLanlanName());
+    if (!normalizedName) return '';
+    try {
+        return MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX + encodeURIComponent(normalizedName);
+    } catch (_) {
+        return '';
+    }
+}
+
+function getModelManagerParameterSaveStorages() {
+    const storages = [];
+    try {
+        if (window.sessionStorage) storages.push(window.sessionStorage);
+    } catch (_) {}
+    try {
+        if (window.localStorage) storages.push(window.localStorage);
+    } catch (_) {}
+    return storages;
+}
+
+function isPendingParameterEditorSaveValid(pendingSave) {
+    if (!pendingSave || typeof pendingSave !== 'object') return false;
+    const timestamp = Number(pendingSave.timestamp || 0);
+    if (!timestamp) return true;
+    return Date.now() - timestamp <= MODEL_MANAGER_PARAMETER_SAVE_MARK_TTL_MS;
+}
+
+function normalizeModelManagerModelMarkValue(value) {
+    return String(value || '').trim();
+}
+
+function pendingParameterEditorSaveMatchesCurrentModel(pendingSave, modelInfo) {
+    if (!pendingSave || !modelInfo) return false;
+    const pendingPath = normalizeModelManagerModelMarkValue(pendingSave.modelPath);
+    const currentPath = normalizeModelManagerModelMarkValue(modelInfo.path);
+    if (pendingPath) {
+        return pendingPath === currentPath;
+    }
+
+    const pendingName = normalizeModelManagerModelMarkValue(pendingSave.modelName);
+    if (!pendingName) return true;
+    return pendingName === normalizeModelManagerModelMarkValue(modelInfo.name);
+}
+
+async function readPendingParameterEditorSave() {
+    const markKey = await getModelManagerParameterSaveMarkKey();
+    if (!markKey) return null;
+    for (const storage of getModelManagerParameterSaveStorages()) {
+        try {
+            const raw = storage.getItem(markKey);
+            if (!raw) continue;
+            const pendingSave = JSON.parse(raw);
+            if (!isPendingParameterEditorSaveValid(pendingSave)) {
+                storage.removeItem(markKey);
+                continue;
+            }
+            return pendingSave;
+        } catch (_) {}
+    }
+    return null;
+}
+
+async function clearPendingParameterEditorSaveState() {
+    const markKey = await getModelManagerParameterSaveMarkKey();
+    if (markKey) {
+        for (const storage of getModelManagerParameterSaveStorages()) {
+            try {
+                storage.removeItem(markKey);
+            } catch (_) {}
+        }
+    }
+    window._modelManagerParameterEditedSinceSave = false;
+    window._modelManagerParameterSaveNoticeShown = false;
+}
+
+async function restorePendingParameterEditorSaveState(saveButton, options = {}) {
+    const pendingSave = await readPendingParameterEditorSave();
+    if (!pendingSave) return false;
+    if (!pendingParameterEditorSaveMatchesCurrentModel(pendingSave, options.currentModelInfo)) {
+        await clearPendingParameterEditorSaveState();
+        return false;
+    }
+
+    window._modelManagerParameterEditedSinceSave = true;
+    window.hasUnsavedChanges = true;
+    if (saveButton) {
+        saveButton.disabled = false;
+    }
+    if (options.showNotice && !window._modelManagerParameterSaveNoticeShown) {
+        const message = modelManagerText(
+            'modelManager.parameterEditorSavedNeedsModelSave',
+            '捏脸参数已保存，请点击「保存设置」同步到角色配置。'
+        );
+        if (typeof options.showStatus === 'function') {
+            options.showStatus(message, options.statusDuration || 4000);
+        }
+        if (typeof options.showToast === 'function') {
+            options.showToast(message, options.toastDuration || 4200, 'warning');
+        }
+        window._modelManagerParameterSaveNoticeShown = true;
+    }
+    return true;
+}
 
 // 全局辅助：从待机动作多选容器获取已勾选 URL 列表（供快照使用）
 function _getSelectedIdleAnimationsGlobal(containerId) {
@@ -591,9 +753,905 @@ function snapshotsEqual(a, b) {
     return Object.keys(a).every(k => String(a[k]) === String(b[k]));
 }
 
+function modelSelectionChanged(before, after) {
+    if (!before || !after) return true;
+    return String(before.modelType) !== String(after.modelType)
+        || String(before.live2d) !== String(after.live2d)
+        || String(before.live3d) !== String(after.live3d);
+}
+
 // 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置”复位”）
 window._modelManagerHasSaved = false;
 window._modelManagerLanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || '';
+window._modelManagerModelChangedSinceSave = false;
+window._modelManagerLoadedFallbackModel = false;
+window._suppressModelManagerChange = false;
+
+function markModelChangedForCardFacePrompt() {
+    if (window._suppressModelManagerChange) return;
+    window._modelManagerModelChangedSinceSave = true;
+}
+
+function isSuppressedModelManagerChangeEvent(event) {
+    return !!(event && event._suppressModelManagerChange);
+}
+
+function dispatchModelManagerChange(target, options = {}) {
+    if (!target) return false;
+    const event = new Event('change', { bubbles: true });
+    if (options.suppress || window._suppressModelManagerChange) {
+        event._suppressModelManagerChange = true;
+    }
+    return target.dispatchEvent(event);
+}
+
+async function suppressModelManagerChange(fn) {
+    const previous = window._suppressModelManagerChange;
+    window._suppressModelManagerChange = true;
+    try {
+        return await fn();
+    } finally {
+        window._suppressModelManagerChange = previous;
+    }
+}
+
+function modelManagerText(key, fallback, params = {}) {
+    try {
+        if (window.t && typeof window.t === 'function') {
+            const translated = window.t(key, params);
+            if (translated && translated !== key) return translated;
+        }
+    } catch (e) {
+        console.error(`[i18n] Translation failed for key "${key}":`, e);
+    }
+    return fallback;
+}
+
+function setModelManagerStatusText(message) {
+    const statusSpan = document.getElementById('status-text');
+    if (statusSpan) statusSpan.textContent = message;
+}
+
+async function resolveModelManagerLanlanName() {
+    if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+        rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
+        return window._modelManagerLanlanName;
+    }
+    try {
+        const data = await RequestHelper.fetchJson('/api/config/page_config');
+        if (data && data.success && data.lanlan_name) {
+            window._modelManagerLanlanName = data.lanlan_name;
+            rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
+        }
+    } catch (e) {
+        console.warn('[模型管理] 获取 lanlan_name 失败，跳过缓存:', e);
+    }
+    return window._modelManagerLanlanName || '';
+}
+
+async function notifyMainPageModelReload() {
+    const lanlanName = await resolveModelManagerLanlanName();
+    if (lanlanName && lanlanName.trim() !== '') {
+        sendMessageToMainPage('reload_model', { lanlan_name: lanlanName });
+    } else {
+        console.warn('[模型管理] lanlan_name 为空，跳过 reload_model 通知以避免主界面过滤失败');
+    }
+}
+
+const MODEL_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
+
+function openCardMakerFromModelManager(lanlanName, options = {}) {
+    const params = new URLSearchParams({
+        name: lanlanName,
+        mode: 'maker'
+    });
+    if (options.fallbackDefaultOnClose) {
+        params.set('fallback_default_on_close', '1');
+    }
+    if (options.fallbackToken) {
+        params.set('fallback_token', options.fallbackToken);
+    }
+    const url = `/card_maker?${params.toString()}`;
+    const features = 'width=1200,height=800';
+
+    // 从角色卡管理页打开，避免卡面制作页成为模型管理页的子窗口。
+    // 否则模型管理页关闭时，部分 Electron/浏览器环境会连带关闭卡面制作页。
+    if (window.opener && !window.opener.closed) {
+        try {
+            if (typeof window.opener.openManagedPopup === 'function') {
+                return window.opener.openManagedPopup(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            if (typeof window.opener.openOrFocusWindow === 'function') {
+                return window.opener.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            const openedByParent = window.opener.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            if (openedByParent && typeof window.opener.requestOpenedWindowRestore === 'function') {
+                window.opener.requestOpenedWindowRestore(openedByParent);
+            }
+            return openedByParent;
+        } catch (error) {
+            console.warn('[模型管理] 通过父窗口打开卡面制作页失败，回退当前窗口打开:', error);
+        }
+    }
+
+    if (typeof window.openOrFocusWindow === 'function') {
+        return window.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+    }
+    return window.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+}
+
+function notifyCardFaceUpdatedFromModelManager(name) {
+    const message = {
+        type: 'card-face-updated',
+        name,
+        timestamp: Date.now()
+    };
+
+    if (window.opener && !window.opener.closed) {
+        try {
+            window.opener.postMessage(message, window.location.origin);
+        } catch (_) {}
+        try {
+            const loadCharacterCards = window.opener.loadCharacterCards;
+            if (typeof loadCharacterCards === 'function') {
+                const refreshResult = loadCharacterCards.call(window.opener);
+                if (refreshResult && typeof refreshResult.catch === 'function') {
+                    refreshResult.catch(() => {});
+                }
+            }
+        } catch (_) {}
+    }
+
+    try {
+        const channel = new BroadcastChannel('neko-card-face-events');
+        channel.postMessage(message);
+        channel.close();
+    } catch (_) {}
+
+    try {
+        localStorage.setItem('neko_card_face_event', JSON.stringify(message));
+        localStorage.removeItem('neko_card_face_event');
+    } catch (_) {}
+}
+
+function createCardMakerFallbackToken() {
+    try {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+    } catch (_) {}
+    return `card-maker-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getCardMakerFallbackCloseMarkKey(token, name) {
+    const normalizedToken = String(token || '').trim();
+    const normalizedName = String(name || '').trim();
+    if (!normalizedToken || !normalizedName) return '';
+    try {
+        return `neko_card_maker_fallback_closed:${encodeURIComponent(normalizedToken)}:${encodeURIComponent(normalizedName)}`;
+    } catch (_) {
+        return '';
+    }
+}
+
+function postCardMakerFallbackEvent(message) {
+    try {
+        const channel = new BroadcastChannel('neko-card-maker-fallback-events');
+        channel.postMessage(message);
+        channel.close();
+    } catch (_) {}
+
+    try {
+        const closeMarkKey = getCardMakerFallbackCloseMarkKey(message?.token, message?.name);
+        if (closeMarkKey) {
+            localStorage.setItem(closeMarkKey, JSON.stringify({
+                token: message.token,
+                name: message.name,
+                timestamp: Date.now()
+            }));
+        }
+        localStorage.setItem('neko_card_maker_fallback_event', JSON.stringify(message));
+        localStorage.removeItem('neko_card_maker_fallback_event');
+    } catch (_) {}
+}
+
+function notifyCardMakerFallbackOwnerClosing() {
+    const active = window._modelManagerActiveCardMakerFallback;
+    if (!active || active.cardFaceSaved || !active.lanlanName || !active.token) return;
+
+    const message = {
+        type: 'model-manager-card-maker-fallback-owner-closing',
+        name: active.lanlanName,
+        token: active.token,
+        timestamp: Date.now()
+    };
+
+    try {
+        active.makerWindow?.postMessage(message, window.location.origin);
+    } catch (_) {}
+    postCardMakerFallbackEvent(message);
+}
+
+function cleanupCardMakerCloseFallbackWatcher() {
+    const cleanup = window._modelManagerCardMakerFallbackCleanup;
+    if (typeof cleanup === 'function') {
+        try {
+            cleanup();
+        } catch (error) {
+            console.warn('[模型管理] 清理卡面制作兜底监听失败:', error);
+        }
+    }
+    if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
+        window._modelManagerCardMakerFallbackCleanup = null;
+    }
+    window._modelManagerActiveCardMakerFallback = null;
+}
+
+function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = {}, options = {}) {
+    if (!makerWindow || !lanlanName) return;
+
+    cleanupCardMakerCloseFallbackWatcher();
+
+    const startedAt = Date.now();
+    const fallbackToken = options.fallbackToken || '';
+    let cardFaceSaved = false;
+    let fallbackRunning = false;
+    let closeTimer = 0;
+    let closeGraceTimer = 0;
+    let channel = null;
+    let cachedDefaultCardFaceImage = null;
+    let fallbackAbortController = null;
+    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800)
+        .then(image => {
+            cachedDefaultCardFaceImage = image;
+            if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+                window._modelManagerActiveCardMakerFallback.cachedDefaultCardFaceImage = image;
+            }
+            return image;
+        })
+        .catch(error => {
+            console.warn('[模型管理] 卡面制作兜底快照预捕获失败，将在兜底时重新截图:', error);
+            return null;
+        });
+    window._modelManagerActiveCardMakerFallback = {
+        makerWindow,
+        lanlanName,
+        token: fallbackToken,
+        cardFaceSaved: false,
+        cachedDefaultCardFaceImage: null
+    };
+
+    const matchesCardFaceUpdate = (data) => {
+        if (!data || data.type !== 'card-face-updated') return false;
+        if (data.name !== lanlanName) return false;
+        if (fallbackToken) {
+            const eventToken = data.fallbackToken || data.fallback_token || data.token || '';
+            if (eventToken !== fallbackToken) return false;
+        }
+        const timestamp = Number(data.timestamp || 0);
+        return !Number.isFinite(timestamp) || timestamp === 0 || timestamp >= startedAt - 2000;
+    };
+
+    const cleanup = () => {
+        if (closeTimer) {
+            clearInterval(closeTimer);
+            closeTimer = 0;
+        }
+        if (closeGraceTimer) {
+            clearTimeout(closeGraceTimer);
+            closeGraceTimer = 0;
+        }
+        window.removeEventListener('message', handleMessage);
+        window.removeEventListener('storage', handleStorage);
+        if (channel) {
+            try { channel.close(); } catch (_) {}
+            channel = null;
+        }
+        cachedDefaultCardFaceImage = null;
+        if (fallbackAbortController) {
+            try { fallbackAbortController.abort(); } catch (_) {}
+        }
+        fallbackAbortController = null;
+        if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
+            window._modelManagerCardMakerFallbackCleanup = null;
+        }
+        if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+            window._modelManagerActiveCardMakerFallback = null;
+        }
+    };
+
+    const markCardFaceSaved = (data) => {
+        if (!matchesCardFaceUpdate(data)) return;
+        cardFaceSaved = true;
+        if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+            window._modelManagerActiveCardMakerFallback.cardFaceSaved = true;
+        }
+        if (fallbackAbortController) {
+            try { fallbackAbortController.abort(); } catch (_) {}
+        }
+        cleanup();
+    };
+
+    function handleMessage(event) {
+        if (event.origin !== window.location.origin) return;
+        markCardFaceSaved(event.data);
+    }
+
+    function handleStorage(event) {
+        if (event.key !== 'neko_card_face_event' || !event.newValue) return;
+        try {
+            markCardFaceSaved(JSON.parse(event.newValue));
+        } catch (_) {}
+    }
+
+    async function generateFallbackDefaultCardFace() {
+        if (fallbackRunning || cardFaceSaved) return;
+        fallbackRunning = true;
+        fallbackAbortController = new AbortController();
+        try {
+            const signal = fallbackAbortController.signal;
+            const modelImage = cachedDefaultCardFaceImage || await cachedDefaultCardFaceImagePromise;
+            if (cardFaceSaved || signal.aborted) return;
+            await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                modelImage,
+                signal,
+                shouldCancel: () => cardFaceSaved
+            });
+            if (cardFaceSaved || signal.aborted) return;
+            await notifyMainPageModelReload();
+        } catch (error) {
+            if (error && error.name === 'AbortError') return;
+            console.error('[模型管理] 卡面制作关闭后的默认卡面兜底生成失败:', error);
+            setModelManagerStatusText(
+                error && error.message
+                    ? error.message
+                    : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+            );
+        } finally {
+            fallbackAbortController = null;
+        }
+    }
+
+    function checkClosed() {
+        let isClosed = false;
+        try {
+            isClosed = makerWindow.closed === true;
+        } catch (_) {
+            isClosed = true;
+        }
+        if (!isClosed) return;
+        if (closeTimer) {
+            clearInterval(closeTimer);
+            closeTimer = 0;
+        }
+        if (closeGraceTimer) return;
+
+        closeGraceTimer = setTimeout(() => {
+            closeGraceTimer = 0;
+            if (cardFaceSaved) {
+                cleanup();
+                return;
+            }
+            generateFallbackDefaultCardFace().finally(() => cleanup());
+        }, 350);
+    }
+
+    window.addEventListener('message', handleMessage);
+    window.addEventListener('storage', handleStorage);
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            channel = new BroadcastChannel('neko-card-face-events');
+            channel.onmessage = event => markCardFaceSaved(event.data);
+        } catch (_) {
+            channel = null;
+        }
+    }
+
+    closeTimer = setInterval(checkClosed, 800);
+    window._modelManagerCardMakerFallbackCleanup = cleanup;
+}
+
+function canvasToPngBlob(canvas) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+            if (blob) resolve(blob);
+            else reject(new Error('canvas_to_blob_failed'));
+        }, 'image/png');
+    });
+}
+
+function drawImageCover(ctx, source, dx, dy, dw, dh, options = {}) {
+    const sw = source.width;
+    const sh = source.height;
+    const sourceRatio = sw / sh;
+    const targetRatio = dw / dh;
+    let sx = 0;
+    let sy = 0;
+    let cropW = sw;
+    let cropH = sh;
+
+    if (sourceRatio > targetRatio) {
+        cropW = sh * targetRatio;
+        sx = (sw - cropW) / 2;
+    } else {
+        cropH = sw / targetRatio;
+        sy = (sh - cropH) / 2;
+    }
+
+    const focusPoint = options.focusPoint;
+    const hasFocusPoint = focusPoint &&
+        Number.isFinite(focusPoint.x) &&
+        Number.isFinite(focusPoint.y);
+    const zoom = Number(options.zoom || (hasFocusPoint ? 1.7 : 1));
+    if (zoom > 1 || hasFocusPoint) {
+        const focusX = hasFocusPoint
+            ? clampCardFaceCrop(focusPoint.x / sw, 0, 1)
+            : (Number.isFinite(options.focusX) ? options.focusX : 0.5);
+        const focusY = hasFocusPoint
+            ? clampCardFaceCrop(focusPoint.y / sh, 0, 1)
+            : (Number.isFinite(options.focusY) ? options.focusY : 0.32);
+        cropW = Math.max(1, cropW / zoom);
+        cropH = Math.max(1, cropH / zoom);
+        sx = clampCardFaceCrop(sw * focusX - cropW / 2, 0, sw - cropW);
+        sy = clampCardFaceCrop(sh * focusY - cropH / 2, 0, sh - cropH);
+    }
+
+    ctx.drawImage(source, sx, sy, cropW, cropH, dx, dy, dw, dh);
+}
+
+function clampCardFaceCrop(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+
+function getManagerHeadFocusInCanvas(manager, sourceCanvas) {
+    if (!manager || !sourceCanvas || typeof manager.getHeadScreenAnchor !== 'function') {
+        return null;
+    }
+
+    const anchor = manager.getHeadScreenAnchor();
+    const canvas = manager.renderer?.domElement;
+    const rect = canvas?.getBoundingClientRect?.();
+    if (!anchor || !rect || rect.width <= 0 || rect.height <= 0) {
+        return null;
+    }
+
+    const x = ((anchor.x - rect.left) / rect.width) * sourceCanvas.width;
+    const y = ((anchor.y - rect.top) / rect.height) * sourceCanvas.height;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+    }
+
+    return {
+        x: clampCardFaceCrop(x, 0, sourceCanvas.width),
+        y: clampCardFaceCrop(y, 0, sourceCanvas.height)
+    };
+}
+
+function renderThreeSceneToCanvas(renderer, scene, camera) {
+    const THREE = window.THREE;
+    if (!THREE || !renderer || !scene || !camera) {
+        throw new Error('three_context_not_ready');
+    }
+
+    const sourceCanvas = renderer.domElement;
+    const width = sourceCanvas?.width || Math.round(sourceCanvas?.clientWidth || 0);
+    const height = sourceCanvas?.height || Math.round(sourceCanvas?.clientHeight || 0);
+    if (width <= 0 || height <= 0) {
+        throw new Error('three_canvas_not_ready');
+    }
+
+    const renderTarget = new THREE.WebGLRenderTarget(width, height, {
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+        depthBuffer: true,
+        stencilBuffer: false
+    });
+    const previousTarget = renderer.getRenderTarget ? renderer.getRenderTarget() : null;
+    const pixels = new Uint8Array(width * height * 4);
+
+    try {
+        renderer.setRenderTarget(renderTarget);
+        renderer.clear(true, true, true);
+        renderer.render(scene, camera);
+        renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, pixels);
+    } finally {
+        renderer.setRenderTarget(previousTarget);
+        renderTarget.dispose();
+    }
+
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('three_output_context_failed');
+
+    const imageData = ctx.createImageData(width, height);
+    const rowBytes = width * 4;
+    for (let y = 0; y < height; y += 1) {
+        const srcStart = (height - 1 - y) * rowBytes;
+        const dstStart = y * rowBytes;
+        imageData.data.set(pixels.subarray(srcStart, srcStart + rowBytes), dstStart);
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return output;
+}
+
+function captureLive2DStageToCanvas() {
+    const app = window.live2dManager?.pixi_app;
+    if (!app?.renderer || !app?.stage) {
+        const fallbackCanvas = document.getElementById('live2d-canvas');
+        if (!fallbackCanvas) throw new Error('live2d_context_not_ready');
+        return fallbackCanvas;
+    }
+
+    app.renderer.render(app.stage);
+
+    const extract = app.renderer.extract || app.renderer.plugins?.extract;
+    if (extract && typeof extract.canvas === 'function') {
+        const extracted = extract.canvas(app.stage);
+        if (extracted && extracted.width > 0 && extracted.height > 0) {
+            return extracted;
+        }
+    }
+
+    return app.renderer.view || document.getElementById('live2d-canvas');
+}
+
+async function captureCurrentModelManagerCanvas(state = {}) {
+    let sourceCanvas = null;
+    let sourceManager = null;
+    const modelType = state.currentModelType || 'live2d';
+    const live3dSubType = state.currentLive3dSubType || '';
+
+    await new Promise(resolve => requestAnimationFrame(resolve));
+
+    if (modelType === 'live3d' && live3dSubType === 'mmd') {
+        sourceManager = window.mmdManager;
+        const core = sourceManager?.core;
+        if (typeof sourceManager?.waitForRenderFrame === 'function') {
+            await sourceManager.waitForRenderFrame(1200);
+        } else if (typeof core?.waitForRenderFrame === 'function') {
+            await core.waitForRenderFrame(1200);
+        }
+        sourceCanvas = renderThreeSceneToCanvas(sourceManager?.renderer, sourceManager?.scene, sourceManager?.camera);
+    } else if (modelType === 'live3d') {
+        sourceManager = window.vrmManager;
+        if (sourceManager?.controls) sourceManager.controls.update();
+        sourceCanvas = renderThreeSceneToCanvas(sourceManager?.renderer, sourceManager?.scene, sourceManager?.camera);
+    } else {
+        sourceCanvas = captureLive2DStageToCanvas();
+    }
+
+    if (!sourceCanvas || sourceCanvas.width <= 0 || sourceCanvas.height <= 0) {
+        throw new Error('model_canvas_not_ready');
+    }
+
+    const copy = document.createElement('canvas');
+    copy.width = sourceCanvas.width;
+    copy.height = sourceCanvas.height;
+    const copyCtx = copy.getContext('2d');
+    if (!copyCtx) throw new Error('copy_canvas_context_failed');
+    copyCtx.drawImage(sourceCanvas, 0, 0);
+    return {
+        canvas: copy,
+        manager: sourceManager,
+        modelType,
+        live3dSubType
+    };
+}
+
+function getPNGTuberDrawableSize(drawable) {
+    if (!drawable) return { width: 0, height: 0 };
+    return {
+        width: drawable.width || drawable.naturalWidth || drawable.clientWidth || 0,
+        height: drawable.height || drawable.naturalHeight || drawable.clientHeight || 0
+    };
+}
+
+function isVisiblePNGTuberDrawable(drawable) {
+    if (!drawable) return false;
+    const size = getPNGTuberDrawableSize(drawable);
+    if (!size.width || !size.height) return false;
+    if (drawable.hidden || drawable.classList?.contains('hidden')) return false;
+    if (drawable.style?.display === 'none') return false;
+    if (typeof window.getComputedStyle === 'function') {
+        const style = window.getComputedStyle(drawable);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+}
+
+function getPNGTuberCaptureDrawable() {
+    const manager = window.pngtuberManager;
+    if (manager && typeof manager.ensureContainer === 'function') {
+        try {
+            manager.ensureContainer();
+        } catch (error) {
+            console.warn('[model_manager] PNGTuber 容器准备失败:', error);
+        }
+    }
+
+    if (isVisiblePNGTuberDrawable(manager?.image)) {
+        return manager.image;
+    }
+
+    const container = document.getElementById('pngtuber-container');
+    if (!container) return null;
+    const drawables = Array.from(container.querySelectorAll('canvas.pngtuber-layered-canvas, img.pngtuber-image'));
+    return drawables.find(isVisiblePNGTuberDrawable) || null;
+}
+
+function waitForPNGTuberImageDrawable(drawable) {
+    if (!(drawable instanceof HTMLImageElement)) return Promise.resolve();
+    if (drawable.complete && drawable.naturalWidth > 0 && drawable.naturalHeight > 0) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+        const cleanup = () => {
+            drawable.removeEventListener('load', onLoad);
+            drawable.removeEventListener('error', onError);
+        };
+        const onLoad = () => {
+            cleanup();
+            resolve();
+        };
+        const onError = () => {
+            cleanup();
+            reject(new Error('pngtuber_image_load_failed'));
+        };
+        drawable.addEventListener('load', onLoad, { once: true });
+        drawable.addEventListener('error', onError, { once: true });
+    });
+}
+
+function isRemotePNGTuberDrawable(drawable) {
+    if (!(drawable instanceof HTMLImageElement)) return false;
+    const src = drawable.currentSrc || drawable.src || '';
+    return /^https?:\/\//i.test(src) && !src.startsWith(window.location.origin);
+}
+
+async function capturePNGTuberPreviewToCanvas() {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const drawable = getPNGTuberCaptureDrawable();
+    if (!drawable) throw new Error('pngtuber_drawable_not_ready');
+    await waitForPNGTuberImageDrawable(drawable);
+    if (isRemotePNGTuberDrawable(drawable)) {
+        throw new Error('pngtuber_remote_card_face_unsupported');
+    }
+    const { width, height } = getPNGTuberDrawableSize(drawable);
+    if (!width || !height) throw new Error('pngtuber_drawable_not_ready');
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('pngtuber_canvas_context_failed');
+    ctx.drawImage(drawable, 0, 0, width, height);
+    return canvas;
+}
+
+function resolveDefaultCardFacePortraitModelType(state = {}) {
+    const modelType = String(state.currentModelType || 'live2d').toLowerCase();
+    const live3dSubType = String(state.currentLive3dSubType || '').toLowerCase();
+    if (modelType === 'pngtuber') return 'pngtuber';
+    if (modelType === 'live3d') {
+        if (live3dSubType === 'mmd') return 'mmd';
+        if (live3dSubType === 'vrm') return 'vrm';
+        if (window.mmdManager?.currentModel?.mesh) return 'mmd';
+        return 'vrm';
+    }
+    return modelType === 'mmd' || modelType === 'vrm' ? modelType : 'live2d';
+}
+
+async function captureDefaultCardFaceModelImage(state = {}, width, height) {
+    const portraitModelType = resolveDefaultCardFacePortraitModelType(state);
+    if (portraitModelType === 'pngtuber') {
+        return {
+            canvas: await capturePNGTuberPreviewToCanvas(),
+            drawOptions: {
+                zoom: 1.2,
+                focusY: 0.45
+            }
+        };
+    }
+
+    if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+        try {
+            const portrait = await window.avatarPortrait.capture({
+                width,
+                height,
+                padding: 0.035,
+                background: 'transparent',
+                shape: 'square',
+                radius: 0,
+                cropMode: 'headshot',
+                modelType: portraitModelType
+            });
+
+            if (portrait?.canvas && portrait.canvas.width > 0 && portrait.canvas.height > 0) {
+                return {
+                    canvas: portrait.canvas,
+                    drawOptions: {}
+                };
+            }
+        } catch (error) {
+            console.warn('[模型管理] 默认卡面头像裁切失败，回退模型画布截图:', error);
+        }
+    }
+
+    const capture = await captureCurrentModelManagerCanvas(state);
+    const sourceCanvas = capture.canvas;
+    const headFocus = getManagerHeadFocusInCanvas(capture.manager, sourceCanvas);
+    return {
+        canvas: sourceCanvas,
+        drawOptions: headFocus
+            ? {
+                // 回退路径：优先对齐 3D 模型头部骨骼锚点。
+                zoom: 1.7,
+                focusPoint: headFocus
+            }
+            : {
+                // 回退路径：无头像识别能力时使用偏上构图。
+                zoom: 1.45,
+                focusY: 0.32
+            }
+    };
+}
+
+async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, options = {}) {
+    const abortSignal = options.signal || null;
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const throwIfCancelled = () => {
+        if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+            const error = new Error('默认卡面生成已取消');
+            error.name = 'AbortError';
+            throw error;
+        }
+    };
+
+    throwIfCancelled();
+    setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
+
+    const cardW = 600;
+    const cardH = 800;
+    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
+    throwIfCancelled();
+    const sourceCanvas = modelImage.canvas;
+    const output = document.createElement('canvas');
+    output.width = cardW;
+    output.height = cardH;
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('card_canvas_context_failed');
+
+    ctx.fillStyle = '#E8F4F8';
+    ctx.fillRect(0, 0, cardW, cardH);
+
+    drawImageCover(
+        ctx,
+        sourceCanvas,
+        0,
+        0,
+        cardW,
+        cardH,
+        modelImage.drawOptions || {}
+    );
+
+    const cardBlob = await canvasToPngBlob(output);
+    throwIfCancelled();
+    const formData = new FormData();
+    formData.append('image', cardBlob, 'card_face.png');
+
+    const controller = new AbortController();
+    const abortFallbackUpload = () => controller.abort();
+    if (abortSignal) {
+        if (abortSignal.aborted) {
+            abortFallbackUpload();
+        } else {
+            abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
+        }
+    }
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    let response;
+    try {
+        throwIfCancelled();
+        response = await fetch(
+            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+            { method: 'PUT', body: formData, signal: controller.signal }
+        );
+    } catch (error) {
+        if (error && error.name === 'AbortError') {
+            if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+                const abortError = new Error('默认卡面生成已取消');
+                abortError.name = 'AbortError';
+                throw abortError;
+            }
+            throw new Error('默认卡面上传超时，请稍后重试');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+        if (abortSignal) {
+            abortSignal.removeEventListener('abort', abortFallbackUpload);
+        }
+    }
+    throwIfCancelled();
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${response.status}`);
+    }
+
+    notifyCardFaceUpdatedFromModelManager(lanlanName);
+}
+
+async function offerCardFaceAfterModelSave(state = {}) {
+    if (window._modelManagerCardFacePromptActive) return;
+    cleanupCardMakerCloseFallbackWatcher();
+    window._modelManagerCardFacePromptActive = true;
+    try {
+        const lanlanName = await resolveModelManagerLanlanName();
+        if (!lanlanName) return;
+
+        const cardFaceChoice = await showDecisionPrompt({
+            title: modelManagerText('modelManager.editCardFaceAfterModelSaveTitle', '编辑卡面'),
+            message: modelManagerText('modelManager.editCardFaceAfterModelSaveMessage', '模型设置已保存。是否要现在编辑卡面？'),
+            buttons: [
+                {
+                    value: 'edit',
+                    text: modelManagerText('modelManager.editCardFaceNow', '编辑卡面'),
+                    variant: 'primary'
+                },
+                {
+                    value: 'default',
+                    text: modelManagerText('modelManager.createDefaultCardFace', '生成默认卡面'),
+                    variant: 'secondary'
+                }
+            ]
+        });
+
+        if (cardFaceChoice === 'edit') {
+            const fallbackToken = createCardMakerFallbackToken();
+            const makerWindow = openCardMakerFromModelManager(lanlanName, {
+                fallbackDefaultOnClose: true,
+                fallbackToken
+            });
+            if (!makerWindow) {
+                const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
+                setModelManagerStatusText(message);
+                try {
+                    await generateDefaultCardFaceFromModelManager(lanlanName, state);
+                } catch (error) {
+                    console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
+                    setModelManagerStatusText(
+                        error && error.message
+                            ? error.message
+                            : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                    );
+                }
+            } else {
+                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
+            }
+        } else if (cardFaceChoice === 'default') {
+            try {
+                await generateDefaultCardFaceFromModelManager(lanlanName, state);
+            } catch (error) {
+                console.error('[模型管理] 生成默认卡面失败:', error);
+                setModelManagerStatusText(
+                    error && error.message
+                        ? error.message
+                        : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                );
+            }
+        }
+        // 不管走哪条分支（用户取消、卡面生成失败也好），模型本身已经保存成功，
+        // 都要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
+
+        window.hasUnsavedChanges = false;
+        await notifyMainPageModelReload();
+        window._modelManagerModelChangedSinceSave = false;
+        window._modelManagerLoadedFallbackModel = false;
+    } finally {
+        window._modelManagerCardFacePromptActive = false;
+    }
+}
 /**
  * ===== 代码质量改进：路径处理统一化 (DRY 原则) =====
  * 
@@ -937,6 +1995,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const triggerVrmExpressionBtn = document.getElementById('trigger-vrm-expression-btn');
     const live2dContainer = document.getElementById('live2d-container');
     const vrmContainer = document.getElementById('vrm-container');
+    const pngtuberContainer = document.getElementById('pngtuber-container');
     const motionSelect = document.getElementById('motion-select');
     const expressionSelect = document.getElementById('expression-select');
     const playMotionBtn = document.getElementById('play-motion-btn');
@@ -963,6 +2022,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const uploadBtn = document.getElementById('upload-btn');
     const modelUpload = document.getElementById('model-upload');
+    const pngtuberModelUpload = document.getElementById('pngtuber-model-upload');
+    const pngtuberPreviewGroup = document.getElementById('pngtuber-preview-group');
+    const pngtuberBasicPreviewSection = document.getElementById('pngtuber-basic-preview-section');
+    const pngtuberTalkPreviewBtn = document.getElementById('pngtuber-talk-preview-btn');
+    const pngtuberStatePreviewSection = document.getElementById('pngtuber-state-preview-section');
+    const pngtuberStatePreviewList = document.getElementById('pngtuber-state-preview-list');
+    const pngtuberStatePreviewSelect = document.getElementById('pngtuber-state-preview-select');
+    const pngtuberStatePreviewSelectBtn = document.getElementById('pngtuber-state-preview-select-btn');
+    const pngtuberStatePreviewDropdown = document.getElementById('pngtuber-state-preview-dropdown');
     const vrmFileUpload = document.getElementById('vrm-file-upload');
     const motionFileUpload = document.getElementById('motion-file-upload');
     const expressionFileUpload = document.getElementById('expression-file-upload');
@@ -997,7 +2065,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const initialModel = window.live2dManager?.getCurrentModel() || live2dModel;
             if (!initialModel) return;
 
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             // 模型可能已在 await 期间切换
             if (window.live2dManager?.getCurrentModel() !== initialModel) {
                 console.log('[Live2D Restore] 模型已在 fetchJson 期间切换，跳过恢复');
@@ -1007,17 +2075,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             const charData = data['猫娘']?.[lanlanName];
 
             // 优先从 _reserved 保留字段读取，兼容旧版本的直接平铺结构
-            // 使用 ?? 替代 || 以保留空字符串语义（用户清空后的有效值）
-            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
-                                     ?? charData?.avatar?.live2d?.idle_animation
-                                     ?? charData?.live2d_idle_animation;  // 兼容旧版本平铺字段
+            // 显式检查字段是否存在，以保留空字符串/null 语义（用户清空后的有效值）
+            const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+            const reservedLive2D = charData?._reserved?.avatar?.live2d;
+            const avatarLive2D = charData?.avatar?.live2d;
+            let live2dIdleAnimation;
+            let hasExplicitIdleAnimation = false;
+            if (hasOwn(reservedLive2D, 'idle_animation')) {
+                live2dIdleAnimation = reservedLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(avatarLive2D, 'idle_animation')) {
+                live2dIdleAnimation = avatarLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(charData, 'live2d_idle_animation')) {
+                live2dIdleAnimation = charData.live2d_idle_animation;  // 兼容旧版本平铺字段
+                hasExplicitIdleAnimation = true;
+            }
 
             console.log('[Live2D Restore] live2dIdleAnimation:', live2dIdleAnimation);
-
-            if (!live2dIdleAnimation) {
-                console.log('[Live2D Restore] 没有保存的待机动作');
-                return;
-            }
 
             const motionSelect = document.getElementById('motion-select');
             console.log('[Live2D Restore] motionSelect:', motionSelect);
@@ -1025,6 +2100,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const motionFiles = currentModelFiles?.motion_files || [];
             console.log('[Live2D Restore] motionFiles:', motionFiles);
+            if (!live2dIdleAnimation) {
+                if (hasExplicitIdleAnimation) {
+                    console.log('[Live2D Restore] 待机动作已明确清空');
+                    return;
+                }
+                if (motionFiles.length === 1) {
+                    live2dIdleAnimation = motionFiles[0];
+                    console.log('[Live2D Restore] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
+                } else {
+                    console.log('[Live2D Restore] 没有保存的待机动作');
+                    return;
+                }
+            }
+
             console.log('[Live2D Restore] 检查动作是否在列表中:', motionFiles.includes(live2dIdleAnimation));
             if (!motionFiles.includes(live2dIdleAnimation)) {
                 console.log('[Live2D] 保存的待机动作不在当前模型的动作列表中，跳过恢复:', live2dIdleAnimation);
@@ -1245,6 +2334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let vrmAnimationManager = null;
     let vrmExpressionManager = null;
     let mmdAnimationManager = null;
+    let pngtuberStatePreviewManager = null;
 
     // 防抖/合并刷新标志
     let isRefreshScheduled = false;
@@ -1387,7 +2477,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
         }
-
         if (!vrmAnimationManager) {
             vrmAnimationManager = new DropdownManager({
                 buttonId: 'vrm-animation-select-btn',
@@ -1478,6 +2567,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                         updateMMDAnimationSelectButtonText();
                     }
                 }
+            });
+        }
+
+        if (!pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager = new DropdownManager({
+                buttonId: 'pngtuber-state-preview-select-btn',
+                selectId: 'pngtuber-state-preview-select',
+                dropdownId: 'pngtuber-state-preview-dropdown',
+                textSpanId: 'pngtuber-state-preview-select-text',
+                iconClass: 'pngtuber-state-preview-icon',
+                iconSrc: '/static/icons/motion_select_icon.png?v=1',
+                defaultText: window.i18next?.t('live2d.pngtuberStatePreview') || '状态预览',
+                defaultTextKey: 'live2d.pngtuberStatePreview',
+                iconAlt: window.i18next?.t('live2d.pngtuberStatePreview') || '状态预览',
+                iconAltKey: 'live2d.pngtuberStatePreview',
+                maxVisualWidth: 12,
+                alwaysShowDefault: true,
+                shouldSkipOption: (option) => !option.value,
             });
         }
     }
@@ -1641,7 +2748,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 如果结构被破坏了，重新创建
         if (!textSpan || !backImg || !pawImg) {
-            backToMainBtn.innerHTML = '<img src="/static/icons/back_to_main_button.png?v=1" alt="返回" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;"><span class="round-stroke-text" id="back-text" data-text="返回主页">返回主页</span><img src="/static/icons/paw_ui.png?v=1" alt="猫爪" class="paw-icon" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">';
+            backToMainBtn.innerHTML = '<img src="/static/icons/back_to_main_button.png?v=1" alt="返回" class="back-icon" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;"><span class="round-stroke-text" id="back-text" data-text="返回主页">返回主页</span><img src="/static/icons/paw_ui.png?v=1" alt="猫爪" class="paw-icon" draggable="false" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">';
             textSpan = document.getElementById('back-text');
         }
 
@@ -1769,6 +2876,65 @@ document.addEventListener('DOMContentLoaded', async () => {
     let mmdAnimations = []; // MMD 动画列表
     let _mmdSettingsLoadPromise = null; // 追踪进行中的 MMD 设置加载 Promise
 
+    let modelManagerToastTimer = null;
+    let modelManagerToastCleanupTimer = null;
+
+    const showModelManagerToast = (message, duration = 2600, variant = 'info') => {
+        const text = String(message || '').trim();
+        let toast = document.getElementById('model-manager-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'model-manager-toast';
+            toast.setAttribute('role', 'status');
+            toast.setAttribute('aria-live', 'polite');
+            const icon = document.createElement('span');
+            icon.className = 'model-manager-toast-icon';
+            const content = document.createElement('span');
+            content.className = 'model-manager-toast-text';
+            toast.appendChild(icon);
+            toast.appendChild(content);
+            document.body.appendChild(toast);
+        }
+
+        if (modelManagerToastTimer) {
+            clearTimeout(modelManagerToastTimer);
+            modelManagerToastTimer = null;
+        }
+        if (modelManagerToastCleanupTimer) {
+            clearTimeout(modelManagerToastCleanupTimer);
+            modelManagerToastCleanupTimer = null;
+        }
+
+        if (!text) {
+            toast.classList.remove('is-visible');
+            toast.classList.add('is-hiding');
+            modelManagerToastCleanupTimer = setTimeout(() => {
+                toast.style.display = 'none';
+                modelManagerToastCleanupTimer = null;
+            }, 240);
+            return;
+        }
+
+        toast.className = `model-manager-toast model-manager-toast-${variant || 'info'}`;
+        const content = toast.querySelector('.model-manager-toast-text');
+        if (content) content.textContent = text;
+        toast.style.display = 'flex';
+        toast.classList.remove('is-hiding');
+        void toast.offsetWidth;
+        toast.classList.add('is-visible');
+
+        if (duration > 0) {
+            modelManagerToastTimer = setTimeout(() => {
+                toast.classList.remove('is-visible');
+                toast.classList.add('is-hiding');
+                modelManagerToastCleanupTimer = setTimeout(() => {
+                    toast.style.display = 'none';
+                    modelManagerToastCleanupTimer = null;
+                }, 240);
+            }, duration);
+        }
+    };
+
     const showStatus = (msg, duration = 0) => {
         // 更新状态文本（保持图标结构）
         updateStatusText(msg);
@@ -1790,44 +2956,234 @@ document.addEventListener('DOMContentLoaded', async () => {
         showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
     } catch (pixiError) {
         console.error('[模型管理] PIXI 初始化失败:', pixiError);
-        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${pixiError.message}`));
+        const errMsg = (pixiError && typeof pixiError.message === 'string') ? pixiError.message : String(pixiError ?? 'Unknown error');
+        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${errMsg}`, { error: errMsg }));
+    }
+
+    async function loadLive2DModelOptions({ showLoadedStatus = true } = {}) {
+        try {
+            // 使用助手替换原有 fetch
+            availableModels = await RequestHelper.fetchJson('/api/live2d/models');
+
+            if (availableModels.length > 0) {
+                modelSelect.innerHTML = ''; // 不添加第一个"选择模型"选项
+                availableModels.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.name;
+                    option.textContent = model.display_name || model.name;
+                    option.setAttribute('data-model-type', 'live2d');
+                    if (model.item_id) {
+                        option.dataset.itemId = model.item_id;
+                    }
+                    modelSelect.appendChild(option);
+                });
+                // 如果没有选择，自动选择第一个模型
+                if (modelSelect.options.length > 0 && !modelSelect.value) {
+                    modelSelect.value = modelSelect.options[0].value;
+                }
+                // 更新按钮文字和下拉菜单
+                if (typeof updateLive2DModelDropdown === 'function') {
+                    updateLive2DModelDropdown();
+                }
+                if (typeof updateLive2DModelSelectButtonText === 'function') {
+                    updateLive2DModelSelectButtonText();
+                }
+                if (showLoadedStatus) {
+                    showStatus(t('live2d.modelListLoaded', '模型列表加载成功'));
+                }
+            } else {
+                modelSelect.innerHTML = `<option value="">${t('live2d.noModelsFound', '未找到可用模型')}</option>`;
+                updateLive2DModelDropdown();
+                updateLive2DModelSelectButtonText();
+                if (showLoadedStatus) {
+                    showStatus(t('live2d.noModelsFound', '未找到可用模型'));
+                }
+            }
+        } catch (e) {
+            console.error('加载 Live2D 列表失败:', e);
+            showStatus(t('live2d.modelListLoadFailed', `加载模型列表失败: ${e.message}`));
+        }
+    }
+
+    async function reloadSelectedLive2DModelAfterModeSwitch() {
+        if (currentModelType !== 'live2d' || !modelSelect) return;
+
+        let selectedOption = modelSelect.selectedOptions && modelSelect.selectedOptions[0];
+        if (!selectedOption || selectedOption.dataset.modelType !== 'live2d') {
+            selectedOption = Array.from(modelSelect.options).find(option => option.dataset.modelType === 'live2d');
+            if (!selectedOption) return;
+            modelSelect.value = selectedOption.value;
+        }
+
+        if (typeof updateLive2DModelDropdown === 'function') {
+            updateLive2DModelDropdown();
+        }
+        if (typeof updateLive2DModelSelectButtonText === 'function') {
+            updateLive2DModelSelectButtonText();
+        }
+
+        dispatchModelManagerChange(modelSelect, { suppress: true });
+    }
+
+    async function loadSelectedPNGTuberOption(selectedOption, options = {}) {
+        if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber') return false;
+        let pngtuberConfig = {};
+        try {
+            pngtuberConfig = JSON.parse(selectedOption.getAttribute('data-pngtuber') || '{}');
+        } catch (error) {
+            console.warn('[PNGTuber] 解析模型配置失败:', error);
+        }
+
+        const modelName = selectedOption.value || selectedOption.textContent || '';
+        currentLive3dSubType = '';
+        currentModelInfo = {
+            name: selectedOption.textContent || modelName,
+            folder: selectedOption.getAttribute('data-folder') || modelName,
+            path: selectedOption.getAttribute('data-url') || '',
+            url: selectedOption.getAttribute('data-url') || '',
+            type: 'pngtuber',
+            pngtuber: pngtuberConfig,
+        };
+        rememberSelectedPNGTuberModel(selectedOption, pngtuberConfig);
+
+        if (window.loadPNGTuberAvatar) {
+            await window.loadPNGTuberAvatar(pngtuberConfig);
+        }
+        await loadPNGTuberPreviewControls(pngtuberConfig);
+        if (live2dContainer) live2dContainer.style.display = 'none';
+        if (vrmContainer) {
+            vrmContainer.classList.add('hidden');
+            vrmContainer.style.display = 'none';
+        }
+        if (mmdContainer) {
+            mmdContainer.classList.add('hidden');
+            mmdContainer.style.display = 'none';
+        }
+        if (pngtuberContainer) {
+            pngtuberContainer.classList.remove('hidden');
+            pngtuberContainer.style.display = 'block';
+        }
+        showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
+
+        if (options.markDirty) {
+            window.hasUnsavedChanges = true;
+            if (savePositionBtn) {
+                savePositionBtn.disabled = false;
+            }
+            markModelChangedForCardFacePrompt();
+            console.log('已标记为未保存更改（PNGTuber模型切换），请点击 保存设置 持久化到角色配置。');
+        }
+        return true;
+    }
+
+    function findPNGTuberOptionByConfig(pngtuberConfig) {
+        if (!modelSelect || !pngtuberConfig) return null;
+        const idleImage = String(pngtuberConfig.idle_image || '');
+        const talkingImage = String(pngtuberConfig.talking_image || '');
+        const metadataPath = String(pngtuberConfig.layered_metadata || '');
+        const deriveFolder = (value) => {
+            const parts = String(value || '').split('?')[0].split('#')[0].replace(/\\/g, '/').split('/').filter(Boolean);
+            if (parts[0] === 'user_pngtuber' && parts.length >= 2) return parts[1];
+            if (parts[0] === 'static' && parts.length >= 2) return parts[1];
+            if (parts[0] === 'workshop' && parts.length >= 2) return parts[1];
+            return '';
+        };
+        const folderFromConfig = pngtuberConfig.folder
+            || pngtuberConfig.model_folder
+            || deriveFolder(idleImage)
+            || deriveFolder(talkingImage)
+            || deriveFolder(metadataPath);
+
+        return Array.from(modelSelect.options).find(option => {
+            if (option.dataset.modelType !== 'pngtuber' || !option.value) return false;
+            try {
+                const cfg = JSON.parse(option.getAttribute('data-pngtuber') || '{}');
+                if (folderFromConfig && option.getAttribute('data-folder') === folderFromConfig) return true;
+                return (!!idleImage && cfg.idle_image === idleImage)
+                    || (!!talkingImage && cfg.talking_image === talkingImage)
+                    || (!!metadataPath && cfg.layered_metadata === metadataPath);
+            } catch (_) {
+                return false;
+            }
+        }) || null;
+    }
+
+    async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch(preferredConfig = null) {
+        if (currentModelType !== 'pngtuber' || !modelSelect) return;
+
+        let rememberedPNGTuber = null;
+        try {
+            rememberedPNGTuber = JSON.parse(localStorage.getItem('lastPNGTuberModelSelection') || 'null');
+        } catch (_) {
+            rememberedPNGTuber = null;
+        }
+
+        const findRememberedOption = () => {
+            if (!rememberedPNGTuber) return null;
+            return Array.from(modelSelect.options).find(option => {
+                if (option.dataset.modelType !== 'pngtuber' || !option.value) return false;
+                if (rememberedPNGTuber.value && option.value === rememberedPNGTuber.value) return true;
+                if (rememberedPNGTuber.folder && option.getAttribute('data-folder') === rememberedPNGTuber.folder) return true;
+                if (rememberedPNGTuber.idle_image) {
+                    try {
+                        const cfg = JSON.parse(option.getAttribute('data-pngtuber') || '{}');
+                        return cfg.idle_image === rememberedPNGTuber.idle_image;
+                    } catch (_) {
+                        return false;
+                    }
+                }
+                return false;
+            });
+        };
+
+        let selectedOption = modelSelect.selectedOptions && modelSelect.selectedOptions[0];
+        const preferredOption = findPNGTuberOptionByConfig(preferredConfig);
+        const rememberedOption = findRememberedOption();
+        if (preferredOption) {
+            selectedOption = preferredOption;
+            modelSelect.value = preferredOption.value;
+        } else if (rememberedOption) {
+            selectedOption = rememberedOption;
+            modelSelect.value = rememberedOption.value;
+        }
+        if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber' || !selectedOption.value) {
+            if (preferredConfig) return false;
+            selectedOption = Array.from(modelSelect.options).find(option =>
+                option.dataset.modelType === 'pngtuber' && option.value
+            );
+            if (!selectedOption) return;
+            modelSelect.value = selectedOption.value;
+        }
+
+        if (typeof updateLive2DModelDropdown === 'function') {
+            updateLive2DModelDropdown();
+        }
+        if (typeof updateLive2DModelSelectButtonText === 'function') {
+            updateLive2DModelSelectButtonText();
+        }
+
+        return await loadSelectedPNGTuberOption(selectedOption, { markDirty: false });
+    }
+
+    function rememberSelectedPNGTuberModel(option, pngtuberConfig = null) {
+        if (!option || option.dataset.modelType !== 'pngtuber') return;
+        const config = pngtuberConfig || (() => {
+            try { return JSON.parse(option.getAttribute('data-pngtuber') || '{}'); }
+            catch (_) { return {}; }
+        })();
+        try {
+            localStorage.setItem('lastPNGTuberModelSelection', JSON.stringify({
+                value: option.value || '',
+                folder: option.getAttribute('data-folder') || '',
+                idle_image: config && config.idle_image ? config.idle_image : '',
+            }));
+        } catch (_) {
+            // ignore localStorage failures
+        }
     }
 
     // 先加载模型列表
-    try {
-        // 使用助手替换原有 fetch
-        availableModels = await RequestHelper.fetchJson('/api/live2d/models');
-
-        if (availableModels.length > 0) {
-            modelSelect.innerHTML = ''; // 不添加第一个"选择模型"选项
-            availableModels.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model.name;
-                option.textContent = model.display_name || model.name;
-                if (model.item_id) {
-                    option.dataset.itemId = model.item_id;
-                }
-                modelSelect.appendChild(option);
-            });
-            // 如果没有选择，自动选择第一个模型
-            if (modelSelect.options.length > 0 && !modelSelect.value) {
-                modelSelect.value = modelSelect.options[0].value;
-            }
-            // 更新按钮文字和下拉菜单
-            if (typeof updateLive2DModelDropdown === 'function') {
-                updateLive2DModelDropdown();
-            }
-            if (typeof updateLive2DModelSelectButtonText === 'function') {
-                updateLive2DModelSelectButtonText();
-            }
-            showStatus(t('live2d.modelListLoaded', '模型列表加载成功'));
-        } else {
-            showStatus(t('live2d.noModelsFound', '未找到可用模型'));
-        }
-    } catch (e) {
-        console.error('加载 Live2D 列表失败:', e);
-        showStatus(t('live2d.modelListLoadFailed', `加载模型列表失败: ${e.message}`));
-    }
+    await loadLive2DModelOptions();
 
     // 初始化模型类型（从 localStorage 或默认值）
     let savedModelType = localStorage.getItem('modelType') || 'live2d';
@@ -1839,7 +3195,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         await switchModelDisplay(savedModelType, savedSubType);
     } catch (switchError) {
         console.error('[模型管理] 切换模型显示模式失败:', switchError);
-        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${switchError.message}`), 3000);
+        const errMsg = (switchError && typeof switchError.message === 'string') ? switchError.message : String(switchError ?? 'Unknown error');
+        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${errMsg}`, { error: errMsg }), 3000);
     }
 
     // 注意：loadCurrentCharacterModel() 的调用已移到所有事件监听器注册之后
@@ -1873,6 +3230,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (paramEditorBtn) {
                 const lanlanName = await getLanlanName();
                 if (lanlanName) {
+                    rememberModelManagerLanlanNameFallback(lanlanName);
                     paramEditorBtn.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 }
             }
@@ -1884,7 +3242,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     //
     // 注意：必须使用专用接口保存模型和光照设置，因为通用接口会过滤掉保留字段
     // 保存模型设置到角色的函数（全面升级版）
+    function createModelSaveResult(status, message, details = {}) {
+        return { status, message, details };
+    }
+
+    function mergePNGTuberConfigForSave(selectedConfig, currentConfig, runtimeConfig) {
+        return Object.assign(
+            {},
+            selectedConfig || {},
+            currentConfig || {},
+            runtimeConfig || {}
+        );
+    }
+
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
+        let effectiveLive3dSubType = currentLive3dSubType || '';
+
         function decodeMaybeUrlComponent(value) {
             if (typeof value !== 'string') return value;
             try {
@@ -1921,7 +3294,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (typeof showToast === 'function') {
                     showToast(errorMsg, 'error');
                 }
-                return false;
+                return createModelSaveResult('fail', errorMsg, { reason: 'missing_character' });
             }
 
             // 在发送 PUT 请求保存数据前，添加校验
@@ -1945,7 +3318,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         currentModelInfo.name !== 'undefined' &&
                         currentModelInfo.name !== 'null' &&
                         !currentModelInfo.name.toLowerCase().includes('undefined')) {
-                        const isMmdFallback = currentLive3dSubType === 'mmd' ||
+                        const isMmdFallback = effectiveLive3dSubType === 'mmd' ||
                             (currentModelInfo.type === 'mmd') ||
                             currentModelInfo.name.toLowerCase().endsWith('.pmx') ||
                             currentModelInfo.name.toLowerCase().endsWith('.pmd');
@@ -1976,15 +3349,49 @@ document.addEventListener('DOMContentLoaded', async () => {
                 model_type: currentModelType,
             };
 
-            if (currentModelType === 'live3d') {
+            if (currentModelType === 'pngtuber') {
+                const selectedOpt = modelSelect && modelSelect.options[modelSelect.selectedIndex];
+                let selectedPNGTuberConfig = null;
+                if (selectedOpt) {
+                    try {
+                        selectedPNGTuberConfig = JSON.parse(selectedOpt.getAttribute('data-pngtuber') || '{}');
+                    } catch (_) {
+                        selectedPNGTuberConfig = null;
+                    }
+                }
+                const currentPNGTuberConfig = currentModelInfo && currentModelInfo.pngtuber ? currentModelInfo.pngtuber : null;
+                const runtimePNGTuberConfig = window.pngtuberManager && window.pngtuberManager.config
+                    ? window.pngtuberManager.config
+                    : null;
+                const pngtuberConfig = mergePNGTuberConfigForSave(
+                    selectedPNGTuberConfig,
+                    currentPNGTuberConfig,
+                    runtimePNGTuberConfig
+                );
+                ['adapter', 'layered_metadata', 'source_format', 'source_type'].forEach((key) => {
+                    if (!pngtuberConfig[key] && selectedPNGTuberConfig && selectedPNGTuberConfig[key]) {
+                        pngtuberConfig[key] = selectedPNGTuberConfig[key];
+                    }
+                    if (!pngtuberConfig[key] && currentPNGTuberConfig && currentPNGTuberConfig[key]) {
+                        pngtuberConfig[key] = currentPNGTuberConfig[key];
+                    }
+                });
+                if (!pngtuberConfig || !pngtuberConfig.idle_image) {
+                    const errorMsg = 'PNGTuber模型配置无效，无法保存。请重新导入或选择模型。';
+                    showStatus(errorMsg, 5000);
+                    throw new Error(errorMsg);
+                }
+                modelData.pngtuber = pngtuberConfig;
+            } else if (currentModelType === 'live3d') {
                 // Live3D 模式：根据子类型（VRM 或 MMD）分别构建数据
                 const selectedOpt = vrmModelSelect && vrmModelSelect.options[vrmModelSelect.selectedIndex];
                 const subType = selectedOpt ? selectedOpt.getAttribute('data-sub-type') : null;
                 const modelExt = modelName ? modelName.toLowerCase() : '';
-                const isMmdModel = currentLive3dSubType === 'mmd' ||
+                const isMmdModel = effectiveLive3dSubType === 'mmd' ||
                     subType === 'mmd' ||
                     modelExt.endsWith('.pmx') || modelExt.endsWith('.pmd') ||
                     (currentModelInfo && currentModelInfo.type === 'mmd');
+                effectiveLive3dSubType = isMmdModel ? 'mmd' : 'vrm';
 
                 if (isMmdModel) {
                     // MMD 子类型：构建 MMD 路径（后端读取 data.get('mmd')）
@@ -2079,7 +3486,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const main = document.getElementById('main-light-slider');
 
             // 4. 如果是 VRM/Live3D 模式且当前子类型为 VRM，单独保存光照设置
-            const isVrmSubTypeForSave = !currentLive3dSubType || currentLive3dSubType === 'vrm';
+            const isVrmSubTypeForSave = currentModelType === 'live3d' && effectiveLive3dSubType !== 'mmd';
             if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 const fillSlider = document.getElementById('fill-light-slider');
                 const rimSlider = document.getElementById('rim-light-slider');
@@ -2128,7 +3535,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 5. 如果是 MMD 模式，保存MMD专属设置
             let mmdSettingsResult = null;
-            if (currentModelType === 'live3d' && currentLive3dSubType === 'mmd') {
+            if (currentModelType === 'live3d' && effectiveLive3dSubType === 'mmd') {
                 try {
                     if (_mmdSettingsLoadPromise) {
                         await _mmdSettingsLoadPromise;
@@ -2174,19 +3581,33 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             }
             showStatus(saveMessage, mmdSettingsFailed || lightingFailed ? 3000 : 2000);
-            return !mmdSettingsFailed && !lightingFailed;
+            return createModelSaveResult(
+                mmdSettingsFailed || lightingFailed ? 'partial' : 'ok',
+                saveMessage,
+                {
+                    lightingFailed,
+                    mmdSettingsFailed,
+                    modelSaved: true,
+                    lightingError: lightingResult && lightingResult.error,
+                    mmdSettingsError: mmdSettingsResult && mmdSettingsResult.error,
+                    effectiveLive3dSubType
+                }
+            );
 
         } catch (error) {
             console.error('保存模型设置失败:', error);
-            showStatus(t('live2d.saveFailed', `保存失败: ${error.message}`), 3000);
-            return false;
+            const errorMessage = t('live2d.saveFailed', `保存失败: ${error.message}`, { error: error.message });
+            showStatus(errorMessage, 3000);
+            return createModelSaveResult('fail', errorMessage, { reason: 'exception', error });
         }
     }
 
     // 模型类型切换处理
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
-    async function switchModelDisplay(type, subType) {
+    async function switchModelDisplay(type, subType, options = {}) {
+        const previousModelType = currentModelType;
         currentModelType = type;
+        window._modelManagerCurrentAvatarType = type;
         if (type === 'live3d' && subType) {
             currentLive3dSubType = subType;
         } else if (type !== 'live3d') {
@@ -2218,6 +3639,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (sidebar) {
             sidebar.classList.toggle('mode-live2d', type === 'live2d');
             sidebar.classList.toggle('mode-vrm', type === 'live3d');
+            sidebar.classList.toggle('mode-pngtuber', type === 'pngtuber');
         }
 
         // 更新模型类型按钮文字
@@ -2225,7 +3647,85 @@ document.addEventListener('DOMContentLoaded', async () => {
             modelTypeManager.updateButtonText();
         }
 
-        if (type === 'live2d') {
+        if (type === 'pngtuber') {
+            if (pngtuberPreviewGroup) pngtuberPreviewGroup.style.display = 'flex';
+            if (window.live2dManager) {
+                try {
+                    if (window.live2dManager.currentModel && window.live2dManager.pixi_app?.stage) {
+                        window.live2dManager.pixi_app.stage.removeChild(window.live2dManager.currentModel);
+                    }
+                } catch (cleanupError) {
+                    console.warn('[模型管理] 切换PNGTuber时清理Live2D显示失败:', cleanupError);
+                }
+            }
+            stopIdleRotation('vrm');
+            stopIdleRotation('mmd');
+            if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                try { window.vrmManager.pauseRendering(); } catch (_) { /* ignore */ }
+            }
+            if (window.mmdManager) {
+                try { window.mmdManager.stopAnimation(); } catch (_) { /* ignore */ }
+            }
+
+            if (live2dModelGroup) live2dModelGroup.style.display = 'flex';
+            if (vrmModelGroup) vrmModelGroup.style.display = 'none';
+            if (live2dContainer) live2dContainer.style.display = 'none';
+            if (vrmContainer) {
+                vrmContainer.classList.add('hidden');
+                vrmContainer.style.display = 'none';
+            }
+            if (mmdContainer) {
+                mmdContainer.classList.add('hidden');
+                mmdContainer.style.display = 'none';
+            }
+            if (pngtuberContainer) {
+                pngtuberContainer.classList.remove('hidden');
+                pngtuberContainer.style.display = 'block';
+            }
+
+            const hiddenGroups = [
+                vrmExpressionGroup,
+                vrmAnimationGroup,
+                mmdModelGroup,
+                mmdAnimationGroup,
+                document.getElementById('mmd-animation-actions-group'),
+                document.getElementById('persistent-expression-group'),
+                document.getElementById('parameter-editor-group'),
+                document.getElementById('vrm-settings-section'),
+                document.getElementById('mmd-settings-section'),
+                document.getElementById('vrm-lighting-group'),
+                document.getElementById('vrm-idle-animation-group'),
+                document.getElementById('live3d-emotion-config-group'),
+                document.getElementById('emotion-config-group'),
+            ];
+            hiddenGroups.forEach(group => { if (group) group.style.display = 'none'; });
+            const live2dOnlyControls = ['motion-select', 'expression-select', 'play-motion-btn', 'play-expression-btn', 'touch_set'];
+            live2dOnlyControls.forEach(id => {
+                const elem = document.getElementById(id);
+                const group = elem ? elem.closest('.control-group') : null;
+                if (group) group.style.display = 'none';
+            });
+            const emotionManagerGroup = document.getElementById('emotion-manager-group');
+            if (emotionManagerGroup) emotionManagerGroup.style.display = 'flex';
+            if (uploadBtn) updateUploadButtonText();
+            if (modelUpload) modelUpload.style.display = 'none';
+            if (vrmFileUpload) vrmFileUpload.style.display = 'none';
+            if (pngtuberModelUpload) pngtuberModelUpload.style.display = 'none';
+
+            try {
+                await loadPNGTuberModels();
+                await selectAndPreviewFirstPNGTuberModelAfterModeSwitch(options.preferredPNGTuberConfig || null);
+            } catch (error) {
+                console.error('加载PNGTuber模型列表失败:', error);
+            }
+        } else if (type === 'live2d') {
+            clearPNGTuberPreviewControls();
+            if (pngtuberContainer) {
+                pngtuberContainer.classList.add('hidden');
+                pngtuberContainer.style.display = 'none';
+            }
+            if (window.pngtuberManager) window.pngtuberManager.hide();
+            await loadLive2DModelOptions({ showLoadedStatus: false });
             // 【新增】清理VRM资源
             if (window.vrmManager) {
                 try {
@@ -2279,7 +3779,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (live2dModelGroup) live2dModelGroup.style.display = 'flex';
             if (vrmModelGroup) vrmModelGroup.style.display = 'none';
-            if (live2dContainer) live2dContainer.style.display = 'block';
+            if (live2dContainer) {
+                live2dContainer.classList.remove('hidden');
+                live2dContainer.style.display = 'block';
+                live2dContainer.style.visibility = 'visible';
+                live2dContainer.style.opacity = '';
+            }
             if (vrmExpressionGroup) vrmExpressionGroup.style.display = 'none';
             if (vrmContainer) {
                 vrmContainer.classList.add('hidden');
@@ -2305,6 +3810,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 显示 Live2D 特有的控件
             document.querySelectorAll('.control-group').forEach(group => {
                 if (group.id !== 'live2d-model-group' &&
+                    group.id !== 'pngtuber-preview-group' &&
                     group.id !== 'vrm-model-group' &&
                     group.id !== 'vrm-expression-group' &&
                     group.id !== 'vrm-animation-group' &&
@@ -2314,6 +3820,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     group.style.display = 'flex';
                 }
             });
+            if (pngtuberPreviewGroup) pngtuberPreviewGroup.style.display = 'none';
             // 显示常驻表情组（Live2D特有）
             const persistentExpressionGroup = document.getElementById('persistent-expression-group');
             if (persistentExpressionGroup) persistentExpressionGroup.style.display = 'flex';
@@ -2385,10 +3892,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!live2dCanvas) {
                 const newCanvas = document.createElement('canvas');
                 newCanvas.id = 'live2d-canvas';
+                newCanvas.style.display = 'block';
+                newCanvas.style.visibility = 'visible';
+                newCanvas.style.pointerEvents = 'auto';
                 const container = document.getElementById('live2d-container');
                 if (container) {
                     container.appendChild(newCanvas);
                 }
+            } else {
+                live2dCanvas.style.display = 'block';
+                live2dCanvas.style.visibility = 'visible';
+                live2dCanvas.style.opacity = '';
+                live2dCanvas.style.pointerEvents = 'auto';
             }
 
             // 幂等初始化：仅在未就绪时初始化，避免重复重建导致首帧抖动
@@ -2396,7 +3911,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
                 showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
             }
+            if (previousModelType !== 'live2d') {
+                await reloadSelectedLive2DModelAfterModeSwitch();
+            }
         } else { // VRM
+            clearPNGTuberPreviewControls();
+            if (pngtuberContainer) {
+                pngtuberContainer.classList.add('hidden');
+                pngtuberContainer.style.display = 'none';
+            }
+            if (window.pngtuberManager) window.pngtuberManager.hide();
             // 【新增】清理Live2D资源（内存管理改进）
             if (window.live2dManager) {
                 try {
@@ -2645,7 +4169,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.vrmManager = vrmManager;
                 } catch (error) {
                     console.error('VRM 管理器创建失败:', error);
-                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${errMsg}`, { error: errMsg }));
                     return;
                 }
             }
@@ -2667,7 +4192,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     try {
                         const _lanlanName = await getLanlanName();
                         if (_lanlanName) {
-                            const _charData = await RequestHelper.fetchJson('/api/characters/');
+                            const _charData = await RequestHelper.fetchJson('/api/characters');
                             savedLightingConfig = _charData['猫娘']?.[_lanlanName]?.lighting || null;
                         }
                     } catch (e) {
@@ -2696,7 +4221,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } catch (error) {
                 console.error('VRM 场景初始化失败:', error);
-                showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
+                const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${errMsg}`, { error: errMsg }));
             }
             } else {
                 // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
@@ -2859,7 +4385,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (modelName) {
                             // 触发 change 事件，让 change 事件处理程序统一处理加载逻辑
                             // 这样 currentModelInfo 也会被正确更新
-                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                            dispatchModelManagerChange(modelSelect);
                         }
                     }
 
@@ -2907,7 +4433,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
-                                    vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    dispatchModelManagerChange(vrmModelSelect);
                                     return true;
                                 }
                                 return false;
@@ -2927,7 +4453,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
-                                    vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    dispatchModelManagerChange(vrmModelSelect);
                                     return true;
                                 }
                                 return false;
@@ -3073,6 +4599,201 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    async function loadPNGTuberModels() {
+        try {
+            const data = await RequestHelper.fetchJson('/api/model/pngtuber/models');
+            const models = (data.success && Array.isArray(data.models)) ? data.models : [];
+            if (!modelSelect) return;
+
+            if (models.length > 0) {
+                modelSelect.innerHTML = '';
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.folder || model.name || model.url;
+                    option.textContent = model.name || model.folder || option.value;
+                    option.setAttribute('data-model-type', 'pngtuber');
+                    option.setAttribute('data-folder', model.folder || '');
+                    option.setAttribute('data-url', model.url || '');
+                    option.setAttribute('data-pngtuber', JSON.stringify(model.pngtuber || {}));
+                    modelSelect.appendChild(option);
+                });
+                modelSelect.disabled = false;
+                if (live2dModelSelectBtn) live2dModelSelectBtn.disabled = false;
+            } else {
+                modelSelect.innerHTML = '<option value="">未找到PNGTuber模型</option>';
+            }
+            updateLive2DModelDropdown();
+            updateLive2DModelSelectButtonText();
+        } catch (error) {
+            console.error('加载 PNGTuber 模型列表失败:', error);
+            if (modelSelect) {
+                modelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+            }
+            updateLive2DModelDropdown();
+            updateLive2DModelSelectButtonText();
+            showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
+        }
+    }
+
+    let pngtuberTalkPreviewTimer = null;
+
+    function clearPNGTuberPreviewControls() {
+        if (pngtuberTalkPreviewTimer) {
+            clearTimeout(pngtuberTalkPreviewTimer);
+            pngtuberTalkPreviewTimer = null;
+        }
+        if (window.pngtuberManager && typeof window.pngtuberManager.setSpeaking === 'function') {
+            try { window.pngtuberManager.setSpeaking(false); } catch (_) { /* ignore */ }
+        }
+        if (pngtuberTalkPreviewBtn) {
+            pngtuberTalkPreviewBtn.disabled = false;
+            pngtuberTalkPreviewBtn.classList.remove('active');
+        }
+        if (pngtuberStatePreviewSelect) {
+            pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
+            pngtuberStatePreviewSelect.value = '';
+        }
+        if (pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager.updateDropdown();
+            updatePNGTuberStatePreviewButtonText();
+        }
+        if (pngtuberStatePreviewSection) {
+            pngtuberStatePreviewSection.style.display = 'none';
+        }
+        if (pngtuberPreviewGroup) {
+            pngtuberPreviewGroup.style.display = 'none';
+        }
+    }
+
+    function updatePNGTuberStatePreviewButtonText() {
+        if (!pngtuberStatePreviewSelectBtn) return;
+        let textSpan = document.getElementById('pngtuber-state-preview-select-text');
+        if (!textSpan) {
+            textSpan = pngtuberStatePreviewSelectBtn.querySelector('span');
+        }
+        if (!textSpan) return;
+        textSpan.textContent = '状态预览';
+        textSpan.setAttribute('data-text', '状态预览');
+    }
+
+    async function fetchPNGTuberLayeredMetadata(pngtuberConfig) {
+        const metadataUrl = pngtuberConfig && typeof pngtuberConfig.layered_metadata === 'string'
+            ? pngtuberConfig.layered_metadata.trim()
+            : '';
+        if (!metadataUrl) return null;
+        try {
+            const response = await fetch(metadataUrl, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return await response.json();
+        } catch (error) {
+            console.warn('[PNGTuber] 读取分层 metadata 失败:', error);
+            return null;
+        }
+    }
+
+    function getPNGTuberStateLabels(metadata) {
+        if (!metadata || typeof metadata !== 'object') return [];
+        const settingsStates = metadata.settings && Array.isArray(metadata.settings.states)
+            ? metadata.settings.states
+            : [];
+        const directStates = Array.isArray(metadata.states) ? metadata.states : [];
+        const sourceStates = settingsStates.length > 0 ? settingsStates : directStates;
+        const stateCount = Number(metadata.state_count || metadata.stateCount || sourceStates.length || 0);
+        const count = Number.isFinite(stateCount) ? Math.max(0, Math.floor(stateCount)) : 0;
+        if (count <= 1) return [];
+
+        return Array.from({ length: count }, (_, index) => {
+            const state = sourceStates[index] || {};
+            const name = state.name || state.label || state.display_name || state.displayName;
+            return name ? String(name) : `状态 ${index + 1}`;
+        });
+    }
+
+    function renderPNGTuberStatePreviewDropdown(metadata) {
+        if (!pngtuberStatePreviewSelect || !pngtuberStatePreviewSection) return;
+        pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
+        pngtuberStatePreviewSelect.value = '';
+        const labels = getPNGTuberStateLabels(metadata);
+        if (labels.length === 0) {
+            pngtuberStatePreviewSection.style.display = 'none';
+            if (pngtuberStatePreviewManager) {
+                pngtuberStatePreviewManager.updateDropdown();
+                updatePNGTuberStatePreviewButtonText();
+            }
+            return;
+        }
+
+        labels.forEach((label, index) => {
+            const option = document.createElement('option');
+            option.value = String(index + 1);
+            option.textContent = label;
+            option.dataset.stateNumber = String(index + 1);
+            pngtuberStatePreviewSelect.appendChild(option);
+        });
+        pngtuberStatePreviewSection.style.display = 'flex';
+        if (pngtuberStatePreviewSelectBtn) pngtuberStatePreviewSelectBtn.disabled = false;
+        if (pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager.updateDropdown();
+            updatePNGTuberStatePreviewButtonText();
+        }
+    }
+
+    async function loadPNGTuberPreviewControls(pngtuberConfig) {
+        clearPNGTuberPreviewControls();
+        if (currentModelType !== 'pngtuber' || !pngtuberPreviewGroup) return;
+        pngtuberPreviewGroup.style.display = 'flex';
+        if (pngtuberBasicPreviewSection) pngtuberBasicPreviewSection.style.display = 'flex';
+        if (pngtuberTalkPreviewBtn) pngtuberTalkPreviewBtn.disabled = false;
+
+        const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
+        if (currentModelType !== 'pngtuber') return;
+        renderPNGTuberStatePreviewDropdown(metadata);
+    }
+
+    if (pngtuberTalkPreviewBtn) {
+        pngtuberTalkPreviewBtn.addEventListener('click', () => {
+            if (!window.pngtuberManager || typeof window.pngtuberManager.setSpeaking !== 'function') {
+                showStatus('PNGTuber 模型尚未加载', 2000);
+                return;
+            }
+            if (pngtuberTalkPreviewTimer) clearTimeout(pngtuberTalkPreviewTimer);
+            pngtuberTalkPreviewBtn.disabled = true;
+            pngtuberTalkPreviewBtn.classList.add('active');
+            window.pngtuberManager.setSpeaking(true);
+            pngtuberTalkPreviewTimer = setTimeout(() => {
+                pngtuberTalkPreviewTimer = null;
+                if (window.pngtuberManager && typeof window.pngtuberManager.setSpeaking === 'function') {
+                    window.pngtuberManager.setSpeaking(false);
+                }
+                pngtuberTalkPreviewBtn.disabled = false;
+                pngtuberTalkPreviewBtn.classList.remove('active');
+            }, 1800);
+        });
+    }
+
+    if (pngtuberStatePreviewSelect) {
+        pngtuberStatePreviewSelect.addEventListener('change', () => {
+            const stateNumber = Number(pngtuberStatePreviewSelect.value || 0);
+            if (!stateNumber) return;
+            if (typeof window.playPNGTuberAnimation === 'function') {
+                window.playPNGTuberAnimation(stateNumber);
+            }
+            updatePNGTuberStatePreviewButtonText();
+        });
+    }
+
+    window.addEventListener('pngtuber-layered-state-changed', (event) => {
+        if (!pngtuberStatePreviewSelect) return;
+        const detail = event.detail || {};
+        const stateNumber = Number(detail.stateNumber || detail.state_number || (Number.isFinite(detail.index) ? detail.index + 1 : 0));
+        if (!stateNumber) return;
+        const nextValue = String(stateNumber);
+        if (pngtuberStatePreviewSelect.value !== nextValue) {
+            pngtuberStatePreviewSelect.value = nextValue;
+        }
+        updatePNGTuberStatePreviewButtonText();
+    });
+
     // VRM模型选择按钮点击事件已由 DropdownManager 处理
 
     // VRM 模型选择事件
@@ -3141,7 +4862,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         mmdModelSelect.value = mmdPath;
                     }
                     // 触发 MMD 模型选择的 change 事件来加载模型
-                    mmdModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    dispatchModelManagerChange(mmdModelSelect, {
+                        suppress: isSuppressedModelManagerChangeEvent(e)
+                    });
                 }
 
                 // 保存 currentModelInfo 用于保存配置
@@ -3152,8 +4875,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     type: 'mmd'
                 };
 
-                if (savePositionBtn) savePositionBtn.disabled = false;
-                window.hasUnsavedChanges = true;
+                // 选择模型后立即启用保存按钮（即使是页面初始化的 suppressed 事件，
+                // 否则进入页面后只调属性时按钮会一直保持 HTML 模板里的 disabled）
+                if (savePositionBtn) {
+                    savePositionBtn.disabled = false;
+                }
+
+                if (!isSuppressedModelManagerChangeEvent(e)) {
+                    window.hasUnsavedChanges = true;
+                    markModelChangedForCardFacePrompt();
+                }
                 return;
             }
 
@@ -3237,7 +4968,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 } catch (error) {
                     console.error('VRM 管理器初始化失败:', error);
-                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${errMsg}`, { error: errMsg }));
                     return;
                 }
             }
@@ -3254,7 +4986,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('[模型管理] VRM 场景初始化成功');
                 } catch (initError) {
                     console.error('[模型管理] 场景初始化失败:', initError);
-                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${initError.message}`), 5000);
+                    const errMsg = (initError && typeof initError.message === 'string') ? initError.message : String(initError ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${errMsg}`, { error: errMsg }), 5000);
                     return;
                 }
             }
@@ -3337,8 +5070,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 标记为有未保存更改
-            window.hasUnsavedChanges = true;
-            console.log('已标记为未保存更改（VRM模型切换），请点击 保存设置 持久化到角色配置。');
+            if (!isSuppressedModelManagerChangeEvent(e)) {
+                window.hasUnsavedChanges = true;
+                markModelChangedForCardFacePrompt();
+                console.log('已标记为未保存更改（VRM模型切换），请点击 保存设置 持久化到角色配置。');
+            }
 
             try {
                 showStatus(t('live2d.loadingVRMModel', `正在加载 VRM 模型...`));
@@ -3413,7 +5149,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.vrmModelLoaded', `VRM 模型 ${modelPath} 加载成功`, { model: modelPath }));
             } catch (error) {
                 console.error('加载 VRM 模型失败:', error);
-                showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${error.message}。您仍可以保存模型设置。`));
+                const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${errMsg}。您仍可以保存模型设置。`, { error: errMsg }));
                 // 即使模型加载失败，也尝试加载动作列表（可能用户想预览其他动作）
                 try {
                     await loadVRMAnimations(false);
@@ -3658,7 +5395,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateVRMAnimationPlayButtonIcon();
                 } catch (error) {
                     console.error('播放 VRM 动作失败:', error);
-                    showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${errMsg}`, { error: errMsg }));
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                 }
@@ -4237,7 +5975,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 自动选择默认 Live3D 模型（sister1.0.vrm），当角色无已配置的 VRM/MMD 模型时使用
-    function selectDefaultLive3DModel() {
+    function selectDefaultLive3DModel(options = {}) {
         if (!vrmModelSelect || vrmModelSelect.options.length === 0) return false;
         const defaultFilename = 'sister1.0.vrm';
         const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
@@ -4247,7 +5985,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (matchedOption) {
             vrmModelSelect.value = matchedOption.value;
-            vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            window._modelManagerLoadedFallbackModel = true;
+            if (options.suppressChange) {
+                suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
+            } else {
+                dispatchModelManagerChange(vrmModelSelect);
+            }
             console.log('[模型管理] 自动加载默认 Live3D 模型:', defaultFilename);
             return true;
         }
@@ -5543,7 +7286,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const lanlanName = await getLanlanName();
             if (!lanlanName) return;
 
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             let vrmIdleAnimation = charData?.idle_animation;
             if (vrmIdleAnimation == null) {
@@ -5649,7 +7392,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const lanlanName = await getLanlanName();
             if (!lanlanName) return;
 
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             let mmdIdleAnimation = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
 
@@ -6015,7 +7758,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!lanlanName) return;
 
             // 使用 RequestHelper 确保统一的错误处理和超时
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             const lighting = charData?.lighting;
 
@@ -6125,6 +7868,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (!modelName) return;
 
+        const selectedOption = e.target[e.target.selectedIndex];
+
+        if (currentModelType === 'pngtuber') {
+            await loadSelectedPNGTuberOption(selectedOption, {
+                markDirty: !isSuppressedModelManagerChangeEvent(e)
+            });
+            return;
+        }
+
         // 检查语音模式状态
         const voiceStatus = await checkVoiceModeStatus();
         if (voiceStatus.isCurrent && voiceStatus.isVoiceMode) {
@@ -6142,7 +7894,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!currentModelInfo) return;
 
         // 获取选中的option元素，从中获取item_id
-        const selectedOption = e.target[e.target.selectedIndex];
         const modelSteamId = selectedOption ? selectedOption.dataset.itemId : currentModelInfo.item_id;
 
         // 更新currentModelInfo的item_id（如果从option获取到了）
@@ -6153,8 +7904,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadModel(modelName, currentModelInfo, modelSteamId);
 
         // 不自动保存模型到角色，改为标记为有未保存更改，用户需手动点击"保存设置"
-        window.hasUnsavedChanges = true;
-        console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
+        if (!isSuppressedModelManagerChangeEvent(e)) {
+            window.hasUnsavedChanges = true;
+            markModelChangedForCardFacePrompt();
+            console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
+        }
     });
 
     // 加载模型的函数
@@ -6705,92 +8459,207 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
+    let savingInProgress = false;
+
     savePositionBtn.addEventListener('click', async () => {
-        // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
-        if (currentModelType === 'live3d') {
-            const selectedModelPath = vrmModelSelect ? vrmModelSelect.value : null;
-            if (!selectedModelPath) {
-                showStatus(t('live2d.pleaseSelectModel', '请先选择一个模型'), 2000);
-                return;
-            }
-            // 如果没有currentModelInfo，使用当前选择的模型路径创建
-            if (!currentModelInfo) {
-                const selOpt = vrmModelSelect.options[vrmModelSelect.selectedIndex];
-                const subType = selOpt ? selOpt.getAttribute('data-sub-type') : null;
-                currentModelInfo = {
-                    name: selectedModelPath,
-                    path: selectedModelPath,
-                    type: subType || 'vrm'
-                };
-            }
-        } else {
-            // Live2D模式下需要currentModelInfo
-            if (!currentModelInfo) {
-                showStatus(t('live2d.pleaseSelectModel', '请先选择模型'), 2000);
-                return;
-            }
-        }
+        if (savingInProgress) return;
 
-        showStatus(t('live2d.savingSettings', '正在保存设置...'));
+        savingInProgress = true;
+        const wasSaveButtonDisabled = savePositionBtn.disabled;
+        savePositionBtn.disabled = true;
+        const beforeSaveSnapshot = window._savedModelSnapshot
+            ? { ...window._savedModelSnapshot }
+            : captureSettingsSnapshot();
+        const parameterEditedSinceSave = window._modelManagerParameterEditedSinceSave === true
+            || await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo });
 
-        let positionSuccess = false;
-        let modelSuccess = false;
-
-        // 根据模型类型保存不同的设置
-        if (currentModelType === 'live3d') {
-            // Live3D 模式：保存模型设置
-            // 优先使用 path（含完整相对路径），name 仅为文件名
-            modelSuccess = await saveModelToCharacter(currentModelInfo.path || currentModelInfo.name, null, null);
-        } else {
-            // Live2D 模式：保存位置、缩放和模型设置
-            if (!live2dModel) {
-                showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
-                return;
+        try {
+            // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
+            if (currentModelType === 'live3d') {
+                const selectedModelPath = vrmModelSelect ? vrmModelSelect.value : null;
+                if (!selectedModelPath) {
+                    const message = t('live2d.pleaseSelectModel', '请先选择一个模型');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'warning');
+                    return;
+                }
+                // 如果没有currentModelInfo，使用当前选择的模型路径创建
+                if (!currentModelInfo) {
+                    const selOpt = vrmModelSelect.options[vrmModelSelect.selectedIndex];
+                    const subType = selOpt ? selOpt.getAttribute('data-sub-type') : null;
+                    currentModelInfo = {
+                        name: selectedModelPath,
+                        path: selectedModelPath,
+                        type: subType || 'vrm'
+                    };
+                }
+            } else {
+                // Live2D模式下需要currentModelInfo
+                if (!currentModelInfo) {
+                    const message = t('live2d.pleaseSelectModel', '请先选择模型');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'warning');
+                    return;
+                }
             }
 
-            // 保存位置和缩放
-            positionSuccess = await window.live2dManager.saveUserPreferences(
-                currentModelInfo.path,
-                { x: live2dModel.x, y: live2dModel.y },
-                { x: live2dModel.scale.x, y: live2dModel.scale.y }
+            const savingMessage = t('live2d.savingSettings', '正在保存设置...');
+            showStatus(savingMessage);
+            showModelManagerToast(savingMessage, 0, 'loading');
+
+            let positionSuccess = false;
+            let modelSaveResult = createModelSaveResult(
+                'fail',
+                t('live2d.saveFailedGeneral', '保存失败!'),
+                { reason: 'not_started' }
             );
 
-            // 保存模型设置到角色，同时传入item_id
-            modelSuccess = await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
-        }
+            // 根据模型类型保存不同的设置
+            if (currentModelType === 'live3d' || currentModelType === 'pngtuber') {
+                // Live3D/PNGTuber 模式：保存模型设置
+                // 优先使用 path（含完整相对路径），name 仅为文件名
+                modelSaveResult = await saveModelToCharacter(currentModelInfo.path || currentModelInfo.name, null, null);
+            } else {
+                // Live2D 模式：保存位置、缩放和模型设置
+                if (!live2dModel) {
+                    const message = t('live2d.pleaseLoadModel', '请先加载模型');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'warning');
+                    return;
+                }
 
-        if (currentModelType === 'live3d') {
-            // Live3D 模式：只显示模型保存结果
-            if (modelSuccess) {
-                showStatus(t('live2d.settingsSaved', '模型设置保存成功!'), 2000);
-                window.hasUnsavedChanges = false;
-                window._savedModelSnapshot = captureSettingsSnapshot();
-                window._modelManagerHasSaved = true;
-            } else {
-                showStatus(t('live2d.saveFailedGeneral', '保存失败!'), 2000);
+                // 保存位置和缩放
+                positionSuccess = await window.live2dManager.saveUserPreferences(
+                    currentModelInfo.path,
+                    { x: live2dModel.x, y: live2dModel.y },
+                    { x: live2dModel.scale.x, y: live2dModel.scale.y }
+                );
+
+                // 保存模型设置到角色，同时传入item_id
+                modelSaveResult = await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
             }
-        } else {
-            // Live2D 模式：显示位置和模型保存结果
-            if (positionSuccess && modelSuccess) {
-                showStatus(t('live2d.settingsSaved', '位置和模型设置保存成功!'), 2000);
-                window.hasUnsavedChanges = false; // 保存成功后重置标志
-                window._savedModelSnapshot = captureSettingsSnapshot();
-                window._modelManagerHasSaved = true;
-                // 不在保存时立即通知主页，而是在返回主页时通知
-                // sendMessageToMainPage('reload_model');
-            } else if (positionSuccess) {
-                showStatus(t('live2d.positionSavedModelFailed', '位置保存成功，模型设置保存失败!'), 2000);
-                // 位置偏好已保存，主界面如触发重载可恢复位置；但仅在用户退出时才通知
-                window._modelManagerHasSaved = true;
-            } else if (modelSuccess) {
-                showStatus(t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!'), 2000);
-                window._savedModelSnapshot = captureSettingsSnapshot();
-                window._modelManagerHasSaved = true;
-                // 不在保存时立即通知主页，而是在返回主页时通知
-                // sendMessageToMainPage('reload_model');
+            const savedFallbackModelAsExplicitBinding = window._modelManagerLoadedFallbackModel === true;
+
+            const modelStatus = modelSaveResult && modelSaveResult.status ? modelSaveResult.status : 'fail';
+            const modelMessage = modelSaveResult && modelSaveResult.message
+                ? modelSaveResult.message
+                : t('live2d.saveFailedGeneral', '保存失败!');
+            const partialMessage = modelStatus === 'partial'
+                ? modelMessage
+                : t('live2d.partialSaveWarning', '已保存模型设置，但部分设置保存失败');
+            const positionSaveFailedSuffix = t('live2d.positionSaveFailedSuffix', '位置保存失败');
+            const modelPartialAndPositionFailedMessage = `${partialMessage}；${positionSaveFailedSuffix}`;
+            const modelSavedAtLeastPartially = modelStatus === 'ok' || modelStatus === 'partial';
+
+            if (currentModelType === 'pngtuber') {
+                // PNGTuber stores its lightweight model config and transform together.
+                // Keep the user-facing success text aligned with Live2D's save button.
+                if (modelStatus === 'ok') {
+                    const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'success');
+                    window.hasUnsavedChanges = false;
+                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    window._modelManagerHasSaved = true;
+                } else if (modelStatus === 'partial') {
+                    showStatus(partialMessage, 3000);
+                    showModelManagerToast(partialMessage, 3200, 'warning');
+                    window._modelManagerHasSaved = true;
+                } else {
+                    const message = modelMessage || t('live2d.saveFailedGeneral', '保存失败!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 3200, 'error');
+                }
+            } else if (currentModelType === 'live3d') {
+                // Live3D 模式：只显示模型保存结果
+                if (modelStatus === 'ok') {
+                    const message = modelMessage || t('live2d.settingsSaved', '模型设置保存成功!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'success');
+                    window.hasUnsavedChanges = false;
+                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    window._modelManagerHasSaved = true;
+                } else if (modelStatus === 'partial') {
+                    showStatus(partialMessage, 3000);
+                    showModelManagerToast(partialMessage, 3200, 'warning');
+                    window._modelManagerHasSaved = true;
+                } else {
+                    const message = modelMessage || t('live2d.saveFailedGeneral', '保存失败!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 3200, 'error');
+                }
             } else {
-                showStatus(t('live2d.saveFailedGeneral', '保存失败!'), 2000);
+                // Live2D 模式：显示位置和模型保存结果
+                if (positionSuccess && modelStatus === 'ok') {
+                    const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'success');
+                    window.hasUnsavedChanges = false; // 保存成功后重置标志
+                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    window._modelManagerHasSaved = true;
+                    // 不在保存时立即通知主页，而是在返回主页时通知
+                    // sendMessageToMainPage('reload_model');
+                } else if (positionSuccess && modelStatus === 'partial') {
+                    showStatus(modelMessage, 3000);
+                    showModelManagerToast(partialMessage, 3200, 'warning');
+                    window._modelManagerHasSaved = true;
+                } else if (positionSuccess) {
+                    const message = t('live2d.positionSavedModelFailed', '位置保存成功，模型设置保存失败!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 3200, 'warning');
+                    // 位置偏好已保存，主界面如触发重载可恢复位置；但仅在用户退出时才通知
+                    window._modelManagerHasSaved = true;
+                } else if (modelStatus === 'partial') {
+                    showStatus(modelPartialAndPositionFailedMessage, 3000);
+                    showModelManagerToast(modelPartialAndPositionFailedMessage, 3600, 'warning');
+                    window._modelManagerHasSaved = true;
+                } else if (modelSavedAtLeastPartially) {
+                    const message = t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 3200, 'warning');
+                    if (modelStatus === 'ok') {
+                        window._savedModelSnapshot = captureSettingsSnapshot();
+                    }
+                    window._modelManagerHasSaved = true;
+                    // 不在保存时立即通知主页，而是在返回主页时通知
+                    // sendMessageToMainPage('reload_model');
+                } else {
+                    const message = modelMessage || t('live2d.saveFailedGeneral', '保存失败!');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 3200, 'error');
+                }
             }
+
+            const modelFullySaved = (currentModelType === 'live3d' || currentModelType === 'pngtuber')
+                ? modelStatus === 'ok'
+                : (positionSuccess && modelStatus === 'ok');
+            const shouldOfferCardFace = modelFullySaved
+                && (
+                    savedFallbackModelAsExplicitBinding ||
+                    parameterEditedSinceSave ||
+                    window._modelManagerModelChangedSinceSave
+                    || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
+            );
+            if (modelFullySaved) {
+                await clearPendingParameterEditorSaveState();
+            }
+            if (shouldOfferCardFace) {
+                const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
+                offerCardFaceAfterModelSave({
+                    currentModelType,
+                    currentLive3dSubType: savedLive3dSubType
+                }).catch(error => {
+                    console.error('[模型管理] 保存后的卡面处理失败:', error);
+                });
+            }
+        } catch (error) {
+            console.error('保存设置失败:', error);
+            const message = t('live2d.saveFailed', `保存失败: ${error.message}`, { error: error.message });
+            showStatus(message, 3000);
+            showModelManagerToast(message, 3600, 'error');
+        } finally {
+            savingInProgress = false;
+            savePositionBtn.disabled = wasSaveButtonDisabled;
         }
     });
 
@@ -6802,11 +8671,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const height = 800;
             const left = (screen.width - width) / 2;
             const top = (screen.height - height) / 2;
-            window.open(
-                '/live2d_emotion_manager',
-                'emotionManager',
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow('/live2d_emotion_manager', 'emotionManager', features);
+            } else {
+                window.open('/live2d_emotion_manager', 'emotionManager', features);
+            }
         });
     }
 
@@ -6832,11 +8702,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            window.open(
-                url,
-                winName,
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(url, winName, features);
+            } else {
+                window.open(url, winName, features);
+            }
         });
     }
 
@@ -6846,7 +8717,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     backToMainBtn.addEventListener('click', async () => {
         // 退出前：比对当前设置和已保存快照，完全一致则视为无更改
-        if (window.hasUnsavedChanges && window._savedModelSnapshot) {
+        if (window.hasUnsavedChanges && window._savedModelSnapshot && !window._modelManagerParameterEditedSinceSave) {
             if (snapshotsEqual(window._savedModelSnapshot, captureSettingsSnapshot())) {
                 window.hasUnsavedChanges = false;
             }
@@ -6860,6 +8731,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 用户确认离开，重置未保存状态，避免被 beforeunload 拦截
             window.hasUnsavedChanges = false;
+            await clearPendingParameterEditorSaveState();
         }
 
         // 如果处于全屏状态，先退出全屏
@@ -6908,7 +8780,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 上传模型功能
     uploadBtn.addEventListener('click', () => {
         // 根据当前模型类型选择不同的文件选择器
-        if (currentModelType !== 'live2d') {
+        if (currentModelType === 'pngtuber') {
+            pngtuberModelUpload.click();
+        } else if (currentModelType !== 'live2d') {
             vrmFileUpload.click();
         } else {
             modelUpload.click();
@@ -7330,6 +9204,60 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
+    if (pngtuberModelUpload) {
+        pngtuberModelUpload.addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+
+            uploadStatus.textContent = '正在上传PNGTuber模型...';
+            uploadStatus.style.color = '#4f8cff';
+            uploadBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                for (const file of files) {
+                    formData.append('files', file, file.webkitRelativePath || file.name);
+                }
+
+                const response = await fetch('/api/model/pngtuber/upload_model', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    uploadStatus.textContent = `✓ ${result.message}`;
+                    uploadStatus.style.color = '#28a745';
+                    await loadPNGTuberModels();
+                    if (result.folder && modelSelect) {
+                        const option = Array.from(modelSelect.options).find(opt =>
+                            opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
+                        );
+                        if (option) {
+                            modelSelect.value = option.value;
+                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        } else if (result.pngtuber && window.loadPNGTuberAvatar) {
+                            await window.loadPNGTuberAvatar(result.pngtuber);
+                        }
+                    }
+                    setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
+                } else {
+                    uploadStatus.textContent = `✗ ${result.error}`;
+                    uploadStatus.style.color = '#dc3545';
+                    setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+                }
+            } catch (error) {
+                console.error('上传PNGTuber模型失败:', error);
+                uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+                uploadStatus.style.color = '#dc3545';
+                setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+            } finally {
+                uploadBtn.disabled = false;
+                pngtuberModelUpload.value = '';
+            }
+        });
+    }
+
     // VRM/ZIP模型上传（单个文件）
     vrmFileUpload.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
@@ -7424,16 +9352,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                             await new Promise(resolve => requestAnimationFrame(resolve));
                         }
 
-                        // 检测并修正朝向（会自动保存到preferences）
+                        // 保存加载管线处理后的朝向到 preferences
                         if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
                             const vrm = window.vrmManager.currentModel.vrm;
 
-                            // 检测朝向
-                            const needsRotation = window.VRMOrientationDetector.detectNeedsRotation(vrm);
+                            // loadModel 已经完成 VRM0.x 版本兼容和启发式朝向处理。
+                            // 这里保存最终旋转，避免上传流程再次用旧启发式覆盖加载结果。
                             const detectedRotation = {
-                                x: 0,
-                                y: needsRotation ? Math.PI : 0,
-                                z: 0
+                                x: vrm.scene.rotation.x,
+                                y: vrm.scene.rotation.y,
+                                z: vrm.scene.rotation.z
                             };
 
                             // 应用旋转
@@ -7573,11 +9501,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             userModelList.innerHTML = '<div class="empty-message">' + t('live2d.loadingModels', '加载中...') + '</div>';
 
-            // 并行加载 Live2D、VRM、MMD 用户模型
-            const [live2dResult, vrmResult, mmdResult] = await Promise.all([
+            // 并行加载 Live2D、VRM、MMD、PNGTuber 用户模型
+            const [live2dResult, vrmResult, mmdResult, pngtuberResult] = await Promise.all([
                 RequestHelper.fetchJson('/api/live2d/user_models').catch(() => ({ success: false })),
                 RequestHelper.fetchJson('/api/model/vrm/models').catch(() => ({ success: false })),
-                RequestHelper.fetchJson('/api/model/mmd/models').catch(() => ({ success: false }))
+                RequestHelper.fetchJson('/api/model/mmd/models').catch(() => ({ success: false })),
+                RequestHelper.fetchJson('/api/model/pngtuber/models').catch(() => ({ success: false }))
             ]);
 
             // 整合所有用户模型到统一列表
@@ -7633,6 +9562,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
             }
 
+            // PNGTuber 模型（只显示 user 位置）
+            if (pngtuberResult.success && Array.isArray(pngtuberResult.models)) {
+                pngtuberResult.models.filter(m => !m.location || m.location === 'user').forEach(m => {
+                    allUserModels.push({
+                        id: 'pngtuber:' + (m.folder || m.name),
+                        name: m.name,
+                        displayName: m.name || m.folder,
+                        type: 'pngtuber',
+                        typeLabel: 'PNGTuber',
+                        source: m.folder || m.filename || '',
+                        deleteKey: m.folder || m.name,
+                        url: m.url,
+                        folder: m.folder
+                    });
+                });
+            }
+
             if (allUserModels.length === 0) {
                 userModelList.innerHTML = '<div class="empty-message">' + t('live2d.noUserModels', '暂无可删除的用户模型') + '</div>';
                 return;
@@ -7651,6 +9597,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let isBound = false;
                 if (model.type === 'live2d') {
                     isBound = currentLive2DName === model.name;
+                } else if (model.type === 'pngtuber') {
+                    isBound = currentModelType === 'pngtuber' && currentModelInfo && (
+                        currentModelInfo.folder === model.folder || currentModelInfo.name === model.name
+                    );
                 } else {
                     isBound = currentLive3DUrl === model.url;
                 }
@@ -7675,6 +9625,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     typeBadge.style.color = '#4a9eff';
                 } else if (model.type === 'mmd') {
                     typeBadge.style.color = '#ff6b9d';
+                } else if (model.type === 'pngtuber') {
+                    typeBadge.style.color = '#f0a33a';
                 } else {
                     typeBadge.style.color = '#66bb6a';
                 }
@@ -7740,10 +9692,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 安全防护：移除当前绑定的模型，不允许删除
         const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
         const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+        const currentPNGTuberFolder = currentModelInfo && currentModelInfo.type === 'pngtuber' ? currentModelInfo.folder : '';
         for (const modelId of [...selectedDeleteModels]) {
             const { type, key } = parseModelId(modelId);
             const isBound = (type === 'live2d' && key === currentLive2DName) ||
-                            (type !== 'live2d' && key === currentLive3DUrl);
+                            (type === 'pngtuber' && key === currentPNGTuberFolder) ||
+                            ((type === 'vrm' || type === 'mmd') && key === currentLive3DUrl);
             if (isBound) {
                 selectedDeleteModels.delete(modelId);
                 showStatus(t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型'), 2000);
@@ -7765,6 +9719,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let lastErrorMessage = '';
         let deletedLive2D = false;
         let deletedLive3D = false;
+        let deletedPNGTuber = false;
 
         for (const modelId of selectedDeleteModels) {
             const { type, key } = parseModelId(modelId);
@@ -7788,6 +9743,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: key }) }
                     );
                     deletedLive3D = true;
+                } else if (type === 'pngtuber') {
+                    result = await RequestHelper.fetchJson(
+                        '/api/model/pngtuber/model',
+                        { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: key }) }
+                    );
+                    deletedPNGTuber = true;
                 }
                 if (result && result.success) {
                     successCount++;
@@ -7808,7 +9769,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateConfirmDeleteButton();
 
         // 刷新 Live2D 模型列表
-        if (deletedLive2D) {
+        if (deletedLive2D && currentModelType === 'live2d') {
             try {
                 availableModels = await RequestHelper.fetchJson('/api/live2d/models');
                 modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
@@ -7841,6 +9802,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (typeof loadMMDModels === 'function') await loadMMDModels();
             } catch (e) {
                 console.error('重新加载Live3D模型列表失败:', e);
+            }
+        }
+
+        if (deletedPNGTuber && currentModelType === 'pngtuber') {
+            try {
+                if (typeof loadPNGTuberModels === 'function') await loadPNGTuberModels();
+            } catch (e) {
+                console.error('重新加载PNGTuber模型列表失败:', e);
             }
         }
 
@@ -8113,11 +10082,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const noExpressionText = t('live2d.noExpression', '无表情');
 
         select.innerHTML = '';
-        const placeholderOption = document.createElement('option');
-        placeholderOption.value = '';
-        placeholderOption.textContent = defaultText;
-        placeholderOption.disabled = true;
-        select.appendChild(placeholderOption);
 
         if (type === 'motion') {
             const noMotionOption = document.createElement('option');
@@ -8225,6 +10189,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 加载当前角色模型的函数
     async function loadCurrentCharacterModel() {
         try {
+            window._modelManagerLoadedFallbackModel = false;
             // 获取角色名称
             const lanlanName = await getLanlanName();
             if (!lanlanName) {
@@ -8252,6 +10217,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 || _isValidPath(catgirlConfig.vrm);
             const hasValidMMDPath = _isValidPath(catgirlConfig._reserved?.avatar?.mmd?.model_path)
                 || _isValidPath(catgirlConfig.mmd);
+            const pngtuberConfig = catgirlConfig._reserved?.avatar?.pngtuber || catgirlConfig.pngtuber || null;
+            const hasValidPNGTuber = !!(pngtuberConfig && _isValidPath(pngtuberConfig.idle_image));
             // 优先使用 live3d_sub_type（后端权威来源，含 _reserved 迁移路径）
             const storedLive3dSubType = String(
                 catgirlConfig._reserved?.avatar?.live3d_sub_type
@@ -8263,6 +10230,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             let modelType = catgirlConfig.model_type || ((hasValidVRMPath || hasValidMMDPath) ? 'live3d' : 'live2d');
             // 兼容旧配置：'vrm' 统一为 'live3d'
             if (modelType === 'vrm') modelType = 'live3d';
+
+            if (modelType === 'pngtuber' && hasValidPNGTuber) {
+                await switchModelDisplay('pngtuber', '', { preferredPNGTuberConfig: pngtuberConfig });
+                const matchedOption = findPNGTuberOptionByConfig(pngtuberConfig);
+                if (matchedOption) {
+                    modelSelect.value = matchedOption.value;
+                    await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
+                } else {
+                    currentModelInfo = {
+                        name: lanlanName,
+                        folder: pngtuberConfig.folder || pngtuberConfig.model_folder || '',
+                        path: pngtuberConfig.idle_image,
+                        type: 'pngtuber',
+                        pngtuber: pngtuberConfig,
+                    };
+                    if (window.loadPNGTuberAvatar) {
+                        await window.loadPNGTuberAvatar(pngtuberConfig);
+                    }
+                    await loadPNGTuberPreviewControls(pngtuberConfig);
+                }
+                showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
+                return;
+            }
 
             // 如果模型类型是 Live3D 但没有任何有效模型路径（VRM/MMD），自动修复配置
 
@@ -8335,10 +10325,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        await suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
-                        selectDefaultLive3DModel();
+                        selectDefaultLive3DModel({ suppressChange: true });
                     }
                 } else if (live3dSubType === 'vrm' && hasValidVRMPath && vrmModelSelect) {
                     // VRM 模型：安全获取路径并在合并列表中查找 [VRM] 选项
@@ -8445,16 +10435,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        await suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath, '，尝试加载默认模型');
-                        selectDefaultLive3DModel();
+                        selectDefaultLive3DModel({ suppressChange: true });
                     }
                 }
             } else if (modelType !== 'live2d') {
                 // Live3D 但无有效路径 → 尝试加载内置默认模型
                 console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，尝试加载默认模型`);
-                selectDefaultLive3DModel();
+                selectDefaultLive3DModel({ suppressChange: true });
             } else {
                 // Live2D 模型
                 // 构建API URL，支持可选的item_id参数
@@ -8481,6 +10471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const currentModelData = await RequestHelper.fetchJson(apiUrl);
 
                 if (!currentModelData.success) {
+                    showStatus(currentModelData.error || t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));
                     return;
                 }
 
@@ -8492,6 +10483,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     // 设置模型选择器
                     currentModelInfo = model_info;
+                    window._modelManagerLoadedFallbackModel = model_info.is_fallback === true;
                     modelSelect.value = model_name;
 
                     // 更新按钮文字
@@ -8526,16 +10518,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 如果已自动加载了一个模型，确保在下拉框中选中它
     // 这是双重保险：防止 loadCurrentCharacterModel() 内部设置失败
-    if (currentModelInfo && currentModelInfo.name) {
+    if (currentModelType === 'live2d' && currentModelInfo && currentModelInfo.name) {
         const exists = availableModels.some(m => m.name === currentModelInfo.name);
         if (exists && modelSelect.value !== currentModelInfo.name) {
             modelSelect.value = currentModelInfo.name;
         }
     }
 
+    await restorePendingParameterEditorSaveState(savePositionBtn, {
+        currentModelInfo,
+        showNotice: true,
+        showStatus,
+        showToast: showModelManagerToast
+    });
+
     // 等待异步设置（打光、待机动作等）加载完成后记录快照
-    setTimeout(() => {
+    setTimeout(async () => {
         window._savedModelSnapshot = captureSettingsSnapshot();
+        await restorePendingParameterEditorSaveState(savePositionBtn, {
+            currentModelInfo,
+            showNotice: true,
+            showStatus,
+            showToast: showModelManagerToast
+        });
     }, 500);
   } catch (_fatalError) {
     console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);
@@ -8546,6 +10551,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // 监听页面卸载事件，确保返回时主界面可见
 window.addEventListener('beforeunload', (e) => {
+    notifyCardMakerFallbackOwnerClosing();
+
     // 尝试退出全屏
     if (isFullscreen()) {
         try {

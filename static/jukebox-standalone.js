@@ -137,23 +137,43 @@
     window.Jukebox.State._dragGuard = null;
   }
 
-  function neutralizeLegacyRegions(container) {
+  function setAppRegion(element, value) {
+    if (!element) return;
+
+    try {
+      element.style.setProperty('-webkit-app-region', value, 'important');
+    } catch (_) {
+      element.style.webkitAppRegion = value;
+    }
+  }
+
+  function neutralizeLegacyRegions(container, controller) {
     disconnectLegacyStandaloneDrag();
 
-    // 注意：这里不再把 .jukebox-container 及 header 强制设为 no-drag。
-    // preload-jukebox.js 的 setupNativeDrag 已经铺好了正确的 CSS region：
-    //   .jukebox-container → drag
-    //   .jukebox-content / .jukebox-controls-row / .jukebox-header-buttons 等 → no-drag
-    // 让 OS 原生拖拽接管 header 区域（和 /jukebox/manager 一致的零 IPC 路径），
-    // 同时保留下面的 JS fallback：用户从 content 空白处起拖时仍走 bridge.dragStart。
-    // 历史上这里把全部 region 改 no-drag 是为了让 JS 完全接管，现在我们有 native IPC drag
-    // + 完整的 setupNativeDrag CSS 双保险，不需要再粗暴覆盖。
+    // 独立窗口只允许标题栏拖动；按钮等交互元素继续 no-drag。PC bridge
+    // 支持 dragStart/dragStop 时不再把标题栏设为 CSS app-region: drag：
+    // 这样 renderer 仍能收到鼠标事件并显示 grab cursor，拖动本身仍交给主进程。
+    var useRendererNativeDrag = !!(controller && controller.nativeDrag);
+    document.body.classList.toggle('neko-jukebox-bridge-drag', useRendererNativeDrag);
+
+    // 这里和模板 CSS 双写，避免动态注入样式或 Chromium app-region 缓存造成热区漂移。
+    setAppRegion(container, 'no-drag');
+    var header = container.querySelector('.jukebox-header');
+    if (header) {
+      setAppRegion(header, useRendererNativeDrag ? 'no-drag' : 'drag');
+    }
+    container.querySelectorAll('.jukebox-header-left, .jukebox-header-drag-fill').forEach(function(el) {
+      setAppRegion(el, useRendererNativeDrag ? 'no-drag' : 'drag');
+    });
+    container.querySelectorAll('.jukebox-header-buttons, .jukebox-header-buttons *').forEach(function(el) {
+      setAppRegion(el, 'no-drag');
+    });
 
     // 仅清理旧 DOM 元素 .jukebox-drag-overlay（若存在）—— 这是历史遗留的透明覆盖层，
     // 可能挡住指针事件或造成 z-index 错位。
     var overlay = container.querySelector('.jukebox-drag-overlay');
     if (overlay) {
-      overlay.style.webkitAppRegion = 'no-drag';
+      setAppRegion(overlay, 'no-drag');
       overlay.style.pointerEvents = 'none';
       overlay.setAttribute('aria-hidden', 'true');
     }
@@ -255,7 +275,7 @@
   }
 
   function bindStandaloneDrag(container, controller) {
-    var dragRoot = container;
+    var dragRoot = container.querySelector('.jukebox-header');
     if (!dragRoot) return;
 
     var state = null;
@@ -294,7 +314,7 @@
         return;
       }
 
-      if (e.target.closest(IGNORE_DRAG_SELECTOR)) {
+      if (e.target.closest('button, input, a, select, textarea, .jukebox-header-buttons')) {
         return;
       }
 
@@ -516,7 +536,7 @@
       return false;
     }
 
-    neutralizeLegacyRegions(container);
+    neutralizeLegacyRegions(container, controller);
     document.body.classList.add('neko-jukebox-standalone-page');
 
     bindStandaloneDrag(container, controller);

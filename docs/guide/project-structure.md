@@ -22,8 +22,9 @@ N.E.K.O/
 ├── config/                     # Configuration
 │   ├── __init__.py             # Constants, defaults, port definitions
 │   ├── api_providers.json      # API provider profiles
-│   ├── prompts_sys.py          # System prompts (emotion, proactive chat)
-│   └── prompts_chara.py        # Character system prompts
+│   └── prompts/                # Character, system, and feature prompts
+│       ├── prompts_sys.py      # System prompts (emotion, proactive chat)
+│       └── prompts_chara.py    # Character system prompts
 │
 ├── main_logic/                 # Core business logic
 │   ├── core.py                 # LLMSessionManager (central session handler)
@@ -76,7 +77,7 @@ N.E.K.O/
 │   ├── theme-manager.js        # Dark/light mode
 │   ├── css/                    # Stylesheets
 │   ├── js/                     # Feature-specific JS modules
-│   ├── locales/                # i18n JSON files (en, zh-CN, zh-TW, ja, ko)
+│   ├── locales/                # i18n JSON files (en, zh-CN, zh-TW, ja, ko, ru, es, pt)
 │   └── live2d-ui-*.js          # Live2D UI components
 │
 ├── templates/                  # Jinja2 HTML templates

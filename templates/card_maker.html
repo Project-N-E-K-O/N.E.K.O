@@ -6,21 +6,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="cardExport.title">卡面制作 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值 -->
-    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
+    <script>
+        const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');
+        window.VRM_DEFAULT_LIGHTING = Object.freeze(JSON.parse(vrmDefaultLightingData?.textContent || '{}'));
+    </script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/base.css">
-    <link rel="stylesheet" href="/static/css/card_maker.css">
+    <link rel="stylesheet" href="/static/css/card_maker.css?v={{ static_asset_version | default('0') }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js" defer></script>
 </head>
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
         <h2 data-i18n="cardExport.title" data-text="卡面制作">卡面制作</h2>
-        <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" title="返回">
-            <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭">
-        </button>
+        <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon"></span>
+            </button>
+            <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" data-i18n-aria="cardExport.back" title="返回" aria-label="返回">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭" draggable="false">
+            </button>
+        </div>
     </div>
 
     <!-- 主内容区域 -->
@@ -36,6 +50,7 @@
         <div id="mmd-container" style="display: none;">
             <canvas id="mmd-canvas"></canvas>
         </div>
+        <div id="pngtuber-container" style="display: none;"></div>
     </div>
 
     <!-- 左侧：卡片预览与编辑区域 -->
@@ -53,13 +68,11 @@
             </div>
         </div>
         <div id="card-preview">
-            <div id="card-header-area">
-                <span id="card-preview-name"></span>
-            </div>
             <div id="card-portrait-area">
                 <div id="sticker-overlay-below"></div>
                 <canvas id="card-portrait-canvas"></canvas>
                 <div id="sticker-overlay"></div>
+                <div class="sticker-selection-frame" id="sticker-selection-frame"></div>
                 <div class="sticker-rotate-handle" id="sticker-rotate-handle">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </div>
@@ -68,7 +81,7 @@
         </div>
         <div id="model-loading-overlay">
             <div class="loading-spinner"></div>
-            <div class="loading-text" data-i18n="cardExport.loadingModel">正在加载模型...</div>
+            <div class="loading-text" data-i18n="cardExport.loadingModel">正在加载模型，加载完成后才能保存或关闭</div>
         </div>
     </div>
 
@@ -87,17 +100,17 @@
             <label data-i18n="cardExport.composition">构图调整</label>
             <div class="control-row">
                 <span data-i18n="cardExport.offsetX">水平偏移</span>
-                <input type="range" id="offset-x" min="-500" max="500" value="0" step="1">
+                <input type="range" id="offset-x" min="-800" max="800" value="0" step="1">
                 <span id="offset-x-val" class="range-val">0</span>
             </div>
             <div class="control-row">
                 <span data-i18n="cardExport.offsetY">垂直偏移</span>
-                <input type="range" id="offset-y" min="-500" max="500" value="0" step="1">
+                <input type="range" id="offset-y" min="-1000" max="1000" value="0" step="1">
                 <span id="offset-y-val" class="range-val">0</span>
             </div>
             <div class="control-row">
                 <span data-i18n="cardExport.scale">缩放</span>
-                <input type="range" id="portrait-scale" min="50" max="300" value="100" step="1">
+                <input type="range" id="portrait-scale" min="50" max="600" value="100" step="1">
                 <span id="scale-val" class="range-val">100%</span>
             </div>
             <div class="control-row">
@@ -117,6 +130,7 @@
             <div class="control-section">
                 <label data-i18n="cardExport.stickerPick">选择贴纸</label>
                 <div id="sticker-grid"></div>
+                <div class="sticker-selection-hint" data-i18n="cardExport.stickerOverlapCycleHint">右键重叠贴纸可按图层顺序切换选择</div>
             </div>
             <div class="control-section" id="sticker-controls" style="display:none;">
                 <label data-i18n="cardExport.stickerAdjust">贴纸调整</label>
@@ -144,6 +158,17 @@
                         <span data-i18n="cardExport.lockRatio">锁定比例</span>
                     </button>
                 </div>
+                <div class="control-row" id="sticker-variant-row" style="display:none;">
+                    <button type="button" id="sticker-switch-variant-btn" class="sticker-variant-control-btn" data-i18n-title="cardExport.switchStickerVariant" data-i18n-aria="cardExport.switchStickerVariant" title="切换形态" aria-label="切换形态">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="17 1 21 5 17 9"/>
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                            <polyline points="7 23 3 19 7 15"/>
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                        </svg>
+                        <span data-i18n="cardExport.switchStickerVariant">切换形态</span>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -153,6 +178,11 @@
         </div>
     </div>
     </div>
+
+    <script>
+        window._cardExportPage = true;
+        window.renderQuality = 'high';
+    </script>
 
     <!-- Live2D SDK -->
     <script src="/static/libs/live2dcubismcore.min.js"></script>
@@ -192,9 +222,9 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
 
-    <script>window._cardExportPage = true;</script>
     <script src="/static/vrm-init.js"></script>
     <script src="/static/mmd-init.js"></script>
-    <script src="/static/js/card_maker.js"></script>
+    <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/card_maker.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
 </html>

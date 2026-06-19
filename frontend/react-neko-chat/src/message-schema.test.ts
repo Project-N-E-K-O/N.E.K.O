@@ -15,6 +15,29 @@ describe('message-schema', () => {
     expect(message.blocks[0]?.type).toBe('text');
   });
 
+  it('normalizes empty turn ids while preserving non-empty turn ids', () => {
+    const baseMessage = {
+      id: 'msg-turn',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: 'hello' }],
+    };
+
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: null,
+    }).turnId).toBeUndefined();
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: '',
+    }).turnId).toBeUndefined();
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: 'turn-1',
+    }).turnId).toBe('turn-1');
+  });
+
   it('rejects invalid message payloads', () => {
     expect(() => parseChatMessage({
       id: 'msg-2',
@@ -29,6 +52,63 @@ describe('message-schema', () => {
     const props = parseChatWindowProps(undefined);
 
     expect(props).toEqual({});
+  });
+
+  it('accepts new user icebreaker choice prompts', () => {
+    const onChoiceSelect = vi.fn();
+    const props = parseChatWindowProps({
+      choicePrompt: {
+        source: 'new_user_icebreaker',
+        sessionId: 'icebreaker-day1-session',
+        options: [
+          { choice: 'A', label: '看得差不多了' },
+          { choice: 'B', label: '还有点晕乎乎' },
+        ],
+      },
+      onChoiceSelect,
+    });
+
+    expect(props.choicePrompt?.source).toBe('new_user_icebreaker');
+    props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+    expect(onChoiceSelect).toHaveBeenCalledTimes(1);
+    expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+  });
+
+  it('accepts chat surface mode props', () => {
+    const props = parseChatWindowProps({
+      chatSurfaceMode: 'compact',
+      compactChatState: 'input',
+    });
+
+    expect(props.chatSurfaceMode).toBe('compact');
+    expect(props.compactChatState).toBe('input');
+  });
+
+  it('accepts compact history open requests', () => {
+    const props = parseChatWindowProps({
+      compactHistoryOpenRequest: {
+        id: 'compact-history-open-guide',
+        open: true,
+        reason: 'avatar-floating-guide-history',
+      },
+    });
+
+    expect(props.compactHistoryOpenRequest).toEqual({
+      id: 'compact-history-open-guide',
+      open: true,
+      reason: 'avatar-floating-guide-history',
+    });
+  });
+
+  it('accepts the revived "full" surface mode', () => {
+    // `full` is the frozen legacy surface revived alongside compact/minimized.
+    // The schema accepts all three; the host dispatcher routes `full` to the
+    // isolated FullChatSurface.
+    const props = parseChatWindowProps({
+      chatSurfaceMode: 'full',
+    });
+
+    expect(props.chatSurfaceMode).toBe('full');
   });
 
   it('accepts an avatar interaction callback in window props', () => {

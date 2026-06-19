@@ -353,7 +353,7 @@ window.updateChatModeStyle = function(checkbox) {
         checkmark.style.opacity = '1';
     } else {
         indicator.style.backgroundColor = 'transparent';
-        indicator.style.borderColor = '#ccc';
+        indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
         checkmark.style.opacity = '0';
     }
 
@@ -408,7 +408,7 @@ window.createChatModeToggle = function(options) {
         width: '16px',
         height: '16px',
         borderRadius: '50%',
-        border: '2px solid #ccc',
+        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
         backgroundColor: 'transparent',
         cursor: 'pointer',
         flexShrink: '0',
@@ -547,6 +547,12 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveMemeChat',
         tooltipKey: 'settings.toggles.proactiveMemeChatTooltip',
         globalVarName: 'proactiveMemeEnabled'
+    },
+    {
+        mode: 'mini_game',
+        labelKey: 'settings.toggles.proactiveMiniGameInviteChat',
+        tooltipKey: 'settings.toggles.proactiveMiniGameInviteChatTooltip',
+        globalVarName: 'proactiveMiniGameInviteEnabled'
     }
 ];
 
@@ -626,7 +632,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                 checkmark.style.opacity = '1';
             } else {
                 indicator.style.backgroundColor = 'transparent';
-                indicator.style.borderColor = '#ccc';
+                indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
                 checkmark.style.opacity = '0';
             }
             toggleItem.style.background = hovered
@@ -680,8 +686,11 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         }
 
         // 更新 proactive vision checkbox 状态和视觉样式
+        // 注意：UI 是"隐私模式"，underlying 变量 proactiveVisionEnabled 语义相反，
+        // 故 checked = !proactiveVisionEnabled。和 avatar-ui-popup.js 里 toggle
+        // 配置 inverted: true 对齐。
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
-            const newChecked = window.proactiveVisionEnabled;
+            const newChecked = !window.proactiveVisionEnabled;
             if (proactiveVisionCheckbox.checked !== newChecked) {
                 proactiveVisionCheckbox.checked = newChecked;
             }

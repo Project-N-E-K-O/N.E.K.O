@@ -9,11 +9,96 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/character_card_manager.css">
+    <link rel="stylesheet" href="/static/css/character_card_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
     <style>
+        /* 标题栏按钮容器 */
+        .title-bar-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            -webkit-app-region: no-drag;
+        }
+
+        /* 最小化、最大化/恢复按钮 - 样式与关闭按钮统一 */
+        .minimize-btn,
+        .maximize-btn {
+            background: transparent;
+            border: none;
+            color: #fff;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+            border-radius: 4px;
+            transition: background 0.2s, transform 0.1s ease;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-app-region: no-drag;
+        }
+
+        .minimize-btn:hover,
+        .maximize-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .minimize-btn:active,
+        .maximize-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(1px) scale(0.95);
+            opacity: 0.9;
+        }
+
+        /* 最小化图标：横线 */
+        .minimize-icon {
+            display: block;
+            width: 16px;
+            height: 2px;
+            background: #fff;
+            border-radius: 2px;
+            transform: translateY(5px);
+        }
+
+        /* 最大化图标：实心方框 */
+        .maximize-icon {
+            display: block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+
+        /* 恢复图标：重叠方框（模拟窗口层叠） */
+        .maximize-icon.restored {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            position: relative;
+            background: #4BD4FD;
+            box-sizing: border-box;
+        }
+
+        .maximize-icon.restored::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: 3px;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            background: #4BD4FD;
+            box-sizing: border-box;
+        }
+
         /* 主人档案补充样式 */
         .master-profile-section {
             border: 2px solid #b3e5fc;
@@ -40,14 +125,6 @@
             -webkit-appearance: none;
             width: 100%;
             text-align: left;
-        }
-        .master-profile-header .arrow {
-            transition: transform 0.2s ease;
-            width: 20px;
-            height: 20px;
-        }
-        .master-profile-header.open .arrow {
-            transform: rotate(90deg);
         }
         .master-profile-content {
             position: absolute;
@@ -325,6 +402,27 @@
             background: #40C5F1;
             color: #fff;
         }
+        @media (max-width: 520px) {
+            body .page-title-bar {
+                gap: 8px;
+                padding: 14px clamp(8px, 3vw, 18px);
+            }
+            .page-title-bar h1,
+            .page-title-bar h2 {
+                flex: 1 1 auto;
+                min-width: 0;
+                overflow: hidden;
+            }
+            .title-bar-buttons {
+                flex: 0 0 auto;
+                gap: clamp(4px, 1.5vw, 8px);
+            }
+            .minimize-btn,
+            .maximize-btn {
+                width: clamp(28px, 10vw, 32px);
+                height: clamp(28px, 10vw, 32px);
+            }
+        }
     </style>
 </head>
 
@@ -332,9 +430,17 @@
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
-        <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
-            <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
-        </button>
+        <div class="title-bar-buttons">
+            <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="minimize-icon"></span>
+            </button>
+            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="maximize-icon"></span>
+            </button>
+            <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" draggable="false">
+            </button>
+        </div>
     </div>
 
     <!-- 侧边栏 -->
@@ -362,7 +468,9 @@
 <p data-i18n="steam.pageDescription">通过此页面，您可以浏览、修改、上传、导入导出角色卡和管理Steam创意工坊中的Live2D模型和声音</p>
 </div>
 <button type="button" class="btn sm sidebar-cloudsave-btn" id="open-cloudsave-manager-btn" data-i18n-title="character.openCloudsaveManager" title="云存档管理">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/><path d="M8 16l4 4 4-4"/><path d="M12 12v8"/></svg>
+    <span class="sidebar-cloudsave-icon" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 17.5A4.5 4.5 0 0 0 18 8.8h-1.2A7 7 0 1 0 4.5 16.6"/><path d="M12 12.5v6"/><path d="m9.5 16 2.5 2.5 2.5-2.5"/></svg>
+    </span>
     <span data-i18n="character.openCloudsaveManager">云存档管理</span>
 </button>
 </div>
@@ -370,7 +478,9 @@
 <!-- 主人档案区域 -->
 <div class="menu-section master-profile-section" id="master-profile-section">
     <button type="button" class="master-profile-header" id="master-profile-header" onclick="toggleMasterSection()" aria-expanded="false">
-        <img src="/static/icons/dropdown_arrow.png" class="arrow" alt="" style="width:20px;height:20px;">
+        <span class="master-profile-arrow-bubble" aria-hidden="true">
+            <span class="master-profile-arrow-symbol"></span>
+        </span>
         <span data-i18n="character.masterProfileTitle">主人档案</span>
     </button>
     <div class="master-profile-content" id="master-profile-content" style="display:none;">
@@ -405,9 +515,17 @@
 <div class="tab-contents">
 <!-- 订阅内容标签页 -->
 <div id="subscriptions-content" class="tab-content">
-<div class="section-card">
-<div class="section-header">
-<h2 data-i18n="steam.mySubscriptions">我的订阅</h2>
+<div class="subscription-view-area chara-cards-view-area">
+<div class="chara-cards-header-bg subscription-header-bg">
+<div class="chara-cards-header-row subscription-header-row">
+<div class="card-info-title-area subscription-title-area">
+<div class="card-info-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="#40C5F1" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="#40C5F1"/></svg>
+<span data-i18n="steam.mySubscriptions">我的订阅</span>
+</div>
+<img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
+</div>
+</div>
 </div>
                     
 <div class="filter-controls">
@@ -470,7 +588,7 @@
 <div class="chara-cards-header-row">
 <div class="card-info-title-area">
 <div class="card-info-header-text">
-<svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+<svg width="15" height="15" viewBox="0 0 24 24" fill="#40C5F1" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="#40C5F1"/></svg>
 <span data-i18n="steam.characterCardsList">角色卡列表</span>
 </div>
 <img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
@@ -628,7 +746,8 @@
 <div class="control-group" style="margin-bottom: 0;">
 <div class="control-label" data-i18n="steam.voiceReferenceProviderHint">服务商建议</div>
 <select id="voice-reference-provider-hint" class="control-select">
-<option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里云 CosyVoice</option>
+<option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里百炼 CosyVoice</option>
+<option value="cosyvoice_intl" data-i18n="voice.provider.cosyvoice_intl">阿里国际版 CosyVoice</option>
 <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
 <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
 </select>
@@ -760,7 +879,8 @@
     <script src="/static/live2d-init.js"></script>
     
     <script src="/static/js/reserved_fields_utils.js"></script>
-    <script src="/static/js/character_card_manager.js"></script>
+    <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
     <script type="importmap">
@@ -787,14 +907,86 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/skip-controller.js"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/tutorial/core/universal-manager.js"></script>
 
     <!-- 初始化 -->
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
+        // 最小化按钮逻辑
+        async function minimizeWindow() {
+            const api = window.nekoWindowControl;
+            if (!api || typeof api.minimize !== 'function') return;
+            try {
+                await api.minimize();
+            } catch (e) {
+                // 忽略非 Electron 环境
+            }
+        }
+
+        // 最大化/恢复按钮逻辑
+        async function toggleMaximize() {
+            const api = window.nekoWindowControl;
+            if (!api || typeof api.maximize !== 'function') return;
+            try {
+                const result = await api.maximize();
+                if (result && result.ok) {
+                    updateMaximizeIcon(result.isMaximized);
+                }
+            } catch (e) {
+                // 忽略非 Electron 环境
+            }
+        }
+
+        function updateMaximizeIcon(isMaximized) {
+            const icon = document.querySelector('.maximize-icon');
+            if (!icon) return;
+            const btn = document.getElementById('maximizeBtn');
+            const labelKey = isMaximized ? 'common.restore' : 'common.maximize';
+            const fallbackLabel = isMaximized ? '恢复' : '最大化';
+            const translated = typeof window.t === 'function' ? window.t(labelKey) : null;
+            const label = translated && translated !== labelKey ? translated : fallbackLabel;
+            if (isMaximized) {
+                icon.classList.add('restored');
+            } else {
+                icon.classList.remove('restored');
+            }
+            if (btn) {
+                btn.setAttribute('data-i18n-title', labelKey);
+                btn.setAttribute('data-i18n-aria', labelKey);
+                btn.setAttribute('title', label);
+                btn.setAttribute('aria-label', label);
+            }
+        }
+
+        // 页面加载时查询当前最大化状态，确保图标正确
+        document.addEventListener('DOMContentLoaded', async function() {
             if (typeof initUniversalTutorialManager === 'function') {
                 initUniversalTutorialManager();
             }
+            // 初始化最大化按钮图标
+            try {
+                const api = window.nekoWindowControl;
+                if (api && typeof api.isMaximized === 'function') {
+                    const isMaximized = await api.isMaximized();
+                    updateMaximizeIcon(isMaximized);
+                }
+            } catch (e) {
+                // 浏览器环境忽略
+            }
+            // 监听窗口大小变化以同步图标状态（unmaximize 可能通过双击标题栏等方式触发）
+            window.addEventListener('resize', async function() {
+                try {
+                    const api = window.nekoWindowControl;
+                    if (api && typeof api.isMaximized === 'function') {
+                        const isMaximized = await api.isMaximized();
+                        updateMaximizeIcon(isMaximized);
+                    }
+                } catch (e) {
+                    // 忽略
+                }
+            });
         });
     </script>
 </body>

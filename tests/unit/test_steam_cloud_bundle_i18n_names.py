@@ -56,6 +56,7 @@ INVALID_NAME_CASES = [
     ("foo/bar", "contains_path_separator"),
     ("..", "path_traversal"),
     ("api", "reserved_route_name"),
+    ("basketball_demo", "reserved_route_name"),
     ("AUX", "reserved_device_name"),
     ("bad*", "invalid_character"),
 ]
@@ -63,6 +64,10 @@ INVALID_NAME_CASES = [
 
 def _make_config_manager(tmp_root: Path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],

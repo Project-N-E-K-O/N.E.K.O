@@ -2015,7 +2015,7 @@ export const I18N = {
           busy: '当前会话正忙 (可能在跑 LLM / 写文件), 请稍后再点.',
         },
         avatar: {
-          instruction_integration_hint: '下方所有字段 (道具 / 动作 / 强度 / 触碰区 / 文本上下文 / 附带奖励 / 彩蛋) 都会拼进 Instruction preview — 触发后展开结果区的 "Instruction 预览" 即可看到完整 wire 文本.',
+          instruction_integration_hint: 'Instruction preview 展示实际发送给模型的道具事件提示。当前运行时使用 compact 提示: 道具 / 动作 / 强度 / 附带奖励 / 彩蛋会体现在客观事件里，文本上下文只参与 payload 预览和归一化检查，不直接拼入提示词正文.',
           tool_label: '道具',
           tool_option: {
             lollipop: '棒棒糖',
