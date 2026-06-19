@@ -115,29 +115,30 @@ class SupervisionController:
             and self._focus_active
             and foreground in _DISTRACTION_FOREGROUND_CATEGORIES
         )
+        away_detected = (
+            self._enabled
+            and self._focus_active
+            and idle_value is not None
+            and idle_value >= away_seconds
+        )
         text = str(ocr_text or "")
         if text != self._last_ocr_text or active_from_idle:
             self._last_ocr_text = text
             self._last_activity_at = current
             if self._reminder_level != "active":
                 self._reminder_level = "active"
+        if away_detected:
+            self._reminder_level = "away"
+            return _result(
+                inactivity_detected=True,
+                suggested_action="pause_or_switch",
+            )
         if distraction_detected:
             self._reminder_level = "distraction"
             return _result(
                 inactivity_detected=False,
                 suggested_action="return_to_focus",
                 distraction_detected=True,
-            )
-        if (
-            self._enabled
-            and self._focus_active
-            and idle_value is not None
-            and idle_value >= away_seconds
-        ):
-            self._reminder_level = "away"
-            return _result(
-                inactivity_detected=True,
-                suggested_action="pause_or_switch",
             )
         inactive = (
             self._enabled
@@ -146,6 +147,8 @@ class SupervisionController:
         )
         if inactive:
             self._reminder_level = "inactivity"
+        elif self._reminder_level == "distraction":
+            self._reminder_level = "active"
         return _result(
             inactivity_detected=bool(inactive),
             suggested_action="pause_or_switch" if inactive else "",

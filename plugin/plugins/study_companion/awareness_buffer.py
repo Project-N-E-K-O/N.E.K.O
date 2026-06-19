@@ -110,7 +110,7 @@ class ActivityBuffer:
             for snapshot in reversed(self.snapshots):
                 if snapshot.timestamp < recent_threshold:
                     return False
-                if snapshot.app_type not in ("other", "unknown") and snapshot.activity_type not in (
+                if snapshot.app_type not in ("other", "unknown", "private") and snapshot.activity_type not in (
                     "idle",
                     "",
                 ):

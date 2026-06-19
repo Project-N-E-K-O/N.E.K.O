@@ -145,3 +145,61 @@ def test_supervision_flags_foreground_distraction_during_focus() -> None:
     assert result["foreground_category"] == "gaming"
     assert result["suggested_action"] == "return_to_focus"
     assert result["reminder_level"] == "distraction"
+
+
+def test_supervision_idle_away_takes_priority_over_distraction() -> None:
+    controller = SupervisionController(
+        SupervisionConfig(
+            enabled=True,
+            remind_interval_minutes=10,
+            inactivity_timeout_minutes=5,
+            idle_away_seconds=120,
+        ),
+        clock=lambda: 0.0,
+    )
+    controller.on_focus_start(goal={}, planned_minutes=25, now=0.0)
+
+    result = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        idle_seconds=121.0,
+        foreground_category="gaming",
+        now=121.0,
+    )
+
+    assert result["inactivity_detected"] is True
+    assert result["suggested_action"] == "pause_or_switch"
+    assert result["reminder_level"] == "away"
+    assert result["foreground_category"] == "gaming"
+    assert result["distraction_detected"] is False
+
+
+def test_supervision_clears_distraction_level_after_foreground_changes() -> None:
+    controller = SupervisionController(
+        SupervisionConfig(
+            enabled=True,
+            remind_interval_minutes=10,
+            inactivity_timeout_minutes=5,
+        ),
+        clock=lambda: 0.0,
+    )
+    controller.on_focus_start(goal={}, planned_minutes=25, now=0.0)
+
+    distracted = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        idle_seconds=1.0,
+        foreground_category="gaming",
+        now=60.0,
+    )
+    recovered = controller.observe_activity(
+        ocr_text="same text",
+        sensor_available=True,
+        now=61.0,
+    )
+
+    assert distracted["reminder_level"] == "distraction"
+    assert recovered["inactivity_detected"] is False
+    assert recovered["suggested_action"] == ""
+    assert recovered["reminder_level"] == "active"
+    assert "distraction_detected" not in recovered

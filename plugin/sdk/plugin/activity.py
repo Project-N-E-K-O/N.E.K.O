@@ -18,18 +18,16 @@ class OsActivitySnapshot:
     privacy_state: PrivacyState = "unavailable"
 
 
-_ACTIVITY_TRACKERS: dict[str, Any] = {}
+def _read_system_signal_snapshot() -> Any:
+    from main_logic.activity import get_system_signal_collector
+
+    return get_system_signal_collector().snapshot()
 
 
-def _tracker_for_source(source: str) -> Any:
-    source_key = str(source or "").strip() or "plugin"
-    tracker = _ACTIVITY_TRACKERS.get(source_key)
-    if tracker is None:
-        from main_logic.activity import UserActivityTracker
+def _active_window_from_system_snapshot(system_snapshot: Any) -> Any | None:
+    from main_logic.activity.state_machine import observation_from_system
 
-        tracker = UserActivityTracker(source_key)
-        _ACTIVITY_TRACKERS[source_key] = tracker
-    return tracker
+    return observation_from_system(system_snapshot)
 
 
 def _coerce_idle_seconds(value: Any) -> float | None:
@@ -55,16 +53,21 @@ async def get_os_activity_snapshot(
 ) -> OsActivitySnapshot:
     """Return the OS-only activity signals plugins are allowed to consume."""
 
-    core_snapshot = await _tracker_for_source(source).get_snapshot(now=now)
-    os_signals_available = bool(getattr(core_snapshot, "os_signals_available", True))
-    active_window = getattr(core_snapshot, "active_window", None)
+    _ = (source, now)
+    system_snapshot = _read_system_signal_snapshot()
+    os_signals_available = bool(getattr(system_snapshot, "os_signals_available", True))
+    active_window = (
+        _active_window_from_system_snapshot(system_snapshot)
+        if os_signals_available
+        else None
+    )
     foreground_category = (
         str(getattr(active_window, "category", "") or "").strip().lower() or None
-        if os_signals_available and active_window is not None
+        if active_window is not None
         else None
     )
     idle_seconds = (
-        _coerce_idle_seconds(getattr(core_snapshot, "system_idle_seconds", None))
+        _coerce_idle_seconds(getattr(system_snapshot, "idle_seconds", None))
         if os_signals_available
         else None
     )
@@ -72,7 +75,7 @@ async def get_os_activity_snapshot(
         os_signals_available=os_signals_available,
         foreground_category=foreground_category,
         system_idle_seconds=idle_seconds,
-        privacy_state=_privacy_state(core_snapshot, foreground_category),
+        privacy_state=_privacy_state(system_snapshot, foreground_category),
     )
 
 
