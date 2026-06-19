@@ -2387,15 +2387,20 @@ class LLMSessionManager:
         this proactive turn observed when it made its thinking decision — the
         episode id and the turn count at Phase 2. The decay is SKIPPED unless the
         SM is STILL in that same episode AND no inline turn has landed since:
-          * the user already took over this turn (``owner is USER``) → the user
-            spoke during the proactive turn and aborted it. The inline path
-            marks USER_INPUT (owner→USER) the moment they speak, but its focus
-            update lands LATER (after mini-game / agent-callback handling), so
-            the episode + turn token still match here. This aborted proactive
-            tick must not decay the charge before the user's own message is
-            scored — that (user-driven) episode is the inline path's to update.
-            owner stays USER through PROACTIVE_DONE (which only clears a
-            PROACTIVE owner), so it is still observable at this point.
+          * ``not replied`` AND the user already took over (``owner is USER``) →
+            the user spoke during an UNDELIVERED proactive turn and aborted it
+            before it said anything. The inline path marks USER_INPUT
+            (owner→USER) the moment they speak, but its focus update lands LATER
+            (after mini-game / agent-callback handling), so the episode + turn
+            token still match here. This aborted proactive tick must not decay
+            the charge before the user's own message is scored — that
+            (user-driven) episode is the inline path's to update. owner stays
+            USER through PROACTIVE_DONE (which only clears a PROACTIVE owner), so
+            it is still observable at this point. A turn that DID reply
+            (``replied=True``) genuinely spent the episode and still takes the
+            replied retention even if the user fired back fast enough to flip the
+            owner first; once the inline update actually lands the turn-token
+            guard below takes over.
           * ``episode_token is None`` → the turn observed REGULAR (no active
             episode). There is nothing to cool, and a proactive tick must not
             erode the pre-entry accumulator the inline path is building toward
@@ -2420,14 +2425,22 @@ class LLMSessionManager:
                 # Master switch off → update_focus self-clears any residue.
                 await self.state.update_focus(0.0)
                 return
-            # User already took over this turn: they spoke during the proactive
-            # request (USER_INPUT flipped owner→USER) and aborted it, but their
-            # inline focus update has not landed yet, so the episode/turn token
-            # below would still match. Hand the charge to the imminent inline
-            # turn instead of decaying it with this aborted proactive tick.
-            if self.state.owner is TurnOwner.USER:
+            # User took over an UNDELIVERED turn: the user spoke during the
+            # proactive request (USER_INPUT flipped owner→USER) and aborted it
+            # before it said anything, but their inline focus update has not
+            # landed yet, so the episode/turn token below would still match.
+            # Hand the charge to the imminent inline turn instead of decaying it
+            # with this aborted proactive tick.
+            #   Gated on ``not replied``: a turn that DID commit a reply
+            # (``replied=True``) genuinely spent the episode and must still take
+            # the replied retention even if the user fired back fast enough to
+            # flip the owner before this cooldown ran — owner==USER alone would
+            # wrongly let quick replies after a successful proactive chat skip
+            # their decay. (Once the inline focus update actually lands, the
+            # episode/turn-token guard below takes over.)
+            if not replied and self.state.owner is TurnOwner.USER:
                 logger.debug(
-                    "[%s] focus idle cooldown skipped: user took over the turn",
+                    "[%s] focus idle cooldown skipped: user took over an undelivered turn",
                     self.lanlan_name,
                 )
                 return
