@@ -1923,11 +1923,16 @@ FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
 }
 """FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
 - 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
-  keyword/cadence 都需要一条真实用户消息；样本不足时 cadence 返回 None、不进分母。
-- emotion：读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数映射成
-  distress 信号（高 arousal × 负 valence）。它是 keyword 脆弱词的「真模型」升级版，
-  但**滞后一拍**——画像异步算，inline 评分拿到的是上一轮的读数；没读数时返回 None、
-  不进分母。MASTER_EMOTION_ENABLED 关或读数缺失时该信号自动消失、退回 keyword+cadence。
+- 信号语义分两类：
+  · keyword / emotion 是「distress 正证据」——无证据时返回 None、不进分母（不投反对
+    票）。于是 keyword 满分 或 emotion 满分**任一都能单轮独立触发**，不会被对方的「0」
+    在分母里互相稀释。这是有意的：emotion 是 keyword 词表的真模型升级，用词不在词表
+    但情绪强烈时应能独立把人拉进 FOCUS。
+  · cadence 是行为信号——它的 0.0（「字数没骤降」）是有信息的、照常进分母；只有样本
+    不足时返回 None。
+- emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
+  distress = arousal × max(0,-valence)。**滞后一拍**（画像异步算，inline 拿上一轮读数）；
+  MASTER_EMOTION_ENABLED 关或无读数/无 distress 时返回 None、自动退回 keyword+cadence。
 - idle（proactive）路径不评分：它只用 FOCUS_IDLE_SILENT/REPLIED_RETENTION 让 charge
   衰减，绝不抬升，故不在此表里（凝神的进入/维持只由 inline 驱动）。
 - 上游：各子信号各自归一化到 [0,1]。

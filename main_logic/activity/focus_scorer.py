@@ -109,9 +109,16 @@ class FocusScorer:
         """Drop the cadence baseline (call on session teardown / hot-swap)."""
         self._recent_lengths.clear()
 
-    # ── sub-signals (keyword → [0, 1]; cadence → [0, 1] or None) ─────
-    def _signal_keyword(self, user_text: str) -> float:
+    # ── sub-signals ──────────────────────────────────────────────────
+    # keyword / emotion are *positive distress evidence*: they return None (not
+    # 0.0) when absent, so an empty one never dilutes the other in the weighted
+    # average — a saturated keyword OR a saturated emotion reading can each
+    # trigger Focus on its own. cadence is a behavioural signal whose 0.0
+    # ("message length normal") is informative, so it keeps 0.0 in the denom.
+    def _signal_keyword(self, user_text: str) -> Optional[float]:
         count = scan_vulnerability_keywords(user_text)
+        if count <= 0:
+            return None  # no vulnerability keyword → no signal, not "evidence against"
         sat = max(1, int(config.FOCUS_KEYWORD_SATURATION))
         return min(count / sat, 1.0)
 
@@ -136,11 +143,11 @@ class FocusScorer:
     def _signal_emotion(self, emotion_reading) -> Optional[float]:
         """Distress signal from the master emotion VA reading.
 
-        High arousal × negative valence → distress, the strongest Focus cue
-        (the model-grade upgrade of the vulnerability-keyword signal). Returns
-        ``None`` when no reading is available (master emotion off / not yet
-        analyzed), so it drops out of the weighted average instead of dragging
-        it toward zero.
+        High arousal × negative valence → distress, the model-grade upgrade of
+        the vulnerability-keyword signal. Returns ``None`` (drops out of the
+        weighted average) when there is no reading OR no distress — a stale
+        neutral/positive reading must not dilute a current keyword-positive
+        turn, same "positive evidence only" rule as ``_signal_keyword``.
         """
         if emotion_reading is None:
             return None
@@ -160,7 +167,9 @@ class FocusScorer:
         # triggers Focus, matching the "high arousal + NEGATIVE valence" def.
         # Focus is for vulnerability / distress.
         negativity = max(0.0, -valence)
-        return max(0.0, min(1.0, arousal * negativity))
+        distress = max(0.0, min(1.0, arousal * negativity))
+        # No distress (neutral / positive / stale) → None, not 0.0 (see above).
+        return distress if distress > 0.0 else None
 
 
 def _weighted_average(signals: dict, weights: dict) -> float:

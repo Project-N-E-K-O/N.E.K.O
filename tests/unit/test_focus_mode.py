@@ -179,8 +179,9 @@ def test_scorer_keyword_inline():
 def test_scorer_no_signal_is_zero():
     s = FocusScorer("x")
     res = s.score(user_text="嗯，那个文件我改好了发你了")
-    # No vulnerability keyword; cadence not enough samples.
-    assert res.signals["keyword"] == 0.0
+    # No vulnerability keyword → None (positive-evidence-only); cadence not enough
+    # samples → None. All signals absent → score 0.0.
+    assert res.signals["keyword"] is None
     assert res.score == 0.0
 
 

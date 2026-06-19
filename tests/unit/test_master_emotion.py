@@ -49,21 +49,22 @@ def test_emotion_signal_distress_is_max():
     assert s._signal_emotion(_reading(-1.0, 1.0)) == 1.0
 
 
-def test_emotion_signal_happy_is_zero():
+def test_emotion_signal_happy_is_none():
     s = FocusScorer("t")
-    # positive valence + high arousal (excitement) must NOT trigger Focus
-    assert s._signal_emotion(_reading(1.0, 1.0)) == 0.0
+    # positive valence + high arousal (excitement) → no distress → None (drops
+    # out of the weighted average, never counts as evidence against Focus)
+    assert s._signal_emotion(_reading(1.0, 1.0)) is None
 
 
-def test_emotion_signal_neutral_high_arousal_is_zero():
+def test_emotion_signal_neutral_high_arousal_is_none():
     s = FocusScorer("t")
     # neutral valence → no distress even at high arousal (intensity ≠ distress)
-    assert s._signal_emotion(_reading(0.0, 1.0)) == 0.0
+    assert s._signal_emotion(_reading(0.0, 1.0)) is None
 
 
-def test_emotion_signal_positive_high_arousal_is_zero():
+def test_emotion_signal_positive_high_arousal_is_none():
     s = FocusScorer("t")
-    assert s._signal_emotion(_reading(0.5, 1.0)) == 0.0
+    assert s._signal_emotion(_reading(0.5, 1.0)) is None
 
 
 def test_emotion_signal_calm_negative_is_low():
@@ -91,6 +92,28 @@ def test_score_includes_emotion_and_drops_when_absent():
     s2 = FocusScorer("t")
     without = s2.score(user_text="嗯。")
     assert without.signals["emotion"] is None
+
+
+def test_emotion_alone_can_saturate_score():
+    # #2: a saturated distress reading with no keyword/cadence still scores 1.0
+    # (keyword None drops out of the denominator), so emotion triggers Focus
+    # independently of the vulnerability lexicon.
+    s = FocusScorer("t")
+    res = s.score(user_text="嗯", emotion_reading=_reading(-1.0, 1.0))
+    assert res.signals["keyword"] is None
+    assert res.signals["emotion"] == 1.0
+    assert res.score == 1.0
+
+
+def test_stale_neutral_emotion_does_not_dilute_keyword():
+    # #1: a keyword-positive turn with a stale neutral reading scores on keyword
+    # alone (emotion None drops out), preserving the single-turn entry that
+    # keyword-only scoring used to give.
+    s = FocusScorer("t")
+    res = s.score(user_text="今天好累，感觉一个人撑不住了", emotion_reading=_reading(0.0, 1.0))
+    assert res.signals["emotion"] is None
+    assert res.signals["keyword"] is not None and res.signals["keyword"] > 0
+    assert res.score == res.signals["keyword"]  # not diluted by the stale 0
 
 
 # ── MasterEmotionTracker._parse robustness ───────────────────────────
