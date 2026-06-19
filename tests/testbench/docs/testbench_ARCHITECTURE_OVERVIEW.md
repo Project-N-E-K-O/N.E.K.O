@@ -361,6 +361,30 @@ server.py::create_app()             # FastAPI 工厂 (模块级 app = create_app
 `session_export` / P22 `autosave` / P23 导出 session-agnostic 化的关键
 教训.
 
+#### §2.4.1 上游记忆子系统 · 语义合约 adapter 家族 (2026-06 上游同步)
+
+跟随 2026-06 与主程序 `main` 对齐, 上游引入了一批记忆增强模块 (evidence-RFC
+证据数学 / hybrid_recall 混合召回 / refine 聚类精炼 / anti_repeat 反重复 /
+deep-topic 深话题). 这些模块同时包含**语义合约** (可 import 的纯函数: 打分 /
+衰减 / BM25 / RRF / 簿记 / 就绪度阈值) 与**运行时机制** (embedding 模型 /
+LLM / sqlite / 磁盘 / 锁 / aiohttp / TTS-WS)。testbench 遵循
+`semantic-contract-vs-runtime-mechanism` 原则, **只覆盖语义合约层**, 为此新增
+一组薄 adapter (直接 import 上游纯函数 — 这是"想要的耦合": 上游改公式时配对
+smoke 应当 break)。运行时机制层一律 out-of-scope, 由主程序自己的单测负责。
+
+| Adapter | 复用的上游纯函数 (语义合约) | 配对 smoke | OOS (运行时机制) |
+|---|---|---|---|
+| `evidence_sim.py` | `memory.evidence` 证据分数 / 半衰期衰减 / 状态阈值 / importance→seed / sub_zero | `p27_evidence_math_smoke.py` (9) | event_log / outbox / embedding_worker / sqlite timeindex |
+| `recall_fusion.py` | `hybrid_recall._tokenize/_bm25_rank/_rrf_fuse/_overlaps_window` + `recall._hard_filter` + `temporal.parse_time_window` | `p28_recall_fusion_smoke.py` (8) | 余弦路径 (ONNX EmbeddingService) / recall_memory 工具 HTTP+TTS 管线 |
+| `refine_sim.py` | `refine` 聚类簿记 (`_cluster_hash/_all_stamped_fresh/_cluster_starvation_key/_render_cluster` + annotate/strip) | `p29_refine_cluster_smoke.py` (6) | cosine 聚类 (embedding) / LLM resolve |
+| `anti_repeat_sim.py` | `anti_repeat.bm25_score` (重复检测 BM25: IDF 走背景窗 / TF 走前景窗) + `_ngrams` | `p30_anti_repeat_smoke.py` (5) | `AntiRepeatCorpus` 磁盘 JSON / 锁 / 滚动窗 |
+| `topic_sim.py` | `topic.common.topic_units` + `signals._is_meaningful_turn/_label_key_for_lang` + 内存 `TopicSignalStore` 就绪度 | `p31_topic_readiness_smoke.py` (5) | 在线 enrichment (aiohttp) / delivery (TTS-WS) / pipeline LLM |
+
+**L30 import 判定**: `memory.*` 与 `main_logic.topic.*` 实测 import 无副作用
+(后者 0.31s) → 走**直接 import**; 与 `avatar_dedupe.py` 走 copy+drift (因
+`main_logic.cross_server` 带 ssl/aiohttp import-time 副作用) **不同**。完整设计
+关卡记录见 [`UPSTREAM_SYNC_2026-06.md`](./UPSTREAM_SYNC_2026-06.md) Phase 3.0。
+
 ### §2.5 Router 层 (`routers/`)
 
 HTTP 端点按**业务域**分, 13 个 router:
