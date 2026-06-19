@@ -3014,6 +3014,15 @@
                     return;
                 }
 
+                if (
+                    message.action !== 'yui_guide_tutorial_lifecycle_ended'
+                    && isYuiGuideLifecycleScopedAction(message.action)
+                    && isYuiGuidePcOverlayRunEnded(message.tutorialRunId)
+                ) {
+                    clearYuiGuidePcOverlayBridgeState('stale-after-lifecycle-ended', message.tutorialRunId || '');
+                    return;
+                }
+
                 console.log('[BroadcastChannel] 收到消息:', event.data.action);
 
                 switch (event.data.action) {

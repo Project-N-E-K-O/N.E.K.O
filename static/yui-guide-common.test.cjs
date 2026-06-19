@@ -2221,6 +2221,10 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
         '    yuiGuideInterpageResources.addEventListener(window, ',
         1
     )[0];
+    const broadcastStaleGuardBlock = appInterpageSource.split('nekoBroadcastChannel.onmessage = async function (event) {')[1].split(
+        '                console.log(\'[BroadcastChannel] 收到消息:\', event.data.action);',
+        1
+    )[0];
 
     assert.match(appInterpageSource, /var yuiGuidePcOverlayEndedRunId = '';/);
     assert.match(appInterpageSource, /function isYuiGuidePcOverlayRunEnded\(runId\) \{/);
@@ -2248,6 +2252,10 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
     assert.match(sendPatchBlock, /resolveYuiGuidePcOverlayRunIdForSend\(/);
     assert.match(sendPatchBlock, /if \(!runId \|\| isYuiGuidePcOverlayRunEnded\(runId\)\) \{/);
     assert.match(cursorRelayBlock, /if \(isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)\) \{/);
+    assert.match(broadcastStaleGuardBlock, /isYuiGuideLifecycleScopedAction\(message\.action\)/);
+    assert.match(broadcastStaleGuardBlock, /isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)/);
+    assert.match(broadcastStaleGuardBlock, /clearYuiGuidePcOverlayBridgeState\('stale-after-lifecycle-ended', message\.tutorialRunId \|\| ''\);/);
+    assert.match(broadcastStaleGuardBlock, /return;/);
 });
 
 test('external chat reuses tutorial PC overlay run id for capsule spotlight and cursor patches', () => {
