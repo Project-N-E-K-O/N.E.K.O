@@ -41,6 +41,7 @@ hook a future memory consumer pulls from.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -52,7 +53,8 @@ logger = logging.getLogger(__name__)
 
 # ```json ... ``` fence the emotion tier (e.g. Gemini) may wrap the JSON in.
 # Mirrors system_router.emotion_analysis's stripping before robust_json_loads.
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)\s*```", flags=re.S)
+# Case-insensitive: models also emit ```JSON / ```Json.
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)\s*```", flags=re.S | re.I)
 
 
 @dataclass(frozen=True)
@@ -77,9 +79,24 @@ def _clamp(value, lo: float, hi: float, default: float) -> float:
         v = float(value)
     except (TypeError, ValueError):
         return default
-    if v != v:  # NaN
+    if math.isnan(v):
         return default
     return max(lo, min(hi, v))
+
+
+def _coerce_axis(value) -> Optional[float]:
+    """Coerce a VA axis to float, or ``None`` if missing / non-numeric / NaN.
+
+    Unlike ``_clamp``, this distinguishes "absent" from a real value so a
+    partial response can be rejected rather than silently defaulted to 0.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(v):
+        return None
+    return v
 
 
 class MasterEmotionTracker:
@@ -89,17 +106,26 @@ class MasterEmotionTracker:
         self.lanlan_name = lanlan_name
         self._latest: Optional[MasterEmotionReading] = None
         self._last_attempt_at: float = 0.0
+        self._seq: int = 0
 
     # ── public API ──────────────────────────────────────────────────
     @property
     def latest(self) -> Optional[MasterEmotionReading]:
-        """The most recent reading, or ``None`` if never analyzed / reset."""
+        """The most recent reading, or ``None`` if never analyzed / reset / disabled.
+
+        Honors the master switch: flipping ``MASTER_EMOTION_ENABLED`` off makes
+        the reading disappear immediately (consumers fall back) instead of
+        serving a stale reading until the next analyze.
+        """
+        if not bool(getattr(config, "MASTER_EMOTION_ENABLED", True)):
+            return None
         return self._latest
 
     def reset(self) -> None:
         """Drop the current reading (call on session teardown / hot-swap)."""
         self._latest = None
         self._last_attempt_at = 0.0
+        self._seq += 1
 
     async def analyze(
         self, text: Optional[str], *, now: Optional[float] = None,
@@ -119,14 +145,23 @@ class MasterEmotionTracker:
         if self._should_skip(now):
             return None
         # Reserve the throttle slot up-front (before the await) so concurrent
-        # turns inside the same interval don't all fire a model call.
+        # turns inside the same interval don't all fire a model call. ``_seq``
+        # tags this analysis so an out-of-order completion can't clobber a newer
+        # turn's reading (see the stale-result guard below).
         self._last_attempt_at = now
+        self._seq += 1
+        my_seq = self._seq
 
         raw = await self._invoke(cleaned)
         if not raw:
             return None
         reading = self._parse(raw, now=now, source=cleaned)
         if reading is None:
+            return None
+        # Stale-result guard: if a newer analysis (or a reset) was kicked off
+        # while this one awaited — possible under a slow tier — the newer turn
+        # wins; never let this older turn's reading overwrite it.
+        if my_seq != self._seq:
             return None
         self._latest = reading
         logger.info(
@@ -165,10 +200,14 @@ class MasterEmotionTracker:
         from config.prompts.prompts_emotion import get_master_emotion_va_prompt
         from main_logic.activity.llm_enrichment import _invoke_emotion_tier
 
-        lang = self._resolve_lang(text)
+        # Bound the input: emotion is judgeable from the opening; truncating
+        # stops a pasted wall of text from going to the emotion tier whole.
+        max_chars = max(1, int(getattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 500)))
+        bounded = text[:max_chars]
+        lang = self._resolve_lang(bounded)
         # The VA prompt already says "the speaker in the conversation below",
         # so the user's utterance follows directly — no extra delimiter needed.
-        prompt = get_master_emotion_va_prompt(lang) + "\n\n" + text
+        prompt = get_master_emotion_va_prompt(lang) + "\n\n" + bounded
         timeout = float(getattr(config, "MASTER_EMOTION_TIMEOUT_SEC", 8.0))
         return await _invoke_emotion_tier(prompt, timeout=timeout, label="master_emotion")
 
@@ -197,12 +236,17 @@ class MasterEmotionTracker:
             return None
         if not isinstance(data, dict):
             return None
-        # Require at least one of the two axes; a dict with neither is junk.
-        if "valence" not in data and "arousal" not in data:
+        # A complete reading needs BOTH axes as real numbers. A partial response
+        # (e.g. only ``valence``) must NOT be filled with 0 — a missing arousal
+        # would zero the distress signal (distress ∝ arousal) and silently
+        # misread strong negative affect as calm. Reject → keep the last reading.
+        valence = _coerce_axis(data.get("valence"))
+        arousal = _coerce_axis(data.get("arousal"))
+        if valence is None or arousal is None:
             return None
         return MasterEmotionReading(
-            valence=_clamp(data.get("valence"), -1.0, 1.0, 0.0),
-            arousal=_clamp(data.get("arousal"), 0.0, 1.0, 0.0),
+            valence=max(-1.0, min(1.0, valence)),
+            arousal=max(0.0, min(1.0, arousal)),
             confidence=_clamp(data.get("confidence"), 0.0, 1.0, 0.5),
             updated_at=now,
             source_excerpt=source[:80],

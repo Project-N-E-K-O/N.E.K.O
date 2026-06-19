@@ -1833,6 +1833,12 @@ MASTER_EMOTION_TIMEOUT_SEC = 8.0
 - 用途：传给 _invoke_emotion_tier 的 timeout；超时则本轮不更新读数、保留上一次。
 - 注意：用的是独立的 emotion tier 模型，不是主对话模型，所以不受 Gemini Live 慢拖累。"""
 
+MASTER_EMOTION_MAX_INPUT_CHARS = 500
+"""送进 VA 分析的用户文本上限（字符），超出截断。
+- 用途：情绪判断只需开头一段；截断防用户粘贴长文时把整段塞进 emotion tier
+  （token / 成本 / 输入预算）。
+- 上游：MasterEmotionTracker._invoke 拼 prompt 前截断。"""
+
 # ── Focus mode 凝神 (docs/design/focus-truename-mode.md) ───────────────
 # 信号触发、用户无感的「这一轮开思考 + 换强模型」机制，兑现 90/10 产品命题
 # 里的 10% 神明降临。以下全是 A/B 可调旋钮，集中在此便于灰度调参；情绪关键词

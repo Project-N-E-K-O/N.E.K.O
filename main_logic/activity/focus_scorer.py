@@ -153,11 +153,13 @@ class FocusScorer:
             arousal = float(arousal)
         except (TypeError, ValueError):
             return None
-        # arousal ∈ [0,1] = intensity; (1 - valence)/2 maps valence -1→1, 0→0.5,
-        # +1→0. So strong-negative & high-arousal (distress) ≈ 1; calm or happy
-        # ≈ low. Excitement (positive + high arousal) intentionally does NOT
-        # trigger Focus — Focus is for vulnerability / distress, not elation.
-        negativity = (1.0 - valence) / 2.0
+        # arousal ∈ [0,1] = intensity; negativity = max(0, -valence) fires ONLY
+        # in the negative-valence half (valence -1→1, 0→0, +1→0). So distress =
+        # arousal × negativity ≈ 1 for strong-negative & high-arousal, and 0 for
+        # neutral OR positive affect — neither calm, mere intensity, nor elation
+        # triggers Focus, matching the "high arousal + NEGATIVE valence" def.
+        # Focus is for vulnerability / distress.
+        negativity = max(0.0, -valence)
         return max(0.0, min(1.0, arousal * negativity))
 
 

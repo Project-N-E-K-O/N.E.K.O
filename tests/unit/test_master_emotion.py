@@ -55,9 +55,15 @@ def test_emotion_signal_happy_is_zero():
     assert s._signal_emotion(_reading(1.0, 1.0)) == 0.0
 
 
-def test_emotion_signal_neutral_high_arousal_is_half():
+def test_emotion_signal_neutral_high_arousal_is_zero():
     s = FocusScorer("t")
-    assert abs(s._signal_emotion(_reading(0.0, 1.0)) - 0.5) < 1e-9
+    # neutral valence → no distress even at high arousal (intensity ≠ distress)
+    assert s._signal_emotion(_reading(0.0, 1.0)) == 0.0
+
+
+def test_emotion_signal_positive_high_arousal_is_zero():
+    s = FocusScorer("t")
+    assert s._signal_emotion(_reading(0.5, 1.0)) == 0.0
 
 
 def test_emotion_signal_calm_negative_is_low():
@@ -107,6 +113,11 @@ def test_parse_markdown_wrapped_json():
     assert r is not None
     assert r.valence == 0.2 and r.arousal == 0.3
     assert r.confidence == 0.5  # default when omitted
+    # uppercase fence label (```JSON) is tolerated too
+    r2 = MasterEmotionTracker._parse(
+        '```JSON\n{"valence": -0.1, "arousal": 0.4}\n```', now=1.0, source="x",
+    )
+    assert r2 is not None and r2.arousal == 0.4
 
 
 def test_parse_out_of_range_is_clamped():
@@ -120,6 +131,19 @@ def test_parse_rejects_garbage():
     assert MasterEmotionTracker._parse("not json at all", now=1.0, source="x") is None
     assert MasterEmotionTracker._parse("[1, 2, 3]", now=1.0, source="x") is None  # not a dict
     assert MasterEmotionTracker._parse('{"mood": "sad"}', now=1.0, source="x") is None  # neither axis
+
+
+def test_parse_rejects_partial_reading():
+    # A partial response must be rejected, NOT defaulted to 0 — a missing arousal
+    # would zero the distress signal and misread strong negative affect as calm.
+    assert MasterEmotionTracker._parse('{"valence": -0.9}', now=1.0, source="x") is None
+    assert MasterEmotionTracker._parse('{"arousal": 0.8}', now=1.0, source="x") is None
+    # axis present but null / non-numeric is also incomplete
+    assert MasterEmotionTracker._parse('{"valence": -0.9, "arousal": null}', now=1.0, source="x") is None
+    assert MasterEmotionTracker._parse('{"valence": "bad", "arousal": 0.5}', now=1.0, source="x") is None
+    # both axes present → confidence may still be omitted (defaults)
+    ok = MasterEmotionTracker._parse('{"valence": -0.9, "arousal": 0.8}', now=1.0, source="x")
+    assert ok is not None and ok.confidence == 0.5
 
 
 # ── MasterEmotionTracker.analyze (async, throttle, gating) ───────────
@@ -209,6 +233,46 @@ def test_reset_clears_state(monkeypatch):
     # after reset the throttle is cleared too → an immediate call fires
     r = asyncio.run(t.analyze("难过", now=101.0))
     assert r is not None
+
+
+def test_analyze_drops_stale_out_of_order(monkeypatch):
+    # Simulate a newer analysis (or reset) bumping _seq while this call awaits
+    # the slow tier → the older result must be dropped, not written to latest.
+    t = MasterEmotionTracker("t")
+
+    async def fake(prompt, *, timeout, label):
+        t._seq += 1  # a newer turn kicked off during the await
+        return '{"valence": -0.5, "arousal": 0.5}'
+
+    _patch_tier(monkeypatch, fake)
+    assert asyncio.run(t.analyze("x", now=100.0)) is None
+    assert t.latest is None
+
+
+def test_latest_hidden_when_switch_off(monkeypatch):
+    fake, _ = _fake_tier('{"valence": -0.5, "arousal": 0.5}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("t")
+    asyncio.run(t.analyze("难过", now=100.0))
+    assert t.latest is not None
+    # flip the switch off after a reading exists → latest disappears
+    monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
+    assert t.latest is None
+
+
+def test_input_is_bounded(monkeypatch):
+    captured = {}
+
+    async def fake(prompt, *, timeout, label):
+        captured["prompt"] = prompt
+        return '{"valence": 0, "arousal": 0}'
+
+    _patch_tier(monkeypatch, fake)
+    monkeypatch.setattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 10)
+    t = MasterEmotionTracker("t")
+    asyncio.run(t.analyze("x" * 100, now=100.0))
+    assert captured["prompt"].endswith("x" * 10)
+    assert ("x" * 11) not in captured["prompt"]
 
 
 def test_to_profile_sample():
