@@ -4784,6 +4784,7 @@ class UniversalTutorialManager {
 
             // 标记引导正在运行
             this.isTutorialRunning = true;
+            this.snapshotAvatarFloatingModelInteractionState('tutorial-start');
 
             // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
             this.lockBodyScroll();

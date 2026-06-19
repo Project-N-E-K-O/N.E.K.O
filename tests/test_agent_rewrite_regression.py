@@ -1320,6 +1320,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
         1,
     )[1].split("applyTutorialChatIdentityOverride", 1)[0]
     assert "snapshotAvatarFloatingModelInteractionState(reason = 'tutorial-started')" in tutorial_source
+    assert "this.snapshotAvatarFloatingModelInteractionState('tutorial-start');" in tutorial_source
     assert "this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');" in tutorial_source
     assert "const snapshot = this._avatarFloatingModelLockSnapshot" in avatar_interaction_restore_block
     assert "if (!snapshot) {" in avatar_interaction_restore_block
