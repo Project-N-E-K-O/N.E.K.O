@@ -7,15 +7,15 @@ from pathlib import Path
 import json
 import pytest
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from plugin.plugins.live2d_auto_layer.core.assembly import Live2DAssembler, classify_layer
 from plugin.plugins.live2d_auto_layer.core.auto_rig import export_auto_rig_model, load_auto_rig_model
-from plugin.plugins.live2d_auto_layer.core.cubism import export_cubism_handoff
 from plugin.plugins.live2d_auto_layer.core.importing import import_layer_source
-from plugin.plugins.live2d_auto_layer.core.pipeline import process_layer_source
+from plugin.plugins.live2d_auto_layer.core.pngtuber import export_pngtuber_model, install_pngtuber_package
+from plugin.plugins.live2d_auto_layer.core.pipeline import process_image, process_layer_source
 from plugin.plugins.live2d_auto_layer.core.auto_rig.template import classify_rig_group, infer_bindings
-from plugin.plugins.live2d_auto_layer.services.layer_service import LayerService
+from main_routers.pngtuber_router import _validate_model_package
 
 
 def _install_optional_cv2_stub() -> None:
@@ -154,52 +154,46 @@ def test_process_layer_source_exports_manifest(tmp_path) -> None:
     assert manifest["metrics"]["assembly"][0]["source_name"] == "body"
 
 
-def test_layer_service_ui_result_can_auto_export_cubism_handoff(tmp_path) -> None:
-    source_dir = tmp_path / "source"
-    layers_dir = source_dir / "layers"
-    output_dir = tmp_path / "output"
-    layers_dir.mkdir(parents=True)
-    Image.new("RGBA", (8, 8), (0, 0, 255, 255)).save(layers_dir / "body.png")
-    Image.new("RGBA", (8, 8), (255, 0, 0, 255)).save(layers_dir / "front_hair.png")
-    service = LayerService(output_dir=output_dir)
+def test_process_image_uses_shared_layer_assembly(monkeypatch, tmp_path) -> None:
+    from plugin.plugins.live2d_auto_layer.core import pipeline as pipeline_module
 
-    result = service.import_layer_source(source_dir, session_id="auto-handoff-smoke")
-    ui_result = service.result_to_ui_dict(result, include_cubism_handoff=True)
+    class NoopBackgroundRemover:
+        def remove(self, image):
+            return image.convert("RGBA")
 
-    zip_path = output_dir / "auto-handoff-smoke" / "cubism_handoff.zip"
-    assert ui_result["cubism_handoff_zip_path"] == str(zip_path)
-    assert zip_path.is_file()
+    class NoopAlphaRefiner:
+        def __init__(self, feather_radius=0):
+            self.feather_radius = feather_radius
 
+        def refine(self, image):
+            return image.convert("RGBA")
 
-def test_export_cubism_handoff_package(tmp_path) -> None:
-    source_dir = tmp_path / "source"
-    layers_dir = source_dir / "layers"
-    output_dir = tmp_path / "output"
-    layers_dir.mkdir(parents=True)
-    Image.new("RGBA", (8, 8), (0, 0, 255, 255)).save(layers_dir / "head.png")
-    Image.new("RGBA", (8, 8), (255, 0, 0, 255)).save(layers_dir / "front_hair.png")
+    def fake_segment_image(image, method="anime_face", prompts=None, gsam_instance=None, parts=None, gpt_api_key=""):
+        return {
+            "eye_l": Image.new("RGBA", image.size, (0, 255, 0, 255)),
+            "eyebrow_r": Image.new("RGBA", image.size, (0, 0, 255, 255)),
+            "front_hair": Image.new("RGBA", image.size, (255, 0, 0, 255)),
+        }
 
-    result = process_layer_source(
-        source_dir,
-        output_dir=output_dir,
-        session_id="handoff-smoke",
+    monkeypatch.setattr(pipeline_module, "BackgroundRemover", NoopBackgroundRemover)
+    monkeypatch.setattr(pipeline_module, "AlphaRefiner", NoopAlphaRefiner)
+    monkeypatch.setattr(pipeline_module, "segment_image", fake_segment_image)
+
+    result = process_image(
+        Image.new("RGBA", (8, 8), (255, 255, 255, 255)),
+        output_dir=tmp_path / "output",
+        session_id="internal-assembly-smoke",
+        method="anime_face",
+        parts=["Eye_L", "Eyebrow_R", "Hair"],
+        feather_radius=0,
     )
-    handoff = export_cubism_handoff(result)
 
-    zip_path = tmp_path / "output" / "handoff-smoke" / "cubism_handoff.zip"
-    assert handoff["cubism_handoff_zip_path"] == str(zip_path)
-    assert zip_path.is_file()
-    with zipfile.ZipFile(zip_path) as archive:
-        names = set(archive.namelist())
-        assert "README.md" in names
-        assert "cubism_handoff_manifest.json" in names
-        assert "cubism_layers.csv" in names
-        assert "layers/00_Face_Skin.png" in names
-        assert "layers/01_Hair_Front.png" in names
-        assert not any(name.endswith(".model3.json") or name.endswith(".moc3") for name in names)
-        manifest = json.loads(archive.read("cubism_handoff_manifest.json").decode("utf-8"))
-    assert manifest["is_loadable_live2d_model"] is False
-    assert manifest["layers"][0]["suggested_deformer"] == "WarpDeformer_Head"
+    manifest = json.loads((tmp_path / "output" / "internal-assembly-smoke" / "manifest.json").read_text(encoding="utf-8"))
+    assert [layer.name for layer in result.layers] == ["Eye_Left", "Eyebrow_Right", "Hair_Front"]
+    assert (tmp_path / "output" / "internal-assembly-smoke" / "layers" / "Eye_Left.png").is_file()
+    assert manifest["metrics"]["method"] == "anime_face"
+    assert manifest["metrics"]["assembly"][0]["source"] == "internal"
+    assert manifest["metrics"]["assembly"][0]["source_name"] == "eye_l"
 
 
 def test_export_auto_rig_model_package(tmp_path) -> None:
@@ -282,3 +276,115 @@ def test_export_auto_rig_model_package(tmp_path) -> None:
     model_path.write_text(json.dumps(unsafe), encoding="utf-8")
     with pytest.raises(ValueError, match="outside model directory"):
         load_auto_rig_model(output_dir / "auto-rig-smoke")
+
+
+def test_export_pngtuber_model_package(tmp_path) -> None:
+    source_dir = tmp_path / "source"
+    layers_dir = source_dir / "layers"
+    output_dir = tmp_path / "output"
+    layers_dir.mkdir(parents=True)
+    Image.new("RGBA", (16, 16), (0, 0, 255, 255)).save(layers_dir / "body.png")
+    Image.new("RGBA", (16, 16), (255, 0, 0, 255)).save(layers_dir / "front_hair.png")
+    Image.new("RGBA", (16, 16), (0, 255, 0, 255)).save(layers_dir / "eye_white.png")
+    mouth = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    for x in range(6, 10):
+        for y in range(9, 11):
+            mouth.putpixel((x, y), (80, 0, 0, 255))
+    mouth.save(layers_dir / "mouth.png")
+
+    result = process_layer_source(
+        source_dir,
+        output_dir=output_dir,
+        session_id="pngtuber-smoke",
+    )
+    package = export_pngtuber_model(
+        result,
+        model_name="Layered Smoke",
+        enable_basic_blink=True,
+    )
+
+    zip_path = output_dir / "pngtuber-smoke" / "pngtuber_model.zip"
+    package_dir = output_dir / "pngtuber-smoke" / "pngtuber_model"
+    assert package["pngtuber_zip_path"] == str(zip_path)
+    assert package["pngtuber_model_path"] == str(package_dir / "model.json")
+    assert package["canvas_size"] == [16, 16]
+    assert zip_path.is_file()
+
+    model = json.loads((package_dir / "model.json").read_text(encoding="utf-8"))
+    metadata = json.loads((package_dir / "metadata.live2d-auto-layer.json").read_text(encoding="utf-8"))
+    ok, error = _validate_model_package(package_dir, model)
+
+    assert ok is True, error
+    assert model["model_type"] == "pngtuber"
+    assert model["name"] == "Layered Smoke"
+    assert model["pngtuber"]["adapter"] == "layered_canvas_v1"
+    assert model["pngtuber"]["idle_image"] == "idle.png"
+    assert model["pngtuber"]["talking_image"] == "talking.png"
+    assert metadata["runtime"] == "layered_canvas"
+    assert metadata["source_session_id"] == "pngtuber-smoke"
+    assert metadata["canvas"] == {"width": 16, "height": 16}
+    assert len(metadata["layers"]) == 4
+    assert metadata["state_count"] == 2
+    assert metadata["capabilities"]["generated_talking_mouth"] is True
+    assert metadata["layers"][0]["image"] == "layers/00_Body.png"
+    assert metadata["layers"][1]["image"] == "layers/01_Eye_White.png"
+    assert metadata["layers"][1]["showBlink"] == 1
+    assert metadata["layers"][2]["image"] == "layers/02_Mouth.png"
+
+    with Image.open(package_dir / "idle.png") as idle_image, Image.open(package_dir / "talking.png") as talking_image:
+        assert ImageChops.difference(idle_image.convert("RGB"), talking_image.convert("RGB")).getbbox() is not None
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+        assert "model.json" in names
+        assert "metadata.live2d-auto-layer.json" in names
+        assert "idle.png" in names
+        assert "talking.png" in names
+        assert "layers/00_Body.png" in names
+        assert "layers/01_Eye_White.png" in names
+        assert "layers/02_Mouth.png" in names
+        assert "layers/03_Hair_Front.png" in names
+        assert not any(name.endswith(".model3.json") or name.endswith(".moc3") for name in names)
+
+
+def test_install_pngtuber_package_from_export(tmp_path) -> None:
+    source_dir = tmp_path / "source"
+    layers_dir = source_dir / "layers"
+    output_dir = tmp_path / "output"
+    pngtuber_dir = tmp_path / "pngtuber-library"
+    layers_dir.mkdir(parents=True)
+    Image.new("RGBA", (12, 12), (0, 0, 255, 255)).save(layers_dir / "body.png")
+    Image.new("RGBA", (12, 12), (255, 0, 0, 255)).save(layers_dir / "mouth.png")
+
+    result = process_layer_source(
+        source_dir,
+        output_dir=output_dir,
+        session_id="install-smoke",
+    )
+    package = export_pngtuber_model(result, model_name="Install Smoke")
+    installed = install_pngtuber_package(
+        package["pngtuber_dir"],
+        model_name="Install Smoke",
+        pngtuber_dir=pngtuber_dir,
+    )
+
+    target_dir = pngtuber_dir / str(installed["folder"])
+    model = json.loads((target_dir / "model.json").read_text(encoding="utf-8"))
+    metadata = json.loads((target_dir / "metadata.live2d-auto-layer.json").read_text(encoding="utf-8"))
+
+    assert installed["success"] is True
+    assert installed["url"] == f"/user_pngtuber/{installed['folder']}/model.json"
+    assert model["model_type"] == "pngtuber"
+    assert model["source_format"] == "live2d_auto_layer"
+    assert model["pngtuber"]["idle_image"] == f"/user_pngtuber/{installed['folder']}/idle.png"
+    assert model["pngtuber"]["layered_metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.live2d-auto-layer.json"
+    assert metadata["format"] == "neko.pngtuber.layered_canvas.v1"
+    assert (target_dir / "layers" / "00_Body.png").is_file()
+
+    second = install_pngtuber_package(
+        package["pngtuber_dir"],
+        model_name="Install Smoke",
+        pngtuber_dir=pngtuber_dir,
+    )
+    assert second["folder"] != installed["folder"]
+    assert (pngtuber_dir / str(second["folder"]) / "model.json").is_file()

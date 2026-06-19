@@ -83,14 +83,6 @@ class LayerService:
     def get_session(self, session_id: str) -> ProcessResult | None:
         return self.sessions.load(session_id)
 
-    def export_cubism_handoff(self, session_id: str) -> dict[str, object]:
-        result = self.sessions.load(session_id)
-        if result is None:
-            raise FileNotFoundError(f"Session not found: {session_id}")
-        from ..core.cubism import export_cubism_handoff
-
-        return export_cubism_handoff(result)
-
     def export_auto_rig_model(
         self,
         session_id: str,
@@ -106,6 +98,50 @@ class LayerService:
             result,
             mesh_alpha_threshold=mesh_alpha_threshold,
         )
+
+    def export_pngtuber_model(
+        self,
+        session_id: str,
+        *,
+        model_name: str = "",
+        enable_basic_blink: bool = False,
+    ) -> dict[str, object]:
+        result = self.sessions.load(session_id)
+        if result is None:
+            raise FileNotFoundError(f"Session not found: {session_id}")
+        from ..core.pngtuber import export_pngtuber_model
+
+        return export_pngtuber_model(
+            result,
+            model_name=model_name,
+            enable_basic_blink=enable_basic_blink,
+        )
+
+    def install_pngtuber_model(
+        self,
+        session_id: str,
+        *,
+        model_name: str = "",
+        enable_basic_blink: bool = False,
+        preferred_folder: str = "",
+    ) -> dict[str, object]:
+        export_result = self.export_pngtuber_model(
+            session_id,
+            model_name=model_name,
+            enable_basic_blink=enable_basic_blink,
+        )
+        from ..core.pngtuber import install_pngtuber_package
+
+        installed = install_pngtuber_package(
+            str(export_result["pngtuber_dir"]),
+            model_name=model_name,
+            preferred_folder=preferred_folder,
+        )
+        installed["session_id"] = session_id
+        installed["pngtuber_zip_path"] = export_result.get("pngtuber_zip_path")
+        installed["pngtuber_model_path"] = export_result.get("pngtuber_model_path")
+        installed["pngtuber_metadata_path"] = export_result.get("pngtuber_metadata_path")
+        return installed
 
     def load_auto_rig_model(self, session_id: str) -> dict[str, object]:
         result = self.sessions.load(session_id)
@@ -140,24 +176,9 @@ class LayerService:
             gpt_api_key=gpt_api_key,
         )
 
-    def result_to_ui_dict(self, result: ProcessResult, *, include_cubism_handoff: bool = False) -> dict[str, object]:
+    def result_to_ui_dict(self, result: ProcessResult) -> dict[str, object]:
         data = result.to_dict()
-        if include_cubism_handoff:
-            try:
-                data.update(self.export_cubism_handoff_for_result(result))
-            except Exception as exc:
-                warnings = data.get("warnings")
-                if not isinstance(warnings, list):
-                    warnings = []
-                warnings.append(f"Cubism handoff auto-export failed: {exc}")
-                data["warnings"] = warnings
-                data["cubism_handoff_error"] = str(exc)
         return self.with_inline_artifacts(data)
-
-    def export_cubism_handoff_for_result(self, result: ProcessResult) -> dict[str, object]:
-        from ..core.cubism import export_cubism_handoff
-
-        return export_cubism_handoff(result)
 
     def with_inline_artifacts(self, data: dict[str, object]) -> dict[str, object]:
         decorated = dict(data)

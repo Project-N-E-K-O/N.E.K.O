@@ -58,7 +58,6 @@ type ProcessResult = {
   preview_path?: string
   preview_data_url?: string
   zip_path?: string
-  cubism_handoff_zip_path?: string
   manifest_path?: string
   layers?: LayerArtifact[]
   warnings?: string[]
@@ -135,36 +134,6 @@ type AutoRigTransform = {
   scaleY: number
 }
 
-type CubismConnectionStatus = {
-  host?: string
-  port?: number
-  port_open?: boolean
-  token_saved?: boolean
-  status?: string
-}
-
-type CubismEditorState = {
-  approved?: boolean
-  approval_wait_timed_out?: boolean
-  approval_wait_seconds?: number
-  host?: string
-  port?: number
-  current_edit_mode?: Record<string, any>
-  current_model?: Record<string, any>
-  current_document?: Record<string, any>
-  documents?: Record<string, any>
-}
-
-type CubismExportEvent = {
-  event?: string
-  accepted?: Record<string, any>
-  data?: Record<string, any>
-  timed_out?: boolean
-  timeout_seconds?: number
-}
-
-const CUBISM_APPROVAL_WAIT_SECONDS = 120
-
 const partOptions = [
   { value: "Face_Skin", label: "Face_Skin" },
   { value: "Hair", label: "Hair" },
@@ -186,11 +155,9 @@ const defaultForm = {
   parts: ["Face_Skin", "Eye_L", "Eye_R", "Mouth", "Eyebrow_L", "Eyebrow_R", "Hair", "Body"],
   feather_radius: 2,
   mesh_alpha_threshold: 10,
+  pngtuber_model_name: "",
+  pngtuber_enable_basic_blink: false,
   gpt_api_key: "",
-  cubism_host: "127.0.0.1",
-  cubism_port: 22033,
-  cubism_log_message: "N.E.K.O Live2D Auto Layer connected.",
-  cubism_export_timeout: 30,
 }
 
 function unwrapActionResult(envelope: any): Record<string, any> {
@@ -221,23 +188,6 @@ function qualityStatusLabel(t: (key: string) => string, value: string | undefine
   if (status === "watch") return t("panel.quality.status.watch")
   if (status === "ok") return t("panel.quality.status.ok")
   return status || "-"
-}
-
-function cubismStatusLabel(t: (key: string) => string, status: CubismConnectionStatus | null): string {
-  const value = String(status?.status || "")
-  if (value === "api_unavailable") return t("panel.cubismEditor.status.apiUnavailable")
-  if (value === "api_available_token_saved") return t("panel.cubismEditor.status.tokenSaved")
-  if (value === "api_available_no_token") return t("panel.cubismEditor.status.noToken")
-  return value || "-"
-}
-
-function cubismPortBadge(t: (key: string) => string, status: CubismConnectionStatus | null) {
-  return (
-    <StatusBadge
-      tone={status?.port_open ? "success" : "warning"}
-      label={status?.port_open ? t("panel.cubismEditor.portOpen") : t("panel.cubismEditor.portClosed")}
-    />
-  )
 }
 
 function jsonMarkdown(value: unknown): string {
@@ -554,27 +504,17 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
   const [autoEnvCheckRequested, setAutoEnvCheckRequested] = props.useLocalState("autoEnvCheckRequested", false)
   const [workspaceMode, setWorkspaceMode] = props.useLocalState("workspaceMode", "extract")
   const [sourceMode, setSourceMode] = props.useLocalState("sourceMode", "split")
-  const [cubismHandoffPath, setCubismHandoffPath] = props.useLocalState("cubismHandoffPath", "")
+  const [pngtuberPath, setPngtuberPath] = props.useLocalState("pngtuberPath", "")
+  const [pngtuberInstallResult, setPngtuberInstallResult] = props.useLocalState<Record<string, any> | null>("pngtuberInstallResult", null)
   const [autoRigPath, setAutoRigPath] = props.useLocalState("autoRigPath", "")
   const [autoRigQuality, setAutoRigQuality] = props.useLocalState<AutoRigQualitySummary | null>("autoRigQuality", null)
   const [autoRigModel, setAutoRigModel] = props.useLocalState<AutoRigPreviewModel | null>("autoRigModel", null)
   const [autoRigPose, setAutoRigPose] = props.useLocalState<Record<string, number>>("autoRigPose", {})
-  const [cubismStatus, setCubismStatus] = props.useLocalState<CubismConnectionStatus | null>("cubismStatus", null)
-  const [cubismEditorState, setCubismEditorState] = props.useLocalState<CubismEditorState | null>("cubismEditorState", null)
-  const [cubismExportEvent, setCubismExportEvent] = props.useLocalState<CubismExportEvent | null>("cubismExportEvent", null)
   const autoRigCanvasRef = useRef<any>(null)
 
   useEffect(() => {
     form.setField("method", String(safeState.default_method || "anime_face"))
   }, [safeState.default_method])
-
-  function applyAutomaticCubismHandoff(result: ProcessResult) {
-    const path = String(result.cubism_handoff_zip_path || "")
-    setCubismHandoffPath(path)
-    if (path) {
-      toast.success(t("panel.messages.cubismAutoExportDone"))
-    }
-  }
 
   async function runSplit() {
     const inputPath = form.values.input_path.trim()
@@ -620,12 +560,12 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
-      setCubismHandoffPath("")
+      setPngtuberPath("")
+      setPngtuberInstallResult(null)
       setAutoRigPath("")
       setAutoRigQuality(null)
       setAutoRigModel(null)
       setAutoRigPose({})
-      applyAutomaticCubismHandoff(result)
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.splitDone"))
     } catch (exc: any) {
@@ -666,12 +606,12 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
-      setCubismHandoffPath("")
+      setPngtuberPath("")
+      setPngtuberInstallResult(null)
       setAutoRigPath("")
       setAutoRigQuality(null)
       setAutoRigModel(null)
       setAutoRigPose({})
-      applyAutomaticCubismHandoff(result)
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.resegmentDone"))
     } catch (exc: any) {
@@ -706,12 +646,12 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
-      setCubismHandoffPath("")
+      setPngtuberPath("")
+      setPngtuberInstallResult(null)
       setAutoRigPath("")
       setAutoRigQuality(null)
       setAutoRigModel(null)
       setAutoRigPose({})
-      applyAutomaticCubismHandoff(result)
       await props.api.refresh()
       toast.success(result.message || t("panel.messages.importDone"))
     } catch (exc: any) {
@@ -760,7 +700,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       if (lastResult?.session_id === sessionId) {
         setLastResult(null)
         setSelectedLayer(null)
-        setCubismHandoffPath("")
+        setPngtuberPath("")
+        setPngtuberInstallResult(null)
         setAutoRigPath("")
         setAutoRigQuality(null)
         setAutoRigModel(null)
@@ -784,7 +725,8 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
       const result = unwrapActionResult(envelope) as ProcessResult
       setLastResult(result)
       setSelectedLayer(null)
-      setCubismHandoffPath("")
+      setPngtuberPath("")
+      setPngtuberInstallResult(null)
       setAutoRigPath("")
       setAutoRigQuality(null)
       setAutoRigModel(null)
@@ -838,6 +780,75 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
     }
   }
 
+  function pngtuberExportArgs(sessionId: string) {
+    const modelName = String(form.values.pngtuber_model_name || "").trim()
+    return {
+      session_id: sessionId,
+      model_name: modelName,
+      preferred_folder: modelName,
+      enable_basic_blink: Boolean(form.values.pngtuber_enable_basic_blink),
+    }
+  }
+
+  async function runExportPNGTuberModel() {
+    const sessionId = String(result?.session_id || "").trim()
+    if (!sessionId) {
+      toast.error(t("panel.errors.sessionRequired"))
+      return
+    }
+    setBusy(true)
+    setProgressText(t("panel.messages.exportingPNGTuber"))
+    setError("")
+    try {
+      const envelope = await props.api.call(
+        "live2d_export_pngtuber_model",
+        pngtuberExportArgs(sessionId),
+        { timeoutMs: 120000 },
+      )
+      const data = unwrapActionResult(envelope)
+      setPngtuberPath(String(data.pngtuber_zip_path || ""))
+      setPngtuberInstallResult(null)
+      toast.success(String(data.message || t("panel.messages.pngtuberExportDone")))
+    } catch (exc: any) {
+      const message = String(exc?.message || exc)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+      setProgressText("")
+    }
+  }
+
+  async function runInstallPNGTuberModel() {
+    const sessionId = String(result?.session_id || "").trim()
+    if (!sessionId) {
+      toast.error(t("panel.errors.sessionRequired"))
+      return
+    }
+    setBusy(true)
+    setProgressText(t("panel.messages.installingPNGTuber"))
+    setError("")
+    try {
+      const envelope = await props.api.call(
+        "live2d_install_pngtuber_model",
+        pngtuberExportArgs(sessionId),
+        { timeoutMs: 120000 },
+      )
+      const data = unwrapActionResult(envelope)
+      setPngtuberPath(String(data.pngtuber_zip_path || ""))
+      setPngtuberInstallResult(data)
+      await props.api.refresh()
+      toast.success(String(data.message || t("panel.messages.pngtuberInstallDone")))
+    } catch (exc: any) {
+      const message = String(exc?.message || exc)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+      setProgressText("")
+    }
+  }
+
   async function runLoadAutoRigModel() {
     const sessionId = String(result?.session_id || "").trim()
     if (!sessionId) {
@@ -868,180 +879,6 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
     }
   }
 
-  async function runExportCubismHandoff() {
-    const sessionId = String(result?.session_id || "").trim()
-    if (!sessionId) {
-      toast.error(t("panel.errors.sessionRequired"))
-      return
-    }
-    setBusy(true)
-    setProgressText(t("panel.messages.exportingCubism"))
-    setError("")
-    try {
-      await exportCubismHandoffForSession(sessionId)
-    } catch (exc: any) {
-      const message = String(exc?.message || exc)
-      setError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-      setProgressText("")
-    }
-  }
-
-  async function exportCubismHandoffForSession(sessionId: string, options?: { auto?: boolean }) {
-    const cleanSessionId = String(sessionId || "").trim()
-    if (!cleanSessionId) return
-    setProgressText(t("panel.messages.exportingCubism"))
-    try {
-      const envelope = await props.api.call(
-        "live2d_export_cubism_handoff",
-        { session_id: cleanSessionId },
-        { timeoutMs: 120000 },
-      )
-      const data = unwrapActionResult(envelope)
-      const path = String(data.cubism_handoff_zip_path || "")
-      setCubismHandoffPath(path)
-      toast.success(String(data.message || (options?.auto ? t("panel.messages.cubismAutoExportDone") : t("panel.messages.cubismExportDone"))))
-    } catch (exc: any) {
-      if (!options?.auto) throw exc
-      const message = String(exc?.message || exc)
-      setError(message)
-      toast.error(message)
-    }
-  }
-
-  function cubismConnectionArgs() {
-    return {
-      host: String(form.values.cubism_host || "127.0.0.1").trim() || "127.0.0.1",
-      port: Number(form.values.cubism_port) || 22033,
-    }
-  }
-
-  async function runCubismStatus() {
-    setBusy(true)
-    setProgressText(t("panel.messages.checkingCubism"))
-    setError("")
-    try {
-      const envelope = await props.api.call("live2d_cubism_status", cubismConnectionArgs(), { timeoutMs: 30000 })
-      const data = unwrapActionResult(envelope) as CubismConnectionStatus
-      setCubismStatus(data)
-      toast.success(cubismStatusLabel(t, data))
-    } catch (exc: any) {
-      const message = String(exc?.message || exc)
-      setError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-      setProgressText("")
-    }
-  }
-
-  async function runCubismRegister() {
-    setBusy(true)
-    setProgressText(t("panel.messages.registeringCubism"))
-    setError("")
-    try {
-      const envelope = await props.api.call(
-        "live2d_cubism_register",
-        { ...cubismConnectionArgs(), approval_wait_seconds: CUBISM_APPROVAL_WAIT_SECONDS },
-        { timeoutMs: (CUBISM_APPROVAL_WAIT_SECONDS + 20) * 1000 },
-      )
-      const data = unwrapActionResult(envelope) as Record<string, any>
-      setCubismStatus({
-        host: String(data.host || form.values.cubism_host),
-        port: Number(data.port || form.values.cubism_port),
-        port_open: true,
-        token_saved: Boolean(data.token_saved),
-        status: data.token_saved ? "api_available_token_saved" : "api_available_no_token",
-      })
-      setCubismEditorState({
-        ...(cubismEditorState || {}),
-        approved: Boolean(data.approved),
-        approval_wait_timed_out: Boolean(data.approval_wait_timed_out),
-        approval_wait_seconds: Number(data.approval_wait_seconds || CUBISM_APPROVAL_WAIT_SECONDS),
-        host: String(data.host || form.values.cubism_host),
-        port: Number(data.port || form.values.cubism_port),
-      })
-      toast.success(data.approved ? t("panel.messages.cubismApproved") : t("panel.messages.cubismRegistered"))
-    } catch (exc: any) {
-      const message = String(exc?.message || exc)
-      setError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-      setProgressText("")
-    }
-  }
-
-  async function runCubismEditorState() {
-    setBusy(true)
-    setProgressText(t("panel.messages.loadingCubismState"))
-    setError("")
-    try {
-      const envelope = await props.api.call("live2d_cubism_editor_state", cubismConnectionArgs(), { timeoutMs: 30000 })
-      const data = unwrapActionResult(envelope) as CubismEditorState
-      setCubismEditorState(data)
-      toast.success(data.approved ? t("panel.messages.cubismStateLoaded") : t("panel.messages.cubismNeedsApproval"))
-    } catch (exc: any) {
-      const message = String(exc?.message || exc)
-      setError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-      setProgressText("")
-    }
-  }
-
-  async function runCubismSendLog() {
-    const message = String(form.values.cubism_log_message || "").trim()
-    if (!message) {
-      toast.error(t("panel.errors.cubismLogRequired"))
-      return
-    }
-    setBusy(true)
-    setProgressText(t("panel.messages.sendingCubismLog"))
-    setError("")
-    try {
-      await props.api.call(
-        "live2d_cubism_send_log",
-        { ...cubismConnectionArgs(), message, log_type: "info", display: true },
-        { timeoutMs: 30000 },
-      )
-      toast.success(t("panel.messages.cubismLogSent"))
-    } catch (exc: any) {
-      const messageText = String(exc?.message || exc)
-      setError(messageText)
-      toast.error(messageText)
-    } finally {
-      setBusy(false)
-      setProgressText("")
-    }
-  }
-
-  async function runCubismWaitMocExport() {
-    setBusy(true)
-    setProgressText(t("panel.messages.waitingCubismExport"))
-    setError("")
-    try {
-      const envelope = await props.api.call(
-        "live2d_cubism_wait_moc_export",
-        { ...cubismConnectionArgs(), timeout_seconds: Number(form.values.cubism_export_timeout) || 30 },
-        { timeoutMs: Math.max(60000, (Number(form.values.cubism_export_timeout) || 30) * 1000 + 10000) },
-      )
-      const data = unwrapActionResult(envelope) as CubismExportEvent
-      setCubismExportEvent(data)
-      toast.success(data.timed_out ? t("panel.messages.cubismExportTimeout") : t("panel.messages.cubismExportEventReceived"))
-    } catch (exc: any) {
-      const message = String(exc?.message || exc)
-      setError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-      setProgressText("")
-    }
-  }
-
   const packages = env.python_packages || {}
   const models = env.models || {}
   const devices = env.devices || {}
@@ -1061,18 +898,15 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
   const isExtractWorkspace = workspaceMode === "extract"
   const isAutoRigWorkspace = workspaceMode === "auto_rig"
   const isAutoRigPreviewWorkspace = workspaceMode === "auto_rig_preview"
-  const isCubismWorkspace = workspaceMode === "cubism"
-  const isCubismEditorWorkspace = workspaceMode === "cubism_editor"
+  const isPNGTuberWorkspace = workspaceMode === "pngtuber"
   const isImportMode = sourceMode === "import"
   const autoRigParameters = Array.isArray(autoRigModel?.parameters) ? autoRigModel?.parameters || [] : []
   const workspaceTitle = isAutoRigWorkspace
     ? t("panel.autoRig.title")
     : isAutoRigPreviewWorkspace
       ? t("panel.autoRigPreview.title")
-    : isCubismEditorWorkspace
-      ? t("panel.cubismEditor.title")
-    : isCubismWorkspace
-      ? t("panel.cubism.title")
+    : isPNGTuberWorkspace
+      ? t("panel.pngtuber.title")
       : t("panel.process.title")
 
   useEffect(() => {
@@ -1080,6 +914,11 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
     setAutoEnvCheckRequested(true)
     void checkEnvironment({ silent: true })
   }, [environmentKnown, autoEnvCheckRequested, checkingEnv])
+
+  useEffect(() => {
+    if (["extract", "auto_rig", "auto_rig_preview", "pngtuber"].includes(String(workspaceMode))) return
+    setWorkspaceMode("extract")
+  }, [workspaceMode])
 
   useEffect(() => {
     const canvas = autoRigCanvasRef.current
@@ -1128,8 +967,7 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
           { value: "extract", label: t("panel.workspaces.extract") },
           { value: "auto_rig", label: t("panel.workspaces.autoRig") },
           { value: "auto_rig_preview", label: t("panel.workspaces.autoRigPreview") },
-          { value: "cubism", label: t("panel.workspaces.cubism") },
-          { value: "cubism_editor", label: t("panel.workspaces.cubismEditor") },
+          { value: "pngtuber", label: t("panel.workspaces.pngtuber") },
         ]}
         onChange={(value) => setWorkspaceMode(String(value))}
       />
@@ -1283,6 +1121,51 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
                   />
                 </ButtonGroup>
               </>
+            ) : isPNGTuberWorkspace ? (
+              <>
+                <KeyValue
+                  items={[
+                    { key: "session", label: t("panel.result.session"), value: result?.session_id || "-" },
+                    { key: "layers", label: t("panel.sessions.layers"), value: String(layers.length) },
+                  ]}
+                />
+                <Field className="lal-field" label={t("panel.fields.pngtuberModelName")} help={t("panel.help.pngtuberModelName")}>
+                  <Input
+                    value={String(form.values.pngtuber_model_name || "")}
+                    placeholder={result?.session_id || "PNGTuber model"}
+                    onChange={(value) => form.setField("pngtuber_model_name", value)}
+                  />
+                </Field>
+                <CheckboxGroup
+                  value={form.values.pngtuber_enable_basic_blink ? ["blink"] : []}
+                  options={[{ value: "blink", label: t("panel.fields.pngtuberBasicBlink") }]}
+                  onChange={(value) => form.setField("pngtuber_enable_basic_blink", value.includes("blink"))}
+                />
+                {pngtuberInstallResult ? (
+                  <KeyValue
+                    items={[
+                      { key: "name", label: t("panel.pngtuber.model"), value: String(pngtuberInstallResult.model_name || pngtuberInstallResult.name || "-") },
+                      { key: "folder", label: t("panel.pngtuber.folder"), value: String(pngtuberInstallResult.folder || "-") },
+                      { key: "url", label: t("panel.pngtuber.url"), value: String(pngtuberInstallResult.url || "-") },
+                    ]}
+                  />
+                ) : null}
+                <ButtonGroup className="lal-run-actions">
+                  <Button tone="primary" disabled={busy || !result?.session_id} onClick={runExportPNGTuberModel}>
+                    {t("panel.actions.exportPNGTuber")}
+                  </Button>
+                  <Button tone="success" disabled={busy || !result?.session_id} onClick={runInstallPNGTuberModel}>
+                    {t("panel.actions.installPNGTuber")}
+                  </Button>
+                  <FileDownload
+                    href={artifactUrl(pluginId, pngtuberPath)}
+                    path={pngtuberPath || ""}
+                    filename="pngtuber_model.zip"
+                    label={t("panel.actions.downloadPNGTuber")}
+                    copiedLabel={t("panel.messages.pathCopied")}
+                  />
+                </ButtonGroup>
+              </>
             ) : isAutoRigPreviewWorkspace ? (
               <>
                 <KeyValue
@@ -1337,94 +1220,7 @@ export default function Live2dAutoLayerPanel(props: PluginSurfaceProps<Dashboard
                   </Button>
                 </ButtonGroup>
               </>
-            ) : isCubismEditorWorkspace ? (
-              <>
-                <div className="lal-cubism-status">
-                  {cubismPortBadge(t, cubismStatus)}
-                  <KeyValue
-                    items={[
-                      { key: "endpoint", label: t("panel.cubismEditor.endpoint"), value: `${form.values.cubism_host}:${form.values.cubism_port}` },
-                      { key: "status", label: t("panel.cubismEditor.status"), value: cubismStatusLabel(t, cubismStatus) },
-                      { key: "token", label: t("panel.cubismEditor.token"), value: cubismStatus?.token_saved ? t("panel.status.ready") : t("panel.status.missing") },
-                      { key: "approved", label: t("panel.cubismEditor.approval"), value: cubismEditorState?.approved ? t("panel.cubismEditor.approved") : t("panel.cubismEditor.notApproved") },
-                    ]}
-                  />
-                </div>
-
-                <div className="lal-panel-section">
-                  <div className="lal-section-title">{t("panel.cubismEditor.connection")}</div>
-                  <Field className="lal-field" label={t("panel.fields.cubismHost")}>
-                    <Input value={String(form.values.cubism_host)} onChange={(value) => form.setField("cubism_host", value)} />
-                  </Field>
-                  <Field className="lal-field" label={t("panel.fields.cubismPort")}>
-                    <Input value={String(form.values.cubism_port)} onChange={(value) => form.setField("cubism_port", Number(value) || 22033)} />
-                  </Field>
-                  <ButtonGroup className="lal-run-actions">
-                    <Button tone="default" disabled={busy} onClick={runCubismStatus}>{t("panel.actions.cubismStatus")}</Button>
-                    <Button tone="primary" disabled={busy} onClick={runCubismRegister}>{t("panel.actions.cubismRegister")}</Button>
-                    <Button tone="primary" disabled={busy} onClick={runCubismEditorState}>{t("panel.actions.cubismState")}</Button>
-                  </ButtonGroup>
-                </div>
-
-                <div className="lal-panel-section">
-                  <div className="lal-section-title">{t("panel.cubismEditor.log")}</div>
-                  <Field className="lal-field" label={t("panel.fields.cubismLogMessage")}>
-                    <Input value={String(form.values.cubism_log_message)} onChange={(value) => form.setField("cubism_log_message", value)} />
-                  </Field>
-                  <ButtonGroup className="lal-run-actions">
-                    <Button tone="primary" disabled={busy} onClick={runCubismSendLog}>{t("panel.actions.cubismSendLog")}</Button>
-                  </ButtonGroup>
-                </div>
-
-                <div className="lal-panel-section">
-                  <div className="lal-section-title">{t("panel.cubismEditor.exports")}</div>
-                  <Field className="lal-field" label={t("panel.fields.cubismExportTimeout")}>
-                    <Slider
-                      value={Number(form.values.cubism_export_timeout)}
-                      min={5}
-                      max={180}
-                      step={5}
-                      onChange={(value) => form.setField("cubism_export_timeout", value)}
-                    />
-                  </Field>
-                  <ButtonGroup className="lal-run-actions">
-                    <Button tone="primary" disabled={busy} onClick={runCubismWaitMocExport}>{t("panel.actions.cubismWaitExport")}</Button>
-                  </ButtonGroup>
-                </div>
-
-                {cubismEditorState ? (
-                  <Accordion id="cubism-editor-state" title={t("panel.cubismEditor.stateJson")} open={false}>
-                    <Markdown>{jsonMarkdown(cubismEditorState)}</Markdown>
-                  </Accordion>
-                ) : null}
-                {cubismExportEvent ? (
-                  <Accordion id="cubism-export-event" title={t("panel.cubismEditor.exportJson")} open={false}>
-                    <Markdown>{jsonMarkdown(cubismExportEvent)}</Markdown>
-                  </Accordion>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <KeyValue
-                  items={[
-                    { key: "session", label: t("panel.result.session"), value: result?.session_id || "-" },
-                    { key: "layers", label: t("panel.sessions.layers"), value: String(layers.length) },
-                  ]}
-                />
-                <ButtonGroup className="lal-run-actions">
-                  <Button tone="primary" disabled={busy || !result?.session_id} onClick={runExportCubismHandoff}>
-                    {t("panel.actions.exportCubism")}
-                  </Button>
-                  <FileDownload
-                    href={artifactUrl(pluginId, cubismHandoffPath)}
-                    path={cubismHandoffPath || ""}
-                    filename="cubism_handoff.zip"
-                    label={t("panel.actions.downloadCubism")}
-                    copiedLabel={t("panel.messages.pathCopied")}
-                  />
-                </ButtonGroup>
-              </>
-            )}
+            ) : null}
           </Stack>
         </Card>
 

@@ -69,12 +69,16 @@ _EXACT_ALIASES = {
     "object": "Accessory",
     "left_eyebrow": "Eyebrow_Left",
     "eyebrow_left": "Eyebrow_Left",
+    "eyebrow_l": "Eyebrow_Left",
     "right_eyebrow": "Eyebrow_Right",
     "eyebrow_right": "Eyebrow_Right",
+    "eyebrow_r": "Eyebrow_Right",
     "left_eye": "Eye_Left",
     "eye_left": "Eye_Left",
+    "eye_l": "Eye_Left",
     "right_eye": "Eye_Right",
     "eye_right": "Eye_Right",
+    "eye_r": "Eye_Right",
 }
 
 

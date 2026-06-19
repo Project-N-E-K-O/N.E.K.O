@@ -84,7 +84,7 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_split_image failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(self.main_plugin.layers.result_to_ui_dict(result, include_cubism_handoff=True))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
 
     @ui.action(
         label=tr("actions.resegmentSession.label", default="Resegment"),
@@ -144,7 +144,7 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_resegment_session failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(self.main_plugin.layers.result_to_ui_dict(result, include_cubism_handoff=True))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
 
     @ui.action(
         label=tr("actions.importLayerSource.label", default="Import layers"),
@@ -199,7 +199,7 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_import_layer_source failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(self.main_plugin.layers.result_to_ui_dict(result, include_cubism_handoff=True))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
 
     @ui.action(
         label=tr("actions.exportSession.label", default="Export ZIP"),
@@ -233,43 +233,6 @@ class ProcessRouter(PluginRouter):
             "zip_path": result.zip_path,
             "filename": "live2d_layers.zip",
         })
-
-    @ui.action(
-        label=tr("actions.exportCubismHandoff.label", default="Export Cubism handoff"),
-        tone="primary",
-        group="process",
-        order=35,
-        refresh_context=False,
-    )
-    @plugin_entry(
-        id="live2d_export_cubism_handoff",
-        name=tr("entries.exportCubismHandoff.name", default="Export Cubism Editor handoff package"),
-        description=tr(
-            "entries.exportCubismHandoff.description",
-            default="Generate a Cubism Editor handoff ZIP with ordered PNG layers, layer CSV, metadata, and README. This is not a model3/moc3 model package.",
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "session_id": {"type": "string"},
-            },
-            "required": ["session_id"],
-        },
-        llm_result_fields=["session_id", "cubism_handoff_zip_path", "message", "warning"],
-    )
-    async def export_cubism_handoff(self, session_id: str = "", **_):
-        clean_id = str(session_id or "").strip()
-        if not clean_id:
-            return Err(SdkError("session_id is required"))
-        try:
-            result = await asyncio.to_thread(
-                self.main_plugin.layers.export_cubism_handoff,
-                clean_id,
-            )
-        except Exception as exc:
-            self.logger.warning("live2d_export_cubism_handoff failed: {}", exc, exc_info=True)
-            return Err(SdkError(str(exc)))
-        return Ok(result)
 
     @ui.action(
         label=tr("actions.exportAutoRigModel.label", default="Export AutoRig model"),
@@ -319,6 +282,111 @@ class ProcessRouter(PluginRouter):
             )
         except Exception as exc:
             self.logger.warning("live2d_export_auto_rig_model failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(result)
+
+    @ui.action(
+        label=tr("actions.exportPNGTuberModel.label", default="Export PNGTuber model"),
+        tone="success",
+        group="process",
+        order=38,
+        refresh_context=False,
+    )
+    @plugin_entry(
+        id="live2d_export_pngtuber_model",
+        name=tr("entries.exportPNGTuberModel.name", default="Export NEKO PNGTuber model package"),
+        description=tr(
+            "entries.exportPNGTuberModel.description",
+            default="Generate an importable NEKO PNGTuber ZIP with model.json, layered_canvas_v1 metadata, ordered PNG layers, and fallback composite images. This is not a Cubism model3/moc3 package.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "model_name": {
+                    "type": "string",
+                    "description": "Optional display name written to model.json.",
+                },
+                "enable_basic_blink": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When enabled, eye layers are hidden during blink. Disabled by default because generated sessions usually do not include closed-eye replacement layers.",
+                },
+            },
+            "required": ["session_id"],
+        },
+        llm_result_fields=["session_id", "pngtuber_zip_path", "pngtuber_model_path", "pngtuber_metadata_path", "message", "warning"],
+    )
+    async def export_pngtuber_model(
+        self,
+        session_id: str = "",
+        model_name: str = "",
+        enable_basic_blink: bool = False,
+        **_,
+    ):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.export_pngtuber_model,
+                clean_id,
+                model_name=str(model_name or ""),
+                enable_basic_blink=bool(enable_basic_blink),
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_export_pngtuber_model failed: {}", exc, exc_info=True)
+            return Err(SdkError(str(exc)))
+        return Ok(result)
+
+    @ui.action(
+        label=tr("actions.installPNGTuberModel.label", default="Install PNGTuber model"),
+        tone="success",
+        group="process",
+        order=39,
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="live2d_install_pngtuber_model",
+        name=tr("entries.installPNGTuberModel.name", default="Install NEKO PNGTuber model package"),
+        description=tr(
+            "entries.installPNGTuberModel.description",
+            default="Export a session as NEKO PNGTuber layered_canvas_v1 and install it into the user PNGTuber model library.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "model_name": {"type": "string"},
+                "preferred_folder": {"type": "string"},
+                "enable_basic_blink": {"type": "boolean", "default": False},
+            },
+            "required": ["session_id"],
+        },
+        timeout=120,
+        llm_result_fields=["success", "session_id", "folder", "url", "model_name", "source_format", "message"],
+    )
+    async def install_pngtuber_model(
+        self,
+        session_id: str = "",
+        model_name: str = "",
+        preferred_folder: str = "",
+        enable_basic_blink: bool = False,
+        **_,
+    ):
+        clean_id = str(session_id or "").strip()
+        if not clean_id:
+            return Err(SdkError("session_id is required"))
+        try:
+            result = await asyncio.to_thread(
+                self.main_plugin.layers.install_pngtuber_model,
+                clean_id,
+                model_name=str(model_name or ""),
+                preferred_folder=str(preferred_folder or ""),
+                enable_basic_blink=bool(enable_basic_blink),
+            )
+        except Exception as exc:
+            self.logger.warning("live2d_install_pngtuber_model failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
         return Ok(result)
 
