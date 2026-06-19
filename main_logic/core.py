@@ -2332,6 +2332,10 @@ class LLMSessionManager:
             # unrelated mild cue enter on stale evidence once re-enabled.
             # update_focus self-clears when the switch is off (idempotent).
             await self.state.update_focus(0.0)
+            # Reconcile AGAIN after the self-clear: if the switch was flipped off
+            # mid-episode, the clear above is silent (no FOCUS_EXIT), so clear the
+            # badge this turn rather than waiting for the next one.
+            await self._reconcile_focus_indicator()
             return False
         if not (user_text and user_text.strip()):
             return False
@@ -2486,6 +2490,9 @@ class LLMSessionManager:
             if not FOCUS_MODE_ENABLED:
                 # Master switch off → update_focus self-clears any residue.
                 await self.state.update_focus(0.0)
+                # Same-turn badge clear on a mid-episode switch-off (symmetric
+                # with the inline path); the self-clear emits no FOCUS_EXIT.
+                await self._reconcile_focus_indicator()
                 return
             # User took over an UNDELIVERED turn: the user spoke during the
             # proactive request (USER_INPUT flipped owner→USER) and aborted it

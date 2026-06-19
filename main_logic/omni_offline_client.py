@@ -2052,10 +2052,15 @@ class OmniOfflineClient:
                         # a lone ``</think>``; hold + drop it before TTS/UI ever
                         # see it. Clean providers (reasoning_content path) get no
                         # stripper, so their streaming stays byte-for-byte untouched.
+                        # Gate on the SAME effective-thinking condition as
+                        # _focus_stream_overrides (``thinking_on and not uses_vision``):
+                        # a vision Focus turn runs thinking-OFF, so no </think> ever
+                        # arrives and a stripper would needlessly hold the stream.
                         from config.providers import leaks_thinking_in_content
                         think_stripper = (
                             ThinkingStreamStripper()
-                            if thinking_on and leaks_thinking_in_content(self.model)
+                            if thinking_on and not self._focus_images_seen
+                            and leaks_thinking_in_content(self.model)
                             else None
                         )
                         async for chunk in self._astream_visible_with_tools(
