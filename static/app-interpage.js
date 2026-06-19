@@ -2756,7 +2756,7 @@
         if (!message || !message.action) {
             return false;
         }
-        if (message.tutorialRunId) {
+        if (message.tutorialRunId && message.action !== 'yui_guide_tutorial_lifecycle_ended') {
             try {
                 window.localStorage.setItem('yuiGuidePcOverlayRunId', String(message.tutorialRunId));
             } catch (_) {}

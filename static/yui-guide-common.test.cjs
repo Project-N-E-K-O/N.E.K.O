@@ -2087,6 +2087,9 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(clearOverlayBlock, /window\.nekoTutorialOverlay\.relayToPet\(lifecycleEndedMessage\)/);
     assert.match(clearOverlayBlock, /window\.appInterpage\.nekoBroadcastChannel\.postMessage\(lifecycleEndedMessage\)/);
     assert.match(clearOverlayBlock, /action:\s*'yui_guide_tutorial_lifecycle_ended'/);
+    const lifecycleMessageBlock = clearOverlayBlock.split('const lifecycleEndedMessage = {')[1].split('};', 1)[0];
+    assert.doesNotMatch(lifecycleMessageBlock, /tutorialRunId/);
+    assert.match(appInterpageSource, /if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);
     assert.match(externalCleanupBlock, /var endedRunId = typeof tutorialRunId === 'string' && tutorialRunId/);
