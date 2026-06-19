@@ -28,7 +28,6 @@ import json
 import math
 import random
 import re
-import shutil
 import sqlite3
 import time
 import uuid
@@ -116,7 +115,7 @@ _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 _BADMINTON_SCORE_SESSION_TTL_SECONDS = 10 * 60
 _BADMINTON_SCORING_MODES = {"shooter", "duel"}
-_BADMINTON_GAME_TYPES = {"badminton", "basketball"}
+_BADMINTON_GAME_TYPES = {"badminton"}
 _BADMINTON_SHOT_TYPE_ALIASES = {
     "line_in": "line_in",
     "net_touch": "net_touch",
@@ -174,7 +173,6 @@ _badminton_chat_rate_windows: OrderedDict[str, list[float]] = OrderedDict()
 _BADMINTON_CHAT_RATE_WINDOW_SECONDS = 8.0
 _BADMINTON_CHAT_RATE_MAX = 10
 _BADMINTON_SCORES_DB_PATH: Path | None = None
-_BADMINTON_LEGACY_SCORES_DB_PATH = Path(__file__).resolve().with_name("badminton_scores.db")
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
 _MAX_GAME_MEMORY_TAIL_COUNT = 50
 
@@ -494,11 +492,6 @@ def _normalize_badminton_shot_type(value: Any) -> str:
     if not raw:
         return ""
     return _BADMINTON_SHOT_TYPE_ALIASES.get(raw, "")
-
-
-def _legacy_badminton_shot_type(value: Any) -> str:
-    normalized = _normalize_badminton_shot_type(value)
-    return _BADMINTON_LEGACY_SHOT_TYPES.get(normalized, "")
 
 
 def _normalize_text_items(value: Any, *, max_items: int = 5, max_chars: int = 80) -> list[str]:
@@ -5306,6 +5299,8 @@ def _format_badminton_distance_meters(distance_px: float) -> str:
 
 
 def _score_db_game_slug(game_type: Any = "badminton") -> str:
+    # This backend layer owns only badminton scores; other game types must not
+    # share this leaderboard implicitly.
     return "badminton"
 
 
@@ -5324,29 +5319,6 @@ def _prepare_badminton_scores_db_path(game_type: Any = "badminton") -> Path:
     slug = _score_db_game_slug(game_type)
     db_path = _get_badminton_scores_db_path(slug)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    migration_attempted = bool(getattr(_prepare_badminton_scores_db_path, "_migration_attempted", False))
-    if (
-        slug == "badminton"
-        and
-        _BADMINTON_SCORES_DB_PATH is None
-        and not migration_attempted
-        and not db_path.exists()
-        and _BADMINTON_LEGACY_SCORES_DB_PATH.exists()
-    ):
-        try:
-            shutil.copy2(_BADMINTON_LEGACY_SCORES_DB_PATH, db_path)
-            logger.info(
-                "🏸 已迁移羽毛球排行榜 DB: %s -> %s",
-                _BADMINTON_LEGACY_SCORES_DB_PATH,
-                db_path,
-            )
-        except Exception as exc:
-            logger.warning(
-                "🏸 羽毛球排行榜 DB 迁移失败，将使用新 runtime DB: %s",
-                exc,
-            )
-    if slug == "badminton":
-        setattr(_prepare_badminton_scores_db_path, "_migration_attempted", True)
     return db_path
 
 
