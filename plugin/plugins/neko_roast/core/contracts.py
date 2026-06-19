@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 LiveMode = Literal["co_stream", "solo_stream"]
@@ -14,7 +14,7 @@ SafetyStatus = Literal["running", "paused", "degraded", "tripped", "disconnected
 
 
 def utc_now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 _LIVE_ROOM_URL_RE = re.compile(r"live\.bilibili\.com/(?:h5/|blanc/)?(\d+)", re.IGNORECASE)
@@ -187,7 +187,6 @@ class ViewerIdentity:
             "uid": self.uid,
             "nickname": self.nickname,
             "name": self.name or self.nickname,
-            "email": self.email,
             "avatar_url": self.avatar_url,
             "avatar_mime": self.avatar_mime,
             "has_avatar": bool(self.avatar_bytes),

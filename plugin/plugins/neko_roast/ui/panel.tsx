@@ -1,4 +1,4 @@
-﻿import {
+import {
   Alert,
   Button,
   Card,
@@ -59,7 +59,7 @@ const configDefaults = {
   rate_limit_seconds: "20",
   queue_limit: "5",
   safety_auto_stop_enabled: true,
-  dry_run: false,
+  dry_run: true,
   viewer_store_dir: "",
 }
 
@@ -73,8 +73,8 @@ const sandboxDefaults = {
 
 const presetViewer = {
   uid: "9000000000000001",
-  nickname: "绮夋鐚尗瑙傚療鍛?,
-  danmaku_text: "鍒濊锛岀尗鐚彲浠ラ攼璇勪竴涓嬫垜鐨勫ご鍍忓悧",
+  nickname: "Demo viewer",
+  danmaku_text: "First time here, can you roast my avatar?",
 }
 
 function statusTone(status: string): "success" | "warning" | "danger" | "default" {
@@ -87,7 +87,8 @@ function statusTone(status: string): "success" | "warning" | "danger" | "default
 function ToggleSwitch(props: { checked: boolean; label?: any; disabled?: boolean; tone?: string; onChange: (value: boolean) => void }) {
   const checked = !!props.checked
   const disabled = !!props.disabled
-  // 鐢ㄥ涓讳富棰?CSS 鍙橀噺锛堟繁鑹叉ā寮忚嚜鍔ㄩ€傞厤锛夛紝涓嶅啀鍐欐娴呰壊锛?  // 寮€鍚建閬撯啋璇箟鑹诧紙榛樿 primary 钃濓紱鍔熻兘寮€鍏充紶 tone="success" 鍙栫豢锛夛紝鍏抽棴杞ㄩ亾鈫抦uted锛?  // 绂佺敤鈫抌order锛涙爣绛惧瓧鑹测啋text/muted銆俵abel 鐪佺暐鏃朵笉娓叉煋鏂囧瓧锛堝崱澶撮噷鍙寮€鍏筹級銆?  const onColor = props.tone === "success" ? "var(--success)" : "var(--primary)"
+  // Use host theme variables so dark mode follows the shell.
+  const onColor = props.tone === "success" ? "var(--success)" : "var(--primary)"
   const onGlow = props.tone === "success" ? "0 0 0 2px rgba(103, 194, 58, 0.18)" : "0 0 0 2px rgba(64, 158, 255, 0.18)"
   const trackColor = disabled ? "var(--border)" : checked ? onColor : "var(--muted)"
   const labelColor = disabled ? "var(--muted)" : "var(--text)"
@@ -217,7 +218,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       rate_limit_seconds: String(config.rate_limit_seconds ?? 20),
       queue_limit: String(config.queue_limit ?? 5),
       safety_auto_stop_enabled: config.safety_auto_stop_enabled !== false,
-      dry_run: config.dry_run === true,
+      dry_run: config.dry_run !== false,
       viewer_store_dir: String(config.viewer_store_dir || ""),
     })
   }, [
@@ -265,7 +266,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         queue_limit: Number(configForm.values.queue_limit) || 5,
         safety_auto_stop_enabled: configForm.values.safety_auto_stop_enabled,
         dry_run: configForm.values.dry_run,
-        viewer_store_dir: configForm.values.viewer_store_dir.trim(),  // 瑙備紬妗ｆ瀛樺偍鐩綍锛堢暀绌?鎻掍欢榛樿鐩綍锛?        ...patch,
+        viewer_store_dir: configForm.values.viewer_store_dir.trim(),
+        ...patch,
       })
       await props.api.refresh()
       toast.success(t("panel.messages.saved"))
@@ -275,7 +277,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function browseFolder() {
-    // 璋冨悗绔?pick_folder锛氭湰鏈哄脊鍘熺敓閫夋枃浠跺す妗嗭紝閫変腑鍚庡～杩涜緭鍏ユ锛堜笉鑷姩瀛橈紝鐢ㄦ埛纭鍚庣偣淇濆瓨锛夈€?    try {
+    // Pick a local folder and let the user confirm before saving it.
+    try {
       const res = unwrapActionResult(await props.api.call("pick_folder", {
         initial: String((safeState.viewer_store || {}).dir || ""),
         title: t("panel.storage.pickTitle"),
@@ -290,7 +293,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function lookupLiveRoom() {
-    const roomId = configForm.values.live_room_id.trim()  // 鎴垮彿鎴栫洿鎾棿閾炬帴锛屽悗绔В鏋?    if (!roomId) {
+    const roomId = configForm.values.live_room_id.trim()
+    if (!roomId) {
       toast.error(t("panel.messages.roomRequired"))
       return
     }
@@ -494,7 +498,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Stack>
         <Text>
           {loginLoggedIn
-            ? t("panel.auth.loggedIn") + (loginName ? "锛? + loginName : "") + (loginUid ? " (UID " + loginUid + ")" : "")
+            ? t("panel.auth.loggedIn") + (loginName ? ": " + loginName : "") + (loginUid ? " (UID " + loginUid + ")" : "")
             : t("panel.auth.loggedOut")}
         </Text>
         {loginLoggedIn ? (
@@ -541,7 +545,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Card>
   )
 
-  // 鎺у埗鍙?= 寮€鎾€诲叆鍙ｏ紙Step 3 鎶婂師銆岀洿鎾棿閰嶇疆銆峵ab 鎶樿繘鏉ワ級锛氱櫥褰?+ 鎴垮彿 + 鏌ヨ/杩炴帴 + 鐘舵€佹€昏 + 妯″紡 + dry_run 閫熷紑鍏炽€?  const consoleSection = (
+  // Main live-room console.
+  const consoleSection = (
     <Stack>
       {accountCard}
       <Card title={t("panel.room.title")}>
@@ -552,7 +557,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           {liveRoomResult ? (
             <Alert tone={roomLookupTone}>
               {liveRoomResult.ok
-                ? t("panel.room.lookupOk") + "锛? + (liveRoomResult.title || "-") + " 路 " + (liveRoomResult.anchor_name || "-") + " 路 " + liveStatusLabel
+                ? t("panel.room.lookupOk") + ": " + (liveRoomResult.title || "-") + " / " + (liveRoomResult.anchor_name || "-") + " / " + liveStatusLabel
                 : (liveRoomResult.message || t("panel.room.lookupFailed"))}
             </Alert>
           ) : null}
@@ -604,14 +609,16 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Stack>
   )
 
-  // 妯″潡鐘舵€佸窘绔狅細闄嶇骇(鍏滃簳鍙) > 鍦ㄧ嚎 > 鍗冲皢涓婄嚎(reserved) > 鏈惎鐢?  const moduleBadge = (m: any) => {
+  // Module status badge.
+  const moduleBadge = (m: any) => {
     if (m && m.degraded) return <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
     const reserved = !!(m && m.status && m.status.reserved)
     const on = !!(m && m.enabled)
     return <StatusBadge tone={on ? "success" : (reserved ? "default" : "warning")} label={on ? t("panel.modules.online") : (reserved ? t("panel.modules.soon") : t("panel.modules.off"))} />
   }
 
-  // 澹版槑寮忛厤缃覆鏌擄細鎶婃ā鍧?config_schema 鐨勫瓧娈垫寜 type 鏄犲皠鍒?UI 缁勪欢锛岀粦鍏ㄥ眬 config銆佹敼鍗冲瓨銆?  // boolean鈫扵oggleSwitch(+鍙€?hint 璇存槑鏂囧瓧)锛宻elect鈫抪ill 缁?閫変腑 primary 钃濆～鍏呫€佹湭閫?muted)锛?  // 鍏朵綑鈫扞nput銆俻ill 鐗逛緥鍖栬 docs/ui-architecture.md銆屽己搴︽覆鎴?pill銆嶏紱P3 鐨?integer 闂ㄦ绛夋寜闇€鎵┿€?  const renderConfigField = (f: any, fi: number) => {
+  // Render module-declared config fields.
+  const renderConfigField = (f: any, fi: number) => {
     const name = String((f && f.name) || "")
     const cur = config[name]
     const label = f && f.label ? t(f.label) : name
@@ -664,9 +671,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     )
   }
 
-  // 浜掑姩鍔熻兘鍗★細姣忎釜 domain=="interaction" 鐨勬ā鍧椾竴寮犲崱锛岃嚜甯﹀弬鏁?schema 椹卞姩)銆?  // 鍔犳柊鍔熻兘(P3 绀肩墿/SC/杩涘満)= 娉ㄥ唽妯″潡 + 澹版槑 config_schema锛屽崱鑷姩闀垮嚭鏉ワ紝闆舵敼澶栧３銆?  const interactionModules = modules.filter((m: any) => String((m && m.domain) || "") === "interaction")
+  // Interaction modules render from their declared schemas.
+  const interactionModules = modules.filter((m: any) => String((m && m.domain) || "") === "interaction")
 
-  // 寮瑰箷閿愯瘎鍗″ご寰界珷锛? 鎬侊紙缁?live_enabled銆屽姛鑳藉紑鍏炽€? 杩炴帴鐪熺浉锛夛紝瑙?docs/ui-architecture.md 鍗″ご鍐崇瓥銆?  // 寮€+鍦ㄥ惉鈫掑湪绾?缁?锛涘紑+娌¤繛鎴库啋寰呭懡(姗欙紝鎻愮ず鍘绘帶鍒跺彴鐩戝惉)锛涘叧鈫掑凡鍏抽棴(鐏?銆俶ockup 鐢荤殑鏄凡杩炴帴閭ｄ竴鎬併€?  const roastEnabled = !!config.live_enabled
+  // Live roast card header state.
+  const roastEnabled = !!config.live_enabled
   const roastConnected = !!connection.connected
   const roastBadge = roastEnabled
     ? (roastConnected
@@ -674,7 +683,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         : <StatusBadge tone="warning" label={t("panel.modules.standby")} />)
     : <StatusBadge tone="default" label={t("panel.modules.off")} />
 
-  // 寮瑰箷閿愯瘎(鏍稿績鍒囩墖)鍗★細鑷畾涔夊崱澶?鏍囬 + 3 鎬佸窘绔?+ 缁胯壊鍔熻兘寮€鍏? + schema 瀛楁(寮哄害 pill / 鍘婚噸)銆?  // Card 鏃犳爣棰樺彸鎻掓Ы(runtime.js Card 鍙妸 title 濉?<h2>)锛屾晠鍗″ご鐢?flex 琛岃嚜鎷笺€佷笉璧?Card title銆?  const renderRoastCard = (m: any) => (
+  // Live roast core card.
+  const renderRoastCard = (m: any) => (
     <Card key={m.id || "avatar_roast"}>
       <Stack gap={12}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
@@ -693,7 +703,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Card>
   )
 
-  // 鍏跺畠 interaction 妯″潡(鏈潵)璧伴€氱敤鍗★細妯″潡寰界珷 + schema 瀛楁锛屼笉缁?live_enabled銆?  const renderGenericModuleCard = (m: any, mi: number) => (
+  // Generic card for future interaction modules.
+  const renderGenericModuleCard = (m: any, mi: number) => (
     <Card key={m.id || mi} title={m.title || m.id}>
       <Stack gap={12}>
         {moduleBadge(m)}
@@ -708,7 +719,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
 
   // 鍏滃簳灞傗懀 UI 閿欒杈圭晫锛堣 docs/ui-architecture.md 搂4锛夛細鍗曞紶妯″潡鍗℃覆鏌撴姏閿欏彧濉岃繖涓€寮?  // 锛堥檷绾у崱锛夛紝缁濅笉杩炵疮鏁寸洏闈㈡澘銆俬osted-ui runtime 鏃?class 缁勪欢 / componentDidCatch锛屾晠鐢?  // try/catch 鍖呭悓姝ユ覆鏌撹皟鐢ㄢ€斺€攔enderRoastCard/renderGenericModuleCard 鏄悓姝ユ瀯閫?JSX锛屽潖
-  // 妯″潡鐨?config_schema / 鑷畾涔夋覆鏌撴姏閿欎細鍦ㄦ琚崟鑾枫€傞厤鍚?registry 鐨?degraded 闅旂锛堝眰鈶狅級锛?  // 鏋勬垚銆屾湭鏉ヤ换鎰忕涓夋柟妯″潡鐐镐簡涔熶笉榛戝睆銆嶇殑瀹屾暣淇濊瘉銆侺IVE 鍦烘櫙涓嬪彲闈犳€?> 涓€鍒囥€?  const safeModuleCard = (key: string, title: any, render: () => any) => {
+  // Guard module-card rendering so one bad module cannot blank the panel.
+  const safeModuleCard = (key: string, title: any, render: () => any) => {
     try {
       return render()
     } catch (err) {
@@ -737,7 +749,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Stack>
   )
 
-  // 妯″潡鎬昏琛細浠庛€屼簰鍔ㄦā鍧椼€峵ab 绉诲埌銆岃缃?楂樼骇銆?璇婃柇淇℃伅锛宮ockup 浜掑姩椤典笉鍚畠)銆?  const moduleOverviewCard = (
+  // Module overview table.
+  const moduleOverviewCard = (
     <Card title={t("panel.tabs.modules")}>
       {modules.length ? (
         <DataTable
@@ -861,7 +874,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Stack>
   )
 
-  // 绉佷俊 / 鑷姩鍖栵細瀵瑰簲棰勭暀妯″潡锛坆ili_dm_ingest / automation_ops锛夛紝鐩墠涓哄崰浣嶉〉锛堝嵆灏嗕笂绾匡級銆?  const comingSoonSection = (title: any, desc: any) => (
+  // Reserved tabs stay visible but clearly marked as coming soon.
+  const comingSoonSection = (title: any, desc: any) => (
     <Stack>
       <div style={{ opacity: 0.7 }}>
         <Card>
@@ -992,7 +1006,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   )
 
   // 鐢熷懡鍛ㄦ湡-鍩熷鑸紙鎭掑畾 6 涓竴绾ч〉 + 寮€鍙戣€呮寜 dev 妯″紡鏉′欢杩藉姞锛夛細
-  // 鎺у埗鍙?寮€鎾紝鍚師鐩存挱闂撮厤缃? / 鐩存挱闂翠簰鍔?/ 瑙備紬 / 绉佷俊 / 鑷姩鍖?/ 鈿欒缃€傝 docs/ui-architecture.md 搂1銆?  const tabItems = [
+  // Top-level dashboard tabs.
+  const tabItems = [
     { id: "console", label: t("panel.tabs.console"), content: consoleSection },
     { id: "interaction", label: t("panel.tabs.interaction"), content: modulesSection },
     { id: "viewers", label: t("panel.tabs.viewers"), content: dataSection },

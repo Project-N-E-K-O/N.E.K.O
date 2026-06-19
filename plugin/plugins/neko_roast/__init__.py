@@ -6,8 +6,6 @@ from typing import Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
 
-from .core.runtime import RoastRuntime
-
 
 @neko_plugin
 class NekoRoastPlugin(NekoPluginBase):
@@ -17,10 +15,16 @@ class NekoRoastPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = getattr(ctx, "logger", None)
-        self.runtime: RoastRuntime | None = None
+        self.runtime: Any | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
+        try:
+            from .core.runtime import RoastRuntime
+        except ModuleNotFoundError as exc:
+            if exc.name != "plugin.plugins.neko_roast.core.runtime":
+                raise
+            return Ok({"status": "ready", "runtime": "pending"})
         self.runtime = RoastRuntime(self)
         await self.runtime.start()
         self.register_dynamic_entry(

@@ -23,12 +23,23 @@ class InteractionModule(Protocol):
     enabled: bool
     domain: str
 
-    async def setup(self, ctx: Any) -> None: ...
-    async def teardown(self) -> None: ...
-    async def on_enable(self, ctx: Any) -> None: ...
-    async def on_disable(self) -> None: ...
-    def status(self) -> dict[str, Any]: ...
-    def config_schema(self) -> list[dict[str, Any]]: ...
+    async def setup(self, ctx: Any) -> None:
+        raise NotImplementedError
+
+    async def teardown(self) -> None:
+        raise NotImplementedError
+
+    async def on_enable(self, ctx: Any) -> None:
+        raise NotImplementedError
+
+    async def on_disable(self) -> None:
+        raise NotImplementedError
+
+    def status(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def config_schema(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
 
 @dataclass
@@ -70,7 +81,7 @@ class ModuleRegistry:
         for module in reversed(list(self._modules.values())):
             try:
                 await module.teardown()
-            except Exception:  # noqa: BLE001 — 关停阶段尽力而为，不让单点失败卡住清理
+            except Exception:  # noqa: BLE001
                 pass
 
     async def enable(self, module_id: str, ctx: Any) -> bool:
@@ -89,14 +100,19 @@ class ModuleRegistry:
         module = self._modules.get(module_id)
         if module is None:
             return False
-        module.enabled = enabled
+        previous_enabled = bool(getattr(module, "enabled", False))
         hook = getattr(module, "on_enable" if enabled else "on_disable", None)
         if not callable(hook):
+            module.enabled = enabled
+            self._degraded.pop(module_id, None)
             return True
         try:
             await (hook(ctx) if enabled else hook())
+            module.enabled = enabled
+            self._degraded.pop(module_id, None)
             return True
-        except Exception as exc:  # noqa: BLE001 — 单模块启停失败隔离，不波及其余
+        except Exception as exc:  # noqa: BLE001
+            module.enabled = previous_enabled
             message = str(exc).strip() or type(exc).__name__
             self._degraded[module_id] = message
             self._record_failure(
