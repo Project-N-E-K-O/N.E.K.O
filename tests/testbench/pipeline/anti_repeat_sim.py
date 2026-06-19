@@ -11,7 +11,7 @@ rolling-window persistence). The disk/lock layer is out-of-scope per Phase 3.0.
 The repetition variant of BM25 is the contract worth guarding: unlike search
 BM25, it computes IDF over the **background** window but accumulates TF over the
 small **foreground** window, so "rare overall + frequent lately" scores high
-while filler words ("今天/嗯/哈哈") wash out.
+while filler words (generic greetings and interjections) wash out.
 
 Wraps:
   - ``memory.anti_repeat.bm25_score``  (pure: list[ngram] in, score out)
