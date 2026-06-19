@@ -3672,6 +3672,17 @@
         }
     }
 
+    function getExistingYuiGuidePcOverlayRunId() {
+        if (yuiGuidePcOverlayRunIdOverride) {
+            return yuiGuidePcOverlayRunIdOverride;
+        }
+        try {
+            return window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+        } catch (_) {
+            return '';
+        }
+    }
+
     function resetYuiGuidePcOverlayRunForRetry() {
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
@@ -3782,11 +3793,12 @@
         return nextCursor;
     }
 
-    function sendYuiGuidePcOverlayPatch(patch, retried) {
+    function sendYuiGuidePcOverlayPatch(patch, retried, options) {
         var host = getYuiGuidePcOverlayHost();
         if (!host) {
             return false;
         }
+        var sendOptions = options || {};
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
             yuiGuidePcOverlaySpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
         }
@@ -3801,8 +3813,13 @@
         } else {
             payload.cursor = yuiGuidePcOverlayCursor;
         }
-        var runId = getYuiGuidePcOverlayRunId();
-        if (!yuiGuidePcOverlayActive && typeof host.begin === 'function') {
+        var runId = typeof sendOptions.tutorialRunId === 'string' && sendOptions.tutorialRunId
+            ? sendOptions.tutorialRunId
+            : (sendOptions.allowCreateRun === false ? getExistingYuiGuidePcOverlayRunId() : getYuiGuidePcOverlayRunId());
+        if (!runId) {
+            return false;
+        }
+        if (!yuiGuidePcOverlayActive && sendOptions.skipBegin !== true && typeof host.begin === 'function') {
             try {
                 Promise.resolve(host.begin({ tutorialRunId: runId })).then(function (result) {
                     if (result && result.stale === true) {
@@ -4208,6 +4225,7 @@
     }
 
     function applyYuiGuideChatCursorArc(kind, options) {
+        yuiGuideChatCursorRequestToken = yuiGuideChatCursorRequestToken + 1;
         var arcRequestToken = ++yuiGuideChatCursorArcRequestToken;
         var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind, options || {});
         var center = getYuiGuideChatCursorTargetPoint(kind, options || {});
@@ -4353,7 +4371,11 @@
 
         if (!yuiGuideChatSpotlightKind) {
             clearYuiGuideChatPcSpotlightRects();
-            sendYuiGuidePcOverlayPatch({ spotlights: [] });
+            sendYuiGuidePcOverlayPatch({ spotlights: [] }, false, {
+                tutorialRunId: options && options.pcOverlayRunId,
+                allowCreateRun: !(options && options.allowCreatePcOverlayRun === false),
+                skipBegin: options && options.skipPcOverlayBegin === true
+            });
             var spotlight = getYuiGuideChatSpotlightElement(false);
             if (spotlight) {
                 spotlight.hidden = true;
@@ -4398,13 +4420,20 @@
 
     function clearYuiGuidePcOverlayBridgeState(reason, tutorialRunId) {
         var rawReason = typeof reason === 'string' && reason ? reason : 'lifecycle-ended';
+        var endedRunId = typeof tutorialRunId === 'string' && tutorialRunId
+            ? tutorialRunId
+            : getExistingYuiGuidePcOverlayRunId();
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
         yuiGuidePcOverlayRunIdOverride = '';
         yuiGuideChatCursorRequestToken += 1;
         yuiGuideChatCursorArcRequestToken += 1;
         yuiGuideCompactToolWheelRotateRetryToken += 1;
-        applyYuiGuideChatSpotlight('');
+        applyYuiGuideChatSpotlight('', {
+            pcOverlayRunId: endedRunId,
+            allowCreatePcOverlayRun: false,
+            skipPcOverlayBegin: true
+        });
         relayYuiGuideChatCommand({
             action: 'yui_guide_set_chat_cursor',
             kind: '',
@@ -4424,7 +4453,7 @@
             try {
                 window.nekoTutorialOverlay.clear({
                     reason: rawReason,
-                    tutorialRunId: typeof tutorialRunId === 'string' ? tutorialRunId : ''
+                    tutorialRunId: endedRunId
                 });
             } catch (_) {}
         }

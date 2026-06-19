@@ -1438,7 +1438,7 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
     assert.match(appInterpageSource, /function ensureYuiGuideChatCursorElement\(\) \{[\s\S]*yui-guide-chat-cursor/);
     assert.match(externalizedApplyCursorBlock, /return moveYuiGuideChatCursor\(kind, getYuiGuideChatCursorTargetPoint\(kind, normalizedOptions\), normalizedOptions\)/);
     assert.doesNotMatch(appInterpageSource, /kind === 'avatar-tools'\) \{[\s\S]*getYuiGuideChatVisibleElement\('#react-chat-window-root \.composer-emoji-btn'\)/);
-    assert.doesNotMatch(externalizedArcBlock, /yuiGuideChatCursorRequestToken \+= 1;/);
+    assert.match(externalizedArcBlock, /yuiGuideChatCursorRequestToken = yuiGuideChatCursorRequestToken \+ 1;/);
     assert.match(externalizedArcBlock, /var arcRequestToken = \+\+yuiGuideChatCursorArcRequestToken;/);
     assert.doesNotMatch(externalizedArcBlock, /yuiGuideChatCursorActiveArcTimestamp/);
     assert.match(externalizedArcBlock, /if \(arcRequestToken !== yuiGuideChatCursorArcRequestToken\) \{\s*return;\s*\}/);
@@ -2083,10 +2083,16 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(clearOverlayBlock, /action:\s*'yui_guide_tutorial_lifecycle_ended'/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);
+    assert.match(externalCleanupBlock, /var endedRunId = typeof tutorialRunId === 'string' && tutorialRunId/);
+    assert.match(externalCleanupBlock, /getExistingYuiGuidePcOverlayRunId\(\)/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayRunIdOverride = '';/);
     assert.match(externalCleanupBlock, /yuiGuideChatCursorRequestToken \+= 1;/);
     assert.match(externalCleanupBlock, /yuiGuideCompactToolWheelRotateRetryToken \+= 1;/);
+    assert.match(externalCleanupBlock, /applyYuiGuideChatSpotlight\('', \{[\s\S]*pcOverlayRunId: endedRunId/);
+    assert.match(externalCleanupBlock, /allowCreatePcOverlayRun: false/);
+    assert.match(externalCleanupBlock, /skipPcOverlayBegin: true/);
     assert.match(externalCleanupBlock, /window\.nekoTutorialOverlay\.clear\(\{/);
+    assert.match(externalCleanupBlock, /tutorialRunId: endedRunId/);
     assert.match(appInterpageSource, /case 'yui_guide_tutorial_lifecycle_ended':/);
 });
 
@@ -2103,10 +2109,13 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
     )[0];
 
     assert.match(externalBridgeBlock, /window\.localStorage\.removeItem\('yuiGuidePcOverlayRunId'\)/);
+    assert.match(appInterpageSource, /function getExistingYuiGuidePcOverlayRunId\(\) \{/);
     assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried\)/);
     assert.match(externalBridgeBlock, /result\.stale !== true/);
     assert.match(externalBridgeBlock, /sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\)/);
-    assert.match(externalBridgeBlock, /function sendYuiGuidePcOverlayPatch\(patch, retried\)/);
+    assert.match(externalBridgeBlock, /function sendYuiGuidePcOverlayPatch\(patch, retried, options\)/);
+    assert.match(externalBridgeBlock, /sendOptions\.allowCreateRun === false \? getExistingYuiGuidePcOverlayRunId\(\) : getYuiGuidePcOverlayRunId\(\)/);
+    assert.match(externalBridgeBlock, /sendOptions\.skipBegin !== true/);
     assert.match(externalBridgeBlock, /result && result\.stale === true/);
 
     assert.match(mainBridgeBlock, /const rotateRunId = \(\) => \{/);
