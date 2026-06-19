@@ -270,6 +270,10 @@ class RoastRuntime:
         disabled = "live_enabled" in clean and not bool(self.config.live_enabled)
         if not room_changed and not disabled:
             return
+        if not self.config.live_enabled:
+            self.live_connection_state = "disconnected"
+            self.safety_guard.set_connected(False)
+            return
         if disabled or self.config.live_room_id <= 0:
             await self._stop_live_listener(mark_disabled=True)
             return
