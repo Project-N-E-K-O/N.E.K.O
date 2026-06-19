@@ -3025,12 +3025,6 @@
                         }
                         break;
                     }
-                    case 'hide_main_ui':
-                        handleHideMainUI();
-                        break;
-                    case 'show_main_ui':
-                        handleShowMainUI();
-                        break;
                     case 'memory_edited':
                         await handleMemoryEdited(event.data.catgirl_name);
                         break;

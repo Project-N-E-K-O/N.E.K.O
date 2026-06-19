@@ -24,6 +24,16 @@ def test_yui_model_manager_handoff_opens_fullscreen():
     assert "{ keepMainUIVisible: true }" in model_manager_block
 
 
+def test_model_manager_hide_show_cross_page_messages_are_removed():
+    model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+
+    assert "hide_main_ui" not in model_manager_source
+    assert "show_main_ui" not in model_manager_source
+    assert "case 'hide_main_ui':" not in interpage_source
+    assert "case 'show_main_ui':" not in interpage_source
+
+
 def test_voice_clone_api_settings_uses_shared_named_window():
     source = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
     common_source = Path("static/common_dialogs.js").read_text(encoding="utf-8")
