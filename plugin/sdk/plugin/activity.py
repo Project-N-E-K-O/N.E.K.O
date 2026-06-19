@@ -59,7 +59,7 @@ async def get_os_activity_snapshot(
     os_signals_available = bool(getattr(core_snapshot, "os_signals_available", True))
     active_window = getattr(core_snapshot, "active_window", None)
     foreground_category = (
-        str(getattr(active_window, "category", "") or "").strip() or None
+        str(getattr(active_window, "category", "") or "").strip().lower() or None
         if os_signals_available and active_window is not None
         else None
     )

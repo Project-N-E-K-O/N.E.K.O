@@ -111,7 +111,7 @@ async def test_os_activity_snapshot_narrows_core_tracker_payload(monkeypatch: py
             assert now == 12.5
             return SimpleNamespace(
                 state="focused_work",
-                active_window=SimpleNamespace(category="gaming"),
+                active_window=SimpleNamespace(category="Gaming"),
                 system_idle_seconds="42.25",
                 os_signals_available=True,
             )
