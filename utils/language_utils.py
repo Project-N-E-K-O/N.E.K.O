@@ -30,7 +30,7 @@ import os
 import hashlib
 from collections import OrderedDict
 from typing import Optional, Tuple, List, Any, Dict
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -1190,7 +1190,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         target_name = lang_names.get(target_lang, target_lang)
 
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
             timeout=10.0,
@@ -1283,7 +1283,7 @@ class TranslationService:
         self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
         self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
 
-    def _get_llm_client(self):
+    async def _get_llm_client(self):
         """Get the LLM client (for translation, reusing the emotion model config)"""
         try:
             config = self.config_manager.get_model_api_config('emotion')
@@ -1295,14 +1295,18 @@ class TranslationService:
             if self._llm_client is not None:
                 return self._llm_client
 
-            from config import TRANSLATION_OUTPUT_MAX_TOKENS
-            self._llm_client = create_chat_llm(
-                config['model'], config['base_url'], config['api_key'],
-                max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
-                timeout=30.0,
-            )
-            
-            return self._llm_client
+            async with self._get_cache_lock():
+                if self._llm_client is not None:
+                    return self._llm_client
+
+                from config import TRANSLATION_OUTPUT_MAX_TOKENS
+                self._llm_client = await create_chat_llm_async(
+                    config['model'], config['base_url'], config['api_key'],
+                    max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
+                    timeout=30.0,
+                )
+
+                return self._llm_client
         except Exception as e:
             logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
             return None
@@ -1374,7 +1378,7 @@ class TranslationService:
         if cached is not None:
             return cached
         
-        llm = self._get_llm_client()
+        llm = await self._get_llm_client()
         if llm is None:
             logger.warning("翻译服务：LLM客户端不可用，返回原文")
             return text

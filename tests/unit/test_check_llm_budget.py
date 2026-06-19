@@ -52,8 +52,18 @@ def test_output_missing_both_flagged():
     assert _codes(src).count("LLM_OUTPUT_BUDGET") == 1
 
 
+def test_output_async_factory_missing_both_flagged():
+    src = "llm = await create_chat_llm_async(model, base_url, api_key)"
+    assert _codes(src).count("LLM_OUTPUT_BUDGET") == 1
+
+
 def test_output_budget_and_timeout_clean():
     src = "llm = create_chat_llm(m, b, k, max_completion_tokens=100, timeout=30)"
+    assert "LLM_OUTPUT_BUDGET" not in _codes(src)
+
+
+def test_output_async_factory_budget_and_timeout_clean():
+    src = "llm = await create_chat_llm_async(m, b, k, max_completion_tokens=100, timeout=30)"
     assert "LLM_OUTPUT_BUDGET" not in _codes(src)
 
 

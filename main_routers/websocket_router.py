@@ -430,11 +430,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     continue
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
-                # 教程结束释放的是延迟问好，不应被刚经历过的页面/窗口重连保护吞掉。
-                bypass_reconnect_guard = _is_tutorial_release_greeting_reason(greeting_reason)
+                if _is_tutorial_release_greeting_reason(greeting_reason):
+                    logger.info(
+                        f"[{lanlan_name}] greeting_check: skipped after tutorial release "
+                        f"(reason={greeting_reason}); new-user icebreaker owns this slot"
+                    )
+                    continue
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
                 since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
-                if is_switch or since_disconnect > 15 or bypass_reconnect_guard:
+                if is_switch or since_disconnect > 15:
                     if await has_new_character_greeting_pending(_config_manager, lanlan_name):
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → new character greeting")
                         _fire_task(session_manager[lanlan_name].trigger_new_character_greeting())

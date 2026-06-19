@@ -163,7 +163,7 @@ AUTOSTART_CSRF_TOKEN = env('NEKO_AUTOSTART_CSRF_TOKEN') or INSTANCE_ID
   - 失败 → 403 { ok: false, error_code: "csrf_validation_failed", error: "Request could not be verified" }
   ↓
 [业务调用方处理 403]
-  - 短期请求：refreshToken() → 重试一次（参考 tutorial/core/universal-manager.js:120-134 pattern）
+  - 短期请求：refreshToken() → 重试一次（参考 `tutorial/core/universal-manager.js` 的 `postTutorialPromptReset()` pattern）
   - 长跑心跳：连续 N 次失败后停止（参考 static/app-activity-signal.js）
 ```
 
@@ -254,7 +254,7 @@ let response = await fetch('/api/some-endpoint', {
     body: JSON.stringify(payload),
 });
 
-// 可选：CSRF-403 retry-once（参考 tutorial/core/universal-manager.js:120-134）
+// 可选：CSRF-403 retry-once（参考 tutorial/core/universal-manager.js 的 postTutorialPromptReset()）
 if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
     let shouldRetry = false;
     try {

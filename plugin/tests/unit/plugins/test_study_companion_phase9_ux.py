@@ -18,6 +18,7 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     index = (PLUGIN_DIR / "static" / "index.html").read_text(encoding="utf-8")
     renderer = (PLUGIN_DIR / "static" / "katex-render.js").read_text(encoding="utf-8")
     main_js = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    css = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     assert (PLUGIN_DIR / "static" / "katex.min.js").is_file()
     assert (PLUGIN_DIR / "static" / "katex.min.css").is_file()
@@ -27,6 +28,8 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert '<script src="./katex.min.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./katex-render.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./main.js?v=study-hotfix-20260615v"></script>' in index
+    assert ".study-panel__image-preview[hidden]" in css
+    assert ".study-panel__image-preview:not([hidden])" in css
     assert "window.renderMathInText" in renderer
     assert "window.__studyCompanionMath" in renderer
     assert "normalizeLatexForKatex" in renderer
@@ -506,6 +509,11 @@ def test_phase9_i18n_keys_and_placeholders_are_consistent() -> None:
     assert baseline_name in bundles
     assert expected_locales.issubset(set(bundles))
     assert len(bundles) >= len(expected_locales)
+    assert bundles["en.json"]["ui.label.remove_pasted_image"] == "Remove pasted image"
+    assert (
+        bundles["en.json"]["ui.label.remove_pasted_answer_image"]
+        == "Remove pasted answer image"
+    )
     baseline_keys = set(bundles[baseline_name])
     placeholder_pattern = re.compile(r"\{[a-zA-Z0-9_]+\}")
 

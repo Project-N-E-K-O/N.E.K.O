@@ -241,12 +241,12 @@ def _clean_plain_field_value(raw: str) -> str:
     return text
 
 
-def _build_assist_llm():
+async def _build_assist_llm():
     """Construct an LLM client backed by the agent API config. Returns
     ``(llm, error_dict_or_None)``. Caller must ``await llm.aclose()`` if llm is
     not None.
     """
-    from utils.llm_client import create_chat_llm
+    from utils.llm_client import create_chat_llm_async
     try:
         cm = get_config_manager()
         api_cfg = cm.get_model_api_config("agent")
@@ -262,7 +262,7 @@ def _build_assist_llm():
                       "message": "agent model not set"}
     try:
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model,
             base_url,
             api_key,
@@ -306,7 +306,7 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]
     a plain string (treated as one user message) or a list of OpenAI-style
     role/content dicts. Returns ``(content_or_None, error_dict_or_None)``.
     """
-    llm, err = _build_assist_llm()
+    llm, err = await _build_assist_llm()
     if err is not None:
         return None, err
     quota_err = await _reserve_agent_quota("card_assist.invoke")

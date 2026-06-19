@@ -122,6 +122,34 @@ def get_agent_extra_body(model: str) -> dict | None:
     return get_extra_body(model)
 
 
+# Top-level extra_body keys that *disable* thinking (one per provider family in
+# MODELS_EXTRA_BODY_MAP). Gemini nests its thinking_config under an "extra_body"
+# wrapper key whose only payload here is the thinking config, so the whole key is
+# thinking-related. Anything NOT in this set (e.g. step-2-mini's "tools" with the
+# built-in web_search) is unrelated provider config that must survive Focus.
+_THINKING_EXTRA_BODY_KEYS = frozenset({
+    "enable_thinking",   # EXTRA_BODY_OPENAI (qwen / silicon …)
+    "thinking",          # EXTRA_BODY_CLAUDE (claude / glm / kimi / doubao …)
+    "reasoning",         # EXTRA_BODY_OPENROUTER
+    "reasoning_split",   # EXTRA_BODY_MINIMAX
+    "extra_body",        # EXTRA_BODY_GEMINI/_3 (google.thinking_config wrapper)
+})
+
+
+def focus_extra_body(model: str) -> dict | None:
+    """extra_body for a Focus (thinking-on) turn: the model's resolved extra_body
+    with only the *thinking-disable* keys removed.
+
+    Focus wants thinking to run free (drop the disable knob), but must NOT
+    silently nuke unrelated provider config — e.g. ``step-2-mini`` ships a
+    built-in ``web_search`` tool in its extra_body, which a blunt
+    ``extra_body=None`` would drop. Returns the surviving non-thinking dict, or
+    ``None`` when nothing remains (the body was purely thinking-disable)."""
+    resolved = get_extra_body(model) or {}
+    kept = {k: v for k, v in resolved.items() if k not in _THINKING_EXTRA_BODY_KEYS}
+    return kept or None
+
+
 # ────────────────────────────────────────────────────────────────
 # Cache Provider 配置（原 tests/test_cco_capacity.py PROVIDER_CACHE_CONFIG）
 # ────────────────────────────────────────────────────────────────

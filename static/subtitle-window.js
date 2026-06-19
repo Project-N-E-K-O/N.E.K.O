@@ -119,6 +119,9 @@
             renderSubtitleDanmakuLayer(currentTranscript);
         }
         resizeWindowToTranscript();
+        if (SubtitleShared && typeof SubtitleShared.requestSubtitleAutoScroll === 'function') {
+            SubtitleShared.requestSubtitleAutoScroll(subtitleWindowController && subtitleWindowController.refs);
+        }
     }
 
     function applyTranslatedTranscript(data) {

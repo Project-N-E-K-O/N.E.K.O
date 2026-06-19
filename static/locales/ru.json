@@ -1063,10 +1063,12 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "mimo": "MiMo (Xiaomi)",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",
         "pleaseEnterApiKey": "Введите ваш API Key",

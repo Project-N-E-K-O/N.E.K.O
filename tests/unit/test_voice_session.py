@@ -16,6 +16,94 @@ from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMod
 DUMMY_AUDIO_CHUNK = b'\x00' * 1024
 
 
+@pytest.mark.unit
+async def test_prime_context_skipped_accumulates_cached_instructions():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    client._model_lower = "gpt-4o-realtime"
+    client.instructions = "base instructions"
+    updates = []
+
+    async def fake_update_session(config):
+        updates.append(dict(config))
+
+    client.update_session = fake_update_session
+
+    await OmniRealtimeClient.prime_context(client, "assistant: hello", skipped=True)
+    await OmniRealtimeClient.prime_context(client, "user: choice", skipped=True)
+
+    assert updates == [
+        {"instructions": "base instructions\nassistant: hello"},
+        {"instructions": "base instructions\nassistant: hello\nuser: choice"},
+    ]
+    assert client.instructions == "base instructions\nassistant: hello\nuser: choice"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_create_response_propagates_send_failure(monkeypatch):
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._gemini_session = object()
+
+    async def fail_send_user_turn(_text):
+        raise RuntimeError("gemini send failed")
+
+    monkeypatch.setattr(client, "_gemini_send_user_turn", fail_send_user_turn)
+
+    with pytest.raises(RuntimeError, match="gemini send failed"):
+        await OmniRealtimeClient.create_response(client, "postgame context")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_create_response_skipped_failure_restores_skip_state(monkeypatch):
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._gemini_session = object()
+    client._skip_until_next_response = False
+
+    async def fail_send_user_turn(_text):
+        raise RuntimeError("gemini send failed")
+
+    monkeypatch.setattr(client, "_gemini_send_user_turn", fail_send_user_turn)
+
+    with pytest.raises(RuntimeError, match="gemini send failed"):
+        await OmniRealtimeClient.create_response(client, "postgame context", skipped=True)
+
+    assert client._skip_until_next_response is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_prime_context_skipped_failure_restores_skip_state(monkeypatch):
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._gemini_session = object()
+    client._skip_until_next_response = False
+
+    async def fail_send_user_turn(_text):
+        raise RuntimeError("gemini send failed")
+
+    monkeypatch.setattr(client, "_gemini_send_user_turn", fail_send_user_turn)
+
+    with pytest.raises(RuntimeError, match="gemini send failed"):
+        await OmniRealtimeClient.prime_context(client, "assistant: context", skipped=True)
+
+    assert client._skip_until_next_response is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_create_response_raises_when_live_session_missing():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._gemini_session = None
+
+    with pytest.raises(RuntimeError, match="Gemini session not available"):
+        await OmniRealtimeClient.create_response(client, "postgame context")
+
+
 @pytest.fixture
 def mock_websocket():
     """Returns a mock websocket object."""

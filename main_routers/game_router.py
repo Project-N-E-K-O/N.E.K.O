@@ -113,6 +113,7 @@ _game_sessions: Dict[str, dict] = {}
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
+MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
 _BASKETBALL_SCORING_MODES = {"shooter", "duel"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
@@ -1869,11 +1870,11 @@ async def _run_pregame_context_ai(
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_pregame_context")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -2512,11 +2513,11 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
 
     try:
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_context_organizer")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -3317,11 +3318,11 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
         source = truncate_head_tail_tokens(source, 2000, 2000)
         user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_memory_archive")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
@@ -3776,7 +3777,14 @@ def _is_gemini_realtime_session(session: Any) -> bool:
     return bool(getattr(session, "_is_gemini", False))
 
 
-async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: dict, delays: tuple[float, ...]) -> None:
+async def _run_postgame_realtime_nudge_task(
+    mgr: Any,
+    archive: dict,
+    options: dict,
+    delays: tuple[float, ...],
+    *,
+    expected_session: Any | None = None,
+) -> None:
     lanlan_name = str(archive.get("lanlan_name") or "")
     instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
     _log_game_debug_material(
@@ -3790,9 +3798,19 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
     for attempt, delay in enumerate(delays, start=1):
         try:
             await asyncio.sleep(delay)
-            if not _active_realtime_session(mgr):
+            active_session = _active_realtime_session(mgr)
+            if not active_session:
                 logger.info(
                     "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=no_active_realtime_session",
+                    archive.get("game_type"),
+                    archive.get("session_id"),
+                    lanlan_name,
+                    attempt,
+                )
+                return
+            if expected_session is not None and active_session is not expected_session:
+                logger.info(
+                    "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=realtime_session_changed",
                     archive.get("game_type"),
                     archive.get("session_id"),
                     lanlan_name,
@@ -3843,6 +3861,15 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
     )
 
 
+def _postgame_context_request_id(archive: dict) -> Optional[str]:
+    game_type = str(archive.get("game_type") or "game").strip() or "game"
+    session_id = str(archive.get("session_id") or "default").strip() or "default"
+    ended_at = str(archive.get("ended_at") or "").strip()
+    if not ended_at:
+        return None
+    return f"{game_type}:{session_id}:{ended_at}"
+
+
 async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) -> dict:
     session = _active_realtime_session(mgr)
     if not session:
@@ -3857,6 +3884,13 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         lanlan_name=str(archive.get("lanlan_name") or ""),
         source="game_end",
     )
+    if _active_realtime_session(mgr) is not session:
+        return {
+            "ok": False,
+            "mode": "realtime",
+            "action": "skip",
+            "reason": "realtime_session_changed",
+        }
 
     if _is_gemini_realtime_session(session):
         instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
@@ -3912,8 +3946,26 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             "reason": "gemini_direct_response",
         }
 
+    append_context = getattr(mgr, "append_context", None)
+    if not callable(append_context):
+        return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_method_unavailable"}
+    postgame_request_id = _postgame_context_request_id(archive)
     try:
-        await session.prime_context(text, skipped=True)
+        append_result = await append_context(
+            source="game.postgame",
+            role="system",
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="current_session",
+            request_id=postgame_request_id,
+            ordering_key=postgame_request_id,
+            metadata={
+                "game_type": archive.get("game_type"),
+                "lanlan_name": archive.get("lanlan_name"),
+                "kind": "postgame",
+            },
+        )
     except Exception as exc:
         logger.warning(
             "🎮 赛后 Realtime 上下文注入失败: game=%s session=%s lanlan=%s err=%s",
@@ -3923,6 +3975,13 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             exc,
         )
         return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_inject_failed"}
+    if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        return {
+            "ok": False,
+            "mode": "realtime",
+            "action": "skip",
+            "reason": getattr(append_result, "reason", None) or "context_inject_failed",
+        }
 
     logger.info(
         "🎮 赛后 Realtime 上下文已注入: game=%s session=%s lanlan=%s bytes=%d",
@@ -3931,6 +3990,28 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         archive.get("lanlan_name"),
         len(text),
     )
+
+    if _active_realtime_session(mgr) is not session:
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "context",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "nudge_reason": "realtime_session_changed",
+            "reason": "realtime_session_changed",
+            "bytes": len(text),
+        }
+
+    if getattr(append_result, "deduped", False):
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "context",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "reason": "context_deduped",
+        }
 
     nudge_scheduled = False
     nudge_reason = "disabled"
@@ -3942,6 +4023,7 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
                 dict(archive),
                 dict(options),
                 _POSTGAME_REALTIME_NUDGE_DELAYS,
+                expected_session=session,
             ))
             nudge_scheduled = True
             nudge_reason = "scheduled"
@@ -6582,6 +6664,8 @@ async def game_route_start(game_type: str, request: Request):
             if game_type == "basketball":
                 state["mode"] = _normalize_basketball_mode(data.get("mode"))
             _update_route_start_state_from_payload(state, data)
+            if game_type == "new_user_icebreaker":
+                state["heartbeat_enabled"] = False
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
@@ -6596,7 +6680,11 @@ async def game_route_start(game_type: str, request: Request):
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
     mgr_for_ws = get_session_manager().get(lanlan_name)
-    if state.get("game_route_active") and str(state.get("session_id") or "") == session_id:
+    if (
+        game_type != "new_user_icebreaker"
+        and state.get("game_route_active")
+        and str(state.get("session_id") or "") == session_id
+    ):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
@@ -6968,6 +7056,10 @@ async def game_project_context(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_role"}
     if not text:
         return {"ok": False, "reason": "missing_text"}
+    if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
+        return {"ok": False, "reason": "invalid_text_length"}
+    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
 
     if "lanlan_name" not in data:
         return {"ok": False, "reason": "missing_lanlan_name"}
@@ -7010,15 +7102,24 @@ async def game_project_context(game_type: str, request: Request):
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
-    append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
-    append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
+    append_context = getattr(mgr, "append_context", None)
     try:
-        if callable(append_icebreaker_context_async):
-            ok = await append_icebreaker_context_async(role, text)
-        elif callable(append_icebreaker_context):
-            ok = append_icebreaker_context(role, text)
-        else:
+        if not callable(append_context):
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+        append_result = await append_context(
+            source="game.icebreaker",
+            role=role,
+            text=text,
+            audience="model",
+            timing="when_ready",
+            lifetime="session_family",
+            request_id=request_id or None,
+            ordering_key=session_id or None,
+            metadata={
+                "game_type": game_type,
+                "session_id": session_id,
+            },
+        )
     except Exception as exc:
         logger.warning(
             "new_user_icebreaker context append failed for %s: %s",
@@ -7034,17 +7135,27 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
         }
-    if ok is False:
+    if getattr(append_result, "deduped", False):
+        return {
+            "ok": True,
+            "deduped": True,
+            "method": "project_session_history",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
+    ok = getattr(append_result, "appended", False)
+    if not ok:
         return {
             "ok": False,
-            "reason": "context_write_failed",
+            "reason": getattr(append_result, "reason", None) or "context_write_failed",
             "lanlan_name": lanlan_name,
             "game_type": game_type,
             "session_id": session_id,
         }
 
     return {
-        "ok": bool(ok),
+        "ok": True,
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "game_type": game_type,
@@ -7608,6 +7719,18 @@ async def game_realtime_context(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
 
     lanlan_name = str(data.get("lanlan_name") or "").strip()
     if not lanlan_name:
@@ -7662,11 +7785,36 @@ async def game_realtime_context(game_type: str, request: Request):
             "items": len(data.get("pendingItems") or []),
         }
 
+    append_context = getattr(mgr, "append_context", None)
+    if not callable(append_context):
+        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    if _active_realtime_session(mgr) is not session:
+        return {"ok": False, "reason": "realtime_session_changed", "lanlan_name": lanlan_name}
     try:
-        await session.prime_context(text, skipped=True)
+        append_result = await append_context(
+            source="game.realtime_context",
+            role="system",
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="current_session",
+            request_id=str(data.get("request_id") or "") or None,
+            ordering_key=str((data.get("state") or {}).get("sessionId") or data.get("session_id") or "") or None,
+            metadata={
+                "game_type": game_type,
+                "lanlan_name": lanlan_name,
+                "items": len(data.get("pendingItems") or []),
+            },
+        )
     except Exception as e:
         logger.warning("🎮 Realtime 上下文注入失败: game=%s lanlan=%s err=%s", game_type, lanlan_name, e)
         return {"ok": False, "reason": f"inject_failed: {e}", "lanlan_name": lanlan_name}
+    if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        return {
+            "ok": False,
+            "reason": getattr(append_result, "reason", None) or "inject_failed",
+            "lanlan_name": lanlan_name,
+        }
 
     logger.info("🎮 Realtime 上下文已注入: game=%s lanlan=%s bytes=%d", game_type, lanlan_name, len(text))
     return {
@@ -7861,11 +8009,11 @@ async def game_quick_lines(game_type: str, request: Request):
         )
 
         from utils.file_utils import robust_json_loads
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         set_call_type("game_quick_lines")
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             char_info['model'],
             char_info['base_url'],
             char_info['api_key'],

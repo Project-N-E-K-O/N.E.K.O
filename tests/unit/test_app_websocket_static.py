@@ -67,13 +67,15 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
         "function _sendGreetingCheckIfReady()",
         1,
     )[0]
-    blocking_block = source.split("function isNewUserIcebreakerBlockingGreeting()", 1)[1].split(
+    blocking_block = source.split("function isNewUserIcebreakerBlockingGreeting(reason)", 1)[1].split(
         "function sendHomeTutorialState(reason)",
         1,
     )[0]
-    assert "return isNewUserIcebreakerPeriodActive();" in blocking_block
+    assert "if (isNewUserIcebreakerPeriodActive()) return true;" in blocking_block
+    assert "tutorial-completed" in blocking_block
+    assert "tutorial-skipped" in blocking_block
     period_block = source.split("function isNewUserIcebreakerPeriodActive()", 1)[1].split(
-        "function isNewUserIcebreakerBlockingGreeting()",
+        "function isNewUserIcebreakerBlockingGreeting(reason)",
         1,
     )[0]
     assert "readNewUserIcebreakerStore()" in period_block

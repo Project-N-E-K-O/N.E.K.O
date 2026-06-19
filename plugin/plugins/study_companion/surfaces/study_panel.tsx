@@ -20,6 +20,9 @@ type StudyStatus = {
     next_action?: string;
   };
   last_session_summary?: string;
+  config?: {
+    llm_vision_max_image_px?: number;
+  };
 };
 
 type StudyMode = 'companion' | 'interactive' | 'teaching';
@@ -28,9 +31,9 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 60000,
-  study_generate_question: 75000,
-  study_evaluate_answer: 75000,
+  study_explain_text: 310000,
+  study_generate_question: 310000,
+  study_evaluate_answer: 310000,
   study_summarize_session: 90000,
 };
 
@@ -316,7 +319,7 @@ function timeoutForEntry(entryId: string) {
   return ENTRY_TIMEOUT_MS[entryId] || 60000;
 }
 
-const MAX_PASTE_IMAGE_LONG_SIDE = 1920;
+const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const TARGET_DATA_URL_LENGTH = 1_000_000;
 const LOAD_IMAGE_TIMEOUT_MS = 30000;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png']);
@@ -332,6 +335,14 @@ function assertNotAborted(signal?: AbortSignal) {
   if (signal?.aborted) {
     throw new DOMException('Aborted', 'AbortError');
   }
+}
+
+function normalizeVisionMaxImagePx(value: unknown) {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_VISION_MAX_IMAGE_PX;
+  }
+  return Math.max(64, Math.min(4096, parsed));
 }
 
 function loadImage(
@@ -406,7 +417,11 @@ function encodeJpegWithinTarget(canvas: HTMLCanvasElement) {
   return best || fallback;
 }
 
-async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null> {
+async function compressImageForStudy(
+  blob: Blob,
+  signal?: AbortSignal,
+  maxImagePx = DEFAULT_VISION_MAX_IMAGE_PX,
+): Promise<string | null> {
   if (!SUPPORTED_PASTE_IMAGE_TYPES.has(blob.type)) {
     return null;
   }
@@ -419,9 +434,10 @@ async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<
     if (!width || !height) {
       throw new Error('Image dimensions are unavailable');
     }
+    const maxLongSide = normalizeVisionMaxImagePx(maxImagePx);
     const longSide = Math.max(width, height);
-    if (longSide > MAX_PASTE_IMAGE_LONG_SIDE) {
-      const scale = MAX_PASTE_IMAGE_LONG_SIDE / longSide;
+    if (longSide > maxLongSide) {
+      const scale = maxLongSide / longSide;
       width = Math.round(width * scale);
       height = Math.round(height * scale);
     }
@@ -439,8 +455,8 @@ async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<
         0.5,
         Math.min(0.85, Math.sqrt(TARGET_DATA_URL_LENGTH / dataUrl.length) * 0.9),
       );
-      width = Math.max(320, Math.round(width * scale));
-      height = Math.max(320, Math.round(height * scale));
+      width = Math.max(1, Math.min(maxLongSide, Math.round(width * scale)));
+      height = Math.max(1, Math.min(maxLongSide, Math.round(height * scale)));
       const resized = document.createElement('canvas');
       resized.width = width;
       resized.height = height;
@@ -469,6 +485,7 @@ type PasteSetters = {
   setPasteError: (value: string) => void;
   setPastePending?: (value: boolean) => void;
   onImageAccepted?: () => void;
+  getMaxImagePx?: () => number;
   pasteErrorMessage: string;
   unsupportedTypeMessage: string;
 };
@@ -514,7 +531,11 @@ function createPasteHandler(
             continue;
           }
           try {
-            const image = await compressImageForStudy(blob, signal);
+            const image = await compressImageForStudy(
+              blob,
+              signal,
+              setters.getMaxImagePx?.() ?? DEFAULT_VISION_MAX_IMAGE_PX,
+            );
             if (signal.aborted || !isMounted()) {
               return;
             }
@@ -585,7 +606,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const mountedRef = useRef(false);
   const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
+  const visionMaxImagePxRef = useRef(DEFAULT_VISION_MAX_IMAGE_PX);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const replySectionRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
 
@@ -622,6 +645,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     return busy || pastePendingRef.current;
   }
 
+  function scrollReplyIntoView() {
+    replySectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
   function modeLabel(mode: string) {
     const entry = MODE_ORDER.find((candidate) => candidate.id === mode);
     return entry ? t(entry.labelKey, entry.fallback) : String(mode || MODE_ORDER[0].id);
@@ -643,6 +670,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const evaluation = data.last_answer_evaluation && typeof data.last_answer_evaluation === 'object'
       ? data.last_answer_evaluation as Record<string, unknown>
       : undefined;
+    const config = data.config && typeof data.config === 'object'
+      ? data.config as Record<string, unknown>
+      : undefined;
     return {
       status: typeof data.status === 'string' ? data.status : undefined,
       active_mode: typeof data.active_mode === 'string' ? data.active_mode : undefined,
@@ -661,6 +691,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         next_action: typeof evaluation.next_action === 'string' ? evaluation.next_action : undefined,
       } : undefined,
       last_session_summary: typeof data.last_session_summary === 'string' ? data.last_session_summary : undefined,
+      config: config ? {
+        llm_vision_max_image_px: typeof config.llm_vision_max_image_px === 'number'
+          ? config.llm_vision_max_image_px
+          : undefined,
+      } : undefined,
     };
   }
 
@@ -693,11 +728,18 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setTextImage(value);
   }
 
+  function getVisionMaxImagePx() {
+    return visionMaxImagePxRef.current;
+  }
+
   async function refresh(signal?: AbortSignal, _options: { updateReply?: boolean } = {}) {
     const data = normalizeStudyStatus(await callStudyPlugin(props.api, 'study_status', {}, signal));
     if (signal?.aborted) {
       return;
     }
+    visionMaxImagePxRef.current = normalizeVisionMaxImagePx(
+      data.config?.llm_vision_max_image_px,
+    );
     setStatusLine(data);
   }
 
@@ -748,12 +790,23 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    const sourceText = text.trim();
+    if (!sourceText && !textImage) {
+      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const explainArgs: Record<string, unknown> = { text };
+    const explainArgs: Record<string, unknown> = { text: sourceText };
     if (textImage) explainArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
+      setStatus((prev) => ({
+        ...prev,
+        status: textImage ? 'solving_problem' : 'explaining',
+      }));
+      setReply(textImage ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));
+      scrollReplyIntoView();
       const data = await callStudyPlugin(props.api, 'study_explain_text', explainArgs, controller.signal) as {
         reply?: string;
         summary?: string;
@@ -788,9 +841,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    const sourceText = text.trim();
+    if (!sourceText && !textImage) {
+      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const genArgs: Record<string, unknown> = { text };
+    const genArgs: Record<string, unknown> = { text: sourceText };
     if (textImage) genArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
@@ -954,6 +1012,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setTextValue: setText,
       setPasteError: setTextPasteError,
       setPastePending: setPastePendingState,
+      getMaxImagePx: getVisionMaxImagePx,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
@@ -967,6 +1026,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setTextValue: setAnswer,
       setPasteError: setAnswerPasteError,
       setPastePending: setPastePendingState,
+      getMaxImagePx: getVisionMaxImagePx,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
@@ -1110,8 +1170,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.summarize_session', 'Summarize Session')}
         </button>
       </div>
-      <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
-      <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
+      <div ref={replySectionRef}>
+        <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
+        <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
+      </div>
     </div>
   );
 }

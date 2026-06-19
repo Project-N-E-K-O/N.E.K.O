@@ -388,7 +388,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     without a live model.
     """
     from utils.config_manager import get_config_manager
-    from utils.llm_client import HumanMessage, create_chat_llm
+    from utils.llm_client import HumanMessage, create_chat_llm_async
     from utils.token_tracker import set_call_type
 
     try:
@@ -406,7 +406,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
 
     set_call_type('activity_enrichment')
     try:
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model, base_url, api_key,
             temperature=0.4,
             max_completion_tokens=512,
@@ -440,7 +440,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     Returns raw response text or None on any failure.
     """
     from utils.config_manager import get_config_manager
-    from utils.llm_client import HumanMessage, create_chat_llm
+    from utils.llm_client import HumanMessage, create_chat_llm_async
     from utils.token_tracker import set_call_type
 
     try:
@@ -458,7 +458,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     set_call_type('topic_deep_search')
     try:
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model, base_url, api_key,
             temperature=0.3,
             max_completion_tokens=128,

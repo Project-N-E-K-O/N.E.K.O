@@ -134,6 +134,12 @@ def _run_dom_diagnostic(page: Any, args: argparse.Namespace) -> dict[str, Any]:
                     samples,
                 };
             }
+            window.__director.lastPointerPoint = {
+                x: origin.x,
+                y: origin.y,
+                t: Date.now() - 16,
+                speed: 0,
+            };
             window.__director.handleInterrupt({
                 isTrusted: true,
                 type: 'mousemove',
@@ -224,6 +230,12 @@ def _run_pc_payload_diagnostic(page: Any, args: argparse.Namespace) -> dict[str,
             await sleep(0);
             await sleep(0);
             window.__director.interruptsEnabled = true;
+            window.__director.lastPointerPoint = {
+                x: originX,
+                y: originY,
+                t: Date.now() - 16,
+                speed: 0,
+            };
             window.__director.handleInterrupt({
                 isTrusted: true,
                 type: 'mousemove',
@@ -315,6 +327,7 @@ def _run_interrupt_count_diagnostic(page: Any) -> dict[str, Any]:
                 director.abortAsAngryExit = (source) => {
                     events.push({ type: 'angry-exit', source, interruptCount: director.interruptCount });
                 };
+                director.setTutorialTakingOver(true);
                 director.interruptsEnabled = true;
 
                 let x = 100;

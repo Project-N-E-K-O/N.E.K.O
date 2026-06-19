@@ -17,6 +17,7 @@ import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
+  COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
   isCompactExportMessageSelectable,
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
@@ -794,6 +795,18 @@ const compactCursorZoneSelector = [
   '[data-neko-sidepanel]',
 ].join(', ');
 
+const compactToolWheelControlWheelTargetSelector = [
+  '.compact-input-tool-item',
+  '.composer-icon-popover',
+  '.avatar-tool-quickbar',
+  '.avatar-tool-quickbar-edit',
+].join(', ');
+
+const compactHistoryOpenScrollSelector = [
+  '.compact-export-history-anchor[data-compact-export-history-visibility="open"]:not(.under-choice-prompt)',
+  '.compact-export-history-scroll',
+].join(' ');
+
 type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
 type AvatarInteractionToolId = AvatarToolId;
@@ -912,6 +925,50 @@ function loadCursorImage(imagePath: string, cacheState: AvatarToolCacheState): P
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function isPointInElementRect(element: Element, clientX: number, clientY: number): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  return clientX >= rect.left
+    && clientX <= rect.right
+    && clientY >= rect.top
+    && clientY <= rect.bottom;
+}
+
+function isCompactToolWheelControlWheelTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && !!target.closest(compactToolWheelControlWheelTargetSelector);
+}
+
+function getCompactHistoryScrollFromElement(element: Element): HTMLDivElement | null {
+  const scrollNode = element.closest<HTMLDivElement>(compactHistoryOpenScrollSelector);
+  return scrollNode instanceof HTMLDivElement ? scrollNode : null;
+}
+
+function getCompactHistoryScrollUnderCompactToolWheel(
+  event: ReactWheelEvent<HTMLDivElement>,
+): HTMLDivElement | null {
+  if (isCompactToolWheelControlWheelTarget(event.target)) return null;
+  const clientX = event.clientX;
+  const clientY = event.clientY;
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+  const fanElement = event.currentTarget;
+  const pointElements = typeof document.elementsFromPoint === 'function'
+    ? document.elementsFromPoint(clientX, clientY)
+    : [];
+
+  for (const element of pointElements) {
+    if (!(element instanceof Element)) continue;
+    if (fanElement === element || fanElement.contains(element)) continue;
+    const scrollNode = getCompactHistoryScrollFromElement(element);
+    if (scrollNode && isPointInElementRect(scrollNode, clientX, clientY)) {
+      return scrollNode;
+    }
+  }
+
+  return Array.from(document.querySelectorAll<HTMLDivElement>(compactHistoryOpenScrollSelector))
+    .find(scrollNode => isPointInElementRect(scrollNode, clientX, clientY)) ?? null;
 }
 
 async function resolveCompactCursorValue(
@@ -4113,16 +4170,41 @@ function CompactChatApp({
     return rawDelta;
   }, []);
 
+  const routeCompactToolWheelScrollToHistory = useCallback((
+    event: ReactWheelEvent<HTMLDivElement>,
+    normalizedDelta: number,
+  ) => {
+    if (!compactExportHistoryOpen) return false;
+    if (compactInputToolWheelDragActiveRef.current || compactInputToolWheelPointerRef.current) return false;
+    const scrollNode = getCompactHistoryScrollUnderCompactToolWheel(event);
+    if (!scrollNode) return false;
+
+    const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+    if (maxScrollTop <= 0) return false;
+
+    const nextScrollTop = clamp(scrollNode.scrollTop + normalizedDelta, 0, maxScrollTop);
+    if (nextScrollTop === scrollNode.scrollTop) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    scrollNode.scrollTop = nextScrollTop;
+    scrollNode.dispatchEvent(new CustomEvent(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, { bubbles: true }));
+    return true;
+  }, [compactExportHistoryOpen]);
+
   const rotateCompactInputToolWheelByScroll = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
     const normalizedDelta = getCompactInputToolWheelNormalizedDelta(event);
     if (Math.abs(normalizedDelta) < COMPACT_INPUT_TOOL_WHEEL_SCROLL_DEADZONE) return;
+
+    if (routeCompactToolWheelScrollToHistory(event, normalizedDelta)) return;
 
     event.preventDefault();
     event.stopPropagation();
 
     const direction: 1 | -1 = normalizedDelta > 0 ? 1 : -1;
     rotateCompactInputToolWheelSteps(direction, 1, { forceFast: true });
-  }, [getCompactInputToolWheelNormalizedDelta, rotateCompactInputToolWheelSteps]);
+  }, [getCompactInputToolWheelNormalizedDelta, rotateCompactInputToolWheelSteps, routeCompactToolWheelScrollToHistory]);
 
   const getCompactToolWheelBoundedDragPoint = useCallback((clientX: number, clientY: number): CompactToolWheelDragPoint => {
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {

@@ -1045,11 +1045,19 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
     assert "_TUTORIAL_RUNTIME_ASSET_PATHS" in source
-    assert '(_PROJECT_ROOT / "static/tutorial").glob("**/*.js")' in source
-    assert '(_PROJECT_ROOT / "static/tutorial").glob("**/*.json")' in source
+    assert '"**/*.js", "**/*.json"' in source
     assert "*_TUTORIAL_RUNTIME_ASSET_PATHS" in source
-    assert '_PROJECT_ROOT / "static/tutorial/core/skip-controller.js"' in source
-    assert '_PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js"' in source
+
+    from main_routers import pages_router
+
+    tracked_paths = {
+        path.relative_to(Path("main_routers/pages_router.py").resolve().parent.parent).as_posix()
+        for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    }
+    assert "static/tutorial/yui-guide/days/day6-agent-guide.js" in tracked_paths
+    assert "static/tutorial/core/operation-registry.js" in tracked_paths
+    assert "static/tutorial/visual/resistance-controllers.js" in tracked_paths
+    assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
 
 
 def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
@@ -1066,8 +1074,8 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     for template_path in ("templates/index.html", "templates/chat.html"):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
-        assert "/static/app-interpage.js?v={{ static_asset_version }}" in source
-        assert "/static/app-interpage.js?v={{ react_chat_asset_version }}" not in source
+        assert "/static/app-interpage.js?v={{ react_chat_asset_version }}" in source
+        assert "/static/app-interpage.js?v={{ static_asset_version }}" not in source
         for asset_path in react_assets:
             assert f"{asset_path}?v={react_version}" in source
             assert f"{asset_path}?v={static_version}" not in source

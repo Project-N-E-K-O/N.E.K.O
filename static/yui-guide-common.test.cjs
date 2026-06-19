@@ -1579,7 +1579,7 @@ test('director routes scene and chat stream timers through scoped resources', ()
 
 test('manager routes tutorial listeners and blockers through scoped resources', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const constructorBlock = source.split('    constructor() {')[1].split(
+    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    constructor() {')[1].split(
         '        // 刷新延迟常量',
         1
     )[0];

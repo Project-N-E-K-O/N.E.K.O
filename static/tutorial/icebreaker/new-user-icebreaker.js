@@ -12,6 +12,7 @@
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
     var activeSession = null;
+    var pendingStartDay = '';
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -65,6 +66,99 @@
         return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
+        });
+    }
+
+    function getPageConfigUrl() {
+        var lanlanName = resolveLanlanName();
+        var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
+        return '/api/config/page_config' + suffix;
+    }
+
+    function getLocalMutationHeaders() {
+        var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            return Promise.resolve(security.getMutationHeaders()).then(function (mutationHeaders) {
+                return Object.assign(headers, mutationHeaders || {});
+            }).catch(function () {
+                return headers;
+            });
+        }
+        return fetch(getPageConfigUrl(), {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        }).then(function (response) {
+            if (!response.ok) return headers;
+            return response.json();
+        }).then(function (config) {
+            if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                headers['X-CSRF-Token'] = config.autostart_csrf_token;
+            }
+            return headers;
+        }).catch(function () {
+            return headers;
+        });
+    }
+
+    function refreshLocalMutationHeaders() {
+        var security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.refreshToken === 'function') {
+            return Promise.resolve(security.refreshToken()).then(function () {
+                return getLocalMutationHeaders();
+            }).catch(function () {
+                return getLocalMutationHeaders();
+            });
+        }
+        return getLocalMutationHeaders();
+    }
+
+    function postIcebreakerRoute(path, session, extraBody) {
+        if (!session || !session.sessionId) return Promise.resolve(false);
+        var body = Object.assign({
+            lanlan_name: resolveLanlanName(),
+            session_id: String(session.sessionId || ''),
+            i18n_language: currentLocale()
+        }, extraBody || {});
+
+        function parseRouteResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + path, {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            }).then(parseRouteResponse);
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] route lifecycle request failed:', path, error);
+            return false;
+        });
+    }
+
+    function startIcebreakerRoute(session) {
+        return postIcebreakerRoute('/route/start', session, {
+            source: SOURCE
+        });
+    }
+
+    function clearPendingStartDay(dayKey) {
+        if (pendingStartDay === dayKey) {
+            pendingStartDay = '';
+        }
+    }
+
+    function endIcebreakerRoute(session, reason) {
+        if (!session || session.routeEnded) return Promise.resolve(false);
+        session.routeEnded = true;
+        return postIcebreakerRoute('/route/end', session, {
+            reason: reason || 'icebreaker_complete',
+            postgameProactive: { enabled: false }
         });
     }
 
@@ -262,6 +356,7 @@
             role: cleanRole,
             text: cleanText,
             session_id: String(currentSession.sessionId || ''),
+            request_id: String(extra.requestId || ''),
             event: {
                 kind: 'icebreaker-context',
                 source: SOURCE,
@@ -275,17 +370,39 @@
                 request_id: String(extra.requestId || '')
             }
         };
-        contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
+        function parseContextResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
+        function postContextWithHeaders(headers, allowRetry) {
             return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
             }).then(function (response) {
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-                return response.json();
-            }).then(function (data) {
-                return !!(data && data.ok);
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postContextWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return parseContextResponse(response);
+                    });
+                }
+                return parseContextResponse(response);
+            });
+        }
+
+        contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
+            return getLocalMutationHeaders().then(function (headers) {
+                return postContextWithHeaders(headers, true);
             }).catch(function (error) {
                 console.warn('[NewUserIcebreaker] append LLM context failed:', error);
                 return false;
@@ -512,33 +629,42 @@
     }
 
     function completeWithHandoff(option) {
-        var text = getText(activeSession.localeData, option.handoffKey);
-        var day = activeSession.day;
+        var session = activeSession;
+        if (!session) return Promise.resolve(false);
+        var text = getText(session.localeData, option.handoffKey);
+        var day = session.day;
+        var nodeId = session.nodeId;
+        var sessionId = session.sessionId;
         applyAssistantTextEmotion(text);
-        appendChatMessage('assistant', text, {
+        clearChoicePrompt();
+        return appendChatMessage('assistant', text, {
             day: day,
-            nodeId: activeSession.nodeId,
+            nodeId: nodeId,
             voiceKey: option.handoffVoiceKey || '',
             handoff: true
         }).then(function () {
             speakLine(text, option.handoffVoiceKey || '');
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                sessionId: sessionId,
+                nodeId: nodeId
+            });
+            return endIcebreakerRoute(session, 'icebreaker_handoff');
+        }).then(function () {
+            if (activeSession === session) {
+                activeSession = null;
+            }
+            return true;
         });
-        clearChoicePrompt();
-        markDay(day, {
-            started: true,
-            completed: true,
-            completedAt: Date.now(),
-            sessionId: activeSession.sessionId,
-            nodeId: activeSession.nodeId
-        });
-        activeSession = null;
     }
 
     function handleChoice(detail) {
         if (!activeSession || !detail) return;
+        if (detail.sessionId && detail.sessionId !== activeSession.sessionId) return;
         var session = activeSession;
         if (session.choiceInFlight) return;
-        if (detail.sessionId && detail.sessionId !== session.sessionId) return;
         var node = session.dayConfig.nodes[session.nodeId];
         if (!node || !Array.isArray(node.options)) return;
         var choice = String(detail.choice || '');
@@ -553,20 +679,33 @@
             day: session.day,
             nodeId: session.nodeId,
             choice: choice
-        }).then(function () {
+        }).then(function (message) {
+            if (!message) {
+                if (activeSession === session) {
+                    session.choiceInFlight = false;
+                    setChoicePrompt(node, session.localeData);
+                }
+                return null;
+            }
+            if (activeSession !== session) {
+                return null;
+            }
             if (option.next) {
                 return deliverNode(option.next);
             }
             if (option.handoffKey) {
-                completeWithHandoff(option);
+                return completeWithHandoff(option);
             }
             return null;
-        }).then(function () {
-            session.choiceInFlight = false;
-        }).catch(function (error) {
-            session.choiceInFlight = false;
-            console.warn('[NewUserIcebreaker] choice append failed:', error);
+        }).then(function (result) {
             if (activeSession === session) {
+                session.choiceInFlight = false;
+            }
+            return result;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] choice handling failed:', error);
+            if (activeSession === session) {
+                session.choiceInFlight = false;
                 setChoicePrompt(node, session.localeData);
             }
         });
@@ -618,8 +757,16 @@
                         nodeId: nodeId,
                         releasedByFreeText: true
                     });
+                    endIcebreakerRoute(session, 'icebreaker_free_text_release');
                     if (activeSession === session) {
                         activeSession = null;
+                    }
+                } else if (activeSession === session) {
+                    var currentNode = session.dayConfig && session.dayConfig.nodes
+                        ? session.dayConfig.nodes[nodeId]
+                        : null;
+                    if (currentNode) {
+                        setChoicePrompt(currentNode, localeData);
                     }
                 }
                 return null;
@@ -686,15 +833,17 @@
 
     function startForDay(day, options) {
         var force = !!(options && options.force);
+        var dayKey = String(day || '');
+        if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
+        pendingStartDay = dayKey;
         return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
             if (activeSession && !force) return false;
             var scripts = results[0];
             var localeData = results[1];
-            var dayKey = String(day || '');
             var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
             if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
             if (!force && isDayCompleted(dayKey)) return false;
-            activeSession = {
+            var nextSession = {
                 day: dayKey,
                 dayConfig: dayConfig,
                 localeData: localeData || {},
@@ -702,17 +851,26 @@
                 offTopicCount: 0,
                 sessionId: 'icebreaker-day' + dayKey + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
             };
-            markDay(dayKey, {
-                started: true,
-                completed: false,
-                triggeredAt: Date.now(),
-                sessionId: activeSession.sessionId,
-                nodeId: dayConfig.root
+            return startIcebreakerRoute(nextSession).then(function (started) {
+                if (!started) return false;
+                activeSession = nextSession;
+                markDay(dayKey, {
+                    started: true,
+                    completed: false,
+                    triggeredAt: Date.now(),
+                    sessionId: activeSession.sessionId,
+                    nodeId: dayConfig.root
+                });
+                return deliverNode(dayConfig.root).then(function () {
+                    return true;
+                });
             });
-            deliverNode(dayConfig.root);
-            return true;
+        }).then(function (result) {
+            clearPendingStartDay(dayKey);
+            return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] start failed:', error);
+            clearPendingStartDay(dayKey);
             return false;
         });
     }

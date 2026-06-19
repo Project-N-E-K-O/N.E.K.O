@@ -66,7 +66,7 @@ push_to_llm_mode = "read"
 enabled = true
 
 [llm]
-llm_call_timeout_seconds = 30
+llm_call_timeout_seconds = 300
 llm_vision_enabled = false
 llm_vision_max_image_px = 768
 

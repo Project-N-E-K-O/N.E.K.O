@@ -1063,10 +1063,12 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "mimo": "MiMo(Xiaomi)",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
         "pleaseEnterApiKey": "API 키를 입력하세요.",

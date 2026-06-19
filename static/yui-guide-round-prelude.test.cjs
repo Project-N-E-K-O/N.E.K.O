@@ -163,7 +163,8 @@ test('round prelude continues after avatar override and visibility failures', as
 });
 
 test('manager delegates avatar floating prelude to TutorialRoundPreludeController', () => {
-    const constructorBlock = managerSource.split('constructor() {')[1].split(
+    const managerClassBlock = managerSource.split('class UniversalTutorialManager {')[1];
+    const constructorBlock = managerClassBlock.split('constructor() {')[1].split(
         'this._teardownPromise = null;',
         1
     )[0];

@@ -2808,9 +2808,10 @@ class ConfigManager:
             'provider_label': '阿里国际版CosyVoice' if normalized_provider == 'cosyvoice_intl' else '阿里百炼CosyVoice',
         }
 
-    def _get_cosyvoice_storage_keys(self) -> list[tuple[str, str]]:
+    def _get_cosyvoice_storage_keys(self, voice_storage: dict | None = None) -> list[tuple[str, str]]:
         """Return the voice_storage key for the current Alibaba CN/international API key."""
-        voice_storage = self.load_voice_storage()
+        if voice_storage is None:
+            voice_storage = self.load_voice_storage()
         result: list[tuple[str, str]] = []
         seen = set()
 
@@ -2932,6 +2933,10 @@ class ConfigManager:
         ``validate_voice_id`` / ``cleanup_invalid_voice_ids`` must see every voice actually
         present in storage, otherwise the free edition would misjudge voice_ids users saved
         during a paid period as nonexistent and clear them outright during cleanup.
+
+        Provider-keyed CosyVoice clone buckets are still merged below: if a
+        clone provider API key is configured and has stored voices, the clone
+        list should show those voices even when the main cloud bucket is hidden.
         """
         voice_storage = self.load_voice_storage()
         storage_key = ''
@@ -2960,9 +2965,7 @@ class ConfigManager:
                     all_voices = voice_storage.get(storage_key, {})
                     result = dict(all_voices)
 
-        cosyvoice_storage_keys = []
-        if not is_local_tts and not hide_cloud_main:
-            cosyvoice_storage_keys = self._get_cosyvoice_storage_keys()
+        cosyvoice_storage_keys = self._get_cosyvoice_storage_keys(voice_storage)
 
         # 确保主分区音色有 provider 字段
         default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
@@ -4490,13 +4493,13 @@ class ConfigManager:
 
     def is_free_voice(self) -> bool:
         """Whether the built-in free voice is in use (core=free). The single source of truth for
-        "is voice free" — free preset voices, hidden cloud clone voices and the default YUI
+        "is voice free" — free preset voices, hidden main cloud voices and the default YUI
         fallback all read it. Dual of is_agent_free().
 
         Realtime and text TTS share the same voice and follow core, independent of assist:
-        the CosyVoice/Qwen clone voices hidden by hide_cloud_main merely reuse the assist
-        key; the free edition (core=free) runs the free_mode worker at runtime and cannot
-        play them, hence hidden.
+        hide_cloud_main hides the main CosyVoice/Qwen cloud bucket in free mode. Provider-keyed
+        clone buckets are handled separately by get_voices_for_current_api(), and remain visible
+        when the corresponding CosyVoice clone API key is configured.
         """
         return (self.get_core_config().get('CORE_API_TYPE') or '') == 'free'
 

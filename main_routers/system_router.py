@@ -55,7 +55,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -83,6 +83,7 @@ from config import (
     AUTOSTART_CSRF_TOKEN,
     MEMORY_SERVER_PORT,
     get_extra_body,
+    focus_extra_body,
     PROACTIVE_PHASE1_FETCH_PER_SOURCE,
     PROACTIVE_PHASE1_TOTAL_TOPICS,
     PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
@@ -2837,13 +2838,13 @@ async def _deliver_break_reminder_via_llm(
 
     try:
         async with asyncio.timeout(timeout_seconds):
-            async with create_chat_llm(
+            async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
                 timeout=timeout_seconds,  # mirror the asyncio.timeout() wrapping this stream
-            ) as llm:
+            )) as llm:
                 async for chunk in llm.astream(messages):
                     if mgr.state.is_proactive_preempted(proactive_sid):
                         aborted = True
@@ -3395,7 +3396,7 @@ async def emotion_analysis(request: Request):
         set_call_type("emotion")
 
         # 异步调用模型（使用统一工厂，自动处理 extra_body / provider 兼容）
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model,
             emotion_base_url,
             api_key,
@@ -4879,6 +4880,10 @@ async def proactive_chat(request: Request):
                 await _increment_proactive_chat_total(lanlan_name)
             else:
                 logger.info("[%s] 主动搭话本轮未发起：语音 nudge 被 guard 跳过", lanlan_name)
+            # No Focus cooldown here: a voice nudge is realtime and never runs a
+            # Focus thinking-on reply, so it is not a Focus proactive turn — the
+            # cooldown is applied only at the text Phase-2 idle path (which is
+            # where _focus_idle_thinking actually gates thinking-on).
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -4907,6 +4912,15 @@ async def proactive_chat(request: Request):
         # ``S.proactiveFixedScheduleMode`` branch in static/app-proactive.js.
         _next_schedule_fixed_mode = False
 
+        # Focus idle cooldown bookkeeping (read by _end_proactive via closure).
+        # Set only when the flow reaches the Phase-2 idle Focus decision, so
+        # short-circuit replies (mini-game invite, break-reminder, must-fire)
+        # that return before Phase 2 never spend Focus charge. The episode token
+        # pins the decay to the episode the thinking decision observed.
+        _focus_phase2_reached = False
+        _focus_episode_token = None
+        _focus_turn_token = None
+
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
             """Wraps every normal/short-circuit proactive exit: idempotently fires PROACTIVE_DONE.
 
@@ -4934,12 +4948,27 @@ async def proactive_chat(request: Request):
             # 散落各分支无需各自记；排查"她这轮为什么没主动说话"看这条即可。
             # 占坑前的早退（游戏路由 / voice 与 text 的 409 并发拒绝）不经过
             # 本出口，各自就地补了同前缀（"主动搭话本轮未发起："）的 info。
-            if body.get("action") != "chat":
+            _replied = body.get("action") == "chat"
+            if not _replied:
                 logger.info(
                     "[%s] 主动搭话本轮未发起：%s",
                     lanlan_name,
                     body.get("message") or body.get("error") or "(无原因说明)",
                 )
+            # Idle Focus cooldown — only for turns that reached the Phase-2 idle
+            # Focus decision (short-circuit replies never set the flag, so they
+            # don't spend Focus). A proactive turn never raises the charge; it
+            # decays — faster when it delivered a reply (_replied) than when
+            # Phase 2 produced nothing. count_turn=False + episode-token guard
+            # live inside _focus_idle_cooldown.
+            if _focus_phase2_reached:
+                try:
+                    await mgr._focus_idle_cooldown(
+                        replied=_replied, episode_token=_focus_episode_token,
+                        turn_token=_focus_turn_token,
+                    )
+                except Exception as _focus_err:
+                    logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
@@ -5773,11 +5802,14 @@ async def proactive_chat(request: Request):
                 "detail": str(e)
             }, status_code=500))
 
-        def _make_llm(temperature: float = 1.0,
-                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                      use_vision: bool = False, disable_thinking: bool = True):
+        async def _make_llm(temperature: float = 1.0,
+                            max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                            use_vision: bool = False, disable_thinking: bool = True):
             """
-            Create an LLM instance. use_vision=True uses the vision model; when disable_thinking=False, extra_body is not injected.
+            Create an LLM instance. use_vision=True uses the vision model;
+            when disable_thinking=False (Focus thinking-on) the provider's
+            thinking-disable extras are stripped while other auto-resolved
+            extras (e.g. web_search) are preserved.
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
@@ -5791,8 +5823,14 @@ async def proactive_chat(request: Request):
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
             )
             if not disable_thinking:
-                kw["extra_body"] = None  # skip auto-resolved extra_body
-            return create_chat_llm(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
+                # Focus thinking-on: strip ONLY the thinking-disable keys from
+                # the provider's auto-resolved extra_body, KEEP the rest. Setting
+                # extra_body=None would skip all auto-resolved extras and
+                # silently drop e.g. step-2-mini's built-in web_search on focused
+                # proactive Phase-2 generations (对偶 inline path
+                # OmniOfflineClient._focus_stream_overrides → focus_extra_body).
+                kw["extra_body"] = focus_extra_body(m)
+            return await create_chat_llm_async(m, bu, ak, **kw)  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout set in kw above (splat invisible to the lint).
 
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
@@ -5825,10 +5863,10 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature,
-                                        max_completion_tokens=max_completion_tokens,
-                                        use_vision=use_vision,
-                                        disable_thinking=disable_thinking) as llm:
+                    async with (await _make_llm(temperature=temperature,
+                                                max_completion_tokens=max_completion_tokens,
+                                                use_vision=use_vision,
+                                                disable_thinking=disable_thinking)) as llm:
                         response = await asyncio.wait_for(
                             llm.ainvoke(messages),
                             timeout=timeout
@@ -6499,19 +6537,28 @@ async def proactive_chat(request: Request):
         # unfinished_thread）仍取自早期 snapshot，避免 Phase 1 中途 state 变化
         # 导致 gating 决策（restricted_screen_only 收紧 enabled_modes 等）和最终
         # prompt 不一致。
+        # Freshest enrichment for the proactive prompt — Phase 1 (source fetch +
+        # memory + LLM) just elapsed, so activity scores / open threads moved on.
+        # Falls back to the entry snapshot if the refresh fails / is unavailable.
+        # (The idle Focus decision no longer consumes a snapshot — it is a pure
+        # charge cooldown — so this block only feeds the prompt now.)
         if activity_snapshot is not None:
             from dataclasses import replace as _dc_replace
             from main_logic.activity import format_activity_state_section
             try:
                 fresh_enrich = await mgr._activity_tracker.get_snapshot()
+                # restricted_screen_only deliberately strips semantic open_threads
+                # so gaming / focused-work prompts stay screen-only — render the
+                # prompt with that filtered set.
+                _filtered_open_threads = _open_threads_for_activity_state(
+                    activity_snapshot,
+                    fresh_enrich.open_threads,
+                )
                 display_snap = _dc_replace(
                     activity_snapshot,
                     activity_scores=fresh_enrich.activity_scores,
                     activity_guess=fresh_enrich.activity_guess,
-                    open_threads=_open_threads_for_activity_state(
-                        activity_snapshot,
-                        fresh_enrich.open_threads,
-                    ),
+                    open_threads=_filtered_open_threads,
                 )
             except Exception as _enrich_err:
                 logger.debug(f"[{lanlan_name}] fresh enrichment fetch failed: {_enrich_err}")
@@ -6587,8 +6634,30 @@ async def proactive_chat(request: Request):
         proactive_sid = mgr.current_speech_id
         await mgr.state.fire(_SE.PROACTIVE_PHASE2)
 
+        # Path B (idle) Focus 凝神：this round is now committed to speaking
+        # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?
+        # (= the session is already in Focus, inline-driven). A proactive turn
+        # never raises the charge; the charge cooldown happens after the turn in
+        # _end_proactive (it needs to know whether we actually spoke). Dominates
+        # all three Phase-2 generate sites below (main stream / format-fix regen
+        # / BM25 anti-repeat regen).
+        _focus_phase2_thinking = mgr._focus_idle_thinking()
+        # Mark that this turn reached the Phase-2 idle Focus decision and pin the
+        # focus state it observed (episode id + turn count) — _end_proactive
+        # applies the cooldown only for such turns, and only if still in this
+        # exact episode/turn (race guard: a no-op if inline moved it since).
+        _focus_phase2_reached = True
+        _focus_phase2_snap = mgr.state.snapshot()
+        _focus_episode_token = _focus_phase2_snap.get("focus_episode_id")
+        _focus_turn_token = _focus_phase2_snap.get("focus_turn_count")
+
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
+        # Vision guard: a vision model + thinking reliably times out (see the
+        # Phase-2 注释 above), so Focus thinking-on is suppressed whenever this
+        # round feeds a screenshot. Single source of truth for all three
+        # Phase-2 generate sites.
+        phase2_disable_thinking = phase2_use_vision or not _focus_phase2_thinking
 
         begin_text = _loc(BEGIN_GENERATE, proactive_lang)
         human_text = f"{dynamic_context_for_phase2}\n\n{begin_text}" if dynamic_context_for_phase2 else begin_text
@@ -6651,9 +6720,10 @@ async def proactive_chat(request: Request):
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with _make_llm(temperature=1.0,
-                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                                    use_vision=phase2_use_vision, disable_thinking=True) as llm:
+                async with (await _make_llm(temperature=1.0,
+                                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                                            use_vision=phase2_use_vision,
+                                            disable_thinking=phase2_disable_thinking)) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
@@ -6780,12 +6850,12 @@ async def proactive_chat(request: Request):
                 _fix_text = ""
                 try:
                     async with asyncio.timeout(20.0):
-                        async with _make_llm(
+                        async with (await _make_llm(
                             temperature=1.0,
                             max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                             use_vision=phase2_use_vision,
-                            disable_thinking=True,
-                        ) as _fix_llm:
+                            disable_thinking=phase2_disable_thinking,
+                        )) as _fix_llm:
                             _fix_resp = await _fix_llm.ainvoke(
                                 [messages[0], HumanMessage(content=_fix_human_content)]
                             )
@@ -6942,12 +7012,12 @@ async def proactive_chat(request: Request):
                 }))
             try:
                 async with asyncio.timeout(20.0):
-                    async with _make_llm(
+                    async with (await _make_llm(
                         temperature=1.0,
                         max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                         use_vision=phase2_use_vision,
-                        disable_thinking=True,
-                    ) as _regen_llm:
+                        disable_thinking=phase2_disable_thinking,
+                    )) as _regen_llm:
                         _regen_resp = await _regen_llm.ainvoke(regen_messages)
                         regen_text = (
                             _regen_resp.content if hasattr(_regen_resp, "content") else ""

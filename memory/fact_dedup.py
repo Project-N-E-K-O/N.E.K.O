@@ -404,7 +404,7 @@ class FactDedupResolver:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         pending = await self.aload_pending(name)
@@ -442,7 +442,7 @@ class FactDedupResolver:
             # （background→background），用户路径无感。
             # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,

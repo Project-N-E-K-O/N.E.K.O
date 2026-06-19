@@ -725,12 +725,21 @@ function clearSubtitleDanmakuLayer() {
     SubtitleShared.clearSubtitleDanmakuText(getSubtitleDanmakuRefs());
 }
 
+function requestSubtitleContentAutoScroll() {
+    if (SubtitleShared && typeof SubtitleShared.requestSubtitleAutoScroll === 'function') {
+        SubtitleShared.requestSubtitleAutoScroll(document.getElementById('subtitle-scroll'));
+    }
+}
+
 function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
     subtitleText.style.fontSize = '';
     var danmakuRendering = renderSubtitleDanmakuLayer(subtitleText.textContent);
+    if (!danmakuRendering) {
+        requestSubtitleContentAutoScroll();
+    }
     syncSubtitleRenderState('subtitle-text-write');
 
     // 自适应字号：防抖测量，避免流式高频触发
@@ -767,6 +776,7 @@ function writeSubtitleText(text) {
             })
             : { fontSize: baseFont };
         subtitleText.style.fontSize = layout.fontSize < baseFont ? layout.fontSize + 'px' : '';
+        requestSubtitleContentAutoScroll();
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }
