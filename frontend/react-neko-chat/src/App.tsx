@@ -5756,8 +5756,6 @@ function CompactChatApp({
     const pointer = nextPointer ?? compactInputToolWheelHoverPointerRef.current;
     if (
       !pointer
-      || !compactInputToolFanOpen
-      || !compactInputToolFanInteractive
       || compactInputToolFanActionsDisabled
     ) {
       setCompactInputToolWheelHoveredIndexState(null);
