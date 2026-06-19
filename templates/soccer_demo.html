@@ -3886,6 +3886,41 @@
     return base;
   }
 
+  function _getLocalMutationHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const security = window.nekoLocalMutationSecurity;
+    if (security && typeof security.getMutationHeaders === 'function') {
+      return Promise.resolve(security.getMutationHeaders()).then((mutationHeaders) => {
+        return Object.assign(headers, mutationHeaders || {});
+      }).catch(() => headers);
+    }
+
+    const lanlanName = window.lanlan_config?.lanlan_name || '';
+    const suffix = lanlanName ? `?lanlan_name=${encodeURIComponent(lanlanName)}` : '';
+    return fetch(`/api/config/page_config${suffix}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    }).then((response) => {
+      if (!response.ok) return headers;
+      return response.json();
+    }).then((config) => {
+      if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+        headers['X-CSRF-Token'] = config.autostart_csrf_token;
+      }
+      return headers;
+    }).catch(() => headers);
+  }
+
+  function _refreshLocalMutationHeaders() {
+    const security = window.nekoLocalMutationSecurity;
+    if (security && typeof security.refreshToken === 'function') {
+      return Promise.resolve(security.refreshToken()).then(() => {
+        return _getLocalMutationHeaders();
+      }).catch(() => _getLocalMutationHeaders());
+    }
+    return _getLocalMutationHeaders();
+  }
+
   async function _sendRealtimeGameContext(source, items = []) {
     if (!_llm.realtimeContextEnabled) return;
     const now = performance.now();
@@ -3900,17 +3935,26 @@
       snapshot: item.snapshot,
     }));
     try {
-      const resp = await fetch('/api/game/soccer/realtime-context', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source,
-          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-          state: stateNow,
-          pendingItems: safeItems,
-          i18n_language: _currentI18nLang(),
-        }),
+      const bodyJson = JSON.stringify({
+        source,
+        ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+        state: stateNow,
+        pendingItems: safeItems,
+        i18n_language: _currentI18nLang(),
       });
+      const postWithHeaders = (headers) => fetch('/api/game/soccer/realtime-context', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: bodyJson,
+      });
+      let resp = await postWithHeaders(await _getLocalMutationHeaders());
+      if (resp.status === 403) {
+        const errorPayload = await resp.clone().json().catch(() => ({}));
+        if (errorPayload && errorPayload.error_code === 'csrf_validation_failed') {
+          resp = await postWithHeaders(await _refreshLocalMutationHeaders());
+        }
+      }
       const data = await resp.json().catch(() => ({}));
       if (data.ok) {
         console.log(`[SoccerRealtime] 注入成功 | 来源=${source} 条目=${safeItems.length} bytes=${data.bytes}`);

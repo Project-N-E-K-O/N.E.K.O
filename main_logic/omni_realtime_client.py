@@ -1685,9 +1685,11 @@ class OmniRealtimeClient:
             # Gemini Live API 没有 session.update 机制，只能通过
             # send_client_content 注入上下文（会创建 user turn）。
             # on_response_done 由 _handle_messages_gemini 自然触发。
-            if skipped:
-                self._skip_until_next_response = True
-            await self._create_response_gemini(text)
+            await self._create_response_gemini_with_skip_guard(
+                text,
+                skipped=skipped,
+                raise_on_error=True,
+            )
             return
 
         if not skipped and "qwen" not in self._model_lower:
@@ -1738,9 +1740,11 @@ class OmniRealtimeClient:
             if not instructions or not instructions.strip():
                 logger.info("Gemini: skipping empty content in create_response")
                 return
-            if skipped:
-                self._skip_until_next_response = True
-            await self._create_response_gemini(instructions)
+            await self._create_response_gemini_with_skip_guard(
+                instructions,
+                skipped=skipped,
+                raise_on_error=True,
+            )
             return
 
         # 跳过空内容的发送，避免触发 API 错误
@@ -1776,7 +1780,7 @@ class OmniRealtimeClient:
 
         This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
         ``conversation.item.create(role=user) + response.create``. Shared by
-        ``_create_response_gemini`` (hot-swap priming — tolerates errors) and
+        ``_create_response_gemini`` (callers choose error policy) and
         ``inject_text_and_request_response`` (proactive — must propagate
         errors so the caller can re-queue). Errors propagate here; callers
         that need to swallow wrap it.
@@ -1792,10 +1796,12 @@ class OmniRealtimeClient:
             turn_complete=True,
         )
 
-    async def _create_response_gemini(self, instructions: str) -> None:
+    async def _create_response_gemini(self, instructions: str, *, raise_on_error: bool = False) -> None:
         """Send text content to Gemini and trigger response."""
         if not self._gemini_session:
             logger.warning("Gemini session not available for create_response")
+            if raise_on_error:
+                raise RuntimeError("Gemini session not available for create_response")
             return
 
         # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
@@ -1808,6 +1814,28 @@ class OmniRealtimeClient:
             logger.info("Gemini: sent client content, waiting for response")
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
+            if raise_on_error:
+                raise
+
+    async def _create_response_gemini_with_skip_guard(
+        self,
+        instructions: str,
+        *,
+        skipped: bool = False,
+        raise_on_error: bool = False,
+    ) -> None:
+        """Set Gemini skip state only for a successfully-started skipped turn."""
+        if not skipped:
+            await self._create_response_gemini(instructions, raise_on_error=raise_on_error)
+            return
+
+        previous_skip = self._skip_until_next_response
+        self._skip_until_next_response = True
+        try:
+            await self._create_response_gemini(instructions, raise_on_error=raise_on_error)
+        except Exception:
+            self._skip_until_next_response = previous_skip
+            raise
 
     def is_active_response(self) -> bool:
         """Return True iff the realtime session is currently producing a response.

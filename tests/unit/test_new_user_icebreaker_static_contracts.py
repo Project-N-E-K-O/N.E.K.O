@@ -281,9 +281,12 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/context'" in runtime
     assert "request_id: String(extra.requestId || '')" in runtime
     assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in game_router
-    assert "_icebreaker_context_seen_request_ids" in game_router
-    assert "append_icebreaker_context_async(role, text)" in game_router
-    assert "append_icebreaker_context_async(role, text, request_id)" not in game_router
+    assert "_icebreaker_context_seen_request_ids" not in game_router
+    assert "append_context(" in game_router
+    assert "source=\"game.icebreaker\"" in game_router
+    assert "MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000" in game_router
+    assert "invalid_text_length" in game_router
+    assert "append_icebreaker_context_async" not in game_router
     assert '@router.post("/{game_type}/context")' in game_router
     assert "startIcebreakerRoute(nextSession).then(function (started) {" in runtime
     assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + path" in runtime
@@ -314,15 +317,19 @@ def test_icebreaker_context_reuses_existing_session_context_paths():
     assert "pending_icebreaker_context" not in core
     assert "_icebreaker_context_request_ids" not in core
     assert "def _flush_pending_icebreaker_context" not in core
-    assert "def append_icebreaker_context_async" in core
-    assert "def append_icebreaker_context_async(self, role: str, text: str) -> bool:" in core
+    assert "def append_icebreaker_context_async" not in core
     assert "append_icebreaker_context_async(self, role: str, text: str, request_id" not in core
     assert "def append_icebreaker_context(" not in core
+    assert "async def append_context(" in core
+    assert "source: str" in core
+    assert "audience: str = \"model\"" in core
+    assert "lifetime: str = \"current_session\"" in core
     assert "_normalize_scripted_context" not in core
     assert "_append_scripted_context_to_new_session_cache" not in core
     assert "_conversation_history" in core
     assert "message_cache_for_new_session" in core
-    assert 'await prime_context(f"{normalized_role}: {content}", skipped=True)' in core
+    assert "_CONTEXT_APPEND_BARE_PRIME_SOURCES" in core
+    assert 'prime_text = content if source in _CONTEXT_APPEND_BARE_PRIME_SOURCES else f"{role}: {content}"' in core
 
 
 def test_icebreaker_context_appends_are_serialized_before_chat_progression():

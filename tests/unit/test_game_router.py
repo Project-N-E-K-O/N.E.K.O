@@ -80,6 +80,19 @@ def _allow_local_mutation(request, payload=None, **kwargs):
     return None
 
 
+class _FakeAppendContextManager:
+    def __init__(self, result=None, error=None):
+        self.calls = []
+        self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
+        self.error = error
+
+    async def append_context(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
 @pytest.mark.unit
 def test_basketball_removed_modes_are_not_public_or_scored():
     assert game_router._normalize_basketball_mode("horse") == "spectator"
@@ -128,15 +141,7 @@ def test_parse_control_instructions_extracts_json_line():
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_appends_session_history(monkeypatch):
-    class FakeManager:
-        def __init__(self):
-            self.calls = []
-
-        async def append_icebreaker_context_async(self, role, text):
-            self.calls.append((role, text))
-            return True
-
-    mgr = FakeManager()
+    mgr = _FakeAppendContextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
@@ -154,20 +159,25 @@ async def test_new_user_icebreaker_context_endpoint_appends_session_history(monk
 
         assert result["ok"] is True
         assert result["method"] == "project_session_history"
-        assert mgr.calls == [("assistant", "教程看完啦？")]
+        assert mgr.calls == [{
+            "source": "game.icebreaker",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "audience": "model",
+            "timing": "when_ready",
+            "lifetime": "session_family",
+            "request_id": None,
+            "ordering_key": "icebreaker-day1-test",
+            "metadata": {
+                "game_type": "new_user_icebreaker",
+                "session_id": "icebreaker-day1-test",
+            },
+        }]
 
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypatch):
-    class FakeManager:
-        def __init__(self):
-            self.calls = []
-
-        async def append_icebreaker_context_async(self, role, text):
-            self.calls.append((role, text))
-            return True
-
-    mgr = FakeManager()
+    mgr = _FakeAppendContextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
@@ -185,16 +195,38 @@ async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypa
 
         assert result["ok"] is True
         assert result["method"] == "project_session_history"
-        assert mgr.calls == [("user", "icebreaker choice")]
+        assert mgr.calls[0]["role"] == "user"
+        assert mgr.calls[0]["text"] == "icebreaker choice"
+        assert mgr.calls[0]["source"] == "game.icebreaker"
+        assert mgr.calls[0]["lifetime"] == "session_family"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_oversized_text(monkeypatch):
+    mgr = _FakeAppendContextManager(error=AssertionError("oversized icebreaker context must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "x" * (game_router.MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH + 1),
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result == {"ok": False, "reason": "invalid_text_length"}
+    assert mgr.calls == []
 
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise AssertionError("stale icebreaker context must not append")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    mgr = _FakeAppendContextManager(error=AssertionError("stale icebreaker context must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     _allow_icebreaker_route()
 
@@ -218,11 +250,8 @@ async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_rejects_inactive_route(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise AssertionError("inactive icebreaker route must not append")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    mgr = _FakeAppendContextManager(error=AssertionError("inactive icebreaker route must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
     with reset_game_route_state():
@@ -246,16 +275,8 @@ async def test_new_user_icebreaker_context_rejects_inactive_route(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_dedups_request_id_in_route_state(monkeypatch):
-    class FakeManager:
-        def __init__(self):
-            self.calls = []
-
-        async def append_icebreaker_context_async(self, role, text):
-            self.calls.append((role, text))
-            return True
-
-    mgr = FakeManager()
+async def test_new_user_icebreaker_context_endpoint_delegates_request_id_to_manager(monkeypatch):
+    mgr = _FakeAppendContextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
     with reset_game_route_state():
@@ -270,15 +291,6 @@ async def test_new_user_icebreaker_context_endpoint_dedups_request_id_in_route_s
                 "event": {"request_id": "fallback-id"},
             }),
         )
-        duplicate = await game_router.game_project_context(
-            "new_user_icebreaker",
-            _FakeRequest({
-                "lanlan_name": "Lan",
-                "role": "assistant",
-                "text": "hello",
-                "request_id": "icebreaker-context-1",
-            }),
-        )
         next_request = await game_router.game_project_context(
             "new_user_icebreaker",
             _FakeRequest({
@@ -290,66 +302,42 @@ async def test_new_user_icebreaker_context_endpoint_dedups_request_id_in_route_s
         )
 
     assert first["ok"] is True
-    assert duplicate["ok"] is True
-    assert duplicate["deduped"] is True
     assert next_request["ok"] is True
-    assert mgr.calls == [("assistant", "hello"), ("assistant", "hello again")]
-
-
-@pytest.mark.asyncio
-async def test_new_user_icebreaker_context_dedup_duplicate_does_not_refresh_fifo(monkeypatch):
-    class FakeManager:
-        def __init__(self):
-            self.calls = []
-
-        async def append_icebreaker_context_async(self, role, text):
-            self.calls.append((role, text))
-            return True
-
-    mgr = FakeManager()
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-    monkeypatch.setattr(game_router, "_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES", 2)
-
-    async def post(request_id, text):
-        return await game_router.game_project_context(
-            "new_user_icebreaker",
-            _FakeRequest({
-                "lanlan_name": "Lan",
-                "role": "assistant",
-                "text": text,
-                "request_id": request_id,
-            }),
-        )
-
-    with reset_game_route_state():
-        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
-        first = await post("icebreaker-context-1", "one")
-        second = await post("icebreaker-context-2", "two")
-        duplicate_first = await post("icebreaker-context-1", "one duplicate")
-        third = await post("icebreaker-context-3", "three")
-        replay_first_after_capacity_evict = await post("icebreaker-context-1", "one replay")
-
-    assert first["ok"] is True
-    assert second["ok"] is True
-    assert duplicate_first["deduped"] is True
-    assert third["ok"] is True
-    assert replay_first_after_capacity_evict["ok"] is True
-    assert "deduped" not in replay_first_after_capacity_evict
-    assert mgr.calls == [
-        ("assistant", "one"),
-        ("assistant", "two"),
-        ("assistant", "three"),
-        ("assistant", "one replay"),
+    assert [call["request_id"] for call in mgr.calls] == [
+        "icebreaker-context-1",
+        "icebreaker-context-2",
     ]
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_error(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise TypeError("internal append bug")
+async def test_new_user_icebreaker_context_endpoint_reports_manager_dedup(monkeypatch):
+    mgr = _FakeAppendContextManager(result=SimpleNamespace(appended=False, deduped=True, reason="duplicate_request_id"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    with reset_game_route_state():
+        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello",
+                "request_id": "icebreaker-context-1",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["deduped"] is True
+    assert mgr.calls[0]["request_id"] == "icebreaker-context-1"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_error(monkeypatch):
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=TypeError("internal append bug"))},
+    )
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
     with reset_game_route_state():
@@ -371,11 +359,8 @@ async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise AssertionError("CSRF rejection should happen before append")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    mgr = _FakeAppendContextManager(error=AssertionError("CSRF rejection should happen before append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
     result = await game_router.game_project_context(
         "new_user_icebreaker",
@@ -414,11 +399,11 @@ async def test_new_user_icebreaker_context_endpoint_rejects_unsupported_game_typ
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise RuntimeError("append failed")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=RuntimeError("append failed"))},
+    )
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     _allow_icebreaker_route()
 
@@ -439,11 +424,8 @@ async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monke
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_false_append(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            return False
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    mgr = _FakeAppendContextManager(result=SimpleNamespace(appended=False, deduped=False, reason="no_context_target"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
     with reset_game_route_state():
@@ -459,7 +441,7 @@ async def test_new_user_icebreaker_context_endpoint_handles_false_append(monkeyp
         )
 
     assert result["ok"] is False
-    assert result["reason"] == "context_write_failed"
+    assert result["reason"] == "no_context_target"
     assert result["lanlan_name"] == "Lan"
 
 
@@ -487,15 +469,7 @@ async def test_new_user_icebreaker_context_endpoint_rejects_empty_lanlan_name(mo
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_rejects_stale_session(monkeypatch):
-    class FakeManager:
-        def __init__(self):
-            self.calls = []
-
-        async def append_icebreaker_context_async(self, role, text):
-            self.calls.append((role, text))
-            return True
-
-    mgr = FakeManager()
+    mgr = _FakeAppendContextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     with reset_game_route_state():
@@ -553,11 +527,11 @@ async def test_new_user_icebreaker_context_endpoint_requires_public_append_metho
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise RuntimeError("session history unavailable")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=RuntimeError("session history unavailable"))},
+    )
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
     with reset_game_route_state():
@@ -582,11 +556,11 @@ async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(m
 
 @pytest.mark.asyncio
 async def test_new_user_icebreaker_context_endpoint_handles_async_append_error_from_manager(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise RuntimeError("session history unavailable")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=RuntimeError("session history unavailable"))},
+    )
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
 
     with reset_game_route_state():
@@ -610,37 +584,22 @@ async def test_new_user_icebreaker_context_endpoint_handles_async_append_error_f
 
 
 @pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_rejects_oversized_text(monkeypatch):
-    class FakeManager:
-        async def append_icebreaker_context_async(self, role, text):
-            raise AssertionError("oversized text should be rejected before append")
-
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": FakeManager()})
-
-    result = await game_router.game_project_context(
-        "new_user_icebreaker",
-        _FakeRequest({
-            "lanlan_name": "Lan",
-            "role": "user",
-            "text": "x" * (game_router.MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH + 1),
-        }),
-    )
-
-    assert result == {"ok": False, "reason": "invalid_text_length"}
-
-
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_llm_session_manager_appends_icebreaker_context_to_session_history():
+async def test_llm_session_manager_appends_generic_context_to_session_history():
     class FakeSession:
         def __init__(self):
             self._conversation_history = []
 
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.session = FakeSession()
+    mgr.message_cache_for_new_session = []
+    mgr.session_ready = True
 
-    assert await mgr.append_icebreaker_context_async("assistant", " hi ") is True
-    assert await mgr.append_icebreaker_context_async("user", " choice ") is True
+    first = await mgr.append_context(source="game.icebreaker", role="assistant", text=" hi ")
+    second = await mgr.append_context(source="game.icebreaker", role="user", text=" choice ")
+    assert first.appended is True
+    assert second.appended is True
     assert isinstance(mgr.session._conversation_history[0], AIMessage)
     assert mgr.session._conversation_history[0].content == "hi"
     assert isinstance(mgr.session._conversation_history[1], HumanMessage)
@@ -2903,6 +2862,25 @@ def test_postgame_context_snapshot_excludes_recent_dialogues(monkeypatch):
 
 
 @pytest.mark.unit
+def test_postgame_context_request_id_is_archive_scoped():
+    first = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 10.5,
+    }
+    second = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 11.5,
+    }
+
+    assert game_router._postgame_context_request_id(first) == "soccer:default:10.5"
+    assert game_router._postgame_context_request_id(second) == "soccer:default:11.5"
+    assert game_router._postgame_context_request_id(first) != game_router._postgame_context_request_id(second)
+    assert game_router._postgame_context_request_id({"game_type": "soccer", "session_id": "default"}) is None
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     class FakeSession:
@@ -3367,7 +3345,7 @@ class _FakeRealtimeSession:
 
 
 class _FakeRealtimeManager:
-    def __init__(self, session):
+    def __init__(self, session, append_context_result=None):
         self.session = session
         self.is_active = True
         self.user_language = "zh-CN"
@@ -3378,6 +3356,19 @@ class _FakeRealtimeManager:
         self.voice_nudge_calls = 0
         self.voice_nudge_kwargs = []
         self.voice_nudge_event = asyncio.Event()
+        self.append_context_calls = []
+        self.append_context_result = append_context_result
+
+    async def append_context(self, **kwargs):
+        self.append_context_calls.append(kwargs)
+        if self.append_context_result is not None:
+            return self.append_context_result
+        source = str(kwargs.get("source") or "")
+        text = kwargs["text"]
+        if source not in {"game.realtime_context", "game.postgame"}:
+            text = f"{kwargs['role']}: {text}"
+        await self.session.prime_context(text, skipped=True)
+        return SimpleNamespace(appended=True, deduped=False, targets=("realtime_prime",), reason=None)
 
     async def trigger_voice_proactive_nudge(self, **kwargs):
         self.voice_nudge_calls += 1
@@ -3422,6 +3413,60 @@ async def test_realtime_context_skips_gemini_prime_to_avoid_hidden_response(monk
     assert result["reason"] == "gemini_no_session_update"
     assert session.prime_context_calls == []
     assert session.create_response_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_endpoint_requires_local_mutation_csrf(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, mutation_headers=False, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert mgr.append_context_calls == []
+    assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_aborts_when_active_session_changes_before_append(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    def swap_session(_game_type, _payload, _language=None):
+        mgr.session = replacement
+        return "[Game Realtime Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_compact_realtime_context_text", swap_session)
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert result == {"ok": False, "reason": "realtime_session_changed", "lanlan_name": "Lan"}
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 class _FakeGameRouteManager:
@@ -4754,10 +4799,119 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     # now relies on plain prompt_ephemeral (server VAD + WAV nudge). The
     # postgame instruction reaches the model via prime_context (assert below).
     assert session.prime_context_calls
+    assert mgr.append_context_calls[0]["source"] == "game.postgame"
+    assert mgr.append_context_calls[0]["audience"] == "model"
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
+    assert not context_text.startswith("system: ")
     assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_postgame_nudge_when_context_append_deduped(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(
+        session,
+        append_context_result=SimpleNamespace(
+            appended=False,
+            deduped=True,
+            targets=(),
+            reason="duplicate_request_id",
+        ),
+    )
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+    state["last_state"] = {"score": {"player": 1, "ai": 3}}
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "别认输嘛，再来一脚。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "realtime"
+    assert result["postgame"]["context_injected"] is True
+    assert result["postgame"]["nudge_scheduled"] is False
+    assert result["postgame"]["reason"] == "context_deduped"
+    assert mgr.voice_nudge_calls == 0
+    assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_nudge_skips_replacement_session(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.01,))
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+    mgr.session = replacement
+    await asyncio.sleep(0.05)
+
+    assert result["mode"] == "realtime"
+    assert result["nudge_scheduled"] is True
+    assert mgr.voice_nudge_calls == 0
+    assert len(original.prime_context_calls) == 1
+    assert replacement.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_context_aborts_when_active_session_changes(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+
+    def swap_session(_archive):
+        mgr.session = replacement
+        return "[Game Module Postgame Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_build_game_postgame_context_text", swap_session)
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+
+    assert result == {
+        "ok": False,
+        "mode": "realtime",
+        "action": "skip",
+        "reason": "realtime_session_changed",
+    }
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 @pytest.mark.unit

@@ -40,8 +40,6 @@ from urllib.parse import urlparse
 
 _EXTERNAL_VOICE_DEDUP_TTL_SECONDS = 30.0
 _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
-_ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS = 30.0
-_ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES = 64
 _SSML_TAG_PATTERN = re.compile(
     r"</?(?:[a-z][\w-]*:)?(?:"
     r"speak|p|s|break|say-as|phoneme|sub|prosody|emphasis|voice|audio|mark|lang|w|token|express-as|effect"
@@ -106,7 +104,6 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Game")
 
 router = APIRouter(tags=["game"], prefix="/api/game")
-MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 
 # ── Session 池 ─────────────────────────────────────────────────────
 # key = f"{lanlan_name}:{game_type}:{session_id}"
@@ -116,6 +113,7 @@ _game_sessions: Dict[str, dict] = {}
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
+MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 _BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
 _BASKETBALL_SCORING_MODES = {"shooter", "duel"}
 _basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
@@ -3779,7 +3777,14 @@ def _is_gemini_realtime_session(session: Any) -> bool:
     return bool(getattr(session, "_is_gemini", False))
 
 
-async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: dict, delays: tuple[float, ...]) -> None:
+async def _run_postgame_realtime_nudge_task(
+    mgr: Any,
+    archive: dict,
+    options: dict,
+    delays: tuple[float, ...],
+    *,
+    expected_session: Any | None = None,
+) -> None:
     lanlan_name = str(archive.get("lanlan_name") or "")
     instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
     _log_game_debug_material(
@@ -3793,9 +3798,19 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
     for attempt, delay in enumerate(delays, start=1):
         try:
             await asyncio.sleep(delay)
-            if not _active_realtime_session(mgr):
+            active_session = _active_realtime_session(mgr)
+            if not active_session:
                 logger.info(
                     "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=no_active_realtime_session",
+                    archive.get("game_type"),
+                    archive.get("session_id"),
+                    lanlan_name,
+                    attempt,
+                )
+                return
+            if expected_session is not None and active_session is not expected_session:
+                logger.info(
+                    "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=realtime_session_changed",
                     archive.get("game_type"),
                     archive.get("session_id"),
                     lanlan_name,
@@ -3846,6 +3861,15 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
     )
 
 
+def _postgame_context_request_id(archive: dict) -> Optional[str]:
+    game_type = str(archive.get("game_type") or "game").strip() or "game"
+    session_id = str(archive.get("session_id") or "default").strip() or "default"
+    ended_at = str(archive.get("ended_at") or "").strip()
+    if not ended_at:
+        return None
+    return f"{game_type}:{session_id}:{ended_at}"
+
+
 async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) -> dict:
     session = _active_realtime_session(mgr)
     if not session:
@@ -3860,6 +3884,13 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         lanlan_name=str(archive.get("lanlan_name") or ""),
         source="game_end",
     )
+    if _active_realtime_session(mgr) is not session:
+        return {
+            "ok": False,
+            "mode": "realtime",
+            "action": "skip",
+            "reason": "realtime_session_changed",
+        }
 
     if _is_gemini_realtime_session(session):
         instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
@@ -3915,8 +3946,26 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             "reason": "gemini_direct_response",
         }
 
+    append_context = getattr(mgr, "append_context", None)
+    if not callable(append_context):
+        return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_method_unavailable"}
+    postgame_request_id = _postgame_context_request_id(archive)
     try:
-        await session.prime_context(text, skipped=True)
+        append_result = await append_context(
+            source="game.postgame",
+            role="system",
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="current_session",
+            request_id=postgame_request_id,
+            ordering_key=postgame_request_id,
+            metadata={
+                "game_type": archive.get("game_type"),
+                "lanlan_name": archive.get("lanlan_name"),
+                "kind": "postgame",
+            },
+        )
     except Exception as exc:
         logger.warning(
             "🎮 赛后 Realtime 上下文注入失败: game=%s session=%s lanlan=%s err=%s",
@@ -3926,6 +3975,13 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
             exc,
         )
         return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_inject_failed"}
+    if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        return {
+            "ok": False,
+            "mode": "realtime",
+            "action": "skip",
+            "reason": getattr(append_result, "reason", None) or "context_inject_failed",
+        }
 
     logger.info(
         "🎮 赛后 Realtime 上下文已注入: game=%s session=%s lanlan=%s bytes=%d",
@@ -3934,6 +3990,28 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
         archive.get("lanlan_name"),
         len(text),
     )
+
+    if _active_realtime_session(mgr) is not session:
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "context",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "nudge_reason": "realtime_session_changed",
+            "reason": "realtime_session_changed",
+            "bytes": len(text),
+        }
+
+    if getattr(append_result, "deduped", False):
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "context",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "reason": "context_deduped",
+        }
 
     nudge_scheduled = False
     nudge_reason = "disabled"
@@ -3945,6 +4023,7 @@ async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) 
                 dict(archive),
                 dict(options),
                 _POSTGAME_REALTIME_NUDGE_DELAYS,
+                expected_session=session,
             ))
             nudge_scheduled = True
             nudge_reason = "scheduled"
@@ -7019,38 +7098,28 @@ async def game_project_context(game_type: str, request: Request):
     if stale_response:
         return stale_response
 
-    seen_context_ids = state.get("_icebreaker_context_seen_request_ids")
-    if not isinstance(seen_context_ids, OrderedDict):
-        seen_context_ids = OrderedDict()
-        state["_icebreaker_context_seen_request_ids"] = seen_context_ids
-    now = time.time()
-    ttl_cutoff = now - _ICEBREAKER_CONTEXT_DEDUP_TTL_SECONDS
-    while seen_context_ids:
-        oldest_id = next(iter(seen_context_ids))
-        if seen_context_ids[oldest_id] < ttl_cutoff:
-            seen_context_ids.pop(oldest_id, None)
-            continue
-        break
-    if request_id and request_id in seen_context_ids:
-        return {
-            "ok": True,
-            "deduped": True,
-            "method": "project_session_history",
-            "lanlan_name": lanlan_name,
-            "game_type": game_type,
-            "session_id": session_id,
-        }
-
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
-    append_icebreaker_context_async = getattr(mgr, "append_icebreaker_context_async", None)
+    append_context = getattr(mgr, "append_context", None)
     try:
-        if callable(append_icebreaker_context_async):
-            ok = await append_icebreaker_context_async(role, text)
-        else:
+        if not callable(append_context):
             return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+        append_result = await append_context(
+            source="game.icebreaker",
+            role=role,
+            text=text,
+            audience="model",
+            timing="when_ready",
+            lifetime="session_family",
+            request_id=request_id or None,
+            ordering_key=session_id or None,
+            metadata={
+                "game_type": game_type,
+                "session_id": session_id,
+            },
+        )
     except Exception as exc:
         logger.warning(
             "new_user_icebreaker context append failed for %s: %s",
@@ -7066,22 +7135,27 @@ async def game_project_context(game_type: str, request: Request):
             "game_type": game_type,
             "session_id": str(data.get("session_id") or ""),
         }
-    if ok is False:
+    if getattr(append_result, "deduped", False):
         return {
-            "ok": False,
-            "reason": "context_write_failed",
+            "ok": True,
+            "deduped": True,
+            "method": "project_session_history",
             "lanlan_name": lanlan_name,
             "game_type": game_type,
             "session_id": session_id,
         }
-    if request_id:
-        while len(seen_context_ids) >= _ICEBREAKER_CONTEXT_DEDUP_MAX_ENTRIES:
-            seen_context_ids.popitem(last=False)
-        seen_context_ids[request_id] = now
-        seen_context_ids.move_to_end(request_id)
+    ok = getattr(append_result, "appended", False)
+    if not ok:
+        return {
+            "ok": False,
+            "reason": getattr(append_result, "reason", None) or "context_write_failed",
+            "lanlan_name": lanlan_name,
+            "game_type": game_type,
+            "session_id": session_id,
+        }
 
     return {
-        "ok": bool(ok),
+        "ok": True,
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "game_type": game_type,
@@ -7645,6 +7719,18 @@ async def game_realtime_context(game_type: str, request: Request):
         data = await request.json()
     except Exception:
         return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
 
     lanlan_name = str(data.get("lanlan_name") or "").strip()
     if not lanlan_name:
@@ -7699,11 +7785,36 @@ async def game_realtime_context(game_type: str, request: Request):
             "items": len(data.get("pendingItems") or []),
         }
 
+    append_context = getattr(mgr, "append_context", None)
+    if not callable(append_context):
+        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
+    if _active_realtime_session(mgr) is not session:
+        return {"ok": False, "reason": "realtime_session_changed", "lanlan_name": lanlan_name}
     try:
-        await session.prime_context(text, skipped=True)
+        append_result = await append_context(
+            source="game.realtime_context",
+            role="system",
+            text=text,
+            audience="model",
+            timing="now",
+            lifetime="current_session",
+            request_id=str(data.get("request_id") or "") or None,
+            ordering_key=str((data.get("state") or {}).get("sessionId") or data.get("session_id") or "") or None,
+            metadata={
+                "game_type": game_type,
+                "lanlan_name": lanlan_name,
+                "items": len(data.get("pendingItems") or []),
+            },
+        )
     except Exception as e:
         logger.warning("🎮 Realtime 上下文注入失败: game=%s lanlan=%s err=%s", game_type, lanlan_name, e)
         return {"ok": False, "reason": f"inject_failed: {e}", "lanlan_name": lanlan_name}
+    if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        return {
+            "ok": False,
+            "reason": getattr(append_result, "reason", None) or "inject_failed",
+            "lanlan_name": lanlan_name,
+        }
 
     logger.info("🎮 Realtime 上下文已注入: game=%s lanlan=%s bytes=%d", game_type, lanlan_name, len(text))
     return {
