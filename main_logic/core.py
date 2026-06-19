@@ -1062,6 +1062,9 @@ class LLMSessionManager:
         # 的 emotion 信号读它的最近读数）。绝不复用 lanlan 头像 outward-emotion 管线。
         # privacy-independent（输入是对话不是屏幕），不受隐私门控。
         self._master_emotion = MasterEmotionTracker(lanlan_name)
+        # 凝神 inline 评分用的 emotion 读数快照：每个 user turn 在 _note_user_turn 里
+        # 于「本轮 analyze 启动前」刷新，保证 emotion 信号确定性滞后一拍。
+        self._focus_emotion_reading = None
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
         # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
@@ -2359,8 +2362,11 @@ class LLMSessionManager:
             # emotion 信号读 master 情绪画像的最近读数（异步算、滞后一拍，与
             # cadence 用历史一脉相承）。画像关 / 还没算过时 latest 为 None，
             # FocusScorer 让 emotion 信号自动退出加权、退回 keyword+cadence。
-            _me = getattr(self, '_master_emotion', None)
-            emotion_reading = getattr(_me, 'latest', None)
+            # 读 _note_user_turn 在「本轮 analyze 启动前」存的快照，保证 emotion
+            # 信号确定性地滞后一拍——当前 turn 不消费它自己即将算出的读数（否则快
+            # tier / 中途 await 让 fire-and-forget analyze 抢先更新 latest，同一条
+            # 消息会时而读旧读数时而读自己的，违反 scorer 的 lag-one-turn 契约）。
+            emotion_reading = getattr(self, '_focus_emotion_reading', None)
             scored = self._focus_scorer.score(
                 user_text=user_text, emotion_reading=emotion_reading,
             )
@@ -2671,10 +2677,16 @@ class LLMSessionManager:
     def _note_user_turn(self, *, text: str | None = None, now: float | None = None) -> None:
         # Master 情绪画像：异步分析用户这轮说的话（节流 + 开关都在 tracker 内部）。
         # 语音转写 / 文本输入两条路径的对偶 chokepoint。fire-and-forget、best-effort，
-        # 绝不阻塞 turn 记录、不让分析异常冒泡。凝神 inline 评分读它的最近读数。
-        if text and text.strip() and getattr(self, '_master_emotion', None) is not None:
+        # 绝不阻塞 turn 记录、不让分析异常冒泡。
+        _me = getattr(self, '_master_emotion', None)
+        if _me is not None:
+            # 先 snapshot「本轮 analyze 启动前」的读数，供 _focus_inline_decision 用，
+            # 保证 emotion 信号滞后一拍（当前 turn 不消费下面这次 analyze 的结果）。
+            # 读 .latest 已含 TTL / 开关 gate。
+            self._focus_emotion_reading = _me.latest
+        if text and text.strip() and _me is not None:
             try:
-                self._fire_task(self._master_emotion.analyze(text, now=now))
+                self._fire_task(_me.analyze(text, now=now))
             except Exception as _me_err:
                 logger.debug("[%s] master emotion fire failed: %s", self.lanlan_name, _me_err)
 
