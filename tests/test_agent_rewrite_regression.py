@@ -1508,6 +1508,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
         "window.nekoTutorialOverlay.clear({"
     )
     assert "tutorialRunId: tutorialRunId," in clear_pc_overlay_block
+    assert "Promise.resolve(clearResult).then" in clear_pc_overlay_block
+    assert "window.nekoTutorialOverlay.clear({ reason: rawReason });" in clear_pc_overlay_block
     assert "window.nekoTutorialOverlay.relayToChat(lifecycleEndedMessage);" in clear_pc_overlay_block
     assert "window.nekoTutorialOverlay.relayToPet(lifecycleEndedMessage);" in clear_pc_overlay_block
     assert "window.appInterpage.nekoBroadcastChannel.postMessage(lifecycleEndedMessage);" in clear_pc_overlay_block

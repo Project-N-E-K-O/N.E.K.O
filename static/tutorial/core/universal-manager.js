@@ -1376,9 +1376,18 @@ class UniversalTutorialManager {
                 window.nekoTutorialOverlay
                 && typeof window.nekoTutorialOverlay.clear === 'function'
             ) {
-                window.nekoTutorialOverlay.clear({
+                const clearResult = window.nekoTutorialOverlay.clear({
                     reason: rawReason,
                     tutorialRunId: tutorialRunId
+                });
+                Promise.resolve(clearResult).then(result => {
+                    if (result && (result.stale === true || result.ok === false)) {
+                        window.nekoTutorialOverlay.clear({ reason: rawReason });
+                    }
+                }).catch(() => {
+                    try {
+                        window.nekoTutorialOverlay.clear({ reason: rawReason });
+                    } catch (_) {}
                 });
             }
         } catch (error) {

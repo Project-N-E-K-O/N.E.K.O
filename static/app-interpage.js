@@ -4467,9 +4467,18 @@
             && typeof window.nekoTutorialOverlay.clear === 'function'
         ) {
             try {
-                window.nekoTutorialOverlay.clear({
+                var clearResult = window.nekoTutorialOverlay.clear({
                     reason: rawReason,
                     tutorialRunId: endedRunId
+                });
+                Promise.resolve(clearResult).then(function (result) {
+                    if (result && (result.stale === true || result.ok === false)) {
+                        window.nekoTutorialOverlay.clear({ reason: rawReason });
+                    }
+                }).catch(function () {
+                    try {
+                        window.nekoTutorialOverlay.clear({ reason: rawReason });
+                    } catch (_) {}
                 });
             } catch (_) {}
         }
