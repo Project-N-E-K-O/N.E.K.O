@@ -4355,6 +4355,8 @@ def test_subtitle_settings_window_includes_color_and_danmaku_switch():
     assert '<label class="subtitle-settings-label" data-subtitle-label="danmakuMode" for="subtitle-danmaku-mode-btn"><span class="subtitle-settings-label-text">弹幕模式</span></label>' in template
     assert "data.type === 'danmakuMode'" in script
     assert 'patch.subtitleDanmakuMode = !!data.value;' in script
+    assert script.count("Object.prototype.hasOwnProperty.call(data, 'subtitleFontSize')") == 1
+    assert script.count("Object.prototype.hasOwnProperty.call(data, 'subtitleColorScheme')") == 1
     assert 'subtitle-settings-switch-placeholder' not in template
     assert 'data-subtitle-danmaku-placeholder="true"' not in template
     assert 'subtitle-settings-track' in template

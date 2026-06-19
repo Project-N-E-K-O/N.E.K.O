@@ -70,12 +70,6 @@
         if (Object.prototype.hasOwnProperty.call(data, 'subtitleOpacity')) {
             patch.subtitleOpacity = data.subtitleOpacity;
         }
-        if (Object.prototype.hasOwnProperty.call(data, 'subtitleFontSize')) {
-            patch.subtitleFontSize = data.subtitleFontSize;
-        }
-        if (Object.prototype.hasOwnProperty.call(data, 'subtitleColorScheme')) {
-            patch.subtitleColorScheme = data.subtitleColorScheme;
-        }
         if (!Object.keys(patch).length) return;
         SubtitleShared.updateSettings(patch, {
             persist: false,
