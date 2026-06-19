@@ -177,6 +177,75 @@ def test_neko_plugin_base_init_wires_ctx_config_plugins() -> None:
     assert base.plugins is not None
 
 
+def test_neko_plugin_base_refreshes_store_enabled_after_effective_config_arrives() -> None:
+    ctx = _Ctx()
+    ctx._effective_config = {}
+    base = _DemoPlugin(ctx=ctx)
+
+    assert base.store.enabled is False
+
+    ctx._effective_config = {
+        "plugin": {
+            "store": {"enabled": True},
+            "database": {"enabled": True, "name": "runtime.db"},
+        },
+        "plugin_state": {"backend": "file"},
+    }
+    base.refresh_runtime_config()
+
+    assert base.store.enabled is True
+    assert base.db.enabled is True
+    assert base.db.db_name == "runtime.db"
+    assert base.state.backend == "file"
+
+
+def test_neko_plugin_base_refresh_validates_database_name_before_enabling() -> None:
+    ctx = _Ctx()
+    ctx._effective_config = {}
+    base = _DemoPlugin(ctx=ctx)
+
+    assert base.store.enabled is False
+    assert base.db.enabled is False
+    assert base.db.db_name == "plugin.db"
+
+    ctx._effective_config = {
+        "plugin": {
+            "store": {"enabled": True},
+            "database": {"enabled": True, "name": "nested/bad.db"},
+        },
+        "plugin_state": {"backend": "file"},
+    }
+
+    with pytest.raises(ValueError, match="plain filename"):
+        base.refresh_runtime_config()
+
+    assert base.store.enabled is False
+    assert base.db.enabled is False
+    assert base.db.db_name == "plugin.db"
+    assert base.state.backend == "off"
+
+
+def test_neko_plugin_base_refresh_normalizes_state_backend() -> None:
+    ctx = _Ctx()
+    base = _DemoPlugin(ctx=ctx)
+
+    base.refresh_runtime_config(
+        {
+            "plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "runtime.db"}},
+            "plugin_state": {"backend": "Memory"},
+        }
+    )
+    assert base.state.backend == "memory"
+
+    base.refresh_runtime_config(
+        {
+            "plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "runtime.db"}},
+            "plugin_state": {"backend": "OFF"},
+        }
+    )
+    assert base.state.backend == "off"
+
+
 def test_neko_plugin_base_i18n_uses_plugin_toml_config(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "demo"
     locale_dir = plugin_dir / "locales"

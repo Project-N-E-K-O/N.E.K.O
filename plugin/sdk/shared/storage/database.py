@@ -280,13 +280,7 @@ class PluginDatabase(StorageResultTemplate):
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)
         self.enabled = enabled
-        raw_db_name = db_name or "plugin.db"
-        db_path = Path(raw_db_name)
-        if db_path.is_absolute() or any(part == ".." for part in db_path.parts):
-            raise ValueError("db_name must stay within plugin_dir")
-        safe_name = db_path.name
-        if safe_name != raw_db_name or safe_name.strip() in {"", ".", ".."}:
-            raise ValueError("db_name must be a plain filename within plugin_dir")
+        safe_name = self._normalize_db_name(db_name)
         self.db_name = safe_name
         self._db_path = self.plugin_dir / safe_name
         self._local = threading.local()
@@ -295,6 +289,29 @@ class PluginDatabase(StorageResultTemplate):
         self._conn_lock = threading.Lock()
         self._active_sessions: set[_SqliteAsyncSession] = set()
         self._session_lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_db_name(db_name: str | None) -> str:
+        raw_db_name = db_name or "plugin.db"
+        if "/" in raw_db_name or "\\" in raw_db_name:
+            raise ValueError("db_name must be a plain filename within plugin_dir")
+        db_path = Path(raw_db_name)
+        if db_path.is_absolute() or any(part == ".." for part in db_path.parts):
+            raise ValueError("db_name must stay within plugin_dir")
+        safe_name = db_path.name
+        if safe_name != raw_db_name or safe_name.strip() in {"", ".", ".."}:
+            raise ValueError("db_name must be a plain filename within plugin_dir")
+        return safe_name
+
+    def configure_database_name(self, db_name: str | None) -> None:
+        safe_name = self._normalize_db_name(db_name)
+        if safe_name == self.db_name:
+            return
+        active_conn_ids = {id(session._conn) for session in self._snapshot_active_sessions()}
+        self._close_all_connections(exclude_conn_ids=active_conn_ids)
+        self._reset_kv_store()
+        self.db_name = safe_name
+        self._db_path = self.plugin_dir / safe_name
 
     def _reset_kv_store(self) -> None:
         kv_store = self._kv_store
@@ -343,11 +360,12 @@ class PluginDatabase(StorageResultTemplate):
         if getattr(self._local, "conn", None) is conn:
             self._local.conn = None
 
-    def _close_all_connections(self) -> None:
+    def _close_all_connections(self, *, exclude_conn_ids: set[int] | None = None) -> None:
         first_error: Exception | None = None
         closed_ids: set[int] = set()
+        excluded = exclude_conn_ids or set()
         local_conn = getattr(self._local, "conn", None)
-        if local_conn is not None:
+        if local_conn is not None and id(local_conn) not in excluded:
             try:
                 self._close_one_conn(local_conn)
             except Exception as error:
@@ -355,7 +373,7 @@ class PluginDatabase(StorageResultTemplate):
                     first_error = error
             closed_ids.add(id(local_conn))
         for conn in self._snapshot_conns():
-            if id(conn) in closed_ids:
+            if id(conn) in closed_ids or id(conn) in excluded:
                 continue
             try:
                 self._close_one_conn(conn)
