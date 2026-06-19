@@ -2333,6 +2333,16 @@ class OmniOfflineClient:
                             _think_residual = think_stripper.flush()
                             if _think_residual:
                                 prefix_buffer += _think_residual
+                                # Force the unified flush below to run on this
+                                # residual. When prefix checking is disabled
+                                # (_prefix_buffer_size == 0) prefix_checked starts
+                                # True, so `and not prefix_checked` would otherwise
+                                # drop the held answer silently. Safe to clear: a
+                                # non-empty residual means no </think> ever arrived,
+                                # which only happens when the stripper held the whole
+                                # stream → prefix_buffer was never filled by the live
+                                # path, so prefix_checked carried no completed state.
+                                prefix_checked = False
                         # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True
