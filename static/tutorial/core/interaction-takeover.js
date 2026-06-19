@@ -296,6 +296,15 @@
             return typeof configName === 'string' ? configName : '';
         }
 
+        getExternalizedChatTutorialRunId() {
+            try {
+                const storage = this.window && this.window.localStorage;
+                return storage ? String(storage.getItem('yuiGuidePcOverlayRunId') || '') : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         postExternalChatCommand(action, payload, options) {
             if (!this.isHomeChatExternalized()) {
                 return false;
@@ -316,6 +325,13 @@
             if (!message.lanlan_name) {
                 const lanlanName = this.resolveLanlanName();
                 message.lanlan_name = lanlanName;
+            }
+            const tutorialRunId = this.getExternalizedChatTutorialRunId();
+            if (tutorialRunId && !message.tutorialRunId) {
+                message.tutorialRunId = tutorialRunId;
+            }
+            if (tutorialRunId && !message.pcOverlayRunId) {
+                message.pcOverlayRunId = tutorialRunId;
             }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {

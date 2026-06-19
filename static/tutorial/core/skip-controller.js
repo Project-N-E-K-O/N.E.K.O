@@ -21,10 +21,13 @@
                 return;
             }
 
+            const selector = `#${typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function'
+                ? CSS.escape(this.buttonId)
+                : String(this.buttonId).replace(/[^a-zA-Z0-9_-]/g, '\\$&')}`;
             const style = this.document.createElement('style');
             style.id = this.styleId;
             style.textContent = `
-#neko-tutorial-skip-btn {
+${selector} {
   position: fixed;
   top: max(14px, env(safe-area-inset-top));
   right: max(18px, env(safe-area-inset-right));
@@ -58,7 +61,7 @@
   appearance: none;
 }
 
-#neko-tutorial-skip-btn:hover {
+${selector}:hover {
   color: rgba(20, 33, 49, 0.96);
   border-color: rgba(47, 131, 255, 0.5);
   background: rgba(255, 255, 255, 0.9) !important;
@@ -66,26 +69,26 @@
   transform: translateY(-1px);
 }
 
-#neko-tutorial-skip-btn:active {
+${selector}:active {
   opacity: 0.8;
   transform: translateY(0);
 }
 
-#neko-tutorial-skip-btn:focus-visible {
+${selector}:focus-visible {
   outline: 2px solid rgba(68, 183, 254, 0.6) !important;
   outline-offset: 2px;
 }
 
-html[data-theme='dark'] #neko-tutorial-skip-btn,
-html.dark #neko-tutorial-skip-btn {
+html[data-theme='dark'] ${selector},
+html.dark ${selector} {
   background: rgba(18, 25, 36, 0.78) !important;
   color: rgba(236, 243, 252, 0.86);
   border-color: rgba(104, 183, 255, 0.34);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.26), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
 }
 
-html[data-theme='dark'] #neko-tutorial-skip-btn:hover,
-html.dark #neko-tutorial-skip-btn:hover {
+html[data-theme='dark'] ${selector}:hover,
+html.dark ${selector}:hover {
   color: #ffffff;
   border-color: rgba(104, 183, 255, 0.58);
   background: rgba(28, 38, 53, 0.94) !important;

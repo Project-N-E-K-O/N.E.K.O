@@ -1529,6 +1529,15 @@ def test_tutorial_lifecycle_modules_export_reusable_controllers():
     ):
         assert expected in skip_source
 
+    ensure_styles_block = skip_source.split("ensureStyles() {", 1)[1].split(
+        "        show(options) {",
+        1,
+    )[0]
+    assert "CSS.escape(this.buttonId)" in ensure_styles_block
+    assert "${selector}:hover" in ensure_styles_block
+    assert "html[data-theme='dark'] ${selector}" in ensure_styles_block
+    assert "#neko-tutorial-skip-btn:hover" not in ensure_styles_block
+
     for expected in (
         "class TutorialAvatarReloadController",
         "window.TutorialAvatarReloadController = {",

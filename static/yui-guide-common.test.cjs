@@ -496,6 +496,29 @@ test('target geometry registry and chat window adapter expose phase two boundari
         ['rotate', 1, 2, 'phase2-test'],
         ['wheelIndex', 4, 'phase2-test']
     ]);
+
+    const hookErrorCalls = [];
+    const hookErrorAdapter = common.createChatWindowAdapter({
+        mode: 'externalized',
+        interactionTakeover: {
+            setExternalizedChatSpotlight(kind) {
+                hookErrorCalls.push(['spotlight', kind]);
+            }
+        },
+        beforeExternalizedSpotlight() {
+            throw new Error('expected-hook-failure');
+        }
+    });
+    const originalWarn = console.warn;
+    const hookWarnings = [];
+    console.warn = (...args) => hookWarnings.push(args);
+    try {
+        assert.equal(hookErrorAdapter.setSpotlight('chat-capsule-input'), true);
+    } finally {
+        console.warn = originalWarn;
+    }
+    assert.deepEqual(hookErrorCalls, [['spotlight', 'capsule-input']]);
+    assert.equal(hookWarnings.length, 1);
 });
 
 test('app interpage recognizes explicit Yui guide dedup bypass messages', () => {
@@ -971,6 +994,11 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.match(source, /postExternalChatCommand\(action,\s*payload,\s*options\) \{[\s\S]*this\.externalChatCommandBus\.post\(message,\s*normalizedOptions\)/);
     assert.match(source, /resolveLanlanName\(\) \{[\s\S]*this\.window\.appState[\s\S]*this\.window\.lanlan_config/);
     assert.match(source, /if \(!message\.lanlan_name\) \{[\s\S]*const lanlanName = this\.resolveLanlanName\(\);[\s\S]*message\.lanlan_name = lanlanName;/);
+    assert.match(source, /getExternalizedChatTutorialRunId\(\) \{/);
+    assert.match(source, /getItem\('yuiGuidePcOverlayRunId'\)/);
+    assert.match(source, /const tutorialRunId = this\.getExternalizedChatTutorialRunId\(\);/);
+    assert.match(source, /if \(tutorialRunId && !message\.tutorialRunId\) \{[\s\S]*message\.tutorialRunId = tutorialRunId;/);
+    assert.match(source, /if \(tutorialRunId && !message\.pcOverlayRunId\) \{[\s\S]*message\.pcOverlayRunId = tutorialRunId;/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_buttons_disabled'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_cursor'/);
     assert.match(commandsBlock, /this\.postExternalChatCommand\('yui_guide_drag_chat_cursor'/);
@@ -1041,7 +1069,14 @@ test('externalized chat spotlight ownership stops home overlay spotlight trackin
     assert.match(settingsTourSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(introExternalizedChatSpotlightKind\)/);
     assert.match(operationRegistrySource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(/);
     assert.match(chatAdapterSource, /const beforeExternalizedSpotlight = typeof normalizedOptions\.beforeExternalizedSpotlight === 'function'/);
-    assert.match(adapterSetSpotlightBlock, /beforeExternalizedSpotlight\(getExternalKind\(targetKey\)\);/);
+    assert.match(chatAdapterSource, /function getExternalizedRunMeta\(\) \{/);
+    assert.match(chatAdapterSource, /getExternalizedChatTutorialRunId\(\)/);
+    assert.match(chatAdapterSource, /pcOverlayRunId: tutorialRunId/);
+    assert.match(chatAdapterSource, /function notifyBeforeExternalizedSpotlight\(kind\) \{/);
+    assert.match(chatAdapterSource, /try \{[\s\S]*beforeExternalizedSpotlight\(kind, getExternalizedRunMeta\(\)\);[\s\S]*catch \(error\) \{/);
+    assert.match(adapterSetSpotlightBlock, /const externalKind = getExternalKind\(targetKey\);/);
+    assert.match(adapterSetSpotlightBlock, /notifyBeforeExternalizedSpotlight\(externalKind\);/);
+    assert.match(adapterSetSpotlightBlock, /setExternalizedChatSpotlight\(externalKind\)/);
     assert.match(directorSource, /beforeExternalizedSpotlight: \(\) => this\.clearHomeSpotlightsForExternalizedChat\(\)/);
 });
 
@@ -2249,9 +2284,18 @@ test('external chat reuses tutorial PC overlay run id for capsule spotlight and 
         1
     )[0];
 
-    assert.match(normalizeBridgeBlock, /getExistingYuiGuidePcOverlayRunId\(\)/);
+    assert.match(normalizeBridgeBlock, /resolveCanonicalYuiGuideBridgeRunId\(message\)/);
+    assert.match(normalizeBridgeBlock, /message\.tutorialRunId = canonicalRunId;/);
+    assert.match(normalizeBridgeBlock, /message\.pcOverlayRunId = canonicalRunId;/);
     assert.doesNotMatch(normalizeBridgeBlock, /getYuiGuidePcOverlayRunId\(\)/);
     assert.match(appInterpageSource, /function rememberYuiGuidePcOverlayRunId\(runId\) \{/);
+    assert.match(appInterpageSource, /function resolveCanonicalYuiGuideBridgeRunId\(message\) \{/);
+    assert.match(appInterpageSource, /var tutorialRunId = message && typeof message\.tutorialRunId === 'string'/);
+    assert.match(appInterpageSource, /return rememberYuiGuidePcOverlayRunId\(tutorialRunId\);/);
+    assert.match(appInterpageSource, /var existingRunId = getExistingYuiGuidePcOverlayRunId\(\);/);
+    assert.match(appInterpageSource, /return rememberYuiGuidePcOverlayRunId\(existingRunId\);/);
+    assert.match(appInterpageSource, /var pcOverlayRunId = message && typeof message\.pcOverlayRunId === 'string'/);
+    assert.match(appInterpageSource, /return rememberYuiGuidePcOverlayRunId\(pcOverlayRunId\);/);
     assert.match(appInterpageSource, /function resolveYuiGuidePcOverlayRunIdForSend\(requestedRunId, allowCreateRun\) \{/);
     assert.match(appInterpageSource, /storedRunId && storedRunId !== normalizedRequestedRunId/);
     assert.match(appInterpageSource, /function getYuiGuidePcOverlayRunIdFromMessage\(message\) \{/);
@@ -2287,9 +2331,14 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
     assert.match(externalBridgeBlock, /window\.localStorage\.removeItem\('yuiGuidePcOverlayRunId'\)/);
     assert.match(appInterpageSource, /function getExistingYuiGuidePcOverlayRunId\(\) \{/);
     assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried\)/);
-    assert.match(externalBridgeBlock, /result\.stale !== true/);
+    assert.match(externalBridgeBlock, /var isStaleResponse = !!\(result && result\.stale === true\);/);
+    assert.match(externalBridgeBlock, /var attemptedCurrentRun = !!\(attemptedRunId && attemptedRunId === yuiGuidePcOverlayRunIdOverride\);/);
+    assert.match(externalBridgeBlock, /var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId\(attemptedRunId\);/);
+    assert.match(externalBridgeBlock, /var storedCanonicalRunId = readStoredYuiGuidePcOverlayRunId\(\);/);
+    assert.match(externalBridgeBlock, /var attemptedCanonicalRun = !!\(/);
+    assert.match(externalBridgeBlock, /if \(attemptedCanonicalRun\) \{[\s\S]*syncYuiGuidePcOverlayRunIdFromStorage\(\);[\s\S]*return;/);
     assert.match(appInterpageSource, /function isYuiGuideChatOwnedPcOverlayRunId\(runId\) \{/);
-    assert.match(externalBridgeBlock, /!isYuiGuideChatOwnedPcOverlayRunId\(attemptedRunId\)/);
+    assert.match(externalBridgeBlock, /if \(!attemptedCurrentRun \|\| !attemptedChatOwnedRun\) \{/);
     assert.match(externalBridgeBlock, /syncYuiGuidePcOverlayRunIdFromStorage\(\)[\s\S]*sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\)/);
     assert.match(externalBridgeBlock, /sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\)/);
     assert.match(externalBridgeBlock, /function resolveYuiGuidePcOverlayRunIdForSend\(requestedRunId, allowCreateRun\)/);

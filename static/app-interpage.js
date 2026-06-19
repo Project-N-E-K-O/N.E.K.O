@@ -2694,9 +2694,10 @@
             message.timestamp = Date.now();
         }
         try {
-            var tutorialRunId = getExistingYuiGuidePcOverlayRunId();
-            if (tutorialRunId && !message.tutorialRunId) {
-                message.tutorialRunId = tutorialRunId;
+            var canonicalRunId = resolveCanonicalYuiGuideBridgeRunId(message);
+            if (canonicalRunId) {
+                message.tutorialRunId = canonicalRunId;
+                message.pcOverlayRunId = canonicalRunId;
             }
         } catch (_) {}
         return message;
@@ -3752,6 +3753,26 @@
         return true;
     }
 
+    function resolveCanonicalYuiGuideBridgeRunId(message) {
+        var tutorialRunId = message && typeof message.tutorialRunId === 'string' && message.tutorialRunId
+            ? message.tutorialRunId
+            : '';
+        if (tutorialRunId) {
+            return rememberYuiGuidePcOverlayRunId(tutorialRunId);
+        }
+        var existingRunId = getExistingYuiGuidePcOverlayRunId();
+        if (existingRunId) {
+            return rememberYuiGuidePcOverlayRunId(existingRunId);
+        }
+        var pcOverlayRunId = message && typeof message.pcOverlayRunId === 'string' && message.pcOverlayRunId
+            ? message.pcOverlayRunId
+            : '';
+        if (pcOverlayRunId) {
+            return rememberYuiGuidePcOverlayRunId(pcOverlayRunId);
+        }
+        return '';
+    }
+
     function rememberYuiGuidePcOverlayRunId(runId) {
         var normalizedRunId = typeof runId === 'string' && runId ? runId : '';
         if (!normalizedRunId) {
@@ -3824,14 +3845,26 @@
     }
 
     function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried) {
-        if (
-            !result
-            || result.stale !== true
-            || retried === true
-            || !attemptedRunId
-            || attemptedRunId !== yuiGuidePcOverlayRunIdOverride
-            || !isYuiGuideChatOwnedPcOverlayRunId(attemptedRunId)
-        ) {
+        var isStaleResponse = !!(result && result.stale === true);
+        var alreadyRetried = retried === true;
+        var attemptedCurrentRun = !!(attemptedRunId && attemptedRunId === yuiGuidePcOverlayRunIdOverride);
+        var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId(attemptedRunId);
+        var storedCanonicalRunId = readStoredYuiGuidePcOverlayRunId();
+        var attemptedCanonicalRun = !!(
+            storedCanonicalRunId
+            && attemptedRunId
+            && attemptedRunId === storedCanonicalRunId
+            && !attemptedChatOwnedRun
+        );
+
+        if (!isStaleResponse || alreadyRetried || !attemptedRunId) {
+            return;
+        }
+        if (attemptedCanonicalRun) {
+            syncYuiGuidePcOverlayRunIdFromStorage();
+            return;
+        }
+        if (!attemptedCurrentRun || !attemptedChatOwnedRun) {
             return;
         }
         if (syncYuiGuidePcOverlayRunIdFromStorage()) {

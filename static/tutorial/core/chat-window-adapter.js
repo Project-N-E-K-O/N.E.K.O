@@ -117,6 +117,33 @@
             return registry.getExternalKind(targetKey) || targetKey || '';
         }
 
+        function getExternalizedRunMeta() {
+            if (
+                interactionTakeover
+                && typeof interactionTakeover.getExternalizedChatTutorialRunId === 'function'
+            ) {
+                const tutorialRunId = interactionTakeover.getExternalizedChatTutorialRunId();
+                if (tutorialRunId) {
+                    return {
+                        tutorialRunId,
+                        pcOverlayRunId: tutorialRunId
+                    };
+                }
+            }
+            return {};
+        }
+
+        function notifyBeforeExternalizedSpotlight(kind) {
+            if (!beforeExternalizedSpotlight) {
+                return;
+            }
+            try {
+                beforeExternalizedSpotlight(kind, getExternalizedRunMeta());
+            } catch (error) {
+                console.warn('[YuiGuideChatWindowAdapter] beforeExternalizedSpotlight failed:', error);
+            }
+        }
+
         return {
             mode,
             isExternalized() {
@@ -137,10 +164,9 @@
                     interactionTakeover
                     && typeof interactionTakeover.setExternalizedChatSpotlight === 'function'
                 ) {
-                    if (beforeExternalizedSpotlight) {
-                        beforeExternalizedSpotlight(getExternalKind(targetKey));
-                    }
-                    interactionTakeover.setExternalizedChatSpotlight(getExternalKind(targetKey));
+                    const externalKind = getExternalKind(targetKey);
+                    notifyBeforeExternalizedSpotlight(externalKind);
+                    interactionTakeover.setExternalizedChatSpotlight(externalKind);
                     return true;
                 }
                 return false;
