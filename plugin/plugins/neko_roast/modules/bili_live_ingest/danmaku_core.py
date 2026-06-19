@@ -23,11 +23,6 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode
 
-# ── 取消检查辅助 ──────────────────────────────────────────────────
-async def _check_cancelled(stop_event: asyncio.Event):
-    """await 此函数可在协程中任意 await 点检查是否应停止"""
-    await asyncio.sleep(0)  # 让出控制权，确保事件状态可被读取
-
 # ── WBI 签名常量 ──────────────────────────────────────────────────
 # 重排映射表（固定不变）
 _MIXIN_KEY_ENC_TAB = [
@@ -79,7 +74,6 @@ class ConnectionState:
 WS_MAIN_URL = "wss://broadcastlv.chat.bilibili.com/sub"
 # 备用地址（按可靠性排序）
 WS_FALLBACK_URLS = [
-    "wss://broadcastlv.chat.bilibili.com/sub",
     "wss://tx-gz-live-comet-01.chat.bilibili.com/sub",
     "wss://live-comet-01.chat.bilibili.com/sub",
     "wss://live-comet-02.chat.bilibili.com/sub",
@@ -111,10 +105,7 @@ def _unpack_header(data: bytes):
     return struct.unpack(">IHHII", data[:HEADER_LEN])
 
 
-# 模块级日志回调（由 DanmakuListener 实例设置，供 _decompress 使用）
-_module_logger = None
-
-def _decompress(data: bytes, proto_ver: int) -> bytes:
+def _decompress(data: bytes, proto_ver: int, log: Callable[[str, str], None] | None = None) -> bytes:
     """解压数据"""
     if proto_ver == PROTOCOL_VERSION_ZLIB:
         return zlib.decompress(data)
@@ -123,8 +114,8 @@ def _decompress(data: bytes, proto_ver: int) -> bytes:
             import brotli
             return brotli.decompress(data)
         except ImportError:
-            if _module_logger:
-                _module_logger("brotli 库未安装，无法解压 brotli 数据包，跳过", "warning")
+            if log:
+                log("brotli 库未安装，无法解压 brotli 数据包，跳过", "warning")
             return b""  # 返回空字节，上层 _split_packets 会返回空列表
     return data
 
@@ -187,11 +178,6 @@ class DanmakuListener:
         self._current_server: str = ""  # 当前连接的服务器地址
         self._viewer_count: int = 0  # 当前观看人数（人气值）
 
-        # 设置模块级日志回调（供 _decompress 使用）
-        global _module_logger
-        if logger:
-            _module_logger = lambda msg, level="info": getattr(logger, level, logger.info)(msg)
-
         # WBI key 缓存（每日更替，缓存12小时足够）
         self._wbi_mixin_key: str = ""
         self._wbi_key_ts: float = 0.0   # 上次获取时间（unix 秒）
@@ -206,7 +192,7 @@ class DanmakuListener:
 
     async def _emit(self, event: str, *args, **kwargs):
         cb = self.callbacks.get(event)
-        self._log(f"_emit: event={event}, cb={'有' if cb else '无'}, callbacks_keys={list(self.callbacks.keys())}", "info")
+        self._log(f"_emit: event={event}, cb={'有' if cb else '无'}, callbacks_keys={list(self.callbacks.keys())}", "debug")
         if cb:
             try:
                 if asyncio.iscoroutinefunction(cb):
@@ -808,7 +794,7 @@ class DanmakuListener:
             if proto_ver in (PROTOCOL_VERSION_ZLIB, PROTOCOL_VERSION_BROTLI):
                 # 解压后递归处理
                 try:
-                    decompressed = _decompress(body, proto_ver)
+                    decompressed = _decompress(body, proto_ver, self._log)
                     for pkt in _split_packets(decompressed):
                         await self._process_packet(pkt)
                 except Exception as e:
@@ -850,6 +836,9 @@ class DanmakuListener:
                 await self._emit("on_error", e)
 
             if self._stop_event.is_set():
+                break
+            if self._live_ended:
+                self._connection_state = ConnectionState.DISCONNECTED
                 break
 
             # 自动重连

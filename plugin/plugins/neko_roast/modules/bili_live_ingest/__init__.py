@@ -139,8 +139,7 @@ class BiliLiveIngestModule(BaseModule):
         同步、非阻塞：``publish`` 只做同步派发（订阅者内部各自 fire-and-forget），不拖慢弹幕
         接收循环。``danmaku_core`` 对 DANMU_MSG/SEND_GIFT/SC/INTERACT_WORD/增强指令都发
         ``on_event``，全部发布到总线；``live_events`` 订阅 danmaku/gift/super_chat/guard
-        ???????????????????????
-        事件族 handler 订阅（见 docs/development.md「直播事件中枢」）。
+        参与窗口择优；其他事件族 handler 可各自订阅（见 docs/development.md「直播事件中枢」）。
         """
         if not self.ctx:
             return

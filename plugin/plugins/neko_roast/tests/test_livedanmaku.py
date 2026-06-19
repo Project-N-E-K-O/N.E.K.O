@@ -8,8 +8,17 @@ except 吞掉，导致 on_event("DANMU_MSG") 永不触发（计数恒为 0）。
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 
+from plugin.plugins.neko_roast.modules.bili_live_ingest.danmaku_core import (
+    PROTOCOL_VERSION_BROTLI,
+    DanmakuListener,
+    WS_FALLBACK_URLS,
+    WS_MAIN_URL,
+    _decompress,
+)
 from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import (
     LiveDanmaku,
     MessageType,
@@ -198,3 +207,33 @@ def test_from_danmaku_score_reflects_guard_and_admin():
     assert captain.get_score() > plain.get_score()
     assert captain.guard_level == 3
     assert captain.admin is True
+
+
+def test_fallback_urls_only_repeat_main_as_final_fallback():
+    """Main WebSocket URL should only appear once in the fallback list."""
+    assert WS_FALLBACK_URLS.count(WS_MAIN_URL) == 1
+    assert WS_FALLBACK_URLS[-1] == WS_MAIN_URL
+
+
+def test_preparing_marks_live_ended():
+    """PREPARING should stop outer reconnect attempts after the room goes offline."""
+    seen: list[str] = []
+    listener = DanmakuListener(
+        room_id=1,
+        callbacks={"on_preparing": lambda: seen.append("preparing")},
+    )
+
+    asyncio.run(listener._dispatch_message("PREPARING", {"cmd": "PREPARING"}))
+
+    assert listener._live_ended is True
+    assert seen == ["preparing"]
+
+
+def test_brotli_missing_uses_supplied_log_callback(monkeypatch):
+    """Decompression logging must be scoped to the listener/callback, not module state."""
+    monkeypatch.setitem(sys.modules, "brotli", None)
+    logs: list[tuple[str, str]] = []
+
+    assert _decompress(b"", PROTOCOL_VERSION_BROTLI, lambda msg, level: logs.append((msg, level))) == b""
+
+    assert logs == [("brotli 库未安装，无法解压 brotli 数据包，跳过", "warning")]
