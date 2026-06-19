@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "Не удалось встроить окно чата",
         "reactWindowLoadFailed": "Не удалось загрузить ресурсы окна чата",
         "reactWindowAriaLabel": "Окно чата Neko",
+        "focusIndicator": "Сосредоточена",
         "reactWindowInputHint": "Enter для отправки, Shift + Enter для новой строки",
         "messageListAriaLabel": "Список сообщений чата",
         "composerToolsAriaLabel": "Инструменты ввода",

@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "チャットウィンドウのマウントに失敗しました",
         "reactWindowLoadFailed": "チャットウィンドウのリソース読み込みに失敗しました",
         "reactWindowAriaLabel": "Neko チャットウィンドウ",
+        "focusIndicator": "集中モード",
         "reactWindowInputHint": "Enter で送信、Shift + Enter で改行",
         "messageListAriaLabel": "チャットメッセージ一覧",
         "composerToolsAriaLabel": "入力ツールバー",

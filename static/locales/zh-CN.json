@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "聊天框挂载失败",
         "reactWindowLoadFailed": "聊天框资源加载失败",
         "reactWindowAriaLabel": "Neko 聊天窗口",
+        "focusIndicator": "凝神中",
         "reactWindowInputHint": "Enter 发送，Shift + Enter 换行",
         "messageListAriaLabel": "聊天消息列表",
         "composerToolsAriaLabel": "输入工具栏",

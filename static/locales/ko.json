@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "채팅 창 마운트에 실패했습니다",
         "reactWindowLoadFailed": "채팅 창 리소스를 불러오지 못했습니다",
         "reactWindowAriaLabel": "Neko 채팅 창",
+        "focusIndicator": "집중 모드",
         "reactWindowInputHint": "Enter 로 전송하고 Shift + Enter 로 줄바꿈",
         "messageListAriaLabel": "채팅 메시지 목록",
         "composerToolsAriaLabel": "입력 도구 모음",

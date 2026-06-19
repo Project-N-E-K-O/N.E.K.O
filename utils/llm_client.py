@@ -79,6 +79,67 @@ def strip_thinking_segments(text: str | None) -> str:
     return s.strip()
 
 
+class ThinkingStreamStripper:
+    """Streaming-safe sibling of :func:`strip_thinking_segments`.
+
+    ``strip_thinking_segments`` only runs on a *whole* non-streaming reply.
+    Focus (thinking-on) turns stream token-by-token straight into TTS + the UI, so a
+    provider that leaks chain-of-thought into ``content`` would speak its
+    reasoning aloud. Only the Qwen3.5/3.6/3.7 hybrids do this: they dump the
+    whole CoT into ``content`` terminated by a lone ``</think>`` (clean
+    providers route reasoning to the separate ``reasoning_content`` field,
+    which the streaming loop already withholds). So this holds **all** content
+    until the first ``</think>`` (or a paired ``<think>...</think>``) is seen —
+    dropping everything up to and including it — then passes the real answer
+    through untouched, chunk by chunk.
+
+    Engage it ONLY for ``thinking_on`` turns on a leak-prone model
+    (``config.providers.leaks_thinking_in_content``): for clean providers the
+    close tag never arrives, so holding-until-``</think>`` would withhold the
+    whole answer until ``flush``. If a leak-prone model didn't think this turn
+    (no close tag), ``flush`` returns the held buffer intact so nothing is lost.
+    Split tags across chunks are safe — the buffer accumulates until matched.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._passthrough = False
+
+    def feed(self, text: str) -> str:
+        """Return the emittable slice of ``text`` (``""`` while still buffering)."""
+        if self._passthrough:
+            return text
+        if not text:
+            return ""
+        self._buf += text
+        m = _THINK_ANY_CLOSE_RE.search(self._buf)
+        if m:
+            # Everything up to and including the first close tag is the leaked
+            # CoT (covers both the dangling shape and a paired <think>...</think>,
+            # whose opening tag sits earlier in the buffer). Release the tail and
+            # stream freely from here on.
+            tail = self._buf[m.end():]
+            self._buf = ""
+            self._passthrough = True
+            return tail
+        return ""
+
+    def flush(self) -> str:
+        """Drain any held content at stream end (no close tag ever arrived)."""
+        if self._passthrough:
+            return ""
+        residual = self._buf
+        self._buf = ""
+        return residual
+
+    def reset(self) -> None:
+        """Forget held state — used at a tool-round boundary, where the next
+        segment is a fresh semantic unit and the one-shot CoT preamble (if any)
+        is already behind us."""
+        self._buf = ""
+        self._passthrough = False
+
+
 # ────────────────────────────────────────────────────────────────
 # Active-character context — used by ChatOpenAI._params to substitute
 # ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders that originated from

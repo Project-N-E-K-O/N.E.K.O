@@ -150,6 +150,23 @@ def focus_extra_body(model: str) -> dict | None:
     return kept or None
 
 
+def leaks_thinking_in_content(model: str) -> bool:
+    """True for models that stream chain-of-thought into ``content`` (not the
+    separate ``reasoning_content`` field), which a Focus (thinking-on) turn
+    would otherwise speak aloud.
+
+    Only the Qwen3.5/3.6/3.7 *hybrid* models do this — they emit the whole CoT
+    into ``content`` terminated by a lone ``</think>`` (see the leak note in
+    ``utils.llm_client``). The ``qwen3-vl-*`` vision models route reasoning to
+    ``reasoning_content`` and stay clean, so they are excluded. Used to gate
+    ``utils.llm_client.ThinkingStreamStripper`` onto the streaming path so clean
+    providers keep streaming untouched."""
+    m = (model or "").lower()
+    if "vl" in m:
+        return False
+    return any(tag in m for tag in ("qwen3.5", "qwen3.6", "qwen3.7"))
+
+
 # ────────────────────────────────────────────────────────────────
 # Cache Provider 配置（原 tests/test_cco_capacity.py PROVIDER_CACHE_CONFIG）
 # ────────────────────────────────────────────────────────────────

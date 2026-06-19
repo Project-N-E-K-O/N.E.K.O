@@ -2130,6 +2130,7 @@ from config.providers import (  # noqa: E402, F401
     get_extra_body,
     get_agent_extra_body,
     focus_extra_body,
+    leaks_thinking_in_content,
 )
 
 
@@ -2176,6 +2177,7 @@ __all__ = [
     'get_extra_body',
     'get_agent_extra_body',
     'focus_extra_body',
+    'leaks_thinking_in_content',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',
     'EXTRA_BODY_GEMINI',

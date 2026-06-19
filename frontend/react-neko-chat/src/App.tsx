@@ -1620,6 +1620,10 @@ function CompactChatApp({
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactInputToolWheelChargeReleaseVisualStepOffset, setCompactInputToolWheelChargeReleaseVisualStepOffset] = useState(0);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
+  // Focus 凝神: subtle cognition indicator. Driven by the backend `focus_state`
+  // ws message (app-websocket.js → 'neko-focus-state' CustomEvent). Inert by
+  // default — the backend only emits it when FOCUS_MODE_ENABLED.
+  const [focusActive, setFocusActive] = useState(false);
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
@@ -2573,6 +2577,19 @@ function CompactChatApp({
       window.removeEventListener('neko-assistant-turn-ending', handleAssistantTurnBoundary);
       window.removeEventListener('neko-assistant-turn-end', handleAssistantTurnBoundary);
       window.removeEventListener('neko-compact-caption-update', handleCompactCaptionUpdate);
+    };
+  }, []);
+
+  // Focus 凝神 indicator: reflect backend enter/exit. The bridge in
+  // app-websocket.js translates the `focus_state` ws message into this event.
+  useEffect(() => {
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusActive(Boolean(detail && detail.active));
+    };
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
     };
   }, []);
 
@@ -6490,7 +6507,20 @@ function CompactChatApp({
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
       data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
+      data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {focusActive ? (
+        <div
+          className="chat-surface-focus-indicator"
+          role="status"
+          aria-live="polite"
+          title={i18n('chat.focusIndicator', '凝神中')}
+        >
+          <span className="chat-surface-focus-indicator-label">
+            {i18n('chat.focusIndicator', '凝神中')}
+          </span>
+        </div>
+      ) : null}
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}

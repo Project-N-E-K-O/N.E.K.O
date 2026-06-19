@@ -19,7 +19,7 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, create_chat_llm, create_chat_llm_async
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, ThinkingStreamStripper, create_chat_llm, create_chat_llm_async
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -2038,6 +2038,17 @@ class OmniOfflineClient:
                         _focus_overrides = self._focus_stream_overrides(
                             thinking_on, self._focus_images_seen, self.model,
                         )
+                        # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
+                        # stream their chain-of-thought into ``content`` ending in
+                        # a lone ``</think>``; hold + drop it before TTS/UI ever
+                        # see it. Clean providers (reasoning_content path) get no
+                        # stripper, so their streaming stays byte-for-byte untouched.
+                        from config.providers import leaks_thinking_in_content
+                        think_stripper = (
+                            ThinkingStreamStripper()
+                            if thinking_on and leaks_thinking_in_content(self.model)
+                            else None
+                        )
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
                         ):
@@ -2070,6 +2081,10 @@ class OmniOfflineClient:
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
+                                if think_stripper is not None:
+                                    # New semantic unit after a tool round — the
+                                    # one-shot CoT preamble is behind us; don't hold.
+                                    think_stripper.reset()
                                 # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
                                 # 发出去了，但 TTS 还没听到。tool 边界处不知道
                                 # post-tool 段会有多长，没法走"final < max+slack"
@@ -2108,6 +2123,10 @@ class OmniOfflineClient:
                                 break
 
                             content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                            if think_stripper is not None and content:
+                                # Holds CoT until the first </think>; returns "" while
+                                # buffering so the empty-content guard below skips it.
+                                content = think_stripper.feed(content)
 
                             if content and content.strip():
                                 truncated_content = content
@@ -2306,6 +2325,14 @@ class OmniOfflineClient:
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
 
+                        # 流结束后：先 flush thinking stripper 的残留。仅漏型
+                        # provider 的 thinking_on 轮挂了它；若整轮没出现 </think>
+                        # （模型本轮没思考），它一直 hold，这里把攒住的正文还回
+                        # prefix_buffer，走下面的通用 emit/guard 路径，避免丢答案。
+                        if think_stripper is not None:
+                            _think_residual = think_stripper.flush()
+                            if _think_residual:
+                                prefix_buffer += _think_residual
                         # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True

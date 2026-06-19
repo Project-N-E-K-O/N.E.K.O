@@ -1099,7 +1099,14 @@ class LLMSessionManager:
         # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
         # finish_proactive_delivery / system_router.proactive_chat 等处。
         self.state = SessionStateMachine(lanlan_name=lanlan_name)
-        
+        # Focus 凝神: mirror enter/exit to the frontend as a subtle cognition
+        # indicator (极隐微光 badge — see react-neko-chat). Inert by default: the
+        # SM only emits FOCUS_ENTER / FOCUS_EXIT when FOCUS_MODE_ENABLED. The
+        # badge needs only on/off; memory consumes FOCUS_EXIT's episode payload
+        # on a separate (not-yet-wired) path.
+        self.state.subscribe(SessionEvent.FOCUS_ENTER, self._on_focus_transition)
+        self.state.subscribe(SessionEvent.FOCUS_EXIT, self._on_focus_transition)
+
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
         self._conversation_turn_language = None
@@ -2367,6 +2374,32 @@ class LLMSessionManager:
         if not FOCUS_MODE_ENABLED:
             return False
         return self.state.mode is CognitionMode.FOCUS
+
+    async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
+        """SM subscriber: mirror a Focus enter/exit to the frontend as an
+        ephemeral cognition indicator (a subtle breathing glow — see
+        react-neko-chat). Registered on FOCUS_ENTER / FOCUS_EXIT only, so it is
+        inert unless FOCUS_MODE_ENABLED (the SM emits these only when the switch
+        is on). Ephemeral UI state: pushed live over the websocket and mirrored
+        to the sync queue for cross-server, but never persisted to history — the
+        badge is not conversation, and memory consumes FOCUS_EXIT's payload on a
+        separate path. Best-effort: a ws failure must never disturb the SM event
+        flow (``_dispatch_subscribers`` also swallows, this is belt-and-braces)."""
+        msg = {"type": "focus_state", "active": event is SessionEvent.FOCUS_ENTER}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_state sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_state ws push failed: %s", self.lanlan_name, e)
 
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,

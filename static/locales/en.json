@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "Failed to mount the chat window",
         "reactWindowLoadFailed": "Failed to load chat window resources",
         "reactWindowAriaLabel": "Neko chat window",
+        "focusIndicator": "In focus",
         "reactWindowInputHint": "Press Enter to send, Shift + Enter for a new line",
         "messageListAriaLabel": "Chat messages",
         "composerToolsAriaLabel": "Composer tools",
