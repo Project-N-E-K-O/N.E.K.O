@@ -3937,8 +3937,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: background 0.15s ease, filter 0.15s ease;
 }
 
-.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):hover::after,
-.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover::after {
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"]::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled))::after {
   background: var(--compact-tool-button-hover-fill);
 }
 
@@ -3969,16 +3969,16 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: none;
 }
 
-.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):hover,
 .compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,
-.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover,
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"],
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)),
 .compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within {
   z-index: 12;
 }
 
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-within > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):hover > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within > .compact-input-tool-tooltip {
   opacity: 1;
   transform: translate(0, 0);
@@ -5564,7 +5564,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
-[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:hover {
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-pointer-hovered="true"],
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:focus-within {
   background: transparent;
 }
 
@@ -5862,7 +5863,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     transition: none !important;
   }
 
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
     transform: translate(0, 0);
   }
