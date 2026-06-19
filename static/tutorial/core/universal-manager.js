@@ -2477,12 +2477,10 @@ class UniversalTutorialManager {
     }
 
     restoreAvatarFloatingModelInteractionState(reason = 'tutorial-ended') {
-        const snapshot = this._avatarFloatingModelLockSnapshot || {
-            live2d: false,
-            vrm: false,
-            mmd: false,
-            pngtuber: false
-        };
+        const snapshot = this._avatarFloatingModelLockSnapshot;
+        if (!snapshot) {
+            return;
+        }
         try {
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
                 window.live2dManager.setLocked(!!snapshot.live2d, { updateFloatingButtons: false });
@@ -5004,7 +5002,7 @@ class UniversalTutorialManager {
             && this.isAvatarFloatingGuideRoundRegistered(1)
             && this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps).length === 0
         ) {
-            const source = this.consumeTutorialStartSource();
+            const source = this.currentTutorialStartSource || 'auto';
             this.isTutorialRunning = false;
             window.isInTutorial = false;
             this.unlockBodyScroll();

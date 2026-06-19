@@ -1455,11 +1455,11 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
     );
     assert.match(
         pcOverlayMoveBlock,
-        /this\.overlayRenderer\.moveCursorTo\(\s*x,\s*y,\s*durationMs,\s*normalizedOptions\.effect \|\| '',\s*normalizedOptions\.effectDurationMs\s*\);/
+        /this\.overlayRenderer\.moveCursorTo\(\s*x,\s*y,\s*durationMs,\s*cursorEffect,\s*cursorEffectDurationMs\s*\);/
     );
     assert.match(
         pcOverlayMoveBlock,
-        /this\.overlayRenderer\.pcOverlayBridge\.moveCursorOnlyTo\(\s*x,\s*y,\s*durationMs,\s*normalizedOptions\.effect \|\| '',\s*normalizedOptions\.effectDurationMs\s*\);/
+        /this\.overlayRenderer\.pcOverlayBridge\.moveCursorOnlyTo\(\s*x,\s*y,\s*durationMs,\s*cursorEffect,\s*cursorEffectDurationMs\s*\);/
     );
     assert.match(
         externalizedCursorEffectBlock,
@@ -1992,11 +1992,15 @@ test('return petal transition cancels immediately when tutorial is skipped', () 
     assert.match(waitBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*?resolve\(false\);/);
     assert.match(source, /cancelWhenStopped\(promise\) \{/);
     assert.match(source, /fadePromise = this\.cancelWhenStopped\(fadeModelOut\(baseTransitionDurationMs\)\);/);
+    assert.match(finishBlock, /const completed = await this\.cancelWhenStopped\(transition\.done\(\)\);/);
+    assert.match(finishBlock, /if \(completed === false\) \{[\s\S]*transition\.finish\(\);[\s\S]*return;/);
+    assert.match(executeBlock, /const loadedPetalSequence = await this\.cancelWhenStopped\(petalSequencePromise\);/);
+    assert.match(executeBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*await finishTransition\(transition\);[\s\S]*return;/);
     assert.match(cancelledFinishBlock, /transition\.finish\(\);/);
     assert.match(cancelledFinishBlock, /return;/);
     assert.doesNotMatch(cancelledFinishBlock, /transition\.done\(\)/);
     assert.match(executeBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*?return;/);
-    assert.match(executeBlock, /await this\.finishTransition\(transition\);/);
+    assert.match(executeBlock, /await finishTransition\(transition\);/);
 });
 
 test('avatar floating auto-start rechecks pending state before delayed launch', () => {

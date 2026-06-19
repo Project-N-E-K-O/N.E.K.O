@@ -529,7 +529,7 @@ def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_sp
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
     resistance_source = RESISTANCE_CONTROLLER_PATH.read_text(encoding="utf-8")
 
-    cursor_only_block = overlay_source.split("const sendCursorOnly = (cursor) => {", 1)[1].split(
+    cursor_only_block = overlay_source.split("const sendCursorOnly = (cursor, retried) => {", 1)[1].split(
         "return {",
         1,
     )[0]
@@ -542,12 +542,16 @@ def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_sp
         1,
     )[0]
 
-    assert "const payload = { cursor: cursor };" in cursor_only_block
-    assert "completeStateStore.applyPatch" not in cursor_only_block
-    assert "spotlights" not in cursor_only_block
+    assert "const patch = { cursor: cursor };" in cursor_only_block
+    assert "const payload = completeStateStore.applyPatch(patch);" in cursor_only_block
+    assert "handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);" in cursor_only_block
+    assert "result && result.ok === false" in cursor_only_block
     assert "moveCursorOnlyTo(x, y, durationMs, effect, effectDurationMs)" in overlay_source
     assert "normalizedOptions.forcePcOverlay === true" in move_cursor_block
+    assert "const cursorEffect = normalizedOptions.effect || '';" in move_cursor_block
+    assert "const cursorEffectDurationMs = Math.max(0, Math.round(Number(normalizedOptions.effectDurationMs) || 0));" in move_cursor_block
     assert "this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo" in move_cursor_block
+    assert "this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo(x, y, 0, cursorEffect, cursorEffectDurationMs);" in move_cursor_block
     assert "normalizedOptions.forcePcOverlay === true\n                && this.isPcOverlayActive()" not in move_cursor_block
     assert "this.cursorVisible = this.isPcOverlayActive();" in move_cursor_block
     assert "forcePcOverlay: normalizedOptions.forcePcOverlay === true" in ghost_source

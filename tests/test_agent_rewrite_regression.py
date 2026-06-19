@@ -1322,6 +1322,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "snapshotAvatarFloatingModelInteractionState(reason = 'tutorial-started')" in tutorial_source
     assert "this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');" in tutorial_source
     assert "const snapshot = this._avatarFloatingModelLockSnapshot" in avatar_interaction_restore_block
+    assert "if (!snapshot) {" in avatar_interaction_restore_block
+    assert "return;" in avatar_interaction_restore_block
     assert "window.live2dManager.setLocked(!!snapshot.live2d, { updateFloatingButtons: false });" in avatar_interaction_restore_block
     assert "window.vrmManager.core.setLocked(!!snapshot.vrm);" in avatar_interaction_restore_block
     assert "window.mmdManager.core.setLocked(!!snapshot.mmd);" in avatar_interaction_restore_block
@@ -1392,6 +1394,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     )[0]
     assert "this.isAvatarFloatingGuideRoundRegistered(1)" in empty_prelude_round_block
     assert "this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps).length === 0" in empty_prelude_round_block
+    assert "const source = this.currentTutorialStartSource || 'auto';" in empty_prelude_round_block
+    assert "this.consumeTutorialStartSource()" not in empty_prelude_round_block
     assert "this.startAvatarFloatingGuideRound(1, { source })" in empty_prelude_round_block
     assert "suppressInitialIdle: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
@@ -1417,6 +1421,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "app.renderer.render(app.stage);" in app_ui_source
     assert "function revealInitialLive2DModelWhenUiReady(reason)" in live2d_init_source
     assert "window.showLive2d();" in live2d_init_source
+    assert "try {" in live2d_init_source
+    assert "return false;" in live2d_init_source.split("window.showLive2d();", 1)[1].split("revealed = true;", 1)[0]
     assert "revealInitialLive2DModelWhenUiReady('initial-live2d-load');" in live2d_init_source
     assert "[0, 50, 150, 300, 600, 1000].forEach((delayMs)" in live2d_init_source
     assert "window.addEventListener('load', reveal, { once: true });" in live2d_init_source

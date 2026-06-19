@@ -260,11 +260,22 @@
             if (cleared || !cursor) {
                 return;
             }
-            const payload = { cursor: cursor };
+            const patch = { cursor: cursor };
+            const payload = completeStateStore.applyPatch(patch);
             if (!active) {
                 active = true;
+                const beginRunId = runId;
                 try {
-                    Promise.resolve(host.begin({ tutorialRunId: runId })).catch(() => {
+                    Promise.resolve(host.begin({ tutorialRunId: runId })).then((result) => {
+                        if (result && result.stale === true) {
+                            handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);
+                            return;
+                        }
+                        if (result && result.ok === false) {
+                            failed = true;
+                            remoteReady = false;
+                        }
+                    }).catch(() => {
                         active = false;
                         failed = true;
                         remoteReady = false;
@@ -1427,6 +1438,8 @@
             this.updateSuppressedCursorMotion();
             const normalizedOptions = options || {};
             const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
+            const cursorEffect = normalizedOptions.effect || '';
+            const cursorEffectDurationMs = Math.max(0, Math.round(Number(normalizedOptions.effectDurationMs) || 0));
             const forcePcOverlayCursorOnly = normalizedOptions.forcePcOverlay === true
                 && this.overlayRenderer
                 && this.overlayRenderer.pcOverlayBridge
@@ -1440,7 +1453,7 @@
                     : null;
                 if (!this.cursorPosition) {
                     if (forcePcOverlayCursorOnly) {
-                        this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo(x, y, 0, '', 0);
+                        this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo(x, y, 0, cursorEffect, cursorEffectDurationMs);
                     } else {
                         this.overlayRenderer.showCursorAt(x, y);
                     }
@@ -1455,16 +1468,16 @@
                             x,
                             y,
                             durationMs,
-                            normalizedOptions.effect || '',
-                            normalizedOptions.effectDurationMs
+                            cursorEffect,
+                            cursorEffectDurationMs
                         );
                     } else {
                         this.overlayRenderer.moveCursorTo(
                             x,
                             y,
                             durationMs,
-                            normalizedOptions.effect || '',
-                            normalizedOptions.effectDurationMs
+                            cursorEffect,
+                            cursorEffectDurationMs
                         );
                     }
                     this.keepDomCursorSuppressedForPcOverlay();

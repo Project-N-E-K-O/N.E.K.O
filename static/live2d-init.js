@@ -33,7 +33,12 @@ function revealInitialLive2DModelWhenUiReady(reason) {
         if (typeof window.showLive2d !== 'function') {
             return false;
         }
-        window.showLive2d();
+        try {
+            window.showLive2d();
+        } catch (error) {
+            console.warn('[Live2D Init] showLive2d reveal failed, will retry:', error);
+            return false;
+        }
         revealed = true;
         return true;
     };

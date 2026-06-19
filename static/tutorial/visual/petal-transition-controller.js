@@ -245,7 +245,13 @@
                 return;
             }
             if (typeof transition.done === 'function') {
-                await transition.done();
+                const completed = await this.cancelWhenStopped(transition.done());
+                if (completed === false) {
+                    if (typeof transition.finish === 'function') {
+                        await transition.finish();
+                    }
+                    return;
+                }
             }
             if (typeof transition.finish === 'function') {
                 await transition.finish();
@@ -292,8 +298,9 @@
                     }
                     this.notifyTransitionStart(normalizedOptions);
                     fadePromise = this.cancelWhenStopped(fadeModelOut(baseTransitionDurationMs));
-                    const loadedPetalSequence = await petalSequencePromise;
+                    const loadedPetalSequence = await this.cancelWhenStopped(petalSequencePromise);
                     if (this.isCancelled()) {
+                        await finishTransition(transition);
                         return;
                     }
                     if (loadedPetalSequence) {
@@ -305,8 +312,9 @@
                         });
                     }
                 } else {
-                    const loadedPetalSequence = await petalSequencePromise;
+                    const loadedPetalSequence = await this.cancelWhenStopped(petalSequencePromise);
                     if (this.isCancelled()) {
+                        await finishTransition(transition);
                         return;
                     }
                     transition = createReturnPetalTransition(origin, {
