@@ -19,7 +19,9 @@ def test_yui_model_manager_handoff_opens_fullscreen():
     assert "function isModelManagerPageUrl(openUrl)" in source
     assert "if (isModelManagerPageUrl(openUrl))" in source
     assert "return buildFullscreenWindowFeatures();" in source
-    model_manager_block = source[source.index("function openModelManagerPage("):source.index("function triggerGoodbye(")]
+    start = source.index("function openModelManagerPage(")
+    end = source.index("\n    function ", start + len("function openModelManagerPage("))
+    model_manager_block = source[start:end]
     assert "buildFullscreenWindowFeatures()" in model_manager_block
     assert "{ keepMainUIVisible: true }" in model_manager_block
 
