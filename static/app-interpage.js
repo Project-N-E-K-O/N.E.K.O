@@ -36,78 +36,112 @@
     var _lastCrossWindowIdleActivityAt = 0;
     var yuiGuideTargetGeometryRegistry = null;
     var yuiGuideBridgeCommandBus = null;
-    var yuiGuideInterpageResources = createAppInterpageScopedResources();
-    var yuiGuideChatSpotlightResources = createAppInterpageScopedResources();
 
     function createAppInterpageScopedResources() {
         if (
             window.YuiGuideCommon
             && typeof window.YuiGuideCommon.createScopedTutorialResources === 'function'
         ) {
-            return window.YuiGuideCommon.createScopedTutorialResources({ window: window });
+            try {
+                return window.YuiGuideCommon.createScopedTutorialResources({ window: window });
+            } catch (error) {
+                console.warn('[YuiGuide] scoped resource helper unavailable; using local fallback:', error);
+            }
         }
 
-        var listeners = [];
+        var destroyed = false;
         var timers = [];
         var intervals = [];
-        return {
-            addEventListener: function (target, type, handler, listenerOptions) {
-                if (!target || typeof target.addEventListener !== 'function') {
-                    return null;
-                }
-                target.addEventListener(type, handler, listenerOptions);
-                listeners.push({
-                    target: target,
-                    type: type,
-                    handler: handler,
-                    options: listenerOptions
-                });
-                return handler;
-            },
-            setTimeout: function (callback, delayMs) {
-                var timerId = window.setTimeout(callback, delayMs);
-                timers.push(timerId);
-                return timerId;
-            },
-            clearTimeout: function (timerId) {
-                if (!timerId) {
-                    return;
-                }
-                window.clearTimeout(timerId);
-                var index = timers.indexOf(timerId);
-                if (index !== -1) {
-                    timers.splice(index, 1);
-                }
-            },
-            setInterval: function (callback, delayMs) {
-                var intervalId = window.setInterval(callback, delayMs);
-                intervals.push(intervalId);
-                return intervalId;
-            },
-            clearInterval: function (intervalId) {
-                if (!intervalId) {
-                    return;
-                }
-                window.clearInterval(intervalId);
-                var index = intervals.indexOf(intervalId);
-                if (index !== -1) {
-                    intervals.splice(index, 1);
-                }
-            },
-            destroy: function () {
-                while (intervals.length) {
-                    window.clearInterval(intervals.pop());
-                }
-                while (timers.length) {
-                    window.clearTimeout(timers.pop());
-                }
-                while (listeners.length) {
-                    var listener = listeners.pop();
-                    listener.target.removeEventListener(listener.type, listener.handler, listener.options);
-                }
+        var listeners = [];
+
+        function removeFrom(list, value) {
+            var index = list.indexOf(value);
+            if (index !== -1) {
+                list.splice(index, 1);
             }
+        }
+
+        function addEventListener(target, type, handler, options) {
+            if (destroyed || !target || typeof target.addEventListener !== 'function') {
+                return null;
+            }
+            target.addEventListener(type, handler, options);
+            listeners.push({
+                target: target,
+                type: type,
+                handler: handler,
+                options: options
+            });
+            return handler;
+        }
+
+        function setScopedTimeout(callback, delayMs) {
+            if (destroyed || typeof window.setTimeout !== 'function') {
+                return 0;
+            }
+            var timerId = window.setTimeout(function scopedTimeoutCallback() {
+                removeFrom(timers, timerId);
+                if (typeof callback === 'function') {
+                    callback();
+                }
+            }, delayMs);
+            timers.push(timerId);
+            return timerId;
+        }
+
+        function clearScopedTimeout(timerId) {
+            if (!timerId || typeof window.clearTimeout !== 'function') {
+                return;
+            }
+            removeFrom(timers, timerId);
+            window.clearTimeout(timerId);
+        }
+
+        function setScopedInterval(callback, delayMs) {
+            if (destroyed || typeof window.setInterval !== 'function') {
+                return 0;
+            }
+            var intervalId = window.setInterval(function scopedIntervalCallback() {
+                if (typeof callback === 'function') {
+                    callback();
+                }
+            }, delayMs);
+            intervals.push(intervalId);
+            return intervalId;
+        }
+
+        function clearScopedInterval(intervalId) {
+            if (!intervalId || typeof window.clearInterval !== 'function') {
+                return;
+            }
+            removeFrom(intervals, intervalId);
+            window.clearInterval(intervalId);
+        }
+
+        function destroy() {
+            destroyed = true;
+            timers.slice().forEach(clearScopedTimeout);
+            intervals.slice().forEach(clearScopedInterval);
+            listeners.splice(0).forEach(function (entry) {
+                try {
+                    entry.target.removeEventListener(entry.type, entry.handler, entry.options);
+                } catch (_) {}
+            });
+        }
+
+        return {
+            addEventListener: addEventListener,
+            setTimeout: setScopedTimeout,
+            clearTimeout: clearScopedTimeout,
+            setInterval: setScopedInterval,
+            clearInterval: clearScopedInterval,
+            destroy: destroy,
+            isDestroyed: function () { return destroyed; }
         };
     }
+
+    var yuiGuideInterpageResources = createAppInterpageScopedResources();
+    var yuiGuideChatSpotlightResources = createAppInterpageScopedResources();
 
     /**
      * Returns true if this action+timestamp was already processed (duplicate).

@@ -53,7 +53,7 @@ from main_logic.tool_calling import (
     ToolResult,
 )
 from utils.llm_client import AIMessage, HumanMessage
-from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase, CognitionMode
+from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase, CognitionMode, TurnOwner
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
@@ -2387,6 +2387,20 @@ class LLMSessionManager:
         this proactive turn observed when it made its thinking decision — the
         episode id and the turn count at Phase 2. The decay is SKIPPED unless the
         SM is STILL in that same episode AND no inline turn has landed since:
+          * ``not replied`` AND the user already took over (``owner is USER``) →
+            the user spoke during an UNDELIVERED proactive turn and aborted it
+            before it said anything. The inline path marks USER_INPUT
+            (owner→USER) the moment they speak, but its focus update lands LATER
+            (after mini-game / agent-callback handling), so the episode + turn
+            token still match here. This aborted proactive tick must not decay
+            the charge before the user's own message is scored — that
+            (user-driven) episode is the inline path's to update. owner stays
+            USER through PROACTIVE_DONE (which only clears a PROACTIVE owner), so
+            it is still observable at this point. A turn that DID reply
+            (``replied=True``) genuinely spent the episode and still takes the
+            replied retention even if the user fired back fast enough to flip the
+            owner first; once the inline update actually lands the turn-token
+            guard below takes over.
           * ``episode_token is None`` → the turn observed REGULAR (no active
             episode). There is nothing to cool, and a proactive tick must not
             erode the pre-entry accumulator the inline path is building toward
@@ -2410,6 +2424,25 @@ class LLMSessionManager:
             if not FOCUS_MODE_ENABLED:
                 # Master switch off → update_focus self-clears any residue.
                 await self.state.update_focus(0.0)
+                return
+            # User took over an UNDELIVERED turn: the user spoke during the
+            # proactive request (USER_INPUT flipped owner→USER) and aborted it
+            # before it said anything, but their inline focus update has not
+            # landed yet, so the episode/turn token below would still match.
+            # Hand the charge to the imminent inline turn instead of decaying it
+            # with this aborted proactive tick.
+            #   Gated on ``not replied``: a turn that DID commit a reply
+            # (``replied=True``) genuinely spent the episode and must still take
+            # the replied retention even if the user fired back fast enough to
+            # flip the owner before this cooldown ran — owner==USER alone would
+            # wrongly let quick replies after a successful proactive chat skip
+            # their decay. (Once the inline focus update actually lands, the
+            # episode/turn-token guard below takes over.)
+            if not replied and self.state.owner is TurnOwner.USER:
+                logger.debug(
+                    "[%s] focus idle cooldown skipped: user took over an undelivered turn",
+                    self.lanlan_name,
+                )
                 return
             # Only cool an episode this turn actually observed — never the
             # REGULAR pre-entry accumulator (entering Focus is inline-only).

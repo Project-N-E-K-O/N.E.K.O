@@ -1786,8 +1786,8 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         .replace('{LANLAN_NAME}', current_name) \
         .replace('{MASTER_NAME}', master_name)
 
-    # 获取对话模型配置
-    conversation_config = config_manager.get_model_api_config('conversation')
+    # 获取小游戏主模型配置；默认跟随文本对话模型，用户可在 API 设置中独立覆盖。
+    conversation_config = config_manager.get_model_api_config('game_main')
 
     return {
         'lanlan_name': current_name,
@@ -1810,13 +1810,13 @@ def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str
     """Resolve character metadata but use the summary model tier for helper calls."""
     info = dict(_get_character_info(lanlan_name))
     try:
-        summary_config = get_config_manager().get_model_api_config("summary") or {}
+        summary_config = get_config_manager().get_model_api_config("game_summary") or {}
     except RuntimeError:
         return info
     model = str(summary_config.get("model") or "").strip()
     base_url = str(summary_config.get("base_url") or "").strip()
     api_key = str(summary_config.get("api_key") or "").strip()
-    if not (model and base_url and api_key):
+    if not (model and base_url):
         return info
     info.update({
         "model": model,

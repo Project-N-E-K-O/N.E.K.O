@@ -370,6 +370,93 @@
                                     </div>
                                 </div>
 
+                                <!-- 小游戏模型配置 -->
+                                <div class="model-config-container">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('game')" aria-expanded="false" aria-controls="game-model-content">
+                                        <span class="model-title">
+                                            <img src="/static/icons/correction_model_icon.png"
+                                                data-i18n-alt="api.gameModelsConfig"
+                                                class="model-title-icon">
+                                            <span data-i18n="api.gameModelsConfig">小游戏模型配置</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </button>
+                                    <div id="game-model-content" class="model-content">
+                                        <div class="nested-model-config-container">
+                                            <button type="button" class="model-header nested-model-header" onclick="toggleModelConfig('game-main')" aria-expanded="false" aria-controls="game-main-model-content">
+                                                <span class="model-title">
+                                                    <span data-i18n="api.gameMainModelConfig">小游戏主模型配置</span>
+                                                </span>
+                                                <span class="toggle-icon">▼</span>
+                                            </button>
+                                            <div id="game-main-model-content" class="model-content nested-model-content">
+                                                <div class="field-row">
+                                                    <label for="gameMainModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                                    <select id="gameMainModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                                    </select>
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameMainModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                                    <input type="text" id="gameMainModelUrl"
+                                                        data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                        placeholder="e.g., https://api.openai.com/v1" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameMainModelId" data-i18n="api.modelId">模型ID</label>
+                                                    <input type="text" id="gameMainModelId"
+                                                        data-i18n-placeholder="api.modelExamplePlaceholder"
+                                                        placeholder="e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameMainModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                                    <input type="text" id="gameMainModelApiKey"
+                                                        data-i18n-placeholder="api.gameMainModelApiKeyPlaceholder"
+                                                        placeholder="Enter Mini-game Main Model API Key" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="nested-model-config-container">
+                                            <button type="button" class="model-header nested-model-header" onclick="toggleModelConfig('game-summary')" aria-expanded="false" aria-controls="game-summary-model-content">
+                                                <span class="model-title">
+                                                    <span data-i18n="api.gameSummaryModelConfig">小游戏摘要模型配置</span>
+                                                </span>
+                                                <span class="toggle-icon">▼</span>
+                                            </button>
+                                            <div id="game-summary-model-content" class="model-content nested-model-content">
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                                    <select id="gameSummaryModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                                    </select>
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                                    <input type="text" id="gameSummaryModelUrl"
+                                                        data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                        placeholder="e.g., https://api.openai.com/v1" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelId" data-i18n="api.modelId">模型ID</label>
+                                                    <input type="text" id="gameSummaryModelId"
+                                                        data-i18n-placeholder="api.modelExamplePlaceholder"
+                                                        placeholder="e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                                    <input type="text" id="gameSummaryModelApiKey"
+                                                        data-i18n-placeholder="api.gameSummaryModelApiKeyPlaceholder"
+                                                        placeholder="Enter Mini-game Summary Model API Key" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <!-- 纠错模型配置 -->
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('correction')">

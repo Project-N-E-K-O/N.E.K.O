@@ -26,6 +26,15 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     
     # Fill in a fake key
     test_key = "sk-test-1234567890"
+    mock_page.evaluate("""
+        () => {
+            const input = document.getElementById('apiKeyInput');
+            if (input) {
+                input.value = '';
+                input.removeAttribute('data-real-key');
+            }
+        }
+    """)
     mock_page.fill("#apiKeyInput", test_key)
     mock_page.evaluate("""
         () => {
@@ -951,6 +960,57 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
     """)
 
     assert value == {"url": "ws://localhost:8091/v1", "readonly": False}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("model_type", "follow_provider"),
+    [
+        ("gameMain", "follow_conversation"),
+        ("gameSummary", "follow_summary"),
+    ],
+)
+def test_switching_game_model_away_from_follow_clears_model_readonly(
+    mock_page: Page,
+    running_server: str,
+    model_type: str,
+    follow_provider: str,
+):
+    """Game model IDs must be editable again after leaving follow-conversation/summary modes."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='{follow_provider}']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='custom']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='qwen']", state="attached", timeout=10000)
+
+    value = mock_page.evaluate("""
+        ({ modelType, followProvider }) => {
+            const provider = document.getElementById(`${modelType}ModelProvider`);
+            const model = document.getElementById(`${modelType}ModelId`);
+
+            provider.value = followProvider;
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const followReadonly = model.hasAttribute('readonly');
+
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const customReadonly = model.hasAttribute('readonly');
+
+            model.setAttribute('readonly', 'readonly');
+            provider.value = 'qwen';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const namedReadonly = model.hasAttribute('readonly');
+
+            return { followReadonly, customReadonly, namedReadonly };
+        }
+    """, {"modelType": model_type, "followProvider": follow_provider})
+
+    assert value == {
+        "followReadonly": True,
+        "customReadonly": False,
+        "namedReadonly": False,
+    }
 
 
 @pytest.mark.frontend

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from collections.abc import Mapping
 
 from plugin.logging_config import get_logger
@@ -11,6 +13,8 @@ from plugin.server.messaging.handlers.typing import SendResponse
 logger = get_logger("server.messaging.handlers.plugin_config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
+_CONFIG_UPDATE_PERSIST_BUDGET_SECONDS = 4.0
+_CONFIG_UPDATE_RESPONSE_GRACE_SECONDS = 0.25
 
 def _resolve_target_plugin_id(
     *,
@@ -228,10 +232,33 @@ async def handle_plugin_config_update(request: dict[str, object], send_response:
             message="Permission denied: can only update own config",
         )
         updates = _normalize_updates_payload(request.get("updates"))
-        payload = await config_command_service.update_plugin_config(
-            plugin_id=target_plugin_id,
-            updates=updates,
+        persist_budget = min(
+            _CONFIG_UPDATE_PERSIST_BUDGET_SECONDS,
+            max(0.01, float(timeout) - _CONFIG_UPDATE_RESPONSE_GRACE_SECONDS),
         )
+        try:
+            payload = await asyncio.wait_for(
+                config_command_service.update_plugin_config(
+                    plugin_id=target_plugin_id,
+                    updates=updates,
+                ),
+                timeout=persist_budget,
+            )
+        except TimeoutError:
+            logger.warning(
+                "PLUGIN_CONFIG_UPDATE persistence timed out before request deadline: plugin_id={}, req_id={}, budget={}",
+                target_plugin_id,
+                request_id,
+                persist_budget,
+            )
+            payload = {
+                "success": False,
+                "plugin_id": target_plugin_id,
+                "config": updates,
+                "requires_reload": False,
+                "persisted": False,
+                "message": "Config persistence timed out; update is applied in plugin memory only",
+            }
         send_response(from_plugin, request_id, payload, None, timeout=timeout)
     except ServerDomainError as error:
         logger.warning("PLUGIN_CONFIG_UPDATE failed: code={}, message={}", error.code, error.message)

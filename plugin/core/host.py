@@ -60,6 +60,33 @@ def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
     return safe
 
 
+def _resolve_current_storage_layout() -> dict[str, Any]:
+    from utils.config_manager import get_config_manager
+    from utils.storage_layout import resolve_storage_layout
+
+    return resolve_storage_layout(get_config_manager())
+
+
+def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
+    try:
+        from utils.storage_layout import export_storage_layout_to_env
+
+        layout = _resolve_current_storage_layout()
+        export_storage_layout_to_env(layout)
+        logger_obj.debug(
+            "Plugin child storage layout env refreshed: selected_root={}, anchor_root={}, source={}",
+            layout.get("selected_root"),
+            layout.get("anchor_root"),
+            layout.get("source"),
+        )
+    except Exception as exc:
+        logger_obj.warning(
+            "Failed to refresh plugin child storage layout env; plugin data root may use fallback: err_type={}, err={}",
+            type(exc).__name__,
+            str(exc),
+        )
+
+
 _TIMEOUT_UNSET = object()
 
 
@@ -578,6 +605,10 @@ async def _handle_config_update_command(
             logger.debug("[Plugin Process] Config cache updated")
         else:
             ctx._effective_config = new_config
+
+        refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
+        if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
+            refresh_runtime_config(ctx._effective_config)
         
         # 触发 config_change 生命周期事件（如果存在）
         lifecycle_events = events_by_type.get("lifecycle", {})
@@ -598,6 +629,8 @@ async def _handle_config_update_command(
                 logger.exception("[Plugin Process] config_change handler failed")
                 # 回滚配置到变更前状态
                 ctx._effective_config = old_config
+                if callable(refresh_runtime_config) and isinstance(old_config, dict):
+                    refresh_runtime_config(old_config)
                 logger.debug("[Plugin Process] Config rolled back after handler failure")
                 ret_payload["error"] = f"config_change handler failed: {e}"
                 res_sender.put(ret_payload, timeout=10.0)
@@ -1761,6 +1794,7 @@ class PluginHost:
             return
 
         try:
+            _refresh_child_storage_layout_env(self.logger)
             await asyncio.to_thread(self.process.start)
         except Exception:
             self.logger.error(

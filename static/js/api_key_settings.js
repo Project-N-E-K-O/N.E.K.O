@@ -28,7 +28,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+const MODEL_TYPES = ['conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -40,6 +40,11 @@ const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
     'https://token-plan-sgp.xiaomimimo.com/v1',
     'https://token-plan-ams.xiaomimimo.com/v1',
 ];
+const MODEL_DEFAULT_PROVIDER = {
+    omni: 'follow_core',
+    gameMain: 'follow_conversation',
+    gameSummary: 'follow_summary',
+};
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
@@ -956,6 +961,19 @@ function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
 
 // ==================== Model Provider Dropdowns ====================
 
+function getDefaultProviderForModelType(modelType) {
+    return MODEL_DEFAULT_PROVIDER[modelType] || 'follow_assist';
+}
+
+function appendModelProviderOption(selectEl, value, i18nKey, fallbackText) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = window.t ? window.t(i18nKey, fallbackText) : fallbackText;
+    opt.setAttribute('data-i18n', i18nKey);
+    selectEl.appendChild(opt);
+    return opt;
+}
+
 /**
  * 仅靠 api_providers.json 的结构推断某个 provider 是否「只做 TTS」。
  *
@@ -1019,19 +1037,27 @@ function populateModelProviderDropdowns() {
         if (!sel) return;
         sel.innerHTML = '';
 
+        if (mt === 'gameMain') {
+            appendModelProviderOption(
+                sel,
+                'follow_conversation',
+                'api.customModelProviderFollowConversation',
+                '跟随文本对话模型'
+            );
+        } else if (mt === 'gameSummary') {
+            appendModelProviderOption(
+                sel,
+                'follow_summary',
+                'api.customModelProviderFollowSummary',
+                '跟随摘要模型'
+            );
+        }
+
         // follow_core
-        const optCore = document.createElement('option');
-        optCore.value = 'follow_core';
-        optCore.textContent = window.t ? window.t('api.customModelProviderFollowCore') : '跟随核心API';
-        optCore.setAttribute('data-i18n', 'api.customModelProviderFollowCore');
-        sel.appendChild(optCore);
+        appendModelProviderOption(sel, 'follow_core', 'api.customModelProviderFollowCore', '跟随核心API');
 
         // follow_assist
-        const optAssist = document.createElement('option');
-        optAssist.value = 'follow_assist';
-        optAssist.textContent = window.t ? window.t('api.customModelProviderFollowAssist') : '跟随辅助API';
-        optAssist.setAttribute('data-i18n', 'api.customModelProviderFollowAssist');
-        sel.appendChild(optAssist);
+        appendModelProviderOption(sel, 'follow_assist', 'api.customModelProviderFollowAssist', '跟随辅助API');
 
         // Each non-free provider from _assistApiProviders
         Object.keys(_assistApiProviders).forEach(pk => {
@@ -1080,8 +1106,7 @@ function populateModelProviderDropdowns() {
         optCustom.setAttribute('data-i18n', 'api.customModelProviderCustom');
         sel.appendChild(optCustom);
 
-        // Default: omni → follow_core, others → follow_assist
-        sel.value = (mt === 'omni') ? 'follow_core' : 'follow_assist';
+        sel.value = getDefaultProviderForModelType(mt);
 
         // Attach onchange (only once — skip if already bound from a previous call)
         if (!sel.dataset.providerChangeAttached) {
@@ -1153,6 +1178,30 @@ function onCustomModelProviderChange(modelType) {
         }
         removeKeyBookLink(input);
     };
+
+    if (provider === 'follow_conversation' || provider === 'follow_summary') {
+        const sourceType = provider === 'follow_conversation' ? 'conversation' : 'summary';
+        const sourceUrl = document.getElementById(`${sourceType}ModelUrl`);
+        const sourceModel = document.getElementById(`${sourceType}ModelId`);
+        const sourceKey = document.getElementById(`${sourceType}ModelApiKey`);
+        if (urlInput) {
+            urlInput.value = sourceUrl ? sourceUrl.value.trim() : '';
+            urlInput.setAttribute('readonly', 'readonly');
+        }
+        if (modelIdInput) {
+            modelIdInput.value = sourceModel ? sourceModel.value.trim() : '';
+            modelIdInput.setAttribute('readonly', 'readonly');
+        }
+        if (keyInput) {
+            setMaskedInput(keyInput, sourceKey ? getRealKey(sourceKey) : '');
+            keyInput.setAttribute('readonly', 'readonly');
+            keyInput.placeholder = window.t
+                ? window.t('api.keyAutoFilledFromModel', 'Key 跟随已选择的模型配置')
+                : 'Key 跟随已选择的模型配置';
+            removeKeyBookLink(keyInput);
+        }
+        return;
+    }
 
     if (provider === 'follow_core' || provider === 'follow_assist') {
         // Determine which provider to follow
@@ -1226,10 +1275,12 @@ function onCustomModelProviderChange(modelType) {
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
+        if (modelIdInput) modelIdInput.removeAttribute('readonly');
         setKeyEditable(keyInput);
     } else {
         // Specific provider
         const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+        if (modelIdInput) modelIdInput.removeAttribute('readonly');
         if (modelType === 'omni') {
             const coreProfile = _coreApiProviders[provider] || {};
             if (urlInput) {
@@ -1639,6 +1690,14 @@ async function loadCurrentApiKey() {
             setInputValue('summaryModelUrl', data.summaryModelUrl);
             setInputValue('summaryModelId', data.summaryModelId);
             setInputValue('summaryModelApiKey', data.summaryModelApiKey);
+
+            setInputValue('gameMainModelUrl', data.gameMainModelUrl);
+            setInputValue('gameMainModelId', data.gameMainModelId);
+            setInputValue('gameMainModelApiKey', data.gameMainModelApiKey);
+
+            setInputValue('gameSummaryModelUrl', data.gameSummaryModelUrl);
+            setInputValue('gameSummaryModelId', data.gameSummaryModelId);
+            setInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
 
             setInputValue('correctionModelUrl', data.correctionModelUrl);
             setInputValue('correctionModelId', data.correctionModelId);
@@ -2114,10 +2173,10 @@ function confirmClearCustomApi() {
                 delete keyEl.dataset.masked;
             }
         }
-        // 重置 Provider 下拉为默认值（跟随核心API）并同步联动状态
+        // 重置 Provider 下拉为默认值并同步联动状态
         const providerEl = document.getElementById(`${mt}ModelProvider`);
         if (providerEl) {
-            providerEl.value = 'follow_core';
+            providerEl.value = getDefaultProviderForModelType(mt);
             onCustomModelProviderChange(mt);
         }
     });
@@ -2294,6 +2353,14 @@ async function save_button_down(e) {
     const summaryModelId = getVal('summaryModelId');
     const summaryModelApiKey = getKeyVal('summaryModelApiKey');
 
+    const gameMainModelUrl = getVal('gameMainModelUrl');
+    const gameMainModelId = getVal('gameMainModelId');
+    const gameMainModelApiKey = getKeyVal('gameMainModelApiKey');
+
+    const gameSummaryModelUrl = getVal('gameSummaryModelUrl');
+    const gameSummaryModelId = getVal('gameSummaryModelId');
+    const gameSummaryModelApiKey = getKeyVal('gameSummaryModelApiKey');
+
     const correctionModelUrl = getVal('correctionModelUrl');
     const correctionModelId = getVal('correctionModelId');
     const correctionModelApiKey = getKeyVal('correctionModelApiKey');
@@ -2390,6 +2457,8 @@ async function save_button_down(e) {
         ...bookPayload,
         conversationModelUrl, conversationModelId, conversationModelApiKey,
         summaryModelUrl, summaryModelId, summaryModelApiKey,
+        gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
+        gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
         correctionModelUrl, correctionModelId, correctionModelApiKey,
         emotionModelUrl, emotionModelId, emotionModelApiKey,
         visionModelUrl, visionModelId, visionModelApiKey,
@@ -2469,6 +2538,13 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         if (modelType === 'tts') {
             const ttsMeta = getTtsProviderMeta(providerMode);
             if (ttsMeta && ttsMeta.editable_endpoint) return '';
+        }
+
+        if (providerMode === 'follow_conversation') {
+            return params.conversationModelUrl || resolveUrl('conversation', params.conversationModelProvider);
+        }
+        if (providerMode === 'follow_summary') {
+            return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider);
         }
 
         let providerKey = providerMode;
@@ -2886,7 +2962,7 @@ function toggleModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -2971,6 +3047,42 @@ const LightStatus = {
     TESTING: 'testing',
 };
 
+function getCustomModelDisplayLabel(modelType) {
+    const labelMap = {
+        conversation: ['api.conversationModelConfig', '文本对话模型配置'],
+        summary: ['api.summaryModelConfig', '摘要模型配置'],
+        gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
+        gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
+        correction: ['api.correctionModelConfig', '纠错模型配置'],
+        emotion: ['api.emotionModelConfig', '情感模型配置'],
+        vision: ['api.visionModelConfig', '视觉模型配置'],
+        agent: ['api.agentApiConfigTitle', 'Agent API 配置（需支持视觉功能）'],
+        omni: ['api.realtimeModelConfig', '实时模型配置（Local模式）'],
+        tts: ['api.ttsModelConfig', 'TTS模型配置（双工流式）'],
+    };
+    const [key, fallback] = labelMap[modelType] || ['', modelType];
+    if (!key || !window.t) return fallback;
+    const translated = window.t(key, fallback);
+    return translated && translated !== key ? translated : fallback;
+}
+
+function buildConnectivityLightTitle(lightElement, statusLabel) {
+    const tooltipLabel = lightElement.dataset.tooltipLabel || '';
+    if (!tooltipLabel) return statusLabel;
+
+    const modelType = lightElement.dataset.modelType || '';
+    const modelIdInput = modelType ? document.getElementById(`${modelType}ModelId`) : null;
+    const modelId = modelIdInput ? modelIdInput.value.trim() : '';
+
+    const firstLine = `${tooltipLabel} ${statusLabel}`;
+    if (modelId) {
+        const modelIdLabel = window.t ? window.t('api.modelId', '模型ID') : '模型ID';
+        return `${firstLine}\n${modelIdLabel}: ${modelId}`;
+    }
+
+    return firstLine;
+}
+
 /**
  * 创建指示灯 DOM 元素，插入到 inputElement 前方。
  * @param {HTMLElement} inputElement - 关联的输入框
@@ -2986,6 +3098,10 @@ function createIndicatorLight(inputElement, context) {
     // 存储上下文信息，供后续 ConnectivityManager 使用
     if (context) {
         light.dataset.context = JSON.stringify(context);
+        if (context.type === 'custom' && context.modelType) {
+            light.dataset.modelType = context.modelType;
+            light.dataset.tooltipLabel = getCustomModelDisplayLabel(context.modelType);
+        }
     }
 
     // 将灯和 input 包在一个水平 flex 容器中，确保同行对齐
@@ -3020,7 +3136,8 @@ function updateLightStatus(lightElement, status) {
         [LightStatus.TESTING]: '测试中...',
     };
     const fallback = fallbackMap[status] || status;
-    lightElement.title = window.t ? window.t(tooltipKey, fallback) : fallback;
+    const statusLabel = window.t ? window.t(tooltipKey, fallback) : fallback;
+    lightElement.title = buildConnectivityLightTitle(lightElement, statusLabel);
 }
 
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
@@ -3089,6 +3206,17 @@ function buildConnectivityCacheId(scope, providerKey, key, url) {
         return `${scope}|${providerKey}|${key || ''}`;
     }
     return key || url || '';
+}
+
+function buildCustomConnectivityCacheId(providerType, subType, url, key, model) {
+    return [
+        'custom',
+        providerType || 'openai_compatible',
+        subType || '',
+        url || '',
+        key || '',
+        model || '',
+    ].join('|');
 }
 
 // ==================== 连通性测试：ConnectivityManager ====================
@@ -3197,7 +3325,15 @@ const ConnectivityManager = {
             const provider = providerSel.value;
             result.url = urlInput ? urlInput.value.trim() : '';
 
-            if (provider === 'follow_core') {
+            if (provider === 'follow_conversation' || provider === 'follow_summary') {
+                const sourceType = provider === 'follow_conversation' ? 'conversation' : 'summary';
+                const sourceResult = this.resolveEffectiveKey({ type: 'custom', modelType: sourceType });
+                Object.assign(result, sourceResult);
+                if (modelIdInput) {
+                    const sourceModel = document.getElementById(`${sourceType}ModelId`);
+                    result.model = sourceModel ? sourceModel.value.trim() : '';
+                }
+            } else if (provider === 'follow_core') {
                 // 跟随核心 API
                 const coreResult = this.resolveEffectiveKey({ type: 'core' });
                 // omni 模型使用 core_url (WebSocket)，其他模型使用 openrouter_url
@@ -3229,6 +3365,7 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+                result.model = modelIdInput ? modelIdInput.value.trim() : '';
             } else if (mt === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
                 // 端点可编辑的 TTS provider（如 vLLM-Omni）：走 Mode 2（custom 路径），
                 // 不设 providerKey/providerScope → 后端用用户输入的 URL，绝不退化成「指定
@@ -3313,10 +3450,13 @@ const ConnectivityManager = {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
                 } else {
-                    // 修复 PR #1764 review #6（CodeRabbit）：自定义路径 cacheId 纳入 model
-                    // vllm_omni + tts 切换 model 后必须重新探测（不同 model 可达性不同）
-                    const modelPart = result.model ? `|${result.model}` : '';
-                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}${modelPart}`;
+                    result.cacheId = buildCustomConnectivityCacheId(
+                        result.providerType,
+                        result.subType,
+                        result.url,
+                        result.key,
+                        result.model
+                    );
                 }
             }
             return result;
@@ -4026,8 +4166,8 @@ function initConnectivityLights() {
             summaryLight.className = 'connectivity-summary-light';
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
             summaryLight.dataset.modelType = mt;
-            const modelLabel = window.t ? window.t(`model.${mt}`, mt) : mt;
-            summaryLight.title = modelLabel;
+            summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
+            updateLightStatus(summaryLight, LightStatus.NOT_CONFIGURED);
             summaryRow.appendChild(summaryLight);
         });
 
@@ -4062,6 +4202,32 @@ function initConnectivityLights() {
 
     // ===== Task 7.2: Custom model indicator lights =====
     const customCurrentKeys = {}; // { [modelType]: currentKey }
+    function reRegisterModelSlot(modelType) {
+        if (!lightRefs.custom[modelType]) return;
+        const oldKey = customCurrentKeys[modelType];
+        customCurrentKeys[modelType] = reRegister(
+            lightRefs.custom[modelType].light,
+            lightRefs.custom[modelType].errorDisplay,
+            { type: 'custom', modelType },
+            oldKey,
+            lightRefs.custom[modelType].summaryLight
+        );
+    }
+
+    function syncModelFollowers(sourceType) {
+        const followerType = sourceType === 'conversation' ? 'gameMain' : 'gameSummary';
+        const providerSel = document.getElementById(`${followerType}ModelProvider`);
+        const expectedProvider = sourceType === 'conversation' ? 'follow_conversation' : 'follow_summary';
+        if (!providerSel || providerSel.value !== expectedProvider) return;
+        onCustomModelProviderChange(followerType);
+        reRegisterModelSlot(followerType);
+    }
+
+    function refreshFollowModelSlot(modelType) {
+        onCustomModelProviderChange(modelType);
+        reRegisterModelSlot(modelType);
+    }
+
     CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
         const keyInput = document.getElementById(`${mt}ModelApiKey`);
         if (!keyInput) return;
@@ -4079,7 +4245,8 @@ function initConnectivityLights() {
             ConnectivityManager.registerLight(key, summaryLight);
             // Set initial status to match the main light
             summaryLight.dataset.status = light.dataset.status;
-            summaryLight.title = (window.t ? window.t(`model.${mt}`, mt) : mt) + ' - ' + (light.title || '');
+            summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
+            updateLightStatus(summaryLight, light.dataset.status || LightStatus.NOT_CONFIGURED);
         }
         if (summaryLight) {
             lightRefs.custom[mt].summaryLight = summaryLight;
@@ -4128,14 +4295,11 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_core' && lightRefs.custom[mt]) {
-                    const oldCustomKey = customCurrentKeys[mt];
-                    customCurrentKeys[mt] = reRegister(
-                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
-                        { type: 'custom', modelType: mt }, oldCustomKey,
-                        lightRefs.custom[mt].summaryLight
-                    );
+                    refreshFollowModelSlot(mt);
                 }
             });
+            syncModelFollowers('conversation');
+            syncModelFollowers('summary');
         }, 300);
 
         apiKeyInput.addEventListener('input', handleCoreKeyChange);
@@ -4158,14 +4322,11 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
-                    const oldCustomKey = customCurrentKeys[mt];
-                    customCurrentKeys[mt] = reRegister(
-                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
-                        { type: 'custom', modelType: mt }, oldCustomKey,
-                        lightRefs.custom[mt].summaryLight
-                    );
+                    refreshFollowModelSlot(mt);
                 }
             });
+            syncModelFollowers('conversation');
+            syncModelFollowers('summary');
         }, 300);
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
@@ -4193,11 +4354,32 @@ function initConnectivityLights() {
             if (oldKey && oldKey !== customCurrentKeys[mt]) {
                 cascadeResetForKey(oldKey);
             }
+            if (mt === 'conversation' || mt === 'summary') {
+                syncModelFollowers(mt);
+            }
             // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
         }, 300);
 
         keyInput.addEventListener('input', handleCustomKeyChange);
         keyInput.addEventListener('change', handleCustomKeyChange);
+    });
+
+    // Custom model URL / model ID changes can affect connectivity cache even when Key is unchanged.
+    CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
+        ['Url', 'Id'].forEach(suffix => {
+            const input = document.getElementById(`${mt}Model${suffix}`);
+            if (!input || !lightRefs.custom[mt]) return;
+
+            const handleCustomEndpointChange = debounce(() => {
+                reRegisterModelSlot(mt);
+                if (mt === 'conversation' || mt === 'summary') {
+                    syncModelFollowers(mt);
+                }
+            }, 300);
+
+            input.addEventListener('input', handleCustomEndpointChange);
+            input.addEventListener('change', handleCustomEndpointChange);
+        });
     });
 
     // ===== Task 8.2: Provider switch event binding =====
@@ -4223,14 +4405,11 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && (providerSel.value === 'follow_core' || providerSel.value === 'follow_assist') && lightRefs.custom[mt]) {
-                    const oldCustomKey = customCurrentKeys[mt];
-                    customCurrentKeys[mt] = reRegister(
-                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
-                        { type: 'custom', modelType: mt }, oldCustomKey,
-                        lightRefs.custom[mt].summaryLight
-                    );
+                    refreshFollowModelSlot(mt);
                 }
             });
+            syncModelFollowers('conversation');
+            syncModelFollowers('summary');
         });
     }
 
@@ -4247,14 +4426,11 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
-                    const oldCustomKey = customCurrentKeys[mt];
-                    customCurrentKeys[mt] = reRegister(
-                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
-                        { type: 'custom', modelType: mt }, oldCustomKey,
-                        lightRefs.custom[mt].summaryLight
-                    );
+                    refreshFollowModelSlot(mt);
                 }
             });
+            syncModelFollowers('conversation');
+            syncModelFollowers('summary');
         });
     }
 
@@ -4273,14 +4449,11 @@ function initConnectivityLights() {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const providerSel = document.getElementById(`${mt}ModelProvider`);
                 if (providerSel && providerSel.value === 'follow_assist' && lightRefs.custom[mt]) {
-                    const oldCustomKey = customCurrentKeys[mt];
-                    customCurrentKeys[mt] = reRegister(
-                        lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
-                        { type: 'custom', modelType: mt }, oldCustomKey,
-                        lightRefs.custom[mt].summaryLight
-                    );
+                    refreshFollowModelSlot(mt);
                 }
             });
+            syncModelFollowers('conversation');
+            syncModelFollowers('summary');
         });
     }
 
@@ -4290,12 +4463,10 @@ function initConnectivityLights() {
         if (!providerSel || !lightRefs.custom[mt]) return;
 
         providerSel.addEventListener('change', () => {
-            const oldKey = customCurrentKeys[mt];
-            customCurrentKeys[mt] = reRegister(
-                lightRefs.custom[mt].light, lightRefs.custom[mt].errorDisplay,
-                { type: 'custom', modelType: mt }, oldKey,
-                lightRefs.custom[mt].summaryLight
-            );
+            reRegisterModelSlot(mt);
+            if (mt === 'conversation' || mt === 'summary') {
+                syncModelFollowers(mt);
+            }
         });
     });
 

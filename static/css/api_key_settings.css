@@ -1140,10 +1140,14 @@ transition: all 0.3s ease-in-out;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    width: 100%;
     padding: 12px 20px;
     background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     cursor: pointer;
+    font: inherit;
+    text-align: left;
     transition: all 0.2s ease-in-out;
 }
 
@@ -1187,7 +1191,39 @@ transition: max-height 0.3s ease-in-out;
 }
 
 .model-content.expanded {
-max-height: 2000px;
+    max-height: 2000px;
+}
+
+.nested-model-config-container {
+    margin: 10px 12px;
+    border: 1px solid #d6edf8;
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(64, 197, 241, 0.04);
+}
+
+.nested-model-header {
+    padding: 10px 14px;
+    background: rgba(64, 197, 241, 0.14);
+    border-bottom: 1px solid rgba(64, 197, 241, 0.16);
+}
+
+.nested-model-header .model-title {
+    color: var(--text-blue);
+    font-size: 0.9rem;
+}
+
+.nested-model-header .toggle-icon {
+    color: var(--text-blue);
+}
+
+.nested-model-header:hover {
+    opacity: 1;
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.16);
+}
+
+.nested-model-content.expanded {
+    max-height: 800px;
 }
 
 .model-content .field-row {

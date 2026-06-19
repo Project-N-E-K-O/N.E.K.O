@@ -14,7 +14,7 @@ Coverage:
 6. Idle cooldown: proactive ticks decay charge (two-tier retention by whether
    the turn spoke), never enter; thinking read is mode-only; decay is pinned to
    the observed episode + turn (skips on no-episode / episode-changed / inline
-   recharge of the same episode).
+   recharge of the same episode / user takeover mid-turn).
 """
 import os
 import sys
@@ -32,6 +32,7 @@ from main_logic.session_state import (
     FocusThresholds,
     SessionEvent,
     SessionStateMachine,
+    TurnOwner,
     _focus_decide,
     _FocusAction,
 )
@@ -588,6 +589,44 @@ async def test_idle_cooldown_skips_when_inline_recharged_same_episode(monkeypatc
         replied=True, episode_token=ep_tok, turn_token=turn_tok,
     )
     assert mgr.state.snapshot()["focus_charge"] == charge_fresh  # not decayed
+
+
+async def test_idle_cooldown_skips_after_user_takeover(monkeypatch):
+    # User typed during the proactive turn: USER_INPUT flips owner→USER and
+    # aborts the turn, but the inline focus update lands LATER (after mini-game /
+    # agent-callback handling), so the episode + turn token still match when the
+    # aborted proactive turn runs its cooldown. That stale tick must not decay
+    # the charge before the user's own message is scored — owner==USER gates it.
+    _patch_charge(monkeypatch, enter=1.0, idle_silent=0.7, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS, episode A, turn token unchanged
+    snap = mgr.state.snapshot()
+    ep_tok, turn_tok = snap["focus_episode_id"], snap["focus_turn_count"]
+    charge_now = snap["focus_charge"]
+    mgr.state.owner = TurnOwner.USER  # user took over mid-turn (USER_INPUT)
+    await mgr._focus_idle_cooldown(
+        replied=False, episode_token=ep_tok, turn_token=turn_tok,
+    )
+    assert mgr.state.snapshot()["focus_charge"] == charge_now  # not decayed
+    assert mgr.state.mode is CognitionMode.FOCUS
+
+
+async def test_idle_cooldown_replied_decays_even_when_owner_user(monkeypatch):
+    # A proactive turn that DID commit a reply (replied=True) genuinely spent the
+    # episode. Even if the user fired back fast enough to flip owner→USER before
+    # the cooldown ran (and the inline focus update hasn't landed yet, so the
+    # token still matches), the replied retention must STILL apply — the
+    # owner==USER shortcut is only for UNDELIVERED (replied=False) turns.
+    _patch_charge(monkeypatch, enter=1.0, idle_silent=0.7, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS, charge 1.0
+    snap = mgr.state.snapshot()
+    ep_tok, turn_tok = snap["focus_episode_id"], snap["focus_turn_count"]
+    mgr.state.owner = TurnOwner.USER  # user fired back after the reply committed
+    await mgr._focus_idle_cooldown(
+        replied=True, episode_token=ep_tok, turn_token=turn_tok,
+    )
+    assert abs(mgr.state.snapshot()["focus_charge"] - 0.6) < 1e-9  # still decayed ×0.6
 
 
 async def test_idle_cooldown_disabled_clears_regular_charge(monkeypatch):

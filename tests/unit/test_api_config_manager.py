@@ -287,10 +287,12 @@ class TestCustomApiToggle:
 
     @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
-        """enableCustomApi=true → all 8 model types can be overridden."""
+        """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
             ('summary', 'SUMMARY_MODEL'),
+            ('gameMain', 'GAME_MAIN_MODEL'),
+            ('gameSummary', 'GAME_SUMMARY_MODEL'),
             ('correction', 'CORRECTION_MODEL'),
             ('emotion', 'EMOTION_MODEL'),
             ('vision', 'VISION_MODEL'),
@@ -303,6 +305,8 @@ class TestCustomApiToggle:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameSummaryModelProvider': 'custom',
         }
         for camel_prefix, _ in model_types:
             payload[f'{camel_prefix}ModelUrl'] = f'https://{camel_prefix}.test/v1'
@@ -321,6 +325,161 @@ class TestCustomApiToggle:
                 f'{upper_url} not applied'
             assert cfg[upper_key] == f'sk-{camel_prefix}', \
                 f'{upper_key} not applied'
+
+    @pytest.mark.unit
+    def test_game_models_follow_conversation_and_summary_by_default(self, config_manager):
+        """Mini-game model slots default to the main text and summary model configs."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'https://conversation.custom.test/v1',
+            'conversationModelId': 'conversation-custom-model',
+            'conversationModelApiKey': 'sk-conversation-custom',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'https://summary.custom.test/v1',
+            'summaryModelId': 'summary-custom-model',
+            'summaryModelApiKey': 'sk-summary-custom',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert game_main['model'] == 'conversation-custom-model'
+        assert game_main['base_url'] == 'https://conversation.custom.test/v1'
+        assert game_main['api_key'] == 'sk-conversation-custom'
+        assert game_summary['model'] == 'summary-custom-model'
+        assert game_summary['base_url'] == 'https://summary.custom.test/v1'
+        assert game_summary['api_key'] == 'sk-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_main_explicit_custom_override(self, config_manager):
+        """Mini-game main model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameMainModelUrl': 'https://game-main.custom.test/v1',
+            'gameMainModelId': 'game-main-custom-model',
+            'gameMainModelApiKey': 'sk-game-main-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_main')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-main-custom-model'
+        assert result['base_url'] == 'https://game-main.custom.test/v1'
+        assert result['api_key'] == 'sk-game-main-custom'
+
+    @pytest.mark.unit
+    def test_game_summary_explicit_custom_override(self, config_manager):
+        """Mini-game summary model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameSummaryModelProvider': 'custom',
+            'gameSummaryModelUrl': 'https://game-summary.custom.test/v1',
+            'gameSummaryModelId': 'game-summary-custom-model',
+            'gameSummaryModelApiKey': 'sk-game-summary-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_summary')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-summary-custom-model'
+        assert result['base_url'] == 'https://game-summary.custom.test/v1'
+        assert result['api_key'] == 'sk-game-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_follow_conversation_and_summary_preserve_empty_api_keys(self, config_manager):
+        """Mini-game followers preserve legitimate no-auth keys from followed custom slots."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'http://localhost:8080/v1',
+            'conversationModelId': 'local-conversation-model',
+            'conversationModelApiKey': '',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'http://localhost:8081/v1',
+            'summaryModelId': 'local-summary-model',
+            'summaryModelApiKey': '',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        cfg = config_manager.get_core_config()
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert cfg['GAME_MAIN_MODEL_API_KEY'] == ''
+        assert cfg['GAME_SUMMARY_MODEL_API_KEY'] == ''
+        assert game_main['api_key'] == ''
+        assert game_summary['api_key'] == ''
+
+    @pytest.mark.unit
+    def test_game_follow_assist_derives_model_id_from_assist_profile(self, config_manager):
+        """Mini-game follow-assist slots keep model/url/key from the same assist provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'gemini',
+            'assistApiKeyGemini': 'sk-gemini',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_assist',
+            'gameMainModelId': 'stale-game-main-model',
+            'gameSummaryModelProvider': 'follow_assist',
+            'gameSummaryModelId': 'stale-game-summary-model',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        core_config = config_manager.get_core_config()
+
+        assert game_main['model'] == core_config['CONVERSATION_MODEL']
+        assert game_main['base_url'] == core_config['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-gemini'
+        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['base_url'] == core_config['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-gemini'
+
+    @pytest.mark.unit
+    def test_game_follow_core_derives_model_id_from_core_profile(self, config_manager):
+        """Mini-game follow-core slots keep model/url/key from the same core provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-openai',
+            'coreApi': 'openai',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_core',
+            'gameMainModelId': 'stale-game-main-model',
+            'gameSummaryModelProvider': 'follow_core',
+            'gameSummaryModelId': 'stale-game-summary-model',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        from utils.api_config_loader import get_assist_api_profiles
+        openai_profile = get_assist_api_profiles()['openai']
+
+        assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
+        assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-core-openai'
+        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-core-openai'
 
     @pytest.mark.unit
     def test_custom_api_key_empty_string_valid(self, config_manager):
@@ -1314,7 +1473,7 @@ class TestVllmOmniRawKeyPassthrough:
         assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
 
     @pytest.mark.unit
-    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager):
+    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):
         """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
         _write_core_config(config_manager, {
             'coreApi': 'gemini',
@@ -1333,8 +1492,8 @@ class TestVllmOmniRawKeyPassthrough:
             }
         }
         saved = {}
-        config_manager.load_characters = lambda: character_data
-        config_manager.save_characters = lambda data: saved.setdefault('data', data)
+        monkeypatch.setattr(config_manager, 'load_characters', lambda: character_data)
+        monkeypatch.setattr(config_manager, 'save_characters', lambda data: saved.setdefault('data', data))
 
         cleaned, legacy = config_manager.cleanup_invalid_voice_ids()
 

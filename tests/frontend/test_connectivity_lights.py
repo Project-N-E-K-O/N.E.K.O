@@ -162,6 +162,51 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
     _goto_and_wait(mock_page, running_server)
     _wait_for_lights_settled(mock_page, timeout=15000)
 
+    game_defaults = mock_page.evaluate("""() => ({
+        gameMain: getDefaultProviderForModelType('gameMain'),
+        gameSummary: getDefaultProviderForModelType('gameSummary'),
+    })""")
+    assert game_defaults == {
+        "gameMain": "follow_conversation",
+        "gameSummary": "follow_summary",
+    }
+
+    game_fold_state = mock_page.evaluate("""() => {
+        if (typeof toggleModelConfig === 'function') toggleModelConfig('game');
+        const gameContent = document.getElementById('game-model-content');
+        const gameMainContent = document.getElementById('game-main-model-content');
+        const gameSummaryContent = document.getElementById('game-summary-model-content');
+        const gameHeader = document.querySelector('[aria-controls="game-model-content"]');
+        const gameMainHeader = document.querySelector('[aria-controls="game-main-model-content"]');
+        const gameSummaryHeader = document.querySelector('[aria-controls="game-summary-model-content"]');
+        return {
+            gameHeaderTag: gameHeader?.tagName,
+            gameHeaderExpanded: gameHeader?.getAttribute('aria-expanded'),
+            gameMainHeaderTag: gameMainHeader?.tagName,
+            gameMainHeaderExpanded: gameMainHeader?.getAttribute('aria-expanded'),
+            gameSummaryHeaderTag: gameSummaryHeader?.tagName,
+            gameSummaryHeaderExpanded: gameSummaryHeader?.getAttribute('aria-expanded'),
+            gameExpanded: gameContent?.classList.contains('expanded') || false,
+            gameMainCollapsed: !gameMainContent?.classList.contains('expanded'),
+            gameSummaryCollapsed: !gameSummaryContent?.classList.contains('expanded'),
+            gameMainHidden: gameMainContent?.getAttribute('aria-hidden') === 'true',
+            gameSummaryHidden: gameSummaryContent?.getAttribute('aria-hidden') === 'true',
+        };
+    }""")
+    assert game_fold_state == {
+        "gameHeaderTag": "BUTTON",
+        "gameHeaderExpanded": "true",
+        "gameMainHeaderTag": "BUTTON",
+        "gameMainHeaderExpanded": "false",
+        "gameSummaryHeaderTag": "BUTTON",
+        "gameSummaryHeaderExpanded": "false",
+        "gameExpanded": True,
+        "gameMainCollapsed": True,
+        "gameSummaryCollapsed": True,
+        "gameMainHidden": True,
+        "gameSummaryHidden": True,
+    }
+
     initial_status = _get_core_light_status(mock_page)
 
     # Switch to a different provider (e.g., qwen)
@@ -192,6 +237,9 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
         const enableCustomApi = document.getElementById('enableCustomApi');
         enableCustomApi.checked = true;
         if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const customApiOptions = document.getElementById('custom-api-options');
+        if (customApiOptions) customApiOptions.style.display = 'block';
 
         // Expand conversation model section if collapsed
         const convContent = document.getElementById('conversation-model-content');
@@ -208,6 +256,12 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
 
         const urlInput = document.getElementById('conversationModelUrl');
         if (urlInput) urlInput.value = 'https://api.example.com/v1';
+
+        const modelInput = document.getElementById('conversationModelId');
+        if (modelInput) {
+            modelInput.value = 'neko-conversation-test-model';
+            modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
 
         const keyInput = document.getElementById('conversationModelApiKey');
         if (keyInput) {
@@ -240,7 +294,97 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    assert summary_count > 0, "Summary lights should exist after custom API is enabled"
+    assert summary_count == 10, "Summary lights should cover all custom model slots"
+
+    tooltip_state = mock_page.evaluate("""() => {
+        const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
+        const coreInput = document.getElementById('apiKeyInput');
+        const coreLight = coreInput?.closest('.connectivity-input-row')?.querySelector('.connectivity-light');
+        const label = window.t ? window.t('api.conversationModelConfig', '文本对话模型配置') : '文本对话模型配置';
+        const status = window.t ? window.t('connectivity.status.connected', '已连通') : '已连通';
+        const modelIdLabel = window.t ? window.t('api.modelId', '模型ID') : '模型ID';
+        return {
+            summaryTitle: summaryLight?.getAttribute('title') || '',
+            coreTitle: coreLight?.getAttribute('title') || '',
+            expectedTitle: `${label} ${status}\\n${modelIdLabel}: neko-conversation-test-model`,
+        };
+    }""")
+    assert tooltip_state["summaryTitle"] == tooltip_state["expectedTitle"]
+    assert "\n" not in tooltip_state["coreTitle"]
+    assert "neko-conversation-test-model" not in tooltip_state["coreTitle"]
+
+
+@pytest.mark.frontend
+def test_custom_api_deduplicates_same_custom_endpoint_and_model(mock_page: Page, running_server: str):
+    """Custom API slots with the same effective URL/key/model should share one backend probe."""
+    matching_requests = []
+    duplicate_url = "https://duplicate.example.com/v1"
+    duplicate_model = "shared-mini-game-model"
+
+    def handler(route):
+        body = json.loads(route.request.post_data or "{}")
+        if body.get("url") == duplicate_url and body.get("model") == duplicate_model:
+            matching_requests.append(body)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"success": True, "error": None, "error_code": None}),
+        )
+
+    mock_page.route("**/api/config/test_connectivity", handler)
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    cache_state = mock_page.evaluate("""({ duplicateUrl, duplicateModel }) => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const customApiOptions = document.getElementById('custom-api-options');
+        if (customApiOptions) customApiOptions.style.display = 'block';
+
+        ['gameMain', 'gameSummary'].forEach(mt => {
+            const provider = document.getElementById(`${mt}ModelProvider`);
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const urlInput = document.getElementById(`${mt}ModelUrl`);
+            urlInput.value = duplicateUrl;
+            urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+            const modelInput = document.getElementById(`${mt}ModelId`);
+            modelInput.value = duplicateModel;
+            modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+            const keyInput = document.getElementById(`${mt}ModelApiKey`);
+            keyInput.value = 'sk-shared-custom-key';
+            keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+
+        const main = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'gameMain' });
+        const summary = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'gameSummary' });
+        return {
+            mainCacheId: main.cacheId,
+            summaryCacheId: summary.cacheId,
+            mainModel: main.model,
+            summaryModel: summary.model,
+        };
+    }""", {"duplicateUrl": duplicate_url, "duplicateModel": duplicate_model})
+
+    assert cache_state["mainCacheId"] == cache_state["summaryCacheId"]
+    assert "gameMain" not in cache_state["mainCacheId"]
+    assert "gameSummary" not in cache_state["summaryCacheId"]
+    assert cache_state["mainModel"] == duplicate_model
+    assert cache_state["summaryModel"] == duplicate_model
+
+    mock_page.evaluate("""() => {
+        const btn = document.querySelector('.connectivity-test-btn');
+        if (btn) btn.click();
+    }""")
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    assert len(matching_requests) == 1
+    assert matching_requests[0]["provider_type"] == "openai_compatible"
 
 
 # ---------------------------------------------------------------------------

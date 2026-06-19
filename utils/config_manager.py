@@ -3797,6 +3797,8 @@ class ConfigManager:
             'OPENROUTER_URL': DEFAULT_OPENROUTER_URL,
             'CONVERSATION_MODEL': DEFAULT_CONVERSATION_MODEL,
             'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
+            'GAME_MAIN_MODEL': DEFAULT_CONVERSATION_MODEL,
+            'GAME_SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
             'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
             'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
             'ASSIST_API_KEY_QWEN': DEFAULT_CORE_API_KEY,
@@ -3823,6 +3825,10 @@ class ConfigManager:
             'CONVERSATION_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
             'SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
             'SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
+            'GAME_MAIN_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
+            'GAME_MAIN_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
+            'GAME_SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
+            'GAME_SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
             'CORRECTION_MODEL_URL': DEFAULT_CORRECTION_MODEL_URL,
             'CORRECTION_MODEL_API_KEY': DEFAULT_CORRECTION_MODEL_API_KEY,
             'EMOTION_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
@@ -4086,6 +4092,8 @@ class ConfigManager:
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
+        config['gameMainModelProvider'] = str(core_cfg.get('gameMainModelProvider', '') or '')
+        config['gameSummaryModelProvider'] = str(core_cfg.get('gameSummaryModelProvider', '') or '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
@@ -4121,6 +4129,10 @@ class ConfigManager:
                 """Recompute follow_* URLs for the current provider, avoiding stale regions saved historically."""
                 if provider == 'follow_assist':
                     return config.get('OPENROUTER_URL', '')
+                if provider == 'follow_conversation':
+                    return config.get('CONVERSATION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
+                if provider == 'follow_summary':
+                    return config.get('SUMMARY_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
                 if provider != 'follow_core':
                     return ''
 
@@ -4151,10 +4163,28 @@ class ConfigManager:
                     return resolved_url or core_profile.get('CORE_URL', '')
                 return ''
 
+            def _resolve_game_follow_model_id(prefix: str, provider: str) -> str:
+                if prefix not in ('gameMain', 'gameSummary'):
+                    return ''
+                if provider == 'follow_core':
+                    follow_core_profile = assist_api_profiles.get(core_api_value)
+                    if isinstance(follow_core_profile, dict):
+                        if prefix == 'gameSummary':
+                            return follow_core_profile.get('SUMMARY_MODEL', '') or config.get('SUMMARY_MODEL', '')
+                        return follow_core_profile.get('CONVERSATION_MODEL', '') or config.get('CONVERSATION_MODEL', '')
+                    return config.get('CORE_MODEL', '')
+                if provider != 'follow_assist':
+                    return ''
+                if prefix == 'gameSummary':
+                    return config.get('SUMMARY_MODEL', '')
+                return config.get('CONVERSATION_MODEL', '')
+
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)
                 ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
                 ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
+                ('gameMain',     'GAME_MAIN_MODEL',    'GAME_MAIN_MODEL_URL',    'GAME_MAIN_MODEL_API_KEY'),
+                ('gameSummary',  'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
                 ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
                 ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
@@ -4177,7 +4207,7 @@ class ConfigManager:
                 # 注：follow_* 下用户填的 modelId 当前在 get_model_api_config fallback
                 # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
                 # 那是另一个层面的问题，下个 PR 跟进。
-                is_follow = provider in ('follow_core', 'follow_assist')
+                is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
                 # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
                 # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
                 # 也必须优先保留 GSV URL，否则对话 TTS 会连到辅助 LLM endpoint。
@@ -4204,7 +4234,15 @@ class ConfigManager:
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
-                if cfg_model is not None:
+                if provider == 'follow_conversation':
+                    config[model_key] = config.get('CONVERSATION_MODEL', '')
+                elif provider == 'follow_summary':
+                    config[model_key] = config.get('SUMMARY_MODEL', '')
+                elif provider in ('follow_core', 'follow_assist'):
+                    followed_model = _resolve_game_follow_model_id(prefix, provider)
+                    if followed_model:
+                        config[model_key] = followed_model
+                elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 
                 # API Key 处理：
@@ -4230,6 +4268,10 @@ class ConfigManager:
                 elif provider == 'follow_assist':
                     if not skip_key_for_follow_gsv:
                         config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
+                elif provider == 'follow_conversation':
+                    config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '')
+                elif provider == 'follow_summary':
+                    config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
                 else:
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     if cfg_key is not None:
@@ -4305,6 +4347,20 @@ class ConfigManager:
                 'default_model': 'SUMMARY_MODEL',
                 'fallback_type': 'assist',
             },
+            'game_main': {
+                'custom_model': 'GAME_MAIN_MODEL',
+                'custom_url': 'GAME_MAIN_MODEL_URL',
+                'custom_key': 'GAME_MAIN_MODEL_API_KEY',
+                'default_model': 'GAME_MAIN_MODEL',
+                'fallback_type': 'conversation',
+            },
+            'game_summary': {
+                'custom_model': 'GAME_SUMMARY_MODEL',
+                'custom_url': 'GAME_SUMMARY_MODEL_URL',
+                'custom_key': 'GAME_SUMMARY_MODEL_API_KEY',
+                'default_model': 'GAME_SUMMARY_MODEL',
+                'fallback_type': 'summary',
+            },
             'correction': {
                 'custom_model': 'CORRECTION_MODEL',
                 'custom_url': 'CORRECTION_MODEL_URL',
@@ -4360,6 +4416,15 @@ class ConfigManager:
             raise ValueError(f"Unknown model_type: {model_type}. Valid types: {list(model_type_mapping.keys())}")
         
         mapping = model_type_mapping[model_type]
+
+        if model_type == 'game_main':
+            provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
+            if not treat_as_custom or provider == 'follow_conversation':
+                return self.get_model_api_config('conversation')
+        elif model_type == 'game_summary':
+            provider = str(core_config.get('gameSummaryModelProvider') or 'follow_summary').strip()
+            if not treat_as_custom or provider == 'follow_summary':
+                return self.get_model_api_config('summary')
         
         # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
         # 但 is_custom 仅在 enableCustomApi 开启时为 True。
@@ -4450,6 +4515,10 @@ class ConfigManager:
                 # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
+        elif mapping['fallback_type'] == 'conversation':
+            return self.get_model_api_config('conversation')
+        elif mapping['fallback_type'] == 'summary':
+            return self.get_model_api_config('summary')
         else:
             # 回退到辅助 API 配置
             return {
