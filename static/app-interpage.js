@@ -2796,7 +2796,7 @@
                 applyYuiGuideChatSpotlight(message.kind || '', {
                     preserveDuringResistance: message.preserveDuringResistance === true
                 });
-                scheduleYuiGuideChatInputSpotlightRetry();
+                scheduleYuiGuideChatInputSpotlightRetry(message.kind || '');
                 return true;
             }
             case 'yui_guide_set_chat_cursor': {
@@ -3216,6 +3216,7 @@
                         applyYuiGuideChatSpotlight(event.data.kind || '', {
                             preserveDuringResistance: event.data.preserveDuringResistance === true
                         });
+                        scheduleYuiGuideChatInputSpotlightRetry(event.data.kind || '');
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
@@ -4289,15 +4290,20 @@
         yuiGuideChatSpotlightLastPcRects = [];
     }
 
-    function scheduleYuiGuideChatInputSpotlightRetry() {
-        if (yuiGuideChatSpotlightKind !== 'input') {
+    function isYuiGuideChatInputSpotlightKind(kind) {
+        return kind === 'input' || kind === 'capsule-input';
+    }
+
+    function scheduleYuiGuideChatInputSpotlightRetry(kind) {
+        var retryKind = typeof kind === 'string' && kind ? kind : yuiGuideChatSpotlightKind;
+        if (!isYuiGuideChatInputSpotlightKind(retryKind)) {
             return;
         }
 
         [80, 180, 360, 720, 1200].forEach(function (delayMs) {
             yuiGuideChatSpotlightResources.setTimeout(function () {
-                if (yuiGuideChatSpotlightKind === 'input') {
-                    updateYuiGuideChatSpotlight('input');
+                if (yuiGuideChatSpotlightKind === retryKind) {
+                    updateYuiGuideChatSpotlight(retryKind);
                 }
             }, delayMs);
         });

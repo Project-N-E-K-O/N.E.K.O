@@ -555,6 +555,8 @@ test('app interpage sends external chat pet reports through the command bus', ()
     assert.match(standaloneChatBlock, /postYuiGuideMessageToPet\('request_avatar'/);
     assert.match(standaloneChatBlock, /postYuiGuideMessageToPet\('request_tutorial_chat_identity'/);
     assert.match(standaloneChatBlock, /postYuiGuideMessageToPet\('yui_guide_chat_ready'/);
+    assert.match(source, /return kind === 'input' \|\| kind === 'capsule-input';/);
+    assert.match(source, /scheduleYuiGuideChatInputSpotlightRetry\(message\.kind \|\| ''\);/);
     assert.match(standaloneChatBlock, /yuiGuideInterpageResources\.setTimeout\(drainPendingYuiGuideChatBridgeQueue,\s*0\)/);
     assert.match(standaloneChatBlock, /yuiGuideInterpageResources\.addEventListener\(window,\s*'neko:config-injected'/);
     assert.doesNotMatch(standaloneChatBlock, /window\.setTimeout\(drainPendingYuiGuideChatBridgeQueue/);
