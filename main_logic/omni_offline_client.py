@@ -19,7 +19,7 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, ThinkingStreamStripper, create_chat_llm, create_chat_llm_async
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, ThinkingStreamStripper, strip_thinking_segments, create_chat_llm, create_chat_llm_async
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -1029,7 +1029,13 @@ class OmniOfflineClient:
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 await self._execute_and_append_openai_tool_calls(
                     messages, calls,
-                    assistant_text=streamed_text_buffer,
+                    # Strip any leaked <think> CoT before it lands in history:
+                    # the streaming guard (ThinkingStreamStripper) only protects
+                    # TTS/UI; this assembled pre-tool text is persisted raw to the
+                    # assistant tool-call turn, so a leak-prone Focus turn would
+                    # otherwise carry CoT into the next turn's context. No-op on
+                    # clean replies (no think tag present).
+                    assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
                 )
                 # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
@@ -1317,7 +1323,10 @@ class OmniOfflineClient:
                 # 会重复前缀或改口，最终持久化历史的顺序也跟真实生成顺序对不上。
                 messages.append({
                     "role": "assistant",
-                    "content": streamed_text_buffer,
+                    # Symmetric with the OpenAI path: strip leaked <think> CoT
+                    # before persisting the pre-tool text to history (no-op on
+                    # clean replies / the genai path, which routes thought out).
+                    "content": strip_thinking_segments(streamed_text_buffer),
                     "tool_calls": tool_calls_dict,
                 })
                 for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
@@ -2082,8 +2091,18 @@ class OmniOfflineClient:
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
                                 if think_stripper is not None:
-                                    # New semantic unit after a tool round — the
-                                    # one-shot CoT preamble is behind us; don't hold.
+                                    # Flush before reset: if this pre-tool segment
+                                    # never emitted </think>, the stripper is still
+                                    # holding real answer text it withheld from
+                                    # TTS/UI. The inner generator already persisted
+                                    # that text to history (stripped), so emit it to
+                                    # TTS/UI only here — dropping it (a bare reset)
+                                    # would lose the pre-tool sentence. Then re-arm
+                                    # for the post-tool segment (new semantic unit).
+                                    _pretool_residual = think_stripper.flush()
+                                    if _pretool_residual and _pretool_residual.strip() and self.on_text_delta:
+                                        await self.on_text_delta(_pretool_residual, is_first_chunk)
+                                        is_first_chunk = False
                                     think_stripper.reset()
                                 # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
                                 # 发出去了，但 TTS 还没听到。tool 边界处不知道
