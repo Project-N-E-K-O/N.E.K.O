@@ -17,7 +17,9 @@
 Produces the single [0, 1] score that ``SessionStateMachine.update_focus``
 feeds into its hysteresis. Scoring is **inline-only**: it reads what the
 user just typed (``stream_text``), never the screen. The applicable
-signals are keyword + cadence — both need a real user message.
+signals are keyword + cadence + emotion — keyword/cadence read the message
+directly, emotion reads the latest master-emotion VA reading the caller hands
+in (no I/O in the scorer). All need a real user message / reading.
 
 The idle (``proactive_chat``) path does NOT score: a proactive turn never
 raises the Focus charge. Entering and sustaining Focus is driven solely by
@@ -71,13 +73,20 @@ class FocusScorer:
         )
 
     # ── public API ──────────────────────────────────────────────────
-    def score(self, *, user_text: str) -> FocusScore:
-        """Score one inline turn from the user's message (keyword + cadence).
+    def score(self, *, user_text: str, emotion_reading=None) -> FocusScore:
+        """Score one inline turn from the user's message (keyword + cadence + emotion).
 
         Side effect: when ``user_text`` is a real (non-empty) message, its
         length is appended to the cadence baseline buffer **after** the
         cadence signal is computed (so cadence always compares the current
         message against *prior* messages).
+
+        ``emotion_reading`` is the latest ``MasterEmotionReading`` (duck-typed:
+        any object with ``valence``/``arousal`` floats) from the master emotion
+        tracker, or ``None`` when unavailable. Stays I/O-free — the caller hands
+        in an already-computed reading, the scorer never analyzes. The reading
+        lags one turn (it is produced async) — by design, the same way cadence
+        compares against prior messages.
 
         No ``lang`` argument: the keyword signal scans every locale's
         vulnerability table in parallel (mixed-language speech is common),
@@ -85,8 +94,9 @@ class FocusScorer:
         """
         kw = self._signal_keyword(user_text)
         cadence = self._signal_cadence(user_text)
+        emotion = self._signal_emotion(emotion_reading)
 
-        signals = {"keyword": kw, "cadence": cadence}
+        signals = {"keyword": kw, "cadence": cadence, "emotion": emotion}
         score = _weighted_average(signals, config.FOCUS_SIGNAL_WEIGHTS)
 
         # Update the cadence baseline for this inline message.
@@ -122,6 +132,33 @@ class FocusScorer:
             return 1.0
         # linear ramp between the drop floor and the baseline
         return (baseline - cur) / (baseline - lo)
+
+    def _signal_emotion(self, emotion_reading) -> Optional[float]:
+        """Distress signal from the master emotion VA reading.
+
+        High arousal × negative valence → distress, the strongest Focus cue
+        (the model-grade upgrade of the vulnerability-keyword signal). Returns
+        ``None`` when no reading is available (master emotion off / not yet
+        analyzed), so it drops out of the weighted average instead of dragging
+        it toward zero.
+        """
+        if emotion_reading is None:
+            return None
+        valence = getattr(emotion_reading, "valence", None)
+        arousal = getattr(emotion_reading, "arousal", None)
+        if valence is None or arousal is None:
+            return None
+        try:
+            valence = float(valence)
+            arousal = float(arousal)
+        except (TypeError, ValueError):
+            return None
+        # arousal ∈ [0,1] = intensity; (1 - valence)/2 maps valence -1→1, 0→0.5,
+        # +1→0. So strong-negative & high-arousal (distress) ≈ 1; calm or happy
+        # ≈ low. Excitement (positive + high arousal) intentionally does NOT
+        # trigger Focus — Focus is for vulnerability / distress, not elation.
+        negativity = (1.0 - valence) / 2.0
+        return max(0.0, min(1.0, arousal * negativity))
 
 
 def _weighted_average(signals: dict, weights: dict) -> float:

@@ -1,0 +1,209 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Master (user) emotion tracker — instantaneous valence-arousal reading.
+
+The single source of truth for "how the user feels right now". One instance
+per session, owned alongside ``UserActivityTracker`` / ``FocusScorer``.
+
+  * Fed asynchronously from each real user turn (``_note_user_turn``),
+    throttled by ``MASTER_EMOTION_MIN_INTERVAL_SEC`` so rapid messages don't
+    hammer the emotion-tier model.
+  * Produces a two-dimensional reading — ``valence`` (negative ↔ positive) and
+    ``arousal`` (calm ↔ activated) — via the small ``emotion`` model tier,
+    reusing ``llm_enrichment._invoke_emotion_tier``.
+  * Consumed first by ``FocusScorer``'s ``emotion`` signal (distress = high
+    arousal × negative valence); later by memory / UI / proactive reactions.
+
+Hard boundaries:
+  * This is NOT the ``OUTWARD_EMOTION_ANALYSIS`` pipeline that drives lanlan's
+    avatar face — that analyzes the *character's* reply. This analyzes the
+    *user's* own utterance and never touches the avatar channel.
+  * Privacy-independent BY CONSTRUCTION: the input is what the user said, not
+    screen / app state. So it is NOT gated on privacy mode (see
+    ``docs/contributing/developer-notes.md`` rule 6), mirroring Focus.
+
+Only the latest reading is kept — long-term aggregation (dominant emotion /
+volatility / triggers) is a deferred extension; ``to_profile_sample`` is the
+hook a future memory consumer pulls from.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+import config
+
+logger = logging.getLogger(__name__)
+
+# ```json ... ``` fence the emotion tier (e.g. Gemini) may wrap the JSON in.
+# Mirrors system_router.emotion_analysis's stripping before robust_json_loads.
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)\s*```", flags=re.S)
+
+
+@dataclass(frozen=True)
+class MasterEmotionReading:
+    """One instantaneous read of the user's emotional state.
+
+    ``valence`` ∈ [-1, 1] (negative → positive), ``arousal`` ∈ [0, 1]
+    (calm → activated), ``confidence`` ∈ [0, 1]. ``source_excerpt`` keeps a
+    short prefix of the analyzed text for diagnostics only.
+    """
+
+    valence: float
+    arousal: float
+    confidence: float
+    updated_at: float
+    source_excerpt: str = ""
+
+
+def _clamp(value, lo: float, hi: float, default: float) -> float:
+    """Coerce ``value`` to a float in [lo, hi]; return ``default`` on junk/NaN."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return max(lo, min(hi, v))
+
+
+class MasterEmotionTracker:
+    """Per-session instantaneous master-emotion state. Async-fed, throttled."""
+
+    def __init__(self, lanlan_name: str) -> None:
+        self.lanlan_name = lanlan_name
+        self._latest: Optional[MasterEmotionReading] = None
+        self._last_attempt_at: float = 0.0
+
+    # ── public API ──────────────────────────────────────────────────
+    @property
+    def latest(self) -> Optional[MasterEmotionReading]:
+        """The most recent reading, or ``None`` if never analyzed / reset."""
+        return self._latest
+
+    def reset(self) -> None:
+        """Drop the current reading (call on session teardown / hot-swap)."""
+        self._latest = None
+        self._last_attempt_at = 0.0
+
+    async def analyze(
+        self, text: Optional[str], *, now: Optional[float] = None,
+    ) -> Optional[MasterEmotionReading]:
+        """Analyze one user utterance → update the latest VA reading.
+
+        Throttled by ``MASTER_EMOTION_MIN_INTERVAL_SEC`` and gated by
+        ``MASTER_EMOTION_ENABLED``. Best-effort: any failure (tier disabled,
+        bad JSON, timeout) leaves the previous reading intact and returns
+        ``None``. Returns the new reading on success.
+        """
+        if now is None:
+            now = time.time()
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return None
+        if self._should_skip(now):
+            return None
+        # Reserve the throttle slot up-front (before the await) so concurrent
+        # turns inside the same interval don't all fire a model call.
+        self._last_attempt_at = now
+
+        raw = await self._invoke(cleaned)
+        if not raw:
+            return None
+        reading = self._parse(raw, now=now, source=cleaned)
+        if reading is None:
+            return None
+        self._latest = reading
+        logger.info(
+            "[%s] master emotion: valence=%.2f arousal=%.2f conf=%.2f",
+            self.lanlan_name, reading.valence, reading.arousal, reading.confidence,
+        )
+        return reading
+
+    def to_profile_sample(self) -> Optional[dict]:
+        """Future long-term-profile hook: one sample = the latest reading.
+
+        Long-term aggregation is deferred; this lets a memory / reflection
+        consumer pull the current sample without reaching into private state.
+        """
+        r = self._latest
+        if r is None:
+            return None
+        return {
+            "valence": r.valence,
+            "arousal": r.arousal,
+            "confidence": r.confidence,
+            "at": r.updated_at,
+        }
+
+    # ── internals ────────────────────────────────────────────────────
+    def _should_skip(self, now: float) -> bool:
+        if not bool(getattr(config, "MASTER_EMOTION_ENABLED", True)):
+            return True
+        interval = float(getattr(config, "MASTER_EMOTION_MIN_INTERVAL_SEC", 6.0))
+        return (now - self._last_attempt_at) < interval
+
+    async def _invoke(self, text: str) -> Optional[str]:
+        # Reuse the package-internal emotion-tier call (same small model the
+        # activity enrichment uses). Telemetry currently attributes these to
+        # the shared ``activity_enrichment`` call type.
+        from config.prompts.prompts_emotion import get_master_emotion_va_prompt
+        from main_logic.activity.llm_enrichment import _invoke_emotion_tier
+
+        lang = self._resolve_lang(text)
+        # The VA prompt already says "the speaker in the conversation below",
+        # so the user's utterance follows directly — no extra delimiter needed.
+        prompt = get_master_emotion_va_prompt(lang) + "\n\n" + text
+        timeout = float(getattr(config, "MASTER_EMOTION_TIMEOUT_SEC", 8.0))
+        return await _invoke_emotion_tier(prompt, timeout=timeout, label="master_emotion")
+
+    @staticmethod
+    def _resolve_lang(text: str) -> str:
+        # Prompt language follows the language the user spoke in.
+        try:
+            from utils.language_utils import detect_language, normalize_language_code
+            return normalize_language_code(detect_language(text), format="short")
+        except Exception:
+            return "zh"
+
+    @staticmethod
+    def _parse(
+        raw: str, *, now: float, source: str,
+    ) -> Optional[MasterEmotionReading]:
+        from utils.file_utils import robust_json_loads
+
+        text = (raw or "").strip()
+        fence = _JSON_FENCE_RE.search(text)
+        if fence:
+            text = fence.group(1).strip()
+        try:
+            data = robust_json_loads(text)
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        # Require at least one of the two axes; a dict with neither is junk.
+        if "valence" not in data and "arousal" not in data:
+            return None
+        return MasterEmotionReading(
+            valence=_clamp(data.get("valence"), -1.0, 1.0, 0.0),
+            arousal=_clamp(data.get("arousal"), 0.0, 1.0, 0.0),
+            confidence=_clamp(data.get("confidence"), 0.0, 1.0, 0.5),
+            updated_at=now,
+            source_excerpt=source[:80],
+        )

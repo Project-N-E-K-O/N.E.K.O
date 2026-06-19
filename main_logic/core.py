@@ -1042,7 +1042,7 @@ class LLMSessionManager:
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
         # 详见 docs/design/user-activity-tracker.md。
-        from main_logic.activity import FocusScorer, UserActivityTracker
+        from main_logic.activity import FocusScorer, MasterEmotionTracker, UserActivityTracker
         from main_logic.conversation_turns import create_default_turn_dispatcher
         self._activity_tracker = UserActivityTracker(lanlan_name)
         self._turn_dispatcher = create_default_turn_dispatcher(
@@ -1056,6 +1056,12 @@ class LLMSessionManager:
         # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
         # proactive）共用同一个 scorer，保证行为不分裂。
         self._focus_scorer = FocusScorer(lanlan_name)
+
+        # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
+        # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
+        # 的 emotion 信号读它的最近读数）。绝不复用 lanlan 头像 outward-emotion 管线。
+        # privacy-independent（输入是对话不是屏幕），不受隐私门控。
+        self._master_emotion = MasterEmotionTracker(lanlan_name)
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
         # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
@@ -2350,7 +2356,14 @@ class LLMSessionManager:
             # they typed is core to an AI companion. Privacy mode governs only
             # SCREEN / app-state visibility (see docs/contributing/
             # developer-notes.md rule 6). Hence no snapshot fetch here.
-            scored = self._focus_scorer.score(user_text=user_text)
+            # emotion 信号读 master 情绪画像的最近读数（异步算、滞后一拍，与
+            # cadence 用历史一脉相承）。画像关 / 还没算过时 latest 为 None，
+            # FocusScorer 让 emotion 信号自动退出加权、退回 keyword+cadence。
+            _me = getattr(self, '_master_emotion', None)
+            emotion_reading = getattr(_me, 'latest', None)
+            scored = self._focus_scorer.score(
+                user_text=user_text, emotion_reading=emotion_reading,
+            )
             topic_changed = detect_topic_switch(user_text)
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
@@ -2656,6 +2669,15 @@ class LLMSessionManager:
             dispatcher.set_language(language)
 
     def _note_user_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+        # Master 情绪画像：异步分析用户这轮说的话（节流 + 开关都在 tracker 内部）。
+        # 语音转写 / 文本输入两条路径的对偶 chokepoint。fire-and-forget、best-effort，
+        # 绝不阻塞 turn 记录、不让分析异常冒泡。凝神 inline 评分读它的最近读数。
+        if text and text.strip() and getattr(self, '_master_emotion', None) is not None:
+            try:
+                self._fire_task(self._master_emotion.analyze(text, now=now))
+            except Exception as _me_err:
+                logger.debug("[%s] master emotion fire failed: %s", self.lanlan_name, _me_err)
+
         dispatcher = getattr(self, '_turn_dispatcher', None)
         if dispatcher is not None:
             dispatcher.note_user_message(text=text, now=now)
@@ -4113,6 +4135,7 @@ class LLMSessionManager:
             try:
                 await self.state.clear_focus()
                 self._focus_scorer.reset()
+                self._master_emotion.reset()
             except Exception as _focus_err:
                 logger.debug(f"[{self.lanlan_name}] focus reset on repetition failed: {_focus_err}")
 
@@ -4641,8 +4664,9 @@ class LLMSessionManager:
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
         # 对偶 SM.reset 清 focus 态：scorer 的 cadence 基线也按会话隔离，新会话
-        # 不继承上一会话的消息长度基线。
+        # 不继承上一会话的消息长度基线。master 情绪画像同样按会话隔离。
         self._focus_scorer.reset()
+        self._master_emotion.reset()
 
     def _realtime_base_url(self) -> str:
         """Read the realtime route's base_url, for the native voice routing host remap
