@@ -400,15 +400,15 @@ def test_tutorial_exit_clears_externalized_guide_chat_messages():
     assert "this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');" in fx_block
 
 
-def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
+def test_pc_external_chat_ghost_cursor_uses_overlay_with_dom_fallback():
     source = INTERPAGE_PATH.read_text(encoding="utf-8")
     cursor_block = source.split("function applyYuiGuideChatCursor(kind, options)", 1)[1].split(
         "function clearYuiGuideChatSpotlightTracking()",
         1,
     )[0]
 
-    assert "yui-guide-chat-cursor" not in source
-    assert "getYuiGuideChatCursorElement" not in source
+    assert "yui-guide-chat-cursor" in source
+    assert "function ensureYuiGuideChatCursorElement()" in source
     assert "cancelYuiGuideChatCursorElementAnimations" not in source
     assert ".animate(" not in cursor_block
     assert "sendYuiGuidePcOverlayPatch({" in cursor_block
@@ -416,7 +416,7 @@ def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
     assert "cursor: {" in cursor_block
     assert "visible: true" in cursor_block
     assert "effect: normalizedOptions.effect || ''" in cursor_block
-    assert "cursor.hidden = false" not in cursor_block
+    assert "cursor.hidden = false" in cursor_block
     assert "if (isYuiGuidePcCursorOnlyMode())" in cursor_block
 
 

@@ -1433,6 +1433,10 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
     assert.doesNotMatch(appInterpageSource, /function cancelYuiGuideChatCursorArcForCommand/);
     assert.match(appInterpageSource, /function getYuiGuideChatSpotlightItemTargets\(kind\) \{[\s\S]*document\.getElementById\('composer-tool-popover-compact'\)/);
     assert.match(appInterpageSource, /function getYuiGuideChatSpotlightItemTargets\(kind\) \{[\s\S]*document\.getElementById\('composer-avatar-tool-quickbar'\)/);
+    assert.match(appInterpageSource, /function getYuiGuideChatCursorTarget\(kind, options\) \{[\s\S]*normalizedOptions\.targetIndex/);
+    assert.match(appInterpageSource, /targets\[Math\.min\(targetIndex, targets\.length - 1\)\]/);
+    assert.match(appInterpageSource, /function ensureYuiGuideChatCursorElement\(\) \{[\s\S]*yui-guide-chat-cursor/);
+    assert.match(externalizedApplyCursorBlock, /return moveYuiGuideChatCursor\(kind, getYuiGuideChatCursorTargetPoint\(kind, normalizedOptions\), normalizedOptions\)/);
     assert.doesNotMatch(appInterpageSource, /kind === 'avatar-tools'\) \{[\s\S]*getYuiGuideChatVisibleElement\('#react-chat-window-root \.composer-emoji-btn'\)/);
     assert.doesNotMatch(externalizedArcBlock, /yuiGuideChatCursorRequestToken \+= 1;/);
     assert.match(externalizedArcBlock, /var arcRequestToken = \+\+yuiGuideChatCursorArcRequestToken;/);

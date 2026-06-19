@@ -1078,8 +1078,8 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     for template_path in ("templates/index.html", "templates/chat.html"):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
-        assert "/static/app-interpage.js?v={{ react_chat_asset_version }}" in source
-        assert "/static/app-interpage.js?v={{ static_asset_version }}" not in source
+        assert "/static/app-interpage.js?v={{ static_asset_version }}" in source
+        assert "/static/app-interpage.js?v={{ react_chat_asset_version }}" not in source
         for asset_path in react_assets:
             assert f"{asset_path}?v={react_version}" in source
             assert f"{asset_path}?v={static_version}" not in source

@@ -3912,6 +3912,28 @@
         return null;
     }
 
+    function getYuiGuideChatVisibleElements(selector, root) {
+        var scope = root || document;
+        return Array.prototype.slice.call(scope.querySelectorAll(selector)).filter(function (element, index, array) {
+            var rect = element && typeof element.getBoundingClientRect === 'function'
+                ? element.getBoundingClientRect()
+                : null;
+            return element && array.indexOf(element) === index && rect && rect.width > 0 && rect.height > 0;
+        });
+    }
+
+    function getYuiGuideChatVisibleElementsFromSelectors(selectors) {
+        var results = [];
+        (Array.isArray(selectors) ? selectors : []).forEach(function (selector) {
+            getYuiGuideChatVisibleElements(selector).forEach(function (element) {
+                if (results.indexOf(element) < 0) {
+                    results.push(element);
+                }
+            });
+        });
+        return results;
+    }
+
     function getYuiGuideChatSpotlightItemTargets(kind) {
         var popover = document.getElementById('composer-tool-popover-compact');
         var quickbar = document.getElementById('composer-avatar-tool-quickbar');
@@ -3930,6 +3952,14 @@
                 getYuiGuideChatVisibleElement('[data-avatar-tool-id]', quickbar)
             ].filter(Boolean);
         }
+        if (kind === 'avatar-tool-items') {
+            return getYuiGuideChatVisibleElements('#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id]')
+                .concat(getYuiGuideChatVisibleElements('#composer-avatar-tool-quickbar .composer-icon-button[data-avatar-tool-id]'))
+                .concat(getYuiGuideChatVisibleElements('.composer-icon-button[data-avatar-tool-id]'))
+                .filter(function (element, index, array) {
+                    return array.indexOf(element) === index;
+                });
+        }
         if (kind === 'galgame') {
             return [
                 getYuiGuideChatVisibleElement('.compact-input-tool-item-galgame', popover),
@@ -3939,8 +3969,23 @@
         return [];
     }
 
-    function getYuiGuideChatCursorTargetPoint(kind) {
-        var target = getYuiGuideChatSpotlightTarget(kind);
+    function getYuiGuideChatCursorTarget(kind, options) {
+        var normalizedOptions = options || {};
+        var targetIndex = Number.isFinite(Number(normalizedOptions.targetIndex))
+            ? Math.max(0, Math.floor(Number(normalizedOptions.targetIndex)))
+            : 0;
+        var entry = getYuiGuideChatTargetRegistryEntryByExternalKind(kind);
+        var targets = entry && Array.isArray(entry.localSelectors)
+            ? getYuiGuideChatVisibleElementsFromSelectors(entry.localSelectors)
+            : getYuiGuideChatSpotlightItemTargets(kind);
+        if (targets.length > 0) {
+            return targets[Math.min(targetIndex, targets.length - 1)];
+        }
+        return getYuiGuideChatSpotlightTarget(kind);
+    }
+
+    function getYuiGuideChatCursorTargetPoint(kind, options) {
+        var target = getYuiGuideChatCursorTarget(kind, options);
         var rect = target && typeof target.getBoundingClientRect === 'function'
             ? target.getBoundingClientRect()
             : null;
@@ -3949,6 +3994,38 @@
             x: rect.left + rect.width / 2,
             y: rect.top + rect.height / 2
         };
+    }
+
+    function ensureYuiGuideChatCursorElement() {
+        var cursor = document.getElementById('yui-guide-chat-cursor');
+        if (cursor) return cursor;
+        if (!document.body) return null;
+        cursor = document.createElement('div');
+        cursor.id = 'yui-guide-chat-cursor';
+        cursor.setAttribute('aria-hidden', 'true');
+        cursor.style.position = 'fixed';
+        cursor.style.left = '0';
+        cursor.style.top = '0';
+        cursor.style.width = '18px';
+        cursor.style.height = '18px';
+        cursor.style.borderRadius = '999px';
+        cursor.style.background = 'rgba(80, 140, 255, 0.78)';
+        cursor.style.boxShadow = '0 0 0 4px rgba(80, 140, 255, 0.22), 0 8px 18px rgba(0, 0, 0, 0.24)';
+        cursor.style.pointerEvents = 'none';
+        cursor.style.zIndex = '2147483600';
+        cursor.style.opacity = '0';
+        cursor.style.transform = 'translate3d(-9999px, -9999px, 0)';
+        cursor.style.transitionProperty = 'transform, opacity, box-shadow, background-color';
+        cursor.style.transitionTimingFunction = 'cubic-bezier(0.22, 1, 0.36, 1)';
+        document.body.appendChild(cursor);
+        return cursor;
+    }
+
+    function hideYuiGuideChatCursorElement() {
+        var cursor = document.getElementById('yui-guide-chat-cursor');
+        if (!cursor) return;
+        cursor.style.opacity = '0';
+        cursor.hidden = true;
     }
 
     function reportYuiGuideChatCursorAnchor(screenPoint, kind, effect, effectDurationMs, options) {
@@ -4016,7 +4093,14 @@
             }
             return true;
         }
-        return false;
+        var cursor = ensureYuiGuideChatCursorElement();
+        if (!cursor) return false;
+        cursor.style.transitionDuration = duration + 'ms, 120ms, 120ms, 120ms';
+        cursor.hidden = false;
+        cursor.style.opacity = '1';
+        cursor.style.transform = 'translate3d(' + Math.round(point.x - 9) + 'px, ' + Math.round(point.y - 9) + 'px, 0)';
+        yuiGuideChatCursorPoint = { x: point.x, y: point.y };
+        return true;
     }
 
     function applyYuiGuideChatCursor(kind, options) {
@@ -4036,11 +4120,12 @@
                     cursor: { visible: false }
                 });
             }
+            hideYuiGuideChatCursorElement();
             yuiGuideChatCursorPoint = null;
             return true;
         }
         if (isYuiGuidePcCursorOnlyMode()) {
-            var targetPoint = getYuiGuideChatCursorTargetPoint(kind);
+            var targetPoint = getYuiGuideChatCursorTargetPoint(kind, normalizedOptions);
             if (!targetPoint) return false;
             var screenPoint = toYuiGuideScreenPoint(targetPoint.x, targetPoint.y);
             var freezeKey = kind + ':' + (normalizedOptions.timestamp || '');
@@ -4075,12 +4160,12 @@
             }
             return true;
         }
-        return false;
+        return moveYuiGuideChatCursor(kind, getYuiGuideChatCursorTargetPoint(kind, normalizedOptions), normalizedOptions);
     }
 
     function applyYuiGuideChatCursorDrag(kind, options) {
         yuiGuideChatCursorRequestToken = yuiGuideChatCursorRequestToken + 1;
-        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind);
+        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind, options || {});
         if (!start) return false;
         return moveYuiGuideChatCursor(kind, {
             x: start.x + (Number.isFinite(Number(options && options.deltaX)) ? Number(options.deltaX) : 0),
@@ -4090,8 +4175,8 @@
 
     function applyYuiGuideChatCursorArc(kind, options) {
         var arcRequestToken = ++yuiGuideChatCursorArcRequestToken;
-        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind);
-        var center = getYuiGuideChatCursorTargetPoint(kind);
+        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind, options || {});
+        var center = getYuiGuideChatCursorTargetPoint(kind, options || {});
         if (!start || !center) return false;
         var direction = Number(options && options.direction) < 0 ? -1 : 1;
         var fraction = Number.isFinite(Number(options && options.fraction)) ? Math.max(0, Math.min(1, Number(options.fraction))) : 0.2;
