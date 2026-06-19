@@ -175,7 +175,6 @@ _BADMINTON_CHAT_RATE_WINDOW_SECONDS = 8.0
 _BADMINTON_CHAT_RATE_MAX = 10
 _BADMINTON_SCORES_DB_PATH: Path | None = None
 _BADMINTON_LEGACY_SCORES_DB_PATH = Path(__file__).resolve().with_name("badminton_scores.db")
-_BADMINTON_SCORES_DB_MIGRATED = False
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
 _MAX_GAME_MEMORY_TAIL_COUNT = 50
 
@@ -5322,15 +5321,15 @@ def _get_badminton_scores_db_path(game_type: Any = "badminton") -> Path:
 
 
 def _prepare_badminton_scores_db_path(game_type: Any = "badminton") -> Path:
-    global _BADMINTON_SCORES_DB_MIGRATED
     slug = _score_db_game_slug(game_type)
     db_path = _get_badminton_scores_db_path(slug)
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    migration_attempted = bool(getattr(_prepare_badminton_scores_db_path, "_migration_attempted", False))
     if (
         slug == "badminton"
         and
         _BADMINTON_SCORES_DB_PATH is None
-        and not _BADMINTON_SCORES_DB_MIGRATED
+        and not migration_attempted
         and not db_path.exists()
         and _BADMINTON_LEGACY_SCORES_DB_PATH.exists()
     ):
@@ -5346,7 +5345,8 @@ def _prepare_badminton_scores_db_path(game_type: Any = "badminton") -> Path:
                 "🏸 羽毛球排行榜 DB 迁移失败，将使用新 runtime DB: %s",
                 exc,
             )
-    _BADMINTON_SCORES_DB_MIGRATED = True
+    if slug == "badminton":
+        setattr(_prepare_badminton_scores_db_path, "_migration_attempted", True)
     return db_path
 
 
