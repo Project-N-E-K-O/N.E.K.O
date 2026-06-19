@@ -9,9 +9,11 @@
 > P25 Day 1 subagent 并行开发首次应用 + P25 Day 1 fixup mirror shape +
 > P25 Day 2 前端面板派生 + Day 2 polish 手测 r1-r6 派生 + Day 3 `last_llm_wire`
 > 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生 +
-> P26 C3 hotfix markdown pipeline + USER_MANUAL 深度事实对齐派生的
-> 25 条候选元教训 (L28-L52, 登记于 §7.A 候选区, 未计入主编号 29 条;
-> **L50 / L51 已升格为 §7.28 / §7.29**, 其余候选待 P27+ 二次复现后升格).
+> P26 C3 hotfix markdown pipeline + USER_MANUAL 深度事实对齐 +
+> **上游同步 2026-06 (testbench 对齐主程序 `main` 至 7 月): 记忆子系统语义合约覆盖派生**的
+> 30 条候选元教训 (L28-L57, 登记于 §7.A 候选区, 未计入主编号 29 条;
+> **L50 / L51 已升格为 §7.28 / §7.29**, 其余候选待 P27+ 二次复现后升格.
+> **本轮新增 L56 (合约 smoke 单因子隔离) / L57 (按 import 副作用画像选 直接import vs copy+drift)**).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -653,7 +655,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
         - §1.4 "覆盖度 RAG 灯" 的**文档版本** — 文档起草也可做 RAG 自检: 章节覆盖 UI 区域的比例 / 章节实锤的代码引用行数 / 章节手测通过的 pass 轮次. 绿黄红三灯对齐.
     - **对应 Cursor skill**: `docs-code-reality-grep-before-draft` (2026-04-24 post-push 整理期同批抽出, `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md`, 四层防御全量落纸; 与 §7.28 `server-boot-id-for-ui-state` 同为"升格条目 → 可机械化 skill"第二个实证).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)**, 待二次复现后并入主编号)
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)** + **上游同步 2026-06 记忆子系统覆盖派生 L56/L57**, 待二次复现后并入主编号)
 
 > 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列候选 (L28-L52)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
@@ -1276,6 +1278,34 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - L48 §7.A "文档四象限分层" 的**review 维度版** — L48 按读者象限分流文档, L55 按 bug 维度分流 review. 两者都强调"输入分类后差异处理".
 - **候选 skill** (P27+ 再命中 1 次后抽): `multi-round-ai-review-pattern-matrix` — 触发条件 = "项目接收第 2/3/4 轮 GitHub AI review, 准备做第 N 批 maintenance patch". 模板: (1) 列出本轮 N 条意见; (2) 对照上轮维度矩阵, 标注本轮每条所属维度 (新维度 / 已扫维度); (3) 已扫维度的指认仍按 L53 流程过 (不假定为误报); (4) 新维度优先抽 chokepoint 或 sweep helper; (5) 收尾把本轮维度并入矩阵供下一轮参考.
 - **进入主编号条件**: 需要在 P27+ 或其它项目再有一次"二轮以上 AI review 仍挖出真 bug 且 pattern 与前轮不重叠" 才升级为 **§7.31 "AI review 多轮迭代价值 + bug surface 多维"** (与 L53 升 §7.30 同批考虑).
+
+---
+
+**L56 (新候选) "对比/数学类合约 smoke 的断言必须单因子隔离 — 测某维度时固定其它所有自由度, 否则会测到耦合维度反向掩盖目标维度"** (上游同步 2026-06 Phase 3, `p30_anti_repeat_smoke.py` C4 自踩派生, 2026-06-19, 单次实锤):
+
+- **场景**: 给一个**多输入耦合**的纯函数 (BM25 评分: 分数同时受前景词频 TF↑ 与文档频率 DF↑→IDF↓ 反向影响) 写合约 smoke, 想断言"前景出现越多分越高 (TF 累积)". 初版图省事直接令背景语料 `bg = fg` (同一批文档既当前景又当背景), 然后只改 fg 里某词的出现次数, 断言"`more` 文档 > `less` 文档".
+- **失败模式**: `bg=fg` 意味着改 fg 的同时**也改了** bg → 该词的 DF 跟着变, rare 词高 IDF 的增益**反盖过** TF 累积的增益, 断言方向直接翻转 (`more` 反而 < `less`), smoke 红。表面看像"被测函数错了", 实则是**测试自身把两个自由度焊死了**, 测到的是 TF 与 IDF 的净效应而非 TF 单独效应。
+- **修法**: **固定背景** (锁死 DF/IDF 这一自由度) , 只在前景里变目标词的出现次数 (单独放开 TF) , 断言才回到正确方向。
+- **归纳为合约测试设计纪律**: 给"多输入单输出且各输入对输出方向不一致"的纯函数写断言时, 必须**先列出函数的全部自由度** (TF / DF / 文档长度 / k1 / b / 半衰期 / 时钟 ...), 断言某一维度的单调性时**显式固定其它所有维度**, 禁止让一个 fixture 同时驱动两个维度 (尤其"同一份数据既当 query-side 又当 corpus-side"是最隐蔽的耦合)。一句话: **合约 smoke 是受控实验, 不是端到端冒烟; 受控实验的第一纪律是单因子。**
+- **关联**:
+    - §1.6 "语义契约 vs 运行时机制" 的**测试侧补充** — §1.6 解决"测什么 (纯函数才测)", L56 解决"怎么断言 (单因子隔离)"。
+    - L43 §7.A "LLM 调用点契约用 AST 静态扫" 同属"合约守护"家族, 但 L56 针对**数值/排序类**合约的断言设计陷阱。
+- **候选 skill** (P27+ 再命中 1 次后抽): `contract-smoke-single-factor-isolation` — 触发条件 = "给多输入耦合的纯函数 (评分 / 排序 / 衰减 / 融合) 写单调性 / 阈值断言"。模板: (1) 列函数全部自由度; (2) 断言目标维度前, 把其它维度钉成常量 fixture; (3) 杜绝"同一份数据喂两个 side"; (4) 断言失败先怀疑 fixture 焊死了第二维度, 再怀疑被测函数。
+- **进入主编号条件**: 需要在 P27+ 任一阶段再命中一次"合约 smoke 因 fixture 耦合两个自由度导致断言反向/假阴" (任意评分/排序/融合/衰减类纯函数), 才升级为 §7.30/§7.31。
+
+---
+
+**L57 (新候选) "复用上游模块前先用 import 副作用探针决定 '直接 import 纯函数' vs 'copy + drift smoke'，两条策略各有适用面，不可一刀切"** (上游同步 2026-06 Phase 3.0/Phase 3 派生, 2026-06-19, 单次实锤 + 与 avatar copy+drift 互补):
+
+- **场景**: testbench 要复用主程序的逻辑做合约覆盖。有两条正交策略: (A) **直接 `import` 上游纯函数** (耦合即目的: 上游改公式→配对 smoke 应当 break, 这是"想要的耦合"); (B) **copy 一份 + drift smoke** (byte-hash / 解析值比对, 用于上游模块带 import-time 副作用、直接 import 会拖垮 testbench 的场景)。本轮要在 `memory.evidence/hybrid_recall/recall/refine/anti_repeat` 与 `main_logic.topic.*` 上选策略。
+- **失败模式 (若一刀切)**: 早期 avatar_dedupe 因 `main_logic.cross_server` 在 import 时拉起 `ssl`/`aiohttp` 等重副作用, 被迫走 (B) copy+drift。若把"凡上游一律 copy"当成铁律, 本轮 5 个记忆/话题模块就会被无谓 copy 5 份 → 上游一改公式, testbench 的 copy 与 drift smoke 双双滞后, 反而**违背**"想要的耦合"初衷; 反过来若"凡上游一律直接 import", 撞上带副作用的模块 (cross_server) 又会让 testbench 进程被污染/变慢。
+- **修法 (本轮实证)**: 落策略前**先跑 import 副作用探针** —— 实测 `import memory.evidence` / `import main_logic.topic.signals` 无副作用且快 (后者 0.31s) → 走 (A) 直接 import; 而 `main_logic.cross_server` 带 ssl/aiohttp import-time 副作用 → 维持 (B) copy+drift。判据写进 ARCHITECTURE_OVERVIEW §2.4.1 与 UPSTREAM_SYNC Phase 3.0。
+- **归纳为复用策略纪律**: "testbench 复用上游" 不是单一手法, 而是**按被复用模块的 import-time 副作用画像二分**: 无副作用纯函数 → 直接 import (拥抱耦合 + 合约 smoke 守公式); 有副作用 → copy + drift smoke (隔离副作用 + byte/解析值守等价)。**选策略前必须先探副作用, 不靠"凡上游一律 X"的惯性。**
+- **关联**:
+    - §1.6 "语义契约 vs 运行时机制" — L57 是它的**复用落地手法层**: §1.6 判"哪些是纯函数语义合约", L57 判"纯函数该 import 还是 copy"。
+    - avatar_dedupe copy+drift (`p25_avatar_dedupe_drift_smoke.py`) = 策略 (B) 的首例; 本轮 5 adapter = 策略 (A) 的批量实证。两者**互补而非同族** (防御手法不同: drift-smoke vs contract-smoke), 故不直接升格, 留候选。
+- **候选 skill** (P27+ 再命中 1 次后抽): `reuse-strategy-by-import-side-effect-probe` — 触发条件 = "要在测试生态里复用生产模块的逻辑"。模板: (1) 先 `python -c "import X; print(elapsed)"` 探副作用与耗时; (2) 无副作用→直接 import + 配对 contract smoke (拥抱耦合); (3) 有副作用→copy + drift smoke (byte-hash/解析值); (4) 把判据写进架构文档, 不留"凭感觉 copy"。
+- **进入主编号条件**: 需要在 P27+ 再命中一次"按 import 副作用画像在 直接import vs copy 间做出(且事后被证明正确的)二选一" 才升级为 §7.30/§7.31。
 
 ---
 
