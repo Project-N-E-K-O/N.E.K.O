@@ -5481,6 +5481,7 @@ describe('App', () => {
     await openCompactInputTools();
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     const fanRectSpy = mockCompactToolFanRect(fan);
+    // The default wheel's slot 0 sits at 45deg on the 80px orbit, initially the screenshot tool.
     const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
 
     try {
@@ -5502,6 +5503,7 @@ describe('App', () => {
       });
 
       expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
       expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
       expect(avatarButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
     } finally {
