@@ -474,9 +474,12 @@
                     durationMs > 0 ? durationMs + 500 : undefined
                 );
             }
-            const primaryTarget = Object.prototype.hasOwnProperty.call(event, 'primaryTarget')
+            let primaryTarget = Object.prototype.hasOwnProperty.call(event, 'primaryTarget')
                 ? event.primaryTarget
-                : await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');
+                : null;
+            if (!primaryTarget) {
+                primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');
+            }
             if (typeof director.runAvatarFloatingSceneOperation === 'function') {
                 return await director.runAvatarFloatingSceneOperation(
                     legacyScene,

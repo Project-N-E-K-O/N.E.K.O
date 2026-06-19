@@ -579,7 +579,7 @@ def test_externalized_resistance_restores_home_cursor_visibility_before_animatin
 
 def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bridge():
     source = INTERPAGE_PATH.read_text(encoding="utf-8")
-    bridge_block = source.split("function sendYuiGuidePcOverlayPatch(patch, retried)", 1)[1].split(
+    bridge_block = source.split("function sendYuiGuidePcOverlayPatch(patch, retried, options)", 1)[1].split(
         "function isYuiGuidePcCursorOnlyMode()",
         1,
     )[0]

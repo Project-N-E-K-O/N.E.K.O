@@ -1889,11 +1889,13 @@ test('director routes termination requests through TutorialTerminationRouter', (
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
     assert.match(routerBlock, /director\.tutorialManager\.handleTutorialSkipRequest\(\)/);
-    assert.doesNotMatch(routerBlock, /director\.skip\('skip', 'skip'\)/);
+    assert.match(routerBlock, /await director\.skip\('skip', 'skip'\);/);
     assert.match(routerBlock, /director\.forwardPluginDashboardSkipRequestToButton\(detail\)/);
     assert.match(requestTerminationBlock, /return this\.terminationRouter\.requestTermination\(reason,\s*tutorialReason\);/);
     assert.match(skipBlock, /return this\.terminationRouter\.skip\(reason,\s*tutorialReason\);/);
     assert.match(pageHideBlock, /this\.tutorialManager\.requestTutorialEnd\('pagehide'\)/);
+    assert.match(pageHideBlock, /try \{/);
+    assert.match(pageHideBlock, /pagehide tutorial end threw/);
     assert.match(pageHideBlock, /this\.destroy\(\);/);
     assert.match(pluginSkipBlock, /return this\.terminationRouter\.handlePluginDashboardSkipRequest\(data\);/);
     assert.doesNotMatch(requestTerminationBlock, /beginTerminationVisualCleanup/);
@@ -1964,7 +1966,7 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
-    assert.doesNotMatch(routerBlock, /director\.skip\('skip', 'skip'\)/);
+    assert.match(routerBlock, /await director\.skip\('skip', 'skip'\);/);
     assert.doesNotMatch(routerBlock, /director\.beginTerminationVisualCleanup\(\);/);
     assert.match(resistanceControllerSource, /director\.requestTermination\(source \|\| 'angry_exit', 'angry_exit'\);/);
     assert.match(resistanceControllerSource, /minDurationMs:\s*Number\.isFinite\(angryExitNarrationDurationMs\)/);

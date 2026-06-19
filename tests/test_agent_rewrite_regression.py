@@ -1292,6 +1292,9 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
     live2d_model_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
+    visual_runtime_source = Path("static/tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
+    resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
 
     begin_start = avatar_reload_source.index("beginOverride()")
     restore_start = avatar_reload_source.index("restoreOverride()")
@@ -1369,6 +1372,15 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "const remainingMs = Math.max(0, maxWaitTime - (Date.now() - startedAt));" in tutorial_source
     assert "const live2dIdle = await this.waitForLive2dModelLoadIdle(remainingMs);" in tutorial_source
     assert "return true;" in tutorial_source
+    end_request_block = tutorial_source.split("requestTutorialEnd(reason = 'destroy') {", 1)[1].split(
+        "requestTutorialDestroy(reason = 'destroy') {",
+        1,
+    )[0]
+    assert "const driver = this.driver;" in end_request_block
+    assert "if (this.driver !== driver) {" in end_request_block
+    assert end_request_block.index("if (this.driver !== driver) {") < end_request_block.index(
+        "const skipButtonStillVisible"
+    )
     reset_block = tutorial_source.split("resetTutorialStartState() {", 1)[1].split(
         "emitTutorialStarted(",
         1,
@@ -1408,6 +1420,9 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
     assert "var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;" in interpage_source
     assert "suppressPersistentExpressions: skipPersistentExpressions" in interpage_source
+    assert "var frozenScreenPoint = freezePoint ? yuiGuideChatCursorFrozenScreenPoints[freezeKey] : null;" in interpage_source
+    assert "if (!targetPoint && !frozenScreenPoint) return false;" in interpage_source
+    assert "if (event.origin !== window.location.origin) return;" in interpage_source
     assert "live2dContainer2.style.removeProperty('opacity');" in interpage_source
     assert "live2dCanvas2.style.removeProperty('opacity');" in interpage_source
     assert "typeof window.showLive2d === 'function'" in interpage_source
@@ -1441,6 +1456,28 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "window.addEventListener('load', reveal, { once: true });" in live2d_init_source
     assert "neko-live2d-model-ready" in live2d_model_source
     assert "this._modelLoadState = 'ready';" in live2d_model_source
+    operation_run_block = visual_runtime_source.split("async handleOperationRun(event, context) {", 1)[1].split(
+        "async handleCompactToolWheelRotateGalgameIntoCenter",
+        1,
+    )[0]
+    assert "let primaryTarget = Object.prototype.hasOwnProperty.call(event, 'primaryTarget')" in operation_run_block
+    assert "if (!primaryTarget) {" in operation_run_block
+    assert "primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');" in operation_run_block
+    plugin_skip_block = resistance_source.split("async handlePluginDashboardSkipRequest(data) {", 1)[1].split(
+        "return {",
+        1,
+    )[0]
+    assert "await director.skip('skip', 'skip');" in plugin_skip_block
+    assert "await director.requestTermination('skip', 'skip');" not in plugin_skip_block
+    assert "console.debug('[YuiGuide] interrupt_resist_light step config missing" in resistance_source
+    pagehide_block = director_source.split("onPageHide() {", 1)[1].split(
+        "get mobileTouchInteractionPassthrough()",
+        1,
+    )[0]
+    assert "try {" in pagehide_block
+    assert "Promise.resolve(this.tutorialManager.requestTutorialEnd('pagehide')).catch" in pagehide_block
+    assert "pagehide tutorial end threw" in pagehide_block
+    assert "this.destroy();" in pagehide_block
     assert live2d_model_source.index("this._modelLoadState = 'ready';") < live2d_model_source.index(
         "window.dispatchEvent(new CustomEvent('neko-live2d-model-ready'"
     )

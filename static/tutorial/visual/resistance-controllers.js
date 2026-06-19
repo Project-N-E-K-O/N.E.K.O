@@ -90,7 +90,11 @@
             }
 
             const normalizedOptions = options || {};
-            const resistanceStep = call(this.callbacks, 'getStep', null, 'interrupt_resist_light') || {};
+            const resistanceStepConfig = call(this.callbacks, 'getStep', null, 'interrupt_resist_light');
+            if (!resistanceStepConfig && typeof console !== 'undefined' && typeof console.debug === 'function') {
+                console.debug('[YuiGuide] interrupt_resist_light step config missing; using resistance fallback defaults.');
+            }
+            const resistanceStep = resistanceStepConfig || {};
 
             this.lightResistanceActive = true;
             const performance = resistanceStep.performance || {};
@@ -860,7 +864,7 @@
             if (director.tutorialManager && typeof director.tutorialManager.handleTutorialSkipRequest === 'function') {
                 await director.tutorialManager.handleTutorialSkipRequest();
             } else {
-                await director.requestTermination('skip', 'skip');
+                await director.skip('skip', 'skip');
             }
         }
     }

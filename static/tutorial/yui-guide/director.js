@@ -12972,10 +12972,15 @@
 
         onPageHide() {
             if (this.tutorialManager && typeof this.tutorialManager.requestTutorialEnd === 'function') {
-                Promise.resolve(this.tutorialManager.requestTutorialEnd('pagehide')).catch((error) => {
-                    console.warn('[YuiGuide] pagehide tutorial end failed, falling back to destroy:', error);
+                try {
+                    Promise.resolve(this.tutorialManager.requestTutorialEnd('pagehide')).catch((error) => {
+                        console.warn('[YuiGuide] pagehide tutorial end failed, falling back to destroy:', error);
+                        this.destroy();
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] pagehide tutorial end threw, falling back to destroy:', error);
                     this.destroy();
-                });
+                }
                 return;
             }
             this.destroy();

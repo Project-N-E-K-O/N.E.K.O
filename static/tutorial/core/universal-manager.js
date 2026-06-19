@@ -1448,9 +1448,12 @@ class UniversalTutorialManager {
                 if (this._tutorialEndHandled) {
                     return;
                 }
+                if (this.driver !== driver) {
+                    return;
+                }
 
                 const skipButtonStillVisible = !!document.getElementById('neko-tutorial-skip-btn');
-                if (this.driver === driver || this.isTutorialRunning || window.isInTutorial || skipButtonStillVisible) {
+                if (this.isTutorialRunning || window.isInTutorial || skipButtonStillVisible) {
                     console.warn('[Tutorial] driver destroy 未触发结束回调，执行兜底结束');
                     this.driver = null;
                     void this.onTutorialEnd();

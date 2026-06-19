@@ -4181,9 +4181,10 @@
         }
         if (isYuiGuidePcCursorOnlyMode()) {
             var targetPoint = getYuiGuideChatCursorTargetPoint(kind, normalizedOptions);
-            if (!targetPoint) return false;
-            var screenPoint = toYuiGuideScreenPoint(targetPoint.x, targetPoint.y);
             var freezeKey = kind + ':' + (normalizedOptions.timestamp || '');
+            var frozenScreenPoint = freezePoint ? yuiGuideChatCursorFrozenScreenPoints[freezeKey] : null;
+            if (!targetPoint && !frozenScreenPoint) return false;
+            var screenPoint = frozenScreenPoint || toYuiGuideScreenPoint(targetPoint.x, targetPoint.y);
             if (freezePoint && yuiGuideChatCursorFrozenScreenPoints[freezeKey]) {
                 screenPoint = yuiGuideChatCursorFrozenScreenPoints[freezeKey];
             } else if (freezePoint) {
@@ -4192,7 +4193,9 @@
             var duration = Number.isFinite(Number(normalizedOptions.durationMs))
                 ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs)))
                 : 240;
-            yuiGuideChatCursorPoint = { x: targetPoint.x, y: targetPoint.y };
+            if (targetPoint) {
+                yuiGuideChatCursorPoint = { x: targetPoint.x, y: targetPoint.y };
+            }
             sendYuiGuidePcOverlayPatch({
                 cursor: {
                     visible: true,
@@ -4414,7 +4417,7 @@
     });
 
     yuiGuideInterpageResources.addEventListener(window, 'message', function (event) {
-        if (event.origin && event.origin !== window.location.origin) return;
+        if (event.origin !== window.location.origin) return;
         var data = event.data || {};
         if (!data || data.action !== '__nekoTutorialOverlayRelay') return;
         applyYuiGuideChatCursorRelay(Object.assign({}, data.detail || {}, {
