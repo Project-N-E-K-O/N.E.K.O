@@ -3199,7 +3199,7 @@
     function handleSubtitleSettingsChange(event) {
         var detail = event && event.detail ? event.detail : {};
         var changedKeys = Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
-        if (changedKeys.indexOf('subtitleEnabled') === -1) {
+        if (changedKeys.length && changedKeys.indexOf('subtitleEnabled') === -1) {
             return;
         }
         if (!detail.state || typeof detail.state.subtitleEnabled === 'undefined') {
@@ -3212,7 +3212,11 @@
         var subtitleStore = window.nekoSubtitleShared;
         if (subtitleStore && typeof subtitleStore.subscribeSettings === 'function') {
             subtitleStore.subscribeSettings(function(stateValue, detail) {
-                handleSubtitleSettingsChange({ detail: detail || { state: stateValue, changedKeys: ['subtitleEnabled'] } });
+                var syncDetail = detail || {};
+                if (!syncDetail.state) {
+                    syncDetail = Object.assign({}, syncDetail, { state: stateValue });
+                }
+                handleSubtitleSettingsChange({ detail: syncDetail });
             });
             return;
         }

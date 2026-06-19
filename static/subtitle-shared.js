@@ -474,10 +474,13 @@
             var storedPassthrough = localStorage.getItem(SETTINGS_KEYS.subtitleInteractionPassthrough);
             if (storedLocked !== null) {
                 settingsState.subtitlePanelLocked = storedLocked === 'true';
+                settingsState.subtitleInteractionPassthrough = settingsState.subtitlePanelLocked;
             } else if (storedPassthrough !== null) {
-                settingsState.subtitlePanelLocked = storedPassthrough !== 'false';
+                settingsState.subtitlePanelLocked = false;
+                settingsState.subtitleInteractionPassthrough = storedPassthrough !== 'false';
+            } else {
+                settingsState.subtitleInteractionPassthrough = settingsState.subtitlePanelLocked;
             }
-            settingsState.subtitleInteractionPassthrough = settingsState.subtitlePanelLocked;
             settingsState.subtitleDanmakuMode = localStorage.getItem(SETTINGS_KEYS.subtitleDanmakuMode) === 'true';
             settingsState.subtitleFontSize = normalizeSubtitleFontSize(localStorage.getItem(SETTINGS_KEYS.subtitleFontSize));
             settingsState.subtitleColorScheme = normalizeSubtitleColorScheme(localStorage.getItem(SETTINGS_KEYS.subtitleColorScheme));
@@ -1202,7 +1205,6 @@
         }
         if (refs.danmakuModeBtn) {
             var danmakuText = getUiText('danmakuMode', locale);
-            refs.danmakuModeBtn.textContent = danmakuText;
             refs.danmakuModeBtn.title = danmakuText;
             refs.danmakuModeBtn.setAttribute('aria-label', danmakuText);
         }

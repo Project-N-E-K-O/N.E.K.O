@@ -170,7 +170,7 @@
         </div>
         <div id="subtitle-settings-panel" class="hidden">
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="targetLang"><span class="subtitle-settings-label-text">语言</span></span>
+                <label class="subtitle-settings-label" data-subtitle-label="targetLang" for="subtitle-lang-select"><span class="subtitle-settings-label-text">语言</span></label>
                 <select id="subtitle-lang-select" data-i18n-title="subtitle.settings.targetLang" title="语言">
                     <option value="zh">中文</option>
                     <option value="en">English</option>
@@ -182,12 +182,12 @@
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="opacity"><span class="subtitle-settings-label-text">不透明度</span></span>
+                <label class="subtitle-settings-label" data-subtitle-label="opacity" for="subtitle-opacity-slider"><span class="subtitle-settings-label-text">不透明度</span></label>
                 <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" data-i18n-title="subtitle.settings.opacity" title="不透明度">
                 <span id="subtitle-opacity-value">95%</span>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="fontSize"><span class="subtitle-settings-label-text">字体</span></span>
+                <label class="subtitle-settings-label" data-subtitle-label="fontSize" for="subtitle-font-size-select"><span class="subtitle-settings-label-text">字体</span></label>
                 <select id="subtitle-font-size-select" data-i18n-title="subtitle.settings.fontSize" title="字体">
                     <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
                     <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
@@ -197,7 +197,7 @@
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="colorScheme"><span class="subtitle-settings-label-text">配色</span></span>
+                <label class="subtitle-settings-label" data-subtitle-label="colorScheme" for="subtitle-color-scheme-select"><span class="subtitle-settings-label-text">配色</span></label>
                 <select id="subtitle-color-scheme-select" data-i18n-title="subtitle.settings.colorScheme" title="配色">
                     <option value="default" data-subtitle-color-scheme-label="colorSchemeDefault">默认</option>
                     <option value="red" data-subtitle-color-scheme-label="colorSchemeRed">红</option>
@@ -210,7 +210,7 @@
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="danmakuMode"><span class="subtitle-settings-label-text">弹幕模式</span></span>
+                <label class="subtitle-settings-label" data-subtitle-label="danmakuMode" for="subtitle-danmaku-mode-btn"><span class="subtitle-settings-label-text">弹幕模式</span></label>
                 <label class="subtitle-settings-switch subtitle-danmaku-switch">
                     <input type="checkbox" id="subtitle-danmaku-mode-btn" data-i18n-title="subtitle.settings.danmakuMode" data-i18n-aria="subtitle.settings.danmakuMode" title="弹幕模式" aria-label="弹幕模式">
                     <span class="subtitle-settings-track" aria-hidden="true"></span>

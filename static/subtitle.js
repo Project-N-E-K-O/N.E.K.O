@@ -18,6 +18,7 @@ var webDanmakuModeSettingsCleanup = null;
 var WEB_DANMAKU_AVATAR_GAP = 12;
 var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
 var WEB_DANMAKU_STATE_SYNC_MS = 120;
+var WEB_DANMAKU_LAYOUT_POLL_MS = 80;
 var WEB_DANMAKU_MIN_PANEL_WIDTH = 48;
 var WEB_DANMAKU_MIN_PANEL_HEIGHT = 28;
 var WEB_DANMAKU_LAYOUT_EPSILON = 0.25;
@@ -334,19 +335,25 @@ function attachWebDanmakuModeLayout(controller) {
     var destroyed = false;
     var snapshot = null;
     var rafId = 0;
+    var layoutTimerId = 0;
     var lastStateSyncAt = 0;
     var lastVisualLayout = null;
     var previousTransition = null;
     var previousWillChange = null;
 
     function cancelLayoutLoop() {
-        if (!rafId) return;
-        window.cancelAnimationFrame(rafId);
-        rafId = 0;
+        if (rafId) {
+            window.cancelAnimationFrame(rafId);
+            rafId = 0;
+        }
+        if (layoutTimerId) {
+            window.clearTimeout(layoutTimerId);
+            layoutTimerId = 0;
+        }
     }
 
-    function scheduleLayout(force) {
-        if (!active || rafId) return;
+    function requestLayoutFrame(force) {
+        if (!active || destroyed || rafId) return;
         rafId = window.requestAnimationFrame(function() {
             rafId = 0;
             if (!active || destroyed) return;
@@ -364,6 +371,23 @@ function attachWebDanmakuModeLayout(controller) {
             }
             scheduleLayout(false);
         });
+    }
+
+    function scheduleLayout(force) {
+        if (!active || destroyed) return;
+        if (force && layoutTimerId) {
+            window.clearTimeout(layoutTimerId);
+            layoutTimerId = 0;
+        }
+        if (rafId || layoutTimerId) return;
+        if (force) {
+            requestLayoutFrame(true);
+            return;
+        }
+        layoutTimerId = window.setTimeout(function() {
+            layoutTimerId = 0;
+            requestLayoutFrame(false);
+        }, WEB_DANMAKU_LAYOUT_POLL_MS);
     }
 
     function onViewportChanged() {

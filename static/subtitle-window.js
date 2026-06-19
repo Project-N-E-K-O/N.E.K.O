@@ -705,7 +705,7 @@
 
         var unsubscribe = SubtitleShared.subscribeSettings(function(state) {
             setActive(!!(state && state.subtitleDanmakuMode));
-        });
+        }, { immediate: true });
 
         return function detachDanmakuModeLayout() {
             unsubscribe();
@@ -1177,6 +1177,8 @@
             patch.subtitleFontSize = data.value;
         } else if (data.type === 'colorScheme') {
             patch.subtitleColorScheme = data.value;
+        } else if (data.type === 'danmakuMode') {
+            patch.subtitleDanmakuMode = !!data.value;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'enabled')) {
             patch.subtitleEnabled = !!data.enabled;

@@ -36,11 +36,11 @@ NEKO-PC 桌面壳（同级仓库 `/N.E.K.O.-PC`）：
 
 1. `subtitleEnabled`：翻译字幕显示开关，默认 `false`。
 2. `userLanguage`：目标语言，默认 `zh`。
-3. `subtitleOpacity`：背景不透明度，默认 `25`。
+3. `subtitleOpacity`：背景不透明度，默认 `95`。
 4. `subtitlePanelBounds`：面板尺寸，默认 `{ width: 655, height: 109 }`。
 5. `subtitlePanelPosition`：Web host 面板位置，默认 `null`。
 6. `subtitlePanelLocked`：位置锁定状态，默认 `false`。
-7. `subtitleInteractionPassthrough`：透明区域穿透，默认 `false`，当前实际和 `subtitlePanelLocked` 绑定。
+7. `subtitleInteractionPassthrough`：透明区域穿透，默认 `false`；当前可见控件和 `subtitlePanelLocked` 绑定，兼容旧存储时可只恢复穿透但不锁定面板。
 8. `subtitleDanmakuMode`：弹幕模式开关，默认 `false`。
 9. `subtitleFontSize`：字幕字号，默认 `26`，有效值为 `16`、`21`、`26`、`34`、`44`。
 10. `subtitleColorScheme`：字幕配色，默认 `default`，有效值为 `default`、`red`、`orange`、`yellow`、`green`、`blue`、`indigo`、`violet`。

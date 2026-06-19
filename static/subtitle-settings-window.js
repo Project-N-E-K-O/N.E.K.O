@@ -24,6 +24,8 @@
             patch.subtitleFontSize = data.value;
         } else if (data.type === 'colorScheme') {
             patch.subtitleColorScheme = data.value;
+        } else if (data.type === 'danmakuMode') {
+            patch.subtitleDanmakuMode = !!data.value;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'language')) {
             patch.userLanguage = data.language;

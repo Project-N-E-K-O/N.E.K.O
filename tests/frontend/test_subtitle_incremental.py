@@ -69,6 +69,14 @@ def test_web_subtitle_opacity_slider_matches_design_minimum():
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in subtitle_template
 
 
+def test_web_danmaku_layout_uses_poll_timer_between_frame_updates():
+    script = (PROJECT_ROOT / "static/subtitle.js").read_text(encoding="utf-8")
+
+    assert "var WEB_DANMAKU_LAYOUT_POLL_MS = 80;" in script
+    assert "layoutTimerId = window.setTimeout(function()" in script
+    assert "requestLayoutFrame(false);" in script
+
+
 def test_subtitle_named_color_schemes_use_classic_palette():
     css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
 
@@ -1388,6 +1396,57 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
 
 
 @pytest.mark.frontend
+def test_subtitle_shared_does_not_migrate_legacy_passthrough_to_locked(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/subtitle-legacy-passthrough-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'true');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const shared = window.nekoSubtitleShared;
+            const settings = shared.getSettings();
+            const render = shared.getRenderState();
+            return {
+                locked: settings.subtitlePanelLocked,
+                passthrough: settings.subtitleInteractionPassthrough,
+                renderLocked: render.subtitlePanelLocked,
+                renderPassthrough: render.subtitleInteractionPassthrough,
+                storedLocked: window.localStorage.getItem('subtitlePanelLocked'),
+                storedPassthrough: window.localStorage.getItem('subtitleInteractionPassthrough'),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "locked": False,
+        "passthrough": True,
+        "renderLocked": False,
+        "renderPassthrough": True,
+        "storedLocked": None,
+        "storedPassthrough": "true",
+    }
+
+
+@pytest.mark.frontend
 def test_subtitle_color_scheme_select_persists_and_updates_panel(
     mock_page: Page,
 ):
@@ -2542,6 +2601,70 @@ def test_react_translate_button_tracks_external_subtitle_enabled_changes(
         False,
         True,
     ]
+
+
+@pytest.mark.frontend
+def test_react_translate_button_accepts_initial_shared_state_without_changed_keys(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="react-chat-window-overlay" hidden>
+            <div id="react-chat-window-shell">
+                <div id="react-chat-window-drag-handle"></div>
+                <div id="react-chat-window-root"></div>
+            </div>
+        </div>
+        """,
+        path="/subtitle-react-initial-empty-changed-keys-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.appState = { subtitleEnabled: false };
+            window.__reactChatPropsHistory = [];
+            window.NekoChatWindow = {
+                mount: (_root, props) => {
+                    window.__reactChatPropsHistory.push({
+                        translateEnabled: props.translateEnabled,
+                    });
+                    window.__lastReactChatProps = props;
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.nekoSubtitleShared",
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const host = window.reactChatWindowHost;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            host.openWindow();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                appStateEnabled: window.appState.subtitleEnabled,
+                settingsEnabled: window.nekoSubtitleShared.getSettings().subtitleEnabled,
+                translateEnabled: window.__lastReactChatProps.translateEnabled,
+                history: window.__reactChatPropsHistory.slice(),
+            };
+        }
+        """
+    )
+
+    assert result["appStateEnabled"] is False
+    assert result["settingsEnabled"] is True
+    assert result["translateEnabled"] is True
+    assert result["history"] == [{"translateEnabled": True}]
 
 
 @pytest.mark.frontend
@@ -4091,9 +4214,10 @@ def test_subtitle_window_template_keeps_current_panel_control_scaffold():
     assert 'id="subtitle-drag-handle"' not in template
     assert 'id="subtitle-drag-arrows"' not in template
     assert 'data-subtitle-placeholder="暂无翻译内容"' in template
-    assert 'data-subtitle-label="opacity"><span class="subtitle-settings-label-text">不透明度</span></span>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="targetLang" for="subtitle-lang-select"><span class="subtitle-settings-label-text">语言</span></label>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="opacity" for="subtitle-opacity-slider"><span class="subtitle-settings-label-text">不透明度</span></label>' in template
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in template
-    assert 'data-subtitle-label="fontSize"><span class="subtitle-settings-label-text">字体</span></span>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="fontSize" for="subtitle-font-size-select"><span class="subtitle-settings-label-text">字体</span></label>' in template
     assert 'id="subtitle-font-size-select"' in template
     for size, label_key, fallback in [
         ("16", "fontSizeSmall", "小号"),
@@ -4105,8 +4229,8 @@ def test_subtitle_window_template_keeps_current_panel_control_scaffold():
         assert f'<option value="{size}"' in template
         assert f'data-subtitle-font-size-label="{label_key}"' in template
         assert f'>{fallback}</option>' in template
-    assert 'data-subtitle-label="colorScheme"><span class="subtitle-settings-label-text">配色</span></span>' in template
-    assert 'data-subtitle-label="danmakuMode"><span class="subtitle-settings-label-text">弹幕模式</span></span>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="colorScheme" for="subtitle-color-scheme-select"><span class="subtitle-settings-label-text">配色</span></label>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="danmakuMode" for="subtitle-danmaku-mode-btn"><span class="subtitle-settings-label-text">弹幕模式</span></label>' in template
     assert 'id="subtitle-color-scheme-select"' in template
     for scheme, label_key, fallback in [
         ("default", "colorSchemeDefault", "默认"),
@@ -4216,12 +4340,20 @@ def test_subtitle_window_settings_hides_passthrough_toggle_and_allows_small_boun
 @pytest.mark.frontend
 def test_subtitle_settings_window_includes_color_and_danmaku_switch():
     template = (PROJECT_ROOT / "static" / "subtitle-settings.html").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "static" / "subtitle-settings-window.js").read_text(encoding="utf-8")
 
     assert 'id="subtitle-color-scheme-select"' in template
     assert 'data-subtitle-color-scheme-label="colorSchemeDefault"' in template
     assert 'data-subtitle-color-scheme-label="colorSchemeViolet"' in template
     assert 'id="subtitle-danmaku-mode-btn"' in template
     assert 'type="checkbox" id="subtitle-danmaku-mode-btn"' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="targetLang" for="subtitle-lang-select"><span class="subtitle-settings-label-text">语言</span></label>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="opacity" for="subtitle-opacity-slider"><span class="subtitle-settings-label-text">不透明度</span></label>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="fontSize" for="subtitle-font-size-select"><span class="subtitle-settings-label-text">字体</span></label>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="colorScheme" for="subtitle-color-scheme-select"><span class="subtitle-settings-label-text">配色</span></label>' in template
+    assert '<label class="subtitle-settings-label" data-subtitle-label="danmakuMode" for="subtitle-danmaku-mode-btn"><span class="subtitle-settings-label-text">弹幕模式</span></label>' in template
+    assert "data.type === 'danmakuMode'" in script
+    assert 'patch.subtitleDanmakuMode = !!data.value;' in script
     assert 'subtitle-settings-switch-placeholder' not in template
     assert 'data-subtitle-danmaku-placeholder="true"' not in template
     assert 'subtitle-settings-track' in template
@@ -5526,6 +5658,7 @@ def test_subtitle_window_state_sync_updates_font_size_realtime(
             const before = {
                 setting: window.nekoSubtitleShared.getSettings().subtitleFontSize,
                 colorScheme: window.nekoSubtitleShared.getSettings().subtitleColorScheme,
+                danmakuMode: window.nekoSubtitleShared.getSettings().subtitleDanmakuMode,
                 textFontSize: getComputedStyle(text).fontSize,
                 textColor: getComputedStyle(text).color,
                 dataset: display.dataset.subtitleFontSize,
@@ -5535,12 +5668,16 @@ def test_subtitle_window_state_sync_updates_font_size_realtime(
                 detail: { type: 'colorScheme', value: 'orange' },
             }));
             window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { type: 'danmakuMode', value: true },
+            }));
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
                 detail: { type: 'fontSize', value: 44 },
             }));
             await new Promise((resolve) => setTimeout(resolve, 0));
             const after = {
                 setting: window.nekoSubtitleShared.getSettings().subtitleFontSize,
                 colorScheme: window.nekoSubtitleShared.getSettings().subtitleColorScheme,
+                danmakuMode: window.nekoSubtitleShared.getSettings().subtitleDanmakuMode,
                 textFontSize: getComputedStyle(text).fontSize,
                 textColor: getComputedStyle(text).color,
                 dataset: display.dataset.subtitleFontSize,
@@ -5554,6 +5691,7 @@ def test_subtitle_window_state_sync_updates_font_size_realtime(
     assert result["before"] == {
         "setting": 26,
         "colorScheme": "default",
+        "danmakuMode": False,
         "textFontSize": "26px",
         "textColor": "rgb(5, 7, 10)",
         "dataset": "26",
@@ -5562,6 +5700,7 @@ def test_subtitle_window_state_sync_updates_font_size_realtime(
     assert result["after"] == {
         "setting": 44,
         "colorScheme": "orange",
+        "danmakuMode": True,
         "textFontSize": "44px",
         "textColor": "rgb(255, 140, 0)",
         "dataset": "44",
