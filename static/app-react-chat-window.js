@@ -2503,7 +2503,6 @@
     }
 
     function refreshAssistantAvatarUrls(event) {
-        var shouldClear = event && event.type === 'chat-avatar-preview-cleared';
         var changed = false;
         state.messages = state.messages.map(function (message) {
             if (!message || message.role !== 'assistant') return message;
@@ -3227,9 +3226,14 @@
             var subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
                 ? subtitleStore.getSettings()
                 : null;
-            var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
-                ? appSt.subtitleEnabled
-                : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'));
+            var viewProps = ensureViewProps();
+            var current = (viewProps && typeof viewProps.translateEnabled !== 'undefined')
+                ? !!viewProps.translateEnabled
+                : (
+                    appSt && typeof appSt.subtitleEnabled !== 'undefined'
+                        ? !!appSt.subtitleEnabled
+                        : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'))
+                );
             next = !current;
             if (appSt) appSt.subtitleEnabled = next;
             if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {

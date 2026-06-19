@@ -69,12 +69,17 @@ def test_web_subtitle_opacity_slider_matches_design_minimum():
     assert 'id="subtitle-opacity-slider" min="0" max="100"' in subtitle_template
 
 
-def test_web_danmaku_layout_uses_poll_timer_between_frame_updates():
+def test_web_danmaku_layout_uses_animation_frames_for_visual_tracking():
     script = (PROJECT_ROOT / "static/subtitle.js").read_text(encoding="utf-8")
+    layout_block = script.split("function attachWebDanmakuModeLayout", 1)[1].split(
+        "function applySharedSubtitleSettings", 1
+    )[0]
 
-    assert "var WEB_DANMAKU_LAYOUT_POLL_MS = 80;" in script
-    assert "layoutTimerId = window.setTimeout(function()" in script
-    assert "requestLayoutFrame(false);" in script
+    assert "var WEB_DANMAKU_LAYOUT_POLL_MS" not in script
+    assert "window.setTimeout" not in layout_block
+    assert "window.requestAnimationFrame(function()" in layout_block
+    assert "requestLayoutFrame();" in layout_block
+    assert "now - lastStateSyncAt >= WEB_DANMAKU_STATE_SYNC_MS" in layout_block
 
 
 def test_subtitle_named_color_schemes_use_classic_palette():
@@ -818,6 +823,142 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
 
 
 @pytest.mark.frontend
+def test_web_subtitle_danmaku_mode_tracks_each_frame_without_rerendering_text(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-settings-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden">
+                <input type="checkbox" id="subtitle-danmaku-mode-btn">
+            </div>
+        </div>
+        """,
+        path="/subtitle-web-danmaku-raf-tracking-harness",
+    )
+    mock_page.set_viewport_size({"width": 1280, "height": 720})
+    mock_page.evaluate(
+        """
+        () => {
+            window.fetch = () => Promise.resolve({
+                json: () => Promise.resolve({ success: true, language: 'zh' }),
+            });
+            window.__rafId = 0;
+            window.__rafQueue = [];
+            window.requestAnimationFrame = (callback) => {
+                const id = ++window.__rafId;
+                window.__rafQueue.push({ id, callback });
+                return id;
+            };
+            window.cancelAnimationFrame = (id) => {
+                window.__rafQueue = window.__rafQueue.filter((frame) => frame.id !== id);
+            };
+            window.__runNextRaf = () => {
+                const frame = window.__rafQueue.shift();
+                if (!frame) {
+                    return { ran: false, queued: window.__rafQueue.length };
+                }
+                frame.callback(window.performance.now());
+                return { ran: true, queued: window.__rafQueue.length };
+            };
+            window.lanlan_config = { model_type: 'live2d' };
+            window.__avatarLeft = 780;
+            window.__avatarBoundsCalls = 0;
+            window.live2dManager = {
+                currentModel: {},
+                getModelScreenBounds: () => {
+                    window.__avatarBoundsCalls += 1;
+                    window.__avatarLeft += 20;
+                    return {
+                        left: window.__avatarLeft,
+                        top: 300,
+                        right: window.__avatarLeft + 200,
+                        bottom: 700,
+                        width: 200,
+                        height: 400,
+                        centerX: window.__avatarLeft + 100,
+                        centerY: 500,
+                    };
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const shared = window.nekoSubtitleShared;
+            const originalRender = shared.renderSubtitleDanmakuText;
+            const display = document.getElementById('subtitle-display');
+            window.__danmakuRenderCalls = [];
+            shared.renderSubtitleDanmakuText = function(refs, text, options) {
+                window.__danmakuRenderCalls.push({
+                    text,
+                    enabled: !!(options && options.enabled),
+                });
+                return originalRender.apply(this, arguments);
+            };
+
+            shared.updateSettings({ subtitleDanmakuMode: true }, {
+                source: 'test-enable-web-danmaku',
+            });
+            window.writeSubtitleText('One, two. Three! Four? Five.');
+            const afterWrite = {
+                calls: window.__danmakuRenderCalls.length,
+                queued: window.__rafQueue.length,
+            };
+            const firstFrame = window.__runNextRaf();
+            const afterFirstFrame = {
+                left: Number.parseFloat(display.style.left),
+                top: Number.parseFloat(display.style.top),
+                calls: window.__danmakuRenderCalls.length,
+                queued: window.__rafQueue.length,
+                avatarBoundsCalls: window.__avatarBoundsCalls,
+            };
+            const secondFrame = window.__runNextRaf();
+            const afterSecondFrame = {
+                left: Number.parseFloat(display.style.left),
+                top: Number.parseFloat(display.style.top),
+                calls: window.__danmakuRenderCalls.length,
+                queued: window.__rafQueue.length,
+                avatarBoundsCalls: window.__avatarBoundsCalls,
+            };
+            return {
+                afterWrite,
+                firstFrame,
+                secondFrame,
+                afterFirstFrame,
+                afterSecondFrame,
+                itemCount: document.querySelectorAll('.subtitle-danmaku-item').length,
+            };
+        }
+        """
+    )
+
+    assert result["afterWrite"] == {"calls": 1, "queued": 1}
+    assert result["firstFrame"]["ran"] is True
+    assert result["secondFrame"]["ran"] is True
+    assert result["afterFirstFrame"]["calls"] == 1
+    assert result["afterSecondFrame"]["calls"] == 1
+    assert result["afterSecondFrame"]["left"] > result["afterFirstFrame"]["left"]
+    assert result["afterFirstFrame"]["top"] == result["afterSecondFrame"]["top"]
+    assert result["afterSecondFrame"]["queued"] == 1
+    assert result["afterSecondFrame"]["avatarBoundsCalls"] == 2
+    assert result["itemCount"] == 3
+
+
+@pytest.mark.frontend
 def test_web_subtitle_danmaku_mode_does_not_take_over_electron_pet(mock_page: Page):
     _open_subtitle_harness(
         mock_page,
@@ -1444,6 +1585,67 @@ def test_subtitle_shared_does_not_migrate_legacy_passthrough_to_locked(
         "storedLocked": None,
         "storedPassthrough": "true",
     }
+
+
+@pytest.mark.frontend
+def test_subtitle_shared_restores_explicit_passthrough_separately_from_lock(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/subtitle-explicit-passthrough-restore-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'true');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const shared = window.nekoSubtitleShared;
+            const initial = shared.getSettings();
+            shared.updateSettings({
+                subtitlePanelLocked: true,
+                subtitleInteractionPassthrough: true,
+                subtitleOpacity: 0,
+            }, {
+                persist: false,
+                source: 'test-danmaku-enter',
+            });
+            const whileDanmaku = shared.getSettings();
+            const restored = shared.updateSettings({
+                subtitlePanelLocked: initial.subtitlePanelLocked,
+                subtitleInteractionPassthrough: initial.subtitleInteractionPassthrough,
+                subtitleOpacity: initial.subtitleOpacity,
+            }, {
+                persist: false,
+                source: 'test-danmaku-restore',
+            });
+            const render = shared.getRenderState();
+            return { initial, whileDanmaku, restored, render };
+        }
+        """
+    )
+
+    assert result["initial"]["subtitlePanelLocked"] is False
+    assert result["initial"]["subtitleInteractionPassthrough"] is True
+    assert result["whileDanmaku"]["subtitlePanelLocked"] is True
+    assert result["whileDanmaku"]["subtitleInteractionPassthrough"] is True
+    assert result["restored"]["subtitlePanelLocked"] is False
+    assert result["restored"]["subtitleInteractionPassthrough"] is True
+    assert result["render"]["subtitlePanelLocked"] is False
+    assert result["render"]["subtitleInteractionPassthrough"] is True
 
 
 @pytest.mark.frontend
@@ -2751,6 +2953,87 @@ def test_react_translate_button_direct_toggle_controls_subtitle_window(
     assert result["afterOn"] is True
     assert result["afterOff"] is False
     assert result["calls"] == ["set:true", "set:false"]
+    assert [entry["translateEnabled"] for entry in result["history"]] == [
+        False,
+        True,
+        False,
+    ]
+
+
+@pytest.mark.frontend
+def test_react_translate_button_fallback_uses_current_view_state_after_desktop_sync(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="react-chat-window-overlay" hidden>
+            <div id="react-chat-window-shell">
+                <div id="react-chat-window-drag-handle"></div>
+                <div id="react-chat-window-root"></div>
+            </div>
+        </div>
+        """,
+        path="/subtitle-react-desktop-view-props-toggle-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'false');
+            window.appState = { subtitleEnabled: false };
+            window.__subtitleWindowCalls = [];
+            window.__reactChatPropsHistory = [];
+            window.nekoSubtitleWindow = {
+                setEnabled: (enabled) => window.__subtitleWindowCalls.push(`set:${enabled}`),
+            };
+            window.NekoChatWindow = {
+                mount: (_root, props) => {
+                    window.__reactChatPropsHistory.push({
+                        translateEnabled: props.translateEnabled,
+                    });
+                    window.__lastReactChatProps = props;
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const host = window.reactChatWindowHost;
+            host.openWindow();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.dispatchEvent(new CustomEvent('react-chat-window:set-view-props', {
+                detail: { viewProps: { translateEnabled: true } },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterDesktopSync = window.__lastReactChatProps.translateEnabled;
+            window.__lastReactChatProps.onTranslateToggle();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                afterDesktopSync,
+                afterClick: window.__lastReactChatProps.translateEnabled,
+                calls: window.__subtitleWindowCalls.slice(),
+                appStateEnabled: window.appState.subtitleEnabled,
+                storedEnabled: window.localStorage.getItem('subtitleEnabled'),
+                history: window.__reactChatPropsHistory.slice(),
+            };
+        }
+        """
+    )
+
+    assert result["afterDesktopSync"] is True
+    assert result["afterClick"] is False
+    assert result["calls"] == ["set:false"]
+    assert result["appStateEnabled"] is False
+    assert result["storedEnabled"] == "false"
     assert [entry["translateEnabled"] for entry in result["history"]] == [
         False,
         True,

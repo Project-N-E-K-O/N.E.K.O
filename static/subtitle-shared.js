@@ -653,11 +653,16 @@
             next.subtitlePanelPosition = normalizePanelPosition(patch.subtitlePanelPosition);
         }
         if (hasOwn(patch, 'subtitlePanelLocked') || hasOwn(patch, 'subtitleInteractionPassthrough')) {
-            var boundLocked = hasOwn(patch, 'subtitlePanelLocked')
-                ? !!patch.subtitlePanelLocked
-                : patch.subtitleInteractionPassthrough !== false;
-            next.subtitlePanelLocked = boundLocked;
-            next.subtitleInteractionPassthrough = boundLocked;
+            var hasPanelLocked = hasOwn(patch, 'subtitlePanelLocked');
+            var hasInteractionPassthrough = hasOwn(patch, 'subtitleInteractionPassthrough');
+            if (hasPanelLocked) {
+                next.subtitlePanelLocked = !!patch.subtitlePanelLocked;
+            }
+            if (hasInteractionPassthrough) {
+                next.subtitleInteractionPassthrough = patch.subtitleInteractionPassthrough !== false;
+            } else if (hasPanelLocked) {
+                next.subtitleInteractionPassthrough = next.subtitlePanelLocked;
+            }
         }
         if (hasOwn(patch, 'subtitleDanmakuMode')) {
             next.subtitleDanmakuMode = !!patch.subtitleDanmakuMode;

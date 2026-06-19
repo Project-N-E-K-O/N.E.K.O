@@ -18,7 +18,6 @@ var webDanmakuModeSettingsCleanup = null;
 var WEB_DANMAKU_AVATAR_GAP = 12;
 var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
 var WEB_DANMAKU_STATE_SYNC_MS = 120;
-var WEB_DANMAKU_LAYOUT_POLL_MS = 80;
 var WEB_DANMAKU_MIN_PANEL_WIDTH = 48;
 var WEB_DANMAKU_MIN_PANEL_HEIGHT = 28;
 var WEB_DANMAKU_LAYOUT_EPSILON = 0.25;
@@ -310,12 +309,7 @@ function syncWebDanmakuLayoutState(layout) {
     if (!SubtitleShared || typeof SubtitleShared.updateSettings !== 'function') return false;
     if (!layout) return false;
     SubtitleShared.updateSettings({
-        subtitlePanelBounds: layout.subtitlePanelBounds
-    }, {
-        persist: false,
-        source: 'subtitle-web-danmaku-layout'
-    });
-    SubtitleShared.updateSettings({
+        subtitlePanelBounds: layout.subtitlePanelBounds,
         subtitlePanelPosition: layout.subtitlePanelPosition
     }, {
         persist: false,
@@ -335,7 +329,7 @@ function attachWebDanmakuModeLayout(controller) {
     var destroyed = false;
     var snapshot = null;
     var rafId = 0;
-    var layoutTimerId = 0;
+    var forceNextLayout = false;
     var lastStateSyncAt = 0;
     var lastVisualLayout = null;
     var previousTransition = null;
@@ -346,18 +340,17 @@ function attachWebDanmakuModeLayout(controller) {
             window.cancelAnimationFrame(rafId);
             rafId = 0;
         }
-        if (layoutTimerId) {
-            window.clearTimeout(layoutTimerId);
-            layoutTimerId = 0;
-        }
+        forceNextLayout = false;
     }
 
-    function requestLayoutFrame(force) {
+    function requestLayoutFrame() {
         if (!active || destroyed || rafId) return;
         rafId = window.requestAnimationFrame(function() {
             rafId = 0;
             if (!active || destroyed) return;
             var now = Date.now();
+            var force = forceNextLayout;
+            forceNextLayout = false;
             var layout = computeWebDanmakuLayout(getWebDanmakuAvatarBounds());
             if (layout) {
                 if (force || !sameWebDanmakuLayout(lastVisualLayout, layout)) {
@@ -369,25 +362,16 @@ function attachWebDanmakuModeLayout(controller) {
                     lastStateSyncAt = now;
                 }
             }
-            scheduleLayout(false);
+            requestLayoutFrame();
         });
     }
 
     function scheduleLayout(force) {
         if (!active || destroyed) return;
-        if (force && layoutTimerId) {
-            window.clearTimeout(layoutTimerId);
-            layoutTimerId = 0;
-        }
-        if (rafId || layoutTimerId) return;
         if (force) {
-            requestLayoutFrame(true);
-            return;
+            forceNextLayout = true;
         }
-        layoutTimerId = window.setTimeout(function() {
-            layoutTimerId = 0;
-            requestLayoutFrame(false);
-        }, WEB_DANMAKU_LAYOUT_POLL_MS);
+        requestLayoutFrame();
     }
 
     function onViewportChanged() {
@@ -1159,7 +1143,6 @@ function initSubtitleHostUi() {
             var shouldRemeasureText = detail && (
                 detail.source === 'subtitle-ui-resize' ||
                 detail.source === 'subtitle-ui-font-size' ||
-                detail.source === 'subtitle-web-danmaku-layout' ||
                 detail.source === 'subtitle-web-danmaku-restore' ||
                 changedKeys.indexOf('subtitleDanmakuMode') !== -1 ||
                 changedKeys.indexOf('subtitleFontSize') !== -1
