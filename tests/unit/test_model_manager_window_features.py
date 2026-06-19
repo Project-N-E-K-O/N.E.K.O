@@ -19,7 +19,9 @@ def test_yui_model_manager_handoff_opens_fullscreen():
     assert "function isModelManagerPageUrl(openUrl)" in source
     assert "if (isModelManagerPageUrl(openUrl))" in source
     assert "return buildFullscreenWindowFeatures();" in source
-    assert "buildFullscreenWindowFeatures()" in source[source.index("function openModelManagerPage("):]
+    model_manager_block = source[source.index("function openModelManagerPage("):source.index("function triggerGoodbye(")]
+    assert "buildFullscreenWindowFeatures()" in model_manager_block
+    assert "{ keepMainUIVisible: true }" in model_manager_block
 
 
 def test_voice_clone_api_settings_uses_shared_named_window():
