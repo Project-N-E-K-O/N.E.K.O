@@ -1,0 +1,66 @@
+"""ViewerStore（本地 JSON 持久化）单测：落盘往返、自定义目录、计数、audit=None 容错。"""
+
+from __future__ import annotations
+
+import json
+
+from plugin.plugins.neko_roast.core.contracts import ViewerIdentity
+from plugin.plugins.neko_roast.stores.viewer_store import ViewerStore
+
+
+class _FakePlugin:
+    def __init__(self, data_dir):
+        self._data_dir = data_dir
+
+    def data_path(self, *parts):
+        return self._data_dir.joinpath(*parts) if parts else self._data_dir
+
+
+async def test_persists_to_json_in_default_dir(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="1001", nickname="桃子"))
+
+    file = tmp_path / "viewer_profiles.json"
+    assert file.exists()
+    data = json.loads(file.read_text(encoding="utf-8"))
+    assert data["1001"]["nickname"] == "桃子"
+
+    # 新实例从盘上读回 → 持久化生效（重启不丢）
+    store2 = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    recent = await store2.recent_profiles()
+    assert any(p["uid"] == "1001" for p in recent)
+
+
+async def test_custom_dir_is_used(tmp_path):
+    custom = tmp_path / "custom_here"
+    store = ViewerStore(_FakePlugin(tmp_path / "default"), audit=None, dir_provider=lambda: str(custom))
+    await store.upsert_identity(ViewerIdentity(uid="42", nickname="阿四二"))
+
+    assert (custom / "viewer_profiles.json").exists()
+    assert not (tmp_path / "default" / "viewer_profiles.json").exists()
+    status = store.storage_status()
+    assert status["using_custom"] is True
+    assert status["writable"] is True
+    assert status["path"] == str(custom / "viewer_profiles.json")
+
+
+async def test_empty_custom_dir_falls_back_to_default(tmp_path):
+    # dir_provider 返回空串 → 用默认目录（等价于未配置）
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None, dir_provider=lambda: "  ")
+    await store.upsert_identity(ViewerIdentity(uid="9", nickname="九"))
+    assert (tmp_path / "viewer_profiles.json").exists()
+    assert store.storage_status()["using_custom"] is False
+
+
+async def test_mark_roasted_roundtrip(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="7", nickname="七"))
+    assert await store.has_roasted("7") is False
+
+    await store.mark_roasted("7", "锐评内容")
+
+    assert await store.has_roasted("7") is True
+    recent = await store.recent_profiles()
+    item = next(p for p in recent if p["uid"] == "7")
+    assert item["roast_count"] == 1
+    assert item["last_result"] == "锐评内容"
