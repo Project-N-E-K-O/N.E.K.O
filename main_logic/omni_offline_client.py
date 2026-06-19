@@ -19,7 +19,7 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, create_chat_llm, create_chat_llm_async
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, ThinkingStreamStripper, strip_thinking_segments, create_chat_llm, create_chat_llm_async
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -1029,7 +1029,13 @@ class OmniOfflineClient:
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 await self._execute_and_append_openai_tool_calls(
                     messages, calls,
-                    assistant_text=streamed_text_buffer,
+                    # Strip any leaked <think> CoT before it lands in history:
+                    # the streaming guard (ThinkingStreamStripper) only protects
+                    # TTS/UI; this assembled pre-tool text is persisted raw to the
+                    # assistant tool-call turn, so a leak-prone Focus turn would
+                    # otherwise carry CoT into the next turn's context. No-op on
+                    # clean replies (no think tag present).
+                    assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
                 )
                 # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
@@ -1317,7 +1323,10 @@ class OmniOfflineClient:
                 # 会重复前缀或改口，最终持久化历史的顺序也跟真实生成顺序对不上。
                 messages.append({
                     "role": "assistant",
-                    "content": streamed_text_buffer,
+                    # Symmetric with the OpenAI path: strip leaked <think> CoT
+                    # before persisting the pre-tool text to history (no-op on
+                    # clean replies / the genai path, which routes thought out).
+                    "content": strip_thinking_segments(streamed_text_buffer),
                     "tool_calls": tool_calls_dict,
                 })
                 for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
@@ -2038,6 +2047,22 @@ class OmniOfflineClient:
                         _focus_overrides = self._focus_stream_overrides(
                             thinking_on, self._focus_images_seen, self.model,
                         )
+                        # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
+                        # stream their chain-of-thought into ``content`` ending in
+                        # a lone ``</think>``; hold + drop it before TTS/UI ever
+                        # see it. Clean providers (reasoning_content path) get no
+                        # stripper, so their streaming stays byte-for-byte untouched.
+                        # Gate on the SAME effective-thinking condition as
+                        # _focus_stream_overrides (``thinking_on and not uses_vision``):
+                        # a vision Focus turn runs thinking-OFF, so no </think> ever
+                        # arrives and a stripper would needlessly hold the stream.
+                        from config.providers import leaks_thinking_in_content
+                        think_stripper = (
+                            ThinkingStreamStripper()
+                            if thinking_on and not self._focus_images_seen
+                            and leaks_thinking_in_content(self.model)
+                            else None
+                        )
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
                         ):
@@ -2070,6 +2095,20 @@ class OmniOfflineClient:
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
+                                if think_stripper is not None:
+                                    # Flush before reset: if this pre-tool segment
+                                    # never emitted </think>, the stripper is still
+                                    # holding real answer text it withheld from
+                                    # TTS/UI. The inner generator already persisted
+                                    # that text to history (stripped), so emit it to
+                                    # TTS/UI only here — dropping it (a bare reset)
+                                    # would lose the pre-tool sentence. Then re-arm
+                                    # for the post-tool segment (new semantic unit).
+                                    _pretool_residual = think_stripper.flush()
+                                    if _pretool_residual and _pretool_residual.strip() and self.on_text_delta:
+                                        await self.on_text_delta(_pretool_residual, is_first_chunk)
+                                        is_first_chunk = False
+                                    think_stripper.reset()
                                 # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
                                 # 发出去了，但 TTS 还没听到。tool 边界处不知道
                                 # post-tool 段会有多长，没法走"final < max+slack"
@@ -2108,6 +2147,10 @@ class OmniOfflineClient:
                                 break
 
                             content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                            if think_stripper is not None and content:
+                                # Holds CoT until the first </think>; returns "" while
+                                # buffering so the empty-content guard below skips it.
+                                content = think_stripper.feed(content)
 
                             if content and content.strip():
                                 truncated_content = content
@@ -2306,6 +2349,24 @@ class OmniOfflineClient:
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
 
+                        # 流结束后：先 flush thinking stripper 的残留。仅漏型
+                        # provider 的 thinking_on 轮挂了它；若整轮没出现 </think>
+                        # （模型本轮没思考），它一直 hold，这里把攒住的正文还回
+                        # prefix_buffer，走下面的通用 emit/guard 路径，避免丢答案。
+                        if think_stripper is not None:
+                            _think_residual = think_stripper.flush()
+                            if _think_residual:
+                                prefix_buffer += _think_residual
+                                # Force the unified flush below to run on this
+                                # residual. When prefix checking is disabled
+                                # (_prefix_buffer_size == 0) prefix_checked starts
+                                # True, so `and not prefix_checked` would otherwise
+                                # drop the held answer silently. Safe to clear: a
+                                # non-empty residual means no </think> ever arrived,
+                                # which only happens when the stripper held the whole
+                                # stream → prefix_buffer was never filled by the live
+                                # path, so prefix_checked carried no completed state.
+                                prefix_checked = False
                         # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True

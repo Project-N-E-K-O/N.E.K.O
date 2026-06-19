@@ -145,7 +145,7 @@ def test_in_cooldown_true_when_responded_within_24h_and_under_10_chats():
 
 
 def test_game_specific_cooldown_does_not_cross_block_other_game():
-    """Declining soccer should not block a basketball invite cooldown."""
+    """Declining soccer should not block a badminton invite cooldown."""
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 60
     state['responded_at'] = time.time() - 60
@@ -153,7 +153,7 @@ def test_game_specific_cooldown_does_not_cross_block_other_game():
     state['last_game_type'] = 'soccer'
 
     assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
-    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is False
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'badminton') is False
 
 
 def test_later_suppression_cross_blocks_other_games():
@@ -163,7 +163,7 @@ def test_later_suppression_cross_blocks_other_games():
     state['last_game_type'] = 'soccer'
     state['suppressed_until'] = time.time() + 60
 
-    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'badminton') is True
 
 
 def test_in_cooldown_true_when_only_time_elapsed_chats_short():
@@ -668,8 +668,8 @@ async def test_maybe_deliver_uses_localized_template(monkeypatch):
     assert 'Alice' in message
     assert (
         'soccer' in message.lower()
-        or 'basketball' in message.lower()
-        or 'shooting challenge' in message.lower()
+        or 'badminton' in message.lower()
+        or 'rally challenge' in message.lower()
     )
 
 
@@ -979,10 +979,10 @@ def test_cooldown_decline_is_5h_by_default():
 
 
 @pytest.mark.asyncio
-async def test_declined_soccer_invite_still_allows_basketball_invite(monkeypatch):
-    """A soccer cooldown should still allow a basketball invite for the character."""
+async def test_declined_soccer_invite_still_allows_badminton_invite(monkeypatch):
+    """A soccer cooldown should still allow a badminton invite for the character."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
-    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('soccer', 'basketball'))
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('soccer', 'badminton'))
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 60
     state['responded_at'] = time.time() - 60
@@ -996,7 +996,7 @@ async def test_declined_soccer_invite_still_allows_basketball_invite(monkeypatch
     )
 
     assert out is not None
-    assert out['game_type'] == 'basketball'
+    assert out['game_type'] == 'badminton'
 
 
 def test_new_user_force_at_is_4_by_default():
@@ -1105,10 +1105,10 @@ def test_apply_choice_accept_fallback_reports_launched_game_type(monkeypatch):
     state['delivered_at'] = time.time() - 30
     state['responded_at'] = None
     state['pending_session_id'] = 'sess-fallback'
-    state['last_game_type'] = 'basketball'
+    state['last_game_type'] = 'badminton'
 
     def _fake_launch_url(game_type: str, lanlan_name: str, session_id: str) -> str | None:
-        if game_type == 'basketball':
+        if game_type == 'badminton':
             return None
         return f'/soccer_demo?lanlan_name={lanlan_name}&session_id={session_id}'
 
@@ -1119,8 +1119,8 @@ def test_apply_choice_accept_fallback_reports_launched_game_type(monkeypatch):
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'soccer'
     assert result['game_url'] == f'/soccer_demo?lanlan_name={LANLAN}&session_id=sess-fallback'
-    assert state['last_game_type'] == 'basketball'
-    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+    assert state['last_game_type'] == 'badminton'
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'badminton') is True
     assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is False
 
 
@@ -1299,10 +1299,10 @@ def test_maybe_apply_keyword_noop_when_no_pending():
         '好啊',
         '来玩一句投篮',
         '来一局足球',
-        'please play basketball',
-        'play basketball',
-        'what about basketball, can we play?',
-        '不想踢足球，想打篮球',
+        'please play badminton',
+        'play badminton',
+        'what about badminton, can we play?',
+        '不想踢足球，想打羽毛球',
     ):
         assert sr._maybe_apply_mini_game_invite_keyword(LANLAN, text) is None
 
@@ -1316,13 +1316,13 @@ def test_response_cooldowns_are_kept_per_game_after_later_invites():
     soccer_result = sr._apply_mini_game_invite_choice(LANLAN, 'decline', source='unit')
     assert soccer_result['action'] == 'cooldown'
 
-    sr._mini_game_invite_record_delivered(LANLAN, 'basketball-sess')
-    state['last_game_type'] = 'basketball'
-    basketball_result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
-    assert basketball_result['action'] == 'open_game'
+    sr._mini_game_invite_record_delivered(LANLAN, 'badminton-sess')
+    state['last_game_type'] = 'badminton'
+    badminton_result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+    assert badminton_result['action'] == 'open_game'
 
     assert sr._mini_game_invite_in_cooldown(LANLAN, 'soccer') is True
-    assert sr._mini_game_invite_in_cooldown(LANLAN, 'basketball') is True
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'badminton') is True
 
 
 def test_response_cooldowns_advance_after_top_level_later_reset():
@@ -1462,7 +1462,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] in ('soccer', 'basketball')
+    assert payload['game_type'] in ('soccer', 'badminton')
 
 
 @pytest.mark.asyncio
@@ -1516,7 +1516,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] in ('soccer', 'basketball')
+    assert payload['game_type'] in ('soccer', 'badminton')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
@@ -1553,33 +1553,35 @@ def test_keywords_cover_all_native_locales():
             )
 
 
-def test_basketball_invite_config_and_i18n_complete():
+def test_badminton_invite_copy_staged_but_not_enabled_until_page_lands():
     from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
     from config.prompts.prompts_activity import WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
-    assert 'basketball' in MINI_GAME_INVITE_AVAILABLE_GAMES
-    assert MINI_GAME_LAUNCH_URL_BY_GAME['basketball'] == '/basketball_demo'
+    assert 'basketball' not in MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert 'basketball' not in MINI_GAME_LAUNCH_URL_BY_GAME
+    assert 'badminton' not in MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert 'badminton' not in MINI_GAME_LAUNCH_URL_BY_GAME
     for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
-        assert MINI_GAME_INVITE_LINES_BY_GAME['basketball'][lang].strip()
-        work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['basketball'][lang]
+        assert MINI_GAME_INVITE_LINES_BY_GAME['badminton'][lang].strip()
+        work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['badminton'][lang]
         assert work_break_prompt.strip()
         assert '{master}' in work_break_prompt
         assert '{app}' in work_break_prompt
         assert '{minutes}' in work_break_prompt
 
 
-def test_accept_basketball_invite_returns_basketball_url():
+def test_accept_staged_badminton_invite_falls_back_until_page_lands():
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 3
     state['responded_at'] = None
-    state['pending_session_id'] = 'bb-sess'
-    state['last_game_type'] = 'basketball'
+    state['pending_session_id'] = 'bd-sess'
+    state['last_game_type'] = 'badminton'
 
     result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
 
     assert result['action'] == 'open_game'
-    assert result['game_type'] == 'basketball'
-    assert result['game_url'].startswith('/basketball_demo?')
-    assert 'mode=duel' in result['game_url']
-    assert 'session_id=bb-sess' in result['game_url']
+    assert result['game_type'] == 'soccer'
+    assert result['game_url'].startswith('/soccer_demo?')
+    assert 'mode=duel' not in result['game_url']
+    assert 'session_id=bd-sess' in result['game_url']

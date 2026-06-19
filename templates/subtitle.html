@@ -32,8 +32,8 @@
         </div>
         <div id="subtitle-settings-panel" class="hidden">
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
-                <select id="subtitle-lang-select" title="目标语言">
+                <label class="subtitle-settings-label" data-subtitle-label="targetLang" for="subtitle-lang-select"><span class="subtitle-settings-label-text">语言</span></label>
+                <select id="subtitle-lang-select" title="语言">
                     <option value="zh">中文</option>
                     <option value="en">English</option>
                     <option value="ja">日本語</option>
@@ -44,15 +44,38 @@
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-subtitle-label="opacity">背景不透明度</span>
-                <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" title="背景不透明度">
+                <label class="subtitle-settings-label" data-subtitle-label="opacity" for="subtitle-opacity-slider"><span class="subtitle-settings-label-text">不透明度</span></label>
+                <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" title="不透明度">
                 <span id="subtitle-opacity-value">95%</span>
             </div>
-            <div class="subtitle-settings-row subtitle-passthrough-setting-row">
-                <span class="subtitle-settings-label" data-subtitle-label="passthroughInteraction">透明区域穿透</span>
-                <label class="subtitle-settings-switch">
-                    <input type="checkbox" id="subtitle-passthrough-toggle" checked title="透明区域穿透">
-                    <span class="subtitle-settings-track"></span>
+            <div class="subtitle-settings-row">
+                <label class="subtitle-settings-label" data-subtitle-label="fontSize" for="subtitle-font-size-select"><span class="subtitle-settings-label-text">字体</span></label>
+                <select id="subtitle-font-size-select" title="字体">
+                    <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
+                    <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
+                    <option value="26" data-subtitle-font-size-label="fontSizeDefault" selected>默认</option>
+                    <option value="34" data-subtitle-font-size-label="fontSizeLarger">较大</option>
+                    <option value="44" data-subtitle-font-size-label="fontSizeLarge">大号</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <label class="subtitle-settings-label" data-subtitle-label="colorScheme" for="subtitle-color-scheme-select"><span class="subtitle-settings-label-text">配色</span></label>
+                <select id="subtitle-color-scheme-select" title="配色">
+                    <option value="default" data-subtitle-color-scheme-label="colorSchemeDefault">默认</option>
+                    <option value="red" data-subtitle-color-scheme-label="colorSchemeRed">红</option>
+                    <option value="orange" data-subtitle-color-scheme-label="colorSchemeOrange">橙</option>
+                    <option value="yellow" data-subtitle-color-scheme-label="colorSchemeYellow">黄</option>
+                    <option value="green" data-subtitle-color-scheme-label="colorSchemeGreen">绿</option>
+                    <option value="blue" data-subtitle-color-scheme-label="colorSchemeBlue">蓝</option>
+                    <option value="indigo" data-subtitle-color-scheme-label="colorSchemeIndigo">靛</option>
+                    <option value="violet" data-subtitle-color-scheme-label="colorSchemeViolet">紫</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <label class="subtitle-settings-label" data-subtitle-label="danmakuMode" for="subtitle-danmaku-mode-btn"><span class="subtitle-settings-label-text">弹幕模式</span></label>
+                <label class="subtitle-settings-switch subtitle-danmaku-switch">
+                    <input type="checkbox" id="subtitle-danmaku-mode-btn" title="弹幕模式" aria-label="弹幕模式">
+                    <span class="subtitle-settings-track" aria-hidden="true"></span>
                 </label>
             </div>
         </div>

@@ -1946,6 +1946,16 @@
                         window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
                     }
 
+                // -------- focus_state (凝神 indicator) --------
+                // Backend mirrors Focus enter/exit (LLMSessionManager
+                // ._on_focus_transition). Re-dispatch as a CustomEvent the React
+                // chat window listens for to toggle its subtle 思考微光 glow.
+                // Inert by default — only emitted when FOCUS_MODE_ENABLED.
+                } else if (response.type === 'focus_state') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-state', {
+                        detail: { active: !!response.active },
+                    }));
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;

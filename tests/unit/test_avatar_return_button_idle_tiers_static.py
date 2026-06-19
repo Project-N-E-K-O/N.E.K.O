@@ -2231,10 +2231,9 @@ def test_return_button_idle_tier_assets_are_version_tracked():
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
 
-    # app-interpage.js 归 react_chat 版本体系：index/chat.html 用 react_chat_asset_version
-    # 给它打版本，其缓存失效由 _REACT_CHAT_ASSET_VERSION_PATHS 追踪，不再列入 static 来源清单
-    # （_YUI_GUIDE_ASSET_VERSION_PATHS），避免改动它无谓 bump 所有 static 资源版本。
-    assert APP_INTERPAGE_PATH in pages_router._REACT_CHAT_ASSET_VERSION_PATHS
+    # app-interpage.js follows the static/tutorial asset version because it owns tutorial bridges.
+    assert APP_INTERPAGE_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert APP_INTERPAGE_PATH not in pages_router._REACT_CHAT_ASSET_VERSION_PATHS
     assert APP_INTERPAGE_PATH.is_file()
 
 

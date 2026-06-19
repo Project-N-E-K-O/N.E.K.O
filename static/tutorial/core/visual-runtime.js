@@ -338,6 +338,28 @@
                     context.commandRegistry.dispatch(command, context)
                 )));
             };
+            const prepareOnStartDispatcher = async () => {
+                if (!Array.isArray(event.onStart) || !context || !context.commandRegistry) {
+                    return () => Promise.resolve([]);
+                }
+                const preparedCommands = await Promise.all(event.onStart.map(async (command) => {
+                    if (!command || command.command !== 'operation.run') {
+                        return command;
+                    }
+                    const operationScene = Object.assign({}, getLegacyScene(context), {
+                        operation: command.operation || getLegacyScene(context).operation || ''
+                    });
+                    const primaryTarget = await this.resolveTarget(
+                        command.target || operationScene.target || '',
+                        context,
+                        'primary'
+                    );
+                    return Object.assign({}, command, { primaryTarget });
+                }));
+                return () => Promise.all(preparedCommands.map((command) => (
+                    context.commandRegistry.dispatch(command, context)
+                )));
+            };
             const legacyScene = getLegacyScene(context);
             const cursorScene = Object.assign({}, legacyScene, {
                 target: event.target || legacyScene.target || '',
@@ -364,14 +386,12 @@
                     const clickStarted = director.setExternalizedChatCursorEffect(cursorKind, 'click', {
                         effectDurationMs: durationMs
                     });
-                    const operationPromise = dispatchOnStart();
+                    const dispatchPreparedOnStart = await prepareOnStartDispatcher();
                     if (durationMs > 0 && typeof director.waitForSceneDelay === 'function') {
-                        await Promise.all([
-                            director.waitForSceneDelay(durationMs),
-                            operationPromise
-                        ]);
+                        await director.waitForSceneDelay(durationMs);
+                        await dispatchPreparedOnStart();
                     } else {
-                        await operationPromise;
+                        await dispatchPreparedOnStart();
                     }
                     return clickStarted !== false;
                 }
@@ -454,7 +474,12 @@
                     durationMs > 0 ? durationMs + 500 : undefined
                 );
             }
-            const primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');
+            let primaryTarget = Object.prototype.hasOwnProperty.call(event, 'primaryTarget')
+                ? event.primaryTarget
+                : null;
+            if (!primaryTarget) {
+                primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');
+            }
             if (typeof director.runAvatarFloatingSceneOperation === 'function') {
                 return await director.runAvatarFloatingSceneOperation(
                     legacyScene,

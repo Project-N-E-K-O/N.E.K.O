@@ -1099,7 +1099,22 @@ class LLMSessionManager:
         # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
         # finish_proactive_delivery / system_router.proactive_chat 等处。
         self.state = SessionStateMachine(lanlan_name=lanlan_name)
-        
+        # Focus 凝神: mirror enter/exit to the frontend as a subtle cognition
+        # indicator (极隐微光 badge — see react-neko-chat). Inert by default: the
+        # SM only enters Focus when FOCUS_MODE_ENABLED. The badge needs only
+        # on/off; memory consumes FOCUS_EXIT's episode payload on a separate
+        # (not-yet-wired) path.
+        #   Two layers keep the badge honest: (1) FOCUS_ENTER/EXIT subscriptions
+        # give immediate updates on the normal hysteresis path; (2) a per-turn
+        # reconcile (_reconcile_focus_indicator) catches Focus states dropped
+        # WITHOUT an event — clear_focus (history wipe) and the master-switch /
+        # privacy self-clear in update_focus — so the badge can't get stuck on.
+        # _push_focus_indicator is idempotent on this cached state so the two
+        # layers never double-fire.
+        self._focus_indicator_active = False
+        self.state.subscribe(SessionEvent.FOCUS_ENTER, self._on_focus_transition)
+        self.state.subscribe(SessionEvent.FOCUS_EXIT, self._on_focus_transition)
+
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
         self._conversation_turn_language = None
@@ -2304,6 +2319,10 @@ class LLMSessionManager:
         never blocks the user reply. Returns False fast when the master switch
         is off (skips the snapshot cost).
         """
+        # Reconcile the badge first — catches a Focus state cleared since the
+        # last turn without a FOCUS_EXIT event (clear_focus / master-switch
+        # self-clear), even on the early-return path when the switch is now off.
+        await self._reconcile_focus_indicator()
         from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
         if not FOCUS_MODE_ENABLED:
             # Flag flipped off → clear ALL focus residue unconditionally, not
@@ -2313,6 +2332,10 @@ class LLMSessionManager:
             # unrelated mild cue enter on stale evidence once re-enabled.
             # update_focus self-clears when the switch is off (idempotent).
             await self.state.update_focus(0.0)
+            # Reconcile AGAIN after the self-clear: if the switch was flipped off
+            # mid-episode, the clear above is silent (no FOCUS_EXIT), so clear the
+            # badge this turn rather than waiting for the next one.
+            await self._reconcile_focus_indicator()
             return False
         if not (user_text and user_text.strip()):
             return False
@@ -2368,6 +2391,46 @@ class LLMSessionManager:
             return False
         return self.state.mode is CognitionMode.FOCUS
 
+    async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
+        """SM subscriber for FOCUS_ENTER / FOCUS_EXIT — immediate badge update on
+        the normal hysteresis path. Delegates to the idempotent push."""
+        await self._push_focus_indicator(event is SessionEvent.FOCUS_ENTER)
+
+    async def _reconcile_focus_indicator(self) -> None:
+        """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
+        history-wipe, master-switch / privacy self-clear in update_focus) so the
+        badge can't get stuck on. Called once per turn; idempotent."""
+        await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
+
+    async def _push_focus_indicator(self, active: bool) -> None:
+        """Mirror the cognition indicator (focus_state) to the frontend — a
+        subtle breathing glow (see react-neko-chat). Idempotent on the cached
+        state so the event path and the per-turn reconcile never double-fire.
+        Ephemeral UI state: pushed live over the websocket and mirrored to the
+        sync queue for cross-server, but never persisted to history (the badge
+        is not conversation; memory consumes FOCUS_EXIT's payload separately).
+        Best-effort: a ws failure must never disturb the caller."""
+        # getattr default guards bypass-__init__ constructions (bare test mgrs,
+        # cross-server / unpickled managers) — they simply have no badge to sync.
+        if active == getattr(self, "_focus_indicator_active", False):
+            return
+        self._focus_indicator_active = active
+        msg = {"type": "focus_state", "active": active}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_state sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_state ws push failed: %s", self.lanlan_name, e)
+
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
     ) -> None:
@@ -2415,6 +2478,9 @@ class LLMSessionManager:
         hard-cap turn slot (that bounds inline turns). Pure charge cooldown:
         privacy-independent, no snapshot. Best-effort; never blocks the exit.
         """
+        # Idle-path counterpart to the inline reconcile — keeps the badge honest
+        # on proactive-only stretches (idempotent).
+        await self._reconcile_focus_indicator()
         from config import (  # live read
             FOCUS_MODE_ENABLED,
             FOCUS_IDLE_REPLIED_RETENTION,
@@ -2424,6 +2490,9 @@ class LLMSessionManager:
             if not FOCUS_MODE_ENABLED:
                 # Master switch off → update_focus self-clears any residue.
                 await self.state.update_focus(0.0)
+                # Same-turn badge clear on a mid-episode switch-off (symmetric
+                # with the inline path); the self-clear emits no FOCUS_EXIT.
+                await self._reconcile_focus_indicator()
                 return
             # User took over an UNDELIVERED turn: the user spoke during the
             # proactive request (USER_INPUT flipped owner→USER) and aborted it

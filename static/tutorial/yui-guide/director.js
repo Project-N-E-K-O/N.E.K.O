@@ -2667,6 +2667,7 @@
                         );
                     },
                     isDestroyed: () => this.destroyed,
+                    isResistancePaused: () => this.scenePausedForResistance === true,
                     externalizedChatDetector: () => this.isHomeChatExternalized(),
                     externalChatChannelProvider: () => {
                         return window.appInterpage && window.appInterpage.nekoBroadcastChannel
@@ -6524,6 +6525,10 @@
                     && nextSceneId === 'day1_takeover_capture_cursor'
                 )
                 || (
+                    previousSceneId === 'day1_takeover_capture_cursor'
+                    && nextSceneId === 'day1_takeover_return_control'
+                )
+                || (
                     previousSceneId === 'day3_tool_toggle_intro'
                     && this.isDay3AvatarToolsSceneId(nextSceneId)
                 )
@@ -7868,10 +7873,6 @@
         }
 
         async playDay1IntroActivationRoundScene(sceneRunId) {
-            const introStep = this.getStep('intro_basic');
-            if (!introStep || !introStep.performance) {
-                return false;
-            }
             if (!this.day1RoundWakeupCompleted) {
                 await this.runWakeupPrelude();
                 this.day1RoundWakeupCompleted = true;
@@ -7940,10 +7941,12 @@
         }
 
         async playDay1IntroGreetingRoundScene(sceneRunId) {
-            const introStep = this.getStep('intro_basic');
-            if (!introStep || !introStep.performance) {
-                return false;
-            }
+            const introStep = this.getStep('intro_basic') || {
+                performance: {
+                    interruptible: true
+                },
+                interrupts: {}
+            };
             if (!this.introFlowStarted) {
                 const activated = await this.playDay1IntroActivationRoundScene(sceneRunId);
                 if (!activated) {
@@ -7959,15 +7962,10 @@
             }
             this.enableInterrupts(introStep);
             if (this.isHomeChatExternalized()) {
-                this.hideHomeCursorForExternalizedChat();
-                this.cursor.hide();
-                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                    this.interactionTakeover.setExternalizedChatSpotlight('input');
-                }
-                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
-                    this.interactionTakeover.setExternalizedChatCursor('');
-                    this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
-                }
+                this.setExternalizedChatGuideTarget('capsule-input', {
+                    effect: '',
+                    durationMs: 0
+                });
             } else {
                 const inputTarget = this.getChatInputTarget();
                 if (inputTarget) {
@@ -8027,9 +8025,28 @@
         }
 
         playCursorResistanceToUserMotion(x, y, distance, motionDx, motionDy) {
-            const hasVisibleCursor = typeof this.cursor.hasVisiblePosition === 'function'
+            let hasVisibleCursor = typeof this.cursor.hasVisiblePosition === 'function'
                 ? this.cursor.hasVisiblePosition()
                 : this.cursor.hasPosition();
+            if (!hasVisibleCursor && this.isHomeChatExternalized()) {
+                const currentPoint = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                    ? this.overlay.getCursorPosition()
+                    : null;
+                if (
+                    currentPoint
+                    && Number.isFinite(currentPoint.x)
+                    && Number.isFinite(currentPoint.y)
+                    && typeof this.cursor.showAt === 'function'
+                ) {
+                    this.cursor.showAt(currentPoint.x, currentPoint.y);
+                    hasVisibleCursor = true;
+                } else if (
+                    typeof this.restoreCursorFromExternalizedChatAnchor === 'function'
+                    && this.restoreCursorFromExternalizedChatAnchor(30000)
+                ) {
+                    hasVisibleCursor = true;
+                }
+            }
             if (!hasVisibleCursor) {
                 return;
             }
@@ -8043,7 +8060,8 @@
                 motionDy: motionDy,
                 scale: 0.4,
                 outDurationMs: 140,
-                backDurationMs: 240
+                backDurationMs: 240,
+                forcePcOverlay: true
             });
         }
 
@@ -11601,7 +11619,7 @@
                 && this.interactionTakeover
                 && typeof this.interactionTakeover.setExternalizedChatCursor === 'function'
             ) {
-                this.interactionTakeover.setExternalizedChatCursor('input', {
+                this.interactionTakeover.setExternalizedChatCursor('capsule-input', {
                     effect: '',
                     durationMs: 0
                 });
@@ -12113,15 +12131,10 @@
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
-            this.hideHomeCursorForExternalizedChat();
-            this.cursor.hide();
-            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                this.interactionTakeover.setExternalizedChatSpotlight('input');
-            }
-            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
-                this.interactionTakeover.setExternalizedChatCursor('');
-                this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
-            }
+            this.setExternalizedChatGuideTarget('capsule-input', {
+                effect: '',
+                durationMs: 0
+            });
 
             this.enableInterrupts(introStep);
             await this.playIntroGreetingReply();
@@ -12958,6 +12971,18 @@
         }
 
         onPageHide() {
+            if (this.tutorialManager && typeof this.tutorialManager.requestTutorialEnd === 'function') {
+                try {
+                    Promise.resolve(this.tutorialManager.requestTutorialEnd('pagehide')).catch((error) => {
+                        console.warn('[YuiGuide] pagehide tutorial end failed, falling back to destroy:', error);
+                        this.destroy();
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] pagehide tutorial end threw, falling back to destroy:', error);
+                    this.destroy();
+                }
+                return;
+            }
             this.destroy();
         }
 

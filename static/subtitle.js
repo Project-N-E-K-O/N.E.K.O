@@ -14,6 +14,13 @@
 
 var SubtitleShared = window.nekoSubtitleShared || null;
 var subtitleUiController = null;
+var webDanmakuModeSettingsCleanup = null;
+var WEB_DANMAKU_AVATAR_GAP = 12;
+var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
+var WEB_DANMAKU_STATE_SYNC_MS = 120;
+var WEB_DANMAKU_MIN_PANEL_WIDTH = 48;
+var WEB_DANMAKU_MIN_PANEL_HEIGHT = 28;
+var WEB_DANMAKU_LAYOUT_EPSILON = 0.25;
 var initialSubtitleSettings = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
     ? SubtitleShared.getSettings()
     : null;
@@ -44,6 +51,399 @@ function isSubtitleTranslationOwner() {
              window.nekoChatWindow &&
              window.location &&
              window.location.pathname === '/chat');
+}
+
+function isWebSubtitleDanmakuHost() {
+    var body = document.body;
+    return !!(body &&
+        body.classList.contains('subtitle-web-host') &&
+        !body.classList.contains('subtitle-window-host') &&
+        !body.classList.contains('electron-chat-window') &&
+        !body.classList.contains('lanlan-pet-mode') &&
+        !window.__LANLAN_IS_ELECTRON_PET__ &&
+        !window.__NEKO_MULTI_WINDOW__ &&
+        isSubtitleTranslationOwner());
+}
+
+function normalizeWebDanmakuRect(rect) {
+    if (!rect) return null;
+    var left = Number(rect.left);
+    var top = Number(rect.top);
+    if (!Number.isFinite(left)) left = Number(rect.x);
+    if (!Number.isFinite(top)) top = Number(rect.y);
+    var right = Number(rect.right);
+    var bottom = Number(rect.bottom);
+    var width = Number(rect.width);
+    var height = Number(rect.height);
+    if (!Number.isFinite(width) && Number.isFinite(left) && Number.isFinite(right)) {
+        width = right - left;
+    }
+    if (!Number.isFinite(height) && Number.isFinite(top) && Number.isFinite(bottom)) {
+        height = bottom - top;
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top) ||
+        !Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+        return null;
+    }
+    if (!Number.isFinite(right)) right = left + width;
+    if (!Number.isFinite(bottom)) bottom = top + height;
+    var centerX = Number(rect.centerX);
+    var centerY = Number(rect.centerY);
+    if (!Number.isFinite(centerX)) centerX = left + width / 2;
+    if (!Number.isFinite(centerY)) centerY = top + height / 2;
+    return {
+        left: left,
+        top: top,
+        right: right,
+        bottom: bottom,
+        width: width,
+        height: height,
+        centerX: centerX,
+        centerY: centerY
+    };
+}
+
+function resolveWebDanmakuManagerBounds(type) {
+    var manager = type === 'live2d' ? window.live2dManager
+        : (type === 'vrm' ? window.vrmManager
+            : (type === 'mmd' ? window.mmdManager : null));
+    if (!manager || !manager.currentModel || typeof manager.getModelScreenBounds !== 'function') {
+        return null;
+    }
+    if (type === 'mmd' && !manager.currentModel.mesh) {
+        return null;
+    }
+    try {
+        return normalizeWebDanmakuRect(manager.getModelScreenBounds());
+    } catch (_) {
+        return null;
+    }
+}
+
+function getVisibleElementRectForWebDanmaku(element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+    try {
+        return normalizeWebDanmakuRect(element.getBoundingClientRect());
+    } catch (_) {
+        return null;
+    }
+}
+
+function resolveWebDanmakuPngtuberBounds() {
+    var elements = [];
+    var manager = window.pngtuberManager;
+    if (manager) {
+        if (manager.image) elements.push(manager.image);
+        if (manager.imageElement) elements.push(manager.imageElement);
+        if (manager.canvasElement) elements.push(manager.canvasElement);
+    }
+    var container = document.getElementById('pngtuber-container');
+    if (container && typeof container.querySelectorAll === 'function') {
+        var nodes = container.querySelectorAll('.pngtuber-image, canvas, img');
+        for (var i = 0; i < nodes.length; i += 1) {
+            elements.push(nodes[i]);
+        }
+    }
+    for (var j = 0; j < elements.length; j += 1) {
+        var rect = getVisibleElementRectForWebDanmaku(elements[j]);
+        if (rect) return rect;
+    }
+    return null;
+}
+
+function getWebDanmakuAvatarBounds() {
+    var configuredType = (window.lanlan_config && window.lanlan_config.model_type
+        ? String(window.lanlan_config.model_type).toLowerCase()
+        : '');
+    var orderedTypes = [];
+    ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(function(type) {
+        if (type === configuredType) orderedTypes.unshift(type);
+        else orderedTypes.push(type);
+    });
+
+    for (var i = 0; i < orderedTypes.length; i += 1) {
+        var type = orderedTypes[i];
+        var bounds = type === 'pngtuber'
+            ? resolveWebDanmakuPngtuberBounds()
+            : resolveWebDanmakuManagerBounds(type);
+        if (bounds) return bounds;
+    }
+    return null;
+}
+
+function cloneWebDanmakuPanelBounds(bounds) {
+    return bounds ? {
+        width: Number(bounds.width),
+        height: Number(bounds.height)
+    } : null;
+}
+
+function cloneWebDanmakuPanelPosition(position) {
+    return position ? {
+        left: Number(position.left),
+        top: Number(position.top),
+        coordinateSpace: 'viewport'
+    } : null;
+}
+
+function createWebDanmakuSettingsSnapshot() {
+    if (!SubtitleShared || typeof SubtitleShared.getSettings !== 'function') return null;
+    var state = SubtitleShared.getSettings();
+    return {
+        subtitlePanelBounds: cloneWebDanmakuPanelBounds(state.subtitlePanelBounds),
+        subtitlePanelPosition: cloneWebDanmakuPanelPosition(state.subtitlePanelPosition),
+        subtitlePanelLocked: !!state.subtitlePanelLocked,
+        subtitleInteractionPassthrough: state.subtitleInteractionPassthrough !== false,
+        subtitleOpacity: state.subtitleOpacity
+    };
+}
+
+function getWebDanmakuViewportSize() {
+    var doc = document.documentElement || {};
+    return {
+        width: Math.max(1, Number(window.innerWidth) || Number(doc.clientWidth) || 1),
+        height: Math.max(1, Number(window.innerHeight) || Number(doc.clientHeight) || 1)
+    };
+}
+
+function clampWebDanmakuNumber(value, min, max) {
+    return Math.max(min, Math.min(value, max));
+}
+
+function computeWebDanmakuLayout(avatarBounds) {
+    var avatar = normalizeWebDanmakuRect(avatarBounds);
+    if (!avatar) return null;
+    var viewport = getWebDanmakuViewportSize();
+    var panelWidth = Math.round(clampWebDanmakuNumber(
+        avatar.width,
+        WEB_DANMAKU_MIN_PANEL_WIDTH,
+        viewport.width
+    ));
+    var panelHeight = Math.round(clampWebDanmakuNumber(
+        panelWidth / 3,
+        WEB_DANMAKU_MIN_PANEL_HEIGHT,
+        viewport.height
+    ));
+    var maxLeft = Math.max(0, viewport.width - panelWidth);
+    var maxTop = Math.max(0, viewport.height - panelHeight);
+    var left = clampWebDanmakuNumber(
+        avatar.centerX - panelWidth / 2,
+        0,
+        maxLeft
+    );
+    var top = clampWebDanmakuNumber(
+        avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP +
+            panelHeight * WEB_DANMAKU_VERTICAL_OFFSET_RATIO,
+        0,
+        maxTop
+    );
+    return {
+        subtitlePanelBounds: {
+            width: panelWidth,
+            height: panelHeight
+        },
+        subtitlePanelPosition: {
+            left: left,
+            top: top,
+            coordinateSpace: 'viewport'
+        }
+    };
+}
+
+function sameWebDanmakuPanelBounds(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return a.width === b.width && a.height === b.height;
+}
+
+function sameWebDanmakuPanelPosition(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return Math.abs(Number(a.left) - Number(b.left)) < WEB_DANMAKU_LAYOUT_EPSILON &&
+        Math.abs(Number(a.top) - Number(b.top)) < WEB_DANMAKU_LAYOUT_EPSILON &&
+        a.coordinateSpace === b.coordinateSpace;
+}
+
+function sameWebDanmakuLayout(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return sameWebDanmakuPanelBounds(a.subtitlePanelBounds, b.subtitlePanelBounds) &&
+        sameWebDanmakuPanelPosition(a.subtitlePanelPosition, b.subtitlePanelPosition);
+}
+
+function cloneWebDanmakuLayout(layout) {
+    if (!layout) return null;
+    return {
+        subtitlePanelBounds: cloneWebDanmakuPanelBounds(layout.subtitlePanelBounds),
+        subtitlePanelPosition: cloneWebDanmakuPanelPosition(layout.subtitlePanelPosition)
+    };
+}
+
+function applyWebDanmakuVisualLayout(controller, layout) {
+    var refs = controller && controller.refs;
+    var display = refs && refs.display;
+    if (!display || !layout || !layout.subtitlePanelBounds || !layout.subtitlePanelPosition) return false;
+    var currentState = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
+        ? SubtitleShared.getSettings()
+        : null;
+    if (SubtitleShared && typeof SubtitleShared.applySubtitlePanelBounds === 'function') {
+        SubtitleShared.applySubtitlePanelBounds(display, layout.subtitlePanelBounds, {
+            host: 'web',
+            fontSize: currentState ? currentState.subtitleFontSize : undefined
+        });
+    } else {
+        display.style.width = layout.subtitlePanelBounds.width + 'px';
+        display.style.height = layout.subtitlePanelBounds.height + 'px';
+    }
+    display.style.left = layout.subtitlePanelPosition.left + 'px';
+    display.style.top = layout.subtitlePanelPosition.top + 'px';
+    display.style.bottom = 'auto';
+    display.style.transform = 'none';
+    display.style.animation = 'none';
+    display.dataset.subtitlePositioned = 'true';
+    return true;
+}
+
+function syncWebDanmakuLayoutState(layout) {
+    if (!SubtitleShared || typeof SubtitleShared.updateSettings !== 'function') return false;
+    if (!layout) return false;
+    SubtitleShared.updateSettings({
+        subtitlePanelBounds: layout.subtitlePanelBounds,
+        subtitlePanelPosition: layout.subtitlePanelPosition
+    }, {
+        persist: false,
+        source: 'subtitle-web-danmaku-layout'
+    });
+    return true;
+}
+
+function attachWebDanmakuModeLayout(controller) {
+    if (!SubtitleShared ||
+        typeof SubtitleShared.subscribeSettings !== 'function' ||
+        typeof SubtitleShared.updateSettings !== 'function') {
+        return function() {};
+    }
+
+    var active = false;
+    var destroyed = false;
+    var snapshot = null;
+    var rafId = 0;
+    var forceNextLayout = false;
+    var lastStateSyncAt = 0;
+    var lastVisualLayout = null;
+    var previousTransition = null;
+    var previousWillChange = null;
+
+    function cancelLayoutLoop() {
+        if (rafId) {
+            window.cancelAnimationFrame(rafId);
+            rafId = 0;
+        }
+        forceNextLayout = false;
+    }
+
+    function requestLayoutFrame() {
+        if (!active || destroyed || rafId) return;
+        rafId = window.requestAnimationFrame(function() {
+            rafId = 0;
+            if (!active || destroyed) return;
+            var now = Date.now();
+            var force = forceNextLayout;
+            forceNextLayout = false;
+            var layout = computeWebDanmakuLayout(getWebDanmakuAvatarBounds());
+            if (layout) {
+                if (force || !sameWebDanmakuLayout(lastVisualLayout, layout)) {
+                    applyWebDanmakuVisualLayout(controller, layout);
+                    lastVisualLayout = cloneWebDanmakuLayout(layout);
+                }
+                if (force || now - lastStateSyncAt >= WEB_DANMAKU_STATE_SYNC_MS) {
+                    syncWebDanmakuLayoutState(layout);
+                    lastStateSyncAt = now;
+                }
+            }
+            requestLayoutFrame();
+        });
+    }
+
+    function scheduleLayout(force) {
+        if (!active || destroyed) return;
+        if (force) {
+            forceNextLayout = true;
+        }
+        requestLayoutFrame();
+    }
+
+    function onViewportChanged() {
+        lastStateSyncAt = 0;
+        scheduleLayout(true);
+    }
+
+    function start() {
+        if (active || destroyed || !isWebSubtitleDanmakuHost()) return;
+        active = true;
+        snapshot = createWebDanmakuSettingsSnapshot();
+        lastStateSyncAt = 0;
+        lastVisualLayout = null;
+        if (controller && typeof controller.closeSettingsForExternalInteraction === 'function') {
+            controller.closeSettingsForExternalInteraction('clean');
+        }
+        var display = controller && controller.refs ? controller.refs.display : null;
+        if (display) {
+            previousTransition = display.style.transition;
+            previousWillChange = display.style.willChange;
+            display.style.transition = 'none';
+            display.style.willChange = 'left, top, width, height';
+        }
+        SubtitleShared.updateSettings({
+            subtitlePanelLocked: true,
+            subtitleInteractionPassthrough: true,
+            subtitleOpacity: 0
+        }, {
+            persist: false,
+            source: 'subtitle-web-danmaku-enter'
+        });
+        window.addEventListener('resize', onViewportChanged);
+        window.addEventListener('scroll', onViewportChanged, true);
+        scheduleLayout(true);
+    }
+
+    function stop() {
+        if (!active) return;
+        active = false;
+        cancelLayoutLoop();
+        window.removeEventListener('resize', onViewportChanged);
+        window.removeEventListener('scroll', onViewportChanged, true);
+        if (snapshot) {
+            SubtitleShared.updateSettings(snapshot, {
+                persist: false,
+                source: 'subtitle-web-danmaku-restore'
+            });
+            snapshot = null;
+        }
+        var display = controller && controller.refs ? controller.refs.display : null;
+        if (display) {
+            display.style.transition = previousTransition || '';
+            display.style.willChange = previousWillChange || '';
+        }
+        previousTransition = null;
+        previousWillChange = null;
+        lastVisualLayout = null;
+    }
+
+    var unsubscribe = SubtitleShared.subscribeSettings(function(state) {
+        if (state && state.subtitleDanmakuMode) {
+            start();
+        } else {
+            stop();
+        }
+    }, { immediate: true });
+
+    return function cleanupWebDanmakuModeLayout() {
+        destroyed = true;
+        if (typeof unsubscribe === 'function') unsubscribe();
+        stop();
+    };
 }
 
 function applySharedSubtitleSettings(patch, options) {
@@ -87,7 +487,10 @@ function syncSubtitleRenderState(source) {
         subtitlePanelBounds: currentSettings ? currentSettings.subtitlePanelBounds : { width: 600, height: 68 },
         subtitlePanelPosition: currentSettings ? currentSettings.subtitlePanelPosition : null,
         subtitlePanelLocked: currentSettings ? !!currentSettings.subtitlePanelLocked : false,
-        subtitleInteractionPassthrough: currentSettings ? currentSettings.subtitleInteractionPassthrough !== false : true
+        subtitleInteractionPassthrough: currentSettings ? currentSettings.subtitleInteractionPassthrough !== false : true,
+        subtitleDanmakuMode: currentSettings ? !!currentSettings.subtitleDanmakuMode : false,
+        subtitleFontSize: currentSettings ? currentSettings.subtitleFontSize : 26,
+        subtitleColorScheme: currentSettings ? currentSettings.subtitleColorScheme : 'default'
     }, { source: source || 'subtitle-core' });
 }
 
@@ -270,6 +673,7 @@ function hideSubtitle() {
     if (!display) return;
     const subtitleText = document.getElementById('subtitle-text');
     if (subtitleText) subtitleText.textContent = '';
+    clearSubtitleDanmakuLayer();
     display.classList.remove('show');
     display.classList.add('hidden');
     display.style.opacity = '0';
@@ -281,6 +685,30 @@ function hideSubtitle() {
  * 长文本自动缩小字号以保持在可视范围内。
  */
 var _subtitleFontResizeTimer = null;
+function getSubtitleDanmakuRefs() {
+    if (subtitleUiController && subtitleUiController.refs) {
+        return subtitleUiController.refs;
+    }
+    return {
+        display: document.getElementById('subtitle-display'),
+        scroll: document.getElementById('subtitle-scroll'),
+        text: document.getElementById('subtitle-text')
+    };
+}
+
+function renderSubtitleDanmakuLayer(text) {
+    if (!SubtitleShared || typeof SubtitleShared.renderSubtitleDanmakuText !== 'function') return false;
+    var state = typeof SubtitleShared.getSettings === 'function' ? SubtitleShared.getSettings() : null;
+    var enabled = !!(state && state.subtitleDanmakuMode);
+    SubtitleShared.renderSubtitleDanmakuText(getSubtitleDanmakuRefs(), text, { enabled: enabled });
+    return enabled;
+}
+
+function clearSubtitleDanmakuLayer() {
+    if (!SubtitleShared || typeof SubtitleShared.clearSubtitleDanmakuText !== 'function') return;
+    SubtitleShared.clearSubtitleDanmakuText(getSubtitleDanmakuRefs());
+}
+
 function requestSubtitleContentAutoScroll() {
     if (SubtitleShared && typeof SubtitleShared.requestSubtitleAutoScroll === 'function') {
         SubtitleShared.requestSubtitleAutoScroll(document.getElementById('subtitle-scroll'));
@@ -291,16 +719,20 @@ function writeSubtitleText(text) {
     const subtitleText = document.getElementById('subtitle-text');
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
-    requestSubtitleContentAutoScroll();
+    subtitleText.style.fontSize = '';
+    var danmakuRendering = renderSubtitleDanmakuLayer(subtitleText.textContent);
+    if (!danmakuRendering) {
+        requestSubtitleContentAutoScroll();
+    }
     syncSubtitleRenderState('subtitle-text-write');
 
     // 自适应字号：防抖测量，避免流式高频触发
     if (_subtitleFontResizeTimer) clearTimeout(_subtitleFontResizeTimer);
     if (!text || !text.trim()) {
-        subtitleText.style.fontSize = '';
         syncSubtitleRenderState('subtitle-text-clear');
         return;
     }
+    if (danmakuRendering) return;
     _subtitleFontResizeTimer = setTimeout(function() {
         var display = document.getElementById('subtitle-display');
         if (!display) return;
@@ -310,6 +742,9 @@ function writeSubtitleText(text) {
         var panelBounds = SubtitleShared && typeof SubtitleShared.getPanelBounds === 'function'
             ? SubtitleShared.getPanelBounds(preset.subtitlePanelBounds)
             : { width: display.offsetWidth || 600, height: display.offsetHeight || 68 };
+        var baseFont = SubtitleShared && typeof SubtitleShared.normalizeSubtitleFontSize === 'function'
+            ? SubtitleShared.normalizeSubtitleFontSize(preset.subtitleFontSize)
+            : (Number(preset.subtitleFontSize) || 26);
         var layout = SubtitleShared && typeof SubtitleShared.measureSubtitleLayout === 'function'
             ? SubtitleShared.measureSubtitleLayout({
                 mode: 'web',
@@ -318,13 +753,13 @@ function writeSubtitleText(text) {
                 maxWidth: panelBounds.width,
                 minHeight: panelBounds.height,
                 maxHeight: panelBounds.height,
-                baseFont: 17,
+                baseFont: baseFont,
                 // Keep in sync with PANEL_TEXT_HORIZONTAL_RESERVE in subtitle-shared.js.
                 availableWidth: Math.max(0, (display.clientWidth || panelBounds.width) - 110),
                 availableHeight: panelBounds.height
             })
-            : { fontSize: 17 };
-        subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+            : { fontSize: baseFont };
+        subtitleText.style.fontSize = layout.fontSize < baseFont ? layout.fontSize + 'px' : '';
         requestSubtitleContentAutoScroll();
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
@@ -704,8 +1139,13 @@ function initSubtitleHostUi() {
             }
         },
         onSettingsApplied: function(state, refs, detail) {
+            var changedKeys = detail && Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
             var shouldRemeasureText = detail && (
-                detail.source === 'subtitle-ui-resize'
+                detail.source === 'subtitle-ui-resize' ||
+                detail.source === 'subtitle-ui-font-size' ||
+                detail.source === 'subtitle-web-danmaku-restore' ||
+                changedKeys.indexOf('subtitleDanmakuMode') !== -1 ||
+                changedKeys.indexOf('subtitleFontSize') !== -1
             );
             if (shouldRemeasureText && refs && refs.text && refs.text.textContent) {
                 writeSubtitleText(refs.text.textContent);
@@ -713,6 +1153,20 @@ function initSubtitleHostUi() {
             syncSubtitleRenderState(detail && detail.source ? detail.source : 'subtitle-ui-apply');
         }
     });
+    if (subtitleUiController && !webDanmakuModeSettingsCleanup) {
+        webDanmakuModeSettingsCleanup = attachWebDanmakuModeLayout(subtitleUiController);
+        var baseDestroy = subtitleUiController.destroy;
+        subtitleUiController.destroy = function() {
+            if (webDanmakuModeSettingsCleanup) {
+                webDanmakuModeSettingsCleanup();
+                webDanmakuModeSettingsCleanup = null;
+            }
+            if (typeof baseDestroy === 'function') {
+                return baseDestroy.apply(subtitleUiController, arguments);
+            }
+            return undefined;
+        };
+    }
     return subtitleUiController;
 }
 

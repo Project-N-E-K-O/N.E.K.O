@@ -10,6 +10,7 @@ const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avat
 const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
 const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
 const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
+const targetGeometryRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/target-geometry-registry.js'), 'utf8');
 
 function getSceneBlock(source, sceneId) {
   const idPattern = "id: '" + sceneId + "'";
@@ -22,7 +23,7 @@ function getSceneBlock(source, sceneId) {
   return source.slice(start, end + '\n                }'.length);
 }
 
-test('Day1 intro-only scene flows are delegated from timeline operations', () => {
+test('Day1 activation stays timeline-owned while greeting uses the generic scene path', () => {
   const operationRegistryBlock = operationRegistrySource.match(/registerBuiltInOperations\(\)\s*\{([\s\S]*?)\n\s*\}\n\s*\n\s*resolveTargetEntry/);
   assert.ok(operationRegistryBlock, 'expected to find built-in operation registrations');
   const activationSceneBlock = getSceneBlock(day1Source, 'day1_intro_activation');
@@ -31,13 +32,17 @@ test('Day1 intro-only scene flows are delegated from timeline operations', () =>
   assert.match(activationSceneBlock, /timelinePlayback:\s*true/);
   assert.match(activationSceneBlock, /timelineAudio:\s*false/);
   assert.match(activationSceneBlock, /operation:\s*'day1-intro-activation-flow'/);
-  assert.match(greetingSceneBlock, /timelinePlayback:\s*true/);
-  assert.match(greetingSceneBlock, /timelineAudio:\s*false/);
-  assert.match(greetingSceneBlock, /operation:\s*'day1-intro-greeting-flow'/);
+  assert.doesNotMatch(greetingSceneBlock, /timelinePlayback:\s*true/);
+  assert.doesNotMatch(greetingSceneBlock, /timelineAudio:\s*false/);
+  assert.doesNotMatch(greetingSceneBlock, /operation:\s*'day1-intro-greeting-flow'/);
+  assert.match(greetingSceneBlock, /target:\s*'chat-input'/);
+  assert.match(greetingSceneBlock, /cursorTarget:\s*'chat-capsule-input'/);
+  assert.match(greetingSceneBlock, /cursorAction:\s*'move'/);
+  assert.match(greetingSceneBlock, /operation:\s*'day1-intro-greeting-performance'/);
   assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-activation-flow'/);
   assert.match(operationRegistryBlock[1], /runDay1IntroActivationFlow/);
-  assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-greeting-flow'/);
-  assert.match(operationRegistryBlock[1], /runDay1IntroGreetingFlow/);
+  assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-greeting-performance'/);
+  assert.match(operationRegistryBlock[1], /runDay1IntroGreetingPerformance/);
   assert.doesNotMatch(sceneOrchestratorSource, /registerSceneFlow\('day1-intro-activation'/);
   assert.doesNotMatch(sceneOrchestratorSource, /registerSceneFlow\('day1-intro-greeting'/);
   assert.doesNotMatch(sceneOrchestratorSource, /playRegisteredSceneFlow/);
@@ -202,12 +207,13 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /if \(selector === 'chat-capsule-input'\) \{\s*return this\.getChatCapsuleInputTarget\(\);/);
   assert.match(directorSource, /const registeredKind = this\.cursor\.getExternalKind\(this\.getAvatarFloatingCursorTargetKey\(scene\)\);[\s\S]*if \(registeredKind\) \{[\s\S]*return registeredKind;/);
   assert.match(directorSource, /'chat-capsule-input': 'capsule-input'/);
-  assert.match(appInterpageSource, /if \(kind === 'capsule-input'\) \{[\s\S]*data-compact-geometry-part="capsuleBody"/);
-  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*if \(isYuiGuidePcOverlayAvailable\(\)\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}\);/);
+  assert.match(targetGeometryRegistrySource, /'chat-capsule-input': Object\.freeze\(\{[\s\S]*externalKind: 'capsule-input'[\s\S]*data-compact-geometry-part="capsuleBody"/);
+  assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)[\s\S]*entry\.localSelectors\.some/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);
   assert.match(directorSource, /setExternalizedChatCursorEffect\(kind,\s*effect,\s*options\)[\s\S]*this\.rememberExternalizedChatCursorHandoffPoint\(normalizedKind,\s*cursorOptions\.effect\);[\s\S]*this\.interactionTakeover\.setExternalizedChatCursor\(normalizedKind,\s*cursorOptions\);/);
-  assert.doesNotMatch(appInterpageSource, /payload\.cursor\s*=\s*yuiGuidePcOverlayCursor/);
   const moveIndex = sceneOrchestratorSource.indexOf('await director.moveAvatarFloatingCursor(scene, cursorTarget || primaryTarget');
   const operationIndex = sceneOrchestratorSource.indexOf('await startSceneOperation();', moveIndex);
   assert.notStrictEqual(moveIndex, -1, 'expected generic avatar floating cursor move');

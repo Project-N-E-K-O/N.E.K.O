@@ -35,6 +35,11 @@
             button.style.touchAction = 'manipulation';
 
             let skipHandled = false;
+            const resetSkipHandled = () => {
+                skipHandled = false;
+                button.disabled = false;
+                button.removeAttribute('aria-disabled');
+            };
             const handleSkipRequest = (event) => {
                 if (skipHandled) {
                     return;
@@ -60,9 +65,11 @@
                 try {
                     Promise.resolve(onSkip(event)).catch((error) => {
                         console.warn('[TutorialSkipController] skip handler failed:', error);
+                        resetSkipHandled();
                     });
                 } catch (error) {
                     console.warn('[TutorialSkipController] skip handler threw:', error);
+                    resetSkipHandled();
                 }
             };
 

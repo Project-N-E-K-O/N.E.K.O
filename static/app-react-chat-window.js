@@ -2503,7 +2503,6 @@
     }
 
     function refreshAssistantAvatarUrls(event) {
-        var shouldClear = event && event.type === 'chat-avatar-preview-cleared';
         var changed = false;
         state.messages = state.messages.map(function (message) {
             if (!message || message.role !== 'assistant') return message;
@@ -3192,6 +3191,22 @@
         }
     }
 
+    function syncSubtitleWindowFromTranslateToggle(enabled) {
+        var subtitleWindow = window.nekoSubtitleWindow;
+        if (!subtitleWindow) return;
+        try {
+            if (typeof subtitleWindow.setEnabled === 'function') {
+                subtitleWindow.setEnabled(!!enabled);
+            } else if (enabled && typeof subtitleWindow.show === 'function') {
+                subtitleWindow.show();
+            } else if (!enabled && typeof subtitleWindow.hide === 'function') {
+                subtitleWindow.hide();
+            }
+        } catch (error) {
+            console.warn('[ReactChatWindow] subtitle window visibility sync failed:', error);
+        }
+    }
+
     function handleTranslateToggle() {
         var bridge = window.subtitleBridge;
         var next;
@@ -3211,9 +3226,14 @@
             var subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
                 ? subtitleStore.getSettings()
                 : null;
-            var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
-                ? appSt.subtitleEnabled
-                : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'));
+            var viewProps = ensureViewProps();
+            var current = (viewProps && typeof viewProps.translateEnabled !== 'undefined')
+                ? !!viewProps.translateEnabled
+                : (
+                    appSt && typeof appSt.subtitleEnabled !== 'undefined'
+                        ? !!appSt.subtitleEnabled
+                        : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'))
+                );
             next = !current;
             if (appSt) appSt.subtitleEnabled = next;
             if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
@@ -3232,9 +3252,47 @@
 
         // Update React prop to reflect new state
         state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        syncSubtitleWindowFromTranslateToggle(next);
         renderWindow();
 
         dispatchHostEvent('translate-toggle', { enabled: next });
+    }
+
+    function syncTranslateEnabledFromSubtitleState(enabled) {
+        var next = !!enabled;
+        var props = ensureViewProps();
+        if (props.translateEnabled === next) {
+            return;
+        }
+        state.viewProps = Object.assign({}, props, { translateEnabled: next });
+        renderWindow();
+    }
+
+    function handleSubtitleSettingsChange(event) {
+        var detail = event && event.detail ? event.detail : {};
+        var changedKeys = Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
+        if (changedKeys.length && changedKeys.indexOf('subtitleEnabled') === -1) {
+            return;
+        }
+        if (!detail.state || typeof detail.state.subtitleEnabled === 'undefined') {
+            return;
+        }
+        syncTranslateEnabledFromSubtitleState(detail.state.subtitleEnabled);
+    }
+
+    function bindSubtitleSettingsSync() {
+        var subtitleStore = window.nekoSubtitleShared;
+        if (subtitleStore && typeof subtitleStore.subscribeSettings === 'function') {
+            subtitleStore.subscribeSettings(function(stateValue, detail) {
+                var syncDetail = detail || {};
+                if (!syncDetail.state) {
+                    syncDetail = Object.assign({}, syncDetail, { state: stateValue });
+                }
+                handleSubtitleSettingsChange({ detail: syncDetail });
+            });
+            return;
+        }
+        window.addEventListener('neko-subtitle-settings-change', handleSubtitleSettingsChange);
     }
 
     // ============================ GalGame mode ============================
@@ -6478,6 +6536,7 @@
             composerDisabled: !!(state.homeTutorialInteractionLocked || state.homeTutorialInputLocked),
             compactInputLocked: !!state.homeTutorialInputLocked
         });
+        bindSubtitleSettingsSync();
         syncChatSurfaceModeUI();
         prewarmUserDisplayName();
         // Resolve the persisted GalGame preference now that the storage-location

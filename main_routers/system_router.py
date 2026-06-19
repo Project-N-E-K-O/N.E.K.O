@@ -55,7 +55,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
+from utils.llm_client import SystemMessage, HumanMessage, ThinkingStreamStripper, create_chat_llm_async
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -84,6 +84,7 @@ from config import (
     MEMORY_SERVER_PORT,
     get_extra_body,
     focus_extra_body,
+    leaks_thinking_in_content,
     PROACTIVE_PHASE1_FETCH_PER_SOURCE,
     PROACTIVE_PHASE1_TOTAL_TOPICS,
     PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
@@ -2337,8 +2338,6 @@ def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> 
         "lanlan_name": lanlan_name,
         "session_id": session_id,
     }
-    if game_type == "basketball":
-        query["mode"] = "duel"
     separator = "&" if "?" in url_template else "?"
     return f"{url_template}{separator}{_urlencode(query)}"
 
@@ -6717,6 +6716,16 @@ async def proactive_chat(request: Request):
             full_text += text
             return False
         
+        # Focus 凝神: idle/proactive counterpart to OmniOfflineClient's inline
+        # stripper — text-mode Phase-2 also streams thinking-on (disable_thinking
+        # False). Strip leaked <think> CoT before it reaches TTS/UI for leak-prone
+        # models (qwen3.5/3.6/3.7 hybrids). Symmetric with the inline path; None
+        # (no wrapping) for clean providers or thinking-off turns → zero impact.
+        _p2_strip = (
+            ThinkingStreamStripper()
+            if (not phase2_disable_thinking) and leaks_thinking_in_content(conversation_model)
+            else None
+        )
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
@@ -6732,9 +6741,13 @@ async def proactive_chat(request: Request):
                             aborted = True
                             break
                         content = chunk.content if hasattr(chunk, 'content') else ''
+                        if _p2_strip is not None and content:
+                            # Holds CoT until the first </think>; returns "" while
+                            # buffering so the skip below drops the held chunk.
+                            content = _p2_strip.feed(content)
                         if not content:
                             continue
-                        
+
                         if not tag_parsed:
                             buffer += content
                             # 缓冲前 ~80 字符，解析 "主动搭话" 前缀和来源标签
@@ -6801,7 +6814,17 @@ async def proactive_chat(request: Request):
             else:
                 await _emit_safe(pass_probe)
         pass_probe = ""
-        
+
+        # Focus: flush the stripper's held answer. Non-empty only when no
+        # </think> ever arrived (the model didn't think this turn) — which means
+        # the tag was never parsed and nothing flowed through pass_probe, so feed
+        # it into `buffer` and let the unparsed-buffer block below tag-parse +
+        # emit it (symmetric with the inline path's prefix_buffer flush).
+        if _p2_strip is not None and not aborted:
+            _p2_residual = _p2_strip.flush()
+            if _p2_residual:
+                buffer += _p2_residual
+
         # --- 流结束后 buffer 未 flush 的兜底处理 ---
         if not tag_parsed and buffer and not aborted:
             cleaned = buffer

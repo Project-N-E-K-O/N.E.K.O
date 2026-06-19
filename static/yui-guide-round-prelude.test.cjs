@@ -109,7 +109,7 @@ test('round prelude starts takeover for day one before audio activation', async 
     ]);
 });
 
-test('round prelude continues after avatar override and visibility failures', async () => {
+test('round prelude stops after avatar override failure', async () => {
     const { TutorialRoundPreludeController } = require('./tutorial/core/round-prelude-controller.js');
     const calls = [];
     const warnings = [];
@@ -117,6 +117,53 @@ test('round prelude continues after avatar override and visibility failures', as
         beginAvatarOverride() {
             calls.push('begin');
             return Promise.reject(new Error('override failed'));
+        },
+        revealPrepared() {
+            calls.push('reveal');
+        },
+        ensureVisible() {
+            calls.push('visible');
+        },
+        sleep(delayMs) {
+            calls.push(['sleep', delayMs]);
+            return Promise.resolve();
+        },
+        beginTakingOver(detail) {
+            calls.push(['takeover', detail.day, detail.source]);
+        },
+        setLifecycleActive(active) {
+            calls.push(['lifecycle', active]);
+        },
+        showSkipButton() {
+            calls.push('skip');
+        },
+        dispatchStarted(detail) {
+            calls.push(['started', detail.day, detail.source]);
+        },
+        warn(message) {
+            warnings.push(message);
+        }
+    });
+
+    await assert.rejects(
+        () => controller.play(2, { source: 'auto', delayMs: 20 }),
+        /override failed/
+    );
+
+    assert.deepEqual(calls, [
+        'begin',
+        'reveal'
+    ]);
+    assert.equal(warnings.length, 1);
+});
+
+test('round prelude stops after visibility failure', async () => {
+    const { TutorialRoundPreludeController } = require('./tutorial/core/round-prelude-controller.js');
+    const calls = [];
+    const warnings = [];
+    const controller = new TutorialRoundPreludeController({
+        beginAvatarOverride() {
+            calls.push('begin');
         },
         revealPrepared() {
             calls.push('reveal');
@@ -146,20 +193,18 @@ test('round prelude continues after avatar override and visibility failures', as
         }
     });
 
-    await controller.play(2, { source: 'auto', delayMs: 20 });
+    await assert.rejects(
+        () => controller.play(2, { source: 'auto', delayMs: 20 }),
+        /visible failed/
+    );
 
     assert.deepEqual(calls, [
         'begin',
         'reveal',
         'visible',
-        'reveal',
-        ['sleep', 20],
-        ['takeover', 2, 'auto'],
-        ['lifecycle', true],
-        'skip',
-        ['started', 2, 'auto']
+        'reveal'
     ]);
-    assert.equal(warnings.length, 2);
+    assert.equal(warnings.length, 1);
 });
 
 test('manager delegates avatar floating prelude to TutorialRoundPreludeController', () => {

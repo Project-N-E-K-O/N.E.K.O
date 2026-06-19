@@ -28,7 +28,6 @@ import json
 import math
 import random
 import re
-import shutil
 import sqlite3
 import time
 import uuid
@@ -50,11 +49,11 @@ _SSML_TAG_PATTERN = re.compile(
 from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
-    get_basketball_pregame_context_formatter_labels,
-    get_basketball_pregame_context_prompt,
-    get_basketball_quick_lines_prompt,
-    get_basketball_quick_lines_user_prompt,
-    get_basketball_system_prompt,
+    get_badminton_pregame_context_formatter_labels,
+    get_badminton_pregame_context_prompt,
+    get_badminton_quick_lines_prompt,
+    get_badminton_quick_lines_user_prompt,
+    get_badminton_system_prompt,
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
@@ -114,62 +113,72 @@ _game_sessions: Dict[str, dict] = {}
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
-_BASKETBALL_SCORE_SESSION_TTL_SECONDS = 10 * 60
-_BASKETBALL_SCORING_MODES = {"shooter", "duel"}
-_basketball_recent_score_sessions: Dict[tuple[str, str], dict] = {}
+_BADMINTON_SCORE_SESSION_TTL_SECONDS = 10 * 60
+_BADMINTON_SCORING_MODES = {"shooter", "duel"}
+_BADMINTON_GAME_TYPES = {"badminton"}
+_BADMINTON_SHOT_TYPE_ALIASES = {
+    "line_in": "line_in",
+    "net_touch": "net_touch",
+    "zone_in": "zone_in",
+    "out": "out",
+    "net": "net",
+}
+_badminton_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 
 _SOCCER_QUICK_LINE_KEYS = {
     "goal-scored", "goal-conceded", "own-goal-by-ai", "own-goal-by-player",
     "steal", "stolen", "player-idle", "player-charging-long",
     "free-ball", "startle-direct", "startle-graze", "zoneout",
 }
-_BASKETBALL_QUICK_LINE_KEYS = {
-    "swish", "bank", "rim_in", "rim_out", "air_ball",
+_BADMINTON_QUICK_LINE_KEYS = {
+    "line_in", "net_touch", "zone_in", "out", "net",
     "shot_missed", "game_over", "long_aim", "close_to_record",
     "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
 }
-_BASKETBALL_QUICK_LINES_FALLBACK: Dict[str, list[str]] = {
-    "swish": ["空心喵！", "这球漂亮"],
-    "bank": ["擦板也算喵", "角度不错"],
-    "rim_in": ["弹进去了喵", "心脏停一下"],
-    "rim_out": ["差一点喵", "这都弹出来？"],
-    "air_ball": ["篮筐在右边喵", "偏太多啦"],
-    "shot_missed": ["还有机会喵", "稳一点再来"],
+_BADMINTON_QUICK_LINES_FALLBACK: Dict[str, list[str]] = {
+    "line_in": ["压线喵！", "落点漂亮"],
+    "net_touch": ["擦网也算喵", "角度不错"],
+    "zone_in": ["刚好进区喵", "落点很刁钻"],
+    "out": ["出界一点点喵", "这拍太长了"],
+    "net": ["挂网了喵", "拍面再打开一点"],
+    "shot_missed": ["还有机会喵", "稳一点再挥"],
     "game_over": ["再来一局？", "这次先记着"],
-    "long_aim": ["快投呀喵", "还在瞄准？"],
+    "long_aim": ["快挥拍呀喵", "还在等球落地？"],
     "close_to_record": ["快摸到纪录了", "差一点点喵"],
-    "new_record": ["破纪录了喵！", "这也太远了"],
-    "streak_5": ["五连中喵！", "手感来了"],
-    "streak_10": ["十连中？！", "你是怪物喵"],
+    "new_record": ["破纪录了喵！", "这落点太远了"],
+    "streak_5": ["五连回合喵！", "手感来了"],
+    "streak_10": ["十连回合？！", "你是怪物喵"],
     "streak_15": ["十五连也太夸张", "这次真稳"],
     "streak_20": ["二十连？！", "这回合离谱喵"],
 }
-_BASKETBALL_QUICK_LINES_FALLBACK_EN: Dict[str, list[str]] = {
-    "swish": ["Clean swish!", "Okay, that was pretty"],
-    "bank": ["Banked it, huh", "Nice angle"],
-    "rim_in": ["It bounced in!", "My heart skipped"],
-    "rim_out": ["So close", "How did that roll out?"],
-    "air_ball": ["The rim is over there", "Way off, hey"],
-    "shot_missed": ["Still in it", "Settle and shoot again"],
+_BADMINTON_QUICK_LINES_FALLBACK_EN: Dict[str, list[str]] = {
+    "line_in": ["On the line!", "Nice placement"],
+    "net_touch": ["Net touch counts", "Nice angle"],
+    "zone_in": ["Right in the zone", "Sharp landing"],
+    "out": ["Just out", "A little too long"],
+    "net": ["Caught the net", "Open the racket face"],
+    "shot_missed": ["Still in it", "Settle and swing again"],
     "game_over": ["One more round?", "I'll remember this one"],
-    "long_aim": ["Shoot already", "Still aiming?"],
+    "long_aim": ["Swing already", "Still waiting?"],
     "close_to_record": ["Almost a record", "Just a little more"],
     "new_record": ["New record!", "That was too far"],
-    "streak_5": ["Five in a row!", "You're heating up"],
-    "streak_10": ["Ten straight?!", "You're unreal"],
+    "streak_5": ["Five rallies in a row!", "You're heating up"],
+    "streak_10": ["Ten straight rallies?!", "You're unreal"],
     "streak_15": ["Fifteen is wild", "This run is steady"],
     "streak_20": ["Twenty?!", "This round is absurd"],
 }
-_basketball_quick_lines_cache: OrderedDict[str, Dict[str, list[str]]] = OrderedDict()
-_BASKETBALL_QUICK_LINES_CACHE_MAX = 32
-_basketball_chat_rate_windows: OrderedDict[str, list[float]] = OrderedDict()
-_BASKETBALL_CHAT_RATE_WINDOW_SECONDS = 8.0
-_BASKETBALL_CHAT_RATE_MAX = 10
-_BASKETBALL_SCORES_DB_PATH: Path | None = None
-_BASKETBALL_LEGACY_SCORES_DB_PATH = Path(__file__).resolve().with_name("basketball_scores.db")
-_BASKETBALL_SCORES_DB_MIGRATED = False
+_badminton_quick_lines_cache: OrderedDict[str, Dict[str, list[str]]] = OrderedDict()
+_BADMINTON_QUICK_LINES_CACHE_MAX = 32
+_badminton_chat_rate_windows: OrderedDict[str, list[float]] = OrderedDict()
+_BADMINTON_CHAT_RATE_WINDOW_SECONDS = 8.0
+_BADMINTON_CHAT_RATE_MAX = 10
+_BADMINTON_SCORES_DB_PATH: Path | None = None
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
 _MAX_GAME_MEMORY_TAIL_COUNT = 50
+
+
+def _is_badminton_game_type(game_type: Any) -> bool:
+    return str(game_type or "").strip().lower() in _BADMINTON_GAME_TYPES
 
 
 async def _push_game_window_state_change(
@@ -228,13 +237,13 @@ _SOCCER_GAME_MEMORY_POLICY_FIELDS = (
     "soccer_game_memory_archive_enabled",
     "soccer_game_memory_postgame_context_enabled",
 )
-_DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED = False
-_BASKETBALL_GAME_MEMORY_POLICY_FIELDS = (
-    "basketball_game_memory_enabled",
-    "basketball_game_memory_player_interaction_enabled",
-    "basketball_game_memory_event_reply_enabled",
-    "basketball_game_memory_archive_enabled",
-    "basketball_game_memory_postgame_context_enabled",
+_DEFAULT_BADMINTON_GAME_MEMORY_ENABLED = False
+_BADMINTON_GAME_MEMORY_POLICY_FIELDS = (
+    "badminton_game_memory_enabled",
+    "badminton_game_memory_player_interaction_enabled",
+    "badminton_game_memory_event_reply_enabled",
+    "badminton_game_memory_archive_enabled",
+    "badminton_game_memory_postgame_context_enabled",
 )
 _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
@@ -396,7 +405,7 @@ def _infer_service_source(base_url: str, model: str = "", api_type: str = "") ->
     }
 
 
-def _basketball_duel_difficulty_control_prompt(language: str | None = None) -> str:
+def _badminton_duel_difficulty_control_prompt(language: str | None = None) -> str:
     lang = normalize_language_code(language)
     if lang == "zh":
         return (
@@ -429,11 +438,11 @@ def _build_game_prompt(
         context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context, language)
         in_game_context_prompt = _format_game_context_for_prompt(game_context, language)
         return f"{prompt}{context_prompt}{in_game_context_prompt}"
-    if game_type == "basketball":
-        prompt = get_basketball_system_prompt(language, mode=mode).format(name=lanlan_name, personality=lanlan_prompt)
-        if _normalize_basketball_mode(mode) == "duel":
-            prompt = f"{prompt}{_basketball_duel_difficulty_control_prompt(language)}"
-        context_prompt = _format_basketball_pregame_context_for_prompt(pre_game_context, language, mode=mode)
+    if _is_badminton_game_type(game_type):
+        prompt = get_badminton_system_prompt(language, mode=mode).format(name=lanlan_name, personality=lanlan_prompt)
+        if _normalize_badminton_mode(mode) == "duel":
+            prompt = f"{prompt}{_badminton_duel_difficulty_control_prompt(language)}"
+        context_prompt = _format_badminton_pregame_context_for_prompt(pre_game_context, language, mode=mode)
         in_game_context_prompt = _format_game_context_for_prompt(game_context, language)
         return f"{prompt}{context_prompt}{in_game_context_prompt}"
     # 未来其他游戏在这里扩展
@@ -476,6 +485,13 @@ def _normalize_short_text(value: Any, *, max_chars: int = 120) -> str:
     if max_chars > 0:
         text = text[:max_chars]
     return text
+
+
+def _normalize_badminton_shot_type(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return _BADMINTON_SHOT_TYPE_ALIASES.get(raw, "")
 
 
 def _normalize_text_items(value: Any, *, max_items: int = 5, max_chars: int = 80) -> list[str]:
@@ -739,28 +755,28 @@ _SOCCER_GAME_MEMORY_PAYLOAD_KEYS = {
 }
 
 
-_BASKETBALL_GAME_MEMORY_PAYLOAD_KEYS = {
-    "basketball_game_memory_enabled": (
-        "basketball_game_memory_enabled", "basketballGameMemoryEnabled",
+_BADMINTON_GAME_MEMORY_PAYLOAD_KEYS = {
+    "badminton_game_memory_enabled": (
+        "badminton_game_memory_enabled", "badmintonGameMemoryEnabled",
         "game_memory_enabled", "gameMemoryEnabled", "memoryEnabled", "enableGameMemory",
     ),
-    "basketball_game_memory_player_interaction_enabled": (
-        "basketball_game_memory_player_interaction_enabled", "basketballGameMemoryPlayerInteractionEnabled",
+    "badminton_game_memory_player_interaction_enabled": (
+        "badminton_game_memory_player_interaction_enabled", "badmintonGameMemoryPlayerInteractionEnabled",
         "game_player_interaction_memory_enabled", "gamePlayerInteractionMemoryEnabled",
         "game_memory_player_interaction_enabled", "gameMemoryPlayerInteractionEnabled",
     ),
-    "basketball_game_memory_event_reply_enabled": (
-        "basketball_game_memory_event_reply_enabled", "basketballGameMemoryEventReplyEnabled",
+    "badminton_game_memory_event_reply_enabled": (
+        "badminton_game_memory_event_reply_enabled", "badmintonGameMemoryEventReplyEnabled",
         "game_event_reply_memory_enabled", "gameEventReplyMemoryEnabled",
         "game_memory_event_reply_enabled", "gameMemoryEventReplyEnabled",
     ),
-    "basketball_game_memory_archive_enabled": (
-        "basketball_game_memory_archive_enabled", "basketballGameMemoryArchiveEnabled",
+    "badminton_game_memory_archive_enabled": (
+        "badminton_game_memory_archive_enabled", "badmintonGameMemoryArchiveEnabled",
         "game_archive_memory_enabled", "gameArchiveMemoryEnabled",
         "game_memory_archive_enabled", "gameMemoryArchiveEnabled",
     ),
-    "basketball_game_memory_postgame_context_enabled": (
-        "basketball_game_memory_postgame_context_enabled", "basketballGameMemoryPostgameContextEnabled",
+    "badminton_game_memory_postgame_context_enabled": (
+        "badminton_game_memory_postgame_context_enabled", "badmintonGameMemoryPostgameContextEnabled",
         "game_postgame_context_memory_enabled", "gamePostgameContextMemoryEnabled",
         "game_memory_postgame_context_enabled", "gameMemoryPostgameContextEnabled",
     ),
@@ -769,24 +785,29 @@ _BASKETBALL_GAME_MEMORY_PAYLOAD_KEYS = {
 
 def _normalize_game_memory_type(game_type: str | None) -> str:
     game = str(game_type or "soccer").strip().lower()
-    return "basketball" if game == "basketball" else "soccer"
+    if game in _BADMINTON_GAME_TYPES:
+        return "badminton"
+    return "soccer"
 
 
 def _game_memory_policy_fields(game_type: str | None) -> tuple[str, ...]:
-    if _normalize_game_memory_type(game_type) == "basketball":
-        return _BASKETBALL_GAME_MEMORY_POLICY_FIELDS
+    gt = _normalize_game_memory_type(game_type)
+    if gt == "badminton":
+        return _BADMINTON_GAME_MEMORY_POLICY_FIELDS
     return _SOCCER_GAME_MEMORY_POLICY_FIELDS
 
 
 def _game_memory_payload_keys(game_type: str | None) -> dict:
-    if _normalize_game_memory_type(game_type) == "basketball":
-        return _BASKETBALL_GAME_MEMORY_PAYLOAD_KEYS
+    gt = _normalize_game_memory_type(game_type)
+    if gt == "badminton":
+        return _BADMINTON_GAME_MEMORY_PAYLOAD_KEYS
     return _SOCCER_GAME_MEMORY_PAYLOAD_KEYS
 
 
 def _game_memory_default_enabled(game_type: str | None) -> bool:
-    if _normalize_game_memory_type(game_type) == "basketball":
-        return _DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED
+    gt = _normalize_game_memory_type(game_type)
+    if gt == "badminton":
+        return _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED
     return _DEFAULT_SOCCER_GAME_MEMORY_ENABLED
 
 
@@ -820,8 +841,8 @@ def _soccer_game_memory_policy(value: Any) -> dict:
     return _game_memory_policy("soccer", value)
 
 
-def _basketball_game_memory_policy(value: Any) -> dict:
-    return _game_memory_policy("basketball", value)
+def _badminton_game_memory_policy(value: Any) -> dict:
+    return _game_memory_policy("badminton", value)
 
 
 def _game_memory_policy_from_payload(
@@ -860,8 +881,8 @@ def _soccer_game_memory_policy_from_payload(data: dict, current: dict | None = N
     return _game_memory_policy_from_payload("soccer", data, current=current)
 
 
-def _basketball_game_memory_policy_from_payload(data: dict, current: dict | None = None) -> dict | None:
-    return _game_memory_policy_from_payload("basketball", data, current=current)
+def _badminton_game_memory_policy_from_payload(data: dict, current: dict | None = None) -> dict | None:
+    return _game_memory_policy_from_payload("badminton", data, current=current)
 
 
 def _game_memory_player_interaction_enabled(value: Any, game_type: str | None = None) -> bool:
@@ -1103,18 +1124,18 @@ def _format_soccer_pregame_context_for_prompt(pre_game_context: Any, language: s
     )
 
 
-_BASKETBALL_EXPRESSIONS = {"cheer", "shock", "hype", "anticipate", "bored", "tease"}
-_BASKETBALL_INTENSITIES = {"low", "medium", "high"}
+_BADMINTON_EXPRESSIONS = {"cheer", "shock", "hype", "anticipate", "bored", "tease"}
+_BADMINTON_INTENSITIES = {"low", "medium", "high"}
 
 
-def _default_basketball_pregame_context(*, initial_difficulty: str | None = None, mode: str = "spectator") -> dict:
-    normalized_mode = _normalize_basketball_mode(mode)
+def _default_badminton_pregame_context(*, initial_difficulty: str | None = None, mode: str = "spectator") -> dict:
+    normalized_mode = _normalize_badminton_mode(mode)
     difficulty = initial_difficulty if initial_difficulty in _SOCCER_DIFFICULTIES else "lv2"
     mode_label = {
         "spectator": "自由练习",
-        "shooter": "投篮挑战（操控模式）",
-        "duel": "投篮对战",
-    }.get(normalized_mode, "投篮挑战")
+        "shooter": "挥拍挑战（操控模式）",
+        "duel": "羽毛球对拉",
+    }.get(normalized_mode, "羽毛球挑战")
     return {
         "launchIntent": "unknown",
         "confidence": 0.0,
@@ -1131,23 +1152,23 @@ def _default_basketball_pregame_context(*, initial_difficulty: str | None = None
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
         "difficultyPolicy": "duel 默认 lv2；spectator/shooter 忽略初始 difficulty，由局内事件自然调整。",
-        "moodPolicy": "沿用普通投篮陪玩表现；不引入强情绪惯性。",
-        "expressionPolicy": "默认期待/轻吐槽；根据命中、失误、连中和对战比分自然变化。",
+        "moodPolicy": "沿用普通羽毛球陪玩表现；不引入强情绪惯性。",
+        "expressionPolicy": "默认期待/轻吐槽；根据成功、失误、连中和对拉比分自然变化。",
         "softeningSignals": [],
         "hardeningSignals": [],
         "specialPolicies": [],
-        "postgameCarryback": "赛后只按真实投篮过程和互动自然归档。",
+        "postgameCarryback": "赛后只按真实羽毛球过程和互动自然归档。",
     }
 
 
-def _normalize_basketball_pregame_context(
+def _normalize_badminton_pregame_context(
     value: Any,
     *,
     neko_invite_text: str = "",
     mode: str = "spectator",
 ) -> tuple[dict, bool]:
-    """Normalize basketball pregame model output. Returns (context, had_invalid_fields)."""
-    base = _default_basketball_pregame_context(mode=mode)
+    """Normalize badminton pregame model output. Returns (context, had_invalid_fields)."""
+    base = _default_badminton_pregame_context(mode=mode)
     if not isinstance(value, dict):
         return base, True
 
@@ -1215,14 +1236,14 @@ def _normalize_basketball_pregame_context(
 
     if "initialExpression" in value:
         expression = str(value.get("initialExpression") or "").strip()
-        if expression in _BASKETBALL_EXPRESSIONS:
+        if expression in _BADMINTON_EXPRESSIONS:
             context["initialExpression"] = expression
         else:
             invalid = True
 
     if "initialIntensity" in value:
         intensity = str(value.get("initialIntensity") or "").strip()
-        if intensity in _BASKETBALL_INTENSITIES:
+        if intensity in _BADMINTON_INTENSITIES:
             context["initialIntensity"] = intensity
         else:
             invalid = True
@@ -1265,7 +1286,7 @@ def _normalize_basketball_pregame_context(
     return context, invalid
 
 
-def _format_basketball_pregame_context_for_prompt(
+def _format_badminton_pregame_context_for_prompt(
     pre_game_context: Any,
     language: str | None = None,
     *,
@@ -1274,12 +1295,12 @@ def _format_basketball_pregame_context_for_prompt(
     if not isinstance(pre_game_context, dict):
         return ""
     compact = json.dumps(pre_game_context, ensure_ascii=False, separators=(",", ":"))
-    labels = get_basketball_pregame_context_formatter_labels(language)
+    labels = get_badminton_pregame_context_formatter_labels(language)
     mode_label = {
-        "spectator": "投篮挑战",
-        "shooter": "投篮挑战（操控模式）",
-        "duel": "投篮对战",
-    }.get(_normalize_basketball_mode(mode), "投篮挑战")
+        "spectator": "羽毛球自由练习",
+        "shooter": "挥拍挑战（操控模式）",
+        "duel": "羽毛球对拉",
+    }.get(_normalize_badminton_mode(mode), "羽毛球挑战")
     return (
         f"{labels['header']}\n"
         f"mode={mode_label}\n"
@@ -1434,16 +1455,16 @@ _GAME_INTERNAL_ADVICE_RE = re.compile(
     re.IGNORECASE,
 )
 _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS = frozenset({
-    "basketballGameMemoryEnabled",
-    "basketball_game_memory_enabled",
-    "basketballGameMemoryPlayerInteractionEnabled",
-    "basketball_game_memory_player_interaction_enabled",
-    "basketballGameMemoryEventReplyEnabled",
-    "basketball_game_memory_event_reply_enabled",
-    "basketballGameMemoryArchiveEnabled",
-    "basketball_game_memory_archive_enabled",
-    "basketballGameMemoryPostgameContextEnabled",
-    "basketball_game_memory_postgame_context_enabled",
+    "badmintonGameMemoryEnabled",
+    "badminton_game_memory_enabled",
+    "badmintonGameMemoryPlayerInteractionEnabled",
+    "badminton_game_memory_player_interaction_enabled",
+    "badmintonGameMemoryEventReplyEnabled",
+    "badminton_game_memory_event_reply_enabled",
+    "badmintonGameMemoryArchiveEnabled",
+    "badminton_game_memory_archive_enabled",
+    "badmintonGameMemoryPostgameContextEnabled",
+    "badminton_game_memory_postgame_context_enabled",
     "soccerGameMemoryEnabled",
     "soccer_game_memory_enabled",
     "soccerGameMemoryPlayerInteractionEnabled",
@@ -1650,12 +1671,12 @@ def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> 
     return normalized
 
 
-def _get_basketball_quick_lines_fallback(language: str | None = None) -> Dict[str, list[str]]:
+def _get_badminton_quick_lines_fallback(language: str | None = None) -> Dict[str, list[str]]:
     try:
         normalized = normalize_language_code(str(language or ""), format="short") if language else ""
     except Exception:
         normalized = ""
-    source = _BASKETBALL_QUICK_LINES_FALLBACK if normalized == "zh" else _BASKETBALL_QUICK_LINES_FALLBACK_EN
+    source = _BADMINTON_QUICK_LINES_FALLBACK if normalized == "zh" else _BADMINTON_QUICK_LINES_FALLBACK_EN
     return {key: list(lines) for key, lines in source.items()}
 
 
@@ -1976,7 +1997,7 @@ async def _build_soccer_pregame_context(
     return context, source, error
 
 
-async def _build_basketball_pregame_context(
+async def _build_badminton_pregame_context(
     *,
     game_type: str,
     session_id: str,
@@ -1985,7 +2006,7 @@ async def _build_basketball_pregame_context(
     neko_invite_text: str,
     mode: str = "spectator",
 ) -> tuple[dict, str, str]:
-    normalized_mode = _normalize_basketball_mode(mode)
+    normalized_mode = _normalize_badminton_mode(mode)
     char_info = _get_character_info(lanlan_name)
     recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
     _log_game_debug_material(
@@ -2005,18 +2026,18 @@ async def _build_basketball_pregame_context(
             recent_history=recent_history,
             neko_initiated=neko_initiated,
             neko_invite_text=neko_invite_text,
-            prompt_template=get_basketball_pregame_context_prompt(char_info.get("user_language")),
-            extra_payload={"gameType": "basketball", "mode": normalized_mode},
+            prompt_template=get_badminton_pregame_context_prompt(char_info.get("user_language")),
+            extra_payload={"gameType": game_type, "mode": normalized_mode},
         )
     except ValueError as exc:
-        logger.warning("🎮 篮球开局上下文 JSON 非法，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
-        context = _default_basketball_pregame_context(mode=normalized_mode)
+        logger.warning("🎮 羽毛球开局上下文 JSON 非法，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
+        context = _default_badminton_pregame_context(mode=normalized_mode)
         return context, "fallback", "invalid_json"
     except Exception:
-        context = _default_basketball_pregame_context(mode=normalized_mode)
+        context = _default_badminton_pregame_context(mode=normalized_mode)
         return context, "fallback", "ai_failed"
 
-    context, invalid_fields = _normalize_basketball_pregame_context(
+    context, invalid_fields = _normalize_badminton_pregame_context(
         raw_context,
         neko_invite_text=neko_invite_text,
         mode=normalized_mode,
@@ -2217,11 +2238,11 @@ def _build_route_state(
         "soccer_game_memory_event_reply_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "soccer_game_memory_archive_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "soccer_game_memory_postgame_context_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
-        "basketball_game_memory_enabled": _DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED,
-        "basketball_game_memory_player_interaction_enabled": _DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED,
-        "basketball_game_memory_event_reply_enabled": _DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED,
-        "basketball_game_memory_archive_enabled": _DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED,
-        "basketball_game_memory_postgame_context_enabled": _DEFAULT_BASKETBALL_GAME_MEMORY_ENABLED,
+        "badminton_game_memory_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
+        "badminton_game_memory_player_interaction_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
+        "badminton_game_memory_event_reply_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
+        "badminton_game_memory_archive_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
+        "badminton_game_memory_postgame_context_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
         "game_memory_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "game_memory_player_interaction_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "game_memory_event_reply_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
@@ -4376,7 +4397,7 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
     return {
         "pre_game_context": pre_game_context,
         "game_context": _build_game_context_prompt_payload(state, include_recent=False),
-        "mode": _normalize_basketball_mode(state.get("mode")),
+        "mode": _normalize_badminton_mode(state.get("mode")),
     }
 
 
@@ -4608,12 +4629,12 @@ async def _build_and_register_game_session(
     if postgame_snapshot is not None:
         pre_game_context = postgame_snapshot.get("pre_game_context")
         game_context = postgame_snapshot.get("game_context")
-        route_mode = _normalize_basketball_mode(postgame_snapshot.get("mode"))
+        route_mode = _normalize_badminton_mode(postgame_snapshot.get("mode"))
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), lanlan_name)
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
         game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
-        route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
+        route_mode = _normalize_badminton_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
         char_info['lanlan_name'],
@@ -4622,7 +4643,7 @@ async def _build_and_register_game_session(
         game_context if isinstance(game_context, dict) else None,
         char_info.get("user_language"),
     )
-    if game_type == "basketball":
+    if _is_badminton_game_type(game_type):
         system_prompt = _build_game_prompt(*prompt_args, mode=route_mode)
     else:
         system_prompt = _build_game_prompt(*prompt_args)
@@ -4700,12 +4721,12 @@ async def _refresh_game_session_instructions(
     if postgame_snapshot is not None:
         pre_game_context = postgame_snapshot.get("pre_game_context")
         game_context = postgame_snapshot.get("game_context")
-        route_mode = _normalize_basketball_mode(postgame_snapshot.get("mode"))
+        route_mode = _normalize_badminton_mode(postgame_snapshot.get("mode"))
     else:
         route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), char_info["lanlan_name"])
         pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
         game_context = _build_game_context_prompt_payload(route_state, include_recent=False)
-        route_mode = _normalize_basketball_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
+        route_mode = _normalize_badminton_mode(route_state.get("mode") if isinstance(route_state, dict) else "")
     prompt_args = (
         game_type,
         char_info["lanlan_name"],
@@ -4714,7 +4735,7 @@ async def _refresh_game_session_instructions(
         game_context if isinstance(game_context, dict) else None,
         char_info.get("user_language"),
     )
-    if game_type == "basketball":
+    if _is_badminton_game_type(game_type):
         instructions = _build_game_prompt(*prompt_args, mode=route_mode)
     else:
         instructions = _build_game_prompt(*prompt_args)
@@ -4744,7 +4765,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
         mood = str(parsed.get("mood") or "").strip()
         if mood in _SOCCER_MOODS:
             control["mood"] = mood
-        if game_type == "basketball":
+        if _is_badminton_game_type(game_type):
             expression = str(parsed.get("expression") or "").strip()
             intensity = str(parsed.get("intensity") or "").strip()
             difficulty = str(parsed.get("difficulty") or "").strip()
@@ -5001,13 +5022,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
-    """Build a soft balance hint from the Basketball duel score."""
+def _build_badminton_duel_balance_hint(event: Any) -> Dict[str, Any]:
+    """Build a soft balance hint from the Badminton duel score."""
     if not isinstance(event, dict):
         return {}
     current_state = event.get("currentState") if isinstance(event.get("currentState"), dict) else {}
-    state_duel = _sanitize_basketball_duel_state(current_state.get("duel")) or {}
-    event_duel = _sanitize_basketball_duel_state(event.get("duel")) or {}
+    state_duel = _sanitize_badminton_duel_state(current_state.get("duel")) or {}
+    event_duel = _sanitize_badminton_duel_state(event.get("duel")) or {}
     duel = {**state_duel, **event_duel}
     player_score = _safe_int(duel.get("player_score"), 0)
     neko_score = _safe_int(duel.get("neko_score"), 0)
@@ -5110,7 +5131,7 @@ def _build_basketball_duel_balance_hint(event: Any) -> Dict[str, Any]:
     }
 
 
-def _basketball_duel_event_shooter(event: dict) -> str:
+def _badminton_duel_event_shooter(event: dict) -> str:
     label = str(event.get("label") or "").lower()
     if "neko" in label:
         return "neko"
@@ -5121,7 +5142,7 @@ def _basketball_duel_event_shooter(event: dict) -> str:
     return shooter if shooter in {"neko", "player"} else ""
 
 
-def _build_basketball_duel_anger_pressure_cap(
+def _build_badminton_duel_anger_pressure_cap(
     event: Any,
     route_state: Any,
     *,
@@ -5143,22 +5164,22 @@ def _build_basketball_duel_anger_pressure_cap(
     accumulated = _safe_int(route_state.get("anger_pressure_accumulated"), 0)
     kind = str(event.get("kind") or "").strip()
     shot_type = str(event.get("shot_type") or "").strip()
-    shooter = _basketball_duel_event_shooter(event)
+    shooter = _badminton_duel_event_shooter(event)
     duel = event.get("duel") if isinstance(event.get("duel"), dict) else {}
     diff = _safe_int(duel.get("neko_score"), 0) - _safe_int(duel.get("player_score"), 0)
 
     if kind in {"shot_result", "shot_missed"} and shooter == "neko":
         if kind == "shot_result":
-            hit_streak = _safe_int(route_state.get("basketball_neko_hit_streak"), 0) + 1
-            route_state["basketball_neko_hit_streak"] = hit_streak
+            hit_streak = _safe_int(route_state.get("badminton_neko_hit_streak"), 0) + 1
+            route_state["badminton_neko_hit_streak"] = hit_streak
             if hit_streak == 5:
                 accumulated += 1
             if hit_streak == 10:
                 accumulated += 2
-            if shot_type == "swish":
+            if _normalize_badminton_shot_type(shot_type) == "line_in":
                 accumulated += 2
         else:
-            route_state["basketball_neko_hit_streak"] = 0
+            route_state["badminton_neko_hit_streak"] = 0
     elif kind == "shot_missed" and shooter == "player":
         accumulated += 1
 
@@ -5184,7 +5205,7 @@ def _build_basketball_duel_anger_pressure_cap(
     }
 
 
-def _apply_basketball_anger_pressure_cap(result: Dict[str, Any], event: Any) -> Dict[str, Any]:
+def _apply_badminton_anger_pressure_cap(result: Dict[str, Any], event: Any) -> Dict[str, Any]:
     """Apply duel pressure cap post-processing to avoid continued max pressure."""
     if not isinstance(result, dict) or not isinstance(event, dict):
         return result
@@ -5225,32 +5246,33 @@ def _strip_ssml_like_tags(text: str) -> str:
     return line[:240]
 
 
-def _check_basketball_chat_rate(lanlan_name: str, session_id: str) -> bool:
+def _check_badminton_chat_rate(lanlan_name: str, session_id: str) -> bool:
     key = f"{str(lanlan_name or '').strip()}:{str(session_id or '').strip()}"
     now = time.monotonic()
-    cutoff = now - _BASKETBALL_CHAT_RATE_WINDOW_SECONDS
-    window = [ts for ts in _basketball_chat_rate_windows.get(key, []) if ts >= cutoff]
-    if len(window) >= _BASKETBALL_CHAT_RATE_MAX:
-        _basketball_chat_rate_windows[key] = window
+    cutoff = now - _BADMINTON_CHAT_RATE_WINDOW_SECONDS
+    window = [ts for ts in _badminton_chat_rate_windows.get(key, []) if ts >= cutoff]
+    if len(window) >= _BADMINTON_CHAT_RATE_MAX:
+        _badminton_chat_rate_windows[key] = window
         return False
     window.append(now)
-    _basketball_chat_rate_windows[key] = window
-    _basketball_chat_rate_windows.move_to_end(key)
-    while len(_basketball_chat_rate_windows) > 128:
-        _basketball_chat_rate_windows.popitem(last=False)
+    _badminton_chat_rate_windows[key] = window
+    _badminton_chat_rate_windows.move_to_end(key)
+    while len(_badminton_chat_rate_windows) > 128:
+        _badminton_chat_rate_windows.popitem(last=False)
     return True
 
 
-def _normalize_basketball_mode(value: Any) -> str:
+def _normalize_badminton_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
+    # timed/time_attack/HORSE modes were removed; unknown modes fall back to spectator.
     return mode if mode in {"spectator", "shooter", "duel"} else "spectator"
 
 
-def _is_basketball_scoring_mode(value: Any) -> bool:
-    return _normalize_basketball_mode(value) in _BASKETBALL_SCORING_MODES
+def _is_badminton_scoring_mode(value: Any) -> bool:
+    return _normalize_badminton_mode(value) in _BADMINTON_SCORING_MODES
 
 
-def _normalize_basketball_non_negative_int(value: Any, *, default: int = 0, max_value: int = 999999) -> int:
+def _normalize_badminton_non_negative_int(value: Any, *, default: int = 0, max_value: int = 999999) -> int:
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -5260,7 +5282,7 @@ def _normalize_basketball_non_negative_int(value: Any, *, default: int = 0, max_
     return max(0, min(int(number), int(max_value)))
 
 
-def _normalize_basketball_distance(value: Any, *, default: float = 0.0, max_value: float = 10000.0) -> float:
+def _normalize_badminton_distance(value: Any, *, default: float = 0.0, max_value: float = 10000.0) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -5270,105 +5292,92 @@ def _normalize_basketball_distance(value: Any, *, default: float = 0.0, max_valu
     return max(0.0, min(number, float(max_value)))
 
 
-_BASKETBALL_PX_PER_METER = 12.0 * 3.28084
+_BADMINTON_PX_PER_METER = 12.0 * 3.28084
 
 
-def _format_basketball_distance_meters(distance_px: float) -> str:
-    return f"{distance_px / _BASKETBALL_PX_PER_METER:.1f}"
+def _format_badminton_distance_meters(distance_px: float) -> str:
+    return f"{distance_px / _BADMINTON_PX_PER_METER:.1f}"
 
 
-def _get_basketball_scores_db_path() -> Path:
-    override = _BASKETBALL_SCORES_DB_PATH
+def _score_db_game_slug(game_type: Any = "badminton") -> str:
+    # This backend layer owns only badminton scores; other game types must not
+    # share this leaderboard implicitly.
+    return "badminton"
+
+
+def _get_badminton_scores_db_path(game_type: Any = "badminton") -> Path:
+    override = _BADMINTON_SCORES_DB_PATH
     if override is not None:
         return Path(override)
     try:
         base_dir = Path(get_config_manager().app_docs_dir)
     except Exception:
         base_dir = Path.cwd()
-    return base_dir / "state" / "game_scores" / "basketball_scores.db"
+    return base_dir / "state" / "game_scores" / f"{_score_db_game_slug(game_type)}_scores.db"
 
 
-def _prepare_basketball_scores_db_path() -> Path:
-    global _BASKETBALL_SCORES_DB_MIGRATED
-    db_path = _get_basketball_scores_db_path()
+def _prepare_badminton_scores_db_path(game_type: Any = "badminton") -> Path:
+    slug = _score_db_game_slug(game_type)
+    db_path = _get_badminton_scores_db_path(slug)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    if (
-        _BASKETBALL_SCORES_DB_PATH is None
-        and not _BASKETBALL_SCORES_DB_MIGRATED
-        and not db_path.exists()
-        and _BASKETBALL_LEGACY_SCORES_DB_PATH.exists()
-    ):
-        try:
-            shutil.copy2(_BASKETBALL_LEGACY_SCORES_DB_PATH, db_path)
-            logger.info(
-                "🏀 已迁移篮球排行榜 DB: %s -> %s",
-                _BASKETBALL_LEGACY_SCORES_DB_PATH,
-                db_path,
-            )
-        except Exception as exc:
-            logger.warning(
-                "🏀 篮球排行榜 DB 迁移失败，将使用新 runtime DB: %s",
-                exc,
-            )
-    _BASKETBALL_SCORES_DB_MIGRATED = True
     return db_path
 
 
-def _open_basketball_scores_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_prepare_basketball_scores_db_path()), timeout=5.0, isolation_level=None)
+def _open_badminton_scores_db(game_type: Any = "badminton") -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_prepare_badminton_scores_db_path(game_type)), timeout=5.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _ensure_basketball_scores_schema(conn: sqlite3.Connection) -> None:
+def _ensure_badminton_scores_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS basketball_scores (
+        CREATE TABLE IF NOT EXISTS badminton_scores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
             lanlan_name TEXT NOT NULL DEFAULT '',
             score INTEGER NOT NULL,
             streak INTEGER NOT NULL,
             max_distance_px REAL NOT NULL,
-            swish_count INTEGER NOT NULL DEFAULT 0,
-            bank_count INTEGER NOT NULL DEFAULT 0,
-            rim_in_count INTEGER NOT NULL DEFAULT 0,
+            line_in_count INTEGER NOT NULL DEFAULT 0,
+            net_touch_count INTEGER NOT NULL DEFAULT 0,
+            zone_in_count INTEGER NOT NULL DEFAULT 0,
             mode TEXT NOT NULL DEFAULT 'spectator',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
-    basketball_columns = {
+    badminton_columns = {
         str(row["name"])
-        for row in conn.execute("PRAGMA table_info(basketball_scores)").fetchall()
+        for row in conn.execute("PRAGMA table_info(badminton_scores)").fetchall()
     }
-    if "mode" not in basketball_columns:
-        conn.execute("ALTER TABLE basketball_scores ADD COLUMN mode TEXT NOT NULL DEFAULT 'spectator'")
-    basketball_score_count_columns = {
-        "swish_count": "INTEGER NOT NULL DEFAULT 0",
-        "bank_count": "INTEGER NOT NULL DEFAULT 0",
-        "rim_in_count": "INTEGER NOT NULL DEFAULT 0",
+    if "mode" not in badminton_columns:
+        conn.execute("ALTER TABLE badminton_scores ADD COLUMN mode TEXT NOT NULL DEFAULT 'spectator'")
+    badminton_score_count_columns = {
+        "line_in_count": "INTEGER NOT NULL DEFAULT 0",
+        "net_touch_count": "INTEGER NOT NULL DEFAULT 0",
+        "zone_in_count": "INTEGER NOT NULL DEFAULT 0",
     }
-    for column_name, column_definition in basketball_score_count_columns.items():
-        if column_name not in basketball_columns:
+    for column_name, column_definition in badminton_score_count_columns.items():
+        if column_name not in badminton_columns:
             conn.execute(
-                f"ALTER TABLE basketball_scores ADD COLUMN {column_name} {column_definition}"
+                f"ALTER TABLE badminton_scores ADD COLUMN {column_name} {column_definition}"
             )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_bb_scores_score ON basketball_scores(score DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_bd_scores_score ON badminton_scores(score DESC)"
     )
 
 
-def _basketball_score_rows(conn: sqlite3.Connection, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
+def _badminton_score_rows(conn: sqlite3.Connection, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
     if limit is not None:
-        clean_limit = _normalize_basketball_non_negative_int(limit, default=10, max_value=100)
-        clean_offset = _normalize_basketball_non_negative_int(offset, default=0, max_value=100000)
+        clean_limit = _normalize_badminton_non_negative_int(limit, default=10, max_value=100)
+        clean_offset = _normalize_badminton_non_negative_int(offset, default=0, max_value=100000)
         return conn.execute(
             """
             SELECT
                 id, session_id, lanlan_name, score, streak, max_distance_px,
-                swish_count, bank_count, rim_in_count, mode, created_at
-            FROM basketball_scores
+                line_in_count, net_touch_count, zone_in_count, mode, created_at
+            FROM badminton_scores
             ORDER BY score DESC, streak DESC, max_distance_px DESC, created_at ASC, id ASC
             LIMIT ? OFFSET ?
             """,
@@ -5378,18 +5387,18 @@ def _basketball_score_rows(conn: sqlite3.Connection, limit: int | None = None, o
         """
         SELECT
             id, session_id, lanlan_name, score, streak, max_distance_px,
-            swish_count, bank_count, rim_in_count, mode, created_at
-        FROM basketball_scores
+            line_in_count, net_touch_count, zone_in_count, mode, created_at
+        FROM badminton_scores
         ORDER BY score DESC, streak DESC, max_distance_px DESC, created_at ASC, id ASC
         """,
     ).fetchall()
 
 
-def _basketball_rank_for_row(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
+def _badminton_rank_for_row(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
     rank_row = conn.execute(
         """
         SELECT COUNT(*) + 1 AS rank
-        FROM basketball_scores
+        FROM badminton_scores
         WHERE
             score > ?
             OR (score = ? AND streak > ?)
@@ -5405,30 +5414,30 @@ def _basketball_rank_for_row(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
             row["score"], row["streak"], row["max_distance_px"], row["created_at"], row["id"],
         ),
     ).fetchone()
-    return _normalize_basketball_non_negative_int(rank_row["rank"] if rank_row else 1, default=1)
+    return _normalize_badminton_non_negative_int(rank_row["rank"] if rank_row else 1, default=1)
 
 
-def _basketball_row_to_public_dict(row: sqlite3.Row, rank: int) -> dict:
+def _badminton_row_to_public_dict(row: sqlite3.Row, rank: int) -> dict:
     created_at = str(row["created_at"] or "")
-    distance_px = _normalize_basketball_distance(row["max_distance_px"], default=0.0)
+    distance_px = _normalize_badminton_distance(row["max_distance_px"], default=0.0)
     return {
         "rank": rank,
         "name": _normalize_short_text(row["lanlan_name"], max_chars=80),
-        "score": _normalize_basketball_non_negative_int(row["score"]),
-        "streak": _normalize_basketball_non_negative_int(row["streak"]),
-        "max_distance_m": _format_basketball_distance_meters(distance_px),
-        "mode": _normalize_basketball_mode(row["mode"]),
+        "score": _normalize_badminton_non_negative_int(row["score"]),
+        "streak": _normalize_badminton_non_negative_int(row["streak"]),
+        "max_distance_m": _format_badminton_distance_meters(distance_px),
+        "mode": _normalize_badminton_mode(row["mode"]),
         "date": created_at[:10],
     }
 
 
-def _basketball_player_identity(lanlan_name: str, session_id: str) -> tuple[str, str]:
+def _badminton_player_identity(lanlan_name: str, session_id: str) -> tuple[str, str]:
     clean_name = _normalize_short_text(lanlan_name, max_chars=80)
     clean_session = _normalize_short_text(session_id, max_chars=120)
     return clean_name, clean_session
 
 
-def _basketball_score_totals_from_data(data: Any) -> dict | None:
+def _badminton_score_totals_from_data(data: Any) -> dict | None:
     if not isinstance(data, dict):
         return None
 
@@ -5453,61 +5462,61 @@ def _basketball_score_totals_from_data(data: Any) -> dict | None:
             break
 
     return {
-        "score": _normalize_basketball_non_negative_int(score_value),
-        "streak": _normalize_basketball_non_negative_int(streak_value),
-        "max_distance_px": _normalize_basketball_distance(distance_value),
+        "score": _normalize_badminton_non_negative_int(score_value),
+        "streak": _normalize_badminton_non_negative_int(streak_value),
+        "max_distance_px": _normalize_badminton_distance(distance_value),
     }
 
 
-def _basketball_score_totals_match_submission(data: dict, expected: Any) -> bool:
+def _badminton_score_totals_match_submission(data: dict, expected: Any) -> bool:
     if not isinstance(expected, dict):
         return True
-    actual = _basketball_score_totals_from_data(data)
+    actual = _badminton_score_totals_from_data(data)
     if not actual:
         return False
     return (
-        actual["score"] == _normalize_basketball_non_negative_int(expected.get("score"))
-        and actual["streak"] == _normalize_basketball_non_negative_int(expected.get("streak"))
+        actual["score"] == _normalize_badminton_non_negative_int(expected.get("score"))
+        and actual["streak"] == _normalize_badminton_non_negative_int(expected.get("streak"))
         and math.isclose(
             actual["max_distance_px"],
-            _normalize_basketball_distance(expected.get("max_distance_px")),
+            _normalize_badminton_distance(expected.get("max_distance_px")),
             rel_tol=0.0,
             abs_tol=0.001,
         )
     )
 
 
-def _prune_basketball_score_sessions(now: float | None = None) -> None:
+def _prune_badminton_score_sessions(now: float | None = None) -> None:
     current = time.time() if now is None else now
-    for key, meta in list(_basketball_recent_score_sessions.items()):
+    for key, meta in list(_badminton_recent_score_sessions.items()):
         if float(meta.get("expires_at") or 0.0) <= current:
-            _basketball_recent_score_sessions.pop(key, None)
+            _badminton_recent_score_sessions.pop(key, None)
 
 
-def _remember_basketball_score_session(
+def _remember_badminton_score_session(
     lanlan_name: str,
     session_id: str,
     mode: Any,
     score_totals: dict | None = None,
 ) -> None:
-    clean_mode = _normalize_basketball_mode(mode)
-    if not _is_basketball_scoring_mode(clean_mode):
+    clean_mode = _normalize_badminton_mode(mode)
+    if not _is_badminton_scoring_mode(clean_mode):
         return
-    clean_name, clean_session = _basketball_player_identity(lanlan_name, session_id)
+    clean_name, clean_session = _badminton_player_identity(lanlan_name, session_id)
     if not clean_name or not clean_session:
         return
-    _prune_basketball_score_sessions()
+    _prune_badminton_score_sessions()
     meta = {
         "mode": clean_mode,
-        "expires_at": time.time() + _BASKETBALL_SCORE_SESSION_TTL_SECONDS,
+        "expires_at": time.time() + _BADMINTON_SCORE_SESSION_TTL_SECONDS,
     }
-    clean_totals = _basketball_score_totals_from_data(score_totals)
+    clean_totals = _badminton_score_totals_from_data(score_totals)
     if clean_totals:
         meta["score_totals"] = clean_totals
-    _basketball_recent_score_sessions[(clean_name, clean_session)] = meta
+    _badminton_recent_score_sessions[(clean_name, clean_session)] = meta
 
 
-def _basketball_end_payload_completed_round(data: dict) -> bool:
+def _badminton_end_payload_completed_round(data: dict) -> bool:
     if _coerce_payload_bool(data.get("round_completed")) is True:
         return True
     if _coerce_payload_bool(data.get("roundCompleted")) is True:
@@ -5523,28 +5532,28 @@ def _basketball_end_payload_completed_round(data: dict) -> bool:
     return False
 
 
-def _basketball_score_session_key_from_payload(data: dict) -> tuple[str, str, str] | None:
+def _badminton_score_session_key_from_payload(data: dict) -> tuple[str, str, str] | None:
     session_id = _normalize_short_text(data.get("session_id"), max_chars=120)
     lanlan_name = _normalize_short_text(data.get("lanlan_name"), max_chars=80)
     if not session_id or not lanlan_name:
         return None
-    mode = _normalize_basketball_mode(data.get("mode"))
-    if not _is_basketball_scoring_mode(mode):
+    mode = _normalize_badminton_mode(data.get("mode"))
+    if not _is_badminton_scoring_mode(mode):
         return None
     return lanlan_name, session_id, mode
 
 
-def _basketball_score_submission_allowed(data: dict, *, reserve: bool = False) -> bool:
-    session_key = _basketball_score_session_key_from_payload(data)
+def _badminton_score_submission_allowed(data: dict, *, reserve: bool = False) -> bool:
+    session_key = _badminton_score_session_key_from_payload(data)
     if not session_key:
         return False
     lanlan_name, session_id, mode = session_key
-    _prune_basketball_score_sessions()
+    _prune_badminton_score_sessions()
     key = (lanlan_name, session_id)
-    meta = _basketball_recent_score_sessions.get(key)
+    meta = _badminton_recent_score_sessions.get(key)
     if not (meta and meta.get("mode") == mode):
         return False
-    if not _basketball_score_totals_match_submission(data, meta.get("score_totals")):
+    if not _badminton_score_totals_match_submission(data, meta.get("score_totals")):
         return False
     if meta.get("reserved") is True:
         return False
@@ -5553,67 +5562,67 @@ def _basketball_score_submission_allowed(data: dict, *, reserve: bool = False) -
     return True
 
 
-def _basketball_score_data_for_insert(data: dict) -> dict:
-    session_key = _basketball_score_session_key_from_payload(data)
+def _badminton_score_data_for_insert(data: dict) -> dict:
+    session_key = _badminton_score_session_key_from_payload(data)
     if not session_key:
         return data
     lanlan_name, session_id, mode = session_key
-    meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
+    meta = _badminton_recent_score_sessions.get((lanlan_name, session_id))
     totals = meta.get("score_totals") if isinstance(meta, dict) else None
     if not isinstance(totals, dict):
         return data
     insert_data = dict(data)
     insert_data.update({
-        "score": _normalize_basketball_non_negative_int(totals.get("score")),
-        "streak": _normalize_basketball_non_negative_int(totals.get("streak")),
-        "max_distance_px": _normalize_basketball_distance(totals.get("max_distance_px")),
+        "score": _normalize_badminton_non_negative_int(totals.get("score")),
+        "streak": _normalize_badminton_non_negative_int(totals.get("streak")),
+        "max_distance_px": _normalize_badminton_distance(totals.get("max_distance_px")),
         "mode": mode,
     })
     return insert_data
 
 
-def _release_basketball_score_session_reservation(data: dict) -> None:
-    session_key = _basketball_score_session_key_from_payload(data)
+def _release_badminton_score_session_reservation(data: dict) -> None:
+    session_key = _badminton_score_session_key_from_payload(data)
     if not session_key:
         return
     lanlan_name, session_id, _mode = session_key
-    meta = _basketball_recent_score_sessions.get((lanlan_name, session_id))
+    meta = _badminton_recent_score_sessions.get((lanlan_name, session_id))
     if meta:
         meta.pop("reserved", None)
 
 
-def _consume_basketball_score_session(data: dict) -> None:
-    session_key = _basketball_score_session_key_from_payload(data)
+def _consume_badminton_score_session(data: dict) -> None:
+    session_key = _badminton_score_session_key_from_payload(data)
     if not session_key:
         return
     lanlan_name, session_id, _mode = session_key
-    _basketball_recent_score_sessions.pop((lanlan_name, session_id), None)
+    _badminton_recent_score_sessions.pop((lanlan_name, session_id), None)
 
 
-def _basketball_leaderboard_total_players(conn: sqlite3.Connection) -> int:
+def _badminton_leaderboard_total_players(conn: sqlite3.Connection) -> int:
     row = conn.execute(
         """
         SELECT COUNT(DISTINCT CASE
             WHEN TRIM(lanlan_name) <> '' THEN lanlan_name
             ELSE session_id
         END) AS total_players
-        FROM basketball_scores
+        FROM badminton_scores
         """
     ).fetchone()
     if not row:
         return 0
-    return _normalize_basketball_non_negative_int(row["total_players"], default=0)
+    return _normalize_badminton_non_negative_int(row["total_players"], default=0)
 
 
-def _basketball_leaderboard_total_scores(conn: sqlite3.Connection) -> int:
-    row = conn.execute("SELECT COUNT(*) AS total_scores FROM basketball_scores").fetchone()
+def _badminton_leaderboard_total_scores(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS total_scores FROM badminton_scores").fetchone()
     if not row:
         return 0
-    return _normalize_basketball_non_negative_int(row["total_scores"], default=0)
+    return _normalize_badminton_non_negative_int(row["total_scores"], default=0)
 
 
-def _basketball_personal_best(conn: sqlite3.Connection, lanlan_name: str, session_id: str) -> dict | None:
-    clean_name, clean_session = _basketball_player_identity(lanlan_name, session_id)
+def _badminton_personal_best(conn: sqlite3.Connection, lanlan_name: str, session_id: str) -> dict | None:
+    clean_name, clean_session = _badminton_player_identity(lanlan_name, session_id)
     if not clean_name and not clean_session:
         return None
     if clean_name:
@@ -5621,8 +5630,8 @@ def _basketball_personal_best(conn: sqlite3.Connection, lanlan_name: str, sessio
             """
             SELECT
                 id, session_id, lanlan_name, score, streak, max_distance_px,
-                swish_count, bank_count, rim_in_count, mode, created_at
-            FROM basketball_scores
+                line_in_count, net_touch_count, zone_in_count, mode, created_at
+            FROM badminton_scores
             WHERE lanlan_name = ?
             ORDER BY score DESC, streak DESC, max_distance_px DESC, created_at ASC, id ASC
             LIMIT 1
@@ -5634,8 +5643,8 @@ def _basketball_personal_best(conn: sqlite3.Connection, lanlan_name: str, sessio
             """
             SELECT
                 id, session_id, lanlan_name, score, streak, max_distance_px,
-                swish_count, bank_count, rim_in_count, mode, created_at
-            FROM basketball_scores
+                line_in_count, net_touch_count, zone_in_count, mode, created_at
+            FROM badminton_scores
             WHERE session_id = ?
             ORDER BY score DESC, streak DESC, max_distance_px DESC, created_at ASC, id ASC
             LIMIT 1
@@ -5645,32 +5654,32 @@ def _basketball_personal_best(conn: sqlite3.Connection, lanlan_name: str, sessio
     if not row:
         return None
     return {
-        "rank": _basketball_rank_for_row(conn, row),
-        "score": _normalize_basketball_non_negative_int(row["score"]),
+        "rank": _badminton_rank_for_row(conn, row),
+        "score": _normalize_badminton_non_negative_int(row["score"]),
     }
 
 
-def _basketball_insert_score(data: dict) -> tuple[int, int, bool]:
+def _badminton_insert_score(data: dict, *, game_type: Any = "badminton") -> tuple[int, int, bool]:
     session_id = _normalize_short_text(data.get("session_id"), max_chars=120)
     lanlan_name = _normalize_short_text(data.get("lanlan_name"), max_chars=80)
     if not session_id:
-        session_id = f"basketball-{uuid.uuid4().hex}"
-    score = _normalize_basketball_non_negative_int(data.get("score"))
-    streak = _normalize_basketball_non_negative_int(data.get("streak"))
-    max_distance_px = _normalize_basketball_distance(data.get("max_distance_px"))
-    swish_count = _normalize_basketball_non_negative_int(data.get("swish_count"))
-    bank_count = _normalize_basketball_non_negative_int(data.get("bank_count"))
-    rim_in_count = _normalize_basketball_non_negative_int(data.get("rim_in_count"))
-    mode = _normalize_basketball_mode(data.get("mode"))
-    with _open_basketball_scores_db() as conn:
-        _ensure_basketball_scores_schema(conn)
+        session_id = f"badminton-{uuid.uuid4().hex}"
+    score = _normalize_badminton_non_negative_int(data.get("score"))
+    streak = _normalize_badminton_non_negative_int(data.get("streak"))
+    max_distance_px = _normalize_badminton_distance(data.get("max_distance_px"))
+    line_in_count = _normalize_badminton_non_negative_int(data.get("line_in_count"))
+    net_touch_count = _normalize_badminton_non_negative_int(data.get("net_touch_count"))
+    zone_in_count = _normalize_badminton_non_negative_int(data.get("zone_in_count"))
+    mode = _normalize_badminton_mode(data.get("mode"))
+    with _open_badminton_scores_db(game_type) as conn:
+        _ensure_badminton_scores_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
             cursor = conn.execute(
                 """
-                INSERT INTO basketball_scores (
+                INSERT INTO badminton_scores (
                     session_id, lanlan_name, score, streak, max_distance_px,
-                    swish_count, bank_count, rim_in_count, mode
+                    line_in_count, net_touch_count, zone_in_count, mode
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -5679,9 +5688,9 @@ def _basketball_insert_score(data: dict) -> tuple[int, int, bool]:
                     score,
                     streak,
                     max_distance_px,
-                    swish_count,
-                    bank_count,
-                    rim_in_count,
+                    line_in_count,
+                    net_touch_count,
+                    zone_in_count,
                     mode,
                 ),
             )
@@ -5690,18 +5699,18 @@ def _basketball_insert_score(data: dict) -> tuple[int, int, bool]:
                 """
                 SELECT
                     id, session_id, lanlan_name, score, streak, max_distance_px,
-                    swish_count, bank_count, rim_in_count, mode, created_at
-                FROM basketball_scores
+                    line_in_count, net_touch_count, zone_in_count, mode, created_at
+                FROM badminton_scores
                 WHERE id = ?
                 """,
                 (inserted_id,),
             ).fetchone()
             if not inserted_row:
-                raise RuntimeError("basketball_score_insert_missing")
-            rank = _basketball_rank_for_row(conn, inserted_row)
-            inserted_score = _normalize_basketball_non_negative_int(inserted_row["score"])
-            total_players = _basketball_leaderboard_total_players(conn)
-            personal_best = _basketball_personal_best(conn, lanlan_name, session_id)
+                raise RuntimeError("badminton_score_insert_missing")
+            rank = _badminton_rank_for_row(conn, inserted_row)
+            inserted_score = _normalize_badminton_non_negative_int(inserted_row["score"])
+            total_players = _badminton_leaderboard_total_players(conn)
+            personal_best = _badminton_personal_best(conn, lanlan_name, session_id)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -5827,7 +5836,7 @@ def _compute_shooter_rating(event: Any) -> str:
     return "D"
 
 
-def _sanitize_basketball_duel_state(value: Any) -> dict | None:
+def _sanitize_badminton_duel_state(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return None
     clean: dict[str, Any] = {}
@@ -5865,7 +5874,7 @@ def _sanitize_basketball_duel_state(value: Any) -> dict | None:
     return clean or None
 
 
-def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
+def _sanitize_badminton_attempts_results(value: Any, *, max_items: int = 12) -> list[dict]:
     if not isinstance(value, list):
         return []
     allowed_text = {"shooter", "shot_type"}
@@ -5882,6 +5891,12 @@ def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) ->
         for key in allowed_text:
             if key in item:
                 clean_item[key] = _normalize_short_text(item.get(key), max_chars=40)
+        if "shot_type" in clean_item:
+            normalized_shot_type = _normalize_badminton_shot_type(clean_item.get("shot_type"))
+            if normalized_shot_type:
+                clean_item["shot_type"] = normalized_shot_type
+            else:
+                clean_item.pop("shot_type", None)
         if "scored" in item:
             clean_item["scored"] = item.get("scored") is True
         for key in allowed_numbers:
@@ -5907,7 +5922,7 @@ def _sanitize_basketball_attempts_results(value: Any, *, max_items: int = 12) ->
     return sanitized
 
 
-def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
+def _sanitize_badminton_event(event: Any) -> tuple[dict | None, str]:
     if not isinstance(event, dict):
         return None, "event must be object"
     allowed_kinds = {
@@ -5916,31 +5931,30 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     }
     allowed_results = {"scored", "missed", ""}
     allowed_duel_outcomes = {"player_win", "neko_win"}
-    allowed_shot_types = {"swish", "bank", "rim_in", "rim_out", "air_ball", ""}
     kind = str(event.get("kind") or "").strip()
     if kind not in allowed_kinds:
         return None, "invalid kind"
 
     clean: dict[str, Any] = {"kind": kind}
     if "mode" in event:
-        clean["mode"] = _normalize_basketball_mode(event.get("mode"))
-    for keys in _game_memory_payload_keys("basketball").values():
+        clean["mode"] = _normalize_badminton_mode(event.get("mode"))
+    for keys in _game_memory_payload_keys("badminton").values():
         for key in keys:
             if key in event:
                 clean[key] = event.get(key) is True
 
     result = str(event.get("result") or "").strip()
     duel_outcome = str(event.get("duel_outcome") or "").strip()
-    shot_type = str(event.get("shot_type") or "").strip()
+    shot_type = _normalize_badminton_shot_type(event.get("shot_type"))
     if result not in allowed_results:
         clean.pop("result", None)
     else:
         clean["result"] = result
     if duel_outcome in allowed_duel_outcomes:
         clean["duel_outcome"] = duel_outcome
-    if shot_type not in allowed_shot_types:
+    if "shot_type" in event and not shot_type:
         clean.pop("shot_type", None)
-    else:
+    elif shot_type:
         clean["shot_type"] = shot_type
 
     for key in (
@@ -5975,7 +5989,7 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
     for key in ("was_perfect", "is_new_record"):
         if key in event:
             clean[key] = event.get(key) is True
-    duel_state = _sanitize_basketball_duel_state(event.get("duel"))
+    duel_state = _sanitize_badminton_duel_state(event.get("duel"))
     if duel_state:
         clean["duel"] = duel_state
     current_state = event.get("currentState")
@@ -5984,8 +5998,12 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
         for key in ("game", "last_shot_type"):
             if key in current_state:
                 state_clean[key] = _normalize_short_text(current_state.get(key), max_chars=40)
+        if "last_shot_type" in state_clean:
+            normalized_state_shot_type = _normalize_badminton_shot_type(state_clean.get("last_shot_type"))
+            if normalized_state_shot_type:
+                state_clean["last_shot_type"] = normalized_state_shot_type
         if "mode" in current_state:
-            state_clean["mode"] = _normalize_basketball_mode(current_state.get("mode"))
+            state_clean["mode"] = _normalize_badminton_mode(current_state.get("mode"))
         for key in (
             "streak", "distance", "record_distance", "final_streak", "final_distance",
             "best_streak", "made_count", "attempts_remaining", "attempts_total",
@@ -6028,13 +6046,13 @@ def _sanitize_basketball_event(event: Any) -> tuple[dict | None, str]:
                 if math.isfinite(value):
                     score_clean[dst_key] = max(0.0, min(value, 5000.0))
             if "mode" in score_state:
-                score_clean["mode"] = _normalize_basketball_mode(score_state.get("mode"))
+                score_clean["mode"] = _normalize_badminton_mode(score_state.get("mode"))
             if score_clean:
                 state_clean["score"] = score_clean
-        duel_state = _sanitize_basketball_duel_state(current_state.get("duel"))
+        duel_state = _sanitize_badminton_duel_state(current_state.get("duel"))
         if duel_state:
             state_clean["duel"] = duel_state
-        attempts_results = _sanitize_basketball_attempts_results(
+        attempts_results = _sanitize_badminton_attempts_results(
             current_state.get("attempts_results"),
         )
         if attempts_results:
@@ -6216,11 +6234,11 @@ async def _run_game_chat(
         if balance_hint:
             event = dict(event)
             event['balanceHint'] = balance_hint
-    elif game_type == "basketball" and isinstance(event, dict):
+    elif _is_badminton_game_type(game_type) and isinstance(event, dict):
         route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-        event_mode = _normalize_basketball_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
+        event_mode = _normalize_badminton_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
         if event_mode == "duel":
-            balance_hint = _build_basketball_duel_balance_hint(event)
+            balance_hint = _build_badminton_duel_balance_hint(event)
             if balance_hint:
                 event = dict(event)
                 event["mode"] = "duel"
@@ -6362,11 +6380,11 @@ async def _run_game_chat(
                 if anger_pressure_cap:
                     event = dict(event)
                     event["angerPressureCap"] = anger_pressure_cap
-            elif game_type == "basketball" and isinstance(event, dict):
+            elif _is_badminton_game_type(game_type) and isinstance(event, dict):
                 route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-                event_mode = _normalize_basketball_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
+                event_mode = _normalize_badminton_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
                 if event_mode == "duel":
-                    anger_pressure_cap = _build_basketball_duel_anger_pressure_cap(
+                    anger_pressure_cap = _build_badminton_duel_anger_pressure_cap(
                         event,
                         route_state,
                         lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
@@ -6379,9 +6397,9 @@ async def _run_game_chat(
 
             shooter_evaluation = {}
             shooter_rating = ""
-            if game_type == "basketball" and isinstance(event, dict):
+            if _is_badminton_game_type(game_type) and isinstance(event, dict):
                 route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-                event_mode = _normalize_basketball_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
+                event_mode = _normalize_badminton_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
                 if event_mode == "shooter":
                     event = dict(event)
                     event["mode"] = "shooter"
@@ -6440,14 +6458,14 @@ async def _run_game_chat(
         return {"line": "", "control": {}, "skipped": "route_inactive"}
 
     result = _parse_control_instructions(full_reply, game_type=game_type)
-    if game_type == "basketball" and isinstance(event, dict) and event.get("mode") == "shooter":
+    if _is_badminton_game_type(game_type) and isinstance(event, dict) and event.get("mode") == "shooter":
         result["shooter_evaluation"] = event.get("shooterEvaluation") or _compute_shooter_evaluation(event)
         if event.get("kind") == "game_over":
             result["shooter_rating"] = event.get("shooterRating") or _compute_shooter_rating(event)
     if game_type == "soccer" and isinstance(event, dict):
         result = _apply_soccer_anger_pressure_cap(result, event)
-    elif game_type == "basketball" and isinstance(event, dict) and _normalize_basketball_mode(event.get("mode")) == "duel":
-        result = _apply_basketball_anger_pressure_cap(result, event)
+    elif _is_badminton_game_type(game_type) and isinstance(event, dict) and _normalize_badminton_mode(event.get("mode")) == "duel":
+        result = _apply_badminton_anger_pressure_cap(result, event)
     if isinstance(event, dict) and event.get('balanceHint'):
         result['balance_hint'] = event['balanceHint']
     total_elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
@@ -6504,7 +6522,7 @@ async def game_chat(game_type: str, request: Request):
         if isinstance(event, dict):
             _update_game_memory_enabled_from_payload(state, event, game_type=game_type)
             event = _attach_game_memory_flag_to_event(event, state, game_type=game_type)
-    if game_type == "basketball":
+    if _is_badminton_game_type(game_type):
         stale_result = _game_route_stale_session_response(
             state,
             session_id,
@@ -6524,9 +6542,9 @@ async def game_chat(game_type: str, request: Request):
                 "lanlan_name": lanlan_name,
                 "method": "game_chat",
             }
-        if not _check_basketball_chat_rate(lanlan_name, session_id):
+        if not _check_badminton_chat_rate(lanlan_name, session_id):
             return {"error": "rate_limited", "line": "", "control": {}, "retry_after": 2}
-        event, validation_error = _sanitize_basketball_event(event)
+        event, validation_error = _sanitize_badminton_event(event)
         if event is None:
             return {"error": validation_error or "invalid_event", "line": "", "control": {}}
     if isinstance(event, dict) and lanlan_name:
@@ -6661,8 +6679,8 @@ async def game_route_start(game_type: str, request: Request):
             _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
             state["nekoInitiated"] = neko_initiated
             state["nekoInviteText"] = neko_invite_text
-            if game_type == "basketball":
-                state["mode"] = _normalize_basketball_mode(data.get("mode"))
+            if _is_badminton_game_type(game_type):
+                state["mode"] = _normalize_badminton_mode(data.get("mode"))
             _update_route_start_state_from_payload(state, data)
             if game_type == "new_user_icebreaker":
                 state["heartbeat_enabled"] = False
@@ -6698,7 +6716,7 @@ async def game_route_start(game_type: str, request: Request):
             "end 抵消）: lanlan=%s game=%s session=%s",
             lanlan_name, game_type, session_id,
         )
-    if game_type in {"soccer", "basketball"}:
+    if game_type == "soccer" or _is_badminton_game_type(game_type):
         state["heartbeat_enabled"] = False
         try:
             if game_type == "soccer":
@@ -6710,7 +6728,7 @@ async def game_route_start(game_type: str, request: Request):
                     neko_invite_text=neko_invite_text,
                 )
             else:
-                context, source, error = await _build_basketball_pregame_context(
+                context, source, error = await _build_badminton_pregame_context(
                     game_type=game_type,
                     session_id=session_id,
                     lanlan_name=lanlan_name,
@@ -6720,8 +6738,8 @@ async def game_route_start(game_type: str, request: Request):
                 )
         except Exception as exc:
             logger.warning("🎮 开局上下文构建异常，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
-            if game_type == "basketball":
-                context = _default_basketball_pregame_context(mode=str(state.get("mode") or data.get("mode") or "spectator"))
+            if _is_badminton_game_type(game_type):
+                context = _default_badminton_pregame_context(mode=str(state.get("mode") or data.get("mode") or "spectator"))
             else:
                 context = _default_soccer_pregame_context()
             source, error = "fallback", "ai_failed"
@@ -7252,18 +7270,18 @@ def _build_external_user_event(state: dict, text: str, *, kind: str, source: str
         "lanlan_name": state.get("lanlan_name") or "",
         "type": event_type,
         "source": source,
+        "badmintonGameMemoryEnabled": master,
+        "badminton_game_memory_enabled": master,
+        "badmintonGameMemoryPlayerInteractionEnabled": player_interaction,
+        "badminton_game_memory_player_interaction_enabled": player_interaction,
+        "badmintonGameMemoryEventReplyEnabled": event_reply,
+        "badminton_game_memory_event_reply_enabled": event_reply,
         "soccerGameMemoryEnabled": master,
         "soccer_game_memory_enabled": master,
         "soccerGameMemoryPlayerInteractionEnabled": player_interaction,
         "soccer_game_memory_player_interaction_enabled": player_interaction,
         "soccerGameMemoryEventReplyEnabled": event_reply,
         "soccer_game_memory_event_reply_enabled": event_reply,
-        "basketballGameMemoryEnabled": master,
-        "basketball_game_memory_enabled": master,
-        "basketballGameMemoryPlayerInteractionEnabled": player_interaction,
-        "basketball_game_memory_player_interaction_enabled": player_interaction,
-        "basketballGameMemoryEventReplyEnabled": event_reply,
-        "basketball_game_memory_event_reply_enabled": event_reply,
         "gameMemoryEnabled": player_interaction,
         "game_memory_enabled": player_interaction,
         "gameMemoryPlayerInteractionEnabled": player_interaction,
@@ -7843,7 +7861,7 @@ async def _complete_game_end_from_payload(
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
-        score_session_mode = _normalize_basketball_mode(state.get("mode")) if game_type == "basketball" else ""
+        score_session_mode = _normalize_badminton_mode(state.get("mode")) if _is_badminton_game_type(game_type) else ""
         _update_route_start_state_from_payload(state, data, exiting=True)
         current_state = data.get("currentState")
         if isinstance(current_state, dict):
@@ -7863,7 +7881,7 @@ async def _complete_game_end_from_payload(
         # state-attached ``_exit_task``, but ``/route/start`` scans across
         # all game types for this lanlan. Take the same per-lanlan OUTER
         # supersede lock before the per-(lanlan, game_type) INNER lock so a
-        # late basketball end cannot clear the takeover for a freshly
+        # late badminton end cannot clear the takeover for a freshly
         # started soccer route.
         supersede_lock = _get_supersede_lock(lanlan_name)
         end_route_lock = _get_route_lock(lanlan_name, game_type)
@@ -7877,13 +7895,13 @@ async def _complete_game_end_from_payload(
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
         if (
-            game_type == "basketball"
+            _is_badminton_game_type(game_type)
             and state.get("game_started") is True
-            and _basketball_end_payload_completed_round(data)
+            and _badminton_end_payload_completed_round(data)
         ):
-            score_session_totals = _basketball_score_totals_from_data(state.get("finalScore"))
+            score_session_totals = _badminton_score_totals_from_data(state.get("finalScore"))
             if score_session_totals:
-                _remember_basketball_score_session(
+                _remember_badminton_score_session(
                     lanlan_name,
                     session_id,
                     score_session_mode,
@@ -7955,7 +7973,7 @@ async def game_quick_lines(game_type: str, request: Request):
     heals mgr.user_language. Otherwise the first quick lines can inherit English
     from the global cache populated during ``start_session``.
     """
-    if game_type not in {"soccer", "basketball"}:
+    if game_type != "soccer" and not _is_badminton_game_type(game_type):
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}
 
     fallback_language = None
@@ -7977,17 +7995,17 @@ async def game_quick_lines(game_type: str, request: Request):
         language = request_language or char_info.get("user_language")
         fallback_language = language
         cache_key = ""
-        if game_type == "basketball":
+        if _is_badminton_game_type(game_type):
             cache_lanlan = _normalize_short_text(
                 char_info.get("lanlan_name") or requested_name or "",
                 max_chars=80,
             )
             cache_lang = _normalize_short_text(language or "", max_chars=20)
-            cache_mode = _normalize_basketball_mode(data.get("mode"))
+            cache_mode = _normalize_badminton_mode(data.get("mode"))
             cache_key = f"{cache_lanlan}:{cache_lang}:{cache_mode}"
-            cached = _basketball_quick_lines_cache.get(cache_key)
+            cached = _badminton_quick_lines_cache.get(cache_key)
             if cached:
-                _basketball_quick_lines_cache.move_to_end(cache_key)
+                _badminton_quick_lines_cache.move_to_end(cache_key)
                 return {
                     "ok": True,
                     "character": char_info["lanlan_name"],
@@ -7995,10 +8013,10 @@ async def game_quick_lines(game_type: str, request: Request):
                     "missing": [],
                     "cached": True,
                 }
-        if game_type == "basketball":
-            prompt_template = get_basketball_quick_lines_prompt(language, mode=cache_mode)
-            user_prompt = get_basketball_quick_lines_user_prompt(language, mode=cache_mode)
-            allowed_keys = _BASKETBALL_QUICK_LINE_KEYS
+        if _is_badminton_game_type(game_type):
+            prompt_template = get_badminton_quick_lines_prompt(language, mode=cache_mode)
+            user_prompt = get_badminton_quick_lines_user_prompt(language, mode=cache_mode)
+            allowed_keys = _BADMINTON_QUICK_LINE_KEYS
         else:
             prompt_template = get_soccer_quick_lines_prompt(language)
             user_prompt = get_soccer_quick_lines_user_prompt(language)
@@ -8029,12 +8047,12 @@ async def game_quick_lines(game_type: str, request: Request):
         raw = _strip_json_fence(str(result.content or ""))
         parsed = robust_json_loads(raw)
         lines = _normalize_quick_lines(parsed, allowed_keys)
-        if game_type == "basketball":
+        if _is_badminton_game_type(game_type):
             if cache_key:
-                _basketball_quick_lines_cache[cache_key] = lines
-                _basketball_quick_lines_cache.move_to_end(cache_key)
-                while len(_basketball_quick_lines_cache) > _BASKETBALL_QUICK_LINES_CACHE_MAX:
-                    _basketball_quick_lines_cache.popitem(last=False)
+                _badminton_quick_lines_cache[cache_key] = lines
+                _badminton_quick_lines_cache.move_to_end(cache_key)
+                while len(_badminton_quick_lines_cache) > _BADMINTON_QUICK_LINES_CACHE_MAX:
+                    _badminton_quick_lines_cache.popitem(last=False)
         missing = sorted(allowed_keys - set(lines.keys()))
 
         logger.info(
@@ -8050,27 +8068,27 @@ async def game_quick_lines(game_type: str, request: Request):
         }
     except Exception as e:
         logger.warning("🎮 生成游戏快路径台词失败: game=%s err=%s", game_type, e, exc_info=True)
-        if game_type == "basketball":
+        if _is_badminton_game_type(game_type):
             return {
                 "ok": True,
                 "error": str(e),
-                "lines": _get_basketball_quick_lines_fallback(fallback_language),
+                "lines": _get_badminton_quick_lines_fallback(fallback_language),
                 "fallback": True,
             }
         return {"ok": False, "error": str(e), "lines": {}}
 
 
 @router.get("/{game_type}/leaderboard")
-async def game_basketball_leaderboard(
+async def game_badminton_leaderboard(
     game_type: str,
     session_id: str = "",
     lanlan_name: str = "",
     limit: int = 10,
     offset: int = 0,
 ):
-    clean_limit = _normalize_basketball_non_negative_int(limit, default=10, max_value=100)
-    clean_offset = _normalize_basketball_non_negative_int(offset, default=0, max_value=100000)
-    if game_type != "basketball":
+    clean_limit = _normalize_badminton_non_negative_int(limit, default=10, max_value=100)
+    clean_offset = _normalize_badminton_non_negative_int(offset, default=0, max_value=100000)
+    if not _is_badminton_game_type(game_type):
         return {
             "ok": True,
             "top": [],
@@ -8081,13 +8099,13 @@ async def game_basketball_leaderboard(
             "has_more": False,
             "your_best": None,
         }
-    with _open_basketball_scores_db() as conn:
-        _ensure_basketball_scores_schema(conn)
-        rows = _basketball_score_rows(conn, limit=clean_limit, offset=clean_offset)
-        total_players = _basketball_leaderboard_total_players(conn)
-        total_scores = _basketball_leaderboard_total_scores(conn)
-        top = [_basketball_row_to_public_dict(row, _basketball_rank_for_row(conn, row)) for row in rows]
-        your_best = _basketball_personal_best(conn, lanlan_name, session_id)
+    with _open_badminton_scores_db(game_type) as conn:
+        _ensure_badminton_scores_schema(conn)
+        rows = _badminton_score_rows(conn, limit=clean_limit, offset=clean_offset)
+        total_players = _badminton_leaderboard_total_players(conn)
+        total_scores = _badminton_leaderboard_total_scores(conn)
+        top = [_badminton_row_to_public_dict(row, _badminton_rank_for_row(conn, row)) for row in rows]
+        your_best = _badminton_personal_best(conn, lanlan_name, session_id)
     return {
         "ok": True,
         "top": top,
@@ -8101,8 +8119,8 @@ async def game_basketball_leaderboard(
 
 
 @router.post("/{game_type}/leaderboard")
-async def game_basketball_leaderboard_submit(game_type: str, request: Request):
-    if game_type != "basketball":
+async def game_badminton_leaderboard_submit(game_type: str, request: Request):
+    if not _is_badminton_game_type(game_type):
         return {"ok": False, "reason": f"暂不支持 {game_type} 的排行榜"}
     try:
         data = await request.json()
@@ -8110,15 +8128,15 @@ async def game_basketball_leaderboard_submit(game_type: str, request: Request):
         return {"ok": False, "reason": "invalid_body"}
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
-    if not _basketball_score_submission_allowed(data, reserve=True):
+    if not _badminton_score_submission_allowed(data, reserve=True):
         return {"ok": False, "reason": "invalid_session"}
-    insert_data = _basketball_score_data_for_insert(data)
+    insert_data = _badminton_score_data_for_insert(data)
     try:
-        rank, total_players, is_personal_best = _basketball_insert_score(insert_data)
+        rank, total_players, is_personal_best = _badminton_insert_score(insert_data, game_type=game_type)
     except Exception:
-        _release_basketball_score_session_reservation(data)
+        _release_badminton_score_session_reservation(data)
         raise
-    _consume_basketball_score_session(data)
+    _consume_badminton_score_session(data)
     return {
         "ok": True,
         "rank": rank,

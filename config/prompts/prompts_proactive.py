@@ -3340,14 +3340,14 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
         "es": "{master_name}, ¿quieres jugar una ronda rápida del minijuego de fútbol conmigo?",
         "pt": "{master_name}, quer jogar uma rodada rápida do minijogo de futebol comigo?",
     },
-    "basketball": {
-        "zh": "{master_name}，要不要现在来一局投篮挑战？",
-        "en": "{master_name}, want to try a quick basketball shooting challenge with me?",
-        "ja": "{master_name}、今ちょっとシュートチャレンジやらない？",
-        "ko": "{master_name}, 지금 농구 슛 챌린지 한 판 어때?",
-        "ru": "{master_name}, не хочешь пройти со мной баскетбольный бросковый челлендж?",
-        "es": "{master_name}, ¿quieres probar un reto rápido de tiros de baloncesto conmigo?",
-        "pt": "{master_name}, quer tentar um desafio rápido de arremessos de basquete comigo?",
+    "badminton": {
+        "zh": "{master_name}，要不要现在来一局羽毛球挑战？",
+        "en": "{master_name}, want to try a quick badminton rally challenge with me?",
+        "ja": "{master_name}、今ちょっとバドミントンチャレンジやらない？",
+        "ko": "{master_name}, 지금 배드민턴 챌린지 한 판 어때?",
+        "ru": "{master_name}, не хочешь пройти со мной быстрый бадминтонный челлендж?",
+        "es": "{master_name}, ¿quieres probar un reto rápido de bádminton conmigo?",
+        "pt": "{master_name}, quer tentar um desafio rápido de badminton comigo?",
     },
 }
 

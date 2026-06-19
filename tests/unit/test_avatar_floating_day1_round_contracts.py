@@ -11,12 +11,17 @@ DAY4_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day4-companion-guid
 DAY5_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day5-personalization-guide.js"
 DAY6_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day6-agent-guide.js"
 DAY7_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day7-graduation-guide.js"
+STEPS_PATH = ROOT / "static" / "tutorial/yui-guide/steps.js"
 DIRECTOR_PATH = ROOT / "static" / "tutorial/yui-guide/director.js"
+SCENE_ORCHESTRATOR_PATH = ROOT / "static" / "tutorial/core/scene-orchestrator.js"
 INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
 REACT_APP_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 REACT_SCHEMA_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 REACT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
 MANAGER_PATH = ROOT / "static" / "tutorial/core/universal-manager.js"
+OVERLAY_PATH = ROOT / "static" / "tutorial/yui-guide/overlay.js"
+GHOST_CURSOR_PATH = ROOT / "static" / "tutorial/visual/ghost-cursor-controller.js"
+RESISTANCE_CONTROLLER_PATH = ROOT / "static" / "tutorial/visual/resistance-controllers.js"
 
 
 EXPECTED_DAY1_SCENES = [
@@ -121,6 +126,30 @@ def test_day1_daily_guide_registers_round_scenes_in_day2_to_7_shape():
         assert f"id: '{old_scene_id}'" not in round_block
 
     assert_scene_order(round_block, EXPECTED_DAY1_SCENES)
+
+
+def test_steps_registry_registers_global_resistance_steps_for_all_rounds():
+    source = STEPS_PATH.read_text(encoding="utf-8")
+
+    assert "DEFAULT_RESISTANCE_STEP_PATCHES" in source
+    resist_block = source.split("interrupt_resist_light: Object.freeze({", 1)[1].split(
+        "interrupt_angry_exit: Object.freeze({",
+        1,
+    )[0]
+    angry_block = source.split("interrupt_angry_exit: Object.freeze({", 1)[1]
+
+    assert "bubbleText: '喂！不要拽我啦，现在还没轮到你的回合呢！'" in resist_block
+    assert "voiceKey: 'interrupt_resist_light_1'" in resist_block
+    assert "resistanceVoices: Object.freeze([" in resist_block
+    assert "threshold: 3" in resist_block
+    assert "resetOnStepAdvance: false" in resist_block
+
+    assert "bubbleText: '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'" in angry_block
+    assert "voiceKey: 'interrupt_angry_exit'" in angry_block
+    assert "threshold: 3" in angry_block
+    assert "resetOnStepAdvance: false" in angry_block
+    assert "Object.keys(DEFAULT_RESISTANCE_STEP_PATCHES).forEach(function (id) {" in source
+    assert "if (!steps[id]) {" in source
 
 
 def test_day2_round_keeps_intro_text_and_moves_personalization_after_it():
@@ -367,19 +396,19 @@ def test_tutorial_exit_clears_externalized_guide_chat_messages():
     )
     assert "this.clearGuideChatMessages();" in destroy_block
     assert "clearExternalizedChatGuideMessages()" in takeover
-    assert "this.clearExternalizedChatGuideMessages();" in fx_block
+    assert "this.clearExternalizedChatGuideMessages();" not in fx_block
     assert "this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');" in fx_block
 
 
-def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
+def test_pc_external_chat_ghost_cursor_uses_overlay_with_dom_fallback():
     source = INTERPAGE_PATH.read_text(encoding="utf-8")
     cursor_block = source.split("function applyYuiGuideChatCursor(kind, options)", 1)[1].split(
         "function clearYuiGuideChatSpotlightTracking()",
         1,
     )[0]
 
-    assert "yui-guide-chat-cursor" not in source
-    assert "getYuiGuideChatCursorElement" not in source
+    assert "yui-guide-chat-cursor" in source
+    assert "function ensureYuiGuideChatCursorElement()" in source
     assert "cancelYuiGuideChatCursorElementAnimations" not in source
     assert ".animate(" not in cursor_block
     assert "sendYuiGuidePcOverlayPatch({" in cursor_block
@@ -387,7 +416,7 @@ def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
     assert "cursor: {" in cursor_block
     assert "visible: true" in cursor_block
     assert "effect: normalizedOptions.effect || ''" in cursor_block
-    assert "cursor.hidden = false" not in cursor_block
+    assert "cursor.hidden = false" in cursor_block
     assert "if (isYuiGuidePcCursorOnlyMode())" in cursor_block
 
 
@@ -408,26 +437,149 @@ def test_pc_external_chat_spotlight_uses_overlay_without_dom_fallback():
     assert "sendYuiGuidePcOverlayPatch({ spotlights: pcRects });" in update_block
 
 
+def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gaps():
+    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    update_block = source.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
+        1,
+    )[0]
+    apply_block = source.split("function applyYuiGuideChatSpotlight(kind, options)", 1)[1].split(
+        "function applyYuiGuideChatCursorRelay",
+        1,
+    )[0]
+
+    missing_rect_block = update_block.split("if (!rect || rect.width <= 0 || rect.height <= 0) {", 1)[1].split(
+        "var padding = kind === 'window'",
+        1,
+    )[0]
+    assert "yuiGuideChatSpotlightLastPcKind === kind" in missing_rect_block
+    assert "yuiGuideChatSpotlightLastPcRects.length > 0" in missing_rect_block
+    assert "spotlights: yuiGuideChatSpotlightLastPcRects.map" in missing_rect_block
+    assert "spotlights: []" not in missing_rect_block
+    assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects);" in update_block
+    assert "clearYuiGuideChatPcSpotlightRects();" in apply_block
+    assert "sendYuiGuidePcOverlayPatch({ spotlights: [] });" in apply_block
+
+
+def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause():
+    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    apply_block = interpage_source.split("function applyYuiGuideChatSpotlight(kind, options)", 1)[1].split(
+        "function applyYuiGuideChatCursorRelay",
+        1,
+    )[0]
+    takeover_block = takeover_source.split("setExternalizedChatSpotlight(kind) {", 1)[1].split(
+        "setExternalizedChatCursor(kind, options) {",
+        1,
+    )[0]
+    constructor_block = director_source.split("window.TutorialInteractionTakeover.createController({", 1)[1].split(
+        "externalizedChatDetector:",
+        1,
+    )[0]
+
+    assert "isResistancePaused: () => this.scenePausedForResistance === true" in constructor_block
+    assert "safeInvoke(this.isResistancePaused, [], false) === true" in takeover_block
+    assert "message.preserveDuringResistance = true;" in takeover_block
+    assert "options.preserveDuringResistance === true" in apply_block
+    assert "yuiGuideChatSpotlightKind" in apply_block
+    assert "updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);" in apply_block
+    assert "clearYuiGuideChatSpotlightTracking();" in apply_block.split(
+        "updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);",
+        1,
+    )[1]
+
+
+def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
+    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    overlay_source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
+
+    assert "YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence'" in interpage_source
+    assert "PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence'" in overlay_source
+    assert "function nextYuiGuidePcOverlaySequence()" in interpage_source
+    assert "const nextSequence = () => {" in overlay_source
+    assert "window.localStorage.getItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY)" in interpage_source
+    assert "window.localStorage.setItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY" in interpage_source
+    assert "window.localStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY)" in overlay_source
+    assert "window.localStorage.setItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY" in overlay_source
+    assert "yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence();" in interpage_source
+    assert "sequence = nextSequence();" in overlay_source
+    assert "yuiGuidePcOverlaySequence = Math.max(yuiGuidePcOverlaySequence + 1, Date.now() * 1000);" not in interpage_source
+    assert "sequence = Math.max(sequence + 1, Date.now() * 1000);" not in overlay_source
+
+
 def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_home_bridge():
-    source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
+    source = OVERLAY_PATH.read_text(encoding="utf-8")
     bridge_block = source.split("function createPcOverlayBridge(doc)", 1)[1].split(
         "function createExtraSpotlightElement",
         1,
     )[0]
-    send_block = source.split("const send = (patch, force) => {", 1)[1].split(
+    send_block = source.split("const send = (patch, force, retried) => {", 1)[1].split(
         "const key = JSON.stringify(payload || {});",
         1,
     )[0]
 
-    assert "function withoutTransientCursorEffect(cursor)" in bridge_block
-    assert "currentCursor = withoutTransientCursorEffect(patch.cursor);" in send_block
-    assert "payload.cursor = patch.cursor || null;" in send_block
-    assert "payload.cursor = currentCursor;" in send_block
+    assert "createPcOverlayCompleteStateStore" in bridge_block
+    assert "const payload = completeStateStore.applyPatch(patch || {});" in send_block
+
+
+def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_spotlight():
+    overlay_source = OVERLAY_PATH.read_text(encoding="utf-8")
+    ghost_source = GHOST_CURSOR_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    resistance_source = RESISTANCE_CONTROLLER_PATH.read_text(encoding="utf-8")
+
+    cursor_only_block = overlay_source.split("const sendCursorOnly = (cursor, retried) => {", 1)[1].split(
+        "return {",
+        1,
+    )[0]
+    move_cursor_block = overlay_source.split("moveCursorTo(x, y, options) {", 1)[1].split(
+        "clickCursor(durationMs)",
+        1,
+    )[0]
+    director_resistance_block = director_source.split("playCursorResistanceToUserMotion(x, y, distance, motionDx, motionDy)", 1)[1].split(
+        "runInterruptResistPerformance",
+        1,
+    )[0]
+
+    assert "const patch = { cursor: cursor };" in cursor_only_block
+    assert "const payload = completeStateStore.applyPatch(patch);" in cursor_only_block
+    assert "handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);" in cursor_only_block
+    assert "result && result.ok === false" in cursor_only_block
+    assert "moveCursorOnlyTo(x, y, durationMs, effect, effectDurationMs)" in overlay_source
+    assert "normalizedOptions.forcePcOverlay === true" in move_cursor_block
+    assert "const cursorEffect = normalizedOptions.effect || '';" in move_cursor_block
+    assert "const cursorEffectDurationMs = Math.max(0, Math.round(Number(normalizedOptions.effectDurationMs) || 0));" in move_cursor_block
+    assert "this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo" in move_cursor_block
+    assert "this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo(x, y, 0, cursorEffect, cursorEffectDurationMs);" in move_cursor_block
+    assert "normalizedOptions.forcePcOverlay === true\n                && this.isPcOverlayActive()" not in move_cursor_block
+    assert "this.cursorVisible = this.isPcOverlayActive();" in move_cursor_block
+    assert "forcePcOverlay: normalizedOptions.forcePcOverlay === true" in ghost_source
+    assert "forcePcOverlay: true" in director_resistance_block
+    assert "forcePcOverlay: true" in resistance_source
+
+
+def test_externalized_resistance_restores_home_cursor_visibility_before_animating():
+    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    resistance_block = source.split("playCursorResistanceToUserMotion(x, y, distance, motionDx, motionDy)", 1)[1].split(
+        "isCursorTransientMotionActive()",
+        1,
+    )[0]
+
+    assert "let hasVisibleCursor" in resistance_block
+    assert "this.isHomeChatExternalized()" in resistance_block
+    assert "this.overlay.getCursorPosition()" in resistance_block
+    assert "this.cursor.showAt(currentPoint.x, currentPoint.y);" in resistance_block
+    assert "this.restoreCursorFromExternalizedChatAnchor(30000)" in resistance_block
+    assert "if (!hasVisibleCursor) {" in resistance_block
+    assert resistance_block.index("this.restoreCursorFromExternalizedChatAnchor(30000)") < resistance_block.index(
+        "if (!hasVisibleCursor) {"
+    )
 
 
 def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bridge():
     source = INTERPAGE_PATH.read_text(encoding="utf-8")
-    bridge_block = source.split("function sendYuiGuidePcOverlayPatch(patch)", 1)[1].split(
+    bridge_block = source.split("function sendYuiGuidePcOverlayPatch(patch, retried, options)", 1)[1].split(
         "function isYuiGuidePcCursorOnlyMode()",
         1,
     )[0]
@@ -550,6 +702,12 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "id: 'day1_intro_greeting'" in round_block
     assert "id: 'day1_takeover_return_control'" in round_block
     assert "cursorAction: 'wobble'" not in greeting_scene_block
+    assert "timelinePlayback: true" not in greeting_scene_block
+    assert "day1-intro-greeting-flow" not in greeting_scene_block
+    assert "target: 'chat-input'" in greeting_scene_block
+    assert "cursorTarget: 'chat-capsule-input'" in greeting_scene_block
+    assert "cursorAction: 'move'" in greeting_scene_block
+    assert "operation: 'day1-intro-greeting-performance'" in greeting_scene_block
     assert "target: 'chat-input'" in capsule_block
     assert "spotlight: false" in capsule_block
     assert "cursorWobbleDurationMs: 2000" in capsule_block
@@ -575,18 +733,12 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
         "async playDay1IntroGreetingRoundScene",
         1,
     )[0]
-    greeting_block = director.split("async playDay1IntroGreetingRoundScene", 1)[1].split(
-        "async playDay1IntroBasicVoiceRoundScene",
-        1,
-    )[0]
     assert "focusAndHighlightChatInput" not in activation_block
     assert "setExternalizedChatSpotlight('input')" not in activation_block
     assert "setExternalizedChatCursor('input'" not in activation_block
     assert "effect: 'wobble'" not in activation_block
     assert "setExternalizedChatCursor('');" not in activation_block
     assert "this.hideHomeCursorForExternalizedChat();" in activation_block
-    assert "setSpotlightGeometryHint(inputTarget" in greeting_block
-    assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
 
 
 def test_day1_capsule_drag_hint_copy_uses_single_click_language():
@@ -612,21 +764,35 @@ def test_day1_intro_basic_voice_moves_from_history_handle_anchor():
     assert "await this.moveCursorToElement(voiceControlButton, moveDurationMs);" in showcase_block
 
 
-def test_day1_intro_greeting_highlights_input_without_cursor_wobble():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
-    greeting_block = source.split("async playDay1IntroGreetingRoundScene", 1)[1].split(
-        "async playDay1IntroBasicVoiceRoundScene",
+def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():
+    source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
+    greeting_block = source.split("id: 'day1_intro_greeting'", 1)[1].split(
+        "id: 'day1_capsule_drag_hint'",
         1,
     )[0]
 
-    assert "setExternalizedChatSpotlight('input')" in greeting_block
-    assert "setExternalizedChatCursor('input'" not in greeting_block
-    assert "setSpotlightGeometryHint(inputTarget" in greeting_block
-    assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
     assert "setExternalizedChatCursor('');" not in greeting_block
-    assert "this.hideHomeCursorForExternalizedChat();" in greeting_block
-    assert "this.cursor.hide();" not in greeting_block
-    assert "cursor.wobble" not in greeting_block
+    assert "target: 'chat-input'" in greeting_block
+    assert "cursorTarget: 'chat-capsule-input'" in greeting_block
+    assert "cursorAction: 'move'" in greeting_block
+    assert "operation: 'day1-intro-greeting-performance'" in greeting_block
+    assert "day1-intro-greeting-flow" not in greeting_block
+    assert "timelinePlayback: true" not in greeting_block
+    assert "cursorAction: 'wobble'" not in greeting_block
+
+
+def test_day1_intro_greeting_performance_operation_does_not_play_narration():
+    source = (ROOT / "static" / "tutorial/core/operation-registry.js").read_text(encoding="utf-8")
+    operation_block = source.split("async runDay1IntroGreetingPerformance()", 1)[1].split(
+        "async runDay1IntroBasicVoiceShowcase",
+        1,
+    )[0]
+
+    assert "runIntroGreetingHugPerformance" in operation_block
+    assert "runIntroGiftHeartPerformance" in operation_block
+    assert "speakGuideLine" not in operation_block
+    assert "appendGuideChatMessage" not in operation_block
+    assert "setExternalizedChatCursor" not in operation_block
 
 
 def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
@@ -636,29 +802,64 @@ def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
         1,
     )[0]
 
-    assert "setExternalizedChatSpotlight('input')" in externalized_block
+    assert "setExternalizedChatGuideTarget('capsule-input'" in externalized_block
     assert "setExternalizedChatCursor('input'" not in externalized_block
     assert "setExternalizedChatCursor('');" not in externalized_block
     assert "effect: 'wobble'" not in externalized_block
     assert "this.cursor.hide();" not in externalized_block
-    assert "hideHomeCursorForExternalizedChat" in externalized_block
 
 
 def test_day2_intro_externalized_cursor_uses_scene_action_not_wobble():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
-    first_daily_externalized_block = source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
+    orchestrator_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    first_daily_externalized_block = orchestrator_source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
+        "} else if (introChatSpotlightTarget)",
+        1,
+    )[0]
+    cursor_options_block = director_source.split("getAvatarFloatingIntroExternalizedCursorOptions(scene)", 1)[1].split(
+        "setHomePcCursorOutputSuppressedForExternalizedChat",
+        1,
+    )[0]
+
+    assert "director.getAvatarFloatingIntroExternalizedCursorOptions(scene)" in first_daily_externalized_block
+    assert "effect: this.getExternalizedChatCursorEffect(scene)" in cursor_options_block
+    assert "effect: 'wobble'" not in first_daily_externalized_block
+
+
+def test_day1_intro_externalized_chat_suppresses_home_pc_cursor_before_hiding_it():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    prelude_block = source.split("applyFirstDailySceneIntroCursorPrelude(scene, context)", 1)[1].split(
+        "const introTarget = typeof director.getAvatarFloatingIntroSpotlightTarget",
+        1,
+    )[0]
+    spotlight_block = source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
         "} else if (introChatSpotlightTarget)",
         1,
     )[0]
 
-    assert "effect: this.getExternalizedChatCursorEffect(scene)" in first_daily_externalized_block
-    assert "effect: 'wobble'" not in first_daily_externalized_block
+    assert prelude_block.index("director.setHomePcCursorOutputSuppressedForExternalizedChat(true);") < prelude_block.index(
+        "director.hideHomeCursorForExternalizedChat();"
+    )
+    assert spotlight_block.index("director.setHomePcCursorOutputSuppressedForExternalizedChat(true);") < spotlight_block.index(
+        "director.hideHomeCursorForExternalizedChat();"
+    )
+
+
+def test_day1_return_control_preserves_externalized_cursor_from_capture_scene():
+    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    preserve_block = source.split("shouldPreserveExternalizedChatCursor(previousSceneId, scene)", 1)[1].split(
+        "shouldPreserveIntroExternalizedChatCursor(scene)",
+        1,
+    )[0]
+
+    assert "previousSceneId === 'day1_takeover_capture_cursor'" in preserve_block
+    assert "nextSceneId === 'day1_takeover_return_control'" in preserve_block
 
 
 def test_only_day1_tutorial_configs_use_cursor_wobble():
     guide_files = sorted(Path("static").glob("tutorial/yui-guide/days/day*-*.js"))
     for guide_file in guide_files:
-        if guide_file.name.startswith("tutorial/yui-guide/days/day1-"):
+        if guide_file.name.startswith("day1-"):
             continue
         source = guide_file.read_text(encoding="utf-8")
         assert "cursorAction: 'wobble'" not in source

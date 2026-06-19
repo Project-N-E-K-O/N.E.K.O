@@ -10,6 +10,7 @@
     const BACKDROP_DIM_ENABLED = false;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
+    const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
     const OverlayRendererApi = window.TutorialOverlayRendererApi || {};
     const OverlayCursorStateStore = OverlayRendererApi.OverlayCursorStateStore
         || (window.TutorialOverlayRenderer && window.TutorialOverlayRenderer.OverlayCursorStateStore);
@@ -59,15 +60,19 @@
             return null;
         }
 
+        const createRunId = () => 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        const storeRunId = (nextRunId) => {
+            try {
+                window.localStorage.setItem('yuiGuidePcOverlayRunId', nextRunId);
+            } catch (_) {}
+        };
         let runId = '';
         try {
             runId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
-            if (!runId) {
-                runId = 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
-                window.localStorage.setItem('yuiGuidePcOverlayRunId', runId);
-            }
-        } catch (_) {
-            runId = 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        } catch (_) {}
+        if (!runId) {
+            runId = createRunId();
+            storeRunId(runId);
         }
         let sequence = 0;
         let active = false;
@@ -84,6 +89,51 @@
             storage: window.localStorage,
             defaultCursorClickVisibleMs: DEFAULT_CURSOR_CLICK_VISIBLE_MS
         });
+
+        const rotateRunId = () => {
+            runId = createRunId();
+            storeRunId(runId);
+            sequence = 0;
+            active = false;
+            remoteReady = false;
+            failed = false;
+            lastKey = '';
+            return runId;
+        };
+
+        const nextSequence = () => {
+            const wallSequence = Date.now() * 1000;
+            let storedSequence = 0;
+            try {
+                storedSequence = Math.max(
+                    0,
+                    Math.floor(Number(window.localStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY)) || 0)
+                );
+            } catch (_) {
+                storedSequence = 0;
+            }
+
+            sequence = Math.max(sequence + 1, storedSequence + 1, wallSequence);
+            try {
+                window.localStorage.setItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY, String(sequence));
+            } catch (_) {}
+            return sequence;
+        };
+
+        const handleStaleResult = (result, patch, force, retried, attemptedRunId) => {
+            if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
+                return;
+            }
+            rotateRunId();
+            send(patch, force, true);
+        };
+        const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId) => {
+            if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
+                return;
+            }
+            rotateRunId();
+            sendCursorOnly(cursor, true);
+        };
 
         const getAssetUrl = (assetPath) => {
             try {
@@ -141,7 +191,7 @@
             };
         };
 
-        const send = (patch, force) => {
+        const send = (patch, force, retried) => {
             if (cleared) {
                 return;
             }
@@ -153,8 +203,13 @@
             lastKey = key;
             if (!active) {
                 active = true;
+                const beginRunId = runId;
                 try {
                     Promise.resolve(host.begin({ tutorialRunId: runId })).then((result) => {
+                        if (result && result.stale === true) {
+                            handleStaleResult(result, patch, force, retried === true, beginRunId);
+                            return;
+                        }
                         if (result && result.ok === false) {
                             failed = true;
                             remoteReady = false;
@@ -170,7 +225,8 @@
                     remoteReady = false;
                 }
             }
-            sequence = Math.max(sequence + 1, Date.now() * 1000);
+            sequence = nextSequence();
+            const updateRunId = runId;
             try {
                 Promise.resolve(host.update({
                     tutorialRunId: runId,
@@ -178,6 +234,71 @@
                     sequence: sequence,
                     payload: payload
                 })).then((result) => {
+                    if (result && result.stale === true) {
+                        handleStaleResult(result, patch, force, retried === true, updateRunId);
+                        return;
+                    }
+                    if (result && result.ok === false) {
+                        failed = true;
+                        remoteReady = false;
+                        return;
+                    }
+                    failed = false;
+                    remoteReady = true;
+                }).catch(() => {
+                    active = false;
+                    failed = true;
+                    remoteReady = false;
+                });
+            } catch (_) {
+                active = false;
+                failed = true;
+                remoteReady = false;
+            }
+        };
+        const sendCursorOnly = (cursor, retried) => {
+            if (cleared || !cursor) {
+                return;
+            }
+            const patch = { cursor: cursor };
+            const payload = completeStateStore.applyPatch(patch);
+            if (!active) {
+                active = true;
+                const beginRunId = runId;
+                try {
+                    Promise.resolve(host.begin({ tutorialRunId: runId })).then((result) => {
+                        if (result && result.stale === true) {
+                            handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);
+                            return;
+                        }
+                        if (result && result.ok === false) {
+                            failed = true;
+                            remoteReady = false;
+                        }
+                    }).catch(() => {
+                        active = false;
+                        failed = true;
+                        remoteReady = false;
+                    });
+                } catch (_) {
+                    active = false;
+                    failed = true;
+                    remoteReady = false;
+                }
+            }
+            sequence = nextSequence();
+            const updateRunId = runId;
+            try {
+                Promise.resolve(host.update({
+                    tutorialRunId: runId,
+                    sceneId: doc && doc.body ? (doc.body.getAttribute('data-yui-guide-scene') || '') : '',
+                    sequence: sequence,
+                    payload: payload
+                })).then((result) => {
+                    if (result && result.stale === true) {
+                        handleCursorOnlyStaleResult(result, cursor, retried === true, updateRunId);
+                        return;
+                    }
                     if (result && result.ok === false) {
                         failed = true;
                         remoteReady = false;
@@ -239,6 +360,17 @@
                         effectDurationMs: Math.max(0, Math.round(Number(effectDurationMs) || 0))
                     }
                 }, true);
+            },
+            moveCursorOnlyTo(x, y, durationMs, effect, effectDurationMs) {
+                const point = toScreenPoint(x, y);
+                sendCursorOnly({
+                    visible: true,
+                    x: point.x,
+                    y: point.y,
+                    durationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
+                    effect: effect || '',
+                    effectDurationMs: Math.max(0, Math.round(Number(effectDurationMs) || 0))
+                });
             },
             hideCursor() {
                 send({ cursor: { visible: false } }, true);
@@ -1298,15 +1430,21 @@
                 this.keepDomCursorSuppressedForPcOverlay();
             }
             this.cursorPosition = { x: x, y: y };
-            this.cursorVisible = false;
+            this.cursorVisible = this.isPcOverlayActive();
             return Promise.resolve(true);
         }
 
         moveCursorTo(x, y, options) {
             this.updateSuppressedCursorMotion();
-            if (this.shouldForwardCursorToPcOverlay()) {
-                const normalizedOptions = options || {};
-                const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
+            const normalizedOptions = options || {};
+            const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
+            const cursorEffect = normalizedOptions.effect || '';
+            const cursorEffectDurationMs = Math.max(0, Math.round(Number(normalizedOptions.effectDurationMs) || 0));
+            const forcePcOverlayCursorOnly = normalizedOptions.forcePcOverlay === true
+                && this.overlayRenderer
+                && this.overlayRenderer.pcOverlayBridge
+                && typeof this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo === 'function';
+            if (this.shouldForwardCursorToPcOverlay() || forcePcOverlayCursorOnly) {
                 const pauseCheck = typeof normalizedOptions.pauseCheck === 'function'
                     ? normalizedOptions.pauseCheck
                     : null;
@@ -1314,20 +1452,34 @@
                     ? normalizedOptions.cancelCheck
                     : null;
                 if (!this.cursorPosition) {
-                    this.overlayRenderer.showCursorAt(x, y);
+                    if (forcePcOverlayCursorOnly) {
+                        this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo(x, y, 0, cursorEffect, cursorEffectDurationMs);
+                    } else {
+                        this.overlayRenderer.showCursorAt(x, y);
+                    }
                     this.keepDomCursorSuppressedForPcOverlay();
                     this.cursorPosition = { x: x, y: y };
                     this.cursorVisible = true;
                     return Promise.resolve(true);
                 }
                 if (this.cursorPosition) {
-                    this.overlayRenderer.moveCursorTo(
-                        x,
-                        y,
-                        durationMs,
-                        normalizedOptions.effect || '',
-                        normalizedOptions.effectDurationMs
-                    );
+                    if (forcePcOverlayCursorOnly) {
+                        this.overlayRenderer.pcOverlayBridge.moveCursorOnlyTo(
+                            x,
+                            y,
+                            durationMs,
+                            cursorEffect,
+                            cursorEffectDurationMs
+                        );
+                    } else {
+                        this.overlayRenderer.moveCursorTo(
+                            x,
+                            y,
+                            durationMs,
+                            cursorEffect,
+                            cursorEffectDurationMs
+                        );
+                    }
                     this.keepDomCursorSuppressedForPcOverlay();
                     return this.animateSuppressedCursorPositionTo(x, y, durationMs, {
                         pauseCheck: pauseCheck,
@@ -1335,8 +1487,6 @@
                     });
                 }
             }
-            const normalizedOptions = options || {};
-            const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
             const pauseCheck = typeof normalizedOptions.pauseCheck === 'function'
                 ? normalizedOptions.pauseCheck
                 : null;
@@ -1349,11 +1499,11 @@
             }
             if (!this.cursorPosition) {
                 this.cursorPosition = { x: x, y: y };
-                this.cursorVisible = false;
+                this.cursorVisible = this.isPcOverlayActive();
                 return Promise.resolve(true);
             }
 
-            this.cursorVisible = false;
+            this.cursorVisible = this.isPcOverlayActive();
             return this.animateSuppressedCursorPositionTo(x, y, durationMs, {
                 pauseCheck: pauseCheck,
                 cancelCheck: cancelCheck

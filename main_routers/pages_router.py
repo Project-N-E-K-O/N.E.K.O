@@ -56,6 +56,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/yui-guide/steps.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/avatar-standin.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
     _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
     _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
@@ -64,6 +65,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
+    _PROJECT_ROOT / "static/app-interpage.js",
     _PROJECT_ROOT / "static/app-ui.js",
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
@@ -116,7 +118,6 @@ _static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
-    _PROJECT_ROOT / "static/app-interpage.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app-buttons.js",

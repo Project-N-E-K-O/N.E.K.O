@@ -79,17 +79,15 @@
                 },
                 {
                     id: 'day1_intro_greeting',
-                    timelinePlayback: true,
-                    timelineAudio: false,
-                    timeline: [
-                        { at: 0, command: 'operation.run', operation: 'day1-intro-greeting-flow', blocking: true }
-                    ],
                     afterSceneDelayMs: 0,
                     textKey: 'tutorial.yuiGuide.lines.introGreetingReply',
                     voiceKey: 'intro_greeting_reply',
                     emotion: 'happy',
-                    target: '#react-chat-window-root .composer-input-shell',
-                    operation: 'day1-intro-greeting-flow'
+                    target: 'chat-input',
+                    cursorTarget: 'chat-capsule-input',
+                    cursorAction: 'move',
+                    operation: 'day1-intro-greeting-performance',
+                    spotlightVariant: 'plain-capsule'
                 },
                 {
                     id: 'day1_capsule_drag_hint',

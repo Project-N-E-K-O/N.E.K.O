@@ -29,6 +29,7 @@
             this.allowTouchPassthrough = normalizedOptions.allowTouchPassthrough || null;
             this.allowWindowPassthrough = normalizedOptions.allowWindowPassthrough === true;
             this.isDestroyed = normalizedOptions.isDestroyed || null;
+            this.isResistancePaused = normalizedOptions.isResistancePaused || null;
             this.externalChatChannelProvider = normalizedOptions.externalChatChannelProvider || null;
             this.externalizedChatDetector = normalizedOptions.externalizedChatDetector || null;
             this.destroyed = false;
@@ -313,7 +314,8 @@
                 message.timestamp = Date.now();
             }
             if (!message.lanlan_name) {
-                message.lanlan_name = this.resolveLanlanName();
+                const lanlanName = this.resolveLanlanName();
+                message.lanlan_name = lanlanName;
             }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
@@ -348,9 +350,16 @@
 
         setExternalizedChatSpotlight(kind) {
             this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
-            this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+            const message = {
                 kind: this.externalizedChatSpotlightKind
-            });
+            };
+            if (
+                this.externalizedChatSpotlightKind
+                && safeInvoke(this.isResistancePaused, [], false) === true
+            ) {
+                message.preserveDuringResistance = true;
+            }
+            this.postExternalChatCommand('yui_guide_set_chat_spotlight', message);
         }
 
         setExternalizedChatCursor(kind, options) {
@@ -460,7 +469,6 @@
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
-            this.clearExternalizedChatGuideMessages();
             this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');

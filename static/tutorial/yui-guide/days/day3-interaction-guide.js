@@ -48,6 +48,7 @@
                     persistent: 'chat-tool-toggle',
                     target: 'chat-tool-toggle',
                     cursorAction: 'click',
+                    cursorMoveDurationMs: 1480,
                     operation: 'open-compact-tool-fan'
                 },
                 {

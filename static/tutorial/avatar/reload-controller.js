@@ -91,6 +91,7 @@
                 this.setPreparing(true);
                 await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });
                 ensureOverrideActive();
+                this.setPreparing(true);
                 this.applyIdentityOverride({
                     active: true,
                     displayName: 'YUI',
@@ -180,6 +181,7 @@
                         } catch (_) {}
                     }
                 } finally {
+                    this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {
                         this.override = null;
