@@ -169,19 +169,9 @@ class ServerLifecycleService:
         except Exception as exc:
             logger.warning("failed to emit server_startup_begin event: {}", exc)
 
-        try:
-            _ = state.plugin_response_map
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
-            logger.warning(
-                "failed to initialize plugin response map early: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-
         self._clear_runtime_state()
 
-        await plugin_router.start()
-        logger.debug("plugin router started")
+        await ensure_plugin_messaging_started()
 
         try:
             await self._start_message_plane()
@@ -392,6 +382,21 @@ class ServerLifecycleService:
             logger.warning("server shutdown completed with errors")
         else:
             logger.debug("server shutdown completed")
+
+
+async def ensure_plugin_messaging_started() -> None:
+    """Start plugin request messaging without running full plugin lifecycle."""
+    try:
+        _ = state.plugin_response_map
+    except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
+        logger.warning(
+            "failed to initialize plugin response map early: err_type={}, err={}",
+            type(exc).__name__,
+            str(exc),
+        )
+
+    await plugin_router.start()
+    logger.debug("plugin router started")
 
 
 _service = ServerLifecycleService()
