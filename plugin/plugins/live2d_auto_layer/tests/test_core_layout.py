@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import types
 import zipfile
+from pathlib import Path
 
 import json
 import pytest
@@ -14,6 +15,7 @@ from plugin.plugins.live2d_auto_layer.core.cubism import export_cubism_handoff
 from plugin.plugins.live2d_auto_layer.core.importing import import_layer_source
 from plugin.plugins.live2d_auto_layer.core.pipeline import process_layer_source
 from plugin.plugins.live2d_auto_layer.core.auto_rig.template import classify_rig_group, infer_bindings
+from plugin.plugins.live2d_auto_layer.services.layer_service import LayerService
 
 
 def _install_optional_cv2_stub() -> None:
@@ -152,6 +154,23 @@ def test_process_layer_source_exports_manifest(tmp_path) -> None:
     assert manifest["metrics"]["assembly"][0]["source_name"] == "body"
 
 
+def test_layer_service_ui_result_can_auto_export_cubism_handoff(tmp_path) -> None:
+    source_dir = tmp_path / "source"
+    layers_dir = source_dir / "layers"
+    output_dir = tmp_path / "output"
+    layers_dir.mkdir(parents=True)
+    Image.new("RGBA", (8, 8), (0, 0, 255, 255)).save(layers_dir / "body.png")
+    Image.new("RGBA", (8, 8), (255, 0, 0, 255)).save(layers_dir / "front_hair.png")
+    service = LayerService(output_dir=output_dir)
+
+    result = service.import_layer_source(source_dir, session_id="auto-handoff-smoke")
+    ui_result = service.result_to_ui_dict(result, include_cubism_handoff=True)
+
+    zip_path = output_dir / "auto-handoff-smoke" / "cubism_handoff.zip"
+    assert ui_result["cubism_handoff_zip_path"] == str(zip_path)
+    assert zip_path.is_file()
+
+
 def test_export_cubism_handoff_package(tmp_path) -> None:
     source_dir = tmp_path / "source"
     layers_dir = source_dir / "layers"
@@ -251,7 +270,11 @@ def test_export_auto_rig_model_package(tmp_path) -> None:
     assert loaded["quality_summary"]["visual_status"] == "preserved"
     assert len(loaded["layers"]) == 2
     assert loaded["layers"][0]["name"] == "Face_Skin"
-    assert loaded["layers"][0]["texture_path"].endswith("textures/layers/00_Face_Skin.png")
+    assert Path(loaded["layers"][0]["texture_path"]).parts[-3:] == (
+        "textures",
+        "layers",
+        "00_Face_Skin.png",
+    )
 
     model_path = output_dir / "auto-rig-smoke" / "auto_rig" / "auto_rig_model.json"
     unsafe = json.loads(model_path.read_text(encoding="utf-8"))

@@ -84,7 +84,7 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_split_image failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result, include_cubism_handoff=True))
 
     @ui.action(
         label=tr("actions.resegmentSession.label", default="Resegment"),
@@ -144,7 +144,7 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_resegment_session failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result, include_cubism_handoff=True))
 
     @ui.action(
         label=tr("actions.importLayerSource.label", default="Import layers"),
@@ -199,7 +199,7 @@ class ProcessRouter(PluginRouter):
         except Exception as exc:
             self.logger.warning("live2d_import_layer_source failed: {}", exc, exc_info=True)
             return Err(SdkError(str(exc)))
-        return Ok(self.main_plugin.layers.result_to_ui_dict(result))
+        return Ok(self.main_plugin.layers.result_to_ui_dict(result, include_cubism_handoff=True))
 
     @ui.action(
         label=tr("actions.exportSession.label", default="Export ZIP"),

@@ -140,8 +140,24 @@ class LayerService:
             gpt_api_key=gpt_api_key,
         )
 
-    def result_to_ui_dict(self, result: ProcessResult) -> dict[str, object]:
-        return self.with_inline_artifacts(result.to_dict())
+    def result_to_ui_dict(self, result: ProcessResult, *, include_cubism_handoff: bool = False) -> dict[str, object]:
+        data = result.to_dict()
+        if include_cubism_handoff:
+            try:
+                data.update(self.export_cubism_handoff_for_result(result))
+            except Exception as exc:
+                warnings = data.get("warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                warnings.append(f"Cubism handoff auto-export failed: {exc}")
+                data["warnings"] = warnings
+                data["cubism_handoff_error"] = str(exc)
+        return self.with_inline_artifacts(data)
+
+    def export_cubism_handoff_for_result(self, result: ProcessResult) -> dict[str, object]:
+        from ..core.cubism import export_cubism_handoff
+
+        return export_cubism_handoff(result)
 
     def with_inline_artifacts(self, data: dict[str, object]) -> dict[str, object]:
         decorated = dict(data)

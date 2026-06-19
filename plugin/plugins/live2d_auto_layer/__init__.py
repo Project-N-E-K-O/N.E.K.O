@@ -5,7 +5,7 @@ from plugin.sdk.plugin import (
     Ok,
 )
 
-from .routers import EnvironmentRouter, ProcessRouter
+from .routers import CubismEditorRouter, EnvironmentRouter, ProcessRouter
 from .services import EnvironmentService, LayerService, SessionStore
 
 
@@ -13,7 +13,7 @@ from .services import EnvironmentService, LayerService, SessionStore
 class Live2dAutoLayerPlugin(NekoPluginBase):
     """Live2D Auto Layer"""
 
-    __routers__ = [EnvironmentRouter, ProcessRouter]
+    __routers__ = [EnvironmentRouter, ProcessRouter, CubismEditorRouter]
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
