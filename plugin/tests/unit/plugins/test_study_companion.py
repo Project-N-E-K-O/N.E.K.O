@@ -122,7 +122,7 @@ from plugin.plugins.study_companion.ui_api import (
     build_open_ui_payload,
 )
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
-from plugin.sdk.plugin import Err, Ok
+from plugin.sdk.plugin import Err, Ok, OsActivitySnapshot
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 
 
@@ -441,6 +441,7 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
             enabled=True,
             snapshot_interval_seconds=60,
             push_to_llm_mode="read",
+            os_signals_enabled=False,
         )
     )
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
@@ -487,13 +488,191 @@ async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -
             return _NoActivitySnapshot()
 
     plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}}))
-    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            push_to_llm_mode="blind",
+            os_signals_enabled=False,
+        )
+    )
     plugin._buffer = ActivityBuffer()
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
 
     await plugin.awareness_tick()
 
     assert plugin._awareness_idle_ticks == 1
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_private_activity_tracker_skips_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CaptureShouldNotRun:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def capture_lightweight(self):
+            self.calls += 1
+            raise AssertionError("private activity must not capture the screen")
+
+    async def _activity_snapshot(source: str, *, now: float | None = None):
+        assert source == "study_companion"
+        assert now is not None
+        return OsActivitySnapshot(
+            os_signals_available=True,
+            foreground_category=None,
+            system_idle_seconds=12.0,
+            privacy_state="private",
+        )
+
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    pipeline = _CaptureShouldNotRun()
+    plugin._ocr_pipeline = pipeline
+    monkeypatch.setattr(
+        study_companion_module,
+        "get_os_activity_snapshot",
+        _activity_snapshot,
+    )
+
+    await plugin.awareness_tick()
+
+    assert pipeline.calls == 0
+    assert plugin._awareness_idle_ticks == 1
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "private"
+    assert summary["current_activity"] == "private"
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_uses_activity_tracker_foreground_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+                has_content_change=True,
+                thumbnail_phash="1" * 16,
+            )
+
+    async def _activity_snapshot(source: str, *, now: float | None = None):
+        assert source == "study_companion"
+        assert now is not None
+        return OsActivitySnapshot(
+            os_signals_available=True,
+            foreground_category="gaming",
+            system_idle_seconds=42.0,
+            privacy_state="visible",
+        )
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {}
+
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    monkeypatch.setattr(
+        study_companion_module,
+        "get_os_activity_snapshot",
+        _activity_snapshot,
+    )
+    supervision = _Supervision()
+    plugin._supervision = supervision
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "game"
+    assert supervision.calls == [
+        {
+            "ocr_text": "Question: Why?",
+            "sensor_available": True,
+            "idle_seconds": 42.0,
+            "foreground_category": "gaming",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_ignores_unavailable_os_signals_for_supervision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+                has_content_change=True,
+                thumbnail_phash="2" * 16,
+            )
+
+    async def _activity_snapshot(source: str, *, now: float | None = None):
+        assert source == "study_companion"
+        assert now is not None
+        return OsActivitySnapshot(
+            os_signals_available=False,
+            foreground_category=None,
+            system_idle_seconds=None,
+            privacy_state="unavailable",
+        )
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {}
+
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    monkeypatch.setattr(
+        study_companion_module,
+        "get_os_activity_snapshot",
+        _activity_snapshot,
+    )
+    supervision = _Supervision()
+    plugin._supervision = supervision
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "web_page"
+    assert supervision.calls == [
+        {
+            "ocr_text": "Question: Why?",
+            "sensor_available": True,
+            "idle_seconds": None,
+            "foreground_category": None,
+        }
+    ]
 
 
 class _FakeOcrBackend:

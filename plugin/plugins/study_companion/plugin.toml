@@ -46,6 +46,7 @@ allow_custom_duration = true
 enabled = true
 remind_interval_minutes = 10
 inactivity_timeout_minutes = 5
+idle_away_seconds = 900
 allow_disable_by_chat = true
 
 [study.checkin]
@@ -58,9 +59,11 @@ enabled = false
 snapshot_interval_seconds = 5
 context_window_minutes = 5
 classify_mode = "title_first"
-image_max_bytes = 204800
-push_to_llm_interval_seconds = 30
+image_max_bytes = 65536
+push_to_llm_interval_seconds = 300
 push_to_llm_mode = "read"
+os_signals_enabled = true
+distraction_detection = true
 
 [study_companion.communication]
 enabled = true

@@ -14,6 +14,7 @@ from plugin.plugins.study_companion.voice_filter import (
     _derive_subject,
     _find_earliest_name,
     _has_question_intent,
+    _ocr_is_stale,
     _number_sequence_match,
     _text_overlap_ratio,
     build_context_for_catgirl,
@@ -42,6 +43,28 @@ def test_voice_filter_loads_current_catgirl_name_and_nicknames_from_config_manag
     voice_filter = VoiceFilter(config_manager=ConfigManager())
 
     assert voice_filter.names == ("Mika", "米卡", "小M", "Sensei")
+
+
+def test_voice_filter_logs_config_manager_failures() -> None:
+    class ConfigManager:
+        def get_character_data(self) -> tuple[object, ...]:
+            raise RuntimeError("config damaged")
+
+    class Logger:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def warning(self, *args: object, **kwargs: object) -> None:
+            self.warnings.append((args, kwargs))
+
+    logger = Logger()
+    voice_filter = VoiceFilter(config_manager=ConfigManager(), logger=logger)
+
+    assert voice_filter.names == CATGIRL_NAMES
+    assert any(
+        "voice filter failed to read configured names" in str(args[0])
+        for args, _kwargs in logger.warnings
+    )
 
 
 def test_find_earliest_name_is_case_insensitive_and_uses_first_position() -> None:
@@ -227,6 +250,10 @@ def test_unknown_non_overlapping_transcript_relays_by_returning_none() -> None:
     )
 
     assert result is None
+
+
+def test_ocr_is_stale_treats_invalid_timestamps_as_stale() -> None:
+    assert _ocr_is_stale("not-a-timestamp") is True
 
 
 def test_question_intent_relays_before_ocr_overlap() -> None:

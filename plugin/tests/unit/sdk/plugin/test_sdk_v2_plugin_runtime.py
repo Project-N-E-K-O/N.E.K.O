@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from types import SimpleNamespace
 
 import pytest
 
+import plugin.sdk.plugin.activity as activity_api
 from plugin.sdk.plugin import runtime as rt
 from plugin.sdk.shared.models.errors import ErrorCode
 from plugin.sdk.shared.models.exceptions import TransportError, ValidationError
@@ -100,6 +102,61 @@ def test_hook_executor_mixin_not_implemented() -> None:
     mixin = object.__new__(rt.HookExecutorMixin)
     with pytest.raises(NotImplementedError):
         mixin.__init_hook_executor__()
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_narrows_core_tracker_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Tracker:
+        async def get_snapshot(self, *, now: float | None = None):
+            assert now == 12.5
+            return SimpleNamespace(
+                state="focused_work",
+                active_window=SimpleNamespace(category="gaming"),
+                system_idle_seconds="42.25",
+                os_signals_available=True,
+            )
+
+    monkeypatch.setattr(activity_api, "_tracker_for_source", lambda source: _Tracker())
+
+    snapshot = await activity_api.get_os_activity_snapshot("study_companion", now=12.5)
+
+    assert snapshot.os_signals_available is True
+    assert snapshot.foreground_category == "gaming"
+    assert snapshot.system_idle_seconds == 42.25
+    assert snapshot.privacy_state == "visible"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_privacy_and_unavailable_states(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _PrivateTracker:
+        async def get_snapshot(self, *, now: float | None = None):
+            return SimpleNamespace(
+                state="private",
+                active_window=SimpleNamespace(category="private"),
+                system_idle_seconds=7,
+                os_signals_available=True,
+            )
+
+    monkeypatch.setattr(activity_api, "_tracker_for_source", lambda source: _PrivateTracker())
+    private_snapshot = await activity_api.get_os_activity_snapshot("study_companion")
+    assert private_snapshot.privacy_state == "private"
+    assert private_snapshot.foreground_category == "private"
+
+    class _UnavailableTracker:
+        async def get_snapshot(self, *, now: float | None = None):
+            return SimpleNamespace(
+                state="idle",
+                active_window=SimpleNamespace(category="gaming"),
+                system_idle_seconds=7,
+                os_signals_available=False,
+            )
+
+    monkeypatch.setattr(activity_api, "_tracker_for_source", lambda source: _UnavailableTracker())
+    unavailable_snapshot = await activity_api.get_os_activity_snapshot("study_companion")
+    assert unavailable_snapshot.os_signals_available is False
+    assert unavailable_snapshot.foreground_category is None
+    assert unavailable_snapshot.system_idle_seconds is None
+    assert unavailable_snapshot.privacy_state == "unavailable"
 
 
 @pytest.mark.asyncio

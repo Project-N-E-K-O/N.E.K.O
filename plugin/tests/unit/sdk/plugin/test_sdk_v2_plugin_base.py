@@ -581,6 +581,8 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
         "neko_plugin",
         "plugin_entry",
         "plugin",
+        "OsActivitySnapshot",
+        "get_os_activity_snapshot",
         "PluginConfig",
         "Plugins",
         "PluginRouter",
