@@ -5264,6 +5264,7 @@ def _check_badminton_chat_rate(lanlan_name: str, session_id: str) -> bool:
 
 def _normalize_badminton_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
+    # timed/time_attack/HORSE modes were removed; unknown modes fall back to spectator.
     return mode if mode in {"spectator", "shooter", "duel"} else "spectator"
 
 
