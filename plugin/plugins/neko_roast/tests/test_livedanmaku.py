@@ -1,0 +1,200 @@
+"""Tests for LiveDanmaku.from_danmaku DANMU_MSG parsing.
+
+回归保护：历史 bug 把 ``info[7]``（大航海等级，普通 int）当作可下标列表，
+任意一条正常弹幕都会在 ``len(info[7])`` 抛 TypeError 并被 _dispatch_message 的
+except 吞掉，导致 on_event("DANMU_MSG") 永不触发（计数恒为 0）。同时 admin 只判了
+外层 len、未判内层长度，短 info[2] 会 IndexError。这些测试锁住真实结构解析。
+"""
+
+from __future__ import annotations
+
+import json
+
+from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import (
+    LiveDanmaku,
+    MessageType,
+)
+
+
+def _danmu(info: list, room_id: int = 81004) -> dict:
+    return {"cmd": "DANMU_MSG", "room_id": room_id, "info": info}
+
+
+def test_from_danmaku_full_payload_parses_without_error():
+    """完整正常弹幕（info[7] 为 int 大航海等级）不再抛 TypeError，且字段正确。"""
+    ld = LiveDanmaku.from_danmaku(
+        _danmu(
+            [
+                [0, 1, 25, 16777215, 1700000000000, 0, 0, "", 0, 0, 0],
+                "great stream!",
+                # 用户数组：admin=1, vip=0, svip=0
+                [123456, "CaptainUser", 1, 0, 0, 10000, 1, "#ff0000"],
+                # 粉丝牌：level, name, color, up_name, ?, anchor_roomid
+                [21, "MyMedal", 6126494, "UpName", 0, 22333],
+                [25],  # user_level
+                ["", ""],
+                0,
+                3,  # info[7] = guard_level (int) = 舰长
+                {"ts": 1700000000},
+            ]
+        )
+    )
+    assert ld.msg_type == MessageType.MSG_DANMAKU
+    assert ld.text == "great stream!"
+    assert ld.uid == 123456
+    assert ld.nickname == "CaptainUser"
+    assert ld.admin is True
+    assert ld.vip is False
+    assert ld.svip is False
+    assert ld.guard_level == 3
+    assert ld.user_level == 25
+    assert ld.medal is not None
+    assert ld.medal.name == "MyMedal"
+    assert ld.medal.level == 21
+    assert ld.fans_medal_name == "MyMedal"
+    assert ld.fans_medal_level == 21
+
+
+def test_from_danmaku_guard_level_is_plain_int():
+    """info[7] 是普通 int（大航海等级），不能当作列表下标。"""
+    for guard in (0, 1, 2, 3):
+        ld = LiveDanmaku.from_danmaku(
+            _danmu(
+                [
+                    [0, 1, 25],
+                    "hi",
+                    [111, "U", 0, 0, 0],
+                    [],
+                    [10],
+                    ["", ""],
+                    0,
+                    guard,
+                ]
+            )
+        )
+        assert ld.guard_level == guard
+
+
+def test_from_danmaku_short_user_array_no_index_error():
+    """短 info[2]（仅 uid+uname，无 admin 位）不应 IndexError，admin 安全降级 False。"""
+    ld = LiveDanmaku.from_danmaku(
+        _danmu(
+            [
+                [0, 1, 25, 16777215, 1700000000000],
+                "short danmaku",
+                [654321, "ShortUser"],  # 只有 2 个元素
+                [],
+                [25, 0, 0, 0, 0],
+                ["", ""],
+                0,
+                0,
+            ]
+        )
+    )
+    assert ld.text == "short danmaku"
+    assert ld.uid == 654321
+    assert ld.nickname == "ShortUser"
+    assert ld.admin is False
+    assert ld.guard_level == 0
+
+
+def test_from_danmaku_missing_index7_defaults_guard_zero():
+    """缺少 info[7]（稀疏 payload）时 guard_level 默认 0，不抛异常。"""
+    ld = LiveDanmaku.from_danmaku(
+        _danmu(
+            [
+                [0, 1, 25],
+                "no index7",
+                [777, "NoSeven", 0],
+            ]
+        )
+    )
+    assert ld.text == "no index7"
+    assert ld.uid == 777
+    assert ld.guard_level == 0
+    assert ld.admin is False
+
+
+def test_from_danmaku_vip_svip_from_user_array():
+    """vip/svip 来自用户数组 info[2][3]/[4]，而非 info[7]。"""
+    ld = LiveDanmaku.from_danmaku(
+        _danmu(
+            [
+                [0, 1, 25],
+                "vip msg",
+                [222, "VipUser", 0, 1, 1],  # vip=1, svip=1
+                [],
+                [30],
+                ["", ""],
+                0,
+                0,
+            ]
+        )
+    )
+    assert ld.vip is True
+    assert ld.svip is True
+    assert ld.admin is False
+
+
+def test_from_danmaku_face_url_empty():
+    """弹幕 payload 不携带头像 URL，face_url 必须为空（头像由 bili_identity 按 UID 抓取）。"""
+    ld = LiveDanmaku.from_danmaku(
+        _danmu(
+            [
+                [0, 1, 25],
+                "msg",
+                [333, "User", 0, 0, 0, 1, 1, "#abcdef"],
+                [],
+                [5],
+                ["", ""],
+                0,
+                0,
+            ]
+        )
+    )
+    assert ld.face_url == ""
+
+
+def test_from_raw_json_routes_danmu_msg():
+    """from_raw_json 兜底入口能正确路由 DANMU_MSG 到 from_danmaku。"""
+    raw = json.dumps(
+        _danmu(
+            [
+                [0, 1, 25],
+                "routed",
+                [444, "RoutedUser", 0, 0, 0],
+                [],
+                [12],
+                ["", ""],
+                0,
+                1,
+            ]
+        )
+    )
+    ld = LiveDanmaku.from_raw_json(raw)
+    assert ld is not None
+    assert ld.text == "routed"
+    assert ld.uid == 444
+    assert ld.guard_level == 1
+
+
+def test_from_danmaku_empty_info_is_safe():
+    """空 info 不抛异常，产出空文本的弹幕对象。"""
+    ld = LiveDanmaku.from_danmaku({"cmd": "DANMU_MSG", "info": []})
+    assert ld.text == ""
+    assert ld.uid == 0
+    assert ld.guard_level == 0
+
+
+def test_from_danmaku_score_reflects_guard_and_admin():
+    """get_score 应反映正确解析出的 guard_level 与 admin（验证字段确实进了打分）。"""
+    captain = LiveDanmaku.from_danmaku(
+        _danmu([[0, 1, 25], "x", [1, "Cap", 1, 0, 0], [], [50], ["", ""], 0, 3])
+    )
+    plain = LiveDanmaku.from_danmaku(
+        _danmu([[0, 1, 25], "x", [2, "Plain", 0, 0, 0], [], [1], ["", ""], 0, 0])
+    )
+    # 舰长(1000) + admin(500) + 高用户等级 应远高于普通观众
+    assert captain.get_score() > plain.get_score()
+    assert captain.guard_level == 3
+    assert captain.admin is True
