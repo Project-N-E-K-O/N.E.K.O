@@ -2256,7 +2256,7 @@ def get_badminton_quick_lines_prompt(lang: str | None = None, mode: str = "spect
 
 def get_badminton_quick_lines_user_prompt(lang: str | None = None, mode: str = "spectator") -> str:
     prompt = _localized_template(BADMINTON_QUICK_LINES_USER_PROMPT, lang)
-    mode_name = str(mode or "").strip().lower()
+    mode_name = _normalize_badminton_prompt_mode(mode)
     if mode_name and mode_name != "spectator":
         mode_label = "当前模式" if _normalize_prompt_lang(lang) == "zh" else "Current mode"
         return f"{prompt}\n{mode_label}: {mode_name}"

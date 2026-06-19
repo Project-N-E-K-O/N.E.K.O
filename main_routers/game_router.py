@@ -793,7 +793,7 @@ _BADMINTON_GAME_MEMORY_PAYLOAD_KEYS = {
 
 def _normalize_game_memory_type(game_type: str | None) -> str:
     game = str(game_type or "soccer").strip().lower()
-    if game == "badminton":
+    if game in _BADMINTON_GAME_TYPES:
         return "badminton"
     return "soccer"
 
@@ -1463,16 +1463,6 @@ _GAME_INTERNAL_ADVICE_RE = re.compile(
     re.IGNORECASE,
 )
 _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS = frozenset({
-    "badmintonGameMemoryEnabled",
-    "badminton_game_memory_enabled",
-    "badmintonGameMemoryPlayerInteractionEnabled",
-    "badminton_game_memory_player_interaction_enabled",
-    "badmintonGameMemoryEventReplyEnabled",
-    "badminton_game_memory_event_reply_enabled",
-    "badmintonGameMemoryArchiveEnabled",
-    "badminton_game_memory_archive_enabled",
-    "badmintonGameMemoryPostgameContextEnabled",
-    "badminton_game_memory_postgame_context_enabled",
     "badmintonGameMemoryEnabled",
     "badminton_game_memory_enabled",
     "badmintonGameMemoryPlayerInteractionEnabled",
@@ -2256,11 +2246,6 @@ def _build_route_state(
         "soccer_game_memory_event_reply_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "soccer_game_memory_archive_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "soccer_game_memory_postgame_context_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
-        "badminton_game_memory_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
-        "badminton_game_memory_player_interaction_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
-        "badminton_game_memory_event_reply_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
-        "badminton_game_memory_archive_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
-        "badminton_game_memory_postgame_context_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
         "badminton_game_memory_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
         "badminton_game_memory_player_interaction_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
         "badminton_game_memory_event_reply_enabled": _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
@@ -5984,10 +5969,6 @@ def _sanitize_badminton_event(event: Any) -> tuple[dict | None, str]:
         for key in keys:
             if key in event:
                 clean[key] = event.get(key) is True
-    for keys in _game_memory_payload_keys("badminton").values():
-        for key in keys:
-            if key in event:
-                clean[key] = event.get(key) is True
 
     result = str(event.get("result") or "").strip()
     duel_outcome = str(event.get("duel_outcome") or "").strip()
@@ -7328,12 +7309,6 @@ def _build_external_user_event(state: dict, text: str, *, kind: str, source: str
         "soccer_game_memory_player_interaction_enabled": player_interaction,
         "soccerGameMemoryEventReplyEnabled": event_reply,
         "soccer_game_memory_event_reply_enabled": event_reply,
-        "badmintonGameMemoryEnabled": master,
-        "badminton_game_memory_enabled": master,
-        "badmintonGameMemoryPlayerInteractionEnabled": player_interaction,
-        "badminton_game_memory_player_interaction_enabled": player_interaction,
-        "badmintonGameMemoryEventReplyEnabled": event_reply,
-        "badminton_game_memory_event_reply_enabled": event_reply,
         "gameMemoryEnabled": player_interaction,
         "game_memory_enabled": player_interaction,
         "gameMemoryPlayerInteractionEnabled": player_interaction,
