@@ -46,6 +46,10 @@ from main_logic.activity.system_signals import (
 )
 from main_logic.activity.tracker import UserActivityTracker
 from main_logic.activity.focus_scorer import FocusScore, FocusScorer
+from main_logic.activity.master_emotion import (
+    MasterEmotionReading,
+    MasterEmotionTracker,
+)
 
 __all__ = [
     'UserActivityTracker',
@@ -54,4 +58,5 @@ __all__ = [
     'format_activity_state_section', 'state_to_propensity',
     'SystemSignalCollector', 'SystemSnapshot', 'get_system_signal_collector',
     'FocusScore', 'FocusScorer',
+    'MasterEmotionReading', 'MasterEmotionTracker',
 ]

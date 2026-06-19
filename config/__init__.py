@@ -1811,17 +1811,53 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
+# ── Master 情绪画像（基建）─────────────────────────────────────────────
+# 用 emotion-tier 小模型即时分析「用户自己说的话」的情绪，产出二维 valence-arousal
+# 瞬时读数（效价 -1~+1、唤醒 0~1）。这是一条独立基建：单一权威源，凝神（FocusScorer
+# 的 emotion 信号）是第一个消费者，后续记忆/UI/主动反应可接同一个 state。绝不复用
+# lanlan 头像那条 outward-emotion 管线（那是角色的脸，不是用户的情绪）。privacy-
+# independent：输入是对话不是屏幕，不受隐私模式门控（同凝神，见 developer-notes 规则 6）。
+MASTER_EMOTION_ENABLED = True
+"""Master 情绪画像总开关（默认开）。
+- 用途：开 = 每条用户消息（节流后）异步跑一次 VA 情绪分析、更新瞬时读数；关掉则
+  不分析、读数恒空，凝神的 emotion 信号自动消失，退回 keyword+cadence。
+- 上游：_note_user_turn 的 fire-and-forget 触发；FocusScorer.emotion 信号的可用性。"""
+
+MASTER_EMOTION_MIN_INTERVAL_SEC = 6.0
+"""两次 VA 分析的最小间隔（秒），节流防连发消息打爆 emotion tier。
+- 用途：MasterEmotionTracker 内部按上次分析时间戳早退。
+- 调小 = 更即时但更费 token；调大 = 更省但读数更陈。"""
+
+MASTER_EMOTION_TIMEOUT_SEC = 8.0
+"""单次 VA 分析的 emotion-tier 调用超时（秒）。
+- 用途：传给 _invoke_emotion_tier 的 timeout；超时则本轮不更新读数、保留上一次。
+- 注意：用的是独立的 emotion tier 模型，不是主对话模型，所以不受 Gemini Live 慢拖累。"""
+
+MASTER_EMOTION_MAX_INPUT_CHARS = 500
+"""送进 VA 分析的用户文本上限（字符），超出截断。
+- 用途：情绪判断只需开头一段；截断防用户粘贴长文时把整段塞进 emotion tier
+  （token / 成本 / 输入预算）。
+- 上游：MasterEmotionTracker._invoke 拼 prompt 前截断。"""
+
+MASTER_EMOTION_READING_TTL_SEC = 120.0
+"""情绪读数的有效期（秒），超期视为过期、latest 返回 None。
+- 用途：emotion 信号能单轮独立触发凝神，若读数无限有效，长停顿后一条中性消息
+  会读到几分钟前的旧 distress 读数、误重入/维持 Focus。TTL 让陈旧读数失效，
+  正常对话（turn 间隔几秒~几十秒）不受影响。
+- 设 0 关闭老化。上游：MasterEmotionTracker.latest。"""
+
 # ── Focus mode 凝神 (docs/design/focus-truename-mode.md) ───────────────
 # 信号触发、用户无感的「这一轮开思考 + 换强模型」机制，兑现 90/10 产品命题
 # 里的 10% 神明降临。以下全是 A/B 可调旋钮，集中在此便于灰度调参；情绪关键词
 # 这类多语言词表按 i18n 规约放 config/prompts/prompts_focus.py，不在这里。
-FOCUS_MODE_ENABLED = False
-"""凝神总开关（默认关）。
-- 用途：关掉 = FocusScorer 永不评分、SM 永远停在 REGULAR，两条触发路径都退化回
-  常规（proactive 仍 disable_thinking、stream_text 不升档），逐字节零行为变化。
-- 默认关原因：阈值尚未用真实信号分布调过、且 thinking-on 的端到端行为（内联推理
-  文本在流式 content 里的泄露、各 provider 思考开销）未对真模型验证过。先 inert
-  落地，验证 + 调参后再按 provider opt-in 打开。详见 docs/design/focus-truename-mode.md。
+FOCUS_MODE_ENABLED = True
+"""凝神总开关（默认开）。
+- 用途：开 = FocusScorer 正常评分、SM 按累加电荷进入/退出 FOCUS，命中那一轮 inline
+  升档开思考、proactive 路径按情节冷却；关掉则两条触发路径都退化回常规
+  （proactive 仍 disable_thinking、stream_text 不升档），逐字节零行为变化。
+- 历史：曾默认关「先 inert 落地」，因阈值未用真实信号分布调过、且 thinking-on 的
+  端到端行为（内联推理文本在流式 content 里的泄露、各 provider 思考开销）未对真模型
+  验证过。现转默认开，进入真实信号实测 + 调参阶段。详见 docs/design/focus-truename-mode.md。
 - 上游：FocusScorer / SessionStateMachine 入口的早退判定。"""
 
 # ── 累积进入模型（leaky 累加器）─────────────────────────────────────
@@ -1890,14 +1926,24 @@ FOCUS_HARD_CAP_TURNS = 8
 FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
     "keyword": 0.45,      # 用户消息命中脆弱情绪词
     "cadence": 0.20,      # 回复字数相对基线骤跌
+    "emotion": 0.35,      # master 情绪画像：高唤醒 + 负效价（distress），见 MasterEmotionTracker
 }
 """FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
 - 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
-  keyword/cadence 都需要一条真实用户消息；样本不足时 cadence 返回 None、不进分母。
+- 信号语义分两类：
+  · keyword / emotion 是「distress 正证据」——无证据时返回 None、不进分母（不投反对
+    票）。于是 keyword 满分 或 emotion 满分**任一都能单轮独立触发**，不会被对方的「0」
+    在分母里互相稀释。这是有意的：emotion 是 keyword 词表的真模型升级，用词不在词表
+    但情绪强烈时应能独立把人拉进 FOCUS。
+  · cadence 是行为信号——它的 0.0（「字数没骤降」）是有信息的、照常进分母；只有样本
+    不足时返回 None。
+- emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
+  distress = arousal × max(0,-valence)。**滞后一拍**（画像异步算，inline 拿上一轮读数）；
+  MASTER_EMOTION_ENABLED 关或无读数/无 distress 时返回 None、自动退回 keyword+cadence。
 - idle（proactive）路径不评分：它只用 FOCUS_IDLE_SILENT/REPLIED_RETENTION 让 charge
   衰减，绝不抬升，故不在此表里（凝神的进入/维持只由 inline 驱动）。
 - 上游：各子信号各自归一化到 [0,1]。
-- 设计依据：keyword 是最强单信号故权重最高。改这里直接改触发性格，慎调。"""
+- 设计依据：keyword/emotion 是最强的两个情绪信号故权重最高。改这里直接改触发性格，慎调。"""
 
 FOCUS_KEYWORD_SATURATION = 3
 """脆弱情绪关键词命中数的饱和点。
