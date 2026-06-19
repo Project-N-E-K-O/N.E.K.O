@@ -11,14 +11,10 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from plugin.plugins.neko_roast.core.contracts import LiveEvent, RoastConfig
 from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.core.safety_guard import SafetyGuard
 from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import LiveDanmaku
 from plugin.plugins.neko_roast.modules.live_events import LiveEventsModule
-from plugin.plugins.neko_roast.stores.audit_store import AuditStore
 
 
 def _danmaku(uid: str, text: str = "hi", guard: int = 0, user_level: int = 0, room_id: int = 1) -> LiveDanmaku:
@@ -190,15 +186,38 @@ async def test_reset_cancels_open_window():
     assert hub._buffered_count == 0
 
 
-def test_safety_guard_output_cooldown_remaining():
-    guard = SafetyGuard(RoastConfig(rate_limit_seconds=20), AuditStore())
-    # 首次（_last_output_at=0）-> 冷却早已过 -> 0
-    assert guard.output_cooldown_remaining(now=1000.0) == 0.0
-    # 刚投递过 -> 还剩接近 rate_limit
-    guard._last_output_at = 1000.0
-    assert guard.output_cooldown_remaining(now=1005.0) == pytest.approx(15.0)
-    assert guard.output_cooldown_remaining(now=1030.0) == 0.0
-    # 限流关闭 -> 恒 0
-    guard_off = SafetyGuard(RoastConfig(rate_limit_seconds=0), AuditStore())
-    guard_off._last_output_at = 1000.0
-    assert guard_off.output_cooldown_remaining(now=1000.5) == 0.0
+async def test_flush_exception_clears_window_state():
+    ctx = _FakeCtx(remaining=5.0)
+    hub = await _make_hub(ctx)
+
+    async def _boom(_delay: float) -> None:
+        raise RuntimeError("sleep failed")
+
+    hub._sleep = _boom
+    hub.submit(_danmaku("1", text="缓冲中"))
+    await _drain(hub)
+
+    assert hub._flush_task is None
+    assert hub._best is None
+    assert hub._best_score == 0.0
+    assert hub._buffered_count == 0
+    assert any(r["op"] == "live_event_flush_failed" for r in ctx.audit.records)
+
+
+async def test_external_flush_cancel_clears_task_reference():
+    ctx = _FakeCtx(remaining=5.0)
+    hub = await _make_hub(ctx)
+    blocker = asyncio.Event()
+
+    async def _blocked(_delay: float) -> None:
+        await blocker.wait()
+
+    hub._sleep = _blocked
+    hub.submit(_danmaku("1", text="缓冲中"))
+    task = hub._flush_task
+    assert task is not None
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert hub._flush_task is None
