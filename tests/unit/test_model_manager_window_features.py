@@ -8,7 +8,8 @@ def test_avatar_model_manager_popup_opens_fullscreen():
     assert "screenRef.availWidth || screenRef.width" in source
     assert "screenRef.availHeight || screenRef.height" in source
     assert "features = buildAvatarFullscreenWindowFeatures();" in source
-    assert "openAndPauseMainUI(finalUrl, windowName, features);" in source
+    assert "openModelManagerWindow(finalUrl, windowName, features);" in source
+    assert "window.handleHideMainUI()" not in source
 
 
 def test_yui_model_manager_handoff_opens_fullscreen():
