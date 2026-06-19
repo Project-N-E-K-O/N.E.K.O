@@ -288,8 +288,7 @@
                 return;
             }
             syncRunIdFromStorage();
-            completeStateStore.applyPatch({ cursor: cursor });
-            const payload = { cursor: cursor };
+            const payload = completeStateStore.applyPatch({ cursor: cursor });
             if (!active) {
                 active = true;
                 const beginRunId = runId;

@@ -2580,6 +2580,8 @@
             this.preTakeoverGhostCursorLookAtHandle = null;
             this.guideIdleSwayHandle = null;
             this.takeoverTopPeekHandle = null;
+            this.takeoverOriginalAgentSwitches = null;
+            this.takeoverAgentSwitchRestorePromise = null;
             this.returnPetalTransitionActive = false;
             this.avatarFloatingGuideSuppressionActive = false;
             this.avatarFloatingGuideTutorialModeActive = false;
@@ -8467,6 +8469,67 @@
             }
         }
 
+        async captureDay1TakeoverAgentSwitches() {
+            if (this.takeoverOriginalAgentSwitches) {
+                return this.takeoverOriginalAgentSwitches;
+            }
+            const snapshot = await this.getAgentSwitchSnapshot();
+            this.takeoverOriginalAgentSwitches = snapshot || {
+                agentMaster: null,
+                keyboardControl: null,
+                userPlugin: null
+            };
+            return this.takeoverOriginalAgentSwitches;
+        }
+
+        async restoreDay1TakeoverAgentSwitches(reason) {
+            const snapshot = this.takeoverOriginalAgentSwitches;
+            if (!snapshot) {
+                return true;
+            }
+            if (this.takeoverAgentSwitchRestorePromise) {
+                return this.takeoverAgentSwitchRestorePromise;
+            }
+
+            this.takeoverAgentSwitchRestorePromise = (async () => {
+                const originalAgentMaster = typeof snapshot.agentMaster === 'boolean'
+                    ? snapshot.agentMaster
+                    : null;
+                const originalKeyboardControl = typeof snapshot.keyboardControl === 'boolean'
+                    ? snapshot.keyboardControl
+                    : null;
+                let restored = true;
+
+                try {
+                    if (originalAgentMaster === true) {
+                        restored = (await this.setAgentMasterEnabled(true)) && restored;
+                    }
+                    if (typeof originalKeyboardControl === 'boolean') {
+                        restored = (await this.setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)) && restored;
+                    }
+                    if (originalAgentMaster === false) {
+                        restored = (await this.setAgentMasterEnabled(false)) && restored;
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] 恢复 Day1 接管前 Agent 开关失败:', reason || 'restore', error);
+                    restored = false;
+                }
+
+                if (restored) {
+                    this.takeoverOriginalAgentSwitches = null;
+                }
+                return restored;
+            })();
+
+            try {
+                return await this.takeoverAgentSwitchRestorePromise;
+            } finally {
+                if (this.takeoverAgentSwitchRestorePromise) {
+                    this.takeoverAgentSwitchRestorePromise = null;
+                }
+            }
+        }
+
         async clickAgentSidePanelAction(toggleId, actionId, options) {
             const fallbackClick = async () => {
                 const button = await this.waitForAgentSidePanelActionVisible(toggleId, actionId, 1800);
@@ -10468,6 +10531,9 @@
 
         beginTerminationVisualCleanup() {
             this.sceneRunId += 1;
+            this.restoreDay1TakeoverAgentSwitches('termination_cleanup').catch((error) => {
+                console.warn('[YuiGuide] 终止时恢复 Day1 Agent 开关失败:', error);
+            });
             this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup').catch(() => {});
             this.takeoverTopPeekHandle = null;
             this.stopGuideIdleSwayPerformance('termination_cleanup').catch(() => {});
@@ -11542,6 +11608,9 @@
             this.destroyed = true;
             this.terminationRequested = true;
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
+                console.warn('[YuiGuide] 销毁时恢复 Day1 Agent 开关失败:', error);
+            });
             this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy').catch(() => {});
             this.takeoverTopPeekHandle = null;
             this.stopGuideIdleSwayPerformance('destroy').catch(() => {});

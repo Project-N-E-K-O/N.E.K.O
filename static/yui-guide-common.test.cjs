@@ -1133,6 +1133,13 @@ test('director exposes phase one guard and timing helpers for complex sequences'
     assert.match(launchBlock, /const guardFailed = \(\) => this\.isGuardFailed\(runId\);/);
     assert.match(captureBlock, /const scaleSceneMs = this\.createSceneScaler\(performance && performance\.voiceKey\);/);
     assert.match(captureBlock, /const guardFailed = \(\) => this\.isGuardFailed\(runId\);/);
+    assert.match(source, /this\.takeoverOriginalAgentSwitches = null;/);
+    assert.match(source, /async captureDay1TakeoverAgentSwitches\(\) \{/);
+    assert.match(source, /async restoreDay1TakeoverAgentSwitches\(reason\) \{/);
+    assert.match(source, /setAgentFlagEnabled\('computer_use_enabled', originalKeyboardControl\)/);
+    assert.match(source, /setAgentMasterEnabled\(false\)/);
+    assert.match(source, /restoreDay1TakeoverAgentSwitches\('termination_cleanup'\)/);
+    assert.match(source, /restoreDay1TakeoverAgentSwitches\('destroy'\)/);
 });
 
 test('director routes resistance interrupts through ResistanceController boundary', () => {
@@ -1468,7 +1475,7 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /this\.registerOperation\('day6-plugin-sidepanel-flow'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('rotate-galgame-tool-into-center'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\(\(context\) => \([\s\S]*context\.operation\.indexOf\('show-agent-sidepanel:'\) === 0[\s\S]*context\.scene\.activateSecondaryAction === true/);
-    assert.match(operationRegistryBlock, /this\.registerOperation\('cleanup',\s*\(\) => true\);/);
+    assert.match(operationRegistryBlock, /this\.registerOperation\('cleanup',\s*\(context\) => this\.runCleanup\(context\.scene\)\);/);
     assert.match(operationRegistryBlock, /this\.registerOperation\(\(context\) => \([\s\S]*!context\.operation[\s\S]*context\.operation === 'show-task-hud'[\s\S]*context\.operation\.indexOf\('show-settings-sidepanel:'\) === 0/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('settings-peek-panic'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\(\{ prefix: 'show-settings-menu:' \}/);
@@ -1486,6 +1493,10 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /async runDay2SettingsDetail\(\) \{/);
     assert.match(operationRegistryBlock, /async runDay4AnimationDistanceShowcase\(scene,\s*narrationStartedAt\) \{/);
     assert.match(operationRegistryBlock, /async runDay1TakeoverCaptureCursor\(scene\) \{/);
+    assert.match(operationRegistryBlock, /captureDay1TakeoverAgentSwitches/);
+    assert.match(operationRegistryBlock, /async runCleanup\(scene\) \{/);
+    assert.match(operationRegistryBlock, /sceneId === 'day1_takeover_return_control'/);
+    assert.match(operationRegistryBlock, /restoreDay1TakeoverAgentSwitches\('day1-return-control'\)/);
     assert.match(operationRegistryBlock, /async runDay6PluginOpenAgentPanelFlow\(scene\) \{/);
     assert.match(operationRegistryBlock, /async runDay6PluginOpenManagementPanelFlow\(scene\) \{/);
     assert.match(operationRegistryBlock, /async runDay6PluginDashboardHandoffFlow\(scene,\s*narrationStartedAt\) \{/);
@@ -2371,9 +2382,8 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
     assert.match(mainBridgeBlock, /sendCursorOnly\(cursor, true\)/);
     assert.match(mainBridgeBlock, /const sendCursorOnly = \(cursor, retried\) => \{/);
     assert.match(mainBridgeBlock, /const sendCursorOnly = \(cursor, retried\) => \{[\s\S]*syncRunIdFromStorage\(\);[\s\S]*completeStateStore\.applyPatch\(\{ cursor: cursor \}\)/);
-    assert.match(mainBridgeBlock, /completeStateStore\.applyPatch\(\{ cursor: cursor \}\);/);
-    assert.match(mainBridgeBlock, /const payload = \{ cursor: cursor \};/);
-    assert.doesNotMatch(mainBridgeBlock, /const patch = \{ cursor: cursor \};\s*const payload = completeStateStore\.applyPatch\(patch\);/);
+    assert.match(mainBridgeBlock, /const payload = completeStateStore\.applyPatch\(\{ cursor: cursor \}\);/);
+    assert.doesNotMatch(mainBridgeBlock, /const payload = \{ cursor: cursor \};/);
     assert.match(mainBridgeBlock, /handleCursorOnlyStaleResult\(result, cursor, retried === true, updateRunId\)/);
 });
 

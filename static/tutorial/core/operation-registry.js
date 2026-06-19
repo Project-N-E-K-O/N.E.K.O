@@ -94,7 +94,7 @@
                 && context.scene
                 && context.scene.activateSecondaryAction === true
             ), (context) => this.runShowAgentSidePanelAction(context.scene, context.operation));
-            this.registerOperation('cleanup', () => true);
+            this.registerOperation('cleanup', (context) => this.runCleanup(context.scene));
             this.registerOperation((context) => (
                 !context.operation
                 || context.operation === 'show-task-hud'
@@ -255,6 +255,9 @@
 
         async runDay1TakeoverCaptureCursor(scene) {
             const director = this.director;
+            if (typeof director.captureDay1TakeoverAgentSwitches === 'function') {
+                await director.captureDay1TakeoverAgentSwitches();
+            }
             const step = director.getStep('takeover_capture_cursor') || {
                 anchor: scene.target || '',
                 performance: {}
@@ -265,6 +268,18 @@
                 emotion: scene.emotion || (step.performance && step.performance.emotion) || ''
             });
             return await director.runTakeoverKeyboardControlSequence(step, performance, director.sceneRunId);
+        }
+
+        async runCleanup(scene) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            if (
+                sceneId === 'day1_takeover_return_control'
+                && this.director
+                && typeof this.director.restoreDay1TakeoverAgentSwitches === 'function'
+            ) {
+                await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');
+            }
+            return true;
         }
 
         async runDay6PluginOpenAgentPanelFlow(scene) {

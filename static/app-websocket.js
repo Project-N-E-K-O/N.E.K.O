@@ -3330,7 +3330,10 @@
                 } catch (_) { greetingLang = ''; }
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                sendHomeTutorialState('greeting-check-ready');
+                var homeTutorialStateReason = isTutorialReleaseGreetingReason(greetingReason)
+                    ? greetingReason
+                    : 'greeting-check-ready';
+                sendHomeTutorialState(homeTutorialStateReason);
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
