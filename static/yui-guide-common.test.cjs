@@ -1995,12 +1995,13 @@ test('return petal transition cancels immediately when tutorial is skipped', () 
     assert.match(finishBlock, /const completed = await this\.cancelWhenStopped\(transition\.done\(\)\);/);
     assert.match(finishBlock, /if \(completed === false\) \{[\s\S]*transition\.finish\(\);[\s\S]*return;/);
     assert.match(executeBlock, /const loadedPetalSequence = await this\.cancelWhenStopped\(petalSequencePromise\);/);
-    assert.match(executeBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*await finishTransition\(transition\);[\s\S]*return;/);
+    assert.match(executeBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*await this\.finishTransition\(transition\);[\s\S]*return;/);
     assert.match(cancelledFinishBlock, /transition\.finish\(\);/);
     assert.match(cancelledFinishBlock, /return;/);
     assert.doesNotMatch(cancelledFinishBlock, /transition\.done\(\)/);
     assert.match(executeBlock, /if \(this\.isCancelled\(\)\) \{[\s\S]*?return;/);
-    assert.match(executeBlock, /await finishTransition\(transition\);/);
+    assert.match(executeBlock, /await this\.finishTransition\(transition\);/);
+    assert.doesNotMatch(executeBlock, /await finishTransition\(transition\);/);
 });
 
 test('avatar floating auto-start rechecks pending state before delayed launch', () => {

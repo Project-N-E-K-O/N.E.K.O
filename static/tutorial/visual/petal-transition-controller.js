@@ -300,7 +300,7 @@
                     fadePromise = this.cancelWhenStopped(fadeModelOut(baseTransitionDurationMs));
                     const loadedPetalSequence = await this.cancelWhenStopped(petalSequencePromise);
                     if (this.isCancelled()) {
-                        await finishTransition(transition);
+                        await this.finishTransition(transition);
                         return;
                     }
                     if (loadedPetalSequence) {
@@ -314,7 +314,7 @@
                 } else {
                     const loadedPetalSequence = await this.cancelWhenStopped(petalSequencePromise);
                     if (this.isCancelled()) {
-                        await finishTransition(transition);
+                        await this.finishTransition(transition);
                         return;
                     }
                     transition = createReturnPetalTransition(origin, {
