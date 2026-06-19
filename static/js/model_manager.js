@@ -10569,8 +10569,3 @@ window.addEventListener('beforeunload', (e) => {
     }
 
 });
-
-// 确保在页面关闭时也恢复主界面
-window.addEventListener('unload', () => {
-    // 页面卸载时不需要再次发送消息
-});
