@@ -2803,9 +2803,7 @@
                     preserveDuringResistance: preserveSpotlightDuringResistance,
                     pcOverlayRunId: getYuiGuidePcOverlayRunIdFromMessage(message)
                 });
-                if (!preserveSpotlightDuringResistance) {
-                    scheduleYuiGuideChatInputSpotlightRetry(message.kind || '', getYuiGuidePcOverlayRunIdFromMessage(message));
-                }
+                scheduleYuiGuideChatInputSpotlightRetry(message.kind || '', getYuiGuidePcOverlayRunIdFromMessage(message));
                 return true;
             }
             case 'yui_guide_set_chat_cursor': {
@@ -3232,9 +3230,7 @@
                             preserveDuringResistance: preserveSpotlightDuringResistance,
                             pcOverlayRunId: spotlightRunId
                         });
-                        if (!preserveSpotlightDuringResistance) {
-                            scheduleYuiGuideChatInputSpotlightRetry(event.data.kind || '', spotlightRunId);
-                        }
+                        scheduleYuiGuideChatInputSpotlightRetry(event.data.kind || '', spotlightRunId);
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
@@ -3678,15 +3674,23 @@
     }
 
     function getYuiGuidePcOverlayRunId() {
+        var storedRunId = readStoredYuiGuidePcOverlayRunId();
+        if (storedRunId) {
+            if (storedRunId !== yuiGuidePcOverlayRunIdOverride) {
+                yuiGuidePcOverlayRunIdOverride = storedRunId;
+                yuiGuidePcOverlayActive = false;
+                yuiGuidePcOverlayReady = false;
+            }
+            return storedRunId;
+        }
         if (yuiGuidePcOverlayRunIdOverride) {
-            return yuiGuidePcOverlayRunIdOverride;
+            if (isYuiGuidePcOverlayRunEnded(yuiGuidePcOverlayRunIdOverride)) {
+                yuiGuidePcOverlayRunIdOverride = '';
+            } else {
+                return yuiGuidePcOverlayRunIdOverride;
+            }
         }
         try {
-            var storedRunId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
-            if (storedRunId) {
-                yuiGuidePcOverlayRunIdOverride = storedRunId;
-                return storedRunId;
-            }
             var nextRunId = 'yui-guide-chat-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
             window.localStorage.setItem('yuiGuidePcOverlayRunId', nextRunId);
             yuiGuidePcOverlayRunIdOverride = nextRunId;
@@ -3698,14 +3702,22 @@
     }
 
     function getExistingYuiGuidePcOverlayRunId() {
+        var storedRunId = readStoredYuiGuidePcOverlayRunId();
+        if (storedRunId) {
+            if (storedRunId !== yuiGuidePcOverlayRunIdOverride) {
+                yuiGuidePcOverlayRunIdOverride = storedRunId;
+                yuiGuidePcOverlayActive = false;
+                yuiGuidePcOverlayReady = false;
+            }
+            return storedRunId;
+        }
         if (yuiGuidePcOverlayRunIdOverride) {
-            return yuiGuidePcOverlayRunIdOverride;
+            if (!isYuiGuidePcOverlayRunEnded(yuiGuidePcOverlayRunIdOverride)) {
+                return yuiGuidePcOverlayRunIdOverride;
+            }
+            yuiGuidePcOverlayRunIdOverride = '';
         }
-        try {
-            return window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
-        } catch (_) {
-            return '';
-        }
+        return '';
     }
 
     function isYuiGuidePcOverlayRunEnded(runId) {
@@ -3716,10 +3728,57 @@
         return typeof runId === 'string' && runId.indexOf('yui-guide-chat-') === 0;
     }
 
+    function readStoredYuiGuidePcOverlayRunId() {
+        try {
+            var storedRunId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+            if (storedRunId && isYuiGuidePcOverlayRunEnded(storedRunId)) {
+                window.localStorage.removeItem('yuiGuidePcOverlayRunId');
+                return '';
+            }
+            return storedRunId;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function syncYuiGuidePcOverlayRunIdFromStorage() {
+        var storedRunId = readStoredYuiGuidePcOverlayRunId();
+        if (!storedRunId || storedRunId === yuiGuidePcOverlayRunIdOverride) {
+            return false;
+        }
+        yuiGuidePcOverlayRunIdOverride = storedRunId;
+        yuiGuidePcOverlayActive = false;
+        yuiGuidePcOverlayReady = false;
+        return true;
+    }
+
     function rememberYuiGuidePcOverlayRunId(runId) {
         var normalizedRunId = typeof runId === 'string' && runId ? runId : '';
-        if (!normalizedRunId || isYuiGuidePcOverlayRunEnded(normalizedRunId)) {
+        if (!normalizedRunId) {
             return '';
+        }
+        if (isYuiGuidePcOverlayRunEnded(normalizedRunId)) {
+            if (yuiGuidePcOverlayRunIdOverride === normalizedRunId) {
+                yuiGuidePcOverlayRunIdOverride = '';
+            }
+            try {
+                if (window.localStorage.getItem('yuiGuidePcOverlayRunId') === normalizedRunId) {
+                    window.localStorage.removeItem('yuiGuidePcOverlayRunId');
+                }
+            } catch (_) {}
+            return '';
+        }
+        var storedRunId = readStoredYuiGuidePcOverlayRunId();
+        if (
+            storedRunId
+            && storedRunId !== normalizedRunId
+            && yuiGuidePcOverlayRunIdOverride
+            && yuiGuidePcOverlayRunIdOverride !== normalizedRunId
+        ) {
+            yuiGuidePcOverlayRunIdOverride = storedRunId;
+            yuiGuidePcOverlayActive = false;
+            yuiGuidePcOverlayReady = false;
+            return storedRunId;
         }
         try {
             window.localStorage.setItem('yuiGuidePcOverlayRunId', normalizedRunId);
@@ -3775,8 +3834,31 @@
         ) {
             return;
         }
+        if (syncYuiGuidePcOverlayRunIdFromStorage()) {
+            sendYuiGuidePcOverlayPatch(patch || {}, true);
+            return;
+        }
         resetYuiGuidePcOverlayRunForRetry();
         sendYuiGuidePcOverlayPatch(patch || {}, true);
+    }
+
+    function resolveYuiGuidePcOverlayRunIdForSend(requestedRunId, allowCreateRun) {
+        var normalizedRequestedRunId = typeof requestedRunId === 'string' && requestedRunId
+            ? requestedRunId
+            : '';
+        var storedRunId = readStoredYuiGuidePcOverlayRunId();
+        if (storedRunId && storedRunId !== normalizedRequestedRunId) {
+            yuiGuidePcOverlayRunIdOverride = storedRunId;
+            yuiGuidePcOverlayActive = false;
+            yuiGuidePcOverlayReady = false;
+            return storedRunId;
+        }
+        if (normalizedRequestedRunId) {
+            return rememberYuiGuidePcOverlayRunId(normalizedRequestedRunId);
+        }
+        return allowCreateRun === false
+            ? getExistingYuiGuidePcOverlayRunId()
+            : getYuiGuidePcOverlayRunId();
     }
 
     function nextYuiGuidePcOverlaySequence() {
@@ -3888,9 +3970,10 @@
         } else {
             payload.cursor = yuiGuidePcOverlayCursor;
         }
-        var runId = typeof sendOptions.tutorialRunId === 'string' && sendOptions.tutorialRunId
-            ? sendOptions.tutorialRunId
-            : (sendOptions.allowCreateRun === false ? getExistingYuiGuidePcOverlayRunId() : getYuiGuidePcOverlayRunId());
+        var runId = resolveYuiGuidePcOverlayRunIdForSend(
+            sendOptions.tutorialRunId,
+            sendOptions.allowCreateRun
+        );
         if (!runId || isYuiGuidePcOverlayRunEnded(runId)) {
             return false;
         }
@@ -4122,6 +4205,68 @@
         };
     }
 
+    function getYuiGuideCompactToolWheelCenterPoint() {
+        var fan = getYuiGuideChatVisibleElement('#react-chat-window-root .compact-input-tool-fan')
+            || getYuiGuideChatVisibleElement('.compact-input-tool-fan');
+        var rect = fan && typeof fan.getBoundingClientRect === 'function'
+            ? fan.getBoundingClientRect()
+            : null;
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            return null;
+        }
+        var style = window.getComputedStyle ? window.getComputedStyle(fan) : null;
+        var readPixelVar = function (name, fallback) {
+            var rawValue = style ? String(style.getPropertyValue(name) || '').trim() : '';
+            var parsedValue = Number.parseFloat(rawValue);
+            return Number.isFinite(parsedValue) ? parsedValue : fallback;
+        };
+        return {
+            x: rect.left + readPixelVar('--compact-tool-wheel-center-x', 116),
+            y: rect.top + readPixelVar('--compact-tool-wheel-center-y', 116)
+        };
+    }
+
+    function buildYuiGuideChatCursorArcMotion(kind, options) {
+        var normalizedOptions = options || {};
+        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind, normalizedOptions);
+        var center = kind === 'galgame'
+            ? getYuiGuideCompactToolWheelCenterPoint()
+            : getYuiGuideChatCursorTargetPoint(kind, normalizedOptions);
+        if (!center) {
+            center = getYuiGuideChatCursorTargetPoint(kind, normalizedOptions);
+        }
+        if (!start || !center) {
+            return null;
+        }
+        var radius = Math.hypot(start.x - center.x, start.y - center.y);
+        if (!Number.isFinite(radius) || radius < 4) {
+            return null;
+        }
+        var direction = Number(normalizedOptions.direction) < 0 ? -1 : 1;
+        var fraction = Number.isFinite(Number(normalizedOptions.fraction))
+            ? Math.max(0, Math.min(1, Number(normalizedOptions.fraction)))
+            : 0.2;
+        var totalAngle = direction * Math.PI * 2 * fraction;
+        var startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+        var stepCount = Number.isFinite(Number(normalizedOptions.stepCount))
+            ? Math.max(2, Math.floor(Number(normalizedOptions.stepCount)))
+            : 8;
+        var points = [];
+        for (var index = 1; index <= stepCount; index += 1) {
+            var progress = index / stepCount;
+            var angle = startAngle + totalAngle * progress;
+            points.push({
+                x: center.x + Math.cos(angle) * radius,
+                y: center.y + Math.sin(angle) * radius
+            });
+        }
+        return {
+            start: start,
+            points: points,
+            finalPoint: points[points.length - 1]
+        };
+    }
+
     function ensureYuiGuideChatCursorElement() {
         var cursor = document.getElementById('yui-guide-chat-cursor');
         if (cursor) return cursor;
@@ -4312,33 +4457,50 @@
 
     function applyYuiGuideChatCursorArc(kind, options) {
         yuiGuideChatCursorRequestToken = yuiGuideChatCursorRequestToken + 1;
+        var cursorRequestToken = yuiGuideChatCursorRequestToken;
         var arcRequestToken = ++yuiGuideChatCursorArcRequestToken;
-        var start = yuiGuideChatCursorPoint || getYuiGuideChatCursorTargetPoint(kind, options || {});
-        var center = getYuiGuideChatCursorTargetPoint(kind, options || {});
-        if (!start || !center) return false;
-        var direction = Number(options && options.direction) < 0 ? -1 : 1;
-        var fraction = Number.isFinite(Number(options && options.fraction)) ? Math.max(0, Math.min(1, Number(options.fraction))) : 0.2;
-        var angle = direction * Math.PI * 2 * fraction;
-        var dx = start.x - center.x;
-        var dy = start.y - center.y;
-        var finalPoint = {
-            x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle),
-            y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle)
-        };
-        var moved = moveYuiGuideChatCursor(kind, finalPoint, options || {});
-        if (moved) {
-            var finalScreenPoint = toYuiGuideScreenPoint(finalPoint.x, finalPoint.y);
-            var duration = options && Number.isFinite(Number(options.durationMs))
-                ? Math.max(0, Math.floor(Number(options.durationMs)))
-                : 240;
+        var motion = buildYuiGuideChatCursorArcMotion(kind, options || {});
+        if (!motion || !motion.finalPoint || motion.points.length === 0) return false;
+        var duration = options && Number.isFinite(Number(options.durationMs))
+            ? Math.max(0, Math.floor(Number(options.durationMs)))
+            : 240;
+        var effectDurationMs = options && Number.isFinite(Number(options.effectDurationMs))
+            ? Math.max(0, Math.floor(Number(options.effectDurationMs)))
+            : duration;
+        var startMoved = moveYuiGuideChatCursor(kind, motion.start, Object.assign({}, options || {}, {
+            durationMs: 0,
+            effect: options && typeof options.effect === 'string' ? options.effect : '',
+            effectDurationMs: effectDurationMs
+        }));
+        if (!startMoved) {
+            return false;
+        }
+        var segmentDuration = Math.max(0, Math.round(duration / motion.points.length));
+        motion.points.forEach(function (point, index) {
             window.setTimeout(function () {
-                if (arcRequestToken !== yuiGuideChatCursorArcRequestToken) {
+                if (
+                    arcRequestToken !== yuiGuideChatCursorArcRequestToken
+                    || cursorRequestToken !== yuiGuideChatCursorRequestToken
+                ) {
                     return;
                 }
-                rememberYuiGuideChatCursorScreenPoint(finalScreenPoint, kind, options || {}, true);
-            }, duration);
-        }
-        return moved;
+                moveYuiGuideChatCursor(kind, point, Object.assign({}, options || {}, {
+                    durationMs: segmentDuration,
+                    effectDurationMs: effectDurationMs
+                }));
+            }, index * segmentDuration);
+        });
+        var finalScreenPoint = toYuiGuideScreenPoint(motion.finalPoint.x, motion.finalPoint.y);
+        window.setTimeout(function () {
+            if (
+                arcRequestToken !== yuiGuideChatCursorArcRequestToken
+                || cursorRequestToken !== yuiGuideChatCursorRequestToken
+            ) {
+                return;
+            }
+            rememberYuiGuideChatCursorScreenPoint(finalScreenPoint, kind, options || {}, true);
+        }, duration);
+        return true;
     }
 
     function clearYuiGuideChatSpotlightTracking() {
@@ -4410,6 +4572,18 @@
                 }
             }, delayMs);
         });
+    }
+
+    function ensureYuiGuideChatSpotlightTracking(pcOverlayRunId) {
+        if (typeof pcOverlayRunId === 'string' && pcOverlayRunId) {
+            yuiGuideChatSpotlightPcOverlayRunId = pcOverlayRunId;
+        }
+        if (!yuiGuideChatSpotlightKind || yuiGuideChatSpotlightTimer) {
+            return;
+        }
+        yuiGuideChatSpotlightTimer = yuiGuideChatSpotlightResources.setInterval(function () {
+            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, yuiGuideChatSpotlightPcOverlayRunId);
+        }, 120);
     }
 
     function updateYuiGuideChatSpotlight(kind, pcOverlayRunId) {
@@ -4485,9 +4659,13 @@
             yuiGuideChatSpotlightPcOverlayRunId = pcOverlayRunId;
         }
         if (normalizedKind && options && options.preserveDuringResistance === true) {
+            if (yuiGuideChatSpotlightKind && yuiGuideChatSpotlightKind !== normalizedKind) {
+                clearYuiGuideChatSpotlightTracking();
+            }
             yuiGuideChatSpotlightKind = normalizedKind;
-            clearYuiGuideChatSpotlightTracking();
             preserveYuiGuideChatSpotlightDuringResistance(normalizedKind, pcOverlayRunId);
+            scheduleYuiGuideChatInputSpotlightRetry(normalizedKind, pcOverlayRunId);
+            ensureYuiGuideChatSpotlightTracking(pcOverlayRunId);
             return;
         }
         if (
@@ -4499,6 +4677,7 @@
             && yuiGuideChatSpotlightLastPcRects.length > 0
         ) {
             updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);
+            ensureYuiGuideChatSpotlightTracking(pcOverlayRunId);
             return;
         }
         yuiGuideChatSpotlightKind = normalizedKind;
@@ -4522,9 +4701,7 @@
         }
 
         updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);
-        yuiGuideChatSpotlightTimer = yuiGuideChatSpotlightResources.setInterval(function () {
-            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId);
-        }, 120);
+        ensureYuiGuideChatSpotlightTracking(pcOverlayRunId);
     }
 
     function applyYuiGuideChatCursorRelay(message) {
@@ -4572,6 +4749,12 @@
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
         yuiGuidePcOverlayRunIdOverride = '';
+        yuiGuidePcOverlaySpotlights = [];
+        yuiGuidePcOverlayCursor = null;
+        clearYuiGuideChatPcSpotlightRects();
+        try {
+            window.localStorage.removeItem('yuiGuidePcOverlayRunId');
+        } catch (_) {}
         yuiGuideChatCursorRequestToken += 1;
         yuiGuideChatCursorArcRequestToken += 1;
         yuiGuideCompactToolWheelRotateRetryToken += 1;

@@ -607,7 +607,7 @@ _YUI_RUNTIME_SCRIPTS = (
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/steps.js",
-    "tutorial/yui-guide/avatar-standin.js",
+    "tutorial/avatar/yui-standin.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
     "avatar-performance-stage.js",
@@ -656,7 +656,7 @@ def test_home_template_loads_yui_wakeup_before_director():
     positions = [
         _script_tag_position(source, name)
         for name in (
-            "tutorial/yui-guide/avatar-standin.js",
+            "tutorial/avatar/yui-standin.js",
             "tutorial/yui-guide/overlay.js",
             "tutorial/yui-guide/page-handoff.js",
             "avatar-performance-stage.js",
@@ -1047,7 +1047,7 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/tutorial/core/operation-registry.js" in tracked_paths
     assert "static/tutorial/visual/resistance-controllers.js" in tracked_paths
     assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
-    assert "static/tutorial/yui-guide/avatar-standin.js" in tracked_paths
+    assert "static/tutorial/avatar/yui-standin.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
 
 

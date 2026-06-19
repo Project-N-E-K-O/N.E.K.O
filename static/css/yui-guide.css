@@ -129,7 +129,7 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   inset: 0;
   pointer-events: auto;
   background: transparent;
-  cursor: none !important;
+  cursor: auto !important;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -790,7 +790,7 @@ body.yui-taking-over .yui-guide-bubble,
 body.yui-taking-over .yui-guide-preview,
 body.yui-taking-over .yui-guide-preview-card,
 body.yui-taking-over [data-yui-cursor-hidden="true"] {
-  cursor: none !important;
+  cursor: auto !important;
 }
 
 body.yui-taking-over #neko-tutorial-skip-btn,
@@ -861,13 +861,13 @@ body.yui-taking-over #vrm-canvas,
 body.yui-taking-over #mmd-container,
 body.yui-taking-over #mmd-canvas {
   pointer-events: none !important;
-  cursor: none !important;
+  cursor: auto !important;
 }
 
 body.yui-guide-home-ui-suppressed #react-chat-window-drag-handle,
 body.yui-taking-over #react-chat-window-drag-handle {
   pointer-events: none !important;
-  cursor: none !important;
+  cursor: auto !important;
 }
 
 .yui-guide-overlay.is-angry .yui-guide-cursor {

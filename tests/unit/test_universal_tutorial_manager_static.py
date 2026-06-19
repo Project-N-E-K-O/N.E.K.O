@@ -53,6 +53,40 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
     assert "notifyYuiGuideStepLeave" not in source
 
 
+def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model():
+    source = _read_manager()
+
+    assert "getTutorialLive2dCurrentModel(manager = window.live2dManager || null)" in source
+    assert "hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null)" in source
+    assert "throw new Error('tutorial_yui_live2d_model_missing_after_load');" in source
+
+    renderable_block = source.split(
+        "    hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null) {",
+        1,
+    )[1].split(
+        "    async ensureTutorialYuiLive2dVisible(reason = '') {",
+        1,
+    )[0]
+    visible_block = source.split(
+        "    async ensureTutorialYuiLive2dVisible(reason = '') {",
+        1,
+    )[1].split(
+        "    isLive2dModelLoadBusy() {",
+        1,
+    )[0]
+
+    assert "const model = this.getTutorialLive2dCurrentModel(manager);" in renderable_block
+    assert "return !!(manager && model && app && app.stage && app.renderer);" in renderable_block
+    assert "const activeByPath = this.isTutorialYuiLive2dActive();" in visible_block
+    assert "if (activeByPath && this.hasTutorialYuiLive2dRenderableModel()) {" in visible_block
+    assert "const placementReady = await this.applyTutorialLive2dViewportPlacement();" in visible_block
+    assert "if (placementReady) {" in visible_block
+    assert "YUI 临时模型路径已激活但视觉对象不可用" in visible_block
+    assert "YUI 临时模型需要重新加载以恢复视觉对象" in visible_block
+    assert "&& this.hasTutorialYuiLive2dRenderableModel()" in visible_block
+    assert "&& placementReady === true;" in visible_block
+
+
 def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():
     source = _read_manager()
 

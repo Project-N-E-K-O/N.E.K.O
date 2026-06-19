@@ -1613,10 +1613,14 @@ class UniversalTutorialManager {
             suppressInitialIdle: true,
             suppressPersistentExpressions: true
         });
+        const loadedModel = this.getTutorialLive2dCurrentModel(window.live2dManager);
+        if (!loadedModel) {
+            throw new Error('tutorial_yui_live2d_model_missing_after_load');
+        }
         await this.applyTutorialLive2dViewportPlacement();
         if (window.LanLan1) {
-            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+            window.LanLan1.live2dModel = loadedModel;
+            window.LanLan1.currentModel = loadedModel;
         }
         if (typeof window.showLive2d === 'function') {
             window.showLive2d();
@@ -1640,22 +1644,51 @@ class UniversalTutorialManager {
             || modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME;
     }
 
+    getTutorialLive2dCurrentModel(manager = window.live2dManager || null) {
+        if (!manager) {
+            return null;
+        }
+        if (typeof manager.getCurrentModel === 'function') {
+            return manager.getCurrentModel();
+        }
+        return manager.currentModel || null;
+    }
+
+    hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null) {
+        const app = manager && manager.pixi_app;
+        const model = this.getTutorialLive2dCurrentModel(manager);
+        return !!(manager && model && app && app.stage && app.renderer);
+    }
+
     async ensureTutorialYuiLive2dVisible(reason = '') {
         this.revealTutorialLive2dPrepared();
-        if (this.isTutorialYuiLive2dActive()) {
+        const activeByPath = this.isTutorialYuiLive2dActive();
+        if (activeByPath && this.hasTutorialYuiLive2dRenderableModel()) {
             this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');
-            await this.applyTutorialLive2dViewportPlacement();
-            return true;
+            const placementReady = await this.applyTutorialLive2dViewportPlacement();
+            if (placementReady) {
+                return true;
+            }
+            console.warn('[Tutorial] YUI 临时模型路径已激活但布局不可用，重新加载:', reason || 'unknown');
+        } else if (activeByPath) {
+            console.warn('[Tutorial] YUI 临时模型路径已激活但视觉对象不可用，重新加载:', reason || 'unknown');
         }
 
-        console.warn('[Tutorial] YUI 临时模型未处于激活状态，尝试直接加载:', reason || 'unknown');
+        console.warn(
+            activeByPath
+                ? '[Tutorial] YUI 临时模型需要重新加载以恢复视觉对象:'
+                : '[Tutorial] YUI 临时模型未处于激活状态，尝试直接加载:',
+            reason || 'unknown'
+        );
         await this.loadTemporaryTutorialLive2dModel({
             live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME
         });
         this.revealTutorialLive2dPrepared();
         this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load');
-        await this.applyTutorialLive2dViewportPlacement();
-        return this.isTutorialYuiLive2dActive();
+        const placementReady = await this.applyTutorialLive2dViewportPlacement();
+        return this.isTutorialYuiLive2dActive()
+            && this.hasTutorialYuiLive2dRenderableModel()
+            && placementReady === true;
     }
 
     isLive2dModelLoadBusy() {

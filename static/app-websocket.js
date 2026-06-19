@@ -629,14 +629,17 @@
         return false;
     }
 
+    function isTutorialReleaseGreetingReason(reason) {
+        var normalizedReason = String(reason || '').trim().toLowerCase();
+        return normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped';
+    }
+
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        if (isNewUserIcebreakerPeriodActive()) return true;
         var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
-        if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
-            && !hasCompletedNewUserIcebreaker()) {
-            return true;
+        if (isTutorialReleaseGreetingReason(normalizedReason)) {
+            return false;
         }
-        return false;
+        return isNewUserIcebreakerPeriodActive();
     }
 
     function sendHomeTutorialState(reason) {
@@ -3283,7 +3286,8 @@
         S._greetingCheckReason = reason || '';
     }
     function _consumeGreetingCheckForNewUserIcebreaker() {
-        if (!isNewUserIcebreakerBlockingGreeting()) return false;
+        if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;
+        if (!isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)) return false;
         sendHomeTutorialState('greeting-check-consumed-by-icebreaker');
         S._greetingCheckPending = false;
         S._greetingCheckIsSwitch = false;

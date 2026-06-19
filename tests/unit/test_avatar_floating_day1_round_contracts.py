@@ -211,7 +211,7 @@ def test_day3_round_targets_new_compact_tool_flow():
     assert "avatar_floating_day3_avatar_tools_more" not in round_block
     assert "show-galgame-in-compact-tool-fan" not in round_block
     assert "cursorAction: 'wobble'" not in round_block
-    assert "target: 'chat-input'" in intro_block
+    assert "target: 'chat-capsule-input'" in intro_block
     assert "cursorAction: 'move'" in intro_block
     assert "operation: 'open-compact-tool-fan'" not in intro_block
     assert "persistent: 'chat-tool-toggle'" in avatar_tools_block

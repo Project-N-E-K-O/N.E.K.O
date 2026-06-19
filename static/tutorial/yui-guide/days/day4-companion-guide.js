@@ -36,7 +36,7 @@
                     voiceKey: 'avatar_floating_day4_intro',
                     text: '今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-capsule-input',
                     cursorAction: 'move'
                 },
                 {
@@ -57,6 +57,7 @@
                     target: 'settings-sidepanel:chat-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:chat-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {
