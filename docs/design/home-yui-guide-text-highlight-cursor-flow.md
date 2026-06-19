@@ -12,14 +12,14 @@
 
 ## 当前首页顺序
 
-首页主线顺序来自 `HOME_SCENE_ORDER`：
+首页主线顺序来自 `day1 round scenes`：
 
 ```text
-intro_basic
-takeover_capture_cursor
-takeover_plugin_preview
-takeover_settings_peek
-takeover_return_control
+day1_intro_basic_voice
+day1_takeover_capture_cursor
+day6_plugin_dashboard_flow
+day2_settings_round_scene
+day1_takeover_return_control
 ```
 
 `interrupt_resist_light` 和 `interrupt_angry_exit` 是教程期间的打断分支，不属于正常主线，但可能插入任意 takeover 场景。
@@ -84,7 +84,7 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.introBasic`
    - 中文：“这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！……”
-2. 文本进入聊天窗口，语音 key 为 `intro_basic`。
+2. 文本进入聊天窗口，语音 key 为 `day1_intro_basic_voice`。
 
 高亮流程：
 
@@ -110,7 +110,7 @@ ghost cursor 流程：
 
 注意：
 
-1. `intro_basic.performance.timeline` 里有 `highlightVoiceControl`，但当前实际展示主要由 `runIntroVoiceControlButtonShowcase()` 完成。
+1. `day1_intro_basic_voice.performance.timeline` 里有 `highlightVoiceControl`，但当前实际展示主要由 `runIntroVoiceControlButtonShowcase()` 完成。
 2. 这一段结束后进入 takeover 主流程；进入下一段前不能遗留语音按钮方向的目光锁。
 
 ## 3. 猫爪与键鼠控制
@@ -119,7 +119,7 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.takeoverCaptureCursor`
    - 中文：“超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！……”
-2. 文本进入聊天窗口，语音 key 为 `takeover_capture_cursor`。
+2. 文本进入聊天窗口，语音 key 为 `day1_takeover_capture_cursor`。
 3. 旁白和 UI 自动操作并行执行。
 
 高亮流程：
@@ -160,7 +160,7 @@ ghost cursor 流程：
 
 1. `tutorial.yuiGuide.lines.takeoverPluginPreviewHome`
    - 中文：“还没完呢！你快看快看，这里还有超多好玩的插件呢！”
-2. 文本进入聊天窗口，语音 key 为 `takeover_plugin_preview_home`。
+2. 文本进入聊天窗口，语音 key 为 `avatar_floating_day6_plugin_side_panel`。
 
 高亮流程一：
 
@@ -183,7 +183,7 @@ ghost cursor 流程一：
 1. `tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard`
    - 中文：“有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调……”
 2. 插件 dashboard 打开后，文本仍追加到聊天窗口。
-3. 语音 key 为 `takeover_plugin_preview_dashboard`。
+3. 语音 key 为 `avatar_floating_day6_plugin_dashboard`。
 
 高亮流程二：
 
@@ -222,7 +222,7 @@ ghost cursor 流程二：
 
 1. `tutorial.yuiGuide.lines.takeoverSettingsPeekIntro`
    - 中文：“当然啦，如果你想让本喵多和你聊聊天，也不是不行啦……设置都在这个齿轮里。”
-2. 文本进入聊天窗口，语音 key 为 `takeover_settings_peek_intro`。
+2. 文本进入聊天窗口，语音 key 为 `day2_settings_intro_voice`。
 
 高亮流程一：
 
@@ -233,7 +233,7 @@ ghost cursor 流程二：
 
 ghost cursor 流程一：
 
-1. 等待 `takeover_settings_peek_intro` 的 `openSettingsPanel` cue。
+1. 等待 `day2_settings_intro_voice` 的 `openSettingsPanel` cue。
 2. cue 到达后 cursor 移动到 settings 按钮。
 3. cursor click，director 调用 `openSettingsPanel()`。
 
@@ -243,7 +243,7 @@ ghost cursor 流程一：
    - 中文：“你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？”
 2. `tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2`
    - 中文：“等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！”
-3. 语音 key 统一为 `takeover_settings_peek_detail`。
+3. 语音 key 统一为 `day2_settings_detail_voice`。
 4. 第一段先以流式消息进入聊天窗口，第二段在 `showSecondLine` cue 到达时追加。
 
 高亮流程二：
@@ -267,7 +267,7 @@ ghost cursor 流程二：
 
 模型动作流程：
 
-1. 本段从设置按钮展示开始，就会启动 ghost cursor LookAt handle，并持续到整个 `runSettingsPeekScene()` 结束。
+1. 本段从设置按钮展示开始，就会启动 ghost cursor LookAt handle，并持续到整个 `settings round operation` 结束。
 2. 在第一段旁白里，cursor 朝 settings 按钮移动并点击时，模型面部和视线会跟随到齿轮按钮方向。
 3. 进入细节展示后，cursor 移向角色设置入口、再移向侧面板/条目 union 中心并做椭圆巡游时，模型会继续跟随这些 ghost cursor 轨迹，而不是固定看正前方。
 4. 第二段情绪反转出现时，`playSettingsPeekPanic()` 负责额外的慌乱表情/位移动作；ghost cursor LookAt 不会停掉，因此会形成“慌乱姿态 + 仍盯着当前设置项”的叠加效果。
@@ -284,7 +284,7 @@ ghost cursor 流程二：
 
 1. `tutorial.yuiGuide.lines.takeoverReturnControl`
    - 中文：“好啦好啦，不霸占你的电脑啦！控制权还给你了喵！……”
-2. 文本进入聊天窗口，语音 key 为 `takeover_return_control`。
+2. 文本进入聊天窗口，语音 key 为 `day1_takeover_return_control`。
 3. 语音播放到 70% 时触发 `returnPetalTransition` cue。
 
 高亮流程：
@@ -311,7 +311,7 @@ ghost cursor 流程：
 
 注意：
 
-1. `takeover_return_control.performance.timeline` 里有 `returnControl`，但当前主要收尾动作在 `playScene()` 的 return-control 分支完成。
+1. `day1_takeover_return_control.performance.timeline` 里有 `returnControl`，但当前主要收尾动作在 `playScene()` 的 return-control 分支完成。
 2. 花瓣转场只在正常第 6 段归还控制权时触发；跳过教程和愤怒退出仍走普通销毁恢复路径。
 3. 这一步结束后用户鼠标和页面交互恢复。
 

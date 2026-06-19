@@ -262,23 +262,23 @@ YuiGuideDirector
   -> AvatarPerformanceStage + Live2D driver + default coordinator
 ```
 
-苏醒链路：
+当前 Day1 苏醒链路：
 
 ```text
-startPrelude()
+playAvatarFloatingRound(1)
+  -> day1_intro_activation
   -> runWakeupPrelude()
   -> callAvatarStage('runWakeup')
   -> YuiGuideAvatarStage.runWakeup()
   -> AvatarPerformance poseTimeline
-  -> runChatIntroPrelude()
 ```
 
-后续 step 链路：
+后续每日 round scene 链路：
 
 ```text
-playManagedScene(stepId)
-  -> callAvatarStage('enterStep')
-  -> playScene(stepId)
+playAvatarFloatingScene(scene)
+  -> prepareAvatarFloatingScene()
+  -> timeline / operation
   -> speakGuideLine()
       -> callAvatarStage('onSpeechStart')
       -> 原有语音播放

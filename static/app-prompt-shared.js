@@ -641,7 +641,7 @@
             if (!(target instanceof Element)) {
                 return false;
             }
-            return Boolean(target.closest('.modal-overlay, .driver-popover, .driver-overlay'));
+            return Boolean(target.closest('.modal-overlay'));
         }
 
         function isWeakHomePointerTarget(target) {

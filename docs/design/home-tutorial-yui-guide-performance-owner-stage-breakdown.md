@@ -30,7 +30,6 @@
 - `static/app-buttons.js`
 - `static/app-react-chat-window.js`
 - `static/app-websocket.js`
-- `static/css/tutorial-styles.css`
 - `static/css/yui-guide.css`
 
 核心职责分布：
@@ -81,30 +80,21 @@ window.isNekoHomeTutorialBlockingGreeting()
 
 ## 4. 场景注册表
 
-本节记录的是 Day 1 迁移前的首页教程注册表和行为基线。Day 1 统一到七日每日教程框架后，正式主入口应改为 `window.YuiGuideDailyGuides[1].round.scenes` + `playAvatarFloatingRound(1)`；下列 `HOME_SCENE_ORDER`、`startPrelude()`、`enterStep()` 等名称只作为迁移对照，不能继续作为 Day 1 正式每日教程的独立播放框架。
+Day 1 正式主入口是 `window.YuiGuideDailyGuides[1].round.scenes` + `startAvatarFloatingGuideRound(1)`。当前首页主流程顺序由 `static/tutorial/yui-guide/days/day1-home-guide.js` 定义：
 
-首页主流程顺序由 `HOME_SCENE_ORDER` 定义：
+1. `day1_intro_activation`
+2. `day1_intro_greeting`
+3. `day1_capsule_drag_hint`
+4. `day1_history_handle`
+5. `day1_day1_intro_basic_voice_voice`
+6. `day1_screen_entry`
+7. `day1_screen_entry_invite`
+8. `day1_day1_takeover_capture_cursor`
+9. `day1_day1_takeover_return_control`
 
-1. `intro_basic`
-2. `takeover_capture_cursor`
-3. `takeover_plugin_preview`
-4. `takeover_settings_peek`
-5. `takeover_return_control`
-6. `interrupt_resist_light`
-7. `interrupt_angry_exit`
-8. `handoff_api_key`
-9. `handoff_memory_browser`
-10. `handoff_plugin_dashboard`
+旧目标页恢复场景已经下线。当前 `api_key`、`memory_browser`、`plugin_dashboard` 只作为 registry page key 保留，`sceneOrder` 为空时不启动页面教程；未来如需恢复跨页说明，必须新增 Yui scene 并写入对应页面的 `sceneOrder`。
 
-另有目标页恢复场景：
-
-- `api_key_intro`
-- `memory_browser_intro`
-- `plugin_dashboard_landing`
-
-当前首页实际主线主要使用前五个 takeover 场景，`interrupt_*` 由打断机制临时触发，`handoff_*` 是跨页接力场景的注册能力。
-
-`intro_basic`、`takeover_capture_cursor`、`takeover_plugin_preview`、`takeover_settings_peek`、`takeover_return_control` 都设置为可打断，并且 `resetOnStepAdvance = false`，所以打断次数会跨主线场景累计。
+当前打断场景仍由 `YuiGuideSteps` 提供给 Director 使用，不进入 Day 1 `round.scenes` 主线；打断次数跨主线 scene 累计。
 
 ## 5. Director 生命周期
 
@@ -114,16 +104,17 @@ window.isNekoHomeTutorialBlockingGreeting()
 window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 ```
 
-当前 Director 的主要方法：
+当前 Director 的主要入口：
 
-- `startPrelude()`
-- `enterStep(stepId, context)`
-- `leaveStep(stepId)`
+- `playAvatarFloatingRound(1)`
+- `playAvatarFloatingScene(scene)`
+- `round scene cleanup`
+- `playAvatarFloatingRound(day, options)`
 - `skip(reason)`
 - `abortAsAngryExit(source)`
 - `destroy()`
 
-`UniversalTutorialManager` 创建 Director 后，会在 prelude、step enter、step leave、tutorial end 等节点通知它。Director 自身还会广播或接收若干 `neko:yui-guide:*` 事件，用于跨窗口、外置聊天窗口和插件 Dashboard 协作。
+`UniversalTutorialManager` 创建 Director 后，通过 `startAvatarFloatingGuideRound(1)` 进入每日 round。Director 自身还会广播或接收若干 `neko:yui-guide:*` 事件，用于跨窗口、外置聊天窗口和 PC 全局 overlay 协作。保留的 step 级入口只服务未来显式注册的新 Yui scene，不能作为旧页面教程回落路径。
 
 ## 6. 首页主流程
 
@@ -131,8 +122,8 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 
 首页引导启动后，Yui 会先等待必要的用户交互以解锁浏览器音频播放。当前实现会围绕 React compact 胶囊对话输入框和语音按钮建立高亮与旁白。
 
-`intro_basic` 会向 React chat 教程消息流追加内容，播放本地预录语音，并驱动表情轨道。首页普通模式的可见高亮目标是 compact 胶囊对话输入框；外置 `/chat` 窗口模式下，教程消息和按钮锁定状态通过 `appInterpage` / BroadcastChannel 同步。
-首页普通模式的 prelude 激活提示是刻意例外：compact 胶囊输入框上方的 overlay 气泡（例如“点一下这里，我就能开始说话啦～”）不进入聊天记录；正式教程旁白（例如 `intro_basic` 及后续旁白）才追加到 React chat。首页内嵌聊天直接 append 到 React chat；N.E.K.O.-PC 的外置 `/chat` 窗口通过 BroadcastChannel 注入教程消息，只有外置聊天窗通信失败时才退回 overlay 气泡兜底。
+`day1_intro_activation` 负责围绕 React compact 胶囊输入框建立开始交互；`day1_intro_greeting` 和 `day1_day1_intro_basic_voice_voice` 会向 React chat 教程消息流追加内容，播放本地预录语音，并驱动表情轨道。首页普通模式的可见高亮目标是 compact 胶囊对话输入框；外置 `/chat` 窗口模式下，教程消息和按钮锁定状态通过 `appInterpage` / BroadcastChannel 同步。
+首页普通模式的激活提示是刻意例外：compact 胶囊输入框上方的 overlay 气泡（例如“点一下这里，我就能开始说话啦～”）不进入聊天记录；正式教程旁白才追加到 React chat。首页内嵌聊天直接 append 到 React chat；N.E.K.O.-PC 的外置 `/chat` 窗口通过 BroadcastChannel 注入教程消息，只有外置聊天窗通信失败时才退回 overlay 气泡兜底。
 教程消息进入 React compact 胶囊后，`yui-guide-` 消息应直接显示当前文本 patch，不等待普通助手语音消息的播放进度同步；教程终止/销毁时，仍需把活跃教程消息收尾为完整 `blocks` + `status: 'sent'`。
 
 教程锁开启时，首页嵌入 React chat 必须进入硬禁用状态：输入框 disabled/readOnly，发送、截图、图片导入、工具按钮、GalGame 选项和 ChoicePrompt 选项不可触发。宿主层 `handleComposerSubmit()` 也要检查同一锁，防止键盘提交、焦点残留或程序调用绕过组件状态。
@@ -149,19 +140,13 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 
 ### 6.2 猫爪接管
 
-`takeover_capture_cursor` 会高亮猫爪按钮，Ghost Cursor 移动并模拟点击，随后真实打开猫爪面板，并启用相关 Agent 开关，例如总开关和键鼠控制能力。
+`day1_takeover_capture_cursor` 会高亮猫爪按钮，Ghost Cursor 移动并模拟点击，随后真实打开猫爪面板，并启用相关 Agent 开关，例如总开关和键鼠控制能力。
 
 猫爪侧边二级面板会根据视口空间自动在按钮右侧或左侧展开。当前 Director 在采样二级面板内按钮坐标前，会调用 `waitForAgentSidePanelLayoutStable()` 等待 `AvatarPopupUI` 的展开动画和边缘自校正结束，避免“面板实际翻到左侧，但第一次点击仍打到右侧旧坐标”的问题。
 
 ### 6.3 插件 Dashboard 预览
 
-`takeover_plugin_preview` 会打开猫爪插件开关，悬停显示管理面板入口，并由 Ghost Cursor 点击打开插件 Dashboard。
-
-注意这里有两套路径概念：
-
-- 场景注册表里的 `handoff_plugin_dashboard.navigation.openUrl` 仍标为 `/ui/`。
-- 当前实际插件 Dashboard 演出由专用逻辑打开，`static/tutorial/yui-guide/page-handoff.js` 会构造 `/api/agent/user_plugin/dashboard`，并附带 opener origin 等参数。
-- Dashboard 页面内演出由 `frontend/plugin-manager/src/yui-guide-runtime.ts` 执行。
+插件 Dashboard 预览已从 Day 1 当前主线移除。`static/tutorial/yui-guide/page-handoff.js` 和 `frontend/plugin-manager/src/yui-guide-runtime.ts` 的专用握手能力仍保留给后续新 Yui scene 复用，但不会由空 page `sceneOrder` 或旧页面教程自动启动。
 
 首页与 Dashboard 通过 `postMessage` 握手：
 
@@ -178,13 +163,11 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 
 ### 6.4 设置面板一瞥
 
-`takeover_settings_peek` 会关闭猫爪面板，恢复首页主 UI，然后高亮设置按钮。第一段旁白播放到 `openSettingsPanel` cue 时才点击设置按钮；cue 由真实音频时长比例映射，不按语言写死延迟。
-
-设置面板打开后，Director 会定位“角色设置”、角色外形入口、声音克隆入口或它们所在的二级区域，用联合 spotlight 和 Ghost Cursor 椭圆轨迹展示。
+设置面板一瞥已从 Day 1 当前主线移除。后续如果重新加入，应作为新的每日 round scene 明确声明目标、旁白和清理契约。
 
 ### 6.5 归还控制权
 
-`takeover_return_control` 会清理高亮，播放归还控制权旁白，Ghost Cursor 平滑回到视口中心并隐藏，然后禁用打断监听并以 `complete` 结束教程。
+`day1_takeover_return_control` 会清理高亮，播放归还控制权旁白，Ghost Cursor 平滑回到视口中心并隐藏，然后禁用打断监听并以 `complete` 结束教程。
 
 ## 7. 教程期间 Yui 模型覆盖
 
@@ -244,12 +227,8 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 当前主要表情轨道：
 
 - `intro_greeting_reply`：`sbx`、`xxy`
-- `intro_basic`：`swz`
-- `takeover_capture_cursor`：`szhs`、`syhs`
-- `takeover_plugin_preview_home`：`by`
-- `takeover_plugin_preview_dashboard`：`syhs`
-- `takeover_settings_peek_intro`：`xxy`
-- `takeover_settings_peek_detail`：`sbx`
+- `day1_intro_basic_voice` voice key：`swz`
+- `day1_takeover_capture_cursor`：`szhs`、`syhs`
 - `interrupt_resist_light_1` / `interrupt_resist_light_3`：使用 `angry` 或 `surprised` 轻微抵抗情绪/动作。
 - `interrupt_angry_exit`：使用 `angry` emotion 和生气退出自定义动作；Live2D 动作不可用时仍保留 `angry` emotion 兜底。
 
@@ -264,7 +243,7 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 
 每日收尾花瓣转场：
 
-- Day 1 已落地的 `takeover_return_control` 花瓣转场是基准实现。
+- Day 1 已落地的 `day1_takeover_return_control` 花瓣转场是基准实现。
 - 七日新手教程每一天的正常 wrap/收尾都要复用花瓣转场：收尾台词播放到约 70% 时隐藏 Ghost Cursor、清理所有 spotlight，并播放花瓣覆盖层。
 - 每日收尾转场播放前，必须先关闭当天临时打开的业务 UI，例如屏幕/麦克风弹窗、设置侧边栏、Agent 面板、任务 HUD、工具菜单或跨页 handoff 高亮。
 - 花瓣转场只属于正常完成路径；skip、angry exit、page destroy、remote terminate 不播放正常收尾花瓣，仍走统一清理。

@@ -18,10 +18,10 @@
 - `getChatWindowTarget()`：聊天上下文 spotlight 优先使用 compact capsule/input/surface，再回退旧 shell。
 - `getChatIntroActivationTarget()`：教程前奏等待用户激活时，同样优先允许 compact 胶囊输入框。
 - `highlightChatWindow()` 和 `focusAndHighlightChatInput()`：外置聊天窗时调用 `setExternalizedChatSpotlight('input')`，不要回退为 `window`。
-- `getSceneSpotlightTarget('takeover_return_control')`：最后一句归还控制权台词优先返回 `getChatInputTarget()`，不要再使用 neko 容器作为常驻高光目标。
-- `playManagedScene()`：`takeover_return_control` 开场不要调用 `clearPersistentSpotlight()`；普通首页模式设置 input persistent spotlight，外置聊天窗模式通过 `focusAndHighlightChatInput()` 同步 input spotlight。
-- `takeover_return_control` 仍会在 `returnPetalTransition` cue 到达后清理 persistent/action spotlight、隐藏 Ghost Cursor、关闭面板并禁用 interrupts；这里的要求是“收尾台词播放阶段高亮输入框”，不是让聚光穿过最终转场清理。
-- 如果 compact input/capsule 不可见，`getSceneSpotlightTarget('takeover_return_control')` 会回退到原 selector target，避免 spotlight 目标为空导致收尾演出异常。
+- `getSceneSpotlightTarget('day1_takeover_return_control')`：最后一句归还控制权台词优先返回 `getChatInputTarget()`，不要再使用 neko 容器作为常驻高光目标。
+- `playAvatarFloatingScene()`：`day1_takeover_return_control` 开场不要调用 `clearPersistentSpotlight()`；普通首页模式设置 input persistent spotlight，外置聊天窗模式通过 `focusAndHighlightChatInput()` 同步 input spotlight。
+- `day1_takeover_return_control` 仍会在 `returnPetalTransition` cue 到达后清理 persistent/action spotlight、隐藏 Ghost Cursor、关闭面板并禁用 interrupts；这里的要求是“收尾台词播放阶段高亮输入框”，不是让聚光穿过最终转场清理。
+- 如果 compact input/capsule 不可见，`getSceneSpotlightTarget('day1_takeover_return_control')` 会回退到原 selector target，避免 spotlight 目标为空导致收尾演出异常。
 
 外置 `/chat` 窗口的实际 DOM 高光在 `static/app-interpage.js`：
 
@@ -54,14 +54,10 @@ React 胶囊侧在 `frontend/react-neko-chat/src/App.tsx`：
 
 `static/tutorial/core/universal-manager.js` 负责教程期间的全局用户点击拦截。
 
-- `blockNekoTutorialClickEvents()` 在 `startTutorial()` 锁定 body 滚动后安装捕获阶段监听。
-- `unblockNekoTutorialClickEvents()` 在 `_teardownTutorialUI()` 开始时移除监听，确保教程结束后恢复正常点击。
-- 监听使用 `{ capture: true, passive: false }`，覆盖 `pointerdown`、`pointerup`、`mousedown`、`mouseup`、`click`、`dblclick`、`auxclick`、`contextmenu`、`touchstart`、`touchend`。
-- `_isNekoTutorialClickBlocked` 防止重复安装/重复移除监听。
-- `blockNekoTutorialClickEvent()` 只在 `isTutorialRunning` 或 `window.isInTutorial` 时工作，并且放行 `.driver-popover` / `#neko-tutorial-skip-btn` 这类教程控制。
-- `blockNekoTutorialClickEvent()` 只拦截 `event.isTrusted !== false` 的真实用户事件，保留教程脚本内部的 `.click()` / synthetic event。
-- 命中 neko 目标后会 `preventDefault()`，并优先 `stopImmediatePropagation()`，防止目标自身和后续监听继续响应。
-- `isNekoTutorialClickTarget()` 覆盖 neko 本体容器、Live2D/VRM/MMD canvas/container、返回 idle 按钮、悬浮按钮、reaction bubble、lock icon 等目标。
+- 旧 Driver.js 页面教程的捕获阶段点击 blocker 已删除；新教程期间不再安装旧 DOM 级全局点击拦截。
+- `startTutorial()` 只通过 `lockBodyScroll()` 使用 scoped resources 暂停滚轮和触摸滚动，`_teardownTutorialUI()` 调用 `unlockBodyScroll()` 释放，避免教程结束后留下页面级 blocker。
+- PC 端输入接管由 `preload-pet.js::isPointWithinTutorialInputSurface()` 的坐标判断负责，只识别新教程输入面：`#neko-tutorial-skip-btn`、`[data-yui-skip-control]`、`[data-yui-emergency-exit]`、`.yui-guide-overlay`、`.yui-guide-stage`。
+- 胶囊输入框、ghost cursor 与 spotlight 的交互限制应在 Yui Director / InteractionTakeover / PC 输入层内收敛，不能再复活旧 DOM blocker。
 
 ## 对抗机制
 
@@ -69,7 +65,7 @@ React 胶囊侧在 `frontend/react-neko-chat/src/App.tsx`：
 
 场景配置在 `static/tutorial/yui-guide/steps.js`：
 
-- `intro_basic`、`takeover_capture_cursor`、`takeover_plugin_preview`、`takeover_settings_peek`、`takeover_return_control` 都设置 `performance.interruptible = true`。
+- Day1 当前 round scene 通过 `getAvatarFloatingInterruptStep(scene)` 生成打断上下文，主要接管段保持可触发轻微抵抗。
 - 主线 takeover 场景的 `interrupts.mode` 是 `theatrical_abort`，默认阈值 `threshold = 3`，节流 `throttleMs = 500`。
 - `interrupt_resist_light` 是轻微抵抗分支，提供两句抵抗台词和对应 voice key：`interrupt_resist_light_1`、`interrupt_resist_light_3`。
 - `interrupt_angry_exit` 是连续打断达到阈值后的生气退出分支，使用 `interrupt_angry_exit` 台词、语音和 `angry` 情绪。

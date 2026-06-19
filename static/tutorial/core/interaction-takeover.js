@@ -349,17 +349,28 @@
         }
 
         setExternalizedChatSpotlight(kind) {
+            const previousKind = this.externalizedChatSpotlightKind;
             this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
             const message = {
                 kind: this.externalizedChatSpotlightKind
             };
             if (
-                this.externalizedChatSpotlightKind
+                (this.externalizedChatSpotlightKind || previousKind)
                 && safeInvoke(this.isResistancePaused, [], false) === true
             ) {
                 message.preserveDuringResistance = true;
             }
             this.postExternalChatCommand('yui_guide_set_chat_spotlight', message);
+        }
+
+        preserveExternalizedChatSpotlightDuringResistance() {
+            if (!this.externalizedChatSpotlightKind) {
+                return false;
+            }
+            return this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+                kind: this.externalizedChatSpotlightKind,
+                preserveDuringResistance: true
+            });
         }
 
         setExternalizedChatCursor(kind, options) {

@@ -2,26 +2,19 @@
  * Yui Guide Page Handoff — 统一页面打开 API
  *
  * Dev C 专属模块（首页交互与跨页负责人）。
- * M1 阶段只提供统一页面打开包装；M3 阶段扩展跨页 handoff 与 scene 恢复。
+ * M1 阶段只提供统一页面打开包装；跨页 handoff 能力保留给新 Yui scene 使用。
  *
  * 锚点验证结果（M1 基线，2026-04-15）:
  * ┌──────────────────────────┬───────────────────────────────────────┬────────┐
- * │ 场景 ID                  │ 锚点选择器                            │ 状态   │
+ * │ 当前 Day1 round scene    │ 锚点选择器                            │ 状态   │
  * ├──────────────────────────┼───────────────────────────────────────┼────────┤
- * │ intro_basic              │ #text-input-area                      │ OK *   │
- * │ takeover_capture_cursor  │ #${p}-btn-agent                       │ OK     │
- * │ takeover_plugin_preview  │ #${p}-btn-agent                       │ OK     │
- * │ takeover_settings_peek   │ #${p}-btn-settings                    │ OK     │
- * │ takeover_return_control  │ #${p}-container                       │ OK     │
+ * │ day1_intro_activation    │ chat capsule input                    │ OK     │
+ * │ day1_intro_greeting      │ chat capsule input                    │ OK     │
+ * │ day1_takeover_capture... │ #${p}-btn-agent                       │ OK     │
+ * │ day1_takeover_return...  │ chat capsule input                    │ OK     │
  * │ interrupt_resist_light   │ #${p}-container                       │ OK     │
  * │ interrupt_angry_exit     │ #${p}-container                       │ OK     │
- * │ handoff_api_key          │ #${p}-menu-api-keys                   │ OK **  │
- * │ handoff_memory_browser   │ #${p}-menu-memory                     │ OK **  │
- * │ handoff_plugin_dashboard │ #${p}-btn-agent                       │ OK     │
  * └──────────────────────────┴───────────────────────────────────────┴────────┘
- *  * #text-input-area 在 #chat-container(display:none!important) 内，
- *    仅由 startPrelude() 使用，不作为 driver.js 高亮目标，可接受。
- * ** 由 Dev C M1 在 avatar-ui-popup.js _createMenuItem() 中补设 DOM ID。
  *
  * ${p} 占位符由主负责人的 Director 在运行时解析为实际模型前缀（live2d/vrm/mmd）。
  */
@@ -933,7 +926,7 @@
 
     /**
      * 打开 Agent / 猫爪弹层。
-     * 用于 takeover_plugin_preview 等需要展示真实 Agent 能力面板的场景。
+     * 用于每日 round 中需要展示真实 Agent 能力面板的 scene。
      *
      * @returns {Promise<boolean>} 弹层是否成功打开
      */

@@ -260,8 +260,8 @@
             if (cleared || !cursor) {
                 return;
             }
-            const patch = { cursor: cursor };
-            const payload = completeStateStore.applyPatch(patch);
+            completeStateStore.applyPatch({ cursor: cursor });
+            const payload = { cursor: cursor };
             if (!active) {
                 active = true;
                 const beginRunId = runId;
@@ -1317,11 +1317,15 @@
             this.syncSpotlightTracking();
         }
 
-        clearSpotlight() {
+        clearSpotlight(options) {
+            const preservePcOverlaySpotlights = !!(
+                options
+                && options.preservePcOverlaySpotlights === true
+            );
             this.ensureRoot();
             this.stopSpotlightTracking();
             this.spotlightState.clearAll();
-            if (this.isPcOverlayActive()) {
+            if (this.isPcOverlayActive() && !preservePcOverlaySpotlights) {
                 if (this.pcCursorOutputSuppressed === true) {
                     this.overlayRenderer.clearCursorCache();
                 }

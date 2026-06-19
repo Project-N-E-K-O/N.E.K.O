@@ -3254,8 +3254,6 @@
             '#prominent-notice-overlay',
             '.modal-overlay',
             '.modal-dialog',
-            '.driver-popover',
-            '.driver-overlay',
             '.storage-location-completion-card',
             '#storage-location-overlay',
             '.storage-location-modal'

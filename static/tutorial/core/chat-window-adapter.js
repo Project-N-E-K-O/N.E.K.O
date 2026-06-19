@@ -109,6 +109,9 @@
         const resolveLocalTarget = typeof normalizedOptions.resolveLocalTarget === 'function'
             ? normalizedOptions.resolveLocalTarget
             : () => null;
+        const beforeExternalizedSpotlight = typeof normalizedOptions.beforeExternalizedSpotlight === 'function'
+            ? normalizedOptions.beforeExternalizedSpotlight
+            : null;
 
         function getExternalKind(targetKey) {
             return registry.getExternalKind(targetKey) || targetKey || '';
@@ -134,6 +137,9 @@
                     interactionTakeover
                     && typeof interactionTakeover.setExternalizedChatSpotlight === 'function'
                 ) {
+                    if (beforeExternalizedSpotlight) {
+                        beforeExternalizedSpotlight(getExternalKind(targetKey));
+                    }
                     interactionTakeover.setExternalizedChatSpotlight(getExternalKind(targetKey));
                     return true;
                 }

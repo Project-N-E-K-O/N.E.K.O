@@ -44,7 +44,7 @@ PC 端迁移的关键目标是解决跨窗口演出不连续的问题：Ghost Cu
 
 如果某个按钮在当前布局不可见，优先使用同组容器作为降级 spotlight，不伪造按钮、不强制改变布局；如果按钮只是折叠到更多菜单，则允许先打开更多菜单，因为这是用户真实会遇到的路径。
 
-设置类 scene 的导演时序按当前代码实现校准：`show-settings-sidepanel:*` 和 `show-settings-menu:*` 通常会在 `prepareAvatarFloatingScene()` 阶段先打开设置弹窗或对应侧边栏，随后台词进入聊天窗、spotlight 落到已展开面板，Ghost Cursor 再进入面板巡游。Day 1 的 `takeover_settings_peek` 保留“齿轮按钮点击打开设置”的镜头；Day 4 的 `day4_chat_settings` 也会先高亮并模拟点击设置按钮，再转入对话设置侧边栏。
+设置类 scene 的导演时序按当前代码实现校准：`show-settings-sidepanel:*` 和 `show-settings-menu:*` 通常会在 `prepareAvatarFloatingScene()` 阶段先打开设置弹窗或对应侧边栏，随后台词进入聊天窗、spotlight 落到已展开面板，Ghost Cursor 再进入面板巡游。Day 1 当前不再包含设置面板镜头；Day 4 的 `day4_chat_settings` 会先高亮并模拟点击设置按钮，再转入对话设置侧边栏。
 
 高亮去重不是“创建后隐藏”：同一目标同一时刻只允许一套主 spotlight。非收尾 scene 不做 operation 后的 `settled` 二次高亮刷新；需要切换舞台的 scene 必须在 `prepareAvatarFloatingScene()` 阶段完成真实 UI 准备，或交给下一 scene 重新建立高亮。只有每日收尾 `cleanup` scene 例外，它负责在收尾台词期间重新高亮分日指定收尾目标，再在花瓣 cue 同步清理。圆角矩形 spotlight 保留左右猫耳和猫爪装饰；圆形按钮只使用 `circle-highlight.png` 圆形图片高亮，不显示猫耳和猫爪。
 
@@ -127,8 +127,8 @@ PC 端迁移的关键目标是解决跨窗口演出不连续的问题：Ghost Cu
 ### 第一天：初次唤醒、聊天与基础入口
 
 - 心理学原理：首因效应。先让用户知道“她能说话、能看你主动发来的图片、能在你允许时帮忙做事”，不急着讲完整设置。
-- 串联功能：文本输入、语音入口、截图/导入图片/粘贴图片、翻译与点歌入口提示、Agent 按钮预览、插件管理预览、设置一瞥。
-- 代码锚点：`HOME_SCENE_ORDER` 的 `intro_basic`、`takeover_capture_cursor`、`takeover_plugin_preview`、`takeover_settings_peek`、`takeover_return_control`。
+- 串联功能：文本输入、胶囊拖动、历史条、语音入口、屏幕分享入口、Agent 按钮接管和归还控制权。
+- 代码锚点：`static/tutorial/yui-guide/days/day1-home-guide.js` 的 `day1_*` round scenes。
 - 小剧场：第一次把手伸向你这边的屏幕。
 
 #### 阶段 1：初次见面与聊天输入

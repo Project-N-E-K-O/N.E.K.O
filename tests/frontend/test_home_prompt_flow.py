@@ -3079,7 +3079,10 @@ def test_avatar_floating_daily_scenes_keep_persistent_cursor_look_at_enabled(
 ):
     _bootstrap_page(
         mock_page,
-        setup_js="window.history.pushState({}, '', '/');",
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = '<button id="live2d-btn-agent" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>';
+        """,
         script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
     )
 
@@ -7299,7 +7302,12 @@ def test_managed_scene_cursor_start_uses_previous_scene_anchor_when_position_los
             director.avatarFloatingSceneCursorAnchorPoints = {
                 previous_scene: { x: 680, y: 460 },
             };
-            await director.playManagedScene('next_scene', { source: 'test' });
+            await director.playAvatarFloatingScene({
+                id: 'next_scene',
+                target: '#target',
+                cursorTarget: '#target',
+                cursorAction: 'move',
+            }, 1, 1, 2);
             return calls;
         }
         """
@@ -11209,7 +11217,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
 
 
 @pytest.mark.frontend
-def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
+def test_day1_takeover_operation_uses_round_operation_registry(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -11226,16 +11234,20 @@ def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
             director.sceneRunId = 42;
             director.getAgentSwitchSnapshot = async () => ({ agent: false });
             director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
-            director.playManagedScene = async (sceneId, options) => {
-                events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
-                events.push('previous:' + String(options && options.previousSceneId || ''));
-                director.sceneRunId += 1;
+            director.runTakeoverKeyboardControlSequence = async (step, performance, runId) => {
+                events.push('keyboard:' + String(step && step.anchor || ''));
+                events.push('voice:' + String(performance && performance.voiceKey || ''));
+                events.push('run:' + String(runId));
+                return true;
             };
 
-            const keepGoing = await director.playDay1AvatarFloatingScene({
+            const keepGoing = await director.runAvatarFloatingSceneOperation({
                 id: 'day1_takeover_capture_cursor',
+                target: '#live2d-btn-agent',
+                cursorTarget: '#live2d-btn-agent',
+                voiceKey: 'takeover_capture_cursor',
                 operation: 'day1-managed-scene:takeover_capture_cursor',
-            }, 42, 'day1_screen_entry_invite', 6, 8);
+            }, null, Date.now(), Promise.resolve());
 
             return {
                 keepGoing,
@@ -11249,8 +11261,9 @@ def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
     assert result["keepGoing"] is True
     assert result["sceneRunId"] == 43
     assert result["events"] == [
-        "managed:takeover_capture_cursor:avatar-floating-day1-round",
-        "previous:day1_screen_entry_invite",
+        "keyboard:#live2d-btn-agent",
+        "voice:takeover_capture_cursor",
+        "run:42",
     ]
 
 
@@ -11317,9 +11330,16 @@ def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
             director.clearVirtualSpotlight = (key) => events.push('clear-virtual:' + key);
             director.highlightChatWindow = () => events.push('highlight-chat-window');
 
-            await director.playManagedScene('takeover_capture_cursor', {
-                source: 'avatar-floating-day1-round',
-            });
+            await director.playAvatarFloatingScene({
+                id: 'day1_takeover_capture_cursor',
+                text: '超级魔法开关出现！',
+                voiceKey: 'takeover_capture_cursor',
+                emotion: 'happy',
+                target: '#live2d-btn-agent',
+                cursorTarget: '#live2d-btn-agent',
+                cursorAction: 'click',
+                operation: 'day1-managed-scene:takeover_capture_cursor',
+            }, 1, 7, 9);
 
             return { events, persistentSpotlights };
         }
@@ -11497,15 +11517,21 @@ def test_day1_takeover_capture_from_screen_entry_invite_does_not_clear_cursor(mo
             director.sceneRunId = 42;
             director.getAgentSwitchSnapshot = async () => ({ agent: false });
             director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
-            director.playManagedScene = async (sceneId, options) => {
-                events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
-                events.push('previous:' + String(options && options.previousSceneId || ''));
+            director.runTakeoverKeyboardControlSequence = async (step, performance, runId) => {
+                events.push('keyboard:' + String(step && step.anchor || ''));
+                events.push('voice:' + String(performance && performance.voiceKey || ''));
+                events.push('run:' + String(runId));
+                return true;
             };
 
-            await director.playDay1AvatarFloatingScene({
+            await director.playAvatarFloatingScene({
                 id: 'day1_takeover_capture_cursor',
+                target: '#live2d-btn-agent',
+                cursorTarget: '#live2d-btn-agent',
+                cursorAction: 'click',
+                voiceKey: 'takeover_capture_cursor',
                 operation: 'day1-managed-scene:takeover_capture_cursor',
-            }, 42, 'day1_screen_entry_invite', 6, 8);
+            }, 1, 7, 9);
 
             return events;
         }
@@ -11513,8 +11539,9 @@ def test_day1_takeover_capture_from_screen_entry_invite_does_not_clear_cursor(mo
     )
 
     assert result == [
-        "managed:takeover_capture_cursor:avatar-floating-day1-round",
-        "previous:day1_screen_entry_invite",
+        "keyboard:#live2d-btn-agent",
+        "voice:takeover_capture_cursor",
+        "run:43",
     ]
 
 

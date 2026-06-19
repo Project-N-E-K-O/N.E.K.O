@@ -264,9 +264,6 @@
                 voiceKey: scene.voiceKey || (step.performance && step.performance.voiceKey) || '',
                 emotion: scene.emotion || (step.performance && step.performance.emotion) || ''
             });
-            if (!director.takeoverOriginalAgentSwitches) {
-                director.takeoverOriginalAgentSwitches = await director.getAgentSwitchSnapshot();
-            }
             return await director.runTakeoverKeyboardControlSequence(step, performance, director.sceneRunId);
         }
 
@@ -464,6 +461,9 @@
                     director.interactionTakeover
                     && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
                 ) {
+                    if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                        director.clearHomeSpotlightsForExternalizedChat();
+                    }
                     director.interactionTakeover.setExternalizedChatSpotlight(
                         this.getExternalKind(scene && scene.persistent || '')
                         || director.getExternalizedChatTargetKind(scene && scene.persistent || '', scene)

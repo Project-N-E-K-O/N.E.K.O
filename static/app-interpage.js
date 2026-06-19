@@ -2694,7 +2694,7 @@
             message.timestamp = Date.now();
         }
         try {
-            var tutorialRunId = getYuiGuidePcOverlayRunId();
+            var tutorialRunId = getExistingYuiGuidePcOverlayRunId();
             if (tutorialRunId && !message.tutorialRunId) {
                 message.tutorialRunId = tutorialRunId;
             }
@@ -2756,11 +2756,16 @@
         if (!message || !message.action) {
             return false;
         }
+        if (
+            message.action !== 'yui_guide_tutorial_lifecycle_ended'
+            && isYuiGuideLifecycleScopedAction(message.action)
+            && isYuiGuidePcOverlayRunEnded(message.tutorialRunId)
+        ) {
+            clearYuiGuidePcOverlayBridgeState('stale-after-lifecycle-ended', message.tutorialRunId || '');
+            return true;
+        }
         if (message.tutorialRunId && message.action !== 'yui_guide_tutorial_lifecycle_ended') {
-            try {
-                window.localStorage.setItem('yuiGuidePcOverlayRunId', String(message.tutorialRunId));
-            } catch (_) {}
-            yuiGuidePcOverlayRunIdOverride = String(message.tutorialRunId);
+            rememberYuiGuidePcOverlayRunId(message.tutorialRunId);
         }
 
         switch (message.action) {
@@ -2793,10 +2798,14 @@
             case 'yui_guide_set_chat_spotlight': {
                 if (!isStandaloneChatPage() || !document.body) return true;
                 ensureYuiGuideExternalChatExpanded();
+                var preserveSpotlightDuringResistance = message.preserveDuringResistance === true;
                 applyYuiGuideChatSpotlight(message.kind || '', {
-                    preserveDuringResistance: message.preserveDuringResistance === true
+                    preserveDuringResistance: preserveSpotlightDuringResistance,
+                    pcOverlayRunId: getYuiGuidePcOverlayRunIdFromMessage(message)
                 });
-                scheduleYuiGuideChatInputSpotlightRetry(message.kind || '');
+                if (!preserveSpotlightDuringResistance) {
+                    scheduleYuiGuideChatInputSpotlightRetry(message.kind || '', getYuiGuidePcOverlayRunIdFromMessage(message));
+                }
                 return true;
             }
             case 'yui_guide_set_chat_cursor': {
@@ -2816,6 +2825,7 @@
                         ? message.targetIndex
                         : 0,
                     freezePoint: message.freezePoint === true,
+                    pcOverlayRunId: getYuiGuidePcOverlayRunIdFromMessage(message),
                     timestamp: getYuiGuideBridgeMessageTimestamp(message)
                 };
                 applyYuiGuideChatCursor(cursorKind, cursorOptions);
@@ -3203,7 +3213,10 @@
                     case 'yui_guide_drag_chat_cursor':
                     case 'yui_guide_arc_chat_cursor': {
                         if (!isStandaloneChatPage() || !document.body) break;
-                        relayYuiGuideChatCommand(event.data);
+                        var cursorRunId = getYuiGuidePcOverlayRunIdFromMessage(event.data);
+                        relayYuiGuideChatCommand(Object.assign({}, event.data, {
+                            pcOverlayRunId: cursorRunId
+                        }));
                         break;
                     }
                     case 'yui_guide_set_compact_history_open': {
@@ -3213,10 +3226,15 @@
                     }
                     case 'yui_guide_set_chat_spotlight': {
                         if (!isStandaloneChatPage() || !document.body) break;
+                        var preserveSpotlightDuringResistance = event.data.preserveDuringResistance === true;
+                        var spotlightRunId = getYuiGuidePcOverlayRunIdFromMessage(event.data);
                         applyYuiGuideChatSpotlight(event.data.kind || '', {
-                            preserveDuringResistance: event.data.preserveDuringResistance === true
+                            preserveDuringResistance: preserveSpotlightDuringResistance,
+                            pcOverlayRunId: spotlightRunId
                         });
-                        scheduleYuiGuideChatInputSpotlightRetry(event.data.kind || '');
+                        if (!preserveSpotlightDuringResistance) {
+                            scheduleYuiGuideChatInputSpotlightRetry(event.data.kind || '', spotlightRunId);
+                        }
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
@@ -3607,11 +3625,13 @@
     var yuiGuidePcOverlayActive = false;
     var yuiGuidePcOverlayReady = false;
     var yuiGuidePcOverlayRunIdOverride = '';
+    var yuiGuidePcOverlayEndedRunId = '';
     var yuiGuidePcOverlaySequence = 0;
     var yuiGuidePcOverlaySpotlights = [];
     var yuiGuidePcOverlayCursor = null;
     var yuiGuideChatSpotlightLastPcKind = '';
     var yuiGuideChatSpotlightLastPcRects = [];
+    var yuiGuideChatSpotlightPcOverlayRunId = '';
     var yuiGuideChatCursorRequestToken = 0;
     var yuiGuideChatCursorArcRequestToken = 0;
     var yuiGuideChatCursorPoint = null;
@@ -3688,6 +3708,52 @@
         }
     }
 
+    function isYuiGuidePcOverlayRunEnded(runId) {
+        return !!runId && !!yuiGuidePcOverlayEndedRunId && runId === yuiGuidePcOverlayEndedRunId;
+    }
+
+    function isYuiGuideChatOwnedPcOverlayRunId(runId) {
+        return typeof runId === 'string' && runId.indexOf('yui-guide-chat-') === 0;
+    }
+
+    function rememberYuiGuidePcOverlayRunId(runId) {
+        var normalizedRunId = typeof runId === 'string' && runId ? runId : '';
+        if (!normalizedRunId || isYuiGuidePcOverlayRunEnded(normalizedRunId)) {
+            return '';
+        }
+        try {
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', normalizedRunId);
+        } catch (_) {}
+        yuiGuidePcOverlayRunIdOverride = normalizedRunId;
+        return normalizedRunId;
+    }
+
+    function getYuiGuidePcOverlayRunIdFromMessage(message) {
+        var runId = message && typeof message.tutorialRunId === 'string'
+            ? message.tutorialRunId
+            : '';
+        return rememberYuiGuidePcOverlayRunId(runId);
+    }
+
+    function isYuiGuideLifecycleScopedAction(action) {
+        switch (action) {
+            case 'yui_guide_set_chat_buttons_disabled':
+            case 'yui_guide_set_chat_input_locked':
+            case 'yui_guide_set_chat_spotlight':
+            case 'yui_guide_set_chat_cursor':
+            case 'yui_guide_drag_chat_cursor':
+            case 'yui_guide_arc_chat_cursor':
+            case 'yui_guide_set_avatar_tool_menu_open':
+            case 'yui_guide_set_compact_history_open':
+            case 'yui_guide_set_compact_tool_fan_open':
+            case 'yui_guide_rotate_compact_tool_wheel':
+            case 'yui_guide_set_compact_tool_wheel_index':
+                return true;
+            default:
+                return false;
+        }
+    }
+
     function resetYuiGuidePcOverlayRunForRetry() {
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
@@ -3705,6 +3771,7 @@
             || retried === true
             || !attemptedRunId
             || attemptedRunId !== yuiGuidePcOverlayRunIdOverride
+            || !isYuiGuideChatOwnedPcOverlayRunId(attemptedRunId)
         ) {
             return;
         }
@@ -3804,6 +3871,9 @@
             return false;
         }
         var sendOptions = options || {};
+        if (isYuiGuidePcOverlayRunEnded(sendOptions.tutorialRunId)) {
+            return false;
+        }
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
             yuiGuidePcOverlaySpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
         }
@@ -3821,7 +3891,7 @@
         var runId = typeof sendOptions.tutorialRunId === 'string' && sendOptions.tutorialRunId
             ? sendOptions.tutorialRunId
             : (sendOptions.allowCreateRun === false ? getExistingYuiGuidePcOverlayRunId() : getYuiGuidePcOverlayRunId());
-        if (!runId) {
+        if (!runId || isYuiGuidePcOverlayRunEnded(runId)) {
             return false;
         }
         if (!yuiGuidePcOverlayActive && sendOptions.skipBegin !== true && typeof host.begin === 'function') {
@@ -4136,6 +4206,8 @@
                     effect: normalizedOptions.effect || '',
                     effectDurationMs: Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs) || 0))
                 }
+            }, false, {
+                tutorialRunId: normalizedOptions.pcOverlayRunId
             });
             publishYuiGuideChatCursorAnchor(kind, screenPoint, normalizedOptions, duration === 0);
             if (duration > 0) {
@@ -4210,6 +4282,8 @@
                     effect: normalizedOptions.effect || '',
                     effectDurationMs: Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs) || 0))
                 }
+            }, false, {
+                tutorialRunId: normalizedOptions.pcOverlayRunId
             });
             publishYuiGuideChatCursorAnchor(kind, screenPoint, normalizedOptions, duration === 0);
             if (duration > 0) {
@@ -4290,12 +4364,41 @@
         yuiGuideChatSpotlightLastPcRects = [];
     }
 
+    function cloneYuiGuideChatPcSpotlightRects() {
+        return yuiGuideChatSpotlightLastPcRects.map(function (pcRect) {
+            return Object.assign({}, pcRect);
+        });
+    }
+
+    function preserveYuiGuideChatSpotlightDuringResistance(kind, pcOverlayRunId) {
+        var preservedKind = typeof kind === 'string' && kind ? kind : yuiGuideChatSpotlightKind;
+        if (!preservedKind) {
+            return false;
+        }
+        if (
+            yuiGuideChatSpotlightLastPcKind === preservedKind
+            && yuiGuideChatSpotlightLastPcRects.length > 0
+        ) {
+            sendYuiGuidePcOverlayPatch({
+                spotlights: cloneYuiGuideChatPcSpotlightRects()
+            }, false, {
+                tutorialRunId: pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId
+            });
+            return true;
+        }
+        updateYuiGuideChatSpotlight(preservedKind, pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId);
+        return true;
+    }
+
     function isYuiGuideChatInputSpotlightKind(kind) {
         return kind === 'input' || kind === 'capsule-input';
     }
 
-    function scheduleYuiGuideChatInputSpotlightRetry(kind) {
+    function scheduleYuiGuideChatInputSpotlightRetry(kind, pcOverlayRunId) {
         var retryKind = typeof kind === 'string' && kind ? kind : yuiGuideChatSpotlightKind;
+        var retryRunId = typeof pcOverlayRunId === 'string' && pcOverlayRunId
+            ? pcOverlayRunId
+            : yuiGuideChatSpotlightPcOverlayRunId;
         if (!isYuiGuideChatInputSpotlightKind(retryKind)) {
             return;
         }
@@ -4303,15 +4406,18 @@
         [80, 180, 360, 720, 1200].forEach(function (delayMs) {
             yuiGuideChatSpotlightResources.setTimeout(function () {
                 if (yuiGuideChatSpotlightKind === retryKind) {
-                    updateYuiGuideChatSpotlight(retryKind);
+                    updateYuiGuideChatSpotlight(retryKind, retryRunId);
                 }
             }, delayMs);
         });
     }
 
-    function updateYuiGuideChatSpotlight(kind) {
+    function updateYuiGuideChatSpotlight(kind, pcOverlayRunId) {
         var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();
         var spotlight = getYuiGuideChatSpotlightElement(!pcOverlayAvailable);
+        var patchOptions = {
+            tutorialRunId: pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId
+        };
 
         var target = getYuiGuideChatSpotlightTarget(kind);
         var rect = target && typeof target.getBoundingClientRect === 'function'
@@ -4329,7 +4435,7 @@
                         spotlights: yuiGuideChatSpotlightLastPcRects.map(function (pcRect) {
                             return Object.assign({}, pcRect);
                         })
-                    });
+                    }, false, patchOptions);
                 }
             }
             if (spotlight) {
@@ -4349,7 +4455,7 @@
                 height: rect.height + padding * 2
             }, kind, '')].filter(Boolean);
             rememberYuiGuideChatPcSpotlightRects(kind, pcRects);
-            sendYuiGuidePcOverlayPatch({ spotlights: pcRects });
+            sendYuiGuidePcOverlayPatch({ spotlights: pcRects }, false, patchOptions);
             if (spotlight) {
                 spotlight.hidden = true;
                 spotlight.classList.remove('is-visible', 'is-window', 'is-input');
@@ -4372,6 +4478,18 @@
 
     function applyYuiGuideChatSpotlight(kind, options) {
         var normalizedKind = typeof kind === 'string' ? kind : '';
+        var pcOverlayRunId = options && typeof options.pcOverlayRunId === 'string'
+            ? options.pcOverlayRunId
+            : '';
+        if (pcOverlayRunId) {
+            yuiGuideChatSpotlightPcOverlayRunId = pcOverlayRunId;
+        }
+        if (normalizedKind && options && options.preserveDuringResistance === true) {
+            yuiGuideChatSpotlightKind = normalizedKind;
+            clearYuiGuideChatSpotlightTracking();
+            preserveYuiGuideChatSpotlightDuringResistance(normalizedKind, pcOverlayRunId);
+            return;
+        }
         if (
             !normalizedKind
             && options
@@ -4380,16 +4498,18 @@
             && yuiGuideChatSpotlightLastPcKind === yuiGuideChatSpotlightKind
             && yuiGuideChatSpotlightLastPcRects.length > 0
         ) {
-            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);
             return;
         }
         yuiGuideChatSpotlightKind = normalizedKind;
         clearYuiGuideChatSpotlightTracking();
 
         if (!yuiGuideChatSpotlightKind) {
+            var clearSpotlightRunId = pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId;
             clearYuiGuideChatPcSpotlightRects();
+            yuiGuideChatSpotlightPcOverlayRunId = '';
             sendYuiGuidePcOverlayPatch({ spotlights: [] }, false, {
-                tutorialRunId: options && options.pcOverlayRunId,
+                tutorialRunId: clearSpotlightRunId,
                 allowCreateRun: !(options && options.allowCreatePcOverlayRun === false),
                 skipBegin: options && options.skipPcOverlayBegin === true
             });
@@ -4401,23 +4521,29 @@
             return;
         }
 
-        updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+        updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);
         yuiGuideChatSpotlightTimer = yuiGuideChatSpotlightResources.setInterval(function () {
-            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId);
         }, 120);
     }
 
     function applyYuiGuideChatCursorRelay(message) {
         if (!message || typeof message !== 'object' || !isStandaloneChatPage() || !document.body) return false;
+        if (isYuiGuidePcOverlayRunEnded(message.tutorialRunId)) {
+            return false;
+        }
         var action = message.action || '';
+        var cursorOptions = Object.assign({}, message, {
+            pcOverlayRunId: message.pcOverlayRunId || getYuiGuidePcOverlayRunIdFromMessage(message)
+        });
         if (action === 'yui_guide_drag_chat_cursor') {
-            return applyYuiGuideChatCursorDrag(message.kind || '', message);
+            return applyYuiGuideChatCursorDrag(message.kind || '', cursorOptions);
         }
         if (action === 'yui_guide_arc_chat_cursor') {
-            return applyYuiGuideChatCursorArc(message.kind || '', message);
+            return applyYuiGuideChatCursorArc(message.kind || '', cursorOptions);
         }
         if (action === 'yui_guide_set_chat_cursor') {
-            return applyYuiGuideChatCursor(message.kind || '', message);
+            return applyYuiGuideChatCursor(message.kind || '', cursorOptions);
         }
         return false;
     }
@@ -4440,6 +4566,9 @@
         var endedRunId = typeof tutorialRunId === 'string' && tutorialRunId
             ? tutorialRunId
             : getExistingYuiGuidePcOverlayRunId();
+        if (endedRunId) {
+            yuiGuidePcOverlayEndedRunId = endedRunId;
+        }
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
         yuiGuidePcOverlayRunIdOverride = '';
