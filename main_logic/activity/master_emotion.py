@@ -175,8 +175,9 @@ class MasterEmotionTracker:
 
         Long-term aggregation is deferred; this lets a memory / reflection
         consumer pull the current sample without reaching into private state.
+        Reads via ``self.latest`` so it honors the MASTER_EMOTION_ENABLED gate.
         """
-        r = self._latest
+        r = self.latest
         if r is None:
             return None
         return {

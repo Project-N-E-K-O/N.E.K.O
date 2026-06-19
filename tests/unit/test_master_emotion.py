@@ -275,9 +275,12 @@ def test_input_is_bounded(monkeypatch):
     assert ("x" * 11) not in captured["prompt"]
 
 
-def test_to_profile_sample():
+def test_to_profile_sample(monkeypatch):
     t = MasterEmotionTracker("t")
     assert t.to_profile_sample() is None
     t._latest = _reading(-0.4, 0.6)
     sample = t.to_profile_sample()
     assert sample == {"valence": -0.4, "arousal": 0.6, "confidence": 0.9, "at": 0.0}
+    # honors the switch (reads via self.latest), same as latest
+    monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
+    assert t.to_profile_sample() is None
