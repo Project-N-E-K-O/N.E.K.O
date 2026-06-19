@@ -115,6 +115,21 @@ async def test_connect_live_room_rolls_back_live_enabled_when_start_fails(runtim
 
 
 @pytest.mark.asyncio
+async def test_connect_live_room_switches_active_room_without_double_start(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 100
+    runtime.config.live_enabled = True
+    await runtime.bili_live_ingest.start_listening(100)
+
+    snapshot = await runtime.connect_live_room(200)
+
+    assert snapshot["connected"] is True
+    assert runtime.config.live_room_id == 200
+    assert runtime.bili_live_ingest.started == [100, 200]
+    assert runtime.bili_live_ingest.stopped == 1
+    assert runtime.bili_live_ingest.room_id == 200
+
+
+@pytest.mark.asyncio
 async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: RoastRuntime) -> None:
     runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
     runtime.config.live_enabled = True

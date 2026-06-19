@@ -507,6 +507,8 @@ class RoastRuntime:
             raise ValueError("room_id must be configured before connecting")
         if target_room_id != self.config.live_room_id:
             await self.set_live_room(target_room_id)
+            if self.bili_live_ingest.is_listening() and int(self.config.live_room_id or 0) == target_room_id:
+                return self.live_connection_snapshot()
         self.config.live_enabled = True  # 内存即时生效（gate/safety 共享同一 config 对象），避免配置写竞争拖垮连接
         started = await self._start_live_listener(target_room_id)
         self.audit.record(
