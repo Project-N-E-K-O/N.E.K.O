@@ -111,15 +111,26 @@ class MasterEmotionTracker:
     # ── public API ──────────────────────────────────────────────────
     @property
     def latest(self) -> Optional[MasterEmotionReading]:
-        """The most recent reading, or ``None`` if never analyzed / reset / disabled.
+        """The most recent reading, or ``None`` if never analyzed / reset / disabled / expired.
 
         Honors the master switch: flipping ``MASTER_EMOTION_ENABLED`` off makes
         the reading disappear immediately (consumers fall back) instead of
         serving a stale reading until the next analyze.
+
+        Also age-gated by ``MASTER_EMOTION_READING_TTL_SEC``: the emotion signal
+        can trigger Focus on its own, so an indefinitely-served old distress
+        reading would mis-enter Focus on an unrelated neutral message after a
+        long pause. Normal turn cadence (seconds) stays well within the TTL.
         """
         if not bool(getattr(config, "MASTER_EMOTION_ENABLED", True)):
             return None
-        return self._latest
+        r = self._latest
+        if r is None:
+            return None
+        ttl = float(getattr(config, "MASTER_EMOTION_READING_TTL_SEC", 120.0))
+        if ttl > 0 and (time.time() - r.updated_at) > ttl:
+            return None
+        return r
 
     def reset(self) -> None:
         """Drop the current reading (call on session teardown / hot-swap)."""

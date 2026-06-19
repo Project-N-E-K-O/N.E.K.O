@@ -1839,6 +1839,13 @@ MASTER_EMOTION_MAX_INPUT_CHARS = 500
   （token / 成本 / 输入预算）。
 - 上游：MasterEmotionTracker._invoke 拼 prompt 前截断。"""
 
+MASTER_EMOTION_READING_TTL_SEC = 120.0
+"""情绪读数的有效期（秒），超期视为过期、latest 返回 None。
+- 用途：emotion 信号能单轮独立触发凝神，若读数无限有效，长停顿后一条中性消息
+  会读到几分钟前的旧 distress 读数、误重入/维持 Focus。TTL 让陈旧读数失效，
+  正常对话（turn 间隔几秒~几十秒）不受影响。
+- 设 0 关闭老化。上游：MasterEmotionTracker.latest。"""
+
 # ── Focus mode 凝神 (docs/design/focus-truename-mode.md) ───────────────
 # 信号触发、用户无感的「这一轮开思考 + 换强模型」机制，兑现 90/10 产品命题
 # 里的 10% 神明降临。以下全是 A/B 可调旋钮，集中在此便于灰度调参；情绪关键词

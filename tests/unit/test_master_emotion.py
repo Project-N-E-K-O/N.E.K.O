@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 import config
 from main_logic.activity import (
     FocusScorer,
@@ -25,6 +27,14 @@ from main_logic.activity import (
     MasterEmotionTracker,
 )
 from main_logic.activity.master_emotion import _clamp
+
+
+@pytest.fixture(autouse=True)
+def _disable_reading_ttl(monkeypatch):
+    # Most tests pin a fixed epoch-ish now=100.0 for throttle/seq determinism;
+    # the real-time TTL gate (time.time() - updated_at) would treat that as long
+    # expired. Disable aging by default — the TTL test re-enables it explicitly.
+    monkeypatch.setattr(config, "MASTER_EMOTION_READING_TTL_SEC", 0)
 
 
 # ── _clamp ───────────────────────────────────────────────────────────
@@ -114,6 +124,39 @@ def test_stale_neutral_emotion_does_not_dilute_keyword():
     assert res.signals["emotion"] is None
     assert res.signals["keyword"] is not None and res.signals["keyword"] > 0
     assert res.score == res.signals["keyword"]  # not diluted by the stale 0
+
+
+def test_cadence_alone_does_not_trigger():
+    # cadence amplifies distress evidence, not a trigger: a built baseline + a
+    # short neutral reply ("嗯。") with no keyword/emotion must gate cadence out
+    # and score 0, not renormalise cadence to a full 1.0.
+    s = FocusScorer("t")
+    for _ in range(4):
+        s.score(user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上")
+    res = s.score(user_text="嗯。")
+    assert res.signals["cadence"] is None  # gated: no distress evidence present
+    assert res.score == 0.0
+
+
+def test_cadence_counts_when_distress_present():
+    # with a distress signal present, cadence is NOT gated and amplifies it.
+    s = FocusScorer("t")
+    for _ in range(4):
+        s.score(user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上")
+    res = s.score(user_text="嗯。", emotion_reading=_reading(-0.9, 0.9))
+    assert res.signals["cadence"] is not None and res.signals["cadence"] > 0.5
+    assert res.signals["emotion"] is not None
+
+
+def test_reading_expires_after_ttl(monkeypatch):
+    fake, _ = _fake_tier('{"valence": -0.9, "arousal": 0.9}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("t")
+    asyncio.run(t.analyze("难过", now=100.0))  # updated_at=100.0 (ancient epoch)
+    monkeypatch.setattr(config, "MASTER_EMOTION_READING_TTL_SEC", 120.0)
+    assert t.latest is None  # ancient updated_at vs real now → expired
+    monkeypatch.setattr(config, "MASTER_EMOTION_READING_TTL_SEC", 0)
+    assert t.latest is not None  # aging disabled → served again
 
 
 # ── MasterEmotionTracker._parse robustness ───────────────────────────

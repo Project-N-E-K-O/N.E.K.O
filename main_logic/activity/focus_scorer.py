@@ -93,8 +93,15 @@ class FocusScorer:
         so the score is language-agnostic.
         """
         kw = self._signal_keyword(user_text)
-        cadence = self._signal_cadence(user_text)
         emotion = self._signal_emotion(emotion_reading)
+        cadence = self._signal_cadence(user_text)
+        # cadence amplifies distress evidence; it is NOT a trigger on its own.
+        # With keyword/emotion using positive-evidence-only (None) semantics, a
+        # lone cadence signal would renormalise to a full 1.0 — so an ordinary
+        # short reply ("ok") could enter Focus with no distress evidence at all.
+        # Gate it: when neither keyword nor emotion is present, drop cadence too.
+        if kw is None and emotion is None:
+            cadence = None
 
         signals = {"keyword": kw, "cadence": cadence, "emotion": emotion}
         score = _weighted_average(signals, config.FOCUS_SIGNAL_WEIGHTS)

@@ -190,8 +190,10 @@ def test_scorer_cadence_drop_after_baseline():
     # Feed long messages to build a baseline (each call appends after scoring).
     for _ in range(4):
         s.score(user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上")
-    res = s.score(user_text="嗯。")
-    assert res.signals["cadence"] is not None and res.signals["cadence"] > 0.5
+    # Query the cadence sub-signal directly: score() gates cadence out when no
+    # distress evidence (keyword/emotion) is present, so going through score()
+    # here would mask the cadence computation this test is about.
+    assert s._signal_cadence("嗯。") is not None and s._signal_cadence("嗯。") > 0.5
 
 
 def test_scorer_cadence_none_without_baseline():
