@@ -276,22 +276,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     }
   }
 
-  async function browseFolder() {
-    // Pick a local folder and let the user confirm before saving it.
-    try {
-      const res = unwrapActionResult(await props.api.call("pick_folder", {
-        initial: String((safeState.viewer_store || {}).dir || ""),
-        title: t("panel.storage.pickTitle"),
-      }))
-      if (res && res.path) {
-        configForm.setField("viewer_store_dir", String(res.path))
-        toast.success(t("panel.storage.browsed"))
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    }
-  }
-
   async function lookupLiveRoom() {
     const roomId = configForm.values.live_room_id.trim()
     if (!roomId) {
