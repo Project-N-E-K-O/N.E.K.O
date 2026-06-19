@@ -20,6 +20,3 @@ class PermissionGate:
                 return False, "live roast is disabled"
             return True, ""
         return False, f"unsupported source: {source}"
-
-    def automation_enabled(self) -> bool:
-        return False

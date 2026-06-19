@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from .contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerProfile
@@ -10,6 +11,7 @@ from .contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerProfi
 class RoastPipeline:
     def __init__(self, ctx: Any) -> None:
         self.ctx = ctx
+        self._uid_locks: dict[str, asyncio.Lock] = {}
 
     async def handle_event(self, event: ViewerEvent) -> InteractionResult:
         steps: list[PipelineStep] = []
@@ -47,43 +49,51 @@ class RoastPipeline:
                 profile = await self.ctx.viewer_profile.upsert(identity)
                 steps.append(PipelineStep("viewer_profile", "ok"))
 
-            if self.ctx.config.roast_once_per_uid and not is_sandbox_event and await self.ctx.viewer_profile.has_roasted(identity.uid):
-                reason = "uid already roasted"
-                steps.append(PipelineStep("viewer_gate", "skipped", reason))
-                result = InteractionResult(False, "skipped", event, identity=identity, profile=profile, reason=reason, steps=steps)
-                self.ctx.audit.record("pipeline_skipped", reason, level="info", detail={"uid": identity.uid})
-                return result
-            steps.append(PipelineStep("viewer_gate", "ok"))
-
-            request = self.ctx.avatar_roast.build_request(event, identity, profile)
-            steps.append(PipelineStep("avatar_roast", "ok"))
-
-            output_decision = self.ctx.safety_guard.before_output(event)
-            if not output_decision.allowed:
-                steps.append(PipelineStep("safety_guard.before_output", "skipped", output_decision.reason))
-                result = InteractionResult(False, "skipped", event, identity=identity, profile=profile, request=request, reason=output_decision.reason, steps=steps)
-                self.ctx.audit.record("pipeline_output_skipped", output_decision.reason, level="warning", detail={"uid": identity.uid})
-                return result
-            steps.append(PipelineStep("safety_guard.before_output", "ok", output_decision.status))
-
+            uid_lock: asyncio.Lock | None = None
+            if self.ctx.config.roast_once_per_uid and not is_sandbox_event:
+                uid_lock = self._uid_locks.setdefault(identity.uid, asyncio.Lock())
+                await uid_lock.acquire()
             try:
-                output = await self.ctx.dispatcher.push_roast(request)
-            except Exception as exc:
-                raw_message = str(exc).strip()
-                message = raw_message or f"output_failed: {type(exc).__name__}"
-                self.ctx.safety_guard.record_failure("output", message)
-                steps.append(PipelineStep("neko_dispatcher", "failed", message))
-                result = InteractionResult(False, "failed", event, identity=identity, profile=profile, request=request, reason=message, steps=steps)
+                if uid_lock is not None and await self.ctx.viewer_profile.has_roasted(identity.uid):
+                    reason = "uid already roasted"
+                    steps.append(PipelineStep("viewer_gate", "skipped", reason))
+                    result = InteractionResult(False, "skipped", event, identity=identity, profile=profile, reason=reason, steps=steps)
+                    self.ctx.audit.record("pipeline_skipped", reason, level="info", detail={"uid": identity.uid})
+                    return result
+                steps.append(PipelineStep("viewer_gate", "ok"))
+
+                request = self.ctx.avatar_roast.build_request(event, identity, profile)
+                steps.append(PipelineStep("avatar_roast", "ok"))
+
+                output_decision = self.ctx.safety_guard.before_output(event)
+                if not output_decision.allowed:
+                    steps.append(PipelineStep("safety_guard.before_output", "skipped", output_decision.reason))
+                    result = InteractionResult(False, "skipped", event, identity=identity, profile=profile, request=request, reason=output_decision.reason, steps=steps)
+                    self.ctx.audit.record("pipeline_output_skipped", output_decision.reason, level="warning", detail={"uid": identity.uid})
+                    return result
+                steps.append(PipelineStep("safety_guard.before_output", "ok", output_decision.status))
+
+                try:
+                    output = await self.ctx.dispatcher.push_roast(request)
+                except Exception as exc:
+                    raw_message = str(exc).strip()
+                    message = raw_message or f"output_failed: {type(exc).__name__}"
+                    self.ctx.safety_guard.record_failure("output", message)
+                    steps.append(PipelineStep("neko_dispatcher", "failed", message))
+                    result = InteractionResult(False, "failed", event, identity=identity, profile=profile, request=request, reason=message, steps=steps)
+                    self.ctx.record_result(result)
+                    return result
+
+                if not is_sandbox_event:
+                    await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
+                steps.append(PipelineStep("neko_dispatcher", "ok"))
+                result = InteractionResult(True, "pushed", event, identity=identity, profile=profile, request=request, output=output, steps=steps)
+                self.ctx.audit.record("pipeline_pushed", "roast request pushed", detail={"uid": identity.uid, "source": event.source})
                 self.ctx.record_result(result)
                 return result
-
-            if not is_sandbox_event:
-                await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
-            steps.append(PipelineStep("neko_dispatcher", "ok"))
-            result = InteractionResult(True, "pushed", event, identity=identity, profile=profile, request=request, output=output, steps=steps)
-            self.ctx.audit.record("pipeline_pushed", "roast request pushed", detail={"uid": identity.uid, "source": event.source})
-            self.ctx.record_result(result)
-            return result
+            finally:
+                if uid_lock is not None:
+                    uid_lock.release()
         except Exception as exc:
             message = f"pipeline_failed: {type(exc).__name__}"
             self.ctx.safety_guard.record_failure("pipeline", message)

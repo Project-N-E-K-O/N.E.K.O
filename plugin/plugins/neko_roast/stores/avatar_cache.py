@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 
 class AvatarCache:
     def __init__(self, max_items: int = 128) -> None:
         self.max_items = max(1, max_items)
         self._items: dict[str, tuple[bytes, str]] = {}
-        self._order: list[str] = []
+        self._order: deque[str] = deque()
 
     def get(self, key: str) -> tuple[bytes, str] | None:
         return self._items.get(key)
@@ -19,7 +21,7 @@ class AvatarCache:
             self._order.append(key)
         self._items[key] = (data, mime)
         while len(self._order) > self.max_items:
-            old = self._order.pop(0)
+            old = self._order.popleft()
             self._items.pop(old, None)
 
     def status(self) -> dict[str, int]:

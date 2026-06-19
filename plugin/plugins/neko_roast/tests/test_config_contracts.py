@@ -1,7 +1,14 @@
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import RoastConfig, ViewerIdentity, utc_now_iso
+from plugin.plugins.neko_roast.adapters.bili_auth_service import BiliAuthService
+from plugin.plugins.neko_roast.core.contracts import InteractionRequest, RoastConfig, SafetyDecision, ViewerEvent, ViewerIdentity, ViewerProfile, utc_now_iso
 from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
+from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
+from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
+from plugin.plugins.neko_roast.modules.bili_identity import BiliIdentityModule
 
 
 def test_roast_config_defaults_to_dry_run_for_real_room_safety():
@@ -69,3 +76,136 @@ async def test_module_toggle_failure_keeps_previous_state_and_success_clears_deg
     assert await registry.enable("demo", ctx=None) is True
     assert module.enabled is True
     assert registry.is_degraded("demo") is False
+
+
+@pytest.mark.asyncio
+async def test_bili_login_check_none_state_stays_waiting():
+    class Events:
+        NONE = object()
+        SCAN = object()
+        CONF = object()
+        TIMEOUT = object()
+        DONE = object()
+
+    class Session:
+        async def check_state(self):
+            return Events.NONE
+
+    service = BiliAuthService(
+        credential_provider=lambda: None,
+        credential_saver=lambda _payload: True,
+        credential_reloader=lambda: None,
+    )
+    service._login_session = Session()
+    service._login_generated_at = 0.0
+    service._require_login_sdk = lambda: (object, Events)
+
+    result = await service.login_check()
+
+    assert result["status"] == "waiting"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
+    class Audit:
+        def __init__(self):
+            self.records = []
+
+        def record(self, op, message="", level="info", detail=None):
+            self.records.append({"op": op, "message": message, "level": level, "detail": detail or {}})
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        def __init__(self):
+            self.roasted = set()
+
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, uid):
+            return uid in self.roasted
+
+        async def mark_roasted(self, uid, _output):
+            self.roasted.add(uid)
+
+    class Dispatcher:
+        def __init__(self):
+            self.calls = 0
+
+        async def push_roast(self, _request):
+            self.calls += 1
+            await asyncio.sleep(0)
+            return "queued_to_neko(test)"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="test",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=ViewerProfileModule(),
+        avatar_roast=AvatarRoast(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+    pipeline = RoastPipeline(ctx)
+    event = ViewerEvent(uid="42", nickname="same", danmaku_text="hi", source="live_danmaku")
+
+    first, second = await asyncio.gather(pipeline.handle_event(event), pipeline.handle_event(event))
+
+    statuses = sorted([first.status, second.status])
+    assert statuses == ["pushed", "skipped"]
+    assert ctx.dispatcher.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_avatar_fetch_tolerates_ctx_release():
+    module = BiliIdentityModule()
+
+    class Cache:
+        def get(self, _key):
+            return None
+
+        def put(self, _key, _data, _mime):
+            raise AssertionError("cache should not be accessed after ctx release")
+
+    module.ctx = SimpleNamespace(
+        avatar_cache=Cache(),
+        config=SimpleNamespace(avatar_fetch_timeout_seconds=1),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+
+    def _fetch_avatar(_url, _timeout):
+        module.ctx = None
+        return b"avatar", "image/png"
+
+    module._fetch_avatar = _fetch_avatar
+
+    identity = await module.resolve(ViewerEvent(uid="7", nickname="七", avatar_url="https://example.test/a.png"))
+
+    assert identity.avatar_bytes == b"avatar"
+    assert identity.avatar_mime == "image/png"

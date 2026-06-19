@@ -29,6 +29,7 @@ class ViewerStore:
         # 串行化读改写，避免并发 upsert/mark_roasted 互相覆盖（lost update）。
         self._lock = asyncio.Lock()
         self._fallback_warned = False
+        self._active_fallback_file: Path | None = None
 
     # ── 存储路径解析 ──────────────────────────────────────────────
 
@@ -95,10 +96,13 @@ class ViewerStore:
 
     async def _load_all(self) -> dict[str, dict[str, Any]]:
         file, _ = self._resolve_file()
+        if self._active_fallback_file is not None:
+            file = self._active_fallback_file
         if not file.exists():
             return {}
         try:
-            data = json.loads(file.read_text(encoding="utf-8"))
+            text = await asyncio.to_thread(file.read_text, encoding="utf-8")
+            data = json.loads(text)
         except Exception as exc:  # noqa: BLE001
             self._audit("viewer_store_load_failed", f"{type(exc).__name__}: {exc}")
             return {}
@@ -108,12 +112,14 @@ class ViewerStore:
 
     async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> None:
         file, custom = self._resolve_file()
-        if self._write_json(file, profiles):
+        if await asyncio.to_thread(self._write_json, file, profiles):
+            self._active_fallback_file = None
             return
         # 自定义目录写失败 → 回退默认目录（只告警一次，避免刷屏）。
         if custom:
             fallback = self._default_dir() / _STORE_FILE
-            if self._write_json(fallback, profiles):
+            if await asyncio.to_thread(self._write_json, fallback, profiles):
+                self._active_fallback_file = fallback
                 if not self._fallback_warned:
                     self._audit("viewer_store_fallback", f"自定义目录不可写，已回退默认目录：{fallback.parent}")
                     self._fallback_warned = True

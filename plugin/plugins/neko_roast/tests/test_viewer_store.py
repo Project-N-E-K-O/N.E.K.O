@@ -52,6 +52,27 @@ async def test_empty_custom_dir_falls_back_to_default(tmp_path):
     assert store.storage_status()["using_custom"] is False
 
 
+async def test_custom_write_fallback_is_used_for_followup_reads(tmp_path, monkeypatch):
+    custom = tmp_path / "custom_here"
+    default = tmp_path / "default"
+    store = ViewerStore(_FakePlugin(default), audit=None, dir_provider=lambda: str(custom))
+    original_write_json = store._write_json
+
+    def _fail_custom(file, profiles):
+        if file.parent == custom:
+            return False
+        return original_write_json(file, profiles)
+
+    monkeypatch.setattr(store, "_write_json", _fail_custom)
+
+    await store.upsert_identity(ViewerIdentity(uid="8", nickname="八"))
+    await store.mark_roasted("8", "fallback result")
+
+    assert not (custom / "viewer_profiles.json").exists()
+    assert (default / "viewer_profiles.json").exists()
+    assert await store.has_roasted("8") is True
+
+
 async def test_mark_roasted_roundtrip(tmp_path):
     store = ViewerStore(_FakePlugin(tmp_path), audit=None)
     await store.upsert_identity(ViewerIdentity(uid="7", nickname="七"))

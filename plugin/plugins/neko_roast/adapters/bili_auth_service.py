@@ -89,7 +89,7 @@ class BiliAuthService:
         png_bytes = pic.content
         img_base64 = base64.b64encode(png_bytes).decode("utf-8")
         terminal_qr = self._login_session.get_qrcode_terminal()
-        qr_url = getattr(self._login_session, "_QrCodeLogin__qr_link", "")
+        qr_url = str(getattr(self._login_session, "qr_link", "") or getattr(self._login_session, "qrcode_url", "") or "")
         return {
             "status": "qrcode_ready",
             "message": "请用B站App扫描二维码登录（180秒内有效）",
@@ -111,6 +111,9 @@ class BiliAuthService:
 
         _, QrCodeLoginEvents = self._require_login_sdk()
         state = await self._login_session.check_state()
+        none_state = getattr(QrCodeLoginEvents, "NONE", None)
+        if none_state is not None and state == none_state:
+            return {"status": "waiting", "message": "等待扫码...", "next_step": "请用B站App扫描二维码"}
         # 防误报：刚生成二维码时 check_state() 可能立刻返回 SCAN
         #（bilibili_api 某些版本中 SCAN 枚举值为 0，与"无事件"混淆）
         if state == QrCodeLoginEvents.SCAN and time.time() - self._login_generated_at < 1.0:

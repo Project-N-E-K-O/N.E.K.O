@@ -73,12 +73,16 @@ class BiliIdentityModule(BaseModule):
                 identity.avatar_bytes = data
                 identity.avatar_mime = mime
                 identity.is_animated_avatar = self._detect_animated(data)
-                self.ctx.avatar_cache.put(avatar_url, data, mime)
+                ctx = self.ctx
+                if ctx is not None:
+                    ctx.avatar_cache.put(avatar_url, data, mime)
         except Exception as exc:
             identity.fetched = False
             avatar_error = f"avatar_fetch_failed: {type(exc).__name__}"
             identity.error = "; ".join([item for item in [identity.error, avatar_error] if item])
-            self.ctx.audit.record("avatar_fetch_failed", identity.error, level="warning", detail={"uid": uid})
+            ctx = self.ctx
+            if ctx is not None:
+                ctx.audit.record("avatar_fetch_failed", identity.error, level="warning", detail={"uid": uid})
         return identity
 
     async def _fetch_profile_by_uid(self, uid: str) -> dict[str, Any]:
