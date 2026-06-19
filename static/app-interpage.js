@@ -1172,6 +1172,10 @@
                                 live2dCanvas2.style.removeProperty('opacity');
                                 live2dCanvas2.style.pointerEvents = 'auto';
                             }
+                            if (window.lanlan_config) {
+                                window.lanlan_config.model_type = newModelType;
+                                window.lanlan_config.live3d_sub_type = live3dSubType;
+                            }
                             if (typeof window.showLive2d === 'function') {
                                 window.showLive2d();
                             }

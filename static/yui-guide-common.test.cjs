@@ -1951,6 +1951,12 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.match(avatarInteractionRestoreBlock, /window\.vrmManager\.core\.setLocked\(!!snapshot\.vrm\);/);
     assert.match(avatarInteractionRestoreBlock, /window\.mmdManager\.core\.setLocked\(!!snapshot\.mmd\);/);
     assert.match(avatarInteractionRestoreBlock, /window\.pngtuberManager\.setLocked\(!!snapshot\.pngtuber,\s*\{\s*updateFloatingButtons:\s*false\s*\}\);/);
+    assert.match(managerSource, /pointerEvents:\s*\{/);
+    assert.match(managerSource, /vrmCanvas: readPointerEvents\('vrm-canvas'\)/);
+    assert.match(managerSource, /mmdCanvas: readPointerEvents\('mmd-canvas'\)/);
+    assert.match(avatarInteractionRestoreBlock, /const hasSnapshotPointerEvents = snapshot\.pointerEvents/);
+    assert.match(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshot\.pointerEvents\[pointerKey\] \|\| '';/);
+    assert.match(avatarInteractionRestoreBlock, /activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'/);
     assert.match(managerSource, /modelType === 'live3d'/);
     assert.match(managerSource, /live3d_sub_type/);
     assert.match(teardownBlock, /this\.restoreAvatarFloatingModelInteractionState\('teardown-early'\);/);

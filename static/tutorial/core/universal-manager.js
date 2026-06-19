@@ -2453,11 +2453,25 @@ class UniversalTutorialManager {
             }
             return false;
         };
+        const readPointerEvents = (elementId) => {
+            const element = document.getElementById(elementId);
+            return element ? element.style.pointerEvents : '';
+        };
         this._avatarFloatingModelLockSnapshot = {
             live2d: readLocked(window.live2dManager),
             vrm: readLocked(window.vrmManager, window.vrmManager && window.vrmManager.interaction),
             mmd: readLocked(window.mmdManager, window.mmdManager && window.mmdManager.interaction),
             pngtuber: readLocked(window.pngtuberManager),
+            pointerEvents: {
+                live2dCanvas: readPointerEvents('live2d-canvas'),
+                live2dContainer: readPointerEvents('live2d-container'),
+                vrmCanvas: readPointerEvents('vrm-canvas'),
+                vrmContainer: readPointerEvents('vrm-container'),
+                mmdCanvas: readPointerEvents('mmd-canvas'),
+                mmdContainer: readPointerEvents('mmd-container'),
+                pngtuberCanvas: readPointerEvents('pngtuber-canvas'),
+                pngtuberContainer: readPointerEvents('pngtuber-container')
+            },
             reason
         };
     }
@@ -2522,8 +2536,15 @@ class UniversalTutorialManager {
         [`${activePrefix}-canvas`, `${activePrefix}-container`].forEach(elementId => {
             const element = document.getElementById(elementId);
             if (!element) return;
-            element.style.removeProperty('pointer-events');
-            if (elementId.endsWith('-canvas') || activePrefix === 'pngtuber') {
+            const pointerKey = elementId.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+            const hasSnapshotPointerEvents = snapshot.pointerEvents
+                && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
+            if (hasSnapshotPointerEvents) {
+                element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';
+                return;
+            }
+            if (activePrefix === 'live2d' || activePrefix === 'pngtuber') {
+                element.style.removeProperty('pointer-events');
                 element.style.pointerEvents = activeLocked ? 'none' : 'auto';
             }
         });

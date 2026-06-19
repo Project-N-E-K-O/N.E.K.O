@@ -1331,6 +1331,12 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "window.pngtuberManager.setLocked(!!snapshot.pngtuber, { updateFloatingButtons: false });" in avatar_interaction_restore_block
     assert "modelType === 'live3d'" in tutorial_source
     assert "live3d_sub_type" in tutorial_source
+    assert "pointerEvents: {" in tutorial_source
+    assert "vrmCanvas: readPointerEvents('vrm-canvas')" in tutorial_source
+    assert "mmdCanvas: readPointerEvents('mmd-canvas')" in tutorial_source
+    assert "const hasSnapshotPointerEvents = snapshot.pointerEvents" in avatar_interaction_restore_block
+    assert "element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';" in avatar_interaction_restore_block
+    assert "activePrefix === 'live2d' || activePrefix === 'pngtuber'" in avatar_interaction_restore_block
     assert "element.style.removeProperty('pointer-events');" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = activeLocked ? 'none' : 'auto';" in avatar_interaction_restore_block
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
@@ -1405,6 +1411,12 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "live2dContainer2.style.removeProperty('opacity');" in interpage_source
     assert "live2dCanvas2.style.removeProperty('opacity');" in interpage_source
     assert "typeof window.showLive2d === 'function'" in interpage_source
+    live2d_show_block = interpage_source.split("if (typeof window.showLive2d === 'function')", 1)[0].rsplit(
+        "await window.live2dManager.loadModel(newModelPath,",
+        1,
+    )[1]
+    assert "window.lanlan_config.model_type = newModelType;" in live2d_show_block
+    assert "window.lanlan_config.live3d_sub_type = live3dSubType;" in live2d_show_block
     assert "window.live2dManager.resumeRendering();" in interpage_source
     assert "function ensureLive2DRenderActive(reason)" in interpage_source
     assert "ensureLive2DRenderActive('model-reload-live2d');" in interpage_source
