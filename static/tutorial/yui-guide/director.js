@@ -7054,6 +7054,9 @@
             }
             if (typeof targetKey === 'string' && targetKey.indexOf('settings-sidepanel:') === 0) {
                 const type = targetKey.split(':')[1] || '';
+                if (scene && scene.deferSettingsSidePanelUntilCursorClick === true) {
+                    return this.getAvatarFloatingSidePanel(type);
+                }
                 return this.getAvatarFloatingSidePanel(type) || await this.ensureAvatarFloatingSettingsSidePanel(type);
             }
             if (scene && scene.id === 'day4_model_lock' && targetKey === '#${p}-lock-icon') {

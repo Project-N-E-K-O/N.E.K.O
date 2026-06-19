@@ -3870,10 +3870,11 @@
             return;
         }
         if (attemptedCanonicalRun) {
-            syncYuiGuidePcOverlayRunIdFromStorage();
-            return;
-        }
-        if (!attemptedCurrentRun || !attemptedChatOwnedRun) {
+            if (syncYuiGuidePcOverlayRunIdFromStorage()) {
+                sendYuiGuidePcOverlayPatch(patch || {}, true);
+                return;
+            }
+        } else if (!attemptedCurrentRun || !attemptedChatOwnedRun) {
             return;
         }
         if (syncYuiGuidePcOverlayRunIdFromStorage()) {

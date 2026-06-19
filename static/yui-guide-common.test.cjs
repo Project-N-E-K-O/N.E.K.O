@@ -1262,6 +1262,10 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
         '        async runDay6PluginOpenAgentPanelFlow',
         1
     )[0];
+    const resolveTargetBlock = source.split('        async resolveAvatarFloatingTarget(scene, role) {')[1].split(
+        '        async resolveAvatarFloatingPersistent',
+        1
+    )[0];
     const inputIntroSceneBlock = source.split('        isAvatarFloatingInputIntroScene(scene) {')[1].split(
         '        getAvatarFloatingIntroSpotlightTarget(scene) {',
         1
@@ -1372,6 +1376,10 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(
         prepareSceneBlock,
         /operation\.indexOf\('show-settings-sidepanel:'\) === 0[\s\S]*&& !deferSettingsSidePanelUntilCursorClick[\s\S]*this\.ensureAvatarFloatingSettingsSidePanel/
+    );
+    assert.match(
+        resolveTargetBlock,
+        /targetKey\.indexOf\('settings-sidepanel:'\) === 0[\s\S]*scene\.deferSettingsSidePanelUntilCursorClick === true[\s\S]*return this\.getAvatarFloatingSidePanel\(type\);[\s\S]*this\.ensureAvatarFloatingSettingsSidePanel\(type\)/
     );
     assert.match(flowPanelTourBlock, /onClickStart: \(\) => director\.openSettingsPanel\(\)/);
     assert.match(flowPanelTourBlock, /this\.tourPanel\(scene,\s*sceneRunId,\s*touredPanel,\s*narrationPromise/);
@@ -2355,9 +2363,9 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
     assert.match(externalBridgeBlock, /var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId\(attemptedRunId\);/);
     assert.match(externalBridgeBlock, /var storedCanonicalRunId = readStoredYuiGuidePcOverlayRunId\(\);/);
     assert.match(externalBridgeBlock, /var attemptedCanonicalRun = !!\(/);
-    assert.match(externalBridgeBlock, /if \(attemptedCanonicalRun\) \{[\s\S]*syncYuiGuidePcOverlayRunIdFromStorage\(\);[\s\S]*return;/);
+    assert.match(externalBridgeBlock, /if \(attemptedCanonicalRun\) \{[\s\S]*if \(syncYuiGuidePcOverlayRunIdFromStorage\(\)\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\);[\s\S]*return;[\s\S]*\}\s*\} else if \(!attemptedCurrentRun \|\| !attemptedChatOwnedRun\) \{/);
     assert.match(appInterpageSource, /function isYuiGuideChatOwnedPcOverlayRunId\(runId\) \{/);
-    assert.match(externalBridgeBlock, /if \(!attemptedCurrentRun \|\| !attemptedChatOwnedRun\) \{/);
+    assert.doesNotMatch(externalBridgeBlock, /if \(attemptedCanonicalRun\) \{[\s\S]*syncYuiGuidePcOverlayRunIdFromStorage\(\);[\s\S]*return;[\s\S]*\}\s*if \(!attemptedCurrentRun \|\| !attemptedChatOwnedRun\) \{/);
     assert.match(externalBridgeBlock, /syncYuiGuidePcOverlayRunIdFromStorage\(\)[\s\S]*sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\)/);
     assert.match(externalBridgeBlock, /sendYuiGuidePcOverlayPatch\(patch \|\| \{\}, true\)/);
     assert.match(externalBridgeBlock, /function resolveYuiGuidePcOverlayRunIdForSend\(requestedRunId, allowCreateRun\)/);
