@@ -5476,6 +5476,47 @@ describe('App', () => {
     }
   });
 
+  it('retargets compact tool hover to the visual button under the pointer after wheel rotation', async () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    // The default wheel's slot 0 sits at 45deg on the 80px orbit, initially the screenshot tool.
+    const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
+
+    try {
+      fireEvent.pointerMove(fan, {
+        pointerId: 81,
+        ...pointerAtSelectedSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      const screenshotButton = fan.querySelector('.compact-input-tool-item-screenshot');
+      const avatarButton = fan.querySelector('.compact-input-tool-item-avatar');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+
+      fireEvent.wheel(fan, {
+        deltaY: 80,
+        ...pointerAtSelectedSlot,
+      });
+
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+      expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(avatarButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
   it('routes compact tool wheel background scrolling to the open inline history', () => {
     const previousHistoryOpen = window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     const scrollTopByElement = new WeakMap<HTMLElement, number>();
