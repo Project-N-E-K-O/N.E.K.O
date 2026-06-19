@@ -128,6 +128,10 @@ const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO = 0.7;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME = 0.38;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME = 0.6;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME = 0.85;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_DEFLECTION_DEG = 28;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_SHIFT_PX = 8;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_RATIO = 1;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_MS = 110;
 const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
@@ -1229,6 +1233,7 @@ export default function FullChatSurface({
   const compactInputToolFanRef = useRef<HTMLDivElement | null>(null);
   const compactInputToolWheelPointerRef = useRef<CompactToolWheelPointerState | null>(null);
   const compactInputToolWheelSuppressClickRef = useRef(false);
+  const compactInputToolWheelSelectionPointerKickTimerRef = useRef<number | null>(null);
   const compactInputToolTogglePointerHandledRef = useRef(false);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
@@ -1293,6 +1298,7 @@ export default function FullChatSurface({
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
   const [compactInputToolWheelDragActive, setCompactInputToolWheelDragActive] = useState(false);
   const [compactInputToolWheelDragOffsetRatio, setCompactInputToolWheelDragOffsetRatio] = useState(0);
+  const [compactInputToolWheelSelectionPointerKickRatio, setCompactInputToolWheelSelectionPointerKickRatio] = useState(0);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
@@ -2543,12 +2549,28 @@ export default function FullChatSurface({
     openCompactInputToolFan('click');
   }, [closeCompactInputToolFanFromUserClick, openCompactInputToolFan]);
 
+  const clearCompactInputToolWheelSelectionPointerKickTimer = useCallback(() => {
+    if (compactInputToolWheelSelectionPointerKickTimerRef.current === null) return;
+    window.clearTimeout(compactInputToolWheelSelectionPointerKickTimerRef.current);
+    compactInputToolWheelSelectionPointerKickTimerRef.current = null;
+  }, []);
+
+  const kickCompactInputToolWheelSelectionPointer = useCallback((direction: 1 | -1) => {
+    clearCompactInputToolWheelSelectionPointerKickTimer();
+    setCompactInputToolWheelSelectionPointerKickRatio(direction * COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_RATIO);
+    compactInputToolWheelSelectionPointerKickTimerRef.current = window.setTimeout(() => {
+      compactInputToolWheelSelectionPointerKickTimerRef.current = null;
+      setCompactInputToolWheelSelectionPointerKickRatio(0);
+    }, COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_MS);
+  }, [clearCompactInputToolWheelSelectionPointerKickTimer]);
+
   const rotateCompactInputToolWheel = useCallback((direction: 1 | -1) => {
+    kickCompactInputToolWheelSelectionPointer(direction);
     setCompactInputToolWheelIndex(current => (
       (current + direction + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT
     ));
     playCompactToolWheelDetentSound();
-  }, []);
+  }, [kickCompactInputToolWheelSelectionPointer]);
 
   const getCompactToolWheelDragAngle = useCallback((clientX: number, clientY: number): number | null => {
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
@@ -2615,7 +2637,12 @@ export default function FullChatSurface({
   useEffect(() => () => {
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
-  }, [clearCompactInputToolFanCloseTimer, clearCompactInputToolFanInteractiveTimer]);
+    clearCompactInputToolWheelSelectionPointerKickTimer();
+  }, [
+    clearCompactInputToolFanCloseTimer,
+    clearCompactInputToolFanInteractiveTimer,
+    clearCompactInputToolWheelSelectionPointerKickTimer,
+  ]);
 
   useEffect(() => {
     if (!isCompactSurface || effectiveCompactChatState !== 'input') {
@@ -3817,9 +3844,20 @@ export default function FullChatSurface({
     compactInputToolFanActionsDisabled || !isCompactToolWheelActionable(toolIndex)
   );
   const compactInputToolWheelDragAngle = compactInputToolWheelDragOffsetRatio * COMPACT_TOOL_WHEEL_DRAG_ANGLE_STEP_DEG;
+  const compactInputToolWheelSelectionPointerDeflectionRatio = clamp(
+    compactInputToolWheelDragOffsetRatio + compactInputToolWheelSelectionPointerKickRatio,
+    -1,
+    1,
+  );
+  const compactInputToolWheelSelectionPointerDeflectionAngle = compactInputToolWheelSelectionPointerDeflectionRatio
+    * COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_DEFLECTION_DEG;
+  const compactInputToolWheelSelectionPointerDeflectionShift = compactInputToolWheelSelectionPointerDeflectionRatio
+    * COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_SHIFT_PX;
   const compactInputToolWheelDragStyle = {
     '--compact-tool-wheel-drag-angle': `${compactInputToolWheelDragAngle}deg`,
     '--compact-tool-wheel-drag-counter-angle': `${-compactInputToolWheelDragAngle}deg`,
+    '--compact-tool-wheel-selection-pointer-deflection-angle': `${compactInputToolWheelSelectionPointerDeflectionAngle}deg`,
+    '--compact-tool-wheel-selection-pointer-deflection-shift': `${compactInputToolWheelSelectionPointerDeflectionShift}px`,
   } as CSSProperties;
 
   const compactInputToolFanNode = isCompactSurface && effectiveCompactChatState === 'input' ? (

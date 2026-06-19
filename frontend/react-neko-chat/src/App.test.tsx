@@ -5056,12 +5056,18 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-drag-active', 'true');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
       expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeCloseTo(15, 1);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-angle'))).toBeGreaterThan(13);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-angle'))).toBeLessThan(15);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-shift'))).toBeGreaterThan(3);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-shift'))).toBeLessThan(5);
 
       fireEvent.pointerUp(fan, { pointerId: 41, ...compactToolWheelPoint(15 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
 
       expect(fan).toHaveAttribute('data-compact-tool-wheel-drag-active', 'false');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
       expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-angle')).toBe('0deg');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-shift')).toBe('0px');
     } finally {
       fanRectSpy.mockRestore();
     }
