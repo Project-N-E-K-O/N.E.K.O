@@ -4173,6 +4173,10 @@
             if (isYuiGuidePcCursorOnlyMode()) {
                 sendYuiGuidePcOverlayPatch({
                     cursor: { visible: false }
+                }, false, {
+                    tutorialRunId: normalizedOptions.pcOverlayRunId,
+                    allowCreateRun: !(normalizedOptions.allowCreatePcOverlayRun === false),
+                    skipBegin: normalizedOptions.skipPcOverlayBegin === true
                 });
             }
             hideYuiGuideChatCursorElement();
@@ -4441,11 +4445,10 @@
             allowCreatePcOverlayRun: false,
             skipPcOverlayBegin: true
         });
-        relayYuiGuideChatCommand({
-            action: 'yui_guide_set_chat_cursor',
-            kind: '',
-            reason: rawReason,
-            timestamp: Date.now()
+        applyYuiGuideChatCursor('', {
+            pcOverlayRunId: endedRunId,
+            allowCreatePcOverlayRun: false,
+            skipPcOverlayBegin: true
         });
         applyYuiGuideChatLockState(false);
         applyYuiGuideChatInputLocked(false, rawReason);

@@ -2101,8 +2101,10 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(externalCleanupBlock, /yuiGuideChatCursorRequestToken \+= 1;/);
     assert.match(externalCleanupBlock, /yuiGuideCompactToolWheelRotateRetryToken \+= 1;/);
     assert.match(externalCleanupBlock, /applyYuiGuideChatSpotlight\('', \{[\s\S]*pcOverlayRunId: endedRunId/);
+    assert.match(externalCleanupBlock, /applyYuiGuideChatCursor\('', \{[\s\S]*pcOverlayRunId: endedRunId/);
     assert.match(externalCleanupBlock, /allowCreatePcOverlayRun: false/);
     assert.match(externalCleanupBlock, /skipPcOverlayBegin: true/);
+    assert.doesNotMatch(externalCleanupBlock, /relayYuiGuideChatCommand\(\{\s*action: 'yui_guide_set_chat_cursor'/);
     assert.match(externalCleanupBlock, /window\.nekoTutorialOverlay\.clear\(\{/);
     assert.match(externalCleanupBlock, /tutorialRunId: endedRunId/);
     assert.match(appInterpageSource, /case 'yui_guide_tutorial_lifecycle_ended':/);
