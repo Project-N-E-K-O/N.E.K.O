@@ -24,6 +24,7 @@ This file is for IDE agents and future contributors working inside `plugin/plugi
 ## Documentation Required For New Features
 
 Every new feature or module must include developer-facing documentation in `docs/`.
+Use `docs/README.md` as the document responsibility matrix. Do not copy the same rule into multiple docs; update the canonical document and link to it from the others.
 
 Use one of these patterns:
 
@@ -51,11 +52,32 @@ The documentation must explain:
 
 If a feature has no matching documentation, treat the implementation as incomplete.
 
+## Collaboration Rules
+
+- Split work as Feature -> Slice -> PR. One PR should carry one reviewable slice, or one pure docs / tests / refactor purpose.
+- Keep a PR at 20 files or fewer by default. If it exceeds 20 files, explain why in the PR description and prefer Draft until the shape is reviewed.
+- Use Draft PRs for new base contracts, cross-module migrations, broad documentation governance, or work that intentionally seeds follow-up PRs.
+- Do not mix feature work with unrelated cleanup, panel rewrites, host/server changes, or old-plugin removal.
+- Each dependent PR must state its base PR, merge order, tests run, and rollback/degrade behavior.
+- Phase-specific governance: do not use documentation-governance PRs to implement runtime observability, Gift/SC/Guard behavior, `panel.tsx` refactors, or product changes.
+
+## Reviewer Checklist
+
+Reviewers should check at least:
+
+- Scope: one Slice, clear files touched, no unrelated business/UI/test changes.
+- Size: <=20 files, or a justified Draft / split plan.
+- Architecture: EventBus / pipeline / safety guard / dispatcher / store / audit boundaries are preserved.
+- Output: no module calls `plugin.push_message()` directly; NEKO output stays behind `adapters/neko_dispatcher.py`.
+- Privacy: no raw private data, cookies, tokens, avatar bytes/base64, or raw payloads go to logger, audit, config, or UI.
+- Docs: documentation follows `docs/README.md` canonical source routing.
+- Tests: required commands are listed, or the PR explicitly states it is docs-only.
+
 ## Required Checks
 
-Run at least:
+For docs-only PRs, state that no code tests were run because the change is documentation-only. For any PR touching Python, UI, i18n, contracts, config schema, manifest, or runtime behavior, run at least:
 
 ```powershell
-uv run pytest plugin/tests/unit/plugins/test_neko_roast_contracts.py plugin/plugins/neko_roast/tests/test_smoke.py
+uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```

@@ -1,7 +1,7 @@
 # 直播中心（neko_roast）开发总结与路线图
 
-> 本文是 `development.md`（权威设计细节）的配套：记录整体定位、已完成进度、关键决策与踩过的坑、运行态交互方式、后续路线与待拍板项，供接手者快速上手。
-> 更新日期：2026-06-18
+> 本文只记录阶段定位、完成状态和下一阶段路线。架构规范、协作规范和测试门禁以 `development.md` 为准；文档职责矩阵以 `docs/README.md` 为准；宿主 / SDK 历史问题以 `devlog.md` 为准。
+> 更新日期：2026-06-21
 
 ---
 
@@ -13,37 +13,15 @@
 
 ---
 
-## 2. 架构总览
+## 2. 架构入口
 
-**分层**：`Ingest（接入/事件源）→ Normalize（归一化）→ Pipeline（处理路由）→ Handler（产出，如锐评）→ Dispatch（唯一出口）→ Store（数据）`。
+当前 v0.1 闭环是：
 
-**四条不变量（代码强制，勿破）**：
-- NEKO 输出只走 `adapters/neko_dispatcher.py`；
-- 观众档案写只走 `stores/viewer_store.py`；
-- 审计只走 `stores/audit_store.py`；
-- 直播与沙盒**共用** `core/pipeline.py`，安全门 `core/safety_guard.py` 必经。
-
-**数据流**：
 ```text
-LiveEvent/ViewerEvent
-  → safety_guard.before_event()          连接/暂停/队列闸门
-  → bili_identity.resolve()              UID→昵称/头像(按UID抓)/挂件META
-  → viewer_profile.upsert() / 沙盒临时
-  → viewer_gate.check_once_per_uid()     每UID一次
-  → avatar_roast.build_request()         自适应焦点锐评 prompt
-  → safety_guard.before_output(event)    限流（rate_limit_seconds，沙盒豁免）
-  → neko_dispatcher.push_roast()         唯一出口；dry_run 时短路
-  → push_message → message_plane → main_server → 视觉模型 → 猫猫开口
+Live Ingest → EventBus → Selection → Roast Pipeline → Runtime → Dashboard
 ```
 
-**模块地图（5 能力域）**：
-| 域 | 现有 | 预留 |
-|---|---|---|
-| 接入 Ingest | `bili_live_ingest`（含吞并的 `DanmakuListener`）、`live_events`（P2.5 事件中枢 / 弹幕、礼物、SC、上舰同窗择优地基已完成） | `bili_dm_ingest` |
-| 身份/档案 | `bili_identity`、`viewer_profile` | `contribution_rank`、`watch_time` |
-| 互动产出 | `avatar_roast` | 未来 gift_thanks/sc_read/welcome |
-| B站读写 | — | `bili_read_tools`、`bili_write_tools`（扫码登录可吞并 `bilibili_danmaku/bili_auth_service.py`） |
-| 主播自动化 | — | `automation_ops` |
+详细分层、模块边界、数据边界、pipeline、EventBus 和输出约束不在 roadmap 中重复维护；以 `development.md` 为 Canonical Source。UI 贡献模型以 `ui-architecture.md` 为准。
 
 ---
 
@@ -69,11 +47,13 @@ LiveEvent/ViewerEvent
 | **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——`bili_live_ingest` 把富模型包成 `LiveEvent` 统一信封（`contracts.LiveEvent`：type/uid/payload/source/ts/schema_version/raw）发布到 `EventBus`；`EventBus` 升级为真订阅分发（`subscribe(type,handler,owner)` / `publish`），每订阅者隔离 + 归属（owner）+ audit（`event_handler_failed`）+ 无订阅者静默丢弃。`live_events` 改为**经 bus 订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"`** 的示范订阅者（`submit()` 签名不变、内部择优复用既有 pipeline 语境）。**这是「分发给其他开发者各写各事件 handler」的核心契约**（development.md「直播事件中枢（EventBus）」含第三方加 handler 配方）| 单测 +8（`test_event_bus.py`）+ 契约 +1；端到端经 bus 的 `test_live_listener_routes_rich_event_through_hub_to_pipeline` 仍绿；gift/SC/guard 接线已单测覆盖，专属 P3 handler 待做 |
 | **可靠性收尾（兜底层②④收口）** | ① UI 错误边界：`panel.tsx` `safeModuleCard` 用 try/catch 包每张互动模块卡的同步渲染（hosted-ui runtime 无 class error boundary），未来第三方模块 `config_schema`/渲染抛错只塌成一张降级卡（`panel.modules.renderError`）不黑屏整盘（兜底层④，见 ui-architecture §4）。② 模块 `on_enable/on_disable` 生命周期钩子：`ModuleRegistry.enable/disable` 隔离调用（单点失败标 degraded + audit），地基件，待接 per-module 启停真实调用方 | 单测 +3（`test_module_registry.py`）+ 契约 +1（`test_panel_wraps_module_cards_in_error_boundary`）；panel transpile OK；i18n +1 键 8×228 |
 
-测试基线：`uv run pytest plugin/plugins/neko_roast/tests -q` → **58 passed**；CLI check **0 error**（6 条模板 warning 允许）。`neko_roast` 已提交并推送到 `CN-Zephyr/N.E.K.O` 的 `Roast` 分支；后续改动继续保持在该分支，非本插件改动不混入本插件提交。
+测试基线：`uv run pytest plugin/plugins/neko_roast/tests -q` → **58 passed**；CLI check **0 error**（6 条模板 warning 允许）。PR1903-PR1909 已进入主线；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
 
 ---
 
-## 4. 关键决策与踩过的坑
+## 4. 关键决策与历史问题入口
+
+本节只保留路线图相关的决策摘要。宿主 / SDK 侧历史问题、配置写竞争、storage layout、message plane 等事故记录以 `devlog.md` 和 `development.md` 对应章节为准。
 
 - **吞并策略**：取 `bilibili_danmaku` 的**连接+解析层**（`danmaku_core`/`livedanmaku`，含匿名 WS、WBI 签名、临时 buvid3 反 -352 风控、zlib/brotli 解压、心跳、多服务器故障转移、断线重连）；**弃**其自带 LLM/orchestrator/memory（neko_roast 走 `dispatcher → main_server` 统一人设）。参照系：弹幕姬 `copyliu/bililive_dm` 的小插件契约（4 事件 + 统一模型 + 故障隔离）作为未来扩展点设计蓝本。
 - **弹幕不含头像**：B站 DANMU_MSG 无头像 URL；头像由下游 `bili_identity` **按 UID 抓取**。
@@ -86,18 +66,13 @@ LiveEvent/ViewerEvent
 
 ---
 
-## 5. 当前运行态 & 交互速查
+## 5. 运行与验证入口
 
-- 后端 + NEKO-PC 前端**在运行**。运行态当前默认配置为安全态（`live_room_id=0`、**`dry_run=true`**、`rate_limit_seconds=20`、`developer_tools_enabled=false`）。
-- ⚠️ 只有主播明确进入正式输出窗口时才把 `dry_run=false`；否则连真实房间前必须保持 `dry_run=true`。
-- **插件 action**（admin 鉴权已禁用）：`POST http://127.0.0.1:48916/plugin/neko_roast/hosted-ui/action/<id>`，body `{"args":{...},"kind":"panel","surface_id":"main"}`。id：`connect_live_room{room_id}` / `disconnect_live_room{}` / `update_config{...}` / `submit_viewer_event{uid}` / `lookup_live_room{room_id}`。
-- **读状态**：`GET .../hosted-ui/context?kind=panel&id=main` → `.state.{config,live_connection,recent_results,recent_audit}`。
-- **改 py 后让运行态生效**：`POST .../stop` 再 `.../start`（重载子进程）。改 `panel.tsx` **不用重新构建前端**——plugin-manager 用 sucrase **运行时转译**（见 §3 人气值 UI 行），UI 里(重)开 neko_roast 面板即生效。注意 manifest `auto_start=false`：后端起来后插件**不会自动启动**，hosted-ui 路由要等 `POST /plugin/neko_roast/start` 才注册（否则 context/action 全 404）。
-- **配置改不动时（写竞争卡 10s）的绕过**：用 host 直写端点 `POST /plugin/neko_roast/config/hot-update`，body `{"config":{"neko_roast":{...}},"mode":"temporary"}` —— 走 host 直接热更（`handler_called`，不经插件 `update_own_config` IPC，不碰文件写竞争），即时生效且不落盘（`mode:temporary`，`plugin.toml` 不变，stop/start 即还原）。P2.5 真机验证就是靠它把 `dry_run`/`live_room_id` 热更进去，再 `connect_live_room`（此时 `room_id==config` 跳过 `set_live_room` 持久化）才连上。多个键放同一次请求里（merge 生效，不会互相覆盖）。
-- **测试**：仓库根下运行 `uv run pytest plugin/plugins/neko_roast/tests -q`；CLI `uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast`。
-- **日志**：`%LOCALAPPDATA%\N.E.K.O\logs\`（主日志找 `send_lanlan_response`=猫猫开口、`free-vision-model`=头像进视觉）。
-- **测试房间** `81004`（匿名只读）。PowerShell 打印中文先 `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $env:PYTHONIOENCODING="utf-8"`。
-- **彻底重启**（万不得已）：杀光 neko python+electron+openfang+放端口 → `cd N.E.K.O; uv run python launcher.py`（后台）→ `cd NEKO-PC; npm start`（后台）。遇到疑似配置 / storage layout / hosted-ui 状态漂移时，优先用全量重启排除旧进程缓存。
+运行步骤、action 调用、日志位置和用户操作不在 roadmap 中维护，避免和使用文档漂移：
+
+- 用户/主播流程：见 `quickstart.md`。
+- 开发者运行态和常用 action：见 `developer-guide.md`「开发环境 & 运行态」。
+- 测试门禁：见 `development.md`「测试门禁」和 `AGENTS.md`「Required Checks」。
 
 ---
 
@@ -132,7 +107,7 @@ LiveEvent/ViewerEvent
 
 ## 9. ⚠️ 不要碰的在途 WIP
 
-`N.E.K.O/main_logic/core.py`、`N.E.K.O/plugin/server/application/plugins/ui_query_service.py` 及其两个测试——是修 proactive 投递 / 目标解析的**他人在途工作**，与本插件无关，勿动勿提交。
+跨模块禁碰范围和 Reviewer 硬规则以 `AGENTS.md` 为准。路线图只保留下一阶段方向，不维护临时工作区状态。
 
 ---
 

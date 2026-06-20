@@ -1,8 +1,8 @@
 # neko_roast 开发者指南（从这里开始）
 
-> 面向**接手 / 参与 `neko_roast`（直播中心）开发**的人。这是单一入口：先读这份建立心智模型，
-> 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是参考规格（厚），
-> 本文是上手向导（薄）。
+> 面向**接手 / 参与 `neko_roast`（直播中心）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
+> 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
+> Canonical Source；本文只做上手导览，不复制完整规范。
 >
 > 更新日期：2026-06-19 · 测试基线 58 passed / 0 error
 
@@ -68,8 +68,6 @@ neko_roast/
   body `{"config":{"neko_roast":{...}},"mode":"temporary"}`（内存热更、不落盘）。
 - ⚠️ `dry_run` 默认开启；只有主播明确进入正式输出窗口时才关掉。`dry_run=false` 连真房间猫会**真开口**。测试房 `81004`。
 
-详见 `live-center-roadmap.md` §5「运行态 & 交互速查」。
-
 ## 6. 核心契约：加一个事件 handler（最常见的扩展）
 
 这是「多人各写各模块」的核心路径。直播事件经 `EventBus` 按 `type` 路由，加一个事件族功能 =
@@ -123,17 +121,14 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 
 ## 10. 测试 & 校验（提交前必跑）
 
-仓库根 `N.E.K.O/` 下：
+权威测试门禁见 `development.md`「测试门禁」和 `AGENTS.md`「Required Checks」。仓库根 `N.E.K.O/` 下的常用命令是：
 
 ```powershell
-# 全量（插件 tests/）
 uv run pytest plugin/plugins/neko_roast/tests -q
-# CLI 检查（0 error 才算过；6 条模板 warning 允许）
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-改了 `panel.tsx` 还要确认 sucrase 转译通过（前端 plugin-manager 用生产同款选项
-`transforms:['typescript','jsx']`, `jsxPragma:'h'`, `production`）。当前基线：**58 passed / 0 error**。
+文档-only PR 可以在 PR 描述中说明未运行代码测试；任何触碰 Python、UI、i18n、契约、配置 schema、manifest 或 runtime 行为的 PR 必须按门禁执行。改了 `panel.tsx` 还要确认 sucrase 转译通过（前端 plugin-manager 用生产同款选项 `transforms:['typescript','jsx']`, `jsxPragma:'h'`, `production`）。当前基线以 `development.md` 为准。
 
 ## 11. 红线 / 硬规则
 
@@ -151,10 +146,11 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 | 文档 | 是什么 | 何时读 |
 |---|---|---|
 | **developer-guide.md**（本文）| 上手向导 | 第一份，建立心智模型 |
-| `development.md` | 参考规格（已落地设计逐项细节）| 实现某功能前查对应章节 |
-| `live-center-roadmap.md` | 定位 / 进度 / 决策 / 运行态速查 / 路线 / 下一阶段 TODO | 想知道做到哪、接下来做什么 |
+| `docs/README.md` | 文档职责矩阵 / Canonical Source | 不确定该改哪份文档时 |
+| `development.md` | 开发规范、架构契约、协作规范、测试门禁 | 实现某功能前查对应章节 |
+| `live-center-roadmap.md` | 阶段目标、完成状态、下一阶段顺序 | 想知道做到哪、接下来做什么 |
 | `ui-architecture.md` | 面板 UI / 模块贡献模型 / 五层兜底 / 宿主约束 | 写面板或新模块前 |
-| `AGENTS.md` | IDE agent 与贡献者硬规则 | 写代码前 |
+| `AGENTS.md` | IDE agent 硬规则、Reviewer Checklist、必跑命令 | 写代码或 review 前 |
 | `quickstart.md` | 主播 / 使用者操作流程 | 想知道用户怎么用 |
 | `devlog.md` | 宿主 / SDK 侧问题与跨层待办 | 撞到「不像本插件的锅」时 |
 
@@ -168,5 +164,10 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 
 ## 14. 下一步去哪看
 
+第一周建议：
 
-当前接手建议：先读 `live-center-roadmap.md` §10 确认真实 TODO，再读 `ui-architecture.md` 确认模块贡献模型。新增 P3 handler 必须走 `EventBus` 订阅、复用 `pipeline` / `safety_guard` / `neko_dispatcher`，同步 8 个 locale，并在 `docs/modules/<module_id>.md` 或 `development.md` 留下模块文档。
+1. 先读本文和 `docs/README.md`，确认文档职责和 Canonical Source。
+2. 再读 `development.md` 的「设计原则」「协作规范」「当前模块」「Pipeline」「直播事件中枢（EventBus）」。
+3. UI 或模块贡献相关任务再读 `ui-architecture.md`。
+4. 写代码前读 `AGENTS.md` 的硬规则和 Reviewer Checklist。
+5. 从文档治理、小型测试补齐、模块文档或窄 Slice 开始；不要第一周就碰 safety guard、dispatcher、credential、B 站协议层或 `panel.tsx` 大重构。
