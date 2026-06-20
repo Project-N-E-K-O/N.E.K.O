@@ -1358,14 +1358,25 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     )[0]
     assert "this.startTutorial();" in launch_block
     assert "this.shouldStartHomeAvatarFloatingGuideRound()" in launch_block
-    assert "this.startAvatarFloatingGuideRound(1, { source })" in launch_block
+    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in launch_block
+    assert "this.startAvatarFloatingGuideRound(round, { source })" in launch_block
     assert "shouldStartHomeAvatarFloatingGuideRound() {" in tutorial_source
+    assert "getHomeAvatarFloatingGuideStartRound(options = {})" in tutorial_source
+    assert "candidates.push(state.pendingRound, state.manualResetRound, 1);" in tutorial_source
     start_tutorial_block = tutorial_source.split("startTutorial() {", 1)[1].split(
         "resetTutorialStartState() {",
         1,
     )[0]
     assert "this.currentPage === 'home'" in start_tutorial_block
-    assert "this.startAvatarFloatingGuideRound(1, {" in start_tutorial_block
+    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in start_tutorial_block
+    assert "this.startAvatarFloatingGuideRound(round, {" in start_tutorial_block
+    restart_block = tutorial_source.split("async restartCurrentTutorial() {", 1)[1].split(
+        "}\n}\n\n// 创建全局实例",
+        1,
+    )[0]
+    assert "const restartRound = this.getHomeAvatarFloatingGuideStartRound({ includeActive: true });" in restart_block
+    assert "this.resetAvatarFloatingGuideRoundState(restartRound" in restart_block
+    assert "await this.startAvatarFloatingGuideRound(restartRound, { source: 'manual' });" in restart_block
     assert "this.startYuiGuideSceneSequence(sceneIds" not in tutorial_source
     assert "getDirectYuiGuideSceneIdsForCurrentPage" not in tutorial_source
     assert "useYuiOnlyHomeFlow" not in tutorial_source
@@ -1395,10 +1406,18 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "currentModel.alpha = 1;" in interpage_source
     assert "ticker.start();" in interpage_source
     assert "ticker.update();" in interpage_source
+    assert "function restoreLive2DDisplaySurface(reason)" in app_ui_source
     assert "function activateLive2DRenderForDisplay(reason)" in app_ui_source
     assert "function scheduleLive2DDisplayActivation(reason)" in app_ui_source
+    assert "restoreLive2DDisplaySurface('show-live2d-fast-path');" in app_ui_source
     assert "scheduleLive2DDisplayActivation('show-live2d-fast-path');" in app_ui_source
     assert "scheduleLive2DDisplayActivation('show-live2d');" in app_ui_source
+    restore_live2d_surface_block = app_ui_source.split("function restoreLive2DDisplaySurface(reason)", 1)[1].split(
+        "function activateLive2DRenderForDisplay(reason)",
+        1,
+    )[0]
+    assert "live2dCanvas.style.opacity = '1';" in restore_live2d_surface_block
+    assert "live2dCanvas.style.setProperty('visibility', 'visible', 'important');" in restore_live2d_surface_block
     assert "app.renderer.render(app.stage);" in app_ui_source
     assert "function revealInitialLive2DModelWhenUiReady(reason)" in live2d_init_source
     assert "window.showLive2d();" in live2d_init_source
@@ -1472,6 +1491,10 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "restorePreviousModelUiAfterFailedSwitch" not in interpage_source
     assert "failed to restore previous model UI after switch failure" not in interpage_source
     assert "ensureTutorialLive2dRenderActive(reason = '', options = {})" in tutorial_source
+    assert "restoreTutorialLive2dDisplayState(reason = '')" in tutorial_source
+    assert "this.restoreTutorialLive2dDisplayState(reason);" in tutorial_source
+    assert "document.body.classList.remove('yui-guide-return-petal-fade');" in tutorial_source
+    assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in tutorial_source
     assert "_tutorialLive2dRenderActivationToken" in tutorial_source
     assert "this.ensureTutorialLive2dRenderActive('load-temporary-tutorial-model');" in tutorial_source
     assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');" in tutorial_source
@@ -1481,6 +1504,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "[80, 300].forEach((delayMs)" in tutorial_source
     assert "model.visible = true;" in tutorial_source
     assert "model.alpha = 1;" in tutorial_source
+    assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in tutorial_source
     assert "temporaryConfig" in interpage_source
     assert "skipIdleRestore" in interpage_source
     assert "suppressToast" in interpage_source

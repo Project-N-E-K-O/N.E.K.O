@@ -1818,7 +1818,10 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
     assert.doesNotMatch(scrollBlock, /window\.addEventListener\('wheel'/);
     assert.doesNotMatch(unblockScrollBlock, /window\.removeEventListener\('wheel'/);
 
-    assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(1, \{/);
+    assert.match(source, /getHomeAvatarFloatingGuideStartRound\(options = \{\}\) \{/);
+    assert.match(source, /candidates\.push\(state\.pendingRound, state\.manualResetRound, 1\);/);
+    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideStartRound\(\);/);
+    assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(round, \{/);
     assert.doesNotMatch(source, /startYuiGuideSceneSequence|getDirectYuiGuideSceneIdsForCurrentPage|getPendingYuiGuideResumeScene/);
     assert.doesNotMatch(source, /callYuiGuideDirector|notifyYuiGuideStepEnter|notifyYuiGuideStepLeave/);
     assert.doesNotMatch(source, /waitForDriver|initDriver|getDriverConfig|recreateDriverWithI18n|startTutorialSteps|onStepChange/);

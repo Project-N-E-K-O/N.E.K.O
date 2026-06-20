@@ -44,8 +44,14 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
         1,
     )[0]
 
-    assert "this.startAvatarFloatingGuideRound(1, {" in start_block
-    assert "this.startAvatarFloatingGuideRound(1, { source })" in i18n_block
+    assert "getHomeAvatarFloatingGuideStartRound(options = {})" in source
+    assert "candidates.push(state.pendingRound, state.manualResetRound, 1);" in source
+    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in start_block
+    assert "this.startAvatarFloatingGuideRound(round, {" in start_block
+    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in i18n_block
+    assert "this.startAvatarFloatingGuideRound(round, { source })" in i18n_block
+    assert "this.startAvatarFloatingGuideRound(1, {" not in source
+    assert "this.startAvatarFloatingGuideRound(1, { source })" not in source
     assert "this.startYuiGuideSceneSequence(sceneIds" not in source
     assert "getDirectYuiGuideSceneIdsForCurrentPage" not in source
     assert "getPendingYuiGuideResumeScene" not in source
@@ -58,6 +64,7 @@ def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model(
 
     assert "getTutorialLive2dCurrentModel(manager = window.live2dManager || null)" in source
     assert "hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null)" in source
+    assert "restoreTutorialLive2dDisplayState(reason = '')" in source
     assert "throw new Error('tutorial_yui_live2d_model_missing_after_load');" in source
 
     renderable_block = source.split(
@@ -79,12 +86,25 @@ def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model(
     assert "return !!(manager && model && app && app.stage && app.renderer);" in renderable_block
     assert "const activeByPath = this.isTutorialYuiLive2dActive();" in visible_block
     assert "if (activeByPath && this.hasTutorialYuiLive2dRenderableModel()) {" in visible_block
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');" in visible_block
     assert "const placementReady = await this.applyTutorialLive2dViewportPlacement();" in visible_block
     assert "if (placementReady) {" in visible_block
     assert "YUI 临时模型路径已激活但视觉对象不可用" in visible_block
     assert "YUI 临时模型需要重新加载以恢复视觉对象" in visible_block
     assert "&& this.hasTutorialYuiLive2dRenderableModel()" in visible_block
     assert "&& placementReady === true;" in visible_block
+
+    restore_block = source.split(
+        "    restoreTutorialLive2dDisplayState(reason = '') {",
+        1,
+    )[1].split(
+        "    revealTutorialLive2dPrepared() {",
+        1,
+    )[0]
+    assert "document.body.classList.remove('yui-guide-return-petal-fade');" in restore_block
+    assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in restore_block
+    assert "live2dContainer.style.setProperty('opacity', '1', 'important');" in restore_block
+    assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in restore_block
 
 
 def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():

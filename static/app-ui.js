@@ -844,6 +844,30 @@
 
     mod.hideLive2d = hideLive2d;
 
+    function restoreLive2DDisplaySurface(reason) {
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            live2dContainer.classList.remove('hidden');
+            live2dContainer.classList.remove('minimized');
+            live2dContainer.removeAttribute('data-neko-model-goodbye-exiting');
+            live2dContainer.style.display = 'block';
+            live2dContainer.style.visibility = 'visible';
+            if (live2dContainer.style.opacity === '0' || live2dContainer.style.opacity === '0.001') {
+                live2dContainer.style.opacity = '1';
+            }
+        }
+
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        if (live2dCanvas) {
+            live2dCanvas.classList.remove('minimized');
+            live2dCanvas.style.display = 'block';
+            live2dCanvas.style.transition = '';
+            live2dCanvas.style.opacity = '1';
+            live2dCanvas.style.setProperty('visibility', 'visible', 'important');
+            live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
+        }
+    }
+
     function activateLive2DRenderForDisplay(reason) {
         const manager = window.live2dManager || null;
         const app = manager && manager.pixi_app;
@@ -1027,11 +1051,7 @@
             if (fadeModel && !fadeModel.destroyed) {
                 fadeModel.alpha = 1;
             }
-            const live2dCanvas = document.getElementById('live2d-canvas');
-            if (live2dCanvas) {
-                live2dCanvas.style.setProperty('visibility', 'visible', 'important');
-                live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
-            }
+            restoreLive2DDisplaySurface('show-live2d-fast-path');
             const pixiApp = window.live2dManager ? window.live2dManager.pixi_app : null;
             if (pixiApp && pixiApp.ticker && !pixiApp.ticker.started) {
                 pixiApp.ticker.start();
