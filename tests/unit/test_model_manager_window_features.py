@@ -8,7 +8,8 @@ def test_avatar_model_manager_popup_opens_fullscreen():
     assert "screenRef.availWidth || screenRef.width" in source
     assert "screenRef.availHeight || screenRef.height" in source
     assert "features = buildAvatarFullscreenWindowFeatures();" in source
-    assert "openAndPauseMainUI(finalUrl, windowName, features);" in source
+    assert "openModelManagerWindow(finalUrl, windowName, features);" in source
+    assert "window.handleHideMainUI()" not in source
 
 
 def test_yui_model_manager_handoff_opens_fullscreen():
@@ -18,7 +19,21 @@ def test_yui_model_manager_handoff_opens_fullscreen():
     assert "function isModelManagerPageUrl(openUrl)" in source
     assert "if (isModelManagerPageUrl(openUrl))" in source
     assert "return buildFullscreenWindowFeatures();" in source
-    assert "buildFullscreenWindowFeatures()" in source[source.index("function openModelManagerPage("):]
+    start = source.index("function openModelManagerPage(")
+    end = source.index("\n    function ", start + len("function openModelManagerPage("))
+    model_manager_block = source[start:end]
+    assert "buildFullscreenWindowFeatures()" in model_manager_block
+    assert "{ keepMainUIVisible: true }" in model_manager_block
+
+
+def test_model_manager_hide_show_cross_page_messages_are_removed():
+    model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+
+    assert "hide_main_ui" not in model_manager_source
+    assert "show_main_ui" not in model_manager_source
+    assert "hide_main_ui" not in interpage_source
+    assert "show_main_ui" not in interpage_source
 
 
 def test_voice_clone_api_settings_uses_shared_named_window():

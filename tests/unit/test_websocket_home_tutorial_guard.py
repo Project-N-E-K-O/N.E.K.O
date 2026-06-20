@@ -1,4 +1,9 @@
+from pathlib import Path
+
 from main_routers import websocket_router
+
+
+WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
 def test_home_tutorial_greeting_guard_expires(monkeypatch):
@@ -29,7 +34,9 @@ def test_home_tutorial_greeting_guard_false_state_does_not_block(monkeypatch):
     assert websocket_router._is_home_tutorial_blocking_greeting(lanlan_name) is False
 
 
-def test_tutorial_release_reason_blocks_greeting():
-    assert websocket_router._is_tutorial_release_greeting_reason("tutorial-completed") is True
-    assert websocket_router._is_tutorial_release_greeting_reason("tutorial-skipped") is True
-    assert websocket_router._is_tutorial_release_greeting_reason("ws-open") is False
+def test_tutorial_release_reason_does_not_block_released_greeting():
+    source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+
+    assert "_is_tutorial_release_greeting_reason" not in source
+    assert "skipped after tutorial release" not in source
+    assert "new-user icebreaker owns this slot" not in source

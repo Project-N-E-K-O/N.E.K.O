@@ -781,7 +781,9 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     assert "isNewUserIcebreakerPeriodActive()" in app_proactive
     assert "[ProactiveChat] 新用户破冰期未结束，跳过主动搭话" in app_proactive
 
-    assert "isNewUserIcebreakerBlockingGreeting()" in app_websocket
+    assert "isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)" in app_websocket
+    assert "function isTutorialReleaseGreetingReason(reason)" in app_websocket
+    assert "if (isTutorialReleaseGreetingReason(normalizedReason))" in app_websocket
     assert "tutorial-completed" in app_websocket
     assert "tutorial-skipped" in app_websocket
 

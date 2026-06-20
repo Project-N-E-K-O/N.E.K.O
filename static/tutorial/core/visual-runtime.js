@@ -152,6 +152,9 @@
                     ? director.getAvatarFloatingIntroExternalizedSpotlightKind(legacyScene)
                     : 'capsule-input';
                 const normalizedIntroKind = introKind || 'capsule-input';
+                if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                    director.clearHomeSpotlightsForExternalizedChat();
+                }
                 director.interactionTakeover.setExternalizedChatSpotlight(normalizedIntroKind);
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     const cursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
@@ -187,6 +190,9 @@
                     ? (primaryKind || persistentKind)
                     : (persistentKind || primaryKind);
                 if (externalizedSpotlightKind) {
+                    if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                        director.clearHomeSpotlightsForExternalizedChat();
+                    }
                     director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
                     return true;
                 }

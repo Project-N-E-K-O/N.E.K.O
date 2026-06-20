@@ -103,10 +103,6 @@ def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
     return bool(blocking)
 
 
-def _is_tutorial_release_greeting_reason(reason: str) -> bool:
-    return str(reason or "").strip().lower() in {"tutorial-completed", "tutorial-skipped"}
-
-
 # ---- Telemetry helpers ----
 
 # Dim 字段安全限制 —— 前端是 untrusted 输入，必须挡掉：
@@ -430,12 +426,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     continue
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
-                if _is_tutorial_release_greeting_reason(greeting_reason):
-                    logger.info(
-                        f"[{lanlan_name}] greeting_check: skipped after tutorial release "
-                        f"(reason={greeting_reason}); new-user icebreaker owns this slot"
-                    )
-                    continue
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
                 since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
                 if is_switch or since_disconnect > 15:

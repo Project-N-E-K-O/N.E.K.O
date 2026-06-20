@@ -3,10 +3,8 @@
  * 支持所有页面的引导配置
  */
 
-// 引导页面列表常量 - 包含所有页面类型及子类型的存储键集合
-// 注意：此列表包含 localStorage 使用的存储子键（如 model_manager_*），
-// 并不完全等同于 detectPage() 返回的逻辑页面集合。
-const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
+// 新教程体系目前由 Yui Guide/7 天悬浮教程承载，旧多页面教程已下线。
+const TUTORIAL_PAGES = Object.freeze(['home']);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
@@ -28,11 +26,6 @@ function getTutorialManualIntentKeyForPage(pageKey) {
 }
 
 function getTutorialStorageKeysForPageFallback(pageKey) {
-    if (pageKey === 'model_manager') {
-        return ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
-            .map(getTutorialStorageKeyForPage);
-    }
-
     if (pageKey === 'home') {
         return [
             getTutorialStorageKeyForPage('home_yui_v1'),
@@ -444,38 +437,16 @@ class UniversalTutorialManager {
         window.universalTutorialManager = this;
 
         this.STORAGE_KEY_PREFIX = TUTORIAL_STORAGE_KEY_PREFIX;
-        this.driver = null;
-        this.isInitialized = false;
+        this.isInitialized = true;
         this.isTutorialRunning = false; // 防止重复启动
         this.currentPage = UniversalTutorialManager.detectPage();
         this.currentStep = 0;
-        this.nextButtonGuardTimer = null;
-        this.nextButtonGuardActive = false;
-        this.tutorialPadding = 8;
-        this.tutorialControlledElements = new Set();
-        this.tutorialInteractionStates = new Map();
-        this.tutorialMarkerDisplayCache = null;
-        this.tutorialRollbackActive = false;
-        this._applyingInteractionState = false;
-        this._tutorialInteractionApplyToken = 0;
         this._tutorialLive2dRenderActivationToken = 0;
         this._avatarFloatingModelLockSnapshot = null;
-        this._stepChanging = false;
-        this._pendingStepChange = false;
-        this._lastOnHighlightedStepIndex = null;
-        this._lastAppliedStateKey = null;
         this.cachedValidSteps = null;
-        this._refreshTimers = [];
         this._pendingI18nStart = false;
         this.pendingTutorialStartSource = null;
         this.currentTutorialStartSource = 'auto';
-        this._modelManagerTutorialRecheckTimer = null;
-        this._modelManagerModeListenerAttached = false;
-        this._modelManagerTutorialDebounceTimer = null;
-        this._modelManagerBootstrapFallbackTimer = null;
-        this._modelManagerReceivedModeEvent = false;
-        this._modelManagerModeResources = null;
-        this._modelManagerTimerResources = createUniversalTutorialScopedResources();
         this.yuiGuideDirector = null;
         this._yuiGuideHandoffToken = null;
         this._yuiGuideLastSceneId = null;
@@ -498,14 +469,6 @@ class UniversalTutorialManager {
         this._tutorialScrollBlockOptions = { capture: true, passive: false };
         this._tutorialScrollBlockResources = null;
         this._isTutorialScrollBlocked = false;
-        this._tutorialPointerBlockHandler = this.blockTutorialPointerEvent.bind(this);
-        this._tutorialPointerBlockOptions = { capture: true, passive: false };
-        this._tutorialPointerBlockResources = null;
-        this._isTutorialPointerBlocked = false;
-        this._nekoTutorialClickBlockHandler = this.blockNekoTutorialClickEvent.bind(this);
-        this._nekoTutorialClickBlockOptions = { capture: true, passive: false };
-        this._nekoTutorialClickBlockResources = null;
-        this._isNekoTutorialClickBlocked = false;
         this._isDestroyed = false;
         this._desktopYuiGuideSkipHandler = this.handleDesktopYuiGuideSkipRequest.bind(this);
         this.managerResources.addEventListener(
@@ -514,23 +477,13 @@ class UniversalTutorialManager {
             this._desktopYuiGuideSkipHandler
         );
 
-        // 刷新延迟常量
-        this.LAYOUT_REFRESH_DELAY = 100;
-        this.DYNAMIC_REFRESH_DELAYS = [200, 600, 1000];
-
-        // 用于追踪在引导中修改过的元素及其原始样式
-        this.modifiedElementsMap = new Map();
-
         console.log('[Tutorial] 当前页面:', this.currentPage);
 
-        // 必须在 waitForDriver 之前注册：model_manager 里 await switchModelDisplay 常在 initDriver（可能 setTimeout 延后）之前就结束并派发 neko-model-manager-mode-set，否则首屏已是 MMD 时会丢事件。
-        if (this.currentPage.startsWith('model_manager')) {
-            this.setupModelManagerModeListener();
-            this.scheduleModelManagerBootstrapFallback();
-        }
-
-        // 等待 driver.js 库加载
-        this.waitForDriver();
+        window.setTimeout(() => {
+            this.checkAndStartTutorial().catch(error => {
+                console.error('[Tutorial] checkAndStartTutorial failed:', error);
+            });
+        }, 0);
     }
 
     logPromptFlow(step, details = {}) {
@@ -845,77 +798,6 @@ class UniversalTutorialManager {
         return normalizedPage;
     }
 
-    getYuiGuidePageOrder(page = this.currentPage) {
-        const registry = this.getYuiGuideRegistry();
-        if (!registry || !registry.sceneOrder) {
-            return [];
-        }
-
-        const pageKey = this.getYuiGuidePageKey(page);
-        const pageOrder = Array.isArray(registry.sceneOrder[pageKey]) ? registry.sceneOrder[pageKey] : [];
-        return pageOrder.slice();
-    }
-
-    getPendingYuiGuideResumeScene(page = this.currentPage) {
-        const token = this._yuiGuideHandoffToken;
-        if (!token) {
-            return null;
-        }
-
-        const resumeScene = typeof token.resume_scene === 'string'
-            ? token.resume_scene.trim()
-            : '';
-        if (!resumeScene) {
-            return null;
-        }
-
-        const guideStep = this.getYuiGuideStepDefinition(resumeScene);
-        if (!guideStep) {
-            console.warn('[Tutorial] Yui Guide handoff resume_scene 未注册:', resumeScene);
-            return null;
-        }
-
-        const expectedPage = this.getYuiGuidePageKey(page);
-        if (guideStep.page && guideStep.page !== expectedPage) {
-            console.warn('[Tutorial] Yui Guide handoff resume_scene 页面不匹配:', resumeScene, guideStep.page, expectedPage);
-            return null;
-        }
-
-        return resumeScene;
-    }
-
-    applyYuiGuideResumeScene(validSteps) {
-        if (!Array.isArray(validSteps) || validSteps.length === 0) {
-            return validSteps;
-        }
-
-        const pageKey = this.getYuiGuidePageKey();
-        if (!pageKey || pageKey === 'home') {
-            return validSteps;
-        }
-
-        const resumeSceneId = this.getPendingYuiGuideResumeScene(pageKey);
-        if (!resumeSceneId) {
-            return validSteps;
-        }
-
-        const resumeIndex = validSteps.findIndex(stepConfig => (
-            this.getYuiGuideSceneIdForStep(stepConfig) === resumeSceneId
-        ));
-
-        if (resumeIndex < 0) {
-            console.warn('[Tutorial] 当前页面步骤中未找到 handoff resume_scene，保留原始顺序:', pageKey, resumeSceneId);
-            return validSteps;
-        }
-
-        if (resumeIndex === 0) {
-            return validSteps;
-        }
-
-        console.log('[Tutorial] 根据 handoff resume_scene 恢复教程步骤:', pageKey, resumeSceneId, resumeIndex);
-        return validSteps.slice(resumeIndex);
-    }
-
     getYuiGuideHandoffExpectedPages() {
         const pageKey = this.getYuiGuidePageKey();
 
@@ -925,10 +807,6 @@ class UniversalTutorialManager {
 
         if (pageKey === 'memory_browser') {
             return ['memory_browser'];
-        }
-
-        if (pageKey === 'steam_workshop') {
-            return ['steam_workshop'];
         }
 
         if (pageKey === 'plugin_dashboard') {
@@ -971,104 +849,7 @@ class UniversalTutorialManager {
 
     isYuiGuideEnabledForPage(page = this.currentPage) {
         const pageKey = this.getYuiGuidePageKey(page);
-        const pageOrder = this.getYuiGuidePageOrder(pageKey);
-        if (pageKey === 'home' && this.isAvatarFloatingGuideRoundRegistered(1)) {
-            return true;
-        }
-        if (pageOrder.length === 0) {
-            return false;
-        }
-
-        if (pageKey === 'home') {
-            return true;
-        }
-
-        if (pageKey === 'plugin_dashboard') {
-            return false;
-        }
-
-        if (!this._yuiGuideHandoffToken) {
-            return false;
-        }
-
-        return pageOrder.length > 0;
-    }
-
-    getYuiGuideMappedSceneIds(validSteps = this.cachedValidSteps) {
-        if (!Array.isArray(validSteps) || validSteps.length === 0) {
-            return [];
-        }
-
-        const mappedSceneIds = new Set();
-        validSteps.forEach(stepConfig => {
-            const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
-            if (sceneId) {
-                mappedSceneIds.add(sceneId);
-            }
-        });
-
-        return Array.from(mappedSceneIds);
-    }
-
-    getYuiGuideStepDefinition(stepId) {
-        if (!stepId) {
-            return null;
-        }
-
-        const registry = this.getYuiGuideRegistry();
-        if (!registry || typeof registry.getStep !== 'function') {
-            return null;
-        }
-
-        return registry.getStep(stepId) || null;
-    }
-
-    getYuiGuidePreludeSceneIds(page = this.currentPage, validSteps = this.cachedValidSteps) {
-        const pageOrder = this.getYuiGuidePageOrder(page);
-        const introSceneIds = pageOrder.filter(stepId => (
-            typeof stepId === 'string' &&
-            stepId.startsWith('intro_')
-        ));
-
-        if (this.getYuiGuidePageKey(page) === 'home' && this.isYuiGuideEnabledForPage(page)) {
-            return introSceneIds;
-        }
-
-        const mappedSceneIds = new Set(this.getYuiGuideMappedSceneIds(validSteps));
-
-        return introSceneIds.filter(stepId => !mappedSceneIds.has(stepId));
-    }
-
-    getYuiGuideSceneIdForStep(stepConfig) {
-        if (!stepConfig || typeof stepConfig !== 'object') {
-            return null;
-        }
-
-        const sceneId = typeof stepConfig.yuiGuideSceneId === 'string'
-            ? stepConfig.yuiGuideSceneId.trim()
-            : '';
-
-        if (!sceneId) {
-            return null;
-        }
-
-        const registry = this.getYuiGuideRegistry();
-        if (!registry) {
-            return sceneId;
-        }
-
-        if (typeof registry.hasStep === 'function' && !registry.hasStep(sceneId)) {
-            console.warn(`[Tutorial] Yui Guide 场景未注册: ${sceneId}`);
-            return null;
-        }
-
-        const guideStep = typeof registry.getStep === 'function' ? registry.getStep(sceneId) : null;
-        const expectedPage = this.getYuiGuidePageKey();
-        if (guideStep && guideStep.page && guideStep.page !== expectedPage) {
-            console.warn(`[Tutorial] Yui Guide 场景页面不匹配: ${sceneId} -> ${guideStep.page} (expected ${expectedPage})`);
-        }
-
-        return sceneId;
+        return pageKey === 'home' && this.isAvatarFloatingGuideRoundRegistered(1);
     }
 
     ensureYuiGuideDirector() {
@@ -1154,99 +935,6 @@ class UniversalTutorialManager {
         }));
     }
 
-    buildYuiGuideStepContext(stepConfig, stepIndex, source = 'tutorial') {
-        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
-
-        return {
-            page: this.getYuiGuidePageKey(),
-            runtimePage: this.currentPage,
-            source: source,
-            sceneId: sceneId,
-            stepIndex: stepIndex,
-            totalSteps: Array.isArray(this.cachedValidSteps) ? this.cachedValidSteps.length : 0,
-            driverStep: stepConfig || null,
-            guideStep: sceneId ? this.getYuiGuideStepDefinition(sceneId) : null
-        };
-    }
-
-    callYuiGuideDirector(methodName, ...args) {
-        const director = this.ensureYuiGuideDirector();
-        if (!director || typeof director[methodName] !== 'function') {
-            return;
-        }
-
-        try {
-            const result = director[methodName](...args);
-            if (result && typeof result.then === 'function') {
-                Promise.resolve(result).catch(error => {
-                    console.error(`[Tutorial] Yui Guide Director.${methodName} 执行失败:`, error);
-                });
-            }
-        } catch (error) {
-            console.error(`[Tutorial] Yui Guide Director.${methodName} 调用失败:`, error);
-        }
-    }
-
-    notifyYuiGuidePreludeStart(validSteps) {
-        if (!this.isYuiGuideEnabledForPage()) {
-            return;
-        }
-
-        this._yuiGuideLifecycleActive = true;
-        this._yuiGuideLastSceneId = null;
-
-        const detail = {
-            page: this.getYuiGuidePageKey(),
-            runtimePage: this.currentPage,
-            validSteps: Array.isArray(validSteps) ? validSteps : [],
-            preludeSceneIds: this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps)
-        };
-
-        this.dispatchYuiGuideEvent('prelude-start', detail);
-        this.callYuiGuideDirector('startPrelude');
-    }
-
-    notifyYuiGuideStepEnter(stepConfig, stepIndex, source = 'step-change') {
-        if (!this.isYuiGuideEnabledForPage()) {
-            return;
-        }
-
-        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
-        if (!sceneId || this._yuiGuideLastSceneId === sceneId) {
-            return;
-        }
-
-        const context = this.buildYuiGuideStepContext(stepConfig, stepIndex, source);
-        this.dispatchYuiGuideEvent('step-enter', context);
-        this.callYuiGuideDirector('enterStep', sceneId, context);
-        this._yuiGuideLastSceneId = sceneId;
-    }
-
-    notifyYuiGuideStepLeave(stepConfig, stepIndex, source = 'step-change') {
-        if (!this.isYuiGuideEnabledForPage()) {
-            return;
-        }
-
-        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig) || this._yuiGuideLastSceneId;
-        if (!sceneId || this._yuiGuideLastSceneId !== sceneId) {
-            return;
-        }
-
-        const detail = {
-            page: this.getYuiGuidePageKey(),
-            runtimePage: this.currentPage,
-            source: source,
-            sceneId: sceneId,
-            stepIndex: stepIndex,
-            driverStep: stepConfig || null,
-            guideStep: this.getYuiGuideStepDefinition(sceneId)
-        };
-
-        this.dispatchYuiGuideEvent('step-leave', detail);
-        this.callYuiGuideDirector('leaveStep', sceneId);
-        this._yuiGuideLastSceneId = null;
-    }
-
     notifyYuiGuideTutorialEnd(reason = 'destroy') {
         const detail = this.lifecycleStateStore.createYuiGuideEndDetail({
             page: this.getYuiGuidePageKey(),
@@ -1266,7 +954,13 @@ class UniversalTutorialManager {
         }
 
         this.dispatchYuiGuideEvent('tutorial-end', detail);
-        this.callYuiGuideDirector('destroy');
+        if (this.yuiGuideDirector && typeof this.yuiGuideDirector.destroy === 'function') {
+            try {
+                this.yuiGuideDirector.destroy();
+            } catch (error) {
+                console.warn('[Tutorial] 销毁 Yui Guide Director 失败:', error);
+            }
+        }
         this.yuiGuideDirector = null;
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
@@ -1278,7 +972,6 @@ class UniversalTutorialManager {
     clearAllTutorialLifecycles(reason = 'destroy') {
         const rawReason = this.normalizeTutorialEndRawReason(reason);
         const director = this.yuiGuideDirector;
-        this.invalidateTutorialInteractionApply(rawReason);
 
         try {
             this.notifyYuiGuideTutorialEnd(rawReason);
@@ -1305,16 +998,6 @@ class UniversalTutorialManager {
             this.hideSkipButton();
         } catch (error) {
             console.warn('[Tutorial] 清理跳过按钮失败:', error);
-        }
-        try {
-            this.restoreTutorialInteractionState();
-        } catch (error) {
-            console.warn('[Tutorial] 恢复教程交互状态失败:', error);
-        }
-        try {
-            this.unblockNekoTutorialClickEvents();
-        } catch (error) {
-            console.warn('[Tutorial] 恢复教程点击事件失败:', error);
         }
         try {
             this.restoreYuiGuideChatInputState(rawReason);
@@ -1376,9 +1059,18 @@ class UniversalTutorialManager {
                 window.nekoTutorialOverlay
                 && typeof window.nekoTutorialOverlay.clear === 'function'
             ) {
-                window.nekoTutorialOverlay.clear({
+                const clearResult = window.nekoTutorialOverlay.clear({
                     reason: rawReason,
                     tutorialRunId: tutorialRunId
+                });
+                Promise.resolve(clearResult).then(result => {
+                    if (result && (result.stale === true || result.ok === false)) {
+                        window.nekoTutorialOverlay.clear({ reason: rawReason });
+                    }
+                }).catch(() => {
+                    try {
+                        window.nekoTutorialOverlay.clear({ reason: rawReason });
+                    } catch (_) {}
                 });
             }
         } catch (error) {
@@ -1422,47 +1114,6 @@ class UniversalTutorialManager {
     requestTutorialEnd(reason = 'destroy') {
         this.setTutorialEndReason(reason);
         this.clearAllTutorialLifecycles(reason);
-        const waitForTeardown = () => {
-            if (this._teardownPromise) {
-                return this._teardownPromise;
-            }
-            if (this._tutorialEndHandled) {
-                return Promise.resolve();
-            }
-            return new Promise((resolve) => {
-                window.setTimeout(() => {
-                    resolve(this._teardownPromise || Promise.resolve());
-                }, 160);
-            }).then((pending) => pending);
-        };
-
-        if (this.driver) {
-            const driver = this.driver;
-            try {
-                driver.destroy();
-            } catch (error) {
-                console.warn('[Tutorial] driver destroy 失败，执行兜底结束:', error);
-                this.driver = null;
-                return this.onTutorialEnd();
-            }
-            window.setTimeout(() => {
-                if (this._tutorialEndHandled) {
-                    return;
-                }
-                if (this.driver !== driver) {
-                    return;
-                }
-
-                const skipButtonStillVisible = !!document.getElementById('neko-tutorial-skip-btn');
-                if (this.isTutorialRunning || window.isInTutorial || skipButtonStillVisible) {
-                    console.warn('[Tutorial] driver destroy 未触发结束回调，执行兜底结束');
-                    this.driver = null;
-                    void this.onTutorialEnd();
-                }
-            }, 120);
-            return waitForTeardown();
-        }
-
         return this.onTutorialEnd();
     }
 
@@ -1516,23 +1167,7 @@ class UniversalTutorialManager {
             this._desktopYuiGuideSkipHandler = null;
         }
 
-        if (this.driver) {
-            try {
-                this.driver.destroy();
-            } catch (error) {
-                console.warn('[Tutorial] 销毁 driver 失败:', error);
-            }
-            this.driver = null;
-        }
-
-        this.teardownModelManagerListeners();
         this.clearTutorialLive2dViewportPlacementWatcher();
-        this.clearNextButtonGuard();
-
-        if (this._refreshTimers) {
-            this._refreshTimers.forEach(t => clearTimeout(t));
-            this._refreshTimers = [];
-        }
 
         if (this._teardownTutorialUI) {
             await this._teardownTutorialUI();
@@ -1978,10 +1613,14 @@ class UniversalTutorialManager {
             suppressInitialIdle: true,
             suppressPersistentExpressions: true
         });
+        const loadedModel = this.getTutorialLive2dCurrentModel(window.live2dManager);
+        if (!loadedModel) {
+            throw new Error('tutorial_yui_live2d_model_missing_after_load');
+        }
         await this.applyTutorialLive2dViewportPlacement();
         if (window.LanLan1) {
-            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+            window.LanLan1.live2dModel = loadedModel;
+            window.LanLan1.currentModel = loadedModel;
         }
         if (typeof window.showLive2d === 'function') {
             window.showLive2d();
@@ -2005,22 +1644,51 @@ class UniversalTutorialManager {
             || modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME;
     }
 
+    getTutorialLive2dCurrentModel(manager = window.live2dManager || null) {
+        if (!manager) {
+            return null;
+        }
+        if (typeof manager.getCurrentModel === 'function') {
+            return manager.getCurrentModel();
+        }
+        return manager.currentModel || null;
+    }
+
+    hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null) {
+        const app = manager && manager.pixi_app;
+        const model = this.getTutorialLive2dCurrentModel(manager);
+        return !!(manager && model && app && app.stage && app.renderer);
+    }
+
     async ensureTutorialYuiLive2dVisible(reason = '') {
         this.revealTutorialLive2dPrepared();
-        if (this.isTutorialYuiLive2dActive()) {
+        const activeByPath = this.isTutorialYuiLive2dActive();
+        if (activeByPath && this.hasTutorialYuiLive2dRenderableModel()) {
             this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');
-            await this.applyTutorialLive2dViewportPlacement();
-            return true;
+            const placementReady = await this.applyTutorialLive2dViewportPlacement();
+            if (placementReady) {
+                return true;
+            }
+            console.warn('[Tutorial] YUI 临时模型路径已激活但布局不可用，重新加载:', reason || 'unknown');
+        } else if (activeByPath) {
+            console.warn('[Tutorial] YUI 临时模型路径已激活但视觉对象不可用，重新加载:', reason || 'unknown');
         }
 
-        console.warn('[Tutorial] YUI 临时模型未处于激活状态，尝试直接加载:', reason || 'unknown');
+        console.warn(
+            activeByPath
+                ? '[Tutorial] YUI 临时模型需要重新加载以恢复视觉对象:'
+                : '[Tutorial] YUI 临时模型未处于激活状态，尝试直接加载:',
+            reason || 'unknown'
+        );
         await this.loadTemporaryTutorialLive2dModel({
             live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME
         });
         this.revealTutorialLive2dPrepared();
         this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load');
-        await this.applyTutorialLive2dViewportPlacement();
-        return this.isTutorialYuiLive2dActive();
+        const placementReady = await this.applyTutorialLive2dViewportPlacement();
+        return this.isTutorialYuiLive2dActive()
+            && this.hasTutorialYuiLive2dRenderableModel()
+            && placementReady === true;
     }
 
     isLive2dModelLoadBusy() {
@@ -2625,280 +2293,27 @@ class UniversalTutorialManager {
             return 'home';
         }
 
-        // 模型管理 - 区分 Live2D 和 VRM
-        if (path.includes('model_manager') || path.includes('l2d')) {
-            return 'model_manager';
-        }
-
-        // Live2D 捏脸系统
-        if (path.includes('parameter_editor')) {
-            return 'parameter_editor';
-        }
-
-        // Live2D 情感管理
-        if (path.includes('emotion_manager')) {
-            return 'emotion_manager';
-        }
-
-        // 角色管理
-        if (path.includes('character_card_manager') || path.includes('chara_manager')) {
-            return 'chara_manager';
-        }
-
-        // 设置页面
         if (path.includes('api_key') || path.includes('settings')) {
             return 'settings';
         }
 
-        // 语音克隆
-        if (path.includes('voice_clone')) {
-            return 'voice_clone';
-        }
-
-        // Steam Workshop
-        if (path.includes('steam_workshop')) {
-            return 'steam_workshop';
-        }
-
-        // 内存浏览器
         if (path.includes('memory_browser')) {
             return 'memory_browser';
+        }
+
+        if (
+            path.includes('/api/agent/user_plugin/dashboard')
+            || path === '/ui'
+            || path.startsWith('/ui/')
+        ) {
+            return 'plugin_dashboard';
         }
 
         return 'unknown';
     }
 
     /**
-     * 模型管理页当前展示模式（与 #model-type-select、localStorage live3dSubType 一致）
-     * @returns {'live2d'|'vrm'|'mmd'}
-     */
-    static getModelManagerDisplayMode() {
-        const typeSelect = document.getElementById('model-type-select');
-        let val = typeSelect && typeSelect.value;
-
-        // model_manager 初始化时先 await PIXI/列表，#model-type-select 仍为 HTML 默认 live2d，
-        // 教程的 checkAndStartTutorial 若此时跑在 switchModelDisplay 之前，会与完成时写入的键（如 mmd）不一致。
-        if (typeSelect && val === 'live2d') {
-            try {
-                let saved = (localStorage.getItem('modelType') || 'live2d').toLowerCase();
-                if (saved === 'vrm') saved = 'live3d';
-                if (saved === 'live3d') {
-                    val = 'live3d';
-                }
-            } catch (e) { /* ignore */ }
-        }
-
-        if (val === 'live3d') {
-            let sub = '';
-            try {
-                sub = (localStorage.getItem('live3dSubType') || '').toLowerCase();
-            } catch (e) {
-                sub = '';
-            }
-            if (sub === 'mmd') return 'mmd';
-            const mmdSec = document.getElementById('mmd-settings-section');
-            if (mmdSec) {
-                try {
-                    const cs = window.getComputedStyle(mmdSec);
-                    if (cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0') {
-                        return 'mmd';
-                    }
-                } catch (e) { /* ignore */ }
-            }
-            return 'vrm';
-        }
-        return 'live2d';
-    }
-
-    /**
-     * 模型管理页展示模式 → localStorage 页键（与 getStorageKey 一致）
-     * @param {'live2d'|'vrm'|'mmd'} mode
-     */
-    static modelManagerModeToPageKey(mode) {
-        if (mode === 'mmd') return 'model_manager_mmd';
-        if (mode === 'vrm') return 'model_manager_vrm';
-        return 'model_manager_live2d';
-    }
-
-    /**
-     * 等待 driver.js 库加载
-     */
-    waitForDriver() {
-        if (typeof window.driver !== 'undefined') {
-            this.initDriver();
-            return;
-        }
-
-        let attempts = 0;
-        const maxAttempts = 100;
-
-        const checkDriver = () => {
-            attempts++;
-
-            if (typeof window.driver !== 'undefined') {
-                console.log('[Tutorial] driver.js 已加载');
-                this.initDriver();
-                return;
-            }
-
-            if (attempts >= maxAttempts) {
-                console.error('[Tutorial] driver.js 加载失败（超时 10 秒）');
-                return;
-            }
-
-            setTimeout(checkDriver, 100);
-        };
-
-        checkDriver();
-    }
-
-    /**
-     * 初始化 driver.js 实例
-     */
-    initDriver() {
-        if (this.isInitialized) return;
-
-        try {
-            const DriverClass = window.driver;
-
-            if (!DriverClass) {
-                console.error('[Tutorial] driver.js 类未找到');
-                return;
-            }
-
-            // 注意：此处不再立即创建 driver 实例，而是延迟到 startTutorialSteps 中
-            // 这样可以确保按钮文本等配置能正确获取到最新的 i18n 翻译
-            this.isInitialized = true;
-            console.log('[Tutorial] driver.js 环境检测成功');
-
-            // 检查是否需要自动启动引导
-            this.checkAndStartTutorial().catch(error => {
-                console.error('[Tutorial] checkAndStartTutorial failed:', error);
-            });
-        } catch (error) {
-            console.error('[Tutorial] driver.js 初始化失败:', error);
-        }
-    }
-
-    /**
-     * 获取 driver.js 的统一配置
-     */
-    getDriverConfig() {
-        return {
-            padding: this.tutorialPadding,
-            allowClose: true,
-            overlayClickNext: false,
-            animate: true,
-            smoothScroll: true, // 启用平滑滚动
-            className: 'neko-tutorial-driver',
-            disableActiveInteraction: false,
-            // i18n 按钮文本
-            nextBtnText: this.t('tutorial.buttons.next', '下一步'),
-            prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
-            doneBtnText: this.t('tutorial.buttons.done', '完成'),
-            onDestroyStarted: () => {
-                // 教程结束时，如果需要标记 hint 已显示
-                if (this.shouldMarkHintShown) {
-                    localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
-                    this.shouldMarkHintShown = false;
-                    console.log('[Tutorial] 已标记重置提示为已显示');
-                }
-            },
-            onHighlighted: (element, step, options) => {
-                // 去重机制说明：
-                // 1. driver.js 内部切换步骤时会触发 onHighlighted。
-                // 2. onStepChange 手动触发时也会调用此回调。
-                // 3. 使用 _lastOnHighlightedStepIndex 记录最后一次处理的步骤索引，
-                //    确保同一步骤的逻辑（特别是交互状态应用）只执行一次，避免竞争。
-                // 每次高亮元素时，确保元素在视口中
-                console.log('[Tutorial] 高亮元素:', step.element);
-
-                // 调用步骤特定的 onHighlighted 回调（如果存在）
-                if (step.onHighlighted && typeof step.onHighlighted === 'function') {
-                    const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
-                        ? this.driver.currentStep
-                        : this.currentStep;
-                    if (currentStepIndex === this._lastOnHighlightedStepIndex) {
-                        console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
-                    } else {
-                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                        try {
-                            step.onHighlighted.call(this);
-                        } catch (error) {
-                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
-                        }
-                        this._lastOnHighlightedStepIndex = currentStepIndex;
-                    }
-                }
-
-                // 给一点时间让 Driver.js 完成定位
-                setTimeout(() => {
-                    (async () => {
-                        if (!window.isInTutorial) return;
-                        if (element && element.element) {
-                            const targetElement = element.element;
-                            const rect = targetElement.getBoundingClientRect();
-                            const isInViewport = (
-                                rect.top >= 0 &&
-                                rect.left >= 0 &&
-                                rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                                rect.right <= (window.innerWidth || document.documentElement.clientWidth)
-                            );
-                            if (!isInViewport) {
-                                console.log('[Tutorial] 元素不在视口中，滚动到元素');
-                                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }
-                        }
-
-                        await this.applyTutorialInteractionState(step, 'highlight');
-
-                        // 启用 popover 拖动功能
-                        this.enablePopoverDragging();
-
-                        // 确保 popover 完全在视口内（防止用户无法点击按钮）
-                        this.clampPopoverToViewport();
-                    })().catch(err => {
-                        console.error('[Tutorial] onHighlighted 回调执行失败:', err);
-                    });
-                }, this.LAYOUT_REFRESH_DELAY);
-            }
-        };
-    }
-
-    /**
-     * 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
-     * 这个方法在启动引导时调用，此时 i18n 应该已经加载完成
-     */
-    recreateDriverWithI18n() {
-        try {
-            const DriverClass = window.driver;
-            if (!DriverClass) {
-                console.error('[Tutorial] driver.js 类未找到');
-                return;
-            }
-
-            // 销毁现有的 driver 实例
-            if (this.driver) {
-                try {
-                    this.driver.destroy();
-                } catch (e) {
-                    // 忽略销毁错误
-                }
-                this.driver = null;
-            }
-
-            // 重新创建 driver 实例，使用最新的 i18n 翻译
-            this.driver = new DriverClass(this.getDriverConfig());
-
-            console.log('[Tutorial] driver.js 重新创建成功，使用 i18n 按钮文本');
-        } catch (error) {
-            console.error('[Tutorial] driver.js 重新创建失败:', error);
-            this.driver = null;
-        }
-    }
-
-    /**
-     * 获取当前页面的存储键（模型管理页区分 Live2D / VRM / MMD）
+     * 获取当前页面的存储键。
      */
     getYuiGuideVersionedPageKey(page = this.currentPage) {
         if (page === 'home' && this.isYuiGuideEnabledForPage(page)) {
@@ -2909,13 +2324,6 @@ class UniversalTutorialManager {
     }
 
     getPreferredStoragePageKey(page = this.currentPage) {
-        if (page === 'model_manager') {
-            const mode = UniversalTutorialManager.getModelManagerDisplayMode();
-            const pageKey = UniversalTutorialManager.modelManagerModeToPageKey(mode);
-            console.log('[Tutorial] 模型管理页存储键，展示模式:', mode, '→', pageKey);
-            return pageKey;
-        }
-
         return this.getYuiGuideVersionedPageKey(page) || page;
     }
 
@@ -2929,11 +2337,6 @@ class UniversalTutorialManager {
      */
     getStorageKeysForPage(page) {
         const targetPage = page || this.currentPage;
-        if (targetPage === 'model_manager') {
-            return ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
-                .map(getTutorialStorageKeyForPage);
-        }
-
         const preferredPageKey = this.getPreferredStoragePageKey(targetPage);
         const pageKeys = [preferredPageKey];
         if (preferredPageKey !== targetPage) {
@@ -2995,28 +2398,9 @@ class UniversalTutorialManager {
         return 'auto';
     }
 
-    waitUntilInitialized(maxWaitTime = 5000) {
-        if (this.isInitialized) {
-            return Promise.resolve(true);
-        }
-
-        this.waitForDriver();
-
-        return new Promise(resolve => {
-            const startedAt = Date.now();
-            const poll = () => {
-                if (this.isInitialized) {
-                    resolve(true);
-                    return;
-                }
-                if ((Date.now() - startedAt) >= maxWaitTime) {
-                    resolve(false);
-                    return;
-                }
-                setTimeout(poll, 100);
-            };
-            poll();
-        });
+    waitUntilInitialized() {
+        this.isInitialized = true;
+        return Promise.resolve(true);
     }
 
     async requestTutorialStart(source = 'manual', delayMs = 0) {
@@ -3046,11 +2430,10 @@ class UniversalTutorialManager {
                 return true;
             }
 
-            if (this.currentPage === 'chara_manager') {
-                await this.waitForCatgirlCards();
-                await this.prepareCharaManagerForTutorial();
-                this.startTutorialWhenI18nReady(delayMs);
-                return true;
+            if (!this.isYuiGuideEnabledForPage(this.currentPage)) {
+                this.pendingTutorialStartSource = null;
+                console.warn('[Tutorial] 当前页面没有新版 Yui Guide，引导请求已忽略:', this.currentPage);
+                return false;
             }
 
             this.startTutorialWhenI18nReady(delayMs);
@@ -3142,52 +2525,8 @@ class UniversalTutorialManager {
         });
     }
 
-    clearModelManagerTutorialRecheckTimer() {
-        if (this._modelManagerTutorialRecheckTimer) {
-            this._modelManagerTimerResources.clearTimeout(this._modelManagerTutorialRecheckTimer);
-            this._modelManagerTutorialRecheckTimer = null;
-        }
-        if (this._modelManagerBootstrapFallbackTimer) {
-            this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
-            this._modelManagerBootstrapFallbackTimer = null;
-        }
-    }
 
-    /**
-     * 模型管理页：首次启动时 switchModelDisplay 可能尚未完成，validSteps 会为空；
-     * 记忆浏览重置后若不刷新页面，也不会再次执行 checkAndStartTutorial。延迟补检一次。
-     */
-    scheduleModelManagerTutorialRecheck(delayMs = 8200) {
-        if (this.currentPage !== 'model_manager') return;
-        this.clearModelManagerTutorialRecheckTimer();
-        this._modelManagerTutorialRecheckTimer = this._modelManagerTimerResources.setTimeout(() => {
-            this._modelManagerTutorialRecheckTimer = null;
-            if (this.isTutorialRunning || window.isInTutorial) return;
-            const sk = this.getStorageKey();
-            if (localStorage.getItem(sk) === 'true') return;
-            if (this._pendingI18nStart) {
-                console.log('[Tutorial] 模型管理页补检时 i18n 仍在排队，延后由 i18n 就绪回调启动');
-                return;
-            }
-            console.log('[Tutorial] 模型管理页延迟补检：未标记已看过，尝试再次启动引导');
-            this.startTutorialWhenI18nReady(0);
-        }, delayMs);
-    }
 
-    /**
-     * 记忆浏览等处重置引导后，若当前就在模型管理页则重新检查是否应弹出教程
-     */
-    notifyTutorialResetForCurrentPageIfNeeded(pageKey) {
-        if (pageKey !== 'model_manager' && pageKey !== 'all') return;
-        if (this.currentPage !== 'model_manager') return;
-        this.clearModelManagerTutorialRecheckTimer();
-        this._pendingI18nStart = false;
-        this._modelManagerTimerResources.setTimeout(() => {
-            if (this.isTutorialRunning || window.isInTutorial) return;
-            this.setupModelManagerModeListener();
-            this.maybeStartModelManagerTutorial(300, 'reset', null);
-        }, 400);
-    }
 
     /**
      * 检查是否需要自动启动引导
@@ -3213,33 +2552,14 @@ class UniversalTutorialManager {
             '键:', storageKey,
             '已看过:', hasSeen);
 
-        if (!hasSeen) {
-            // 对于主页，需要等待浮动按钮创建
-            if (this.currentPage === 'home') {
-                this.waitForFloatingButtons().then((found) => {
-                    if (!found) {
-                        console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
-                        return;
-                    }
-                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
-                    this.startTutorialWhenI18nReady(1500);
-                });
-            } else if (this.currentPage === 'chara_manager') {
-                // 对于角色管理页面，需要等待猫娘卡片加载
-                this.waitForCatgirlCards().then(async () => {
-                    // 先展开猫娘卡片和进阶设定，并为元素添加唯一 ID
-                    await this.prepareCharaManagerForTutorial();
-                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
-                    this.startTutorialWhenI18nReady(500);
-                });
-            } else if (this.currentPage === 'model_manager') {
-                // 首次加载由 neko-model-manager-mode-set 事件触发；restartCurrentTutorial 等
-                // 清完存储键后重新走到这里时事件不会再次派发，需主动尝试启动
-                this.maybeStartModelManagerTutorial(400, 'checkAndStart', null);
-            } else {
-                // 其他页面延迟启动，并等待 i18n 准备完成
+        if (!hasSeen && this.currentPage === 'home') {
+            this.waitForFloatingButtons().then((found) => {
+                if (!found) {
+                    console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
+                    return;
+                }
                 this.startTutorialWhenI18nReady(1500);
-            }
+            });
         } else if (this.currentPage === 'home') {
             this.waitForFloatingButtons().then((found) => {
                 if (!found) {
@@ -3250,1206 +2570,18 @@ class UniversalTutorialManager {
         }
     }
 
-    /**
-     * 模型管理页：在展示模式就绪后尝试启动引导（eventMode 来自 neko-model-manager-mode-set 时优先）
-     */
-    maybeStartModelManagerTutorial(delayMs = 400, reason = '', eventMode = null) {
-        if (this.currentPage !== 'model_manager') return;
-        if (this.isTutorialRunning || window.isInTutorial) {
-            console.log('[Tutorial] maybeStart 跳过: 引导正在运行', reason);
-            return;
-        }
 
-        const resolvePageKey = () => {
-            const mode = eventMode || UniversalTutorialManager.getModelManagerDisplayMode();
-            return UniversalTutorialManager.modelManagerModeToPageKey(mode);
-        };
-
-        const pageKey = resolvePageKey();
-        const storageKey = this.STORAGE_KEY_PREFIX + pageKey;
-        if (localStorage.getItem(storageKey) === 'true') {
-            console.log('[Tutorial] maybeStart 跳过: 已看过', reason, pageKey);
-            return;
-        }
-
-        if (this._modelManagerTutorialDebounceTimer) {
-            this._modelManagerTimerResources.clearTimeout(this._modelManagerTutorialDebounceTimer);
-        }
-        this._modelManagerTutorialDebounceTimer = this._modelManagerTimerResources.setTimeout(() => {
-            this._modelManagerTutorialDebounceTimer = null;
-            if (this.currentPage !== 'model_manager') return;
-            if (this.isTutorialRunning || window.isInTutorial) {
-                console.log('[Tutorial] maybeStart debounce 跳过: 引导正在运行', reason);
-                return;
-            }
-            const pk = resolvePageKey();
-            const sk = this.STORAGE_KEY_PREFIX + pk;
-            if (localStorage.getItem(sk) === 'true') {
-                console.log('[Tutorial] maybeStart debounce 跳过: 已看过', reason, pk);
-                return;
-            }
-            console.log('[Tutorial] 模型管理页尝试启动引导:', reason, pk);
-            this._pendingI18nStart = false;
-            this.startTutorialWhenI18nReady(delayMs);
-            this.scheduleModelManagerTutorialRecheck(8500);
-        }, 320);
-    }
-
-    /**
-     * 监听 model_manager 展示模式稳定事件（由 switchModelDisplay 派发）
-     */
-    setupModelManagerModeListener() {
-        if (this._modelManagerModeListenerAttached) return;
-        this._modelManagerModeResources = createUniversalTutorialScopedResources();
-        this._modelManagerModeListenerAttached = true;
-        this._modelManagerModeHandler = (ev) => {
-            if (this.currentPage !== 'model_manager') return;
-            const mode = ev.detail && ev.detail.mode;
-            console.log('[Tutorial] 收到 neko-model-manager-mode-set 事件, mode:', mode);
-            if (!mode || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(mode)) {
-                return;
-            }
-            this._modelManagerReceivedModeEvent = true;
-            this._modelManagerModeResources.setTimeout(() => {
-                this.maybeStartModelManagerTutorial(200, 'mode-set', mode);
-            }, 80);
-        };
-        this._modelManagerModeResources.addEventListener(window, 'neko-model-manager-mode-set', this._modelManagerModeHandler);
-        console.log('[Tutorial] neko-model-manager-mode-set 监听器已设置');
-    }
-
-    /**
-     * 清理模型管理页相关的事件监听和定时器，防止实例替换后幽灵回调
-     */
-    teardownModelManagerListeners() {
-        if (this._modelManagerModeResources) {
-            this._modelManagerModeResources.destroy();
-            this._modelManagerModeResources = null;
-        }
-        this._modelManagerModeHandler = null;
-        this._modelManagerModeListenerAttached = false;
-        this._modelManagerReceivedModeEvent = false;
-        this.clearModelManagerTutorialRecheckTimer();
-        if (this._modelManagerTutorialDebounceTimer) {
-            this._modelManagerTimerResources.clearTimeout(this._modelManagerTutorialDebounceTimer);
-            this._modelManagerTutorialDebounceTimer = null;
-        }
-        if (this._modelManagerTimerResources) {
-            this._modelManagerTimerResources.destroy();
-        }
-        this._modelManagerTimerResources = createUniversalTutorialScopedResources();
-    }
-
-    /**
-     * 模型管理页定时轮询兜底：switchModelDisplay 可能因 VRM 初始化耗时（最长 8s）而延迟派发事件，
-     * 单次定时器容易在事件到达前就已过期。改为每 3 秒轮询一次，直到引导启动或确认已看过。
-     */
-    scheduleModelManagerBootstrapFallback() {
-        if (this.currentPage !== 'model_manager') return;
-        if (this._modelManagerBootstrapFallbackTimer) {
-            this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
-        }
-        let pollCount = 0;
-        const maxPolls = 8;
-        this._modelManagerBootstrapFallbackTimer = this._modelManagerTimerResources.setInterval(() => {
-            pollCount++;
-            if (this.currentPage !== 'model_manager' || pollCount > maxPolls) {
-                this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
-                this._modelManagerBootstrapFallbackTimer = null;
-                return;
-            }
-            if (this.isTutorialRunning || window.isInTutorial) {
-                console.log('[Tutorial] 模型管理页兜底轮询: 引导已在运行，停止轮询');
-                this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
-                this._modelManagerBootstrapFallbackTimer = null;
-                return;
-            }
-            const sk = this.getStorageKey();
-            if (localStorage.getItem(sk) === 'true') {
-                console.log('[Tutorial] 模型管理页兜底轮询: 已看过', sk);
-                this._modelManagerTimerResources.clearInterval(this._modelManagerBootstrapFallbackTimer);
-                this._modelManagerBootstrapFallbackTimer = null;
-                return;
-            }
-            console.log('[Tutorial] 模型管理页兜底轮询 #' + pollCount + ' 尝试启动引导');
-            this.maybeStartModelManagerTutorial(0, 'bootstrap-poll-' + pollCount, null);
-        }, 3000);
-    }
-
-    /**
-     * 获取当前页面的引导步骤配置
-     */
-    getStepsForPage() {
-        console.log('[Tutorial] getStepsForPage 被调用，当前页面:', this.currentPage);
-
-        const configs = {
-            home: this.getHomeSteps(),
-            model_manager: this.getModelManagerSteps(),
-            parameter_editor: this.getParameterEditorSteps(),
-            emotion_manager: this.getEmotionManagerSteps(),
-            chara_manager: this.getCharaManagerSteps(),
-            settings: this.getSettingsSteps(),
-            voice_clone: this.getVoiceCloneSteps(),
-            steam_workshop: this.getSteamWorkshopSteps(),
-            memory_browser: this.getMemoryBrowserSteps(),
-        };
-
-        let steps = configs[this.currentPage] || [];
-
-        // 如果是主页且有步骤，且提示还没显示过，添加最后的提示步骤
-        const hintShown = localStorage.getItem('neko_tutorial_reset_hint_shown');
-        if (steps.length > 0 && this.currentPage === 'home' && !hintShown) {
-            steps = [...steps, this.getTutorialResetHintStep()];
-            // 标记需要在教程结束时设置 hint 已显示
-            this.shouldMarkHintShown = true;
-        } else {
-            this.shouldMarkHintShown = false;
-        }
-
-        console.log('[Tutorial] 返回的步骤数:', steps.length);
-        if (steps.length > 0) {
-            console.log('[Tutorial] 第一个步骤元素:', steps[0].element);
-        }
-
-        return steps;
-    }
-
-    /**
-     * 获取引导结束提示步骤（告知用户可以在记忆浏览重置引导）
-     */
-    getTutorialResetHintStep() {
-        return {
-            element: 'body',
-            popover: {
-                title: this.t('tutorial.resetHint.title', '✨ 引导完成'),
-                description: this.t('tutorial.resetHint.desc', '如果想再次查看引导，可以前往「记忆浏览」页面，在「新手引导」区域重置。'),
-            },
-            disableActiveInteraction: true
-        };
-    }
-
-    /**
-     * 主页引导步骤
-     */
-    getHomeSteps() {
-        const t = (key, fallback) => this.t(key, fallback);
-        // 根据当前模型类型动态选择元素前缀（live2d / vrm / mmd）
-        const p = UniversalTutorialManager.detectModelPrefix();
-
-        return [
-            {
-                element: `#${p}-container`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step1.title', '👋 欢迎来到 N.E.K.O') : '👋 欢迎来到 N.E.K.O',
-                    description: window.t ? window.t('tutorial.step1.desc', '这是你的猫娘！接下来我会带你熟悉各项功能~') : '这是你的猫娘！接下来我会带你熟悉各项功能~',
-                },
-                disableActiveInteraction: false
-            },
-            {
-                element: `#${p}-container`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step1b.title', '🖱️ 拖拽与缩放') : '🖱️ 拖拽与缩放',
-                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用<strong>鼠标滚轮</strong>放大缩小，试试看吧~',
-                },
-                disableActiveInteraction: false,
-                enableModelInteraction: true
-            },
-            {
-                element: `#${p}-lock-icon`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
-                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。锁定后周围的浮动工具栏也不会再出现。再次点击可以解锁~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-floating-buttons`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step5.title', '🎛️ 浮动工具栏') : '🎛️ 浮动工具栏',
-                    description: window.t ? window.t('tutorial.step5.desc', '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~') : '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-btn-mic`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step6.title', '🎤 语音控制') : '🎤 语音控制',
-                    description: window.t ? window.t('tutorial.step6.desc', '启用语音控制，猫娘通过语音识别理解你的话语~') : '启用语音控制，猫娘通过语音识别理解你的话语~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-btn-screen`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
-                    description: window.t ? window.t('tutorial.step7.desc', '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~') : '开启后会持续地将屏幕分享给猫娘，只能在语音对话期间使用~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-btn-agent`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step8.title', '🔨 OpenClaw') : '🔨 OpenClaw',
-                    description: window.t ? window.t('tutorial.step8.desc', '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~') : '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-btn-goodbye`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
-                    description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~ <strong>当她出现问题时，让她离开休息一会儿，往往能解决问题。</strong>',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-btn-settings`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step10.title', '⚙️ 设置') : '⚙️ 设置',
-                    description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
-                },
-                action: 'click',
-                yuiGuideSceneId: 'takeover_settings_peek',
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-toggle-proactive-chat`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
-                    description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-toggle-proactive-vision`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step14.title', '🔒 隐私模式') : '🔒 隐私模式',
-                    description: window.t ? window.t('tutorial.step14.desc', '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~') : '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-menu-character`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step15.title', '👤 角色管理') : '👤 角色管理',
-                    description: window.t ? window.t('tutorial.step15.desc', '调整猫娘的性格、形象、声音等~') : '调整猫娘的性格、形象、声音等~',
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-menu-api-keys`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
-                    description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
-                },
-                yuiGuideSceneId: 'handoff_api_key',
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-menu-memory`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
-                    description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
-                },
-                yuiGuideSceneId: 'handoff_memory_browser',
-                disableActiveInteraction: true
-            },
-            {
-                element: 'body',
-                popover: {
-                    title: t('tutorial.systray.location.title', '🖥️ 托盘图标位置'),
-                    description: `
-                        <div class="neko-systray-location">
-                            <img
-                                src="/static/icons/stray_intro.png"
-                                alt="${this.safeEscapeHtml(t('tutorial.systray.location.alt', '系统托盘位置示例'))}"
-                                class="neko-systray-location__image"
-                            />
-                            <div class="neko-systray-location__caption">
-                                ${this.safeEscapeHtml(t('tutorial.systray.location.desc', 'N.E.K.O 图标会出现在屏幕右下角的系统托盘中，点击它即可找到 N.E.K.O。'))}
-                            </div>
-                            <div class="neko-systray-location__note">
-                                ${this.safeEscapeHtml(t('tutorial.systray.location.note', '如果看不到，可点击托盘展开箭头查看隐藏的图标。'))}
-                            </div>
-                        </div>
-                    `
-                },
-                disableActiveInteraction: true
-            },
-            {
-                element: 'body',
-                popover: {
-                    title: t('tutorial.systray.menu.title', '📋 托盘菜单'),
-                    description: `
-                        <div class="neko-systray-menu">
-                            <div class="neko-systray-menu__hint">
-                                <strong>${this.safeEscapeHtml(t('tutorial.systray.important', '重要：'))}</strong>
-                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：'))}
-                            </div>
-                            <div class="neko-systray-menu__panel">
-                                <div class="neko-systray-menu__item">
-                                    <div class="neko-systray-menu__item-label">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.resetPosition', '重置角色位置'))}
-                                    </div>
-                                    <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.resetPositionDesc', '猫娘跑到屏幕外时，点此恢复默认位置~'))}
-                                    </div>
-                                </div>
-                                <div class="neko-systray-menu__separator"></div>
-                                <div class="neko-systray-menu__item">
-                                    <div class="neko-systray-menu__item-label">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.openChat', '打开对话框'))}
-                                    </div>
-                                    <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.openChatDesc', '打开独立的对话框进行文字对话~'))}
-                                    </div>
-                                </div>
-                                <div class="neko-systray-menu__separator"></div>
-                                <div class="neko-systray-menu__item">
-                                    <div class="neko-systray-menu__item-label">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkey', '快捷键设置'))}
-                                    </div>
-                                    <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '设置全局快捷键，更高效地控制 N.E.K.O~'))}
-                                    </div>
-                                </div>
-                                <div class="neko-systray-menu__separator"></div>
-                                <div class="neko-systray-menu__item neko-systray-menu__item--danger">
-                                    <div class="neko-systray-menu__item-label">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.exit', '退出'))}
-                                    </div>
-                                    <div class="neko-systray-menu__item-desc">
-                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~'))}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    `
-                },
-                disableActiveInteraction: true
-            }
-        ];
-    }
-
-    /**
-     * 模型管理页面引导步骤
-     */
-    getModelManagerSteps() {
-        const mode = UniversalTutorialManager.getModelManagerDisplayMode();
-        console.log('[Tutorial] 模型管理页面 - 展示模式:', mode);
-
-        // Live2D 特定步骤
-        const live2dSteps = [
-            {
-                element: '#persistent-expression-select-btn',
-                popover: {
-                    title: this.t('tutorial.model_manager.live2d.step4.title', '🧷 常驻表情'),
-                    description: this.t('tutorial.model_manager.live2d.step4.desc', '选择一个常驻表情，让模型持续保持该表情，直到你再次更改。'),
-                }
-            },
-            {
-                element: '#emotion-config-btn',
-                popover: {
-                    title: this.t('tutorial.model_manager.live2d.step5.title', '😄 情感配置'),
-                    description: this.t('tutorial.model_manager.live2d.step5.desc', '进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。'),
-                }
-            },
-            {
-                element: '#parameter-editor-btn',
-                popover: {
-                    title: this.t('tutorial.model_manager.live2d.step6.title', '✨ 捏脸系统'),
-                    description: this.t('tutorial.model_manager.live2d.step6.desc', '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的猫娘形象。'),
-                }
-            }
-        ];
-
-        // VRM 特定步骤
-        const vrmSteps = [
-            {
-                element: '#ambient-light-control',
-                popover: {
-                    title: this.t('tutorial.model_manager.vrm.step6.title', '🌟 环境光'),
-                    description: this.t('tutorial.model_manager.vrm.step6.desc', '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。'),
-                }
-            },
-            {
-                element: '#main-light-control',
-                popover: {
-                    title: this.t('tutorial.model_manager.vrm.step7.title', '☀️ 主光源'),
-                    description: this.t('tutorial.model_manager.vrm.step7.desc', '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。'),
-                }
-            },
-            {
-                element: '#exposure-control',
-                popover: {
-                    title: this.t('tutorial.model_manager.vrm.step8.title', '🌞 曝光'),
-                    description: this.t('tutorial.model_manager.vrm.step8.desc', '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。'),
-                }
-            },
-            {
-                element: '#tonemapping-control',
-                popover: {
-                    title: this.t('tutorial.model_manager.vrm.step9.title', '🎞️ 色调映射'),
-                    description: this.t('tutorial.model_manager.vrm.step9.desc', '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。'),
-                }
-            }
-        ];
-
-        // MMD（Live3D 子类型）：常驻表情/捏脸/Live2D 情感按钮在此模式下隐藏，勿用 Live2D 步骤
-        const mmdSteps = [
-            {
-                element: '#vrm-model-select-btn',
-                popover: {
-                    title: this.t('tutorial.model_manager.mmd.step1.title', '🎭 选择 MMD 模型'),
-                    description: this.t('tutorial.model_manager.mmd.step1.desc', '在 Live3D（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。'),
-                }
-            },
-            {
-                element: '#mmd-animation-select-btn',
-                popover: {
-                    title: this.t('tutorial.model_manager.mmd.step2.title', '💃 VMD 动画'),
-                    description: this.t('tutorial.model_manager.mmd.step2.desc', '为 MMD 模型选择 VMD 动作。也可使用「导入 VMD 动画」添加自定义动作文件。'),
-                }
-            },
-            {
-                element: '#mmd-ambient-intensity-slider',
-                popover: {
-                    title: this.t('tutorial.model_manager.mmd.step3.title', '🌟 MMD 光照'),
-                    description: this.t('tutorial.model_manager.mmd.step3.desc', '在「MMD 模型设置」中调节环境光、主光源、曝光与色调映射等，控制 3D 画面效果。'),
-                }
-            },
-            {
-                element: '#live3d-emotion-config-btn',
-                popover: {
-                    title: this.t('tutorial.model_manager.mmd.step4.title', '😄 情感配置'),
-                    description: this.t('tutorial.model_manager.mmd.step4.desc', '先选好模型后，可由此进入情感配置，为不同情感设置表现（Live3D 下 MMD 与 VRM 共用此入口）。'),
-                }
-            }
-        ];
-
-        if (mode === 'mmd') return mmdSteps;
-        if (mode === 'vrm') return vrmSteps;
-        return live2dSteps;
-    }
-
-    /**
-     * Live2D 捏脸系统页面引导步骤
-     */
-    getParameterEditorSteps() {
-        return [
-            {
-                element: '#model-select-btn',
-                popover: {
-                    title: this.t('tutorial.parameter_editor.step1.title', '🎭 选择模型'),
-                    description: this.t('tutorial.parameter_editor.step1.desc', '首先选择要编辑的 Live2D 模型。只有选择了模型后，才能调整参数。'),
-                }
-            },
-            {
-                element: '#parameters-list',
-                popover: {
-                    title: this.t('tutorial.parameter_editor.step2.title', '🎨 参数列表'),
-                    description: this.t('tutorial.parameter_editor.step2.desc', '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。'),
-                }
-            }
-        ];
-    }
-
-    /**
-     * Live2D 情感管理页面引导步骤
-     */
-    getEmotionManagerSteps() {
-        return [
-            {
-                element: '#model-singleselect',
-                popover: {
-                    title: this.t('tutorial.emotion_manager.step1.title', '🎭 选择模型'),
-                    description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。'),
-                }
-            },
-            {
-                // element 复用容器（始终可见），避免 driver 因 .singleselect-options
-                // display:none 时 rect 为零、轮询等待 5s 超时跳过本步。
-                element: '#model-singleselect',
-                _isEmotionPicker: true,
-                popover: {
-                    title: this.t('tutorial.emotion_manager.step_pick.title', '👇 选择一个模型'),
-                    description: this.t('tutorial.emotion_manager.step_pick.desc', '从下拉列表中点击选择一个模型。选好模型后才能进入下一步。'),
-                },
-                onHighlighted: function () {
-                    const singleselect = document.querySelector('#model-singleselect');
-                    if (!singleselect) return;
-                    const header = singleselect.querySelector('.singleselect-header');
-                    const options = singleselect.querySelector('.singleselect-options');
-
-                    // 把列表面板从 absolute 改为 static，撑开容器 rect，
-                    // 这样 driver 基于 getBoundingClientRect 计算的高亮框会自动包住列表，
-                    // 且高度会随实际列表项数量自适应（max-height: 250px 内由内容决定）。
-                    if (options && options.dataset.tutorialFloated !== '1') {
-                        options.dataset.tutorialFloated = '1';
-                        options.dataset.tutorialPosOrig = options.style.position || '';
-                        options.dataset.tutorialTopOrig = options.style.top || '';
-                        options.dataset.tutorialLeftOrig = options.style.left || '';
-                        options.dataset.tutorialBottomOrig = options.style.bottom || '';
-                        options.dataset.tutorialMtOrig = options.style.marginTop || '';
-                        options.style.setProperty('position', 'static', 'important');
-                        options.style.setProperty('top', 'auto', 'important');
-                        options.style.setProperty('left', 'auto', 'important');
-                        options.style.setProperty('bottom', 'auto', 'important');
-                        options.style.setProperty('margin-top', '8px', 'important');
-                    }
-
-                    const ensureOpen = () => {
-                        if (!singleselect.classList.contains('active')) {
-                            singleselect.classList.add('active');
-                            if (header) header.setAttribute('aria-expanded', 'true');
-                        }
-                    };
-                    ensureOpen();
-
-                    // 用户点选项后下拉会被关闭：已选模型则跳到下一步；未选则重新展开（保持框住列表）。
-                    if (!singleselect._tutorialPickerObserver) {
-                        const observer = new MutationObserver(() => {
-                            const stepIdx = (this.driver && typeof this.driver.currentStep === 'number')
-                                ? this.driver.currentStep : -1;
-                            const steps = this.cachedValidSteps || this.getStepsForPage();
-                            const cur = steps[stepIdx];
-                            if (!cur || !cur._isEmotionPicker) return;
-                            if (singleselect.classList.contains('active')) return;
-
-                            if (this.hasEmotionManagerModelSelected()) {
-                                const nextIdx = steps.findIndex(s => s.element === '#emotion-config');
-                                if (nextIdx >= 0 && this.driver && typeof this.driver.showStep === 'function') {
-                                    // 把 timer 加入 _refreshTimers，教程销毁/重启时一并清理，
-                                    // 避免回调跑到已销毁的 driver 上（race）；
-                                    // 同时检查 window.isInTutorial，防止 200ms 内用户 Skip/Done 后还跳步
-                                    const advanceTimer = setTimeout(() => {
-                                        if (!window.isInTutorial) return;
-                                        if (!this.driver || typeof this.driver.showStep !== 'function') return;
-                                        const curIdx = typeof this.driver.currentStep === 'number'
-                                            ? this.driver.currentStep : -1;
-                                        if (curIdx === stepIdx) {
-                                            this.driver.showStep(nextIdx);
-                                        }
-                                    }, 200);
-                                    if (this._refreshTimers) this._refreshTimers.push(advanceTimer);
-                                }
-                            } else {
-                                ensureOpen();
-                                if (this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                }
-                            }
-                        });
-                        observer.observe(singleselect, { attributes: true, attributeFilter: ['class'] });
-                        singleselect._tutorialPickerObserver = observer;
-                    }
-
-                    // 多次 refresh 让高亮框跟上 options 撑开后的容器尺寸
-                    [60, 200, 450].forEach(delay => {
-                        const t = setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                            }
-                        }, delay);
-                        if (this._refreshTimers) this._refreshTimers.push(t);
-                    });
-                }
-            },
-            {
-                element: '#emotion-config',
-                popover: {
-                    title: this.t('tutorial.emotion_manager.step2.title', '😊 情感配置区域'),
-                    description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。猫娘会根据对话内容自动切换情感表现。'),
-                },
-                // 避免在引导开始时强制显示（应在选择模型后显示）
-                skipAutoShow: true,
-                // 情感配置内容异步加载（拉取表情列表 + 渲染下拉），布局会持续重排，
-                // 使用 DYNAMIC_REFRESH_DELAYS 多次刷新让高亮框跟随尺寸变化
-                skipInitialCheck: true
-            },
-            {
-                element: '#reset-btn',
-                popover: {
-                    title: this.t('tutorial.emotion_manager.step3.title', '🔄 重置配置'),
-                    description: this.t('tutorial.emotion_manager.step3.desc', '点击这个按钮可以将情感配置重置为默认值。'),
-                },
-                skipAutoShow: true,
-                // 按钮位置受 #emotion-config 内动态内容影响，需多次刷新跟上重排
-                skipInitialCheck: true
-            }
-        ];
-    }
-
-    /**
-     * 角色管理页面引导步骤）
-     */
-    getCharaManagerSteps() {
-        return [
-            {
-                element: '#master-profile-section',
-                popover: {
-                    title: this.t('tutorial.chara_manager.step1.title', '👤 主人档案'),
-                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响猫娘对您的称呼和态度。'),
-                }
-            },
-            {
-                element: '#character-cards-content',
-                popover: {
-                    title: this.t('tutorial.chara_manager.step6.title', '🐱 猫娘档案'),
-                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。'),
-                }
-            },
-            {
-                element: '.chara-add-btn',
-                popover: {
-                    title: this.t('tutorial.chara_manager.step7.title', '➕ 新增猫娘'),
-                    description: this.t('tutorial.chara_manager.step7.desc', '点击这个按钮创建一个新的猫娘角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。'),
-                }
-            },
-            {
-                element: '.chara-card-item:first-child, .chara-list-item:first-child',
-                popover: {
-                    title: this.t('tutorial.chara_manager.step8.title', '📋 猫娘卡片'),
-                    description: this.t('tutorial.chara_manager.step8.desc', '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。'),
-                }
-            },
-            {
-                element: '.chara-card-item:first-child .card-action-btn.switch-btn, .chara-list-item:first-child .list-action-btn.switch-btn',
-                popover: {
-                    title: this.t('tutorial.chara_manager.step11.title', '🔄 切换猫娘'),
-                    description: this.t('tutorial.chara_manager.step11.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页会使用该角色的形象和性格。'),
-                }
-            },
-            {
-                element: '#api-key-settings-btn',
-                popover: {
-                    title: this.t('tutorial.chara_manager.step5.title', '🔑 API Key 设置'),
-                    description: this.t('tutorial.chara_manager.step5.desc', '点击这里配置 AI 服务的 API Key。这是猫娘能够进行对话的必要配置。'),
-                }
-            }
-        ];
-    }
-
-    /**
-     * 设置页面引导步骤
-     */
-    getSettingsSteps() {
-        // 原生 #coreApiSelect 增强后为 1×1 隐藏；Driver 按 getBoundingClientRect() 画框，必须高亮可见按钮。
-        // 使用 api_key_settings.js 为 trigger 分配的固定 id（不依赖 :has()，避免旧版 Chromium/CEF 与 querySelector 多分支顺序问题）。
-        return [
-            {
-                element: '#coreApiSelect-dropdown-trigger',
-                popover: {
-                    title: this.t('tutorial.settings.step2.title', '🔑 核心 API 服务商'),
-                    description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
-                },
-                yuiGuideSceneId: 'api_key_intro'
-            },
-            {
-                element: '#apiKeyInput',
-                popover: {
-                    title: this.t('tutorial.settings.step3.title', '📝 核心 API Key'),
-                    description: this.t('tutorial.settings.step3.desc', '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。'),
-                }
-            }
-        ];
-    }
-
-    /**
-     * 语音克隆页面引导步骤
-     */
-    getVoiceCloneSteps() {
-        return [
-            {
-                element: '.alibaba-api-notice',
-                popover: {
-                    title: this.t('tutorial.voice_clone.step1.title', '⚠️ 重要提示'),
-                    description: this.t('tutorial.voice_clone.step1.desc', '语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。'),
-                }
-            },
-            {
-                element: '#refLanguage',
-                popover: {
-                    title: this.t('tutorial.voice_clone.step2.title', '🌍 选择参考音频语言'),
-                    description: this.t('tutorial.voice_clone.step2.desc', '选择您上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。'),
-                }
-            },
-            {
-                element: '#prefix',
-                popover: {
-                    title: this.t('tutorial.voice_clone.step3.title', '🏷️ 自定义前缀'),
-                    description: this.t('tutorial.voice_clone.step3.desc', '输入一个 10 字符以内的前缀（只能用数字和英文字母）。这个前缀会作为克隆音色的标识。'),
-                }
-            },
-            {
-                element: '.register-voice-btn',
-                popover: {
-                    title: this.t('tutorial.voice_clone.step4.title', '✨ 注册音色'),
-                    description: this.t('tutorial.voice_clone.step4.desc', '点击这个按钮开始克隆您的音色。系统会处理音频并生成一个独特的音色 ID。'),
-                }
-            },
-            {
-                element: '.voice-list-section',
-                popover: {
-                    title: this.t('tutorial.voice_clone.step5.title', '📋 已注册音色列表'),
-                    description: this.t('tutorial.voice_clone.step5.desc', '这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为猫娘配音。'),
-                }
-            }
-        ];
-    }
-
-    /**
-     * Steam Workshop 页面引导步骤
-     */
-    getSteamWorkshopSteps() {
-        return [
-            {
-                element: '#workshop-tabs',
-                popover: {
-                    title: this.t('tutorial.steam_workshop.step1.title', '🧭 创意工坊分区'),
-                    description: this.t('tutorial.steam_workshop.step1.desc', '这里可以在订阅内容和角色卡之间切换，后续管理 Workshop 内容都会从这里展开。'),
-                }
-            },
-            {
-                element: '#subscriptions-list',
-                popover: {
-                    title: this.t('tutorial.steam_workshop.step2.title', '📦 订阅内容列表'),
-                    description: this.t('tutorial.steam_workshop.step2.desc', '这里会展示当前已订阅的内容，您可以刷新、筛选并继续管理创意工坊资源。'),
-                }
-            }
-        ];
-    }
-
-    /**
-     * 内存浏览器页面引导步骤
-     */
-    getMemoryBrowserSteps() {
-        return [
-            {
-                element: '#memory-file-list',
-                popover: {
-                    title: this.t('tutorial.memory_browser.step2.title', '🐱 猫娘记忆库'),
-                    description: this.t('tutorial.memory_browser.step2.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
-                },
-                yuiGuideSceneId: 'memory_browser_intro'
-            },
-            {
-                element: '#memory-chat-edit',
-                popover: {
-                    title: this.t('tutorial.memory_browser.step4.title', '📝 聊天记录编辑'),
-                    description: this.t('tutorial.memory_browser.step4.desc', '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。'),
-                }
-            }
-        ];
-    }
-
-    /**
-     * 检查元素是否可见
-     */
-    isElementVisible(element) {
-        if (!element) return false;
-
-        // 检查 display 属性
-        const style = window.getComputedStyle(element);
-        if (style.display === 'none') {
-            return false;
-        }
-
-        // 检查 visibility 属性
-        if (style.visibility === 'hidden') {
-            return false;
-        }
-
-        // 检查 opacity 属性
-        if (style.opacity === '0') {
-            return false;
-        }
-
-        // 检查元素是否在视口内或至少有尺寸
-        const rect = element.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * 是否已加载 Live2D 模型（用于情感配置等前置判断）
-     */
-    hasLive2DModelLoaded() {
-        const live2dManager = window.live2dManager;
-        if (live2dManager && typeof live2dManager.getCurrentModel === 'function') {
-            return !!live2dManager.getCurrentModel();
-        }
-        return false;
-    }
-
-    /**
-     * 收起情感配置页面挑选模型步骤所占用的下拉框，恢复 options 原定位与 active 类。
-     * 在离开 picker 步骤、教程结束时调用，确保不残留展开态/static 定位。
-     */
-    _restoreEmotionPickerDropdown() {
-        const singleselect = document.querySelector('#model-singleselect');
-        if (!singleselect) return;
-
-        if (singleselect._tutorialPickerObserver) {
-            singleselect._tutorialPickerObserver.disconnect();
-            singleselect._tutorialPickerObserver = null;
-        }
-
-        const options = singleselect.querySelector('.singleselect-options');
-        if (options && options.dataset.tutorialFloated === '1') {
-            const restore = (prop, dataKey) => {
-                const orig = options.dataset[dataKey] || '';
-                if (orig) {
-                    options.style.setProperty(prop, orig);
-                } else {
-                    options.style.removeProperty(prop);
-                }
-                delete options.dataset[dataKey];
-            };
-            restore('position', 'tutorialPosOrig');
-            restore('top', 'tutorialTopOrig');
-            restore('left', 'tutorialLeftOrig');
-            restore('bottom', 'tutorialBottomOrig');
-            restore('margin-top', 'tutorialMtOrig');
-            delete options.dataset.tutorialFloated;
-        }
-
-        singleselect.classList.remove('active', 'open-up', 'open-down');
-        const header = singleselect.querySelector('.singleselect-header');
-        if (header) header.setAttribute('aria-expanded', 'false');
-    }
-
-    /**
-     * 情感配置页面是否已选择模型
-     */
-    hasEmotionManagerModelSelected() {
-        const select = document.querySelector('#model-select');
-        return !!(select && select.value);
-    }
-
-    /**
-     * 情感配置页面是否已有可选模型项（非占位空值）
-     */
-    hasEmotionManagerSelectableModels() {
-        const select = document.querySelector('#model-select');
-        if (!select) return false;
-        return Array.from(select.options || []).some(option => option && option.value);
-    }
-
-    /**
-     * 设置“下一步”按钮状态
-     */
-    setNextButtonState(enabled, disabledTitle = '') {
-        const nextBtn = document.querySelector('.driver-next');
-        if (!nextBtn) return;
-
-        nextBtn.disabled = !enabled;
-        nextBtn.style.pointerEvents = enabled ? 'auto' : 'none';
-        nextBtn.style.opacity = enabled ? '1' : '0.5';
-        nextBtn.title = enabled ? '' : disabledTitle;
-    }
-
-    /**
-     * 清理“下一步”按钮的前置校验
-     */
-    clearNextButtonGuard() {
-        if (this.nextButtonGuardTimer) {
-            clearInterval(this.nextButtonGuardTimer);
-            this.nextButtonGuardTimer = null;
-        }
-
-        if (this.nextButtonGuardActive) {
-            this.setNextButtonState(true);
-            this.nextButtonGuardActive = false;
-        }
-    }
-
-    /**
-     * 显示隐藏的元素（用于引导）
-     */
-    showElementForTutorial(element, selector) {
-        if (!element) return;
-
-        const style = window.getComputedStyle(element);
-
-        // 保存元素的原始内联样式和类名（如果还未保存）
-        if (!this.modifiedElementsMap.has(element)) {
-            this.modifiedElementsMap.set(element, {
-                originalInlineStyle: element.getAttribute('style') || '',
-                originalClassName: element.className,
-                modifiedProperties: []
-            });
-            console.log(`[Tutorial] 已保存元素原始样式: ${selector}`);
-        }
-
-        const elementRecord = this.modifiedElementsMap.get(element);
-
-        // 显示元素（使用 !important 确保样式被应用）
-        if (style.display === 'none') {
-            element.style.setProperty('display', 'flex', 'important');
-            elementRecord.modifiedProperties.push('display');
-            console.log(`[Tutorial] 显示隐藏元素: ${selector}`);
-        }
-
-        if (style.visibility === 'hidden') {
-            element.style.setProperty('visibility', 'visible', 'important');
-            elementRecord.modifiedProperties.push('visibility');
-            console.log(`[Tutorial] 恢复隐藏元素可见性: ${selector}`);
-        }
-
-        if (style.opacity === '0') {
-            element.style.setProperty('opacity', '1', 'important');
-            elementRecord.modifiedProperties.push('opacity');
-            console.log(`[Tutorial] 恢复隐藏元素透明度: ${selector}`);
-        }
-
-        // 特殊处理浮动工具栏：确保它在引导中保持可见
-        if (selector.endsWith('-floating-buttons')) {
-            // 标记浮动工具栏在引导中，防止自动隐藏
-            element.dataset.inTutorial = 'true';
-            console.log('[Tutorial] 浮动工具栏已标记为引导中');
-        }
-
-        return { originalDisplay: element.style.display, originalVisibility: element.style.visibility, originalOpacity: element.style.opacity };
-    }
-
-    getTutorialInteractiveSelectors() {
-        return [
-            '#live2d-canvas', '#vrm-canvas', '#mmd-canvas',
-            '#live2d-container', '#vrm-container', '#mmd-container', '#pngtuber-container',
-            '#chat-container',
-            '#live2d-floating-buttons', '#vrm-floating-buttons', '#mmd-floating-buttons', '#pngtuber-floating-buttons',
-            '#live2d-return-button-container', '#vrm-return-button-container', '#mmd-return-button-container', '#pngtuber-return-button-container',
-            '#live2d-btn-return', '#vrm-btn-return', '#mmd-btn-return', '#pngtuber-btn-return',
-            '#resetSessionButton',
-            '#returnSessionButton',
-            '#live2d-lock-icon', '#vrm-lock-icon', '#mmd-lock-icon', '#pngtuber-lock-icon',
-            '#toggle-chat-btn',
-            '.live2d-floating-btn', '.vrm-floating-btn', '.mmd-floating-btn', '.pngtuber-floating-btn',
-            '.live2d-trigger-btn', '.vrm-trigger-btn', '.mmd-trigger-btn', '.pngtuber-trigger-btn',
-            // 宽泛匹配：所有以模型前缀开头 ID 的元素都将被教程系统自动识别并控制交互状态
-            '[id^="live2d-"]', '[id^="vrm-"]', '[id^="mmd-"]', '[id^="pngtuber-"]'
-        ];
-    }
-
-    isTutorialControlledElement(element) {
-        if (!element) return false;
-
-        // 复用选择器列表进行匹配检查
-        const selectors = this.getTutorialInteractiveSelectors();
-        const isMatched = selectors.some(selector => {
-            try {
-                return element.matches(selector) || (element.closest && element.closest(selector));
-            } catch (e) {
-                console.warn(`[Tutorial] 选择器匹配失败: ${selector}`, e);
-                return false;
-            }
-        });
-
-        return isMatched;
-    }
-
-    collectTutorialControlledElements(steps = []) {
-        const elements = new Set();
-        const selectors = this.getTutorialInteractiveSelectors();
-        selectors.forEach(selector => {
-            document.querySelectorAll(selector).forEach(element => { elements.add(element); });
-        });
-        steps.forEach(step => {
-            const element = document.querySelector(step.element);
-            if (element && this.isTutorialControlledElement(element)) {
-                elements.add(element);
-            }
-        });
-        this.tutorialControlledElements = elements;
-        console.log(`[Tutorial] 已收集交互元素: ${elements.size}`);
-    }
-
-    setTutorialMarkersVisible(visible, options = {}) {
-        const overlay = document.querySelector('.driver-overlay');
-        const highlight = document.querySelector('.driver-highlight');
-        const popover = document.querySelector('.driver-popover');
-        const elements = [overlay, highlight, popover].filter(Boolean);
-
-        if (!this.tutorialMarkerDisplayCache) {
-            this.tutorialMarkerDisplayCache = new Map();
-        }
-
-        if (!visible) {
-            const keepPopover = options.keepPopover === true;
-            elements.forEach(element => {
-                // 如果指定保留弹窗且当前元素是弹窗，则跳过隐藏
-                if (keepPopover && element === popover) return;
-
-                if (!this.tutorialMarkerDisplayCache.has(element)) {
-                    this.tutorialMarkerDisplayCache.set(element, element.style.visibility);
-                }
-                // 使用 visibility: hidden 代替 display: none，保持布局占位，过渡更平滑
-                element.style.visibility = 'hidden';
-            });
-            return;
-        }
-
-        elements.forEach(element => {
-            const cached = this.tutorialMarkerDisplayCache.get(element);
-            if (cached !== undefined) {
-                element.style.visibility = cached;
-            } else {
-                element.style.visibility = 'visible';
-            }
-        });
-    }
-
-    setElementInteractive(element, enabled) {
-        if (!element) return;
-        if (!this.tutorialInteractionStates.has(element)) {
-            this.tutorialInteractionStates.set(element, {
-                pointerEvents: element.style.pointerEvents,
-                cursor: element.style.cursor,
-                userSelect: element.style.userSelect
-            });
-        }
-        if (enabled) {
-            const state = this.tutorialInteractionStates.get(element);
-            element.style.pointerEvents = state?.pointerEvents || '';
-            element.style.cursor = state?.cursor || '';
-            element.style.userSelect = state?.userSelect || '';
-            if (element.dataset.tutorialDisabled) {
-                delete element.dataset.tutorialDisabled;
-            }
-            return;
-        }
-        element.style.pointerEvents = 'none';
-        element.style.cursor = 'default';
-        element.style.userSelect = 'none';
-        element.dataset.tutorialDisabled = 'true';
-    }
-
-    disableAllTutorialInteractions() {
-        this.tutorialControlledElements.forEach(element => {
-            this.setElementInteractive(element, false);
-        });
-        console.log('[Tutorial] 已禁用所有交互元素');
-    }
-
-    enableCurrentStepInteractions(currentElement) {
-        if (!currentElement) return;
-        this.tutorialControlledElements.forEach(element => {
-            // 启用当前元素、其父级容器以及其内部的受控子元素
-            if (element === currentElement || element.contains(currentElement) || currentElement.contains(element)) {
-                this.setElementInteractive(element, true);
-            }
-        });
-        console.log('[Tutorial] 已启用当前步骤交互元素');
-    }
-
-    validateTutorialLayout(currentElement, context) {
-        if (!currentElement) return true;
-        const highlight = document.querySelector('.driver-highlight');
-        if (!highlight) {
-            console.log('[Tutorial] 未检测到高亮框，跳过布局验证');
-            return true;
-        }
-        const rect = currentElement.getBoundingClientRect();
-        const highlightRect = highlight.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) {
-            console.log('[Tutorial] 当前步骤元素尺寸异常，跳过布局验证');
-            return true;
-        }
-        const padding = this.tutorialPadding || 0;
-        const diffLeft = Math.abs(highlightRect.left - (rect.left - padding));
-        const diffTop = Math.abs(highlightRect.top - (rect.top - padding));
-        const diffWidth = Math.abs(highlightRect.width - (rect.width + padding * 2));
-        const diffHeight = Math.abs(highlightRect.height - (rect.height + padding * 2));
-        // 模型管理页在 MMD/VRM 加载、画布出现时侧栏会长时间连续重排，阈值过小会反复触发回滚（遮罩/高亮被隐藏）
-        const threshold = this.currentPage === 'model_manager' ? 120 : 12;
-        const hasOffset = diffLeft > threshold || diffTop > threshold || diffWidth > threshold || diffHeight > threshold;
-        if (hasOffset) {
-            console.error('[Tutorial] 检测到高亮框偏移，执行回滚', {
-                context,
-                diffLeft,
-                diffTop,
-                diffWidth,
-                diffHeight,
-                threshold
-            });
-            return false;
-        }
-        console.log('[Tutorial] 布局验证通过', {
-            context,
-            diffLeft,
-            diffTop,
-            diffWidth,
-            diffHeight
-        });
-        return true;
-    }
-
-    async refreshAndValidateTutorialLayout(currentElement, context, applyToken) {
-        const isModelManager = this.currentPage === 'model_manager';
-        // 模型管理页：多轮等待 WebGL/MMD 布局稳定；仍失败时也不回滚（回滚会隐藏遮罩/高亮，而此处多为误判）
-        const extraRetries = isModelManager ? 7 : 0;
-        const attempts = 1 + extraRetries;
-
-        for (let attempt = 0; attempt < attempts; attempt++) {
-            if (this.driver && typeof this.driver.refresh === 'function') {
-                this.driver.refresh();
-            }
-            await new Promise(r => setTimeout(r, this.LAYOUT_REFRESH_DELAY));
-            if (!this.isTutorialInteractionApplyCurrent(applyToken)) {
-                return false;
-            }
-            void document.body.offsetHeight;
-
-            const ok = this.validateTutorialLayout(currentElement, context);
-            if (ok) {
-                return true;
-            }
-
-            if (attempt < attempts - 1) {
-                const waitMs = isModelManager ? (200 + attempt * 160) : (280 + attempt * 220);
-                await new Promise(r => setTimeout(r, waitMs));
-                if (!this.isTutorialInteractionApplyCurrent(applyToken)) {
-                    return false;
-                }
-            }
-        }
-
-        if (isModelManager) {
-            console.warn('[Tutorial] 模型管理页布局校验在多次重试后仍未对齐，跳过回滚并最后刷新一次高亮（避免 MMD 重排误清遮罩）');
-            if (this.driver && typeof this.driver.refresh === 'function') {
-                this.driver.refresh();
-            }
-            return true;
-        }
-
-        this.rollbackTutorialInteractionState();
-        return false;
-    }
-
-    rollbackTutorialInteractionState() {
-        this.tutorialRollbackActive = true;
-        this.disableAllTutorialInteractions();
-        // 仅隐藏遮罩和高亮，保留引导弹窗以避免用户卡死，并允许其通过弹窗按钮退出
-        this.setTutorialMarkersVisible(false, { keepPopover: true });
-        console.error('[Tutorial] 检测到布局异常，已回滚交互并保留引导弹窗');
-    }
 
     lockBodyScroll() {
         if (this._isBodyLocked) return;
         this._originalBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
         this.blockTutorialScroll();
-        this.blockTutorialPointerEvents();
         this._isBodyLocked = true;
         console.log('[Tutorial] 禁用页面滚动');
     }
 
     unlockBodyScroll() {
-        this.unblockTutorialPointerEvents();
         this.unblockTutorialScroll();
         if (!this._isBodyLocked) return;
         document.body.style.overflow = this._originalBodyOverflow ?? '';
@@ -4460,7 +2592,6 @@ class UniversalTutorialManager {
 
     blockTutorialScrollEvent(event) {
         if (!this.isTutorialRunning && !window.isInTutorial) return;
-        if (this.currentPage !== 'chara_manager') return;
         if (event && typeof event.preventDefault === 'function') {
             event.preventDefault();
         }
@@ -4483,359 +2614,52 @@ class UniversalTutorialManager {
         this._isTutorialScrollBlocked = false;
     }
 
-    isTutorialControlEventTarget(target) {
-        if (!target || typeof target.closest !== 'function') return false;
-        return !!target.closest('.driver-popover, #neko-tutorial-skip-btn');
-    }
 
-    isHomeIntroActivationClickTarget(target) {
-        if (this.currentPage !== 'home') return false;
-        if (!target || typeof target.closest !== 'function') return false;
-        if (!this.yuiGuideDirector || this.yuiGuideDirector.awaitingIntroActivation !== true) return false;
 
-        return !!target.closest([
-            '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
-            '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
-            '#react-chat-window-root .compact-chat-surface-frame',
-            '#react-chat-window-root .compact-chat-surface-shell',
-            '#react-chat-window-root .composer-input',
-            '#react-chat-window-root .composer-input-shell',
-            '#react-chat-window-root .composer-panel',
-            '#textInputBox',
-            '#text-input-area',
-            '#chat-container #text-input-area'
-        ].join(', '));
-    }
 
-    isManualPluginDashboardOpenClickTarget(target) {
-        if (!target || typeof target.closest !== 'function') return false;
-        if (!this.yuiGuideDirector || this.yuiGuideDirector.manualPluginDashboardOpenAllowed !== true) return false;
 
-        const manualTarget = this.yuiGuideDirector.manualPluginDashboardOpenTarget;
-        if (!manualTarget) return false;
-        return !!(
-            target === manualTarget
-            || (manualTarget.contains && manualTarget.contains(target))
-            || (
-                target.closest
-                && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
-            )
-        );
-    }
 
-    isNekoTutorialClickTarget(target) {
-        if (!target || typeof target.closest !== 'function') return false;
 
-        const selectors = [
-            ...this.getTutorialInteractiveSelectors(),
-            '.neko-idle-return-button-container',
-            '.neko-idle-return-btn',
-            '.avatar-reaction-bubble',
-            '.avatar-reaction-bubble-root',
-            '[id$="-floating-buttons"]',
-            '[id$="-lock-icon"]',
-            '[id$="-return-button-container"]'
-        ];
 
-        return selectors.some(selector => {
-            try {
-                return !!target.closest(selector);
-            } catch (_) {
-                return false;
-            }
-        });
-    }
 
-    blockNekoTutorialClickEvent(event) {
-        if (!this.isTutorialRunning && !window.isInTutorial) return;
-        if (this.isTutorialControlEventTarget(event && event.target)) return;
 
-        // 只拦真实用户输入；Yui 引导自身的 button.click()/MouseEvent 演出需要继续工作。
-        if (event && event.isTrusted === false) return;
-        if (this.isHomeIntroActivationClickTarget(event && event.target)) return;
-        if (this.isManualPluginDashboardOpenClickTarget(event && event.target)) return;
-        if (!this.isNekoTutorialClickTarget(event && event.target)) return;
 
-        if (event && typeof event.preventDefault === 'function') {
-            event.preventDefault();
-        }
-        if (event && typeof event.stopImmediatePropagation === 'function') {
-            event.stopImmediatePropagation();
-        } else if (event && typeof event.stopPropagation === 'function') {
-            event.stopPropagation();
-        }
-    }
 
-    blockNekoTutorialClickEvents() {
-        if (this._isNekoTutorialClickBlocked) return;
-        this._nekoTutorialClickBlockResources = createUniversalTutorialScopedResources();
-        [
-            'pointerdown',
-            'pointerup',
-            'mousedown',
-            'mouseup',
-            'click',
-            'dblclick',
-            'auxclick',
-            'contextmenu',
-            'touchstart',
-            'touchend'
-        ].forEach((eventName) => {
-            this._nekoTutorialClickBlockResources.addEventListener(
-                window,
-                eventName,
-                this._nekoTutorialClickBlockHandler,
-                this._nekoTutorialClickBlockOptions
-            );
-        });
-        this._isNekoTutorialClickBlocked = true;
-    }
 
-    unblockNekoTutorialClickEvents() {
-        if (this._nekoTutorialClickBlockResources) {
-            this._nekoTutorialClickBlockResources.destroy();
-            this._nekoTutorialClickBlockResources = null;
-        }
-        this._isNekoTutorialClickBlocked = false;
-    }
 
-    blockTutorialPointerEvent(event) {
-        if (!this.isTutorialRunning && !window.isInTutorial) return;
-        if (this.currentPage !== 'chara_manager') return;
-        if (this.isTutorialControlEventTarget(event && event.target)) return;
-        if (event && typeof event.preventDefault === 'function') {
-            event.preventDefault();
-        }
-        if (event && typeof event.stopImmediatePropagation === 'function') {
-            event.stopImmediatePropagation();
-        } else if (event && typeof event.stopPropagation === 'function') {
-            event.stopPropagation();
-        }
-    }
 
-    blockTutorialPointerEvents() {
-        if (this._isTutorialPointerBlocked) return;
-        this._tutorialPointerBlockResources = createUniversalTutorialScopedResources();
-        this._tutorialPointerBlockResources.addEventListener(window, 'pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        this._tutorialPointerBlockResources.addEventListener(window, 'mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        this._tutorialPointerBlockResources.addEventListener(window, 'click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        this._tutorialPointerBlockResources.addEventListener(window, 'touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
-        this._isTutorialPointerBlocked = true;
-    }
 
-    unblockTutorialPointerEvents() {
-        if (this._tutorialPointerBlockResources) {
-            this._tutorialPointerBlockResources.destroy();
-            this._tutorialPointerBlockResources = null;
-        }
-        this._isTutorialPointerBlocked = false;
-    }
-
-    restoreTutorialInteractionState() {
-        this.tutorialControlledElements.forEach(element => {
-            const state = this.tutorialInteractionStates.get(element);
-            element.style.pointerEvents = state?.pointerEvents || '';
-            element.style.cursor = state?.cursor || '';
-            element.style.userSelect = state?.userSelect || '';
-            if (element.dataset.tutorialDisabled) {
-                delete element.dataset.tutorialDisabled;
-            }
-        });
-        // 兜底：扫描整个文档中残留的 data-tutorial-disabled 节点。
-        // 模型管理 MMD 教程结束后曾出现 #vrm-model-select-btn / #mmd-animation-select-btn
-        // 等按钮被 pointer-events:none 卡死的情况，根因是 await 期间集合被提前 clear，
-        // 后续被遗漏。这里独立做一遍 DOM 兜底清理。
-        // 优先从 tutorialInteractionStates 还原原始 inline 值，仅在没有保存态时
-        // 退化为清空，避免误把页面上原本就 pointer-events:none 的元素重新激活。
-        try {
-            document.querySelectorAll('[data-tutorial-disabled]').forEach(element => {
-                const state = this.tutorialInteractionStates.get(element);
-                element.style.pointerEvents = state?.pointerEvents || '';
-                element.style.cursor = state?.cursor || '';
-                element.style.userSelect = state?.userSelect || '';
-                delete element.dataset.tutorialDisabled;
-            });
-        } catch (error) {
-            console.warn('[Tutorial] 扫描残留 tutorial-disabled 元素失败:', error);
-        }
-        this.tutorialInteractionStates.clear();
-        this.tutorialControlledElements = new Set();
-        this.tutorialMarkerDisplayCache = null;
-        this.tutorialRollbackActive = false;
-        this._lastAppliedStateKey = null;
-        console.log('[Tutorial] 已恢复交互元素默认状态');
-    }
-
-    invalidateTutorialInteractionApply(reason = 'tutorial-ended') {
-        this._tutorialInteractionApplyToken += 1;
-        this._applyingInteractionState = false;
-        this._lastAppliedStateKey = null;
-        if (reason && reason !== 'step-change') {
-            this.tutorialRollbackActive = false;
-        }
-        return this._tutorialInteractionApplyToken;
-    }
-
-    isTutorialInteractionApplyCurrent(token) {
-        return !!(
-            token === this._tutorialInteractionApplyToken
-            && (this.isTutorialRunning || window.isInTutorial)
-            && !this._tutorialEndHandled
-        );
-    }
-
-    async applyTutorialInteractionState(currentStepConfig, context) {
-        if (!window.isInTutorial || !currentStepConfig) return;
-
-        // 生成当前状态的唯一标识
-        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
-            ? this.driver.currentStep
-            : this.currentStep;
-        const stateKey = `${currentStepIndex}|${currentStepConfig.element}|${!!currentStepConfig.disableActiveInteraction}|${!!currentStepConfig.enableModelInteraction}`;
-
-        if (this._applyingInteractionState) {
-            console.log('[Tutorial] 交互状态正在应用中，跳过重复调用');
-            return;
-        }
-
-        // 如果状态已应用且不是特殊上下文（如 start 或 rollback），则跳过以减少重复验证周期
-        if (this._lastAppliedStateKey === stateKey && context !== 'start' && context !== 'rollback') {
-            console.log(`[Tutorial] 交互状态已应用，跳过重复操作 (Context: ${context})`);
-            return;
-        }
-
-        const applyToken = ++this._tutorialInteractionApplyToken;
-        try {
-            this._applyingInteractionState = true;
-            this.tutorialRollbackActive = false;
-            if (!this.tutorialControlledElements || this.tutorialControlledElements.size === 0) {
-                this.collectTutorialControlledElements(this.cachedValidSteps || []);
-            }
-
-            // 仅在初次启动或特定上下文时才隐藏标记，减少闪烁
-            const shouldHideMarkers = context === 'start' || context === 'rollback';
-            if (shouldHideMarkers) {
-                this.setTutorialMarkersVisible(false);
-            }
-
-            this.disableAllTutorialInteractions();
-            const currentElement = document.querySelector(currentStepConfig.element);
-            if (currentElement && !currentStepConfig.disableActiveInteraction) {
-                this.enableCurrentStepInteractions(currentElement);
-            }
-            if (currentStepConfig.enableModelInteraction) {
-                const canvasPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
-                const modelCanvas = document.getElementById(`${canvasPrefix}-canvas`);
-                if (modelCanvas) {
-                    this.setElementInteractive(modelCanvas, true);
-                }
-            }
-
-            if (shouldHideMarkers) {
-                this.setTutorialMarkersVisible(true);
-            }
-
-            await this.refreshAndValidateTutorialLayout(currentElement, context, applyToken);
-            if (!this.isTutorialInteractionApplyCurrent(applyToken)) {
-                return;
-            }
-            if (!this.tutorialRollbackActive) {
-                this._lastAppliedStateKey = stateKey;
-            }
-        } finally {
-            if (this._tutorialInteractionApplyToken === applyToken) {
-                this._applyingInteractionState = false;
-            }
-        }
-    }
-
-    /**
-     * 启动引导
-     */
     startTutorial() {
         if (!this.isInitialized) {
-            console.warn('[Tutorial] driver.js 未初始化');
-            return;
+            console.warn('[Tutorial] Yui Guide 管理器未初始化');
+            return false;
         }
 
-        // 防止重复启动
-        if (this.isTutorialRunning) {
+        if (this.isTutorialRunning || window.isInTutorial) {
             console.warn('[Tutorial] 引导已在运行中，跳过重复启动');
-            return;
+            this.consumeTutorialStartSource();
+            return true;
         }
 
-        try {
-            // 在 early-return 之前先消耗 pendingTutorialStartSource 和 manual_intent
-            // localStorage 标记，避免页面无步骤/无有效步骤时把用户的"启动"意图遗留到下次。
-            this.currentTutorialStartSource = this.consumeTutorialStartSource();
+        this.currentTutorialStartSource = this.consumeTutorialStartSource();
 
-            const steps = this.getStepsForPage();
-
-            if (steps.length === 0) {
-                console.warn('[Tutorial] 当前页面没有引导步骤');
-                return;
-            }
-
-            // 过滤掉不存在的元素，并显示隐藏的元素
-            const validSteps = steps.filter(step => {
-                // 如果步骤标记为跳过初始检查，则直接通过
-                if (step.skipInitialCheck) {
-                    console.log(`[Tutorial] 跳过初始检查: ${step.element}`);
-                    return true;
-                }
-
-                const element = document.querySelector(step.element);
-                if (!element) {
-                    console.warn(`[Tutorial] 元素不存在: ${step.element}`);
-                    return false;
-                }
-
-                // 检查元素是否可见，如果隐藏则显示它
-                if (!this.isElementVisible(element) && !step.skipAutoShow) {
-                    console.warn(`[Tutorial] 元素隐藏，正在显示: ${step.element}`);
-                    this.showElementForTutorial(element, step.element);
-                }
-
-                return true;
+        if (this.currentPage === 'home') {
+            this.startAvatarFloatingGuideRound(1, {
+                source: this.currentTutorialStartSource
+            }).catch(error => {
+                console.error('[Tutorial] 首页 Day1 悬浮窗教程启动失败:', error);
+                this.resetTutorialStartState();
             });
-
-            const resumedSteps = this.applyYuiGuideResumeScene(validSteps);
-
-            if (resumedSteps.length === 0) {
-                console.warn('[Tutorial] 没有有效的引导步骤');
-                return;
-            }
-
-            // 标记引导正在运行
-            this.isTutorialRunning = true;
-            this.snapshotAvatarFloatingModelInteractionState('tutorial-start');
-
-            // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
-            this.lockBodyScroll();
-            this.blockNekoTutorialClickEvents();
-
-            // 检查当前页面是否需要全屏提示
-            const pagesNeedingFullscreen = [
-                // 已禁用全屏提示
-            ];
-
-            if (pagesNeedingFullscreen.includes(this.currentPage)) {
-                // 显示全屏提示
-                this.showFullscreenPrompt(resumedSteps);
-            } else {
-                // 直接启动引导，不显示全屏提示
-                this.startTutorialSteps(resumedSteps);
-            }
-        } catch (error) {
-            console.error('[Tutorial] 启动引导失败:', error);
-            this.resetTutorialStartState();
+            return true;
         }
+
+        console.warn('[Tutorial] 当前页面没有新版每日教程 round，跳过旧页面教程:', this.currentPage);
+        return false;
     }
 
     resetTutorialStartState() {
         this.revealTutorialLive2dPrepared();
         this._teardownTutorialUI();
-        this.setTutorialMarkersVisible(true);
     }
 
     emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
@@ -4852,430 +2676,7 @@ class UniversalTutorialManager {
         console.log('[Tutorial] 引导启动来源:', source);
     }
 
-    /**
-     * 显示全屏提示
-     */
-    showFullscreenPrompt(validSteps) {
-        // 创建提示遮罩
-        const overlay = document.createElement('div');
-        overlay.style.position = 'fixed';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100vw';
-        overlay.style.height = '100vh';
-        overlay.style.background = 'rgba(0, 0, 0, 0.8)';
-        overlay.style.zIndex = '99999';
-        overlay.style.display = 'flex';
-        overlay.style.alignItems = 'center';
-        overlay.style.justifyContent = 'center';
 
-        // 创建提示框
-        const prompt = document.createElement('div');
-        prompt.style.background = 'rgba(30, 30, 40, 0.95)';
-        prompt.style.border = '2px solid #44b7fe';
-        prompt.style.borderRadius = '16px';
-        prompt.style.padding = '40px';
-        prompt.style.maxWidth = '500px';
-        prompt.style.textAlign = 'center';
-        prompt.style.backdropFilter = 'blur(10px)';
-        prompt.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4)';
-
-        // 标题
-        const title = document.createElement('h2');
-        title.textContent = this.t('tutorial.fullscreenPrompt.title', '🎓 开始新手引导');
-        title.style.color = '#44b7fe';
-        title.style.marginBottom = '20px';
-        title.style.fontSize = '24px';
-
-        // 描述
-        const description = document.createElement('p');
-        description.textContent = this.t('tutorial.fullscreenPrompt.desc', '为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。');
-        description.style.color = 'rgba(255, 255, 255, 0.85)';
-        description.style.marginBottom = '30px';
-        description.style.lineHeight = '1.6';
-        description.style.whiteSpace = 'pre-line';
-
-        // 按钮容器
-        const buttonContainer = document.createElement('div');
-        buttonContainer.style.display = 'flex';
-        buttonContainer.style.gap = '15px';
-        buttonContainer.style.justifyContent = 'center';
-
-        // 全屏按钮
-        const fullscreenBtn = document.createElement('button');
-        fullscreenBtn.textContent = this.t('tutorial.fullscreenPrompt.enterFullscreen', '进入全屏引导');
-        fullscreenBtn.style.padding = '12px 30px';
-        fullscreenBtn.style.background = 'linear-gradient(135deg, #44b7fe 0%, #40C5F1 100%)';
-        fullscreenBtn.style.color = '#fff';
-        fullscreenBtn.style.border = 'none';
-        fullscreenBtn.style.borderRadius = '8px';
-        fullscreenBtn.style.fontSize = '16px';
-        fullscreenBtn.style.fontWeight = '600';
-        fullscreenBtn.style.cursor = 'pointer';
-        fullscreenBtn.style.transition = 'all 0.2s ease';
-
-        fullscreenBtn.onmouseover = () => {
-            fullscreenBtn.style.transform = 'translateY(-2px)';
-            fullscreenBtn.style.boxShadow = '0 4px 12px rgba(68, 183, 254, 0.4)';
-        };
-        fullscreenBtn.onmouseout = () => {
-            fullscreenBtn.style.transform = 'translateY(0)';
-            fullscreenBtn.style.boxShadow = 'none';
-        };
-
-        fullscreenBtn.onclick = () => {
-            document.body.removeChild(overlay);
-
-            // 进入全屏
-            this.enterFullscreenMode();
-
-            // 监听全屏变化事件，等待全屏完成后再启动引导
-            const onFullscreenChange = () => {
-                if (document.fullscreenElement || document.webkitFullscreenElement ||
-                    document.mozFullScreenElement || document.msFullscreenElement) {
-                    // 已进入全屏，延迟一点确保布局稳定
-                    setTimeout(() => {
-                        console.log('[Tutorial] 全屏布局已稳定');
-
-                        // 对于角色管理页面，需要等待猫娘卡片加载
-                        if (this.currentPage === 'chara_manager') {
-                            console.log('[Tutorial] 等待猫娘卡片加载...');
-                            this.waitForCatgirlCards().then(async () => {
-                                console.log('[Tutorial] 猫娘卡片已加载');
-                                await this.prepareCharaManagerForTutorial();
-                                console.log('[Tutorial] 启动引导');
-                                this.startTutorialSteps(validSteps);
-                            });
-                        } else {
-                            console.log('[Tutorial] 启动引导');
-                            this.startTutorialSteps(validSteps);
-                        }
-                    }, 300);
-
-                    // 移除监听器
-                    document.removeEventListener('fullscreenchange', onFullscreenChange);
-                    document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
-                    document.removeEventListener('mozfullscreenchange', onFullscreenChange);
-                    document.removeEventListener('MSFullscreenChange', onFullscreenChange);
-                }
-            };
-
-            // 添加全屏变化监听器
-            document.addEventListener('fullscreenchange', onFullscreenChange);
-            document.addEventListener('webkitfullscreenchange', onFullscreenChange);
-            document.addEventListener('mozfullscreenchange', onFullscreenChange);
-            document.addEventListener('MSFullscreenChange', onFullscreenChange);
-
-            // 超时保护：如果2秒内没有进入全屏，直接启动引导
-            setTimeout(() => {
-                if (!document.fullscreenElement && !document.webkitFullscreenElement &&
-                    !document.mozFullScreenElement && !document.msFullscreenElement) {
-                    console.warn('[Tutorial] 全屏超时');
-
-                    // 对于角色管理页面，需要等待猫娘卡片加载
-                    if (this.currentPage === 'chara_manager') {
-                        console.log('[Tutorial] 等待猫娘卡片加载...');
-                        this.waitForCatgirlCards().then(() => {
-                            console.log('[Tutorial] 猫娘卡片已加载，启动引导');
-                            this.startTutorialSteps(validSteps);
-                        });
-                    } else {
-                        console.log('[Tutorial] 直接启动引导');
-                        this.startTutorialSteps(validSteps);
-                    }
-
-                    // 移除监听器
-                    document.removeEventListener('fullscreenchange', onFullscreenChange);
-                    document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
-                    document.removeEventListener('mozfullscreenchange', onFullscreenChange);
-                    document.removeEventListener('MSFullscreenChange', onFullscreenChange);
-                }
-            }, 2000);
-        };
-
-        // 组装（只有全屏按钮，没有跳过按钮）
-        buttonContainer.appendChild(fullscreenBtn);
-        prompt.appendChild(title);
-        prompt.appendChild(description);
-        prompt.appendChild(buttonContainer);
-        overlay.appendChild(prompt);
-        document.body.appendChild(overlay);
-    }
-
-    /**
-     * 启动引导步骤（内部方法）
-     */
-    startTutorialSteps(validSteps) {
-        this._isDestroyed = false;
-        // 预加载所有步骤中的图片，确保走到含图片的步骤时图片已在浏览器缓存中
-        this._preloadStepImages(validSteps);
-
-        // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
-        this._lastOnHighlightedStepIndex = null;
-        this._tutorialEndHandled = false;
-        this.lifecycleStateStore.resetEndReason();
-
-        // 缓存已验证的步骤，供 onStepChange 使用
-        this.cachedValidSteps = validSteps;
-
-        const useYuiOnlyHomeFlow = (
-            this.currentPage === 'home'
-            && this.isYuiGuideEnabledForPage(this.currentPage)
-        );
-        if (
-            useYuiOnlyHomeFlow
-            && this.isAvatarFloatingGuideRoundRegistered(1)
-            && this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps).length === 0
-        ) {
-            const source = this.currentTutorialStartSource || 'auto';
-            this.isTutorialRunning = false;
-            window.isInTutorial = false;
-            this.unlockBodyScroll();
-            this.unblockNekoTutorialClickEvents();
-            this.startAvatarFloatingGuideRound(1, { source }).catch(error => {
-                console.error('[Tutorial] 首页 Day1 悬浮窗教程启动失败:', error);
-                this.resetTutorialStartState();
-            });
-            return;
-        }
-        const shouldOverrideYuiAvatar = useYuiOnlyHomeFlow;
-
-        let avatarReadyPromise = null;
-        if (shouldOverrideYuiAvatar) {
-            this._tutorialModelPrefix = 'live2d';
-            avatarReadyPromise = this.beginTutorialAvatarOverride();
-        } else {
-            const avatarReloadController = this.ensureTutorialAvatarReloadController();
-            avatarReadyPromise = avatarReloadController ? avatarReloadController.getPendingPromise() : null;
-        }
-
-        if (useYuiOnlyHomeFlow) {
-            const startYuiOnlyHomeFlow = () => {
-                if (this._isDestroyed) {
-                    return;
-                }
-                window.isInTutorial = true;
-                this.currentStep = 0;
-                this.driver = null;
-                console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
-                this.emitTutorialStarted();
-                this.notifyYuiGuidePreludeStart(validSteps);
-                this.showSkipButton();
-            };
-            if (avatarReadyPromise) {
-                avatarReadyPromise.then(
-                    startYuiOnlyHomeFlow,
-                    (error) => {
-                        console.warn('[Tutorial] YUI 头像准备失败，继续启动首页引导:', error);
-                        startYuiOnlyHomeFlow();
-                    }
-                );
-            } else {
-                startYuiOnlyHomeFlow();
-            }
-            return;
-        }
-
-        // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
-        this.recreateDriverWithI18n();
-
-        if (!this.driver) {
-            console.error('[Tutorial] driver 实例创建失败，无法启动引导');
-            this.resetTutorialStartState();
-            return;
-        }
-
-        // 定义步骤
-        this.driver.setSteps(validSteps);
-
-        // 设置全局标记，表示正在进行引导
-        window.isInTutorial = true;
-        console.log('[Tutorial] 设置全局引导标记');
-        this.collectTutorialControlledElements(validSteps);
-        this.disableAllTutorialInteractions();
-        this.setTutorialMarkersVisible(false);
-
-        // 对于角色管理页面，临时移除容器的上边距以修复高亮框偏移问题
-        if (this.currentPage === 'chara_manager') {
-            const container = document.querySelector('.container');
-            if (container) {
-                this.originalContainerMargin = container.style.marginTop;
-                container.style.marginTop = '0';
-                console.log('[Tutorial] 临时移除容器上边距以修复高亮框位置');
-            }
-        }
-
-        // 将模型容器放到屏幕中间偏右（在引导中）
-        const modelPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
-        const modelContainer = document.getElementById(`${modelPrefix}-container`);
-        if (modelContainer) {
-            this.originalLive2dStyle = {
-                left: modelContainer.style.left,
-                top: modelContainer.style.top,
-                right: modelContainer.style.right,
-                bottom: modelContainer.style.bottom,
-                width: modelContainer.style.width,
-                height: modelContainer.style.height,
-                transform: modelContainer.style.transform
-            };
-            modelContainer.style.left = '55%';
-            modelContainer.style.top = '50%';
-            modelContainer.style.right = 'auto';
-            modelContainer.style.bottom = 'auto';
-            modelContainer.style.width = '100%';
-            modelContainer.style.height = '100%';
-            modelContainer.style.transform = 'translate(-50%, -50%) translateZ(0)';
-            console.log(`[Tutorial] 将模型容器放到屏幕中间偏右 (${modelPrefix})`);
-        }
-
-        // 立即强制显示浮动工具栏（引导开始时）
-        const floatingButtons = document.getElementById(`${modelPrefix}-floating-buttons`);
-        if (floatingButtons) {
-            // 保存原始的内联样式值
-            this._floatingButtonsOriginalStyles = {
-                display: floatingButtons.style.display,
-                visibility: floatingButtons.style.visibility,
-                opacity: floatingButtons.style.opacity
-            };
-            console.log('[Tutorial] 已保存浮动工具栏原始样式:', this._floatingButtonsOriginalStyles);
-
-            floatingButtons.style.setProperty('display', 'flex', 'important');
-            floatingButtons.style.setProperty('visibility', 'visible', 'important');
-            floatingButtons.style.setProperty('opacity', '1', 'important');
-            console.log('[Tutorial] 强制显示浮动工具栏');
-        }
-
-        // 立即强制显示锁图标（如果当前页面的引导包含锁图标步骤）
-        const lockIconId = `${modelPrefix}-lock-icon`;
-        const hasLockIconStep = validSteps.some(step => step.element === `#${lockIconId}`);
-        if (hasLockIconStep) {
-            const lockIcon = document.getElementById(lockIconId);
-            if (lockIcon) {
-                // 保存原始的内联样式值
-                this._lockIconOriginalStyles = {
-                    display: lockIcon.style.display,
-                    visibility: lockIcon.style.visibility,
-                    opacity: lockIcon.style.opacity
-                };
-                console.log('[Tutorial] 已保存锁图标原始样式:', this._lockIconOriginalStyles);
-
-                lockIcon.style.setProperty('display', 'block', 'important');
-                lockIcon.style.setProperty('visibility', 'visible', 'important');
-                lockIcon.style.setProperty('opacity', '1', 'important');
-                console.log('[Tutorial] 强制显示锁图标');
-            }
-        }
-
-        // 启动浮动工具栏保护定时器（每 500ms 检查一次）
-        this._tutorialModelPrefix = modelPrefix; // 缓存，给定时器用
-        this.floatingButtonsProtectionTimer = setInterval(() => {
-            const pfx = this._tutorialModelPrefix || 'live2d';
-            const floatingButtons = document.getElementById(`${pfx}-floating-buttons`);
-            if (floatingButtons && window.isInTutorial) {
-                // 强制设置所有可能隐藏浮动按钮的样式
-                floatingButtons.style.setProperty('display', 'flex', 'important');
-                floatingButtons.style.setProperty('visibility', 'visible', 'important');
-                floatingButtons.style.setProperty('opacity', '1', 'important');
-            }
-
-            // 同样保护锁图标（如果当前引导包含锁图标步骤）
-            if (this._lockIconOriginalStyles !== undefined && window.isInTutorial) {
-                const lockIcon = document.getElementById(`${pfx}-lock-icon`);
-                if (lockIcon) {
-                    lockIcon.style.setProperty('display', 'block', 'important');
-                    lockIcon.style.setProperty('visibility', 'visible', 'important');
-                    lockIcon.style.setProperty('opacity', '1', 'important');
-                }
-            }
-        }, 500);
-
-        // 监听事件
-        // driver.on('destroy') 触发后，先做关键 UI 清理（移除跳过按钮 +
-        // 还原 pointer-events），再走完整的 onTutorialEnd 流程。
-        // 这两步独立 try/catch，确保即便 onTutorialEnd 任一环节抛错或被早返回，
-        // 也不会留下右上角残余按钮 / 模型列表锁死。
-        // (MMD/VRM 模型管理教程结束后跳过按钮残留 & 模型列表锁死的修复路径。)
-        this.driver.on('destroy', () => {
-            console.log('[Tutorial] driver destroy → 执行关键 UI 清理');
-            try {
-                this.hideSkipButton();
-            } catch (error) {
-                console.warn('[Tutorial] destroy 清理 hideSkipButton 失败:', error);
-            }
-            try {
-                this.restoreTutorialInteractionState();
-            } catch (error) {
-                console.warn('[Tutorial] destroy 清理 restoreTutorialInteractionState 失败:', error);
-            }
-            this.onTutorialEnd();
-        });
-        this.driver.on('next', () => this.onStepChange().catch(err => {
-            console.error('[Tutorial] 步骤切换失败:', err);
-        }));
-        this.driver.on('prev', () => this.onStepChange().catch(err => {
-            console.error('[Tutorial] 步骤切换失败:', err);
-        }));
-
-        this.notifyYuiGuidePreludeStart(validSteps);
-        const tutorialStartPage = this.currentPage;
-        const tutorialStartSource = this.currentTutorialStartSource;
-        let startResult;
-
-        // 启动引导
-        try {
-            startResult = this.driver.start();
-        } catch (error) {
-            console.error('[Tutorial] 启动引导步骤失败:', error);
-            this.resetTutorialStartState();
-            return;
-        }
-
-        if (validSteps.length > 0) {
-            this.notifyYuiGuideStepEnter(validSteps[0], 0, 'tutorial-start');
-        }
-
-        // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
-        if (this._resizeHandler) {
-            window.removeEventListener('resize', this._resizeHandler);
-            if (this._resizeRafId) { cancelAnimationFrame(this._resizeRafId); this._resizeRafId = null; }
-            if (this._resizeTimeoutId) { clearTimeout(this._resizeTimeoutId); this._resizeTimeoutId = null; }
-        }
-        this._resizeHandler = () => {
-            if (this._resizeRafId) cancelAnimationFrame(this._resizeRafId);
-            if (this._resizeTimeoutId) clearTimeout(this._resizeTimeoutId);
-            this._resizeRafId = requestAnimationFrame(() => {
-                this._resizeTimeoutId = setTimeout(() => {
-                    this._resizeRafId = null;
-                    this._resizeTimeoutId = null;
-                    if (this.driver && window.isInTutorial) this.driver.refresh();
-                }, 50);
-            });
-        };
-        window.addEventListener('resize', this._resizeHandler);
-        setTimeout(() => {
-            const steps = this.cachedValidSteps || [];
-            if (steps.length > 0) {
-                this.applyTutorialInteractionState(steps[0], 'start').catch(err => {
-                    console.error('[Tutorial] 初始交互状态应用失败:', err);
-                });
-            }
-        }, 0);
-
-        // 显示跳过按钮
-        this.showSkipButton();
-
-        Promise.resolve(startResult).then(() => {
-            if (!this.isTutorialRunning || !window.isInTutorial) {
-                return;
-            }
-            this.emitTutorialStarted(tutorialStartPage, tutorialStartSource);
-        }).catch(error => {
-            console.error('[Tutorial] 启动引导步骤失败:', error);
-            this.resetTutorialStartState();
-        });
-
-        console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
-    }
 
     /**
      * 在右上角显示「跳过」按钮，点击后结束引导
@@ -5371,636 +2772,19 @@ class UniversalTutorialManager {
         return true;
     }
 
-    /**
-     * 检查并等待猫娘卡片创建（用于角色管理页面引导）
-     */
-    waitForCatgirlCards(maxWaitTime = 5000) {
-        return new Promise((resolve) => {
-            const startTime = Date.now();
 
-            const checkCatgirlCards = () => {
-                const catgirlList = document.getElementById('chara-cards-container');
-                const firstCatgirl = document.querySelector('.chara-card-item, .chara-list-item');
 
-                if (catgirlList && firstCatgirl) {
-                    console.log('[Tutorial] 猫娘卡片已创建');
-                    resolve(true);
-                    return;
-                }
 
-                const elapsedTime = Date.now() - startTime;
-                if (elapsedTime > maxWaitTime) {
-                    console.warn('[Tutorial] 等待猫娘卡片超时（5秒）');
-                    resolve(false);
-                    return;
-                }
 
-                setTimeout(checkCatgirlCards, 100);
-            };
 
-            checkCatgirlCards();
-        });
-    }
 
-    /**
-     * 获取用于教程展示的目标猫娘卡片
-     * 优先选择第一个，如果不存在则返回 null
-     */
-    getTargetCatgirlBlock() {
-        const catgirlBlocks = document.querySelectorAll('.chara-card-item, .chara-list-item');
-        if (catgirlBlocks.length === 0) {
-            console.warn('[Tutorial] 没有找到任何猫娘卡片');
-            return null;
-        }
 
-        // 返回第一个猫娘卡片
-        return catgirlBlocks[0];
-    }
 
-    /**
-     * 确保猫娘卡片已展开（用于教程）
-     * @param {Element} catgirlBlock - 猫娘卡片元素
-     */
-    async ensureCatgirlExpanded(catgirlBlock) {
-        if (!catgirlBlock) return false;
 
-        // 当前角色管理页的卡片详情改为独立面板，不再有内联展开区域。
-        return this.isElementVisible(catgirlBlock);
-    }
 
-    /**
-     * 确保进阶设定已展开（用于教程）
-     * @param {Element} catgirlBlock - 猫娘卡片元素
-     */
-    async ensureAdvancedSettingsExpanded(catgirlBlock) {
-        if (!catgirlBlock) return false;
 
-        const foldToggle = catgirlBlock.querySelector('.fold-toggle');
-        const foldContainer = catgirlBlock.querySelector('.fold');
 
-        if (!foldToggle || !foldContainer) {
-            console.warn('[Tutorial] 进阶设定结构不完整');
-            return false;
-        }
 
-        // 检查是否已展开 - 通过检查 .fold 元素是否有 .open 类
-        const isExpanded = foldContainer.classList.contains('open');
-        console.log(`[Tutorial] 进阶设定展开状态: ${isExpanded}`);
-
-        if (!isExpanded) {
-            console.log('[Tutorial] 展开进阶设定');
-            foldToggle.click();
-            // 等待展开动画完成
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        return true;
-    }
-
-    /**
-     * 滚动元素到可视区域
-     * @param {Element} element - 要滚动到的元素
-     */
-    scrollIntoViewSmooth(element) {
-        if (!element) return;
-
-        element.scrollIntoView({
-            behavior: 'smooth',
-            block: 'center',
-            inline: 'nearest'
-        });
-    }
-
-    /**
-     * 为角色管理页面准备引导
-     * 关闭所有已展开的卡片，确保初始状态一致
-     */
-    async prepareCharaManagerForTutorial() {
-        console.log('[Tutorial] 准备角色管理页面引导...');
-
-        // 1. 先关闭所有内部的"进阶设定" (.fold-toggle)
-        // 防止外部卡片关闭了，里面还撑着
-        const allFoldToggles = document.querySelectorAll('.fold-toggle');
-        allFoldToggles.forEach(toggle => {
-            let foldContent = toggle.parentElement.querySelector('.fold');
-            // 检查是否处于展开状态 (通常有 'open' 类或者 style display 不为 none)
-            const isExpanded = foldContent && (
-                foldContent.classList.contains('open') ||
-                foldContent.style.display === 'block' ||
-                window.getComputedStyle(foldContent).display === 'block'
-            );
-
-            if (isExpanded) {
-                console.log('[Tutorial] 检测到进阶设定已展开，正在关闭...');
-                toggle.click(); // 触发点击来关闭它，保证状态同步
-            }
-        });
-
-        // 2. 当前角色管理页的卡片详情使用独立面板；教程只需要确认卡片列表处于可见稳定态。
-        document.querySelectorAll('.chara-card-item, .chara-list-item').forEach(block => {
-            if (!this.isElementVisible(block)) {
-                console.log('[Tutorial] 检测到不可见的猫娘卡片，跳过预处理');
-            }
-        });
-
-        // 3. 等待关闭动画完成
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        console.log('[Tutorial] 角色管理页面引导准备完成');
-    }
-
-    /**
-     * 清理角色管理页面引导（保留用于兼容性）
-     */
-    cleanupCharaManagerTutorialIds() {
-        // 不再需要清理 ID，因为我们使用 CSS 选择器
-        console.log('[Tutorial] 角色管理页面引导清理完成');
-    }
-
-    /**
-     * 检查元素是否需要点击（用于折叠/展开组件）
-     */
-    shouldClickElement(element, selector) {
-        // 检查是否是折叠/展开类型的元素（支持类名和 ID）
-        const isToggleElement = selector.includes('.fold-toggle') ||
-            selector.includes('.catgirl-header') ||
-            selector === '#tutorial-target-fold-toggle' ||
-            selector === '#tutorial-target-catgirl-header';
-
-        if (isToggleElement) {
-            // 查找相关的内容容器
-            let contentContainer = element.nextElementSibling;
-
-            // 如果直接的下一个兄弟元素不是内容，向上查找到父元素再查找
-            if (!contentContainer) {
-                // 针对进阶设定按钮的特殊处理（它可能被包在 div 或 span 里）
-                const foldParent = element.closest('.fold, .fold-toggle-wrapper') || element.parentElement;
-                if (foldParent) {
-                    // 尝试找兄弟节点中的内容
-                    contentContainer = foldParent.nextElementSibling || foldParent.querySelector('.fold-content');
-                }
-
-                // 如果还是没找到，尝试通用的查找方式
-                if (!contentContainer) {
-                    const parent = element.closest('[class*="catgirl"]');
-                    if (parent) {
-                        contentContainer = parent.querySelector('[class*="details"], [class*="content"], .fold-content, .fold');
-                        // 注意：对于进阶设定，内容通常是 .fold 元素本身或其子元素，视具体 DOM 结构而定
-                        // 如果 element 是 toggle，那么内容通常是它控制的那个区域
-                    }
-                }
-            }
-
-
-            // 检查内容是否可见
-            if (contentContainer) {
-                const style = window.getComputedStyle(contentContainer);
-                const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-
-                console.log(`[Tutorial] 折叠组件状态检查 - 选择器: ${selector}, 已展开: ${isVisible}`);
-
-                // 如果已经展开，就不需要再点击
-                return !isVisible;
-            }
-
-            // 检查元素本身是否有 aria-expanded 属性
-            const ariaExpanded = element.getAttribute('aria-expanded');
-            if (ariaExpanded !== null) {
-                const isExpanded = ariaExpanded === 'true';
-                console.log(`[Tutorial] 折叠组件 aria-expanded 检查 - 已展开: ${isExpanded}`);
-                return !isExpanded;
-            }
-
-            // 检查是否有 active/open 类
-            if (element.classList.contains('active') || element.classList.contains('open') || element.classList.contains('expanded')) {
-                console.log(`[Tutorial] 折叠组件已处于展开状态（通过class检查）`);
-                return false;
-            }
-        }
-
-        // 其他类型的元素总是需要点击
-        return true;
-    }
-
-    /**
-     * 检查元素是否在可见视口内
-     */
-    isElementInViewport(element) {
-        if (!element) return false;
-
-        const rect = element.getBoundingClientRect();
-        return (
-            rect.top >= 0 &&
-            rect.left >= 0 &&
-            rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-            rect.right <= (window.innerWidth || document.documentElement.clientWidth)
-        );
-    }
-
-    /**
-     * 自动滚动到目标元素
-     */
-    scrollToElement(element) {
-        return new Promise((resolve) => {
-            if (!element) {
-                resolve();
-                return;
-            }
-
-            // 检查元素是否已经在视口内
-            if (this.isElementInViewport(element)) {
-                console.log('[Tutorial] 元素已在视口内，无需滚动');
-                resolve();
-                return;
-            }
-
-            console.log('[Tutorial] 元素不在视口内，正在滚动...');
-
-            // 尝试找到可滚动的父容器
-            let scrollableParent = element.parentElement;
-            while (scrollableParent) {
-                const style = window.getComputedStyle(scrollableParent);
-                const hasScroll = style.overflowY === 'auto' ||
-                    style.overflowY === 'scroll' ||
-                    style.overflow === 'auto' ||
-                    style.overflow === 'scroll';
-
-                if (hasScroll) {
-                    console.log('[Tutorial] 找到可滚动容器，正在滚动到元素...');
-                    // 计算元素相对于可滚动容器的位置
-                    const elementTop = element.offsetTop;
-                    const containerHeight = scrollableParent.clientHeight;
-                    const elementHeight = element.clientHeight;
-
-                    // 计算需要滚动的距离，使元素居中显示
-                    const targetScroll = elementTop - (containerHeight - elementHeight) / 2;
-
-                    scrollableParent.scrollTo({
-                        top: Math.max(0, targetScroll),
-                        behavior: 'smooth'
-                    });
-
-                    // 等待滚动完成（平滑滚动大约需要 300-500ms）
-                    setTimeout(() => {
-                        console.log('[Tutorial] 滚动完成');
-                        resolve();
-                    }, 600);
-                    return;
-                }
-
-                scrollableParent = scrollableParent.parentElement;
-            }
-
-            // 如果没有找到可滚动的父容器，尝试滚动 window
-            console.log('[Tutorial] 未找到可滚动容器，尝试滚动 window');
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-            // 等待滚动完成
-            setTimeout(() => {
-                console.log('[Tutorial] 滚动完成');
-                resolve();
-            }, 600);
-        });
-    }
-
-    /**
-     * 预加载所有教程步骤中的图片。
-     * 解析每个步骤的 popover.description HTML，提取 <img src="..."> 中的 URL，
-     * 通过 new Image() 提前下载到浏览器缓存。这样走到含图片的步骤时，
-     * createPopover 插入 DOM 后图片能立即渲染，offsetHeight 计算准确，
-     * 避免图片异步加载导致弹窗定位偏移、按钮被截断。
-     */
-    _preloadStepImages(steps) {
-        if (!steps || steps.length === 0) return;
-        const srcSet = new Set();
-        const imgTagRegex = /<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>/gi;
-        for (const step of steps) {
-            const desc = step.popover && step.popover.description;
-            if (!desc || typeof desc !== 'string') continue;
-            let match;
-            while ((match = imgTagRegex.exec(desc)) !== null) {
-                srcSet.add(match[1]);
-            }
-            imgTagRegex.lastIndex = 0;
-        }
-        if (srcSet.size === 0) return;
-        console.log(`[Tutorial] 预加载 ${srcSet.size} 张教程图片:`, [...srcSet]);
-        for (const src of srcSet) {
-            const img = new Image();
-            img.src = src;
-        }
-    }
-
-    /**
-     * 将 popover 钳位到视口内，确保用户始终能看到并操作它
-     */
-    clampPopoverToViewport() {
-        const popover = document.querySelector('.driver-popover');
-        if (!popover) return;
-
-        const rect = popover.getBoundingClientRect();
-        const vw = window.innerWidth || document.documentElement.clientWidth;
-        const vh = window.innerHeight || document.documentElement.clientHeight;
-
-        // 如果已经完全在视口内，不做任何操作
-        if (rect.left >= 0 && rect.top >= 0 && rect.right <= vw && rect.bottom <= vh) {
-            return;
-        }
-
-        console.log('[Tutorial] Popover 超出视口，钳位到可见区域', {
-            rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
-            viewport: { vw, vh }
-        });
-
-        // 切换到 fixed 定位以便精确控制位置
-        popover.style.position = 'fixed';
-        popover.style.margin = '0';
-        popover.style.transform = 'none';
-
-        let newLeft = rect.left;
-        let newTop = rect.top;
-
-        // 水平钳位
-        if (rect.right > vw) newLeft = vw - rect.width - 8;
-        if (newLeft < 8) newLeft = 8;
-        // 如果 popover 比视口还宽，至少让左边对齐
-        if (rect.width > vw - 16) newLeft = 8;
-
-        // 垂直钳位
-        if (rect.bottom > vh) newTop = vh - rect.height - 8;
-        if (newTop < 8) newTop = 8;
-        // 如果 popover 比视口还高，至少让顶部对齐，用户可以通过拖拽来看底部
-        if (rect.height > vh - 16) newTop = 8;
-
-        popover.style.left = newLeft + 'px';
-        popover.style.top = newTop + 'px';
-        popover.style.zIndex = '10000';
-    }
-
-    /**
-     * 设置 popover 拖动视觉提示
-     * 注意：实际拖动事件由 driver.min.js 的 bindDragEvents() 处理，
-     * 此方法仅添加视觉提示（cursor、title），避免重复绑定导致冲突。
-     */
-    enablePopoverDragging() {
-        const popover = document.querySelector('.driver-popover');
-        if (!popover) return;
-
-        const popoverTitle = popover.querySelector('.driver-popover-title');
-        if (popoverTitle) {
-            popoverTitle.style.cursor = 'move';
-            popoverTitle.style.userSelect = 'none';
-            popoverTitle.title = this.t('tutorial.drag_hint', '按住拖动以移动提示框');
-        }
-    }
-
-    /**
-     * 步骤改变时的回调
-     */
-    async onStepChange() {
-        if (this._stepChanging) {
-            console.log('[Tutorial] 步骤正在切换中，标记待处理请求');
-            this._pendingStepChange = true;
-            return;
-        }
-        
-        this._stepChanging = true;
-        this._pendingStepChange = false;
-        let succeeded = false;
-
-        try {
-            if (!this.driver) {
-                console.warn('[Tutorial] driver 已销毁，跳过步骤切换');
-                this.currentStep = 0;
-                return;
-            }
-            const steps = this.cachedValidSteps || this.getStepsForPage();
-            const previousStepIndex = this.currentStep;
-            const previousStepConfig = (previousStepIndex >= 0 && previousStepIndex < steps.length)
-                ? steps[previousStepIndex]
-                : null;
-
-            this.currentStep = this.driver.currentStep || 0;
-            console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
-
-            const previousSceneId = this.getYuiGuideSceneIdForStep(previousStepConfig);
-            if (this.currentStep < steps.length) {
-                const currentStepConfig = steps[this.currentStep];
-                const currentSceneId = this.getYuiGuideSceneIdForStep(currentStepConfig);
-
-                if (previousSceneId && previousSceneId !== currentSceneId) {
-                    this.notifyYuiGuideStepLeave(previousStepConfig, previousStepIndex, 'step-change');
-                }
-
-                if (currentSceneId && currentSceneId !== previousSceneId) {
-                    this.notifyYuiGuideStepEnter(currentStepConfig, this.currentStep, 'step-change');
-                }
-
-                // 进入新步骤前，先清理上一阶段的"下一步"前置校验
-                this.clearNextButtonGuard();
-
-                // 清除旧的刷新定时器
-                if (this._refreshTimers) {
-                    this._refreshTimers.forEach(t => clearTimeout(t));
-                    this._refreshTimers = [];
-                }
-
-                // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
-                if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
-                    if (this._lastOnHighlightedStepIndex !== this.currentStep) {
-                        try {
-                            console.log('[Tutorial] 手动触发步骤 onHighlighted');
-                            currentStepConfig.onHighlighted.call(this);
-                            this._lastOnHighlightedStepIndex = this.currentStep;
-                        } catch (error) {
-                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
-                        }
-                    }
-                }
-
-                // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
-                if (this.currentPage === 'chara_manager') {
-                    const needsAdvancedSettings = [
-                        '.chara-card-item:first-child .fold-toggle, .chara-list-item:first-child .fold-toggle',
-                        '.chara-card-item:first-child .live2d-link, .chara-list-item:first-child .live2d-link',
-                        '.chara-card-item:first-child select[name="voice_id"], .chara-list-item:first-child select[name="voice_id"]'
-                    ].includes(currentStepConfig.element);
-
-                    if (needsAdvancedSettings) {
-                        console.log('[Tutorial] 进入进阶设定相关步骤，确保展开状态');
-                        await this._ensureCharaManagerExpanded();
-                    }
-                }
-
-                await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
-
-
-                // 情感配置页面：在"选择模型"挑选步骤上未选模型时禁止进入下一步
-                if (this.currentPage === 'emotion_manager' &&
-                    currentStepConfig._isEmotionPicker) {
-                    const updateNextState = () => {
-                        const hasModel = this.hasEmotionManagerModelSelected();
-                        const hasSelectableModels = this.hasEmotionManagerSelectableModels();
-                        const canProceed = !hasSelectableModels || hasModel;
-                        this.setNextButtonState(
-                            canProceed,
-                            this.t('emotionManager.pleaseSelectModelFirst', '请先选择模型')
-                        );
-                        if (canProceed && this.nextButtonGuardTimer) {
-                            clearInterval(this.nextButtonGuardTimer);
-                            this.nextButtonGuardTimer = null;
-                        }
-                    };
-
-                    this.nextButtonGuardActive = true;
-                    updateNextState();
-                    this.nextButtonGuardTimer = setInterval(updateNextState, 300);
-                }
-
-                // 离开"选择模型"挑选步骤时收起下拉框 + 恢复 options 原定位
-                if (this.currentPage === 'emotion_manager' &&
-                    previousStepConfig &&
-                    previousStepConfig._isEmotionPicker &&
-                    !currentStepConfig._isEmotionPicker) {
-                    this._restoreEmotionPickerDropdown();
-                }
-
-                // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
-                if (this.currentPage === 'model_manager' &&
-                    currentStepConfig.element === '#emotion-config-btn' &&
-                    !this.hasLive2DModelLoaded()) {
-                    console.warn('[Tutorial] 未检测到已加载的 Live2D 模型，跳转回选择模型步骤');
-                    const targetIndex = steps.findIndex(step => step.element === '#live2d-model-select-btn');
-                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                        this.driver.showStep(targetIndex);
-                        return;
-                    }
-                }
-
-                // 情感配置页面中，未选模型时不进入配置区域
-                if (this.currentPage === 'emotion_manager' &&
-                    currentStepConfig.element === '#emotion-config' &&
-                    !this.hasEmotionManagerModelSelected()) {
-                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回挑选模型步骤');
-                    const targetIndex = steps.findIndex(step => step._isEmotionPicker);
-                    const fallbackIndex = steps.findIndex(step => step.element === '#model-singleselect' && !step._isEmotionPicker);
-                    const goto = targetIndex >= 0 ? targetIndex : fallbackIndex;
-                    if (this.driver && typeof this.driver.showStep === 'function' && goto >= 0) {
-                        this.driver.showStep(goto);
-                        return;
-                    }
-                }
-
-                const element = document.querySelector(currentStepConfig.element);
-
-                if (element) {
-                    // 检查元素是否隐藏，如果隐藏则显示
-                    if (!this.isElementVisible(element) && !currentStepConfig.skipAutoShow) {
-                        console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
-                        this.showElementForTutorial(element, currentStepConfig.element);
-                    }
-
-                    // 执行步骤中定义的操作
-                    if (currentStepConfig.action) {
-                        if (currentStepConfig.action === 'click') {
-                            const timer = setTimeout(() => {
-                                console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
-
-                                // 1. 找到要点击的元素
-                                const innerTrigger = element.querySelector('.fold-toggle');
-                                const clickTarget = innerTrigger || element;
-
-                                // 2. 检查是否是折叠类元素，如果已展开则不点击
-                                let shouldClick = true;
-                                if (clickTarget.classList.contains('fold-toggle')) {
-                                    // 检查进阶设定是否已展开
-                                    const foldContainer = clickTarget.closest('.chara-card-item, .chara-list-item, .catgirl-panel-wrapper')?.querySelector('.fold');
-                                    if (foldContainer) {
-                                        const isExpanded = foldContainer.classList.contains('open') ||
-                                            window.getComputedStyle(foldContainer).display !== 'none';
-                                        if (isExpanded) {
-                                            console.log('[Tutorial] 进阶设定已展开，跳过点击');
-                                            shouldClick = false;
-                                        }
-                                    }
-                                }
-
-                                // 3. 执行点击
-                                if (shouldClick) {
-                                    clickTarget.click();
-                                }
-
-                                // 4. 刷新高亮框
-                                const refreshTimer = setTimeout(() => {
-                                    if (this.driver) this.driver.refresh();
-                                }, 500);
-                                if (this._refreshTimers) this._refreshTimers.push(refreshTimer);
-
-                            }, 300);
-                            if (this._refreshTimers) this._refreshTimers.push(timer);
-                        }
-                    } else {
-                        // 即使没有点击操作，也在步骤切换后刷新位置
-                        // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
-                        if (currentStepConfig.skipInitialCheck) {
-                            console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
-                            this.DYNAMIC_REFRESH_DELAYS.forEach((delay, i) => {
-                                const timer = setTimeout(() => {
-                                    if (this.driver && typeof this.driver.refresh === 'function') {
-                                        this.driver.refresh();
-                                        console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第${i + 1}次)`);
-                                    }
-                                }, delay);
-                                if (this._refreshTimers) this._refreshTimers.push(timer);
-                            });
-                        } else {
-                            const timer = setTimeout(() => {
-                                if (this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
-                                }
-                            }, 200);
-                            if (this._refreshTimers) this._refreshTimers.push(timer);
-                        }
-                    }
-
-                    if (this.currentPage === 'model_manager') {
-                        [900, 1800].forEach(delay => {
-                            const t = setTimeout(() => {
-                                if (window.isInTutorial && this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                    console.log(`[Tutorial] 模型管理页延迟刷新高亮 (${delay}ms)`);
-                                }
-                            }, delay);
-                            if (this._refreshTimers) this._refreshTimers.push(t);
-                        });
-                    }
-                }
-            }
-
-            // 在步骤切换后，延迟启用 popover 拖动功能
-            // 因为 driver.js 可能会重新渲染 popover
-            setTimeout(() => {
-                this.enablePopoverDragging();
-            }, 200);
-
-            succeeded = true;
-        } catch (error) {
-            console.error('[Tutorial] 步骤切换回调执行出错:', error);
-            // 发生错误时确保清除待处理标记，避免进入死循环
-            this._pendingStepChange = false;
-            throw error;
-        } finally {
-            this._stepChanging = false;
-            // 如果在执行期间有新的步骤切换请求，且当前步骤处理成功，则再次触发
-            if (succeeded && this._pendingStepChange) {
-                console.log('[Tutorial] 处理待处理的步骤切换请求');
-                this.onStepChange().catch(err => {
-                    console.error('[Tutorial] 待处理步骤切换失败:', err);
-                });
-            }
-        }
-    }
 
     /**
      * 引导结束时的回调
@@ -6012,14 +2796,9 @@ class UniversalTutorialManager {
 
         this._tutorialEndHandled = true;
         const finalSteps = this.cachedValidSteps || [];
-        const finalStepIndex = this.currentStep;
-        const finalStepConfig = (finalStepIndex >= 0 && finalStepIndex < finalSteps.length)
-            ? finalSteps[finalStepIndex]
-            : null;
         const endMeta = this.resolveTutorialEndMeta(finalSteps);
         const avatarFloatingRound = this.activeAvatarFloatingGuideRound;
 
-        this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
         this.broadcastYuiGuideTerminationRequest(endMeta);
         this.clearAllTutorialLifecycles(endMeta.rawReason);
         const completedSource = this.currentTutorialStartSource;
@@ -6077,11 +2856,6 @@ class UniversalTutorialManager {
         // 标记用户已看过该页面的引导
         const storageKey = this.getStorageKey();
         localStorage.setItem(storageKey, 'true');
-        if (this.currentPage === 'model_manager') {
-            const commonStorageKey = getTutorialStorageKeyForPage('model_manager_common');
-            localStorage.setItem(commonStorageKey, 'true');
-            console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
-        }
 
         if (endMeta.reason === 'skip') {
             window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
@@ -6197,37 +2971,16 @@ class UniversalTutorialManager {
      * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
      */
     _teardownTutorialUI() {
-        this.invalidateTutorialInteractionApply(
-            this.lifecycleStateStore.getEndRawReason()
-            || this.lifecycleStateStore.getEndReason()
-            || 'tutorial-ended'
-        );
         this.revealTutorialLive2dPrepared();
-        // 关键 UI 清理：必须先于 _teardownPromise early-return 守卫执行，
-        // 且必须幂等。MMD 模型管理教程曾出现：用户走到末步点「完成」后
-        // 跳过按钮残留、模型列表按钮 pointer-events:none 卡死。
-        // 根因是 teardown 触发时 _teardownPromise 已被前一次未完成的链占用，
-        // early-return 直接跳过了 hideSkipButton / restoreTutorialInteractionState。
-        // 把这两个操作提到守卫之前，可在任何重复/并发调用下都保证用户能继续操作。
         try {
             this.hideSkipButton();
         } catch (error) {
             console.warn('[Tutorial] hideSkipButton 失败:', error);
         }
         try {
-            this.restoreTutorialInteractionState();
-        } catch (error) {
-            console.warn('[Tutorial] restoreTutorialInteractionState 失败:', error);
-        }
-        try {
             this.restoreAvatarFloatingModelInteractionState('teardown-early');
         } catch (error) {
             console.warn('[Tutorial] restoreAvatarFloatingModelInteractionState 失败:', error);
-        }
-        try {
-            this.unblockNekoTutorialClickEvents();
-        } catch (error) {
-            console.warn('[Tutorial] unblockNekoTutorialClickEvents 失败:', error);
         }
         try {
             this.restoreYuiGuideChatInputState(
@@ -6245,54 +2998,9 @@ class UniversalTutorialManager {
         this._isDestroyed = true;
         // 重置运行标志
         this.isTutorialRunning = false;
-        this.clearNextButtonGuard();
-        this._lastAppliedStateKey = null;
-        this._stepChanging = false;
-        this._pendingStepChange = false;
-        this._applyingInteractionState = false;
         this.cachedValidSteps = null;
         this.lifecycleStateStore.resetEndReason();
         this.currentTutorialStartSource = 'auto';
-
-        // 清除刷新定时器
-        if (this._refreshTimers) {
-            this._refreshTimers.forEach(t => clearTimeout(t));
-            this._refreshTimers = [];
-        }
-
-        // 清理 resize 监听
-        if (this._resizeHandler) {
-            window.removeEventListener('resize', this._resizeHandler);
-            this._resizeHandler = null;
-        }
-        if (this._resizeRafId) { cancelAnimationFrame(this._resizeRafId); this._resizeRafId = null; }
-        if (this._resizeTimeoutId) { clearTimeout(this._resizeTimeoutId); this._resizeTimeoutId = null; }
-
-        // 只有进入了全屏的页面才需要退出全屏
-        const pagesNeedingFullscreen = []; // 已禁用全屏提示
-        if (pagesNeedingFullscreen.includes(this.currentPage)) {
-            this.exitFullscreenMode();
-        }
-
-        // 对于角色管理页面，恢复容器的上边距
-        if (this.currentPage === 'chara_manager') {
-            const container = document.querySelector('.container');
-            if (container && this.originalContainerMargin !== undefined) {
-                container.style.marginTop = this.originalContainerMargin;
-                console.log('[Tutorial] 恢复容器上边距');
-            }
-            // 清理引导添加的 ID
-            this.cleanupCharaManagerTutorialIds();
-        }
-
-        if (this.currentPage === 'model_manager') {
-            this.clearModelManagerTutorialRecheckTimer();
-        }
-
-        // 情感配置页面：教程结束时收起模型下拉框 + 恢复 options 原定位
-        if (this.currentPage === 'emotion_manager') {
-            this._restoreEmotionPickerDropdown();
-        }
 
         // 清除全局引导标记
         window.isInTutorial = false;
@@ -6300,90 +3008,6 @@ class UniversalTutorialManager {
         // 恢复页面滚动
         this.unlockBodyScroll();
 
-        const endPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
-        const modelContainer = document.getElementById(`${endPrefix}-container`);
-        if (modelContainer && this.originalLive2dStyle) {
-            modelContainer.style.left = this.originalLive2dStyle.left;
-            modelContainer.style.top = this.originalLive2dStyle.top;
-            modelContainer.style.right = this.originalLive2dStyle.right;
-            modelContainer.style.bottom = this.originalLive2dStyle.bottom;
-            modelContainer.style.width = this.originalLive2dStyle.width;
-            modelContainer.style.height = this.originalLive2dStyle.height;
-            modelContainer.style.transform = this.originalLive2dStyle.transform;
-            console.log(`[Tutorial] 恢复 ${endPrefix} 模型原始位置`);
-        }
-
-        // 清除浮动工具栏保护定时器
-        if (this.floatingButtonsProtectionTimer) {
-            clearInterval(this.floatingButtonsProtectionTimer);
-            this.floatingButtonsProtectionTimer = null;
-            console.log('[Tutorial] 浮动工具栏保护定时器已清除');
-        }
-
-        // 恢复浮动工具栏的原始样式
-        if (this._floatingButtonsOriginalStyles !== undefined) {
-            const floatingButtons = document.getElementById(`${endPrefix}-floating-buttons`);
-            if (floatingButtons) {
-                floatingButtons.style.removeProperty('display');
-                floatingButtons.style.removeProperty('visibility');
-                floatingButtons.style.removeProperty('opacity');
-                if (this._floatingButtonsOriginalStyles.display) {
-                    floatingButtons.style.display = this._floatingButtonsOriginalStyles.display;
-                }
-                if (this._floatingButtonsOriginalStyles.visibility) {
-                    floatingButtons.style.visibility = this._floatingButtonsOriginalStyles.visibility;
-                }
-                if (this._floatingButtonsOriginalStyles.opacity) {
-                    floatingButtons.style.opacity = this._floatingButtonsOriginalStyles.opacity;
-                }
-                console.log('[Tutorial] 已恢复浮动工具栏原始样式');
-            }
-            this._floatingButtonsOriginalStyles = undefined;
-        }
-
-        // 恢复锁图标的原始样式
-        if (this._lockIconOriginalStyles !== undefined) {
-            const lockIcon = document.getElementById(`${endPrefix}-lock-icon`);
-            if (lockIcon) {
-                // 先移除 !important 样式
-                lockIcon.style.removeProperty('display');
-                lockIcon.style.removeProperty('visibility');
-                lockIcon.style.removeProperty('opacity');
-
-                // 恢复原始样式（如果原始样式为空字符串则不设置，让 CSS 规则生效）
-                if (this._lockIconOriginalStyles.display) {
-                    lockIcon.style.display = this._lockIconOriginalStyles.display;
-                }
-                if (this._lockIconOriginalStyles.visibility) {
-                    lockIcon.style.visibility = this._lockIconOriginalStyles.visibility;
-                }
-                if (this._lockIconOriginalStyles.opacity) {
-                    lockIcon.style.opacity = this._lockIconOriginalStyles.opacity;
-                }
-                console.log('[Tutorial] 已恢复锁图标原始样式');
-            }
-            this._lockIconOriginalStyles = undefined;
-        }
-
-        // 清理 popover 拖动监听器（从 manager 对象获取引用）
-        if (this._popoverDragListeners) {
-            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = this._popoverDragListeners;
-            if (dragElement) {
-                dragElement.removeEventListener('mousedown', onMouseDown);
-            }
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-            this._popoverDragListeners = undefined;
-            console.log('[Tutorial] Popover 拖动监听器已清除');
-        }
-        const popover = document.querySelector('.driver-popover');
-        if (popover && popover.dataset.draggableEnabled) {
-            delete popover.dataset.draggableEnabled;
-        }
-
-        // 恢复所有在引导中修改过的元素的原始样式
-        this.restoreAllModifiedElements();
-        this.restoreTutorialInteractionState();
         const teardownPromise = Promise.resolve()
             .then(() => this.restoreTutorialAvatarOverride())
             .then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))
@@ -6400,57 +3024,7 @@ class UniversalTutorialManager {
         return teardownPromise;
     }
 
-    /**
-     * 恢复所有在引导中修改过的元素
-     */
-    restoreAllModifiedElements() {
-        if (this.modifiedElementsMap.size === 0) {
-            console.log('[Tutorial] 没有需要恢复的元素');
-            return;
-        }
 
-        console.log(`[Tutorial] 开始恢复 ${this.modifiedElementsMap.size} 个元素的原始样式`);
-
-        this.modifiedElementsMap.forEach((elementRecord, element) => {
-            try {
-                // 恢复原始的内联样式
-                if (elementRecord.originalInlineStyle) {
-                    element.setAttribute('style', elementRecord.originalInlineStyle);
-                } else {
-                    element.removeAttribute('style');
-                }
-
-                // 恢复原始的类名
-                element.className = elementRecord.originalClassName;
-
-                // 移除任何添加的数据属性
-                if (element.dataset.inTutorial) {
-                    delete element.dataset.inTutorial;
-                }
-
-                console.log(`[Tutorial] 已恢复元素: ${element.tagName}${element.id ? '#' + element.id : ''}${element.className ? '.' + element.className : ''}`);
-            } catch (error) {
-                console.error('[Tutorial] 恢复元素样式失败:', error);
-            }
-        });
-
-        // 清空 Map
-        this.modifiedElementsMap.clear();
-        console.log('[Tutorial] 所有元素样式已恢复，Map 已清空');
-    }
-
-    /**
-     * 重新启动引导（用户手动触发）
-     */
-    async restartTutorial() {
-        const storageKeys = this.getStorageKeysForPage(this.currentPage);
-        storageKeys.forEach(key => localStorage.removeItem(key));
-        this.pendingTutorialStartSource = 'manual';
-
-        await this.requestTutorialEnd('restart');
-
-        this.startTutorial();
-    }
 
     /**
      * 获取引导状态
@@ -6464,29 +3038,6 @@ class UniversalTutorialManager {
         return storageKeys.some(key => localStorage.getItem(key) === 'true');
     }
 
-    /**
-     * 进入全屏模式
-     */
-    enterFullscreenMode() {
-        console.log('[Tutorial] 请求进入全屏模式');
-
-        const elem = document.documentElement;
-
-        // 使用 Fullscreen API 进入全屏
-        if (elem.requestFullscreen) {
-            elem.requestFullscreen().catch(err => {
-                console.error('[Tutorial] 进入全屏失败:', err);
-            });
-        } else if (elem.webkitRequestFullscreen) { // Safari
-            elem.webkitRequestFullscreen();
-        } else if (elem.msRequestFullscreen) { // IE11
-            elem.msRequestFullscreen();
-        } else if (elem.mozRequestFullScreen) { // Firefox
-            elem.mozRequestFullScreen();
-        }
-
-        console.log('[Tutorial] 全屏模式已请求');
-    }
 
     /**
      * 等待指定时间
@@ -6496,105 +3047,7 @@ class UniversalTutorialManager {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    /**
-     * 退出全屏模式
-     */
-    exitFullscreenMode() {
-        console.log('[Tutorial] 退出全屏模式');
 
-        // 使用 Fullscreen API 退出全屏
-        if (document.exitFullscreen) {
-            document.exitFullscreen().catch(err => {
-                console.error('[Tutorial] 退出全屏失败:', err);
-            });
-        } else if (document.webkitExitFullscreen) { // Safari
-            document.webkitExitFullscreen();
-        } else if (document.msExitFullscreen) { // IE11
-            document.msExitFullscreen();
-        } else if (document.mozCancelFullScreen) { // Firefox
-            document.mozCancelFullScreen();
-        }
-
-        console.log('[Tutorial] 全屏模式已退出');
-    }
-    /**
-     * 确保角色管理页面的猫娘卡片和进阶设定都已展开
-     * 用于进入进阶设定相关步骤前的预处理
-     * 使用 async/await + 重试机制确保 DOM 状态稳定
-     */
-    async _ensureCharaManagerExpanded() {
-        let attempts = 0;
-        const maxAttempts = 10;
-
-        while (attempts < maxAttempts) {
-            attempts++;
-            console.log(`[Tutorial] _ensureCharaManagerExpanded: 尝试 ${attempts}/${maxAttempts}`);
-
-            // 1. 找到第一个猫娘卡片
-            const targetBlock = document.querySelector('.chara-card-item:first-child, .chara-list-item:first-child');
-            if (!targetBlock) {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片，重试中...');
-                await this.sleep(300);
-                continue;
-            }
-
-            // 2. 当前角色管理页卡片详情是独立面板，不再需要展开内联详情区域。
-            if (!this.isElementVisible(targetBlock)) {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 目标猫娘卡片不可见，重试中...');
-                await this.sleep(300);
-                continue;
-            }
-
-            // 3. 确保“进阶设定”折叠区域已展开
-            const foldContainer = targetBlock.querySelector('.fold');
-            const foldToggle = targetBlock.querySelector('.fold-toggle');
-
-            if (!foldContainer || !foldToggle) {
-                console.log('[Tutorial] _ensureCharaManagerExpanded: 当前卡片无内联进阶设定，跳过展开');
-                return true;
-            }
-
-            const isExpanded = foldContainer.classList.contains('open') ||
-                window.getComputedStyle(foldContainer).display !== 'none';
-
-            if (!isExpanded) {
-                console.log('[Tutorial] 进阶设定未展开，正在点击切换按钮...');
-                foldToggle.click();
-                // 等待折叠展开动画并刷新 driver 位置
-                await this.sleep(500);
-                if (this.driver && typeof this.driver.refresh === 'function') {
-                    this.driver.refresh();
-                }
-
-                // 再次验证是否成功展开
-                const finalCheck = foldContainer.classList.contains('open') ||
-                    window.getComputedStyle(foldContainer).display !== 'none';
-
-                if (finalCheck) {
-                    console.log('[Tutorial] _ensureCharaManagerExpanded: 进阶设定已成功展开');
-                    return true;
-                } else {
-                    console.warn('[Tutorial] _ensureCharaManagerExpanded: 进阶设定展开状态确认失败，继续重试...');
-                    continue;
-                }
-            }
-
-            // 如果已经走到这里，说明所有部分都已经展开了
-            console.log('[Tutorial] _ensureCharaManagerExpanded: 确认所有区域已展开');
-            return true;
-        }
-
-        console.warn('[Tutorial] _ensureCharaManagerExpanded: 达到最大重试次数，可能未能完全展开');
-        return false;
-    }
-
-    /**
-     * 创建帮助按钮 - 已禁用，改用设置页面的下拉菜单
-     */
-    createHelpButton() {
-        // 不再创建右下角帮助按钮
-        return;
-    }
 
     /** 
      * 重置所有页面的引导状态 
@@ -6611,7 +3064,6 @@ class UniversalTutorialManager {
         this.markTutorialManualStartIntent('home');
         dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
         console.log('[Tutorial] 已重置所有页面引导');
-        this.notifyTutorialResetForCurrentPageIfNeeded('all');
     } 
 
     /**
@@ -6639,20 +3091,12 @@ class UniversalTutorialManager {
         }
 
         console.log('[Tutorial] 已重置页面引导:', pageKey);
-        this.notifyTutorialResetForCurrentPageIfNeeded(pageKey);
     }
 
     /**
      * 重新启动当前页面的引导
      */
     async restartCurrentTutorial() {
-        // 清除浮动按钮保护定时器，防止在重启时留下陈旧的计时器
-        if (this.floatingButtonsProtectionTimer) {
-            clearInterval(this.floatingButtonsProtectionTimer);
-            this.floatingButtonsProtectionTimer = null;
-        }
-
-        // 先销毁现有的 driver 以避免残留的监听器和遮罩
         await this.requestTutorialEnd('restart');
         if (this._teardownPromise) {
             try {
@@ -6667,10 +3111,8 @@ class UniversalTutorialManager {
         console.log('[Tutorial] 已清除当前页面引导记录:', this.currentPage, storageKeys);
         this.pendingTutorialStartSource = 'manual';
 
-        // 重新初始化并启动引导
-        this.isInitialized = false;
         this.isTutorialRunning = false;
-        await this.waitForDriver();
+        await this.requestTutorialStart('manual');
     }
 }
 
@@ -6689,12 +3131,6 @@ async function destroyUniversalTutorialManagerInstance(reason = 'destroy') {
             manager.onTutorialEnd();
         } else if (typeof manager._teardownTutorialUI === 'function') {
             await manager._teardownTutorialUI();
-        }
-        if (manager.driver && typeof manager.driver.destroy === 'function') {
-            manager.driver.destroy();
-        }
-        if (typeof manager.teardownModelManagerListeners === 'function') {
-            manager.teardownModelManagerListeners();
         }
     }
     window.universalTutorialManager = null;
@@ -6826,34 +3262,15 @@ async function resetTutorialForPage(pageKey) {
         if (pageKey === 'home') {
             await postTutorialPromptReset('manual_home_tutorial_reset');
         }
-        if (pageKey === 'model_manager') {
-            getTutorialStorageKeysForPageFallback('model_manager').forEach(key => localStorage.removeItem(key));
-        } else {
-            getTutorialStorageKeysForPageFallback(pageKey).forEach(key => localStorage.removeItem(key));
-        }
+        getTutorialStorageKeysForPageFallback(pageKey).forEach(key => localStorage.removeItem(key));
         if (pageKey === 'home') {
             localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
             dispatchHomeTutorialResetEvent('home', 'manual_home_tutorial_reset');
         }
     }
 
-    // 验证重置结果
-    if (pageKey === 'model_manager') {
-        const mmdVal = localStorage.getItem('neko_tutorial_model_manager_mmd');
-        const vrmVal = localStorage.getItem('neko_tutorial_model_manager_vrm');
-        const l2dVal = localStorage.getItem('neko_tutorial_model_manager_live2d');
-        console.log('%c[Tutorial] 重置后验证 → mmd:', 'color: red; font-weight: bold', mmdVal, 'vrm:', vrmVal, 'live2d:', l2dVal);
-    }
-
     const pageNames = {
         'home': window.t ? window.t('memory.tutorialPageHome', '主页') : '主页',
-        'model_manager': window.t ? window.t('memory.tutorialPageModelManager', '模型设置') : '模型设置',
-        'parameter_editor': window.t ? window.t('memory.tutorialPageParameterEditor', '捏脸系统') : '捏脸系统',
-        'emotion_manager': window.t ? window.t('memory.tutorialPageEmotionManager', '情感管理') : '情感管理',
-        'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
-        'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
-        'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
-        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
         'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };
     const pageName = pageNames[pageKey] || pageKey;

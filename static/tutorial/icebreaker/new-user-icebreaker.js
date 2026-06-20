@@ -596,8 +596,6 @@
             '#neko-tutorial-skip-btn',
             '#home-avatar-floating-guide-player',
             '.home-avatar-floating-guide-player',
-            '.driver-popover',
-            '.driver-overlay',
             '.yui-guide-overlay',
             '.yui-guide-stage'
         ]);

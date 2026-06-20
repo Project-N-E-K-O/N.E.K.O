@@ -262,30 +262,39 @@ YuiGuideDirector
   -> AvatarPerformanceStage + Live2D driver + default coordinator
 ```
 
-苏醒链路：
+当前 Day1 苏醒链路：
 
 ```text
-startPrelude()
+playAvatarFloatingRound(1)
+  -> day1_intro_activation
   -> runWakeupPrelude()
   -> callAvatarStage('runWakeup')
   -> YuiGuideAvatarStage.runWakeup()
   -> AvatarPerformance poseTimeline
-  -> runChatIntroPrelude()
 ```
 
-后续 step 链路：
+后续每日 round scene 链路分为准备、播放、执行和收口四段；`operation` 不是固定在台词前执行，普通 scene 会先启动旁白，再在 cursor move/click 阶段触发 operation：
 
 ```text
-playManagedScene(stepId)
-  -> callAvatarStage('enterStep')
-  -> playScene(stepId)
-  -> speakGuideLine()
-      -> callAvatarStage('onSpeechStart')
-      -> 原有语音播放
-      -> callAvatarStage('onSpeechEnd')
-  -> callAvatarTimelineAction()
-      -> callAvatarStage('onTimelineAction')
-  -> callAvatarStage('exitStep')
+playAvatarFloatingScene(scene)
+  -> SceneOrchestrator.playScene()
+  -> 准备阶段:
+       clear previous scene state
+       prepareAvatarFloatingScene()
+       resolve/apply spotlight
+  -> 播放阶段:
+       speakGuideLine()
+       -> callAvatarStage('onSpeechStart')
+       -> 原有语音播放
+       -> callAvatarStage('onSpeechEnd')
+  -> 执行阶段:
+       move/click Ghost Cursor
+       runAvatarFloatingSceneOperation()
+       callAvatarTimelineAction()
+         -> callAvatarStage('onTimelineAction')
+  -> 收口阶段:
+       wait narration / action / petal transition
+       callAvatarStage('exitStep')
 ```
 
 情绪链路：
