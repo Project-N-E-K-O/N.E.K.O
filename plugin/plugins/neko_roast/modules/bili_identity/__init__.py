@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import ipaddress
 import mimetypes
 import socket
+import ssl
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +16,24 @@ from ...core.contracts import ViewerEvent, ViewerIdentity
 from .._base import BaseModule
 
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
-        return None
+class _ResolvedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, resolved_ip: str, *, port: int, timeout: float) -> None:
+        super().__init__(host, port=port, timeout=timeout)
+        self._resolved_ip = resolved_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._resolved_ip, self.port), self.timeout, self.source_address)
+
+
+class _ResolvedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, resolved_ip: str, *, port: int, timeout: float) -> None:
+        context = ssl.create_default_context()
+        super().__init__(host, port=port, timeout=timeout, context=context)
+        self._resolved_ip = resolved_ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._resolved_ip, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
 class BiliIdentityModule(BaseModule):
@@ -137,25 +153,38 @@ class BiliIdentityModule(BaseModule):
     def _fetch_avatar(url: str, timeout: float) -> tuple[bytes, str]:
         if url == "neko-roast://fixtures/demo-avatar":
             return BiliIdentityModule._load_demo_avatar()
-        BiliIdentityModule._validate_avatar_url(url)
-        request = urllib.request.Request(
-            url,
+        parsed, resolved_ip, port = BiliIdentityModule._resolve_avatar_endpoint(url)
+        connection = BiliIdentityModule._open_avatar_connection(parsed, resolved_ip, port, timeout)
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        host_header = parsed.netloc
+        connection.request(
+            "GET",
+            path,
             headers={
+                "Host": host_header,
                 "Referer": "https://www.bilibili.com",
                 "User-Agent": "Mozilla/5.0 NEKO-Roast/0.1",
             },
         )
-        opener = urllib.request.build_opener(_NoRedirectHandler)
-        with opener.open(request, timeout=timeout) as response:
+        try:
+            response = connection.getresponse()
+            if 300 <= response.status < 400:
+                raise ValueError("avatar_redirect_not_allowed")
+            if response.status >= 400:
+                raise ValueError("avatar_fetch_failed_status")
             data = response.read(2 * 1024 * 1024)
-            content_type = response.headers.get("content-type") or ""
+            content_type = response.getheader("content-type") or ""
+        finally:
+            connection.close()
         mime = content_type.split(";", 1)[0].strip()
         if not mime:
             mime = mimetypes.guess_type(url)[0] or "image/png"
         return data, mime
 
     @staticmethod
-    def _validate_avatar_url(url: str) -> None:
+    def _resolve_avatar_endpoint(url: str) -> tuple[urllib.parse.ParseResult, str, int]:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             raise ValueError("avatar_url_scheme_not_allowed")
@@ -165,11 +194,14 @@ class BiliIdentityModule(BaseModule):
         lowered = hostname.lower()
         if lowered == "localhost" or lowered.endswith(".localhost"):
             raise ValueError("avatar_url_host_not_allowed")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
         try:
-            addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or None)}
+            addresses = [item[4][0] for item in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)]
         except OSError as exc:
             raise ValueError("avatar_url_host_unresolved") from exc
-        for address in addresses:
+        if not addresses:
+            raise ValueError("avatar_url_host_unresolved")
+        for address in set(addresses):
             ip = ipaddress.ip_address(address)
             if (
                 ip.is_private
@@ -180,6 +212,22 @@ class BiliIdentityModule(BaseModule):
                 or ip.is_unspecified
             ):
                 raise ValueError("avatar_url_host_not_allowed")
+        return parsed, addresses[0], port
+
+    @staticmethod
+    def _validate_avatar_url(url: str) -> None:
+        BiliIdentityModule._resolve_avatar_endpoint(url)
+
+    @staticmethod
+    def _open_avatar_connection(
+        parsed: urllib.parse.ParseResult, resolved_ip: str, port: int, timeout: float
+    ) -> http.client.HTTPConnection:
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("avatar_url_host_required")
+        if parsed.scheme == "https":
+            return _ResolvedHTTPSConnection(hostname, resolved_ip, port=port, timeout=timeout)
+        return _ResolvedHTTPConnection(hostname, resolved_ip, port=port, timeout=timeout)
 
     @staticmethod
     def _load_demo_avatar() -> tuple[bytes, str]:

@@ -392,3 +392,58 @@ async def test_bili_identity_ignores_undecodable_avatar_bytes():
 def test_bili_identity_rejects_private_avatar_url():
     with pytest.raises(ValueError):
         BiliIdentityModule._fetch_avatar("http://127.0.0.1/avatar.png", timeout=1)
+
+
+def test_bili_identity_avatar_fetch_uses_validated_resolved_ip(monkeypatch):
+    opened = {}
+
+    def fake_getaddrinfo(host, port, type=0):
+        assert host == "cdn.example.test"
+        assert port == 8443
+        return [(None, None, None, "", ("8.8.8.8", port))]
+
+    class Response:
+        status = 200
+
+        def read(self, _limit):
+            return b"png"
+
+        def getheader(self, name):
+            return "image/png" if name == "content-type" else ""
+
+    class Connection:
+        def request(self, method, path, headers):
+            opened["method"] = method
+            opened["path"] = path
+            opened["host"] = headers["Host"]
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            opened["closed"] = True
+
+    def fake_open(parsed, resolved_ip, port, timeout):
+        opened["hostname"] = parsed.hostname
+        opened["resolved_ip"] = resolved_ip
+        opened["port"] = port
+        opened["timeout"] = timeout
+        return Connection()
+
+    monkeypatch.setattr("plugin.plugins.neko_roast.modules.bili_identity.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(BiliIdentityModule, "_open_avatar_connection", staticmethod(fake_open))
+
+    data, mime = BiliIdentityModule._fetch_avatar("https://cdn.example.test:8443/avatar.png?size=small", timeout=3)
+
+    assert data == b"png"
+    assert mime == "image/png"
+    assert opened == {
+        "hostname": "cdn.example.test",
+        "resolved_ip": "8.8.8.8",
+        "port": 8443,
+        "timeout": 3,
+        "method": "GET",
+        "path": "/avatar.png?size=small",
+        "host": "cdn.example.test:8443",
+        "closed": True,
+    }
