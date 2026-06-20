@@ -12,6 +12,7 @@ from .entry_common import (
     ui,
     LLM_OPERATION_ANSWER_EVALUATE,
 )
+from .models import public_current_question_payload
 
 
 class _TutorAnswerEntriesMixin:
@@ -29,6 +30,9 @@ class _TutorAnswerEntriesMixin:
                 "answer": {"type": "string", "default": ""},
                 "question": {"type": "string", "default": ""},
                 "expected_answer": {"type": "string", "default": ""},
+                "question_id": {"type": "string", "default": ""},
+                "attempt_id": {"type": "string", "default": ""},
+                "selected_topic_id": {"type": "string", "default": ""},
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
@@ -54,6 +58,31 @@ class _TutorAnswerEntriesMixin:
         supplied_expected = str(expected_answer or "").strip()
         state_question = str(current_question.get("question") or "").strip()
         state_expected = str(current_question.get("answer") or "").strip()
+        supplied_question_id = str(kwargs.get("question_id") or "").strip()
+        supplied_attempt_id = str(kwargs.get("attempt_id") or "").strip()
+        state_question_id = str(current_question.get("question_id") or "").strip()
+        state_attempt_id = str(current_question.get("attempt_id") or "").strip()
+        current_question_requires_identity = bool(state_question_id or state_attempt_id)
+        if current_question_requires_identity and not supplied_question:
+            if (
+                not supplied_question_id
+                or not supplied_attempt_id
+                or supplied_question_id != state_question_id
+                or supplied_attempt_id != state_attempt_id
+            ):
+                return Err(
+                    SdkError(
+                        "current question identity does not match",
+                        code="QUESTION_MISMATCH",
+                    )
+                )
+            if current_question.get("attempt_evaluated"):
+                return Err(
+                    SdkError(
+                        "attempt has already been evaluated",
+                        code="ATTEMPT_ALREADY_EVALUATED",
+                    )
+                )
         resolved_question = supplied_question or state_question
         if not resolved_question:
             return Err(SdkError("study tutor requires a question to evaluate against"))
@@ -80,6 +109,14 @@ class _TutorAnswerEntriesMixin:
                 "answer": resolved_expected,
             }
         )
+        selected_topic_id = str(
+            kwargs.get("selected_topic_id")
+            or question_payload.get("selected_topic_id")
+            or question_payload.get("topic_id")
+            or ""
+        ).strip()
+        if selected_topic_id:
+            question_payload["selected_topic_id"] = selected_topic_id
         run_id = self._resolve_current_run_id(kwargs)
         session_id = str(kwargs.get("session_id") or "").strip()
         try:
@@ -93,12 +130,20 @@ class _TutorAnswerEntriesMixin:
                     "current_question": current_question
                     if using_current_question
                     else {},
+                    "public_current_question": public_current_question_payload(
+                        current_question
+                    )
+                    if using_current_question
+                    else {},
                     "question_payload": question_payload,
                     "question_source": "current_question"
                     if using_current_question
                     else "supplied",
                     "run_id": run_id,
                     "session_id": session_id,
+                    "question_id": supplied_question_id or state_question_id,
+                    "attempt_id": supplied_attempt_id or state_attempt_id,
+                    "selected_topic_id": selected_topic_id,
                     "mode": active_mode,
                     **(
                         {
@@ -123,7 +168,8 @@ class _TutorAnswerEntriesMixin:
                 history_kind=LLM_OPERATION_ANSWER_EVALUATE,
                 metadata={
                     "question": resolved_question,
-                    "expected_answer": resolved_expected,
+                    "question_id": supplied_question_id or state_question_id,
+                    "attempt_id": supplied_attempt_id or state_attempt_id,
                     "degraded": reply.degraded,
                     "diagnostic": reply.diagnostic,
                     "payload": reply.payload,
@@ -135,12 +181,20 @@ class _TutorAnswerEntriesMixin:
                 extra_context=tutor_context,
             )
             payload["question"] = resolved_question
+            if supplied_question_id or state_question_id:
+                payload["question_id"] = supplied_question_id or state_question_id
+            if supplied_attempt_id or state_attempt_id:
+                payload["attempt_id"] = supplied_attempt_id or state_attempt_id
+            if selected_topic_id:
+                payload["selected_topic_id"] = selected_topic_id
             payload["screen_classification"] = (
                 tutor_context.get("screen_classification") or {}
             )
             topic = str(
                 payload.get("topic")
+                or payload.get("selected_topic_id")
                 or question_payload.get("topic")
+                or question_payload.get("selected_topic_id")
                 or tutor_context.get("topic")
                 or ""
             ).strip()
@@ -167,6 +221,31 @@ class _TutorAnswerEntriesMixin:
                 topic=topic,
                 mastery_after=mastery_after,
             )
+            if using_current_question and state_attempt_id:
+                public_eval_cache = {
+                    key: value
+                    for key, value in payload.items()
+                    if key
+                    not in {
+                        "answer",
+                        "accepted_answers",
+                        "key_points",
+                        "rubric",
+                        "solution_steps",
+                        "internal_private_payload",
+                        "current_question_private",
+                    }
+                }
+                async with self._lock:
+                    if (
+                        str(self._state.current_question.get("attempt_id") or "")
+                        == state_attempt_id
+                    ):
+                        self._state.current_question["attempt_evaluated"] = True
+                        self._state.current_question["answer_evaluation_cache"] = (
+                            public_eval_cache
+                        )
+                await self._persist_state()
             return Ok(payload)
         except Exception as exc:
             return _entry_exception_error(

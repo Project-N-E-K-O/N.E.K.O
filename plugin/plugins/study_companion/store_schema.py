@@ -123,6 +123,7 @@ def _init_db(self) -> None:
             name TEXT NOT NULL,
             subject TEXT NOT NULL,
             chapter TEXT,
+            stage TEXT NOT NULL DEFAULT '',
             depth INTEGER DEFAULT 1,
             difficulty REAL DEFAULT 0.5,
             prerequisites TEXT NOT NULL DEFAULT '[]',
@@ -321,6 +322,7 @@ def _init_db(self) -> None:
         """
     )
     ensure_memory_schema(conn)
+    self._ensure_column(conn, "topics", "stage", "TEXT")
     self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mastery_topic_updated ON mastery_snapshots(topic_id, updated_at DESC, id DESC)"

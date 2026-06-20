@@ -9,6 +9,8 @@ from .tutor_llm_agent_common import (
     MODE_COMPANION,
     normalize_mode,
     TutorReply,
+    _as_dict,
+    _as_list,
     _as_str,
     _clamp_int,
 )
@@ -49,10 +51,36 @@ def _normalize_question(
     if not question:
         raise SdkError("missing question")
     topic = _as_str(raw.get("topic")).strip() or self._guess_topic(context)
+    accepted_answers = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("accepted_answers"))
+        if _as_str(item, str(item)).strip()
+    ]
+    key_points = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("key_points"))
+        if _as_str(item, str(item)).strip()
+    ]
+    solution_steps = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("solution_steps"))
+        if _as_str(item, str(item)).strip()
+    ]
+    answer = _as_str(raw.get("answer")).strip() or _as_str(
+        raw.get("reference_answer")
+    ).strip()
     return {
         "question": question,
-        "answer": _as_str(raw.get("answer")).strip()
-        or _as_str(raw.get("reference_answer")).strip(),
+        "answer": answer,
+        "reference_answer": _as_str(raw.get("reference_answer")).strip() or answer,
+        "accepted_answers": accepted_answers,
+        "key_points": key_points,
+        "rubric": _as_dict(raw.get("rubric")),
+        "solution_steps": solution_steps,
+        "question_type": _as_str(raw.get("question_type")).strip()
+        or _as_str(raw.get("type")).strip()
+        or "short_answer",
+        "math_equivalence_engine": {"enabled": False},
         "hint": _as_str(raw.get("hint")).strip(),
         "difficulty": _clamp_int(raw.get("difficulty"), 1, 5, 3),
         "topic": topic,

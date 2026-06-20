@@ -47,7 +47,7 @@ def test_study_companion_registered_surfaces_are_brand_renderable() -> None:
 
     registered = {
         item["id"]: Path(item["entry"]).name
-        for item in config["plugin"]["ui"]["guide"]
+        for item in config["plugin"]["ui"]["panel"]
     }
     assert "quickstart" not in registered
     assert (SURFACES_DIR / "quickstart.tsx").is_file()
