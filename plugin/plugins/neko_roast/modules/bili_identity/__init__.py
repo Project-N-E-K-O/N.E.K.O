@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import mimetypes
+import socket
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from ...core.contracts import ViewerEvent, ViewerIdentity
 from .._base import BaseModule
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
 
 
 class BiliIdentityModule(BaseModule):
@@ -59,20 +67,27 @@ class BiliIdentityModule(BaseModule):
             is_default_avatar=bool(avatar_url) and "noface" in avatar_url.lower(),
             pendant=pendant,
         )
-        if not avatar_url:
+        if not avatar_url or identity.is_default_avatar:
             return identity
         cached = self.ctx.avatar_cache.get(avatar_url) if self.ctx else None
         if cached:
-            identity.avatar_bytes, identity.avatar_mime = cached
-            identity.is_animated_avatar = self._detect_animated(identity.avatar_bytes)
+            data, mime = cached
+            usable, animated = self._inspect_avatar(data)
+            if usable:
+                identity.avatar_bytes = data
+                identity.avatar_mime = mime
+                identity.is_animated_avatar = animated
             return identity
         timeout = self.ctx.config.avatar_fetch_timeout_seconds if self.ctx else 8
         try:
             data, mime = await asyncio.to_thread(self._fetch_avatar, avatar_url, timeout)
             if data:
+                usable, animated = self._inspect_avatar(data)
+                if not usable:
+                    raise ValueError("avatar_decode_failed")
                 identity.avatar_bytes = data
                 identity.avatar_mime = mime
-                identity.is_animated_avatar = self._detect_animated(data)
+                identity.is_animated_avatar = animated
                 ctx = self.ctx
                 if ctx is not None:
                     ctx.avatar_cache.put(avatar_url, data, mime)
@@ -103,24 +118,26 @@ class BiliIdentityModule(BaseModule):
         }
 
     @staticmethod
-    def _detect_animated(data: bytes | None) -> bool:
-        """Best-effort：判断头像是否为动图（大会员动态头像），失败按静态处理。"""
+    def _inspect_avatar(data: bytes | None) -> tuple[bool, bool]:
+        """Return (usable_for_vision, animated). Decode failures disable vision."""
         if not data:
-            return False
+            return False, False
         try:
             import io
 
             from PIL import Image
 
             with Image.open(io.BytesIO(data)) as im:
-                return bool(getattr(im, "is_animated", False))
+                im.load()
+                return True, bool(getattr(im, "is_animated", False))
         except Exception:
-            return False
+            return False, False
 
     @staticmethod
     def _fetch_avatar(url: str, timeout: float) -> tuple[bytes, str]:
         if url == "neko-roast://fixtures/demo-avatar":
             return BiliIdentityModule._load_demo_avatar()
+        BiliIdentityModule._validate_avatar_url(url)
         request = urllib.request.Request(
             url,
             headers={
@@ -128,13 +145,41 @@ class BiliIdentityModule(BaseModule):
                 "User-Agent": "Mozilla/5.0 NEKO-Roast/0.1",
             },
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        opener = urllib.request.build_opener(_NoRedirectHandler)
+        with opener.open(request, timeout=timeout) as response:
             data = response.read(2 * 1024 * 1024)
             content_type = response.headers.get("content-type") or ""
         mime = content_type.split(";", 1)[0].strip()
         if not mime:
             mime = mimetypes.guess_type(url)[0] or "image/png"
         return data, mime
+
+    @staticmethod
+    def _validate_avatar_url(url: str) -> None:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("avatar_url_scheme_not_allowed")
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("avatar_url_host_required")
+        lowered = hostname.lower()
+        if lowered == "localhost" or lowered.endswith(".localhost"):
+            raise ValueError("avatar_url_host_not_allowed")
+        try:
+            addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or None)}
+        except OSError as exc:
+            raise ValueError("avatar_url_host_unresolved") from exc
+        for address in addresses:
+            ip = ipaddress.ip_address(address)
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            ):
+                raise ValueError("avatar_url_host_not_allowed")
 
     @staticmethod
     def _load_demo_avatar() -> tuple[bytes, str]:

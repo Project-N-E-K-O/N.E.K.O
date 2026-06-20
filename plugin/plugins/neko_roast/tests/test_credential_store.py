@@ -15,6 +15,7 @@ class _FakePlugin:
         return self._data_dir.joinpath(*parts) if parts else self._data_dir
 
 
+@pytest.mark.asyncio
 async def test_credential_save_load_roundtrip_and_encrypted_at_rest(tmp_path):
     pytest.importorskip("cryptography")
     store = CredentialStore(_FakePlugin(tmp_path), audit=None)
@@ -38,6 +39,7 @@ async def test_credential_save_load_roundtrip_and_encrypted_at_rest(tmp_path):
     assert b"sess-secret" not in enc_bytes
 
 
+@pytest.mark.asyncio
 async def test_credential_delete_removes_files(tmp_path):
     pytest.importorskip("cryptography")
     store = CredentialStore(_FakePlugin(tmp_path), audit=None)

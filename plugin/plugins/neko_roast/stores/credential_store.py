@@ -28,6 +28,7 @@ class CredentialStore:
     def __init__(self, plugin: Any, audit: Any = None) -> None:
         self.plugin = plugin
         self.audit = audit
+        self._lock = asyncio.Lock()
 
     def _data_dir(self) -> Path:
         return Path(self.plugin.data_path())
@@ -49,9 +50,13 @@ class CredentialStore:
             return Fernet(key_path.read_bytes())
         key = Fernet.generate_key()
         data_dir.mkdir(parents=True, exist_ok=True)
-        key_path.write_bytes(key)
-        self._chmod600(key_path)
-        return Fernet(key)
+        try:
+            with key_path.open("xb") as handle:
+                handle.write(key)
+            self._chmod600(key_path)
+            return Fernet(key)
+        except FileExistsError:
+            return Fernet(key_path.read_bytes())
 
     # ── 同步实现（在 to_thread 里跑） ──────────────────────────
 
@@ -100,7 +105,8 @@ class CredentialStore:
     # ── 异步接口（喂给 bili_auth_service 的回调契约） ─────────────
 
     async def save(self, payload: dict) -> bool:
-        ok = await asyncio.to_thread(self._save_sync, payload)
+        async with self._lock:
+            ok = await asyncio.to_thread(self._save_sync, payload)
         if self.audit is not None:
             if ok:
                 self.audit.record(
@@ -113,10 +119,12 @@ class CredentialStore:
         return ok
 
     async def load(self) -> dict | None:
-        return await asyncio.to_thread(self._load_sync)
+        async with self._lock:
+            return await asyncio.to_thread(self._load_sync)
 
     async def delete(self) -> list[str]:
-        removed = await asyncio.to_thread(self._delete_sync)
+        async with self._lock:
+            removed = await asyncio.to_thread(self._delete_sync)
         if self.audit is not None and removed:
             self.audit.record("bili_credential_deleted", "credential files removed", detail={"files": removed})
         return removed

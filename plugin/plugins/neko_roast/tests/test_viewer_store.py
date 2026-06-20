@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from plugin.plugins.neko_roast.core.contracts import ViewerIdentity
 from plugin.plugins.neko_roast.stores.viewer_store import ViewerStore
 
@@ -16,6 +18,7 @@ class _FakePlugin:
         return self._data_dir.joinpath(*parts) if parts else self._data_dir
 
 
+@pytest.mark.asyncio
 async def test_persists_to_json_in_default_dir(tmp_path):
     store = ViewerStore(_FakePlugin(tmp_path), audit=None)
     await store.upsert_identity(ViewerIdentity(uid="1001", nickname="桃子"))
@@ -31,6 +34,7 @@ async def test_persists_to_json_in_default_dir(tmp_path):
     assert any(p["uid"] == "1001" for p in recent)
 
 
+@pytest.mark.asyncio
 async def test_custom_dir_is_used(tmp_path):
     custom = tmp_path / "custom_here"
     store = ViewerStore(_FakePlugin(tmp_path / "default"), audit=None, dir_provider=lambda: str(custom))
@@ -44,6 +48,7 @@ async def test_custom_dir_is_used(tmp_path):
     assert status["path"] == str(custom / "viewer_profiles.json")
 
 
+@pytest.mark.asyncio
 async def test_empty_custom_dir_falls_back_to_default(tmp_path):
     # dir_provider 返回空串 → 用默认目录（等价于未配置）
     store = ViewerStore(_FakePlugin(tmp_path), audit=None, dir_provider=lambda: "  ")
@@ -52,6 +57,7 @@ async def test_empty_custom_dir_falls_back_to_default(tmp_path):
     assert store.storage_status()["using_custom"] is False
 
 
+@pytest.mark.asyncio
 async def test_custom_write_fallback_is_used_for_followup_reads(tmp_path, monkeypatch):
     custom = tmp_path / "custom_here"
     default = tmp_path / "default"
@@ -72,7 +78,11 @@ async def test_custom_write_fallback_is_used_for_followup_reads(tmp_path, monkey
     assert (default / "viewer_profiles.json").exists()
     assert await store.has_roasted("8") is True
 
+    restarted = ViewerStore(_FakePlugin(default), audit=None, dir_provider=lambda: str(custom))
+    assert await restarted.has_roasted("8") is True
 
+
+@pytest.mark.asyncio
 async def test_mark_roasted_roundtrip(tmp_path):
     store = ViewerStore(_FakePlugin(tmp_path), audit=None)
     await store.upsert_identity(ViewerIdentity(uid="7", nickname="七"))

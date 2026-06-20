@@ -95,20 +95,29 @@ class ViewerStore:
             return False
 
     async def _load_all(self) -> dict[str, dict[str, Any]]:
-        file, _ = self._resolve_file()
+        file, custom = self._resolve_file()
+        candidates: list[Path] = []
         if self._active_fallback_file is not None:
-            file = self._active_fallback_file
-        if not file.exists():
-            return {}
-        try:
-            text = await asyncio.to_thread(file.read_text, encoding="utf-8")
-            data = json.loads(text)
-        except Exception as exc:  # noqa: BLE001
-            self._audit("viewer_store_load_failed", f"{type(exc).__name__}: {exc}")
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+            candidates.append(self._active_fallback_file)
+        candidates.append(file)
+        if custom:
+            fallback = self._default_dir() / _STORE_FILE
+            if fallback not in candidates:
+                candidates.append(fallback)
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                text = await asyncio.to_thread(candidate.read_text, encoding="utf-8")
+                data = json.loads(text)
+            except Exception as exc:  # noqa: BLE001
+                self._audit("viewer_store_load_failed", f"{type(exc).__name__}: {exc}")
+                continue
+            if isinstance(data, dict):
+                if candidate != file:
+                    self._active_fallback_file = candidate
+                return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+        return {}
 
     async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> None:
         file, custom = self._resolve_file()

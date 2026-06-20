@@ -84,9 +84,20 @@ class RoastPipeline:
                     self.ctx.record_result(result)
                     return result
 
-                if not is_sandbox_event:
-                    await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
                 steps.append(PipelineStep("neko_dispatcher", "ok"))
+                if not is_sandbox_event:
+                    try:
+                        await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
+                        steps.append(PipelineStep("viewer_profile.mark_roasted", "ok"))
+                    except Exception as exc:
+                        mark_message = f"mark_roasted_failed: {type(exc).__name__}"
+                        steps.append(PipelineStep("viewer_profile.mark_roasted", "failed", mark_message))
+                        self.ctx.audit.record(
+                            "viewer_profile_mark_failed",
+                            mark_message,
+                            level="error",
+                            detail={"uid": identity.uid},
+                        )
                 result = InteractionResult(True, "pushed", event, identity=identity, profile=profile, request=request, output=output, steps=steps)
                 self.ctx.audit.record("pipeline_pushed", "roast request pushed", detail={"uid": identity.uid, "source": event.source})
                 self.ctx.record_result(result)

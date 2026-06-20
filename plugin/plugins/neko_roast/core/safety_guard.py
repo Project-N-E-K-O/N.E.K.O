@@ -84,7 +84,7 @@ class SafetyGuard:
         # 限流：直播态按 rate_limit_seconds 控制最小锐评间隔；开发者沙盒不限流（要即时调试反馈）。
         is_sandbox = event is not None and event.source == "developer_sandbox"
         if not is_sandbox and self.config.rate_limit_seconds > 0:
-            now = time.time()
+            now = time.monotonic()
             if (now - self._last_output_at) < self.config.rate_limit_seconds:
                 return SafetyDecision(False, self.status(), "rate limited")
             self._last_output_at = now
@@ -99,12 +99,12 @@ class SafetyGuard:
         """
         if self.config.rate_limit_seconds <= 0:
             return 0.0
-        current = time.time() if now is None else now
+        current = time.monotonic() if now is None else now
         remaining = self.config.rate_limit_seconds - (current - self._last_output_at)
         return remaining if remaining > 0 else 0.0
 
     def record_failure(self, kind: FailureKind, message: str) -> None:
-        now = time.time()
+        now = time.monotonic()
         bucket = self._pipeline_failures if kind == "pipeline" else self._output_failures
         bucket.append(now)
         self._trim(bucket, now)

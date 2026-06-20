@@ -14,6 +14,8 @@ class PermissionGate:
 
     def allows_source(self, source: TriggerSource) -> tuple[bool, str]:
         if source == "developer_sandbox":
+            if not self.config.developer_tools_enabled:
+                return False, "developer tools are disabled"
             return True, ""
         if source in {"live_danmaku", "manual_live_simulation"}:
             if not self.config.live_enabled:

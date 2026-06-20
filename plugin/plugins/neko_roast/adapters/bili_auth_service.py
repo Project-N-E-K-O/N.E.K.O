@@ -81,6 +81,9 @@ class BiliAuthService:
         if existing:
             return existing
 
+        if self._login_session is not None:
+            self.clear_qr_session()
+
         QrCodeLogin, _ = self._require_login_sdk()
         self._login_session = QrCodeLogin()
         await self._login_session.generate_qrcode()
@@ -156,9 +159,9 @@ class BiliAuthService:
                     fresh_cred = await self._credential_provider()
                     user_info = await user_module.User(uid=uid, credential=fresh_cred).get_user_info()
                     username = user_info.get("name", "")
-            except Exception as exc:
+            except Exception:
                 if self.logger:
-                    self.logger.warning(f"登录后获取用户信息失败: {exc}")
+                    self.logger.warning("login user info fetch failed")
 
             return {
                 "status": "done",
@@ -184,5 +187,5 @@ class BiliAuthService:
                 "username": info.get("name", ""),
                 "message": "凭证有效",
             }
-        except Exception as exc:
-            return {"logged_in": False, "message": f"凭证可能已过期: {exc}，请重新调用 bili_login 登录"}
+        except Exception:
+            return {"logged_in": False, "message": "credential may be invalid; please login again"}

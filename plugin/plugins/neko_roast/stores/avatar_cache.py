@@ -12,13 +12,25 @@ class AvatarCache:
         self._order: deque[str] = deque()
 
     def get(self, key: str) -> tuple[bytes, str] | None:
-        return self._items.get(key)
+        item = self._items.get(key)
+        if item is None:
+            return None
+        try:
+            self._order.remove(key)
+        except ValueError:
+            pass
+        self._order.append(key)
+        return item
 
     def put(self, key: str, data: bytes, mime: str) -> None:
         if not key or not data:
             return
-        if key not in self._items:
-            self._order.append(key)
+        if key in self._items:
+            try:
+                self._order.remove(key)
+            except ValueError:
+                pass
+        self._order.append(key)
         self._items[key] = (data, mime)
         while len(self._order) > self.max_items:
             old = self._order.popleft()

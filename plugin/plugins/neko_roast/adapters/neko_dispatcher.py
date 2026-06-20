@@ -176,6 +176,9 @@ class NekoDispatcher:
         return f"developer_mode_announced(target={target_lanlan or 'default'})"
 
     async def push_roast(self, request: InteractionRequest) -> str:
+        if not request.should_push:
+            reason = request.reason or "request marked as non-deliverable"
+            return f"skipped_to_neko(reason={reason})"
         identity = request.identity
         is_demo_event = request.event.source == "developer_sandbox" and request.event.raw.get("fixture") == "demo_avatar"
         # 锐评指令由 avatar_roast.build_request 集中构造（自适应焦点 / META / 禁脑补）。
@@ -230,5 +233,5 @@ class NekoDispatcher:
             await result
         return (
             f"queued_to_neko(target={target_lanlan}, ai_behavior=respond, "
-            f"visibility=none, image_part_bytes={len(parts[1]['data']) if len(parts) > 1 else 0})"
+            f"visibility=none, image_part_bytes={image_part_bytes})"
         )
