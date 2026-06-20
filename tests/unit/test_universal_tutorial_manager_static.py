@@ -47,6 +47,15 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
     assert "getHomeAvatarFloatingGuideStartRound(options = {})" in source
     assert "candidates.push(state.pendingRound, state.manualResetRound, 1);" in source
     assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in start_block
+    assert start_block.index("const round = this.getHomeAvatarFloatingGuideStartRound();") < start_block.index(
+        "if (!round) {"
+    )
+    assert start_block.index("if (!round) {") < start_block.index(
+        "this.snapshotAvatarFloatingModelInteractionState('tutorial-start');"
+    )
+    assert start_block.index("this.snapshotAvatarFloatingModelInteractionState('tutorial-start');") < start_block.index(
+        "this.startAvatarFloatingGuideRound(round, {"
+    )
     assert "this.startAvatarFloatingGuideRound(round, {" in start_block
     assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in i18n_block
     assert "this.startAvatarFloatingGuideRound(round, { source })" in i18n_block

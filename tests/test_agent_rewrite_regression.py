@@ -1369,6 +1369,15 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     )[0]
     assert "this.currentPage === 'home'" in start_tutorial_block
     assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in start_tutorial_block
+    assert start_tutorial_block.index("const round = this.getHomeAvatarFloatingGuideStartRound();") < start_tutorial_block.index(
+        "if (!round) {"
+    )
+    assert start_tutorial_block.index("if (!round) {") < start_tutorial_block.index(
+        "this.snapshotAvatarFloatingModelInteractionState('tutorial-start');"
+    )
+    assert start_tutorial_block.index("this.snapshotAvatarFloatingModelInteractionState('tutorial-start');") < start_tutorial_block.index(
+        "this.startAvatarFloatingGuideRound(round, {"
+    )
     assert "this.startAvatarFloatingGuideRound(round, {" in start_tutorial_block
     restart_block = tutorial_source.split("async restartCurrentTutorial() {", 1)[1].split(
         "}\n}\n\n// 创建全局实例",
@@ -1416,7 +1425,11 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
         "function activateLive2DRenderForDisplay(reason)",
         1,
     )[0]
-    assert "live2dCanvas.style.opacity = '1';" in restore_live2d_surface_block
+    assert "document.body.classList.remove('yui-guide-live2d-preparing');" in restore_live2d_surface_block
+    assert "document.body.classList.remove('yui-guide-return-petal-fade');" in restore_live2d_surface_block
+    assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in restore_live2d_surface_block
+    assert "live2dContainer.style.setProperty('opacity', '1', 'important');" in restore_live2d_surface_block
+    assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in restore_live2d_surface_block
     assert "live2dCanvas.style.setProperty('visibility', 'visible', 'important');" in restore_live2d_surface_block
     assert "app.renderer.render(app.stage);" in app_ui_source
     assert "function revealInitialLive2DModelWhenUiReady(reason)" in live2d_init_source

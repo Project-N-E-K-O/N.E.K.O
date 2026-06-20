@@ -2708,7 +2708,6 @@ class UniversalTutorialManager {
         }
 
         this.currentTutorialStartSource = this.consumeTutorialStartSource();
-        this.snapshotAvatarFloatingModelInteractionState('tutorial-start');
 
         if (this.currentPage === 'home') {
             const round = this.getHomeAvatarFloatingGuideStartRound();
@@ -2716,6 +2715,7 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 首页每日教程 round 未注册，跳过启动');
                 return false;
             }
+            this.snapshotAvatarFloatingModelInteractionState('tutorial-start');
             this.startAvatarFloatingGuideRound(round, {
                 source: this.currentTutorialStartSource
             }).catch(error => {

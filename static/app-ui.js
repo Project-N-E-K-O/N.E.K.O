@@ -845,6 +845,14 @@
     mod.hideLive2d = hideLive2d;
 
     function restoreLive2DDisplaySurface(reason) {
+        if (document.body && document.body.classList) {
+            document.body.classList.remove('yui-guide-live2d-preparing');
+            document.body.classList.remove('yui-guide-return-petal-fade');
+        }
+        if (document.body && document.body.style && typeof document.body.style.removeProperty === 'function') {
+            document.body.style.removeProperty('--yui-guide-return-avatar-opacity');
+        }
+
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer) {
             live2dContainer.classList.remove('hidden');
@@ -852,17 +860,17 @@
             live2dContainer.removeAttribute('data-neko-model-goodbye-exiting');
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
-            if (live2dContainer.style.opacity === '0' || live2dContainer.style.opacity === '0.001') {
-                live2dContainer.style.opacity = '1';
-            }
+            live2dContainer.style.removeProperty('transition');
+            live2dContainer.style.setProperty('opacity', '1', 'important');
+            live2dContainer.style.removeProperty('pointer-events');
         }
 
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
             live2dCanvas.classList.remove('minimized');
             live2dCanvas.style.display = 'block';
-            live2dCanvas.style.transition = '';
-            live2dCanvas.style.opacity = '1';
+            live2dCanvas.style.removeProperty('transition');
+            live2dCanvas.style.setProperty('opacity', '1', 'important');
             live2dCanvas.style.setProperty('visibility', 'visible', 'important');
             live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
         }
