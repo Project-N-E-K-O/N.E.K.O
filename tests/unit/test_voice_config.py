@@ -9,6 +9,7 @@ from utils.voice_config import (
     VoiceConfig,
     normalize_voice_id,
     parse_legacy_voice_id,
+    read_legacy_voice_id,
     to_legacy_voice_id,
 )
 
@@ -117,6 +118,38 @@ def test_normalize_free_preset():
     assert vc == VoiceConfig(source=SOURCE_PRESET, provider="free", ref="voice-tone-PGLiTXeJCS")
 
 
+def test_normalize_hosted_preset_marks_selected_provider():
+    # 选中的 hosted/local provider 的预制音色（如 MiMo 的 Milo）→ source=preset/provider=<key>
+    vc = normalize_voice_id(
+        "Milo",
+        hosted_preset_provider=lambda r: "mimo" if r == "Milo" else None,
+    )
+    assert vc == VoiceConfig(source=SOURCE_PRESET, provider="mimo", ref="Milo")
+
+
+def test_normalize_hosted_preset_after_native_before_free():
+    # 解析顺序与 validate_voice_id 一致：native 命中先于 hosted preset，hosted preset 先于 free
+    native_first = normalize_voice_id(
+        "Milo",
+        is_native=lambda r: True,
+        native_provider="step",
+        hosted_preset_provider=lambda r: "mimo",
+    )
+    assert native_first.provider == "step"
+    hosted_before_free = normalize_voice_id(
+        "Milo",
+        hosted_preset_provider=lambda r: "mimo",
+        free_voice_ids={"Milo"},
+    )
+    assert hosted_before_free.provider == "mimo"
+
+
+def test_normalize_hosted_preset_miss_carries_ref():
+    # lookup 返回 None（未选中该 provider / 非预制）→ 不误标，裸 ref 原样带过
+    vc = normalize_voice_id("Milo", hosted_preset_provider=lambda r: None)
+    assert vc == VoiceConfig(ref="Milo")
+
+
 def test_normalize_unresolved_carries_ref():
     vc = normalize_voice_id("totally-unknown")
     assert vc == VoiceConfig(ref="totally-unknown")
@@ -153,3 +186,39 @@ def test_prefix_roundtrip_via_normalize_and_back():
     for legacy in ("eleven:voiceX", "gsv:my_voice"):
         vc = parse_legacy_voice_id(legacy)
         assert to_legacy_voice_id(vc) == legacy
+
+
+# ── read_legacy_voice_id (lazy-migration read tolerance) ─────────────────────
+
+def test_read_legacy_from_flat_string():
+    assert read_legacy_voice_id("voice-tone-X") == "voice-tone-X"
+    assert read_legacy_voice_id("  spaced  ") == "spaced"
+    assert read_legacy_voice_id("") == ""
+    assert read_legacy_voice_id(None) == ""
+
+
+def test_read_legacy_from_object_clone_restores_prefix():
+    # 对象形态的 clone 读回 legacy 前缀串（与 dispatch/validate 既有契约一致）
+    assert read_legacy_voice_id(
+        {"source": "clone", "provider": "elevenlabs", "ref": "abc"}
+    ) == "eleven:abc"
+    assert read_legacy_voice_id(
+        {"source": "clone", "provider": "gptsovits", "ref": "myv"}
+    ) == "gsv:myv"
+
+
+def test_read_legacy_from_object_preset_is_bare_ref():
+    # preset/native/free 无前缀，对象 round-trip 回裸 ref（与扁平存储零差异）
+    assert read_legacy_voice_id(
+        {"source": "preset", "provider": "gemini", "ref": "Puck"}
+    ) == "Puck"
+    assert read_legacy_voice_id(
+        {"source": "preset", "provider": "free", "ref": "voice-tone-X"}
+    ) == "voice-tone-X"
+
+
+def test_read_legacy_object_str_roundtrip_equivalence():
+    # 关键不变式：扁平串 normalize→to_dict 存对象，再 read 回来 == 原扁平串
+    for legacy in ("eleven:abc", "gsv:myv", "voice-tone-X", "Puck", ""):
+        vc = parse_legacy_voice_id(legacy) or VoiceConfig(ref=legacy)
+        assert read_legacy_voice_id(vc.to_dict()) == legacy

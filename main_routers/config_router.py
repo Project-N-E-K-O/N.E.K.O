@@ -753,7 +753,7 @@ async def get_core_config_api():
             # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
             **{
                 f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
-                for mt in ('conversation', 'summary', 'correction', 'emotion',
+                for mt in ('conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
                            'vision', 'agent', 'omni', 'tts')
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
@@ -923,7 +923,7 @@ async def update_core_config(request: Request):
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         _model_types = [
-            'conversation', 'summary', 'correction', 'emotion',
+            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
             'vision', 'agent', 'omni', 'tts',
         ]
         for mt in _model_types:
@@ -931,6 +931,15 @@ async def update_core_config(request: Request):
                 field = f'{mt}Model{suffix}'
                 if field in data:
                     core_cfg[field] = data[field]
+        # gptsovitsEnabled 退役后的惰性迁移（save choke point，对偶 #1842 voice_id 思路）：
+        # GSV 启用已收口到 ttsModelProvider=='gptsovits' 单一真相，旧 gptsovitsEnabled 仅作
+        # pre-#1830 存量兜底。前端加载会把启用中的 GSV 下拉钉到 'gptsovits'，故任何提交了
+        # 非 'gptsovits' 的 ttsModelProvider 都是用户显式切走 → 顺手把残留旧 flag 落 False，
+        # 否则 get_core_config 的 follow_* 回落分支会把旧 true 兜回来（切到 follow_assist 也
+        # 关不掉 GSV）。未提交 ttsModelProvider 的局部更新不碰旧 flag，保住从不重存的存量。
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
+            core_cfg['gptsovitsEnabled'] = False
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
@@ -1819,19 +1828,32 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
 
     if core_cfg.get("enableCustomApi", False):
         model_types = [
-            "conversation", "summary", "correction", "emotion",
+            "conversation", "summary", "gameMain", "gameSummary", "correction", "emotion",
             "vision", "agent", "omni", "tts",
         ]
-        for model_type in model_types:
-            provider = str(core_cfg.get(f"{model_type}ModelProvider") or "").strip()
+        def _add_model_target(model_type: str, provider: str, seen: set[str] | None = None) -> None:
+            seen = seen or set()
+            provider = str(provider or "").strip()
             if not provider or provider == "custom":
-                continue
+                return
+            seen_key = f"{model_type}:{provider}"
+            if seen_key in seen:
+                return
+            seen.add(seen_key)
             if provider == "follow_core":
                 _add("core" if model_type == "omni" else "assist", core_provider)
             elif provider == "follow_assist":
                 _add("assist", assist_provider)
+            elif provider == "follow_conversation":
+                _add_model_target("conversation", str(core_cfg.get("conversationModelProvider") or "follow_assist"), seen)
+            elif provider == "follow_summary":
+                _add_model_target("summary", str(core_cfg.get("summaryModelProvider") or "follow_assist"), seen)
             else:
                 _add("core" if model_type == "omni" else "assist", provider)
+
+        for model_type in model_types:
+            provider = str(core_cfg.get(f"{model_type}ModelProvider") or "").strip()
+            _add_model_target(model_type, provider)
 
     return targets
 

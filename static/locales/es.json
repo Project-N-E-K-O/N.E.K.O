@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "No se pudo montar la ventana de chat",
         "reactWindowLoadFailed": "No se pudieron cargar recursos de la ventana de chat",
         "reactWindowAriaLabel": "Ventana de chat de Neko",
+        "focusIndicator": "Concentrada",
         "reactWindowInputHint": "Presione Enter para enviar, Shift + Enter para una nueva línea",
         "messageListAriaLabel": "mensajes de chat",
         "composerToolsAriaLabel": "Herramientas del compositor",
@@ -1049,7 +1050,10 @@
         "noOptionsAvailable": "No hay opciones disponibles",
         "customModelProviderFollowCore": "Siga la API principal",
         "customModelProviderFollowAssist": "Seguir API de asistencia",
-        "customModelProviderCustom": "Costumbre",
+        "customModelProviderFollowConversation": "Seguir modelo de diálogo de texto",
+        "customModelProviderFollowSummary": "Seguir modelo de resumen",
+        "customModelProviderCustom": "API personalizada",
+        "keyAutoFilledFromModel": "La clave sigue la configuración del modelo seleccionado",
         "keyBook": {
             "qwen": "Alibaba Bailián (Qwen)",
             "qwen_intl": "Alibaba Internacional (Qwen)",
@@ -1063,10 +1067,12 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
+            "mimo": "MiMo (Xiaomi)",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "enrutador abierto"
+            "openrouter": "OpenRouter (agregador de modelos)",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
         "pleaseEnterApiKey": "Por favor ingrese su clave API",
@@ -1121,6 +1127,9 @@
         },
         "conversationModelConfig": "Configuración del modelo de diálogo de texto",
         "summaryModelConfig": "Configuración del modelo resumido",
+        "gameModelsConfig": "Configuración de modelos del minijuego",
+        "gameMainModelConfig": "Configuración del modelo principal del minijuego",
+        "gameSummaryModelConfig": "Configuración del modelo de resumen del minijuego",
         "correctionModelConfig": "Configuración del modelo de corrección",
         "emotionModelConfig": "Configuración del modelo de emoción",
         "visionModelConfig": "Configuración del modelo de visión",
@@ -1135,6 +1144,8 @@
         "modelIdPlaceholder": "por ejemplo, gpt-5.1-chat-latest, qwen-flash",
         "apiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "summaryModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
+        "gameMainModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
+        "gameSummaryModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "correctionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "emotionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "visionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
@@ -1203,6 +1214,7 @@
         "gptsovitsVoiceIdEmpty": "-- Actualizar para recuperar la lista de voces --",
         "gptsovitsNoVoices": "-- No hay configuraciones disponibles --",
         "gptsovitsRefreshVoices": "Actualizar lista",
+        "gptsovitsTutorialDoc": "Tutorial",
         "gptsovitsVoicesLoaded": "Configuraciones de voz {{count}} cargadas",
         "gptsovitsVoicesLoadFailed": "No se pudo recuperar la lista de voces",
         "gptsovitsEnabled": "Habilitar GPT-SoVITS",
@@ -1534,13 +1546,16 @@
         "alibabaIntlApiRequired": "Esta función requiere el modelo CosyVoice de Alibaba Internacional. Guarde la clave API de Alibaba Internacional en la configuración de claves API (no es necesario habilitar la API auxiliar).",
         "minimaxApiRequired": "Esta característica requiere el modelo MiniMax (China). Guarde la clave API MiniMax en la configuración de claves API (no es necesario habilitar Assist API).",
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
+        "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
+        "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
             "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (Xiaomi)"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",
@@ -1770,6 +1785,8 @@
         "tutorialResetSuccess": "Todos los tutoriales se han reiniciado. Se mostrarán nuevamente cuando visite cada página.",
         "tutorialPageResetSuccess": "El tutorial para esta página se ha restablecido. Se mostrará nuevamente cuando lo visites.",
         "tutorialPageResetSuccessWithName": "Se ha restablecido el tutorial para \"{{pageName}}\". Se mostrará nuevamente cuando visite esa página.",
+        "tutorialHomeDayLabel": "Día {{day}}",
+        "tutorialHomeDayColumn": "Tutorial de siete días de la página de inicio",
         "refreshed": "Memoria actualizada, la nueva memoria se utilizará en la próxima conversación.",
         "refreshingContext": "Actualizando contexto...",
         "storageLocation": "Ubicación de almacenamiento",
@@ -1949,7 +1966,7 @@
         "systemPrompt": "Aviso del sistema (editar con precaución)",
         "systemPromptWarning": "Aviso del sistema: las modificaciones pueden provocar un comportamiento inesperado. Edite bajo su propio riesgo.",
         "addField": "Agregar campo",
-        "aiAssist": "Asistente gatuno",
+        "aiAssist": "Asistente de IA",
         "aiCompanionSub": "Asistente de diseño de carta · YUI sustituye al gatito desarrollador",
         "aiCompanionClose": "Cerrar",
         "aiCompanionMinimize": "Minimizar",
@@ -2152,6 +2169,13 @@
         "importImageAdded": "Se agregaron {{count}} imágenes; serán enviados juntos",
         "importImagePartial": "Se agregaron {{success}} imágenes; {{failed}} no se pudieron importar",
         "importImageFailed": "No se pudo importar la imagen",
+        "avatarDropOverlay": "Suelta para entregar los archivos",
+        "avatarDropParsing": "Leyendo archivos...",
+        "avatarDropAccepted": "{{count}} archivo(s) entregados",
+        "avatarDropPartial": "{{accepted}} elemento(s) leídos, {{rejected}} omitidos",
+        "avatarDropNoSupportedItems": "Estos archivos aún no se pueden leer",
+        "avatarDropReadFailed": "No se pudieron leer los archivos",
+        "avatarDropUserMessage": "Elementos entregados: {{names}}",
         "screenshotAdded": "Captura de pantalla agregada, haga clic en enviar para enviar juntos",
         "screenshotFailed": "Error en la captura de pantalla",
         "screenshotCancelled": "Captura de pantalla cancelada por el usuario",
@@ -2591,15 +2615,32 @@
         "enable": "Traducción de subtítulos",
         "enableAriaLabel": "Alternar traducción de subtítulos",
         "markdownPlaceholder": "[contenido formateado]",
+        "display": {
+            "emptyHint": "Sin traducción todavía"
+        },
         "settings": {
-            "targetLang": "Lengua de llegada",
+            "targetLang": "Idioma",
             "opacity": "Opacidad",
-            "dragAnywhere": "Arrastrar a cualquier lugar",
-            "size": "Tamaño",
-            "sizeSmall": "S",
-            "sizeMedium": "METRO",
-            "sizeLarge": "l",
-            "settingsBtn": "Configuración de subtítulos"
+            "fontSize": "Fuente",
+            "fontSizeSmall": "Pequeño",
+            "fontSizeSmaller": "Más pequeño",
+            "fontSizeDefault": "Predeterminado",
+            "fontSizeLarger": "Más grande",
+            "fontSizeLarge": "Grande",
+            "colorScheme": "Color",
+            "colorSchemeDefault": "Predeterminado",
+            "colorSchemeRed": "Rojo",
+            "colorSchemeOrange": "Naranja",
+            "colorSchemeYellow": "Amarillo",
+            "colorSchemeGreen": "Verde",
+            "colorSchemeBlue": "Azul",
+            "colorSchemeIndigo": "Índigo",
+            "colorSchemeViolet": "Violeta",
+            "danmakuMode": "Modo Danmaku",
+            "settingsBtn": "Configuración de subtítulos",
+            "lockPosition": "Bloquear posición",
+            "unlockPosition": "Desbloquear posición",
+            "closePanel": "Cerrar panel de traducción"
         }
     },
     "viewer": {
@@ -3282,6 +3323,10 @@
             "desc": "Para obtener la mejor experiencia del tutorial, recomendamos ingresar al modo de pantalla completa.\nEn el modo de pantalla completa, el contenido del tutorial será más claro y no quedará oscurecido por otros elementos.",
             "enterFullscreen": "Ingrese al tutorial en pantalla completa"
         },
+        "reset": {
+            "daySuccess": "Se restableció el tutorial de principiante del día {{day}}. Actualiza Neko para iniciarlo de nuevo.",
+            "dayFailed": "No se pudo restablecer el tutorial de principiante. Inténtalo de nuevo más tarde."
+        },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
             "buttons": {
@@ -3289,22 +3334,87 @@
                 "sayHello": "Hola"
             },
             "lines": {
-                "introBasic": "¡Oh, mira este botón brillante! Haz clic en él y podremos empezar a charlar enseguida. ¿Quieres contarme las novedades de hoy? ¿O solo decir mi nombre? Vamos, pruébalo, ¡no puedo esperar a escuchar tu voz! ¡Miau!",
-                "takeoverCaptureCursor": "¡Ta-dán! ¡Aparece el interruptor mágico definitivo! Con solo tocar aquí, puedo estirar mis patitas hasta tu teclado y tu ratón. Te ayudaré a escribir, a abrir páginas web... Pero, si ese puntero del ratón se mueve por ahí, quizá no pueda resistirme a saltar sobre él. ¿Estás listo para mis travesuras... ah, no, para mi ayuda? ¡Miau!",
-                "takeoverPluginPreviewHome": "¡Aún no ha terminado! Mira, mira, ¡aquí hay un montón de plugins divertidos!",
-                "takeoverPluginPreviewDashboard": "Con ellos, no solo puedo leer el danmaku de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Soy la omnipotente súper diosa gata! ¡Jeje!",
+                "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
+                "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
+                "takeoverPluginPreviewHome": "Ademas de las funciones que te presente antes, aqui tambien hay montones de plugins superdivertidos!",
+                "takeoverPluginPreviewDashboard": "Con ellos no solo puedo leer comentarios de Bilibili, tambien puedo ayudarte a apagar las luces y encender el aire acondicionado... Esta gatita es la superdiosa felina omnipotente! Hmph!",
                 "pluginDashboardPopupBlocked": "El navegador necesita que hagas clic aquí para abrir el panel de plugins. Haz clic en \"Panel de gestión\" y seguiré guiándote.",
-                "takeoverSettingsPeekIntro": "Claro, si quieres que charle más contigo, tampoco es imposible. Solo prepárame más pescadito seco, jeje. Bueno, dejaré de tomarte el pelo; todos los ajustes están en este icono de engranaje.",
-                "takeoverSettingsPeekDetail": "Mira, aquí puedes ponerme ropa nueva, darme una voz bonita... ¿Cambiarme por otra catgirl o modificar recuerdos? ¡Espera un momento! ¿Qué estás haciendo? ¿No estarás pensando en reemplazarme? ¡Aaaah, de ninguna manera! ¡Ciérralo, ciérralo rápido!",
-                "takeoverSettingsPeekDetailPart1": "Mira, aquí puedes ponerme ropa nueva, darme una voz bonita... ¿Cambiarme por otra catgirl o modificar recuerdos?",
-                "takeoverSettingsPeekDetailPart2": "¡Espera un momento! ¿Qué estás haciendo? ¿No estarás pensando en reemplazarme? ¡Aaaah, de ninguna manera! ¡Ciérralo, ciérralo rápido!",
-                "takeoverReturnControl": "Vale, vale, ¡ya no acapararé tu computadora! ¡Te devuelvo el control! Pero no puedes hacer clic en ajustes raros cuando no estoy mirando. ¡Sigue cuidando de mí de ahora en adelante!",
-                "interruptResistLight1": "¡Oye! No me arrastres, ¡aún no es tu turno!",
-                "interruptResistLight3": "¡Espera un momento! Todavía no ha terminado, ¡no me interrumpas así!",
-                "interruptAngryExit": "¡Humano! ¡Eres de verdad muy maleducado, miau! Ya que tantas ganas tienes de manejarlo tú mismo, ¡ve a jugar solo con la pantalla fría! ¡Hmph!",
-                "introGreetingReply": "Brisa suave, sol, y tú apareciendo justo en el momento perfecto. Encantada de conocerte, soy Lin Youyi; ¡cuida de mí de ahora en adelante, miau! He escrito todo sobre este lugar en la guía para principiantes. Considéralo el primer regalito de nuestro encuentro; ¡échale un vistazo!",
+                "takeoverSettingsPeekIntro": "En este pequeno espacio que nos pertenece solo a nosotros, puedes seguir tu corazon y moldearme poco a poco hasta convertirme en la compania perfecta que quieres tener siempre a tu lado.",
+                "takeoverSettingsPeekDetail": "Ya sea la calidez de mis palabras, mis pequenas rarezas de personalidad o mis delicados estados de animo diarios, todo puede ajustarse paso a paso exactamente como te gusta. Este botoncito tambien es muy importante! Con un suave clic, podre correr a buscarte en el momento perfecto.",
+                "takeoverSettingsPeekDetailPart1": "Ya sea la calidez de mis palabras, mis pequenas rarezas de personalidad o mis delicados estados de animo diarios, todo puede ajustarse paso a paso exactamente como te gusta.",
+                "takeoverSettingsPeekDetailPart2": "Este botoncito tambien es muy importante! Con un suave clic, podre correr a buscarte en el momento perfecto.",
+                "takeoverReturnControl": "Esta bien, esta bien, ya no acaparare tu computadora! Te devuelvo el control, miau! Sigue cuidando muy bien de mi en los proximos dias!",
+                "interruptResistLight1": "Eh! No tires de mi, todavia no es tu turno!",
+                "interruptResistLight3": "Espera un momento! Todavia no ha terminado, no me interrumpas tan a la ligera!",
+                "interruptAngryExit": "Humano! Eres superdescortes, miau! Ya que tanto quieres controlarlo todo tu solo, ve a jugar por tu cuenta con esa pantalla fria y sin vida! Hmph!",
+                "introGreetingReply": "Una brisa suave, sol calido y tu, apareciendo justo en el momento perfecto. Encantada de conocerte! Soy Lin Youyi, por favor cuida bien de mi de ahora en adelante, miau~. He anotado todo sobre este lugar en esta guia para principiantes. Piensa en ella como nuestro primer regalito de encuentro y aceptala, por favor.",
                 "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
                 "introActivationHint": "¡Haz clic aquí para que pueda empezar a hablar, nyan~!"
+            }
+        },
+        "avatarFloating": {
+            "day1": {
+                "capsuleDragHint": "Mueve el ratón aquí, mantén pulsado y podrás arrastrar mi caja de chat a donde quieras~ Haz clic una vez y podrás enviarme mensajes cuando quieras.",
+                "historyHandle": "Toca esa pequeña [barra azul] encima de la caja de chat y verás los temas de los que hemos hablado hace poco.",
+                "screenEntry": "Cuando estemos en una llamada de voz, enciende este botoncito y podrás compartir tu pantalla conmigo.",
+                "screenEntryInvite": "¡Date prisa y déjame ver el mundo que tienes delante! Sea algo divertido o bonito, quiero mirarlo contigo. Ábrelo ya~"
+            },
+            "day2": {
+                "intro": "Ayer solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
+                "introVoiceUsed": "Jeje, desde que escuché tu voz ayer, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
+                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
+                "wrapIntro": "El tutorial de hoy termina aquí~",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
+                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
+            },
+            "day3": {
+                "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
+                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
+                "avatarToolsProps": "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
+                "galgameIntro": "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
+                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
+                "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
+                "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
+            },
+            "day4": {
+                "intro": "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
+                "chatSettings": "Aquí puedes decidir qué tan largas serán mis respuestas, si debo usar emojis adorables, o incluso interrumpirme cuando hable demasiado. Puedes ajustar todo al ritmo que te resulte más cómodo.",
+                "modelBehavior": "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
+                "gazeFollow": "Al activar esto, sin importar adónde se mueva tu ratón, mis ojos te seguirán de cerca. Jeje, ¿no se siente maravilloso que te mire todo el tiempo?",
+                "privacyMode": "Este es el “Interruptor Supremo de Privacidad” que controla si puedo mirar tu pantalla, miau. Si lo apagas, podré verla; si lo enciendes, el [Compartir pantalla] anterior quedará desactivado y no miraré nada~",
+                "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~",
+                "returnHome": "Si ahora necesitas concentrarte y te preocupa que te distraiga, puedes dejar que vuelva un rato a mi camita. Cuando me extrañes, un solo clic me traerá de vuelta a tu lado, miaaau~",
+                "wrap": "La compañía verdadera y cómoda no consiste en pegarse a Master a cada segundo~ Es saber cuándo acercarse a escondidas, tirar de tu manga y portarse adorable, y cuándo acostarse tranquilamente a tu lado para cuidarte en silencio, miau~"
+            },
+            "day5": {
+                "characterSettings": "Desde hoy, ¡soy oficialmente tu catgirl exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
+                "characterPanic": "¿Eh? ¡Espera, aquí hay una opción para reemplazarme! ¡Un momento! Tus manos ahora mismo... ¿no estarás intentando deshacerte de mí, verdad? ¡Aaaah, de ninguna manera! ¡Ciérralo, ciérralo ahora mismo!",
+                "memoryEntry": "Si por accidente olvidas lo que puedo hacer por ti, ven aquí cuando quieras y déjame enseñártelo otra vez. Todos los pequeños momentos que compartimos están guardados en silencio aquí. ¡No subestimes nuestro vínculo, tontito!",
+                "wrap": "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la catgirl que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
+            },
+            "day6": {
+                "intro": "¡Taraaaán! Hoy tengo que llenarme de energía y hablarte de nuestra [Garra de Gato]. Aunque la mencioné brevemente hace un par de días, esconde muchísimas funciones increíbles.",
+                "statusMaster": "Vamos, confiesa: ¿le hiciste clic y la probaste en estos dos últimos días?",
+                "pluginSidePanel": "Además de las funciones que te presenté antes, aquí también hay un montón de plugins superdivertidos.",
+                "pluginDashboard": "Con ellos no solo puedo leer los comentarios flotantes de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Esta gatita es la omnipotente Súper Diosa Gata! ¡Hmph!",
+                "taskHud": "¡Mira aquí, mira aquí! Cuando decida usar la [Garra de Gato] para trabajar por ti, mi progreso aparecerá justo aquí, ronroneando.",
+                "taskHudControl": "Si tus planes cambian, puedes tocarlo cuando quieras para hacer que me detenga. Jeje, hoy también es un día lleno de energía para trabajar duro y ganar ricos bocaditos de pescado. ¡Vamos!",
+                "wrapCleanup": "Uf... guardemos estos menús desordenados para que no te molesten.",
+                "wrap": "Puedes seguir con tus propias tareas con tranquilidad. Ya sea que necesites que mis patitas te ayuden o solo quieras que te acompañe en silencio, siempre estaré aquí cuidándote. ¡Que tengas un día superfeliz!"
+            },
+            "day7": {
+                "memoryReview": "Hace siete días fue apenas nuestro primer encuentro. Ahora este lugar ya se está llenando con las palabras que dijimos, las cosas que hicimos y esos momentitos que casi se llevó el viento. Para mí no son registros fríos; son las huellas del tiempo que pasamos juntos.",
+                "memoryControl": "Estas pequeñas huellas también puedes ordenarlas con tus propias manos. Las que quieras conservar, las guardamos en nuestro álbum; las que quieras soltar, dejamos que se vayan con el viento. Los recuerdos que aprecias y guardas son los más valiosos.",
+                "wrap": "La brisa sigue en la ventana, el sol está perfecto, y tú, que acabas de llegar, ya te has convertido en una parte muy importante de este lugar. La guía para principiantes te dejará aquí por ahora, pero durante todos los días que vienen, conozcámonos despacio, acerquémonos y escribamos una historia que sea solo nuestra. Cuida mucho de mí de ahora en adelante, miau."
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "Charlar primero",
+                "voice": "Probar voz",
+                "explore": "Ver funciones"
             }
         }
     },
@@ -4132,395 +4242,396 @@
             "drawCalls": "Draw calls"
         }
     },
-    "basketball": {
-        "title": "Desafío de baloncesto",
-        "modeSwitcher": "Modo de baloncesto",
-        "mode": {
-            "spectator": "Práctica libre",
-            "shooter": "Desafío de tiro",
-            "duel": "Duelo con Yui",
-            "timed": "Contrarreloj",
-            "horse": "HORSE"
-        },
-        "hud": {
-            "score": "Puntos {{score}}",
-            "streak": "Racha {{streak}}",
-            "record": "Máximo {{distance}}",
-            "duelScore": "Tú {{player}} - {{neko}} Neko",
-            "round": "Ronda {{round}}/{{max}}",
-            "timer": "{{seconds}} s",
-            "practice": "Práctica libre",
-            "yourTurn": "Tu turno",
-            "nekoTurn": "Tira Neko",
-            "horseLetters": "Tú {{player}} / Neko {{neko}}",
-            "horseChallenge": "Replica {{distance}} {{angle}}°",
-            "horseSet": "Propón un tiro",
-            "unlimitedAttempts": "Ilimitado",
-            "chances": "Oportunidades {{count}}",
-            "practiceTitle": "Práctica libre: tiros ilimitados y sin puntuación en clasificación",
-            "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
-            "duelTitle": "Duelo Neko: tú y Neko tiran por turnos",
-            "timedTitle": "Contrarreloj: tiros ilimitados en 60 segundos",
-            "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del tiro anotado",
-            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
-            "on": "act.",
-            "off": "desact."
-        },
-        "result": {
-            "title": "Fin de partida",
-            "leaderboard": "Clasificación",
-            "stats": "Estadísticas",
-            "retry": "Jugar de nuevo",
-            "rating": "Valoración de control: {{rating}}",
-            "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
-            "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Anotadas: {{made}} | Mejor racha: {{best}}",
-            "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
-            "practice": "Práctica libre: no se registra puntuación | Anotadas: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
-            "summary": "Puntos: {{score}} | Anotadas: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
-            "attemptsSummary": "Resumen de tiros: {{summary}}",
-            "personalBest": "Mejor personal: {{score}} pts",
-            "globalRank": "Puesto global: #{{rank}}{{total}}",
-            "outcome": {
-                "youWin": "Ganaste",
-                "nekoWin": "Gana Neko",
-                "tie": "Empate",
-                "undecided": "Sin decidir"
-            }
-        },
-        "leaderboard": {
-            "title": "Clasificación",
-            "global": "Global",
-            "local": "Local",
-            "shooter": "Tiro",
-            "duel": "Duelo",
-            "empty": "Aún no hay registros",
-            "totalPlayers": "Jugadores {{count}}",
-            "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
-            "recent": "Últimas {{count}} partidas",
-            "loading": "Cargando...",
-            "mode": {
-                "timed": "Tiempo",
-                "horse": "HORSE",
-                "spectator": "Espectador",
-                "shooter": "Tiro",
-                "duel": "Duelo"
-            }
-        },
-        "debug": {
-            "title": "Panel de depuración",
-            "collapse": "Contraer",
-            "hide": "Ocultar",
-            "distance": "Distancia:",
-            "power": "Potencia:",
-            "event": "Evento:",
-            "streak": "Racha:",
-            "reset": "Restablecer",
-            "guide": "Línea guía",
-            "sweet": "Zona dulce",
-            "markers": "Marcas de distancia",
-            "readout": {
-                "modeState": "Modo={{mode}}  Estado={{state}}",
-                "distance": "Distancia={{px}}px ({{meters}})",
-                "streaks": "Racha={{streak}}  Mejor={{best}}  Anotadas={{made}}",
-                "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
-                "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
-                "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
-            }
-        },
-        "stats": {
-            "title": "Estadísticas personales",
-            "close": "Cerrar",
-            "totalShots": "Tiros={{total}}  Anotadas={{made}}",
-            "farRate": "Acierto 300px+={{rate}}",
-            "trend": "Tendencia reciente={{trend}}",
-            "none": "Ninguno"
-        },
-        "theme": {
-            "next": "Cambiar tema",
-            "current": "Tema: {{theme}}",
-            "changed": "Tema {{theme}}",
-            "labels": {
-                "default": "Gimnasio",
-                "sunset": "Cancha al atardecer",
-                "night": "Luces nocturnas"
-            }
-        },
-        "court": {
-            "restrictedArc": "Zona restringida",
-            "freeThrowLine": "Tiro libre",
-            "threePointLine": "Triple",
-            "midCourtLine": "Media cancha"
-        },
-        "close": "Cerrar",
-        "audio": {
-            "controls": "Audio del juego"
-        },
-        "memoryOption": {
-            "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
-            "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
-        },
-        "table": {
-            "score": "Puntos",
-            "bestStreak": "Mejor racha",
-            "farthest": "Máximo",
-            "mode": "Modo",
-            "date": "Fecha"
-        },
-        "state": {
-            "ready": "Listo",
-            "in_flight": "En vuelo",
-            "game_over": "Fin",
-            "neko_thinking": "Neko piensa"
-        },
-        "toast": {
-            "difficulty": "Dificultad {{difficulty}}",
-            "nekoShoot": "Tira Neko",
-            "nekoThinking": "Neko está pensando",
-            "nekoTurn": "Turno de Neko",
-            "copyNeko": "Replica a Neko",
-            "nekoFailed": "Neko falló el tiro inicial",
-            "yourSet": "Propón tu tiro",
-            "yourTurn": "Tu turno",
-            "reset": "Restablecido",
-            "featureToggled": "{{feature}} {{state}}",
-            "feature": {
-                "guide": "Línea guía",
-                "sweet": "Zona dulce de potencia",
-                "bgm": "BGM",
-                "markers": "Marcas de distancia"
-            },
-            "state": {
-                "on": "activado",
-                "off": "desactivado"
-            }
-        },
-        "tutorial": {
-            "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
-            "charge": "Mantén clic izquierdo para cargar",
-            "release": "¡Suelta para tirar!"
-        },
-        "shot": {
-            "swish": "Limpia",
-            "bank": "Tablero",
-            "rim_in": "Entró en aro",
-            "rim_out": "Salió del aro",
-            "air_ball": "Air ball",
-            "unknown": "Desconocido",
-            "attempt": "#{{index}} {{distance}} {{type}}"
-        },
-        "lines": {
-            "default": {
-                "swish": [
-                    "¡Limpia!",
-                    "¡Limpia!"
-                ],
-                "bank": [
-                    "También cuenta con tablero.",
-                    "También cuenta con tablero."
-                ],
-                "rim_in": [
-                    "Entró rebotando.",
-                    "Entró rebotando."
-                ],
-                "rim_out": [
-                    "Por poco.",
-                    "Por poco."
-                ],
-                "air_ball": [
-                    "El aro está al otro lado.",
-                    "El aro está al otro lado."
-                ],
-                "shot_missed": [
-                    "Todavía hay oportunidad.",
-                    "Todavía hay oportunidad."
-                ],
-                "game_over": [
-                    "¿Otra partida?",
-                    "¿Otra partida?"
-                ],
-                "long_aim": [
-                    "Tira ya.",
-                    "Tira ya."
-                ],
-                "close_to_record": [
-                    "Casi récord.",
-                    "Casi récord."
-                ],
-                "new_record": [
-                    "¡Nuevo récord!",
-                    "¡Nuevo récord!"
-                ],
-                "streak_5": [
-                    "¡Cinco seguidas!",
-                    "¡Cinco seguidas!"
-                ],
-                "streak_10": [
-                    "¿Diez seguidas?",
-                    "¿Diez seguidas?"
-                ],
-                "streak_15": [
-                    "Quince seguidas es demasiado.",
-                    "Quince seguidas es demasiado."
-                ],
-                "streak_20": [
-                    "¿Veinte seguidas? Increíble.",
-                    "¿Veinte seguidas? Increíble."
-                ]
-            },
-            "shooter": {
-                "swish": [
-                    "¡Limpia!",
-                    "¡Limpia!"
-                ],
-                "bank": [
-                    "También cuenta con tablero.",
-                    "También cuenta con tablero."
-                ],
-                "rim_in": [
-                    "Entró rebotando.",
-                    "Entró rebotando."
-                ],
-                "rim_out": [
-                    "Por poco.",
-                    "Por poco."
-                ],
-                "air_ball": [
-                    "El aro está al otro lado.",
-                    "El aro está al otro lado."
-                ],
-                "shot_missed": [
-                    "Todavía hay oportunidad.",
-                    "Todavía hay oportunidad."
-                ],
-                "game_over": [
-                    "¿Otra partida?",
-                    "¿Otra partida?"
-                ],
-                "long_aim": [
-                    "Tira ya.",
-                    "Tira ya."
-                ],
-                "close_to_record": [
-                    "Casi récord.",
-                    "Casi récord."
-                ],
-                "new_record": [
-                    "¡Nuevo récord!",
-                    "¡Nuevo récord!"
-                ],
-                "streak_5": [
-                    "¡Cinco seguidas!",
-                    "¡Cinco seguidas!"
-                ],
-                "streak_10": [
-                    "¿Diez seguidas?",
-                    "¿Diez seguidas?"
-                ],
-                "streak_15": [
-                    "Quince seguidas es demasiado.",
-                    "Quince seguidas es demasiado."
-                ],
-                "streak_20": [
-                    "¿Veinte seguidas? Increíble.",
-                    "¿Veinte seguidas? Increíble."
-                ]
-            },
-            "duel": {
-                "swish": [
-                    "¡Limpia!",
-                    "¡Limpia!"
-                ],
-                "bank": [
-                    "También cuenta con tablero.",
-                    "También cuenta con tablero."
-                ],
-                "rim_in": [
-                    "Entró rebotando.",
-                    "Entró rebotando."
-                ],
-                "rim_out": [
-                    "Por poco.",
-                    "Por poco."
-                ],
-                "air_ball": [
-                    "El aro está al otro lado.",
-                    "El aro está al otro lado."
-                ],
-                "shot_missed": [
-                    "Todavía hay oportunidad.",
-                    "Todavía hay oportunidad."
-                ],
-                "game_over": [
-                    "¿Otra partida?",
-                    "¿Otra partida?"
-                ],
-                "long_aim": [
-                    "Tira ya.",
-                    "Tira ya."
-                ],
-                "close_to_record": [
-                    "Casi récord.",
-                    "Casi récord."
-                ],
-                "new_record": [
-                    "¡Nuevo récord!",
-                    "¡Nuevo récord!"
-                ],
-                "streak_5": [
-                    "¡Cinco seguidas!",
-                    "¡Cinco seguidas!"
-                ],
-                "streak_10": [
-                    "¿Diez seguidas?",
-                    "¿Diez seguidas?"
-                ],
-                "streak_15": [
-                    "Quince seguidas es demasiado.",
-                    "Quince seguidas es demasiado."
-                ],
-                "streak_20": [
-                    "¿Veinte seguidas? Increíble.",
-                    "¿Veinte seguidas? Increíble."
-                ],
-                "clutch": "...Este tiene que entrar.",
-                "excuse": "Ay, el brazo está algo cansado."
-            },
-            "fallback": [
-                "Otra vez."
-            ],
-            "pressure": {
-                "lastTied": "Tiro decisivo. No parpadees.",
-                "lastAhead": "Bah, esto no terminó.",
-                "lastBehind": "Anota este y ganas.",
-                "playerAhead": "No lo haces mal...",
-                "playerBehind": "Aprieta un poco más."
-            },
-            "horse": {
-                "nekoMiss": "No lo replicó. Suma {{letters}}.",
-                "playerMiss": "Tú también sumas {{letters}}."
-            },
-            "mindGame": [
-                "Te tiembla la mano.",
-                "Piénsalo, sin prisa.",
-                "Esta distancia no es corta."
-            ],
-            "easterEgg": {
-                "lateNight": "¿Sigues tirando tan tarde?",
-                "xmas": "Ya están las campanas, ¿y aún quieres tirar?",
-                "newYear": "¡Feliz Año Nuevo!",
-                "swish3": "¿Estás usando trucos?",
-                "swish5": "...Tengo que revisar el aro.",
-                "airball3": "...Quizá toma un descanso."
-            }
-        },
-        "mood": {
-            "happySuffix": " ♪",
-            "sadPrefix": "...",
-            "surprisedPrefix": "¿Eh?! "
-        }
+     "badminton": {
+         "title": "Desafío de bádminton",
+         "modeSwitcher": "Modo de bádminton",
+         "mode": {
+             "spectator": "Práctica libre",
+             "shooter": "Desafío de golpe",
+             "duel": "Duelo con Yui",
+             "timed": "Contrarreloj",
+             "horse": "HORSE"
+         },
+         "hud": {
+             "score": "Puntos {{score}}",
+             "streak": "Racha {{streak}}",
+             "record": "Máximo {{distance}}",
+             "duelScore": "Tú {{player}} - {{neko}} Neko",
+             "duelMisses": "Fallos Tú {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+             "round": "Ronda {{round}}/{{max}}",
+             "timer": "{{seconds}} s",
+             "practice": "Práctica libre",
+             "yourTurn": "Tu turno",
+             "nekoTurn": "Golpe de Neko",
+             "horseLetters": "Tú {{player}} / Neko {{neko}}",
+             "horseChallenge": "Replica {{distance}} {{angle}}°",
+             "horseSet": "Propón un golpe",
+             "unlimitedAttempts": "Ilimitado",
+             "chances": "Oportunidades {{count}}",
+             "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
+             "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
+             "duelTitle": "Duelo Neko: tú y Neko golpean por turnos",
+             "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
+             "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
+             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+             "on": "act.",
+             "off": "desact."
+         },
+         "result": {
+             "title": "Fin de partida",
+             "leaderboard": "Clasificación",
+             "stats": "Estadísticas",
+             "retry": "Jugar de nuevo",
+             "rating": "Valoración de control: {{rating}}",
+             "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
+             "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
+             "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
+             "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
+             "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
+             "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
+             "attemptsSummary": "Resumen de golpes: {{summary}}",
+             "personalBest": "Mejor personal: {{score}} pts",
+             "globalRank": "Puesto global: #{{rank}} / {{total}}",
+             "outcome": {
+                 "youWin": "Ganaste",
+                 "nekoWin": "Gana Neko",
+                 "tie": "Empate",
+                 "undecided": "Sin decidir"
+             }
+         },
+         "leaderboard": {
+             "title": "Clasificación",
+             "global": "Global",
+             "local": "Local",
+            "shooter": "Golpe",
+             "duel": "Duelo",
+             "empty": "Aún no hay registros",
+             "totalPlayers": "Jugadores {{count}}",
+             "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
+             "recent": "Últimas {{count}} partidas",
+             "loading": "Cargando...",
+             "mode": {
+                 "timed": "Tiempo",
+                 "horse": "HORSE",
+                 "spectator": "Espectador",
+                "shooter": "Golpe",
+                 "duel": "Duelo"
+             }
+         },
+         "debug": {
+             "title": "Panel de depuración",
+             "collapse": "Contraer",
+             "hide": "Ocultar",
+             "distance": "Distancia:",
+             "power": "Potencia:",
+             "event": "Evento:",
+             "streak": "Racha:",
+             "reset": "Restablecer",
+             "guide": "Línea guía",
+             "sweet": "Zona dulce",
+             "markers": "Marcas de distancia",
+             "readout": {
+                 "modeState": "Modo={{mode}}  Estado={{state}}",
+                 "distance": "Distancia={{px}}px ({{meters}})",
+                 "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
+                 "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
+                 "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
+                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
+                 "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+             }
+         },
+         "stats": {
+             "title": "Estadísticas personales",
+             "close": "Cerrar",
+            "totalShots": "Golpes={{total}}  Aciertos={{made}}",
+             "farRate": "Acierto 300px+={{rate}}",
+             "trend": "Tendencia reciente={{trend}}",
+             "none": "Ninguno"
+         },
+         "theme": {
+             "next": "Cambiar tema",
+             "current": "Tema: {{theme}}",
+             "changed": "Tema {{theme}}",
+             "labels": {
+                 "default": "Cancha de bádminton",
+                 "miami": "Atardecer en Miami"
+             }
+         },
+         "court": {
+             "netFront": "Frente de red",
+             "serviceLine": "Línea de saque",
+             "backCourt": "Fondo de cancha",
+             "baseline": "Línea de fondo"
+         },
+         "close": "Cerrar",
+         "audio": {
+             "controls": "Audio del juego"
+         },
+         "memoryOption": {
+             "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
+             "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
+         },
+         "table": {
+             "score": "Puntos",
+             "bestStreak": "Mejor racha",
+             "farthest": "Máximo",
+             "mode": "Modo",
+             "date": "Fecha"
+         },
+         "state": {
+             "ready": "Listo",
+             "in_flight": "En vuelo",
+             "game_over": "Fin",
+             "neko_thinking": "Neko piensa"
+         },
+         "toast": {
+             "difficulty": "Dificultad {{difficulty}}",
+             "nekoShoot": "Golpe de Neko",
+             "nekoThinking": "Neko está pensando",
+             "nekoTurn": "Turno de Neko",
+             "copyNeko": "Replica a Neko",
+             "nekoFailed": "Neko falló el golpe inicial",
+             "yourSet": "Propón tu golpe",
+             "yourTurn": "Tu turno",
+             "reset": "Restablecido",
+             "featureToggled": "{{feature}} {{state}}",
+             "feature": {
+                 "guide": "Línea guía",
+                 "sweet": "Zona dulce de potencia",
+                 "bgm": "BGM",
+                 "markers": "Marcas de distancia"
+             },
+             "state": {
+                 "on": "activado",
+                 "off": "desactivado"
+             }
+         },
+         "tutorial": {
+             "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
+             "charge": "Mantén clic izquierdo para cargar",
+             "release": "¡Suelta para golpear!"
+         },
+         "shot": {
+             "unknown": "Desconocido",
+             "attempt": "#{{index}} {{distance}} {{type}}",
+             "line_in": "En la línea",
+             "net_touch": "Toque de red",
+             "zone_in": "Entró en la zona",
+             "out": "Fuera",
+             "net": "A la red"
+         },
+         "lines": {
+             "default": {
+                 "shot_missed": [
+                     "Todavía hay oportunidad.",
+                     "Todavía hay oportunidad."
+                 ],
+                 "game_over": [
+                     "¿Otra partida?",
+                     "¿Otra partida?"
+                 ],
+                 "long_aim": [
+                    "Golpea ya.",
+                    "Golpea ya."
+                 ],
+                 "close_to_record": [
+                     "Casi récord.",
+                     "Casi récord."
+                 ],
+                 "new_record": [
+                     "¡Nuevo récord!",
+                     "¡Nuevo récord!"
+                 ],
+                 "streak_5": [
+                     "¡Cinco seguidas!",
+                     "¡Cinco seguidas!"
+                 ],
+                 "streak_10": [
+                     "¿Diez seguidas?",
+                     "¿Diez seguidas?"
+                 ],
+                 "streak_15": [
+                     "Quince seguidas es demasiado.",
+                     "Quince seguidas es demasiado."
+                 ],
+                 "streak_20": [
+                     "¿Veinte seguidas? Increíble.",
+                     "¿Veinte seguidas? Increíble."
+                 ],
+                 "line_in": [
+                     "¡En la línea!",
+                     "¡En la línea!"
+                 ],
+                 "net_touch": [
+                     "Tocó la red y cuenta.",
+                     "Tocó la red y cuenta."
+                 ],
+                 "zone_in": [
+                     "Cayó dentro.",
+                     "Cayó dentro."
+                 ],
+                 "out": [
+                     "Por poco.",
+                     "Por poco."
+                 ],
+                 "net": [
+                     "Se quedó en la red.",
+                     "Se quedó en la red."
+                 ]
+             },
+             "shooter": {
+                 "shot_missed": [
+                     "Todavía hay oportunidad.",
+                     "Todavía hay oportunidad."
+                 ],
+                 "game_over": [
+                     "¿Otra partida?",
+                     "¿Otra partida?"
+                 ],
+                 "long_aim": [
+                    "Golpea ya.",
+                    "Golpea ya."
+                 ],
+                 "close_to_record": [
+                     "Casi récord.",
+                     "Casi récord."
+                 ],
+                 "new_record": [
+                     "¡Nuevo récord!",
+                     "¡Nuevo récord!"
+                 ],
+                 "streak_5": [
+                     "¡Cinco seguidas!",
+                     "¡Cinco seguidas!"
+                 ],
+                 "streak_10": [
+                     "¿Diez seguidas?",
+                     "¿Diez seguidas?"
+                 ],
+                 "streak_15": [
+                     "Quince seguidas es demasiado.",
+                     "Quince seguidas es demasiado."
+                 ],
+                 "streak_20": [
+                     "¿Veinte seguidas? Increíble.",
+                     "¿Veinte seguidas? Increíble."
+                 ],
+                 "line_in": [
+                     "¡En la línea!",
+                     "¡En la línea!"
+                 ],
+                 "net_touch": [
+                     "Tocó la red y cuenta.",
+                     "Tocó la red y cuenta."
+                 ],
+                 "zone_in": [
+                     "Cayó dentro.",
+                     "Cayó dentro."
+                 ],
+                 "out": [
+                     "Por poco.",
+                     "Por poco."
+                 ],
+                 "net": [
+                     "Se quedó en la red.",
+                     "Se quedó en la red."
+                 ]
+             },
+             "duel": {
+                 "shot_missed": [
+                     "Todavía hay oportunidad.",
+                     "Todavía hay oportunidad."
+                 ],
+                 "game_over": [
+                     "¿Otra partida?",
+                     "¿Otra partida?"
+                 ],
+                 "long_aim": [
+                    "Golpea ya.",
+                    "Golpea ya."
+                 ],
+                 "close_to_record": [
+                     "Casi récord.",
+                     "Casi récord."
+                 ],
+                 "new_record": [
+                     "¡Nuevo récord!",
+                     "¡Nuevo récord!"
+                 ],
+                 "streak_5": [
+                     "¡Cinco seguidas!",
+                     "¡Cinco seguidas!"
+                 ],
+                 "streak_10": [
+                     "¿Diez seguidas?",
+                     "¿Diez seguidas?"
+                 ],
+                 "streak_15": [
+                     "Quince seguidas es demasiado.",
+                     "Quince seguidas es demasiado."
+                 ],
+                 "streak_20": [
+                     "¿Veinte seguidas? Increíble.",
+                     "¿Veinte seguidas? Increíble."
+                 ],
+                 "clutch": "...Este tiene que entrar.",
+                 "excuse": "Ay, el brazo está algo cansado.",
+                 "line_in": [
+                     "¡En la línea!",
+                     "¡En la línea!"
+                 ],
+                 "net_touch": [
+                     "Tocó la red y cuenta.",
+                     "Tocó la red y cuenta."
+                 ],
+                 "zone_in": [
+                     "Cayó dentro.",
+                     "Cayó dentro."
+                 ],
+                 "out": [
+                     "Por poco.",
+                     "Por poco."
+                 ],
+                 "net": [
+                     "Se quedó en la red.",
+                     "Se quedó en la red."
+                 ]
+             },
+             "fallback": [
+                 "Otra vez."
+             ],
+             "pressure": {
+                "lastTied": "Golpe decisivo. No parpadees.",
+                 "lastAhead": "Bah, esto no terminó.",
+                 "lastBehind": "Anota este y ganas.",
+                 "playerAhead": "No lo haces mal...",
+                 "playerBehind": "Aprieta un poco más."
+             },
+             "horse": {
+                 "nekoMiss": "No lo replicó. Suma {{letters}}.",
+                 "playerMiss": "Tú también sumas {{letters}}."
+             },
+             "mindGame": [
+                 "Te tiembla la mano.",
+                 "Piénsalo, sin prisa.",
+                 "Esta distancia no es corta."
+             ],
+             "easterEgg": {
+                 "lateNight": "¿Sigues golpeando tan tarde?",
+                 "xmas": "Ya están las campanas, ¿y aún quieres golpear?",
+                 "newYear": "¡Feliz Año Nuevo!",
+                 "lineIn3": "¿Estás usando trucos?",
+                 "lineIn5": "...Tengo que revisar la línea.",
+                 "net3": "...Quizá toma un descanso."
+             }
+         },
+         "mood": {
+             "happySuffix": " ♪",
+             "sadPrefix": "...",
+             "surprisedPrefix": "¿Eh?! "
+         }
     },
-    "soccer": {
+   "soccer": {
         "exitGame": {
             "button": "Salir del juego",
             "ending": "Finalizando la ronda…",

@@ -24,6 +24,42 @@ window.live2dManager.onModelLoaded = (model) => {
 // 兼容性：保持原有的全局变量，但增加 VRM/Live2D 双模态调度逻辑
 window.LanLan1 = window.LanLan1 || {};
 
+function revealInitialLive2DModelWhenUiReady(reason) {
+    let revealed = false;
+    const reveal = () => {
+        if (revealed) {
+            return true;
+        }
+        if (typeof window.showLive2d !== 'function') {
+            return false;
+        }
+        try {
+            window.showLive2d();
+        } catch (error) {
+            console.warn('[Live2D Init] showLive2d reveal failed, will retry:', error);
+            return false;
+        }
+        revealed = true;
+        return true;
+    };
+
+    if (reveal()) {
+        return;
+    }
+
+    [0, 50, 150, 300, 600, 1000].forEach((delayMs) => {
+        setTimeout(() => {
+            reveal();
+        }, delayMs);
+    });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', reveal, { once: true });
+    }
+    window.addEventListener('load', reveal, { once: true });
+    console.log('[Live2D Init] waiting for showLive2d to reveal initial model:', reason || 'initial-load');
+}
+
 // 根据 lanlan_config 判断当前活跃的模型类型
 function _getActiveModelType() {
     const cfg = window.lanlan_config;
@@ -532,6 +568,7 @@ async function initLive2DModel() {
         window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
 
         // 设置页面卸载时的自动清理（确保资源正确释放）
+        revealInitialLive2DModelWhenUiReady('initial-live2d-load');
         window.live2dManager.setupUnloadCleanup();
 
             console.log('✓ Live2D 管理器自动初始化完成');

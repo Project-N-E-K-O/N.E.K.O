@@ -11,6 +11,72 @@ pytestmark = pytest.mark.plugin_unit
 
 
 @pytest.mark.asyncio
+async def test_ensure_plugin_messaging_started_initializes_response_map_and_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _State:
+        @property
+        def plugin_response_map(self) -> dict[str, object]:
+            calls.append("response_map")
+            return {}
+
+    async def _start_router() -> None:
+        calls.append("router_start")
+
+    monkeypatch.setattr(module, "state", _State())
+    monkeypatch.setattr(module.plugin_router, "start", _start_router)
+
+    ensure = getattr(module, "ensure_plugin_messaging_started", None)
+    assert callable(ensure)
+
+    await ensure()
+
+    assert calls == ["response_map", "router_start"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_plugin_messaging_started_starts_router_when_response_map_init_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _State:
+        @property
+        def plugin_response_map(self) -> dict[str, object]:
+            calls.append("response_map")
+            raise RuntimeError("response map unavailable")
+
+    async def _start_router() -> None:
+        calls.append("router_start")
+
+    warnings: list[tuple[str, str, str]] = []
+
+    class _Logger:
+        def warning(self, message: str, err_type: str, err: str) -> None:
+            warnings.append((message, err_type, err))
+
+        def debug(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr(module, "state", _State())
+    monkeypatch.setattr(module.plugin_router, "start", _start_router)
+    monkeypatch.setattr(module, "logger", _Logger())
+
+    await module.ensure_plugin_messaging_started()
+
+    assert calls == ["response_map", "router_start"]
+    assert warnings == [
+        (
+            "failed to initialize plugin response map early: err_type={}, err={}",
+            "RuntimeError",
+            "response map unavailable",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
     plugins_backup = copy.deepcopy(module.state.plugins)
     hosts_backup = dict(module.state.plugin_hosts)

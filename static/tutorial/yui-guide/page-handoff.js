@@ -1,0 +1,1439 @@
+/**
+ * Yui Guide Page Handoff — 统一页面打开 API
+ *
+ * Dev C 专属模块（首页交互与跨页负责人）。
+ * M1 阶段只提供统一页面打开包装；跨页 handoff 能力保留给新 Yui scene 使用。
+ *
+ * 锚点验证结果（M1 基线，2026-04-15）:
+ * ┌──────────────────────────┬───────────────────────────────────────┬────────┐
+ * │ 当前 Day1 round scene    │ 锚点选择器                            │ 状态   │
+ * ├──────────────────────────┼───────────────────────────────────────┼────────┤
+ * │ day1_intro_activation    │ chat capsule input                    │ OK     │
+ * │ day1_intro_greeting      │ chat capsule input                    │ OK     │
+ * │ day1_takeover_capture... │ #${p}-btn-agent                       │ OK     │
+ * │ day1_takeover_return...  │ chat capsule input                    │ OK     │
+ * │ interrupt_resist_light   │ #${p}-container                       │ OK     │
+ * │ interrupt_angry_exit     │ #${p}-container                       │ OK     │
+ * └──────────────────────────┴───────────────────────────────────────┴────────┘
+ *
+ * ${p} 占位符由主负责人的 Director 在运行时解析为实际模型前缀（live2d/vrm/mmd）。
+ */
+(function () {
+    'use strict';
+
+    var WINDOW_NAME_PREFIX = 'neko_';
+    var WINDOW_CHECK_INTERVAL_MS = 1000;
+    var DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
+
+    var _activeWindows = {};
+    var _activeTimers = {};
+
+    function syncMainUIVisibility() {
+        var hasOpenWindow = Object.keys(_activeWindows).some(function (key) {
+            var win = _activeWindows[key];
+            return !!(win && !win.closed);
+        });
+
+        if (hasOpenWindow) {
+            return;
+        }
+
+        if (typeof window.handleShowMainUI === 'function') {
+            try {
+                window.handleShowMainUI();
+            } catch (_) {}
+        }
+    }
+
+    /**
+     * 规范化窗口名称：简写自动补 neko_ 前缀。
+     * 'api_key' -> 'neko_api_key'
+     * 'neko_api_key' -> 'neko_api_key'
+     */
+    function normalizeWindowName(name) {
+        if (!name) return '';
+        if (name.indexOf(WINDOW_NAME_PREFIX) === 0) return name;
+        return WINDOW_NAME_PREFIX + name;
+    }
+
+    /**
+     * 打开目标页面并暂停主页渲染。
+     *
+     * @param {string} openUrl - 目标页面路径，如 '/api_key'
+     * @param {string} windowName - 窗口名称简写，如 'api_key'，内部自动补前缀
+     * @param {string} [features] - 可选的 window.open features 字符串
+     * @returns {Promise<Window|null>} 子窗口引用，失败时返回 null
+     */
+    function openPage(openUrl, windowName, features, options) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) {
+            console.warn('[YuiGuideHandoff] windowName 为空，取消打开');
+            return Promise.resolve(null);
+        }
+        var normalizedOptions = options || {};
+        var targetUrl = openUrl;
+        try {
+            targetUrl = new URL(openUrl, window.location.origin).toString();
+        } catch (_) {}
+        var childWin;
+
+        var resolvedFeatures = getDefaultPageWindowFeatures(openUrl, features);
+        if (typeof window.openOrFocusWindow === 'function') {
+            childWin = window.openOrFocusWindow(targetUrl, fullName, resolvedFeatures, {
+                navigateOnReuse: !!normalizedOptions.forceReload
+            });
+        } else {
+            childWin = window.open(targetUrl, fullName, resolvedFeatures);
+        }
+
+        if (!childWin) {
+            console.warn('[YuiGuideHandoff] 窗口打开失败或被拦截:', targetUrl);
+            return Promise.resolve(null);
+        }
+
+        _activeWindows[fullName] = childWin;
+        if (!window._openedWindows) {
+            window._openedWindows = {};
+        }
+        window._openedWindows[fullName] = childWin;
+
+        try {
+            childWin.focus();
+        } catch (_) {}
+
+        if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
+            window.handleHideMainUI();
+        }
+
+        return Promise.resolve(childWin);
+    }
+
+    /**
+     * 检查指定窗口是否仍然打开。
+     *
+     * @param {string} windowName - 窗口名称简写
+     * @returns {boolean}
+     */
+    function isWindowOpen(windowName) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) return false;
+        var win = _activeWindows[fullName];
+        if (!win) return false;
+        if (win.closed) {
+            delete _activeWindows[fullName];
+            syncMainUIVisibility();
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 当目标窗口关闭时执行回调（轮询检测）。
+     *
+     * @param {string} windowName - 窗口名称简写
+     * @param {Function} onReturn - 窗口关闭后的回调
+     * @returns {void}
+     */
+    function resumeOnReturn(windowName, onReturn) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) {
+            if (typeof onReturn === 'function') onReturn();
+            return;
+        }
+
+        if (_activeTimers[fullName]) return;
+
+        var win = _activeWindows[fullName];
+
+        if (!win || win.closed) {
+            delete _activeWindows[fullName];
+            syncMainUIVisibility();
+            if (typeof onReturn === 'function') onReturn();
+            return;
+        }
+
+        _activeTimers[fullName] = true;
+        var timer = setInterval(function () {
+            if (win.closed) {
+                clearInterval(timer);
+                if (_activeWindows[fullName] === win) {
+                    delete _activeWindows[fullName];
+                }
+                delete _activeTimers[fullName];
+                syncMainUIVisibility();
+                if (typeof onReturn === 'function') onReturn();
+            }
+        }, WINDOW_CHECK_INTERVAL_MS);
+    }
+
+    // ─── 内部：弹层工具 ──────────────────────────────────────
+
+    var POPUP_OPEN_ANIMATION_MS = 250;
+    var HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
+    var HANDOFF_CONSUMED_NOTIFY_KEY = 'neko_yui_guide_handoff_consumed';
+    var HANDOFF_TOKEN_VERSION = 1;
+    var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
+    var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
+    var HANDOFF_CREATE_ENDPOINT = '/api/yui-guide/handoff/create';
+    var HANDOFF_CONSUME_ENDPOINT = '/api/yui-guide/handoff/consume';
+    var PAGE_CONFIG_URL = '/api/config/page_config';
+    var CSRF_HEADER_NAME = 'X-CSRF-Token';
+    var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
+    function generateTokenId() {
+        return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    }
+
+    var HANDOFF_SESSION_ID = generateTokenId();
+
+    function getPrefix() {
+        if (typeof window.UniversalTutorialManager === 'function' &&
+            typeof window.UniversalTutorialManager.detectModelPrefix === 'function') {
+            return window.UniversalTutorialManager.detectModelPrefix();
+        }
+        if (window.lanlan_config && window.lanlan_config.model_type) {
+            var mt = window.lanlan_config.model_type;
+            if (mt === 'vrm' || mt === 'mmd') return mt;
+            if (mt === 'live3d') {
+                if (window.mmdManager && window.mmdManager.currentModel) return 'mmd';
+                if (window.vrmManager && window.vrmManager.currentModel) return 'vrm';
+            }
+        }
+        return 'live2d';
+    }
+
+    function getManager(prefix) {
+        var p = prefix || getPrefix();
+        return window[p + 'Manager'] || null;
+    }
+
+    function getPopup(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        return document.getElementById(p + '-popup-' + buttonId);
+    }
+
+    function getFloatingButton(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        return document.getElementById(p + '-btn-' + buttonId);
+    }
+
+    function positionFloatingPopupNow(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        var popup = getPopup(buttonId, p);
+        var popupUi = window.AvatarPopupUI || null;
+        if (!popup || !popupUi || typeof popupUi.positionPopup !== 'function') {
+            return false;
+        }
+
+        try {
+            var pos = popupUi.positionPopup(popup, {
+                buttonId: buttonId,
+                buttonPrefix: p + '-btn-',
+                triggerPrefix: p + '-trigger-icon-',
+                rightMargin: 20,
+                bottomMargin: 60,
+                topMargin: 8,
+                gap: 8,
+                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+            });
+            popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+            return true;
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] positionFloatingPopupNow 失败:', buttonId, error);
+            return false;
+        }
+    }
+
+    function waitForPopupPositioned(buttonId, prefix, timeoutMs) {
+        var p = prefix || getPrefix();
+        var popup = getPopup(buttonId, p);
+        if (!popup) {
+            return Promise.resolve(false);
+        }
+
+        if (
+            popup.style.display === 'flex'
+            && !popup.classList.contains('is-positioning')
+            && typeof popup.dataset.opensLeft === 'string'
+            && popup.dataset.opensLeft !== ''
+        ) {
+            positionFloatingPopupNow(buttonId, p);
+            return Promise.resolve(true);
+        }
+
+        return waitFor(function () {
+            if (
+                popup.style.display === 'flex'
+                && !popup.classList.contains('is-positioning')
+                && typeof popup.dataset.opensLeft === 'string'
+                && popup.dataset.opensLeft !== ''
+            ) {
+                return true;
+            }
+            return null;
+        }, Number.isFinite(timeoutMs) ? timeoutMs : POPUP_OPEN_ANIMATION_MS + 900).then(function (positioned) {
+            if (positioned) {
+                positionFloatingPopupNow(buttonId, p);
+                return true;
+            }
+
+            return positionFloatingPopupNow(buttonId, p);
+        });
+    }
+
+    function getPluginDashboardExpectedOrigin() {
+        if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
+            try {
+                return new URL(String(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN), window.location.href).origin;
+            } catch (e) {
+                console.warn('[YuiGuideHandoff] getPluginDashboardExpectedOrigin: YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN 无效:', e);
+            }
+        }
+
+        if (window.NEKO_USER_PLUGIN_BASE) {
+            try {
+                return new URL(String(window.NEKO_USER_PLUGIN_BASE), window.location.href).origin;
+            } catch (e) {
+                console.warn('[YuiGuideHandoff] getPluginDashboardExpectedOrigin: NEKO_USER_PLUGIN_BASE 无效:', e);
+            }
+        }
+
+        return DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
+    }
+
+    function buildPluginDashboardUrl(params) {
+        var url = new URL('/api/agent/user_plugin/dashboard', window.location.origin);
+        if (window.location && window.location.origin) {
+            url.searchParams.set('yui_opener_origin', window.location.origin);
+        }
+        (Array.isArray(params) ? params : []).forEach(function (entry) {
+            if (typeof entry !== 'string' || !entry) return;
+            var equalIndex = entry.indexOf('=');
+            if (equalIndex < 0) {
+                url.searchParams.append(entry, '');
+                return;
+            }
+
+            var key = entry.slice(0, equalIndex);
+            var value = entry.slice(equalIndex + 1);
+            try {
+                url.searchParams.append(key, decodeURIComponent(value));
+            } catch (_) {
+                url.searchParams.append(key, value);
+            }
+        });
+
+        return url.toString();
+    }
+
+    function getHandoffTokenSignature(tokenObj) {
+        if (!tokenObj) return '';
+        return tokenObj.signature || tokenObj.id || tokenObj.token || '';
+    }
+
+    function dispatchHandoffConsumedEvent(detail) {
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-consumed', {
+            detail: detail || {}
+        }));
+    }
+
+    function notifyHandoffConsumed(detail) {
+        var payload = detail || {};
+        dispatchHandoffConsumedEvent(payload);
+        try {
+            localStorage.setItem(HANDOFF_CONSUMED_NOTIFY_KEY, JSON.stringify({
+                detail: payload,
+                emitted_at: Date.now(),
+                sessionId: HANDOFF_SESSION_ID
+            }));
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] notifyHandoffConsumed: 广播失败:', error);
+        }
+    }
+
+    function normalizeHandoffPath(value) {
+        if (typeof value !== 'string' || !value) {
+            return '';
+        }
+        try {
+            var url = new URL(value, window.location.href);
+            if (url.origin !== window.location.origin) {
+                return url.toString();
+            }
+            return url.pathname + url.search + url.hash;
+        } catch (_) {
+            return value;
+        }
+    }
+
+    function getPageConfigUrl() {
+        try {
+            var url = new URL(PAGE_CONFIG_URL, window.location.origin);
+            var params = new URLSearchParams(window.location.search || '');
+            var lanlanName = params.get('lanlan_name') || '';
+            if (lanlanName) {
+                url.searchParams.set('lanlan_name', lanlanName);
+            }
+            return url.pathname + url.search;
+        } catch (_) {
+            return PAGE_CONFIG_URL;
+        }
+    }
+
+    async function getLocalMutationHeaders() {
+        var headers = {
+            'Content-Type': 'application/json'
+        };
+
+        var helper = window.nekoLocalMutationSecurity;
+        if (helper && typeof helper.getMutationHeaders === 'function') {
+            try {
+                var helperHeaders = await helper.getMutationHeaders();
+                if (helperHeaders && typeof helperHeaders === 'object') {
+                    return Object.assign(headers, helperHeaders);
+                }
+            } catch (error) {
+                console.warn('[YuiGuideHandoff] CSRF helper failed, refetching page_config:', error);
+            }
+        }
+
+        try {
+            var response = await fetch(getPageConfigUrl(), {
+                cache: 'no-store'
+            });
+            if (response.ok) {
+                var config = await response.json();
+                if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                    headers[CSRF_HEADER_NAME] = config.autostart_csrf_token;
+                }
+            }
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] page_config CSRF fetch failed:', error);
+        }
+
+        return headers;
+    }
+
+    async function postHandoffJson(endpoint, payload) {
+        var headers = await getLocalMutationHeaders();
+        var response = await fetch(endpoint, {
+            method: 'POST',
+            headers: headers,
+            cache: 'no-store',
+            body: JSON.stringify(payload || {})
+        });
+
+        if (!response.ok) {
+            var error = new Error('HTTP ' + response.status);
+            try {
+                error.responseBody = await response.json();
+                if (error.responseBody && error.responseBody.error) {
+                    error.message = String(error.responseBody.error);
+                }
+            } catch (_) {}
+            throw error;
+        }
+
+        return response.json();
+    }
+
+    async function createHandoffToken(targetPage, resumeScene, targetPath) {
+        var now = Date.now();
+        var response;
+        try {
+            response = await postHandoffJson(HANDOFF_CREATE_ENDPOINT, {
+                token_version: HANDOFF_TOKEN_VERSION,
+                flow_id: HANDOFF_FLOW_ID,
+                source_page: 'home',
+                source_path: normalizeHandoffPath(window.location.href),
+                target_page: targetPage || '',
+                target_path: normalizeHandoffPath(targetPath || ''),
+                resume_scene: resumeScene || null,
+                requested_at: now
+            });
+        } catch (error) {
+            console.error('[YuiGuideHandoff] createHandoffToken: backend create failed:', error);
+            return null;
+        }
+
+        var tokenObj = response && response.token && typeof response.token === 'object'
+            ? response.token
+            : null;
+        if (!tokenObj || !tokenObj.token || tokenObj.token_version !== HANDOFF_TOKEN_VERSION || tokenObj.authority !== 'server') {
+            console.error('[YuiGuideHandoff] createHandoffToken: invalid backend token');
+            return null;
+        }
+
+        try {
+            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(tokenObj));
+        } catch (error) {
+            console.error('[YuiGuideHandoff] createHandoffToken: 存储失败:', error);
+            return null;
+        }
+
+        return tokenObj;
+    }
+
+    function clearHandoffToken() {
+        try {
+            localStorage.removeItem(HANDOFF_STORAGE_KEY);
+        } catch (_) {}
+    }
+
+    function readHandoffToken() {
+        try {
+            var raw = localStorage.getItem(HANDOFF_STORAGE_KEY);
+            if (!raw) return null;
+
+            var tokenObj = JSON.parse(raw);
+            if (!tokenObj || !tokenObj.token || tokenObj.token_version !== HANDOFF_TOKEN_VERSION) {
+                return null;
+            }
+
+            if (Date.now() > tokenObj.expires_at) {
+                clearHandoffToken();
+                return null;
+            }
+
+            return tokenObj;
+        } catch (error) {
+            console.error('[YuiGuideHandoff] readHandoffToken: 读取失败:', error);
+            return null;
+        }
+    }
+
+    async function consumeHandoffToken(expectedPage) {
+        var tokenObj = readHandoffToken();
+        if (!tokenObj) return null;
+
+        if (expectedPage && tokenObj.target_page !== expectedPage) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: 页面不匹配, 期望:', expectedPage, '实际:', tokenObj.target_page);
+            return null;
+        }
+
+        if (tokenObj.consumed) {
+            return null;
+        }
+
+        if (tokenObj.authority !== 'server') {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: ignoring non-authoritative local token');
+            clearHandoffToken();
+            return null;
+        }
+
+        var expectedSignature = getHandoffTokenSignature(tokenObj);
+        if (!expectedSignature) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: token 缺少稳定标识');
+            return null;
+        }
+
+        var response;
+        try {
+            response = await postHandoffJson(HANDOFF_CONSUME_ENDPOINT, {
+                token: tokenObj.token,
+                signature: expectedSignature,
+                expected_page: expectedPage || '',
+                consumer_id: HANDOFF_SESSION_ID
+            });
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: backend consume failed:', error);
+            return null;
+        }
+
+        var authoritativeTokenObj = response && response.token && typeof response.token === 'object'
+            ? response.token
+            : null;
+        if (!authoritativeTokenObj || !authoritativeTokenObj.consumed) {
+            return null;
+        }
+        if (getHandoffTokenSignature(authoritativeTokenObj) !== expectedSignature) {
+            return null;
+        }
+        if (authoritativeTokenObj.consumed_by !== HANDOFF_SESSION_ID) {
+            return null;
+        }
+
+        try {
+            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(authoritativeTokenObj));
+        } catch (error) {
+            console.error('[YuiGuideHandoff] consumeHandoffToken: mark authoritative consume failed:', error);
+            return null;
+        }
+
+        notifyHandoffConsumed({
+            token: authoritativeTokenObj.token,
+            target_page: authoritativeTokenObj.target_page || '',
+            resume_scene: authoritativeTokenObj.resume_scene || null,
+            consumed_by: authoritativeTokenObj.consumed_by,
+            consumed_at: authoritativeTokenObj.consumed_at,
+            source_page: authoritativeTokenObj.source_page || '',
+            flow_id: authoritativeTokenObj.flow_id || '',
+            expected_page: expectedPage || null
+        });
+
+        return authoritativeTokenObj;
+
+    }
+
+    function waitFor(condition, timeoutMs, intervalMs) {
+        var timeout = Number.isFinite(timeoutMs) ? timeoutMs : 4000;
+        var interval = Number.isFinite(intervalMs) ? intervalMs : 80;
+        var startedAt = Date.now();
+
+        return new Promise(function (resolve) {
+            function tick() {
+                var result = null;
+                try {
+                    result = condition();
+                } catch (_) {
+                    result = null;
+                }
+
+                if (result) {
+                    resolve(result);
+                    return;
+                }
+
+                if ((Date.now() - startedAt) >= timeout) {
+                    resolve(null);
+                    return;
+                }
+
+                setTimeout(tick, interval);
+            }
+
+            tick();
+        });
+    }
+
+    function delay(ms) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, Math.max(0, Number.isFinite(ms) ? ms : 0));
+        });
+    }
+
+    function getAgentToggleElement(toggleId) {
+        var prefix = getPrefix();
+        return document.getElementById(prefix + '-toggle-' + toggleId);
+    }
+
+    function getAgentToggleCheckbox(toggleId) {
+        var prefix = getPrefix();
+        return document.getElementById(prefix + '-' + toggleId);
+    }
+
+    function getAgentSidePanel(toggleId) {
+        return document.querySelector('[data-neko-sidepanel-type="' + toggleId + '-actions"]');
+    }
+
+    function isSidePanelVisible(sidePanel) {
+        return !!(sidePanel && sidePanel.style.display === 'flex' && sidePanel.style.opacity !== '0');
+    }
+
+    function getAgentSidePanelAction(toggleId, actionId) {
+        if (!toggleId || !actionId) return null;
+        return document.getElementById('neko-sidepanel-action-' + toggleId + '-' + actionId);
+    }
+
+    function waitForStableElementRect(element, timeoutMs) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') {
+            return Promise.resolve(null);
+        }
+
+        var timeout = Number.isFinite(timeoutMs) ? timeoutMs : 700;
+        var startedAt = Date.now();
+        var lastRect = null;
+        var stableCount = 0;
+
+        return new Promise(function (resolve) {
+            function tick() {
+                var rect = element.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    if ((Date.now() - startedAt) >= timeout) {
+                        resolve(null);
+                        return;
+                    }
+                    setTimeout(tick, 80);
+                    return;
+                }
+
+                if (lastRect) {
+                    var delta = Math.max(
+                        Math.abs(rect.left - lastRect.left),
+                        Math.abs(rect.top - lastRect.top),
+                        Math.abs(rect.width - lastRect.width),
+                        Math.abs(rect.height - lastRect.height)
+                    );
+                    stableCount = delta <= 1 ? stableCount + 1 : 0;
+                }
+                lastRect = {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height
+                };
+
+                if (stableCount >= 2 || (Date.now() - startedAt) >= timeout) {
+                    resolve(element);
+                    return;
+                }
+
+                setTimeout(tick, 80);
+            }
+
+            tick();
+        });
+    }
+
+    function waitForAgentSidePanelLayoutStable(toggleId, timeoutMs) {
+        return waitFor(function () {
+            var panel = getAgentSidePanel(toggleId);
+            return panel && isSidePanelVisible(panel) ? panel : null;
+        }, Number.isFinite(timeoutMs) ? Math.max(260, timeoutMs) : 900).then(function (panel) {
+            if (!panel) return null;
+            return delay(380).then(function () {
+                return waitForStableElementRect(panel, Number.isFinite(timeoutMs) ? timeoutMs : 700);
+            });
+        });
+    }
+
+    function getOpenedWindow(fullName) {
+        if (!fullName) return null;
+        var tracked = _activeWindows[fullName];
+        if (tracked && !tracked.closed) {
+            return tracked;
+        }
+
+        if (window._openedWindows && window._openedWindows[fullName] && !window._openedWindows[fullName].closed) {
+            return window._openedWindows[fullName];
+        }
+
+        return null;
+    }
+
+    function sendAgentCommand(command, payload) {
+        var requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var timeoutId = window.setTimeout(function () {
+            if (controller) {
+                controller.abort();
+            }
+        }, 4000);
+        return fetch('/api/agent/command', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            signal: controller ? controller.signal : undefined,
+            body: JSON.stringify(Object.assign({
+                request_id: requestId,
+                command: command
+            }, payload || {}))
+        }).then(function (response) {
+            if (!response.ok) {
+                throw new Error('command status ' + response.status);
+            }
+            return response.json();
+        }).then(function (data) {
+            if (!data || data.success !== true) {
+                throw new Error((data && data.error) || 'command failed');
+            }
+            return data;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] sendAgentCommand 失败:', command, error);
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'command failed'
+            };
+        }).finally(function () {
+            window.clearTimeout(timeoutId);
+        });
+    }
+
+    function syncAgentToggleDom(toggleId, checked) {
+        var checkbox = getAgentToggleCheckbox(toggleId);
+        var toggleItem = getAgentToggleElement(toggleId);
+        if (!checkbox || !toggleItem) {
+            return;
+        }
+
+        checkbox.checked = !!checked;
+        toggleItem.setAttribute('aria-checked', checked ? 'true' : 'false');
+        if (typeof checkbox._updateStyle === 'function') {
+            checkbox._updateStyle();
+        }
+    }
+
+    function dispatchSyntheticPress(element) {
+        if (!element) {
+            return;
+        }
+
+        try {
+            element.dispatchEvent(new MouseEvent('mouseenter', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+            element.dispatchEvent(new MouseEvent('mousedown', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+            element.dispatchEvent(new MouseEvent('mouseup', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+        } catch (_) {}
+    }
+
+    function buildCenteredWindowFeatures(width, height) {
+        var w = Number.isFinite(width) ? width : Math.min(1280, Math.round(screen.width * 0.8));
+        var h = Number.isFinite(height) ? height : Math.min(900, Math.round(screen.height * 0.8));
+        // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+        if (typeof window.buildCenteredPopupFeatures === 'function') {
+            return window.buildCenteredPopupFeatures(w, h);
+        }
+        var left = Math.max(0, Math.floor((screen.width - w) / 2));
+        var top = Math.max(0, Math.floor((screen.height - h) / 2));
+        return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
+    }
+
+    function buildFullscreenWindowFeatures() {
+        var screenRef = window.screen || {};
+        var width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+        var height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+        var left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+        var top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+        return 'width=' + width + ',height=' + height + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
+    }
+
+    function isFramedSettingsPageUrl(openUrl) {
+        try {
+            var path = new URL(openUrl, window.location.origin).pathname;
+            return path === '/api_key'
+                || path === '/character_card_manager'
+                || path === '/chara_manager'
+                || path === '/memory_browser';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isModelManagerPageUrl(openUrl) {
+        try {
+            return new URL(openUrl, window.location.origin).pathname === '/model_manager';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function getDefaultPageWindowFeatures(openUrl, features) {
+        if (features) return features;
+        if (isModelManagerPageUrl(openUrl)) {
+            return buildFullscreenWindowFeatures();
+        }
+        if (isFramedSettingsPageUrl(openUrl)) {
+            return buildCenteredWindowFeatures(1240, 940);
+        }
+        return features;
+    }
+
+    function getTutorialModelManagerLanlanName() {
+        var explicitName = typeof window.NEKO_YUI_GUIDE_MODEL_MANAGER_LANLAN_NAME === 'string'
+            ? window.NEKO_YUI_GUIDE_MODEL_MANAGER_LANLAN_NAME.trim()
+            : '';
+        if (explicitName) {
+            return explicitName;
+        }
+
+        return DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME;
+    }
+
+    function getModelManagerWindowName(name, prefix) {
+        var normalizedName = typeof name === 'string' && name.trim()
+            ? name.trim()
+            : getTutorialModelManagerLanlanName();
+        var modelPrefix = prefix || getPrefix();
+        var stem = modelPrefix === 'vrm'
+            ? 'vrm-manage_'
+            : modelPrefix === 'mmd'
+            ? 'mmd-manage_'
+            : 'live2d-manage_';
+        return stem + encodeURIComponent(normalizedName);
+    }
+
+    // ─── M2: 首页交互包装 API ────────────────────────────────
+
+    /**
+     * 打开设置弹层。
+     * 教程引导调用后，设置菜单项（#${p}-menu-* / #${p}-toggle-*）变为可定位。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功打开
+     */
+    function openSettingsPanel() {
+        var prefix = getPrefix();
+        var manager = getManager(prefix);
+        var popup = getPopup('settings', prefix);
+        var button = getFloatingButton('settings', prefix);
+
+        if (!manager || !popup || typeof manager.showPopup !== 'function') {
+            console.warn('[YuiGuideHandoff] openSettingsPanel: manager/showPopup 不可用');
+            return Promise.resolve(false);
+        }
+
+        if (popup.style.display === 'flex') {
+            return waitForPopupPositioned('settings', prefix);
+        }
+
+        dispatchSyntheticPress(button);
+        manager.showPopup('settings', popup);
+
+        // 不用固定 setTimeout（低端机/教程首启动主线程繁忙时，
+        // 250ms 内 reflow + style 应用未必完成，会被误判为打开失败）。
+        // 改用轮询 waitFor，跟 closeSettingsPanel 保持对称。
+        return waitFor(function () {
+            return popup.style.display === 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
+            if (!opened) return false;
+            return waitForPopupPositioned('settings', prefix);
+        });
+    }
+
+    /**
+     * 关闭设置弹层。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功关闭
+     */
+    function closeSettingsPanel() {
+        var manager = getManager();
+        if (!manager || typeof manager.closePopupById !== 'function') {
+            return Promise.resolve(false);
+        }
+        var popup = getPopup('settings');
+        if (!popup || popup.style.display !== 'flex') {
+            return Promise.resolve(true);
+        }
+
+        manager.closePopupById('settings');
+
+        return waitFor(function () {
+            return !popup || popup.style.display !== 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (closed) {
+            return !!closed;
+        });
+    }
+
+    /**
+     * 打开 Agent / 猫爪弹层。
+     * 用于每日 round 中需要展示真实 Agent 能力面板的 scene。
+     *
+     * @returns {Promise<boolean>} 弹层是否成功打开
+     */
+    function openAgentPanel() {
+        var prefix = getPrefix();
+        var manager = getManager(prefix);
+        var popup = getPopup('agent', prefix);
+        var button = getFloatingButton('agent', prefix);
+
+        if (!manager || !popup || typeof manager.showPopup !== 'function') {
+            console.warn('[YuiGuideHandoff] openAgentPanel: manager/showPopup 不可用');
+            return Promise.resolve(false);
+        }
+
+        if (popup.style.display === 'flex') {
+            return waitForPopupPositioned('agent', prefix);
+        }
+
+        dispatchSyntheticPress(button);
+        manager.showPopup('agent', popup);
+
+        // 同 openSettingsPanel：用轮询 waitFor 替代固定 250ms，
+        // 避免低端机首启动时被误判为打开失败导致下游链路短路。
+        return waitFor(function () {
+            return popup.style.display === 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
+            if (!opened) return false;
+            return waitForPopupPositioned('agent', prefix);
+        });
+    }
+
+    function closeAgentPanel() {
+        var manager = getManager();
+        document.querySelectorAll('[data-neko-sidepanel-type="agent-user-plugin-actions"], [data-neko-sidepanel-type="agent-openclaw-actions"]').forEach(function (panel) {
+            if (!panel) return;
+            if (panel._hoverCollapseTimer) {
+                clearTimeout(panel._hoverCollapseTimer);
+                panel._hoverCollapseTimer = null;
+            }
+            if (panel._collapseTimeout) {
+                clearTimeout(panel._collapseTimeout);
+                panel._collapseTimeout = null;
+            }
+            if (typeof panel._collapse === 'function') {
+                panel._collapse();
+                return;
+            }
+            panel.style.transition = 'none';
+            panel.style.opacity = '0';
+            panel.style.display = 'none';
+            panel.style.pointerEvents = 'none';
+            panel.style.transition = '';
+        });
+        if (!manager || typeof manager.closePopupById !== 'function') {
+            return Promise.resolve(false);
+        }
+        var popup = getPopup('agent');
+        if (!popup || popup.style.display !== 'flex') {
+            return Promise.resolve(true);
+        }
+
+        manager.closePopupById('agent');
+
+        return waitFor(function () {
+            return !popup || popup.style.display !== 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (closed) {
+            return !!closed;
+        });
+    }
+
+    /**
+     * 确保设置弹层已打开且指定菜单项可见、可被教程高亮定位。
+     *
+     * 如果弹层未打开，会先打开它；然后滚动/展开使目标菜单项进入视口。
+     *
+     * @param {string} menuId - 菜单项 DOM ID 后缀，如 'api-keys'、'memory'、'character'
+     *                           自动拼接为 #${prefix}-menu-${menuId}
+     * @returns {Promise<boolean>} 菜单项是否可见
+     */
+    function ensureSettingsMenuVisible(menuId) {
+        if (!menuId) return Promise.resolve(false);
+        var prefix = getPrefix();
+
+        return openSettingsPanel().then(function (opened) {
+            if (!opened) return false;
+
+            var el = document.getElementById(prefix + '-menu-' + menuId);
+            if (!el) {
+                console.warn('[YuiGuideHandoff] ensureSettingsMenuVisible: 菜单项不存在:', menuId);
+                return false;
+            }
+
+            if (typeof el.scrollIntoView === 'function') {
+                el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+            }
+
+            return true;
+        });
+    }
+
+    function ensureAgentToggleChecked(toggleId, checked) {
+        var desiredChecked = checked !== false;
+        if (!toggleId) return Promise.resolve(false);
+
+        return openAgentPanel().then(function (opened) {
+            if (!opened) return false;
+
+            return waitFor(function () {
+                var checkbox = getAgentToggleCheckbox(toggleId);
+                var toggleItem = getAgentToggleElement(toggleId);
+                if (!checkbox || !toggleItem) {
+                    return null;
+                }
+
+                if (checkbox.disabled) {
+                    return null;
+                }
+
+                return {
+                    checkbox: checkbox,
+                    toggleItem: toggleItem
+                };
+            }, 5000).then(function (parts) {
+                if (!parts || !parts.checkbox || !parts.toggleItem) {
+                    console.warn('[YuiGuideHandoff] ensureAgentToggleChecked: toggle 不可用:', toggleId);
+                    return false;
+                }
+
+                if (!!parts.checkbox.checked === desiredChecked) {
+                    return true;
+                }
+
+                parts.toggleItem.click();
+                return waitFor(function () {
+                    return !!parts.checkbox.checked === desiredChecked ? true : null;
+                }, 1500).then(function (result) {
+                    return !!result;
+                });
+            });
+        });
+    }
+
+    function setAgentMasterEnabled(enabled) {
+        return sendAgentCommand('set_agent_enabled', {
+            enabled: !!enabled
+        }).then(function (result) {
+            if (!result || result.success !== true) {
+                return false;
+            }
+            dispatchSyntheticPress(getAgentToggleElement('agent-master'));
+            syncAgentToggleDom('agent-master', !!enabled);
+            if (!enabled) {
+                syncAgentToggleDom('agent-user-plugin', false);
+            }
+            return true;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] setAgentMasterEnabled 失败:', error);
+            return false;
+        });
+    }
+
+    function setAgentFlagEnabled(flagKey, enabled) {
+        var key = typeof flagKey === 'string' ? flagKey.trim() : '';
+        if (!key) {
+            return Promise.resolve(false);
+        }
+
+        var toggleMap = {
+            user_plugin_enabled: 'agent-user-plugin',
+            computer_use_enabled: 'agent-keyboard',
+            browser_use_enabled: 'agent-browser',
+            openclaw_enabled: 'agent-openclaw',
+            openfang_enabled: 'agent-openfang'
+        };
+
+        return sendAgentCommand('set_flag', {
+            key: key,
+            value: !!enabled
+        }).then(function (result) {
+            if (!result || result.success !== true) {
+                return false;
+            }
+            if (toggleMap[key]) {
+                dispatchSyntheticPress(getAgentToggleElement(toggleMap[key]));
+                syncAgentToggleDom(toggleMap[key], !!enabled);
+            }
+            return true;
+        }).catch(function (error) {
+            console.warn('[YuiGuideHandoff] setAgentFlagEnabled 失败:', key, error);
+            return false;
+        });
+    }
+
+    function ensureAgentSidePanelVisible(toggleId) {
+        if (!toggleId) return Promise.resolve(false);
+
+        return openAgentPanel().then(function (opened) {
+            if (!opened) return false;
+
+            var toggleItem = getAgentToggleElement(toggleId);
+            var sidePanel = getAgentSidePanel(toggleId);
+            if (!toggleItem || !sidePanel) {
+                console.warn('[YuiGuideHandoff] ensureAgentSidePanelVisible: side panel 不存在:', toggleId);
+                return false;
+            }
+
+            if (typeof sidePanel._expand === 'function') {
+                if (sidePanel._hoverCollapseTimer) {
+                    clearTimeout(sidePanel._hoverCollapseTimer);
+                    sidePanel._hoverCollapseTimer = null;
+                }
+                sidePanel._expand();
+            } else {
+                toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+            }
+
+            try {
+                toggleItem.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+                sidePanel.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+            } catch (_) {}
+
+            return waitFor(function () {
+                return isSidePanelVisible(sidePanel) ? sidePanel : null;
+            }, 1500).then(function (panel) {
+                return !!panel;
+            });
+        });
+    }
+
+    function ensureAgentSidePanelActionVisible(toggleId, actionId, timeoutMs) {
+        if (!toggleId || !actionId) return Promise.resolve(null);
+        var normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 1800;
+
+        return ensureAgentSidePanelVisible(toggleId).then(function (visible) {
+            if (!visible) return null;
+
+            return waitForAgentSidePanelLayoutStable(toggleId, Math.min(1000, normalizedTimeoutMs)).then(function () {
+                return waitFor(function () {
+                    var sidePanel = getAgentSidePanel(toggleId);
+                    var button = getAgentSidePanelAction(toggleId, actionId);
+                    if (!sidePanel || !button || !isSidePanelVisible(sidePanel)) {
+                        return null;
+                    }
+                    return button.offsetParent !== null ? button : null;
+                }, normalizedTimeoutMs);
+            }).then(function (button) {
+                if (!button) return null;
+                return waitForStableElementRect(button, Math.min(760, normalizedTimeoutMs)).then(function () {
+                    return button || null;
+                });
+            });
+        });
+    }
+
+    function clickAgentSidePanelAction(toggleId, actionId, options) {
+        if (!toggleId || !actionId) return Promise.resolve(false);
+
+        return ensureAgentSidePanelActionVisible(toggleId, actionId).then(function (button) {
+            if (!button || typeof button.click !== 'function') {
+                console.warn('[YuiGuideHandoff] clickAgentSidePanelAction: action 不存在', toggleId, actionId);
+                return false;
+            }
+
+            if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
+                // openPluginDashboard 内部 openPage 在 resolve 前已经把 childWin
+                // 同步写入 _activeWindows，再走 waitForWindowOpen 只是冗余 round-trip
+                return openPluginDashboard(options).then(function (childWin) {
+                    return !!childWin;
+                });
+            }
+
+            button.click();
+            return true;
+        });
+    }
+
+    function waitForWindowOpen(windowName, timeoutMs) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) return Promise.resolve(null);
+
+        return waitFor(function () {
+            return getOpenedWindow(fullName);
+        }, timeoutMs || 6000, 120);
+    }
+
+    function closeWindow(windowName) {
+        var fullName = normalizeWindowName(windowName);
+        if (!fullName) return Promise.resolve(false);
+
+        var target = getOpenedWindow(fullName);
+        if (!target) {
+            delete _activeWindows[fullName];
+            if (window._openedWindows) {
+                delete window._openedWindows[fullName];
+            }
+            syncMainUIVisibility();
+            return Promise.resolve(true);
+        }
+
+        try {
+            target.close();
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] closeWindow 失败:', fullName, error);
+            return Promise.resolve(false);
+        }
+
+        delete _activeWindows[fullName];
+        if (window._openedWindows) {
+            delete window._openedWindows[fullName];
+        }
+        syncMainUIVisibility();
+        return Promise.resolve(true);
+    }
+
+    function openPluginDashboard(resumeSceneOrOptions, options) {
+        var firstArgIsString = typeof resumeSceneOrOptions === 'string';
+        var legacyResumeScene = firstArgIsString ? resumeSceneOrOptions : '';
+        var sourceOptions;
+        if (firstArgIsString) {
+            sourceOptions = (options && typeof options === 'object') ? options : {};
+        } else if (resumeSceneOrOptions && typeof resumeSceneOrOptions === 'object') {
+            sourceOptions = resumeSceneOrOptions;
+        } else {
+            sourceOptions = {};
+        }
+        var normalizedOptions = Object.assign({}, sourceOptions, {
+            resumeScene: legacyResumeScene || sourceOptions.resumeScene || sourceOptions.resume_scene || null,
+            forceReload: true
+        });
+        return openPage(
+            buildPluginDashboardUrl(),
+            'plugin_dashboard',
+            buildCenteredWindowFeatures(),
+            normalizedOptions
+        );
+    }
+
+    function dispatchHandoffSentEvent(tokenObj, targetPage, resumeScene) {
+        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+            detail: {
+                token: tokenObj && tokenObj.token ? tokenObj.token : '',
+                target_page: targetPage || '',
+                resume_scene: resumeScene || null
+            }
+        }));
+    }
+
+    function openModelManagerPage(lanlanName) {
+        var name = typeof lanlanName === 'string' && lanlanName.trim()
+            ? lanlanName.trim()
+            : getTutorialModelManagerLanlanName();
+        var url = '/model_manager?lanlan_name=' + encodeURIComponent(name);
+        var prefix = getPrefix();
+        var windowName = getModelManagerWindowName(name, prefix);
+        return openPage(
+            url,
+            windowName,
+            buildFullscreenWindowFeatures(),
+            { keepMainUIVisible: true }
+        );
+    }
+
+    function triggerGoodbye(reason) {
+        if (reason) {
+            console.log('[YuiGuideHandoff] triggerGoodbye, reason:', reason);
+        }
+        window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+    }
+
+    function triggerReturn() {
+        var prefix = getPrefix();
+        window.dispatchEvent(new CustomEvent(prefix + '-return-click'));
+    }
+
+    function cleanupTutorialPopups(event) {
+        var detail = event && event.detail ? event.detail : null;
+        if (detail && detail.page !== 'home') {
+            return;
+        }
+        closeAgentPanel();
+        closeSettingsPanel();
+        clearHandoffToken();
+    }
+
+    async function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features, options) {
+        var isPluginDashboardTarget = (
+            targetPage === 'plugin_dashboard'
+            || normalizeWindowName(windowName) === normalizeWindowName('plugin_dashboard')
+        );
+        if (isPluginDashboardTarget) {
+            // Plugin dashboard uses the dedicated start / interrupt-ack flow managed by the guide director.
+            var pluginDashboardOptions = Object.assign({}, options || {}, {
+                forceReload: true
+            });
+            return openPage(
+                buildPluginDashboardUrl(),
+                windowName,
+                features,
+                pluginDashboardOptions
+            );
+        }
+
+        var tokenObj = await createHandoffToken(targetPage, resumeScene, openUrl);
+        if (!tokenObj) {
+            console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
+            return openPage(
+                openUrl,
+                windowName,
+                features,
+                options
+            );
+        }
+
+        var targetUrl = openUrl;
+
+        return openPage(targetUrl, windowName, features, options).then(function (childWin) {
+            if (childWin) {
+                dispatchHandoffSentEvent(tokenObj, targetPage, resumeScene);
+                return childWin;
+            }
+
+            var currentTokenObj = readHandoffToken();
+            if (
+                currentTokenObj
+                && !currentTokenObj.consumed
+                && getHandoffTokenSignature(currentTokenObj) === getHandoffTokenSignature(tokenObj)
+            ) {
+                clearHandoffToken();
+            }
+
+            return null;
+        });
+    }
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== HANDOFF_CONSUMED_NOTIFY_KEY || !event.newValue) {
+            return;
+        }
+
+        try {
+            var payload = JSON.parse(event.newValue);
+            if (!payload || payload.sessionId === HANDOFF_SESSION_ID) {
+                return;
+            }
+            dispatchHandoffConsumedEvent(payload.detail || {});
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] handoff_consumed storage payload 无法解析:', error);
+        }
+    });
+
+    window.addEventListener('neko:yui-guide:tutorial-end', function (event) {
+        if (!event || !event.detail || event.detail.page !== 'home') {
+            return;
+        }
+        cleanupTutorialPopups(event);
+    });
+
+    var handoff = Object.freeze({
+        // M1
+        openPage: openPage,
+        isWindowOpen: isWindowOpen,
+        resumeOnReturn: resumeOnReturn,
+        normalizeWindowName: normalizeWindowName,
+        // M2
+        openSettingsPanel: openSettingsPanel,
+        closeSettingsPanel: closeSettingsPanel,
+        openAgentPanel: openAgentPanel,
+        closeAgentPanel: closeAgentPanel,
+        ensureSettingsMenuVisible: ensureSettingsMenuVisible,
+        triggerGoodbye: triggerGoodbye,
+        triggerReturn: triggerReturn,
+        cleanupTutorialPopups: cleanupTutorialPopups,
+        ensureAgentToggleChecked: ensureAgentToggleChecked,
+        setAgentMasterEnabled: setAgentMasterEnabled,
+        setAgentFlagEnabled: setAgentFlagEnabled,
+        ensureAgentSidePanelVisible: ensureAgentSidePanelVisible,
+        ensureAgentSidePanelActionVisible: ensureAgentSidePanelActionVisible,
+        clickAgentSidePanelAction: clickAgentSidePanelAction,
+        createHandoffToken: createHandoffToken,
+        readHandoffToken: readHandoffToken,
+        consumeHandoffToken: consumeHandoffToken,
+        clearHandoffToken: clearHandoffToken,
+        getPluginDashboardExpectedOrigin: getPluginDashboardExpectedOrigin,
+        openPageWithHandoff: openPageWithHandoff,
+        openPluginDashboard: openPluginDashboard,
+        openModelManagerPage: openModelManagerPage,
+        waitForWindowOpen: waitForWindowOpen,
+        closeWindow: closeWindow
+    });
+
+    function getHomeInteractionApi() {
+        return handoff;
+    }
+
+    window.YuiGuidePageHandoff = handoff;
+    window.YuiGuideHomeInteractionApi = handoff;
+    window.getYuiGuideHomeInteractionApi = getHomeInteractionApi;
+})();

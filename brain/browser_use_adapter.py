@@ -626,7 +626,10 @@ class BrowserUseAdapter:
             kwargs["frequency_penalty"] = None
             kwargs["seed"] = None
             kwargs["service_tier"] = None
-        return BUChatOpenAI(**kwargs)
+        # noqa: LLM_OUTPUT_BUDGET — browser-use's own ChatOpenAI; the browser-use
+        # agent drives its own multi-step LLM lifecycle, so token budget / timeout
+        # are owned by that library and forcing ours here would break its loop.
+        return BUChatOpenAI(**kwargs)  # noqa: LLM_OUTPUT_BUDGET
 
     async def _cdp_eval_on_page(self, session: Any, js: str) -> None:
         """Evaluate JS on the currently focused page via CDP Runtime.evaluate.

@@ -8,17 +8,23 @@ The proactive endpoint reads only the prepared pool.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from main_logic.topic.common import ZH_TOPIC_STOP_CHARS, clean_text, topic_units
 from main_logic.topic.materials import enrich_topic_materials_online
 from main_logic.topic.signals import TopicSignalStore
+from utils.file_utils import atomic_write_json
+from utils.tokenize import truncate_to_tokens
 
 
 logger = logging.getLogger("N.E.K.O.Main.topic.pipeline")
@@ -31,33 +37,19 @@ TopicTrigger = Callable[
     ...,
     Awaitable[bool],
 ]
+DeliveryAvailable = Callable[..., bool]
 
-_MAX_TURNS_PER_SIDE = 8
-_MAX_TEXT_CHARS = 1000
-_PROCESS_DEBOUNCE_SECONDS = 45.0
-_TRIGGER_AFTER_QUIET_SECONDS = 60.0
+_MAX_TEXT_TOKENS = 1000
+_TOKEN_PRECAP_CHARS_PER_TOKEN = 8
+_TRIGGER_RETRY_DELAY_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
-_USED_TOPIC_RECENT_SECONDS = 24 * 60 * 60
+_USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
 
 
-def _clean_text(value: Any, *, limit: int = _MAX_TEXT_CHARS) -> str:
-    return clean_text(value, limit=limit)
-
-
-def _clean_media_intent(value: Any) -> list[str]:
-    if isinstance(value, str):
-        raw_items = [value]
-    elif isinstance(value, Iterable) and not isinstance(value, Mapping):
-        raw_items = list(value)
-    else:
-        raw_items = []
-    intents: list[str] = []
-    for item in raw_items:
-        text = _clean_text(item, limit=30).lower()
-        if text and text not in intents:
-            intents.append(text)
-    return (intents or ["news"])[:2]
+def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
+    precap = max(token_limit, token_limit * _TOKEN_PRECAP_CHARS_PER_TOKEN)
+    return truncate_to_tokens(clean_text(value, limit=precap), token_limit)
 
 
 def _clean_timestamp(value: Any) -> float:
@@ -72,7 +64,7 @@ def _local_day(value: float) -> date:
 
 
 def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
-    interest = _clean_text(material.get("interest"), limit=90)
+    interest = _clean_text(material.get("interest"), token_limit=90)
     if not interest:
         return None
     try:
@@ -87,7 +79,6 @@ def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
         "hook_id": str(material.get("hook_id") or ""),
         "source": "background_topic_pool",
         "interest": interest,
-        "media_intent": _clean_media_intent(material.get("media_intent")),
         "keywords": _clean_keywords(material.get("keywords")),
         "relevance": max(0, min(100, relevance)),
         "risk": max(0, min(100, risk)),
@@ -109,14 +100,14 @@ def _material_log_preview(material: Mapping[str, Any]) -> str:
     hint = material.get("material_hint")
     hint_summary = ""
     if isinstance(hint, Mapping):
-        hint_summary = _clean_text(hint.get("summary"), limit=100)
+        hint_summary = _clean_text(hint.get("summary"), token_limit=100)
     parts = [
         f"relevance={material.get('relevance')}",
         f"risk={material.get('risk')}",
-        f"interest={_clean_text(material.get('interest'), limit=80)}",
+        f"interest={_clean_text(material.get('interest'), token_limit=80)}",
     ]
     if material.get("online_used"):
-        parts.append(f"online={_clean_text(material.get('online_angle'), limit=100)}")
+        parts.append(f"online={_clean_text(material.get('online_angle'), token_limit=100)}")
     if hint_summary:
         parts.append(f"hint={hint_summary}")
     return " | ".join(parts)
@@ -151,7 +142,7 @@ def _clean_keywords(value: Any) -> list[str]:
         raw_items = []
     out: list[str] = []
     for item in raw_items:
-        text = _clean_text(item, limit=30)
+        text = _clean_text(item, token_limit=30)
         if text and text not in out:
             out.append(text)
         if len(out) >= 6:
@@ -171,30 +162,54 @@ def _material_bigram_units(material: Mapping[str, Any]) -> set[str]:
     return {unit for unit in _material_topic_units(material) if len(unit) >= 2}
 
 
-async def _default_analyzer(
-    *,
-    user_msgs: list[str],
-    ai_msgs: list[str],
-    lang: str,
-    global_signals: str = "",
-):
+def _topic_fingerprint(value: Any) -> str:
+    text = _clean_text(value, token_limit=120).lower()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _topic_fingerprints(values: Iterable[Any]) -> set[str]:
+    return {fingerprint for value in values if (fingerprint := _topic_fingerprint(value))}
+
+
+def _stored_topic_fingerprint(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) == 16 and all(char in "0123456789abcdef" for char in text):
+        return text
+    return _topic_fingerprint(text)
+
+
+def _stored_topic_fingerprints(values: Iterable[Any]) -> set[str]:
+    return {
+        fingerprint
+        for value in values
+        if (fingerprint := _stored_topic_fingerprint(value))
+    }
+
+
+async def _default_analyzer(*, lang: str, global_signals: str = ""):
     from main_logic.activity.llm_enrichment import call_topic_candidates
 
-    now = time.time()
-    return await call_topic_candidates(
-        user_msgs=[(now + idx * 0.001, text) for idx, text in enumerate(user_msgs)],
-        ai_msgs=[(now + idx * 0.001, text) for idx, text in enumerate(ai_msgs)],
-        lang=lang,
-        global_signals=global_signals,
-    )
+    return await call_topic_candidates(lang=lang, global_signals=global_signals)
 
 
-def _privacy_mode_active() -> bool:
+def _default_signal_store_path():
     try:
-        from utils.preferences import is_privacy_mode_enabled
-        return is_privacy_mode_enabled()
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        if not config_manager.ensure_local_state_directory():
+            return None
+        return config_manager.local_state_dir / "topic_signals.json"
     except Exception:
-        return True
+        return None
+
+
+def _used_topics_path_for_signal_store(path: Any | None) -> Path | None:
+    if not path:
+        return None
+    signal_path = Path(path)
+    return signal_path.with_name(f"{signal_path.stem}.used_topics.json")
 
 
 class TopicHookPool:
@@ -208,41 +223,165 @@ class TopicHookPool:
         auto_schedule: bool = True,
         enable_online_enrichment: bool = True,
         enable_deep_search: bool = True,
-        debounce_seconds: float = _PROCESS_DEBOUNCE_SECONDS,
-        trigger_delay_seconds: float = _TRIGGER_AFTER_QUIET_SECONDS,
+        debounce_seconds: float | None = None,
+        candidate_quiet_seconds: float = 0.0,
+        trigger_delay_seconds: float = 0.0,
+        trigger_retry_delay_seconds: float | None = None,
         min_trigger_gap_seconds: float = _MIN_TOPIC_TRIGGER_GAP_SECONDS,
-        min_user_turns_for_topic: int = 4,
+        min_user_turns_for_topic: int = 8,
         daily_topic_limit: int = _MAX_DAILY_TOPIC_TRIGGERS,
+        signal_store_path: Any | None = None,
+        delivery_available: DeliveryAvailable | None = None,
     ) -> None:
         self._analyzer = analyzer or _default_analyzer
         self._topic_trigger = topic_trigger
+        self._delivery_available = delivery_available
         self._auto_schedule = auto_schedule
         self._enable_online_enrichment = enable_online_enrichment
         self._enable_deep_search = enable_deep_search
-        self._debounce_seconds = max(0.0, float(debounce_seconds))
-        self._trigger_delay_seconds = max(0.0, float(trigger_delay_seconds))
+        # Legacy knobs are accepted so old callers/tests don't break. Candidate
+        # and delivery timing are now owned by the activity heartbeat and the
+        # real delivery gate, not by topic-private quiet sleeps.
+        self._candidate_quiet_seconds = 0.0
+        self._trigger_delay_seconds = 0.0
+        _ = debounce_seconds, candidate_quiet_seconds, trigger_delay_seconds
+        self._trigger_retry_delay_seconds = max(
+            0.0,
+            float(
+                trigger_retry_delay_seconds
+                if trigger_retry_delay_seconds is not None
+                else _TRIGGER_RETRY_DELAY_SECONDS
+            ),
+        )
         self._min_trigger_gap_seconds = max(0.0, float(min_trigger_gap_seconds))
         self._daily_topic_limit = max(0, int(daily_topic_limit))
         self._signal_store = TopicSignalStore(
             min_user_turns_for_topic=min_user_turns_for_topic,
+            persistence_path=signal_store_path or None,
         )
-        self._user_turns: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=_MAX_TURNS_PER_SIDE))
-        self._ai_turns: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=_MAX_TURNS_PER_SIDE))
+        self._used_topics_path = _used_topics_path_for_signal_store(signal_store_path)
         self._langs: dict[str, str] = {}
         self._materials: dict[str, list[dict[str, Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._trigger_tasks: dict[str, asyncio.Task] = {}
         self._used_topics: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._dirty: set[str] = set()
+        self._used_topics_lock = threading.RLock()
+        self._used_topics_write_lock = threading.Lock()
+        self._load_used_topics()
+        # Restored persisted signals are dirty once after startup: they should
+        # be eligible for the next heartbeat, then stop unless a new turn
+        # arrives. Do not iterate all signal-store names every tick.
+        self._dirty: set[str] = set(self._signal_store.names())
         self._seq: dict[str, int] = defaultdict(int)
+        self._purge_generation: dict[str, int] = defaultdict(int)
 
     def _purge_character_state(self, name: str) -> None:
-        """Drop all accumulated topic state for a character (privacy wipe)."""
-        self._user_turns.pop(name, None)
-        self._ai_turns.pop(name, None)
+        """Drop all topic state for a character."""
+        self._purge_generation[name] += 1
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
+        with self._used_topics_lock:
+            self._used_topics.pop(name, None)
+        self._persist_used_topics()
+        self._cancel_trigger(name)
+
+    def _purge_accumulated_signals(self, name: str, *, flush: bool = True) -> bool:
+        """Drop accumulated candidate evidence without touching pending delivery material."""
+        had_dirty = name in self._dirty
+        changed = self._signal_store.clear(name)
+        self._dirty.discard(name)
+        if changed or had_dirty:
+            self._purge_generation[name] += 1
+        if changed and flush:
+            self._signal_store.flush()
+        return changed
+
+    async def _purge_accumulated_signals_async(self, name: str) -> None:
+        if self._purge_accumulated_signals(name, flush=False):
+            await asyncio.to_thread(self._signal_store.flush)
+
+    def purge_accumulated_signals(self, lanlan_name: str) -> None:
+        """Public hook for explicit candidate-evidence cleanup."""
+        self._purge_accumulated_signals(str(lanlan_name or "default"))
+
+    async def purge_accumulated_signals_async(self, lanlan_name: str) -> None:
+        """Async hook for explicit candidate-evidence cleanup."""
+        await self._purge_accumulated_signals_async(str(lanlan_name or "default"))
+
+    def purge_all_accumulated_signals(self) -> None:
+        """Drop accumulated candidate evidence for every known character."""
+        names = set(self._signal_store.names()) | set(self._dirty)
+        for name in names:
+            self._purge_accumulated_signals(name)
+
+    async def purge_all_accumulated_signals_async(self) -> None:
+        """Async hook for explicit cleanup across every known character."""
+        names = set(self._signal_store.names()) | set(self._dirty)
+        should_flush = False
+        for name in names:
+            should_flush = self._purge_accumulated_signals(name, flush=False) or should_flush
+        if should_flush:
+            await asyncio.to_thread(self._signal_store.flush)
+
+    def _consume_accumulated_signals(self, name: str, *, flush: bool = True) -> None:
+        """Consume analyzed evidence for this process, but keep it durable.
+
+        A prepared hook is still only in memory until delivery. Keeping the
+        signal window on disk lets a short restart re-arm analysis
+        instead of losing the opportunity between candidate generation and
+        delivery. Explicit purge remains the destructive path.
+        """
+        if flush:
+            self._signal_store.flush()
+        self._dirty.discard(name)
+
+    async def _consume_accumulated_signals_async(self, name: str) -> None:
+        self._consume_accumulated_signals(name, flush=False)
+        await asyncio.to_thread(self._signal_store.flush)
+
+    def _discard_delivered_signals(
+        self,
+        name: str,
+        material: Mapping[str, Any] | None = None,
+        *,
+        flush: bool = True,
+    ) -> None:
+        """Drop durable evidence once the pending hook is done."""
+        cutoff = None
+        if material is not None:
+            cutoff = material.get("_signal_cutoff_at")
+        if self._signal_store.clear_until(name, timestamp=cutoff) and flush:
+            self._signal_store.flush()
+
+    async def _discard_delivered_signals_async(
+        self,
+        name: str,
+        material: Mapping[str, Any] | None = None,
+    ) -> None:
+        cutoff = None
+        if material is not None:
+            cutoff = material.get("_signal_cutoff_at")
+        if self._signal_store.clear_until(name, timestamp=cutoff):
+            await asyncio.to_thread(self._signal_store.flush)
+
+    def _discard_analyzed_signals(
+        self,
+        name: str,
+        cutoff: float | None,
+        *,
+        flush: bool = True,
+    ) -> None:
+        """Drop durable evidence after analysis proves no hook is pending."""
+        if self._signal_store.clear_until(name, timestamp=cutoff) and flush:
+            self._signal_store.flush()
+        self._dirty.discard(name)
+
+    async def _discard_analyzed_signals_async(self, name: str, cutoff: float | None) -> None:
+        changed = self._signal_store.clear_until(name, timestamp=cutoff)
+        self._dirty.discard(name)
+        if changed:
+            await asyncio.to_thread(self._signal_store.flush)
 
     def note_user_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
         cleaned = _clean_text(text)
@@ -250,11 +389,9 @@ class TopicHookPool:
             return
         name = str(lanlan_name or "default")
         self._seq[name] += 1
-        self._user_turns[name].append(cleaned)
-        self._signal_store.note_turn(name, actor="user", text=cleaned, lang=lang)
+        self._signal_store.note_turn(name, actor="user", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
-        self._cancel_trigger(name)
         self._schedule(name)
 
     def note_ai_message(self, lanlan_name: str, text: Any, *, lang: str = "zh") -> None:
@@ -263,12 +400,22 @@ class TopicHookPool:
             return
         name = str(lanlan_name or "default")
         self._seq[name] += 1
-        self._ai_turns[name].append(cleaned)
-        self._signal_store.note_turn(name, actor="ai", text=cleaned, lang=lang)
+        self._signal_store.note_turn(name, actor="ai", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
         self._dirty.add(name)
-        self._cancel_trigger(name)
         self._schedule(name)
+
+    def note_turn_timestamp(
+        self,
+        lanlan_name: str,
+        *,
+        lang: str = "zh",
+        now: float | None = None,
+    ) -> None:
+        """Refresh last-activity metadata without storing turn text."""
+        name = str(lanlan_name or "default")
+        del now
+        self._langs[name] = lang or self._langs.get(name, "zh")
 
     def get_ready_materials(self, lanlan_name: str, *, max_items: int = 2) -> list[dict[str, Any]]:
         name = str(lanlan_name or "default")
@@ -288,22 +435,12 @@ class TopicHookPool:
         lanlan_name: str,
         *,
         lang: str | None = None,
-        enrich_online: bool | None = None,
     ) -> None:
         name = str(lanlan_name or "default")
-        if _privacy_mode_active():
-            self._purge_character_state(name)
-            return
         seen_seq = self._seq.get(name, 0)
-        user_msgs = list(self._user_turns.get(name, ()))
-        ai_msgs = list(self._ai_turns.get(name, ()))
-        if not user_msgs and not ai_msgs:
-            self._dirty.discard(name)
-            return
-        if self._daily_quota_reached(name):
-            logger.info("[%s] topic collection paused: daily topic quota reached", name)
-            self._materials.pop(name, None)
-            self._dirty.discard(name)
+        seen_purge_generation = self._purge_generation.get(name, 0)
+        if any(item.get("status") == "pending" for item in self._materials.get(name, [])):
+            logger.info("[%s] topic collection deferred: pending material is in delivery phase", name)
             return
         if not self._signal_store.is_ready(name):
             logger.info(
@@ -311,21 +448,27 @@ class TopicHookPool:
                 name,
                 self._signal_store.readiness_percent(name),
             )
-            self._materials.pop(name, None)
             self._dirty.discard(name)
             return
-        topic_lang = lang or self._langs.get(name, "zh")
+        stored_lang = self._langs.get(name)
+        topic_lang = (
+            stored_lang
+            if stored_lang and stored_lang != "zh"
+            else (lang or stored_lang or "zh")
+        )
+        signal_cutoff_at = self._signal_store.last_turn_at(name)
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         raw_materials = await self._analyzer(
-            user_msgs=user_msgs,
-            ai_msgs=ai_msgs,
             lang=topic_lang,
             global_signals=global_signals,
         )
         if raw_materials is None:
             logger.info("[%s] topic analyzer returned no result; keeping dirty for retry", name)
             return
-        if self._seq.get(name, 0) != seen_seq:
+        if (
+            self._seq.get(name, 0) != seen_seq
+            or self._purge_generation.get(name, 0) != seen_purge_generation
+        ):
             return
         cleaned = [
             material
@@ -337,22 +480,9 @@ class TopicHookPool:
             key=lambda item: int(item.get("relevance", 0)),
             reverse=True,
         )[:2]
-        if cleaned and (self._enable_online_enrichment if enrich_online is None else enrich_online):
-            cleaned = await enrich_topic_materials_online(cleaned, lang=topic_lang, max_materials=1)
-        if self._seq.get(name, 0) != seen_seq:
-            return
-        if _privacy_mode_active():
-            # Privacy may have toggled on during the analyzer / enrichment
-            # awaits above; the start-of-call wipe already passed. Re-check
-            # before storing, else material collected across a privacy interval
-            # would survive and could deliver if privacy toggles off again
-            # before the quiet-window trigger.
-            self._purge_character_state(name)
-            logger.info("[%s] topic material discarded: privacy turned on during analysis", name)
-            return
         cleaned = self._filter_available_materials(name, cleaned)
-        if self._daily_quota_reached(name):
-            cleaned = []
+        for material in cleaned:
+            material["_signal_cutoff_at"] = signal_cutoff_at
         self._materials[name] = cleaned
         if cleaned:
             for idx, material in enumerate(cleaned, start=1):
@@ -361,44 +491,46 @@ class TopicHookPool:
                     name,
                     idx,
                     _material_log_preview(material),
-                )
-            self._schedule_trigger(name, cleaned[0], topic_lang, expected_seq=self._seq.get(name, 0))
+            )
+            self._schedule_trigger(name, cleaned[0], topic_lang)
+            await self._consume_accumulated_signals_async(name)
         else:
             logger.info("[%s] topic material ready: none", name)
-        self._dirty.discard(name)
+            await self._discard_analyzed_signals_async(name, signal_cutoff_at)
 
     def _schedule(self, name: str) -> None:
-        if not self._auto_schedule:
-            return
-        task = self._tasks.get(name)
-        if task is not None and not task.done():
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._tasks[name] = loop.create_task(self._run_later(name), name=f"topic_pool_{name}")
+        # Candidate analysis is driven by the activity heartbeat via
+        # process_ready_topics(). Keep this method as a compatibility no-op so
+        # note_turn stays tiny and no topic-private sleep loop is created.
+        return
 
     async def _run_later(self, name: str) -> None:
-        try:
-            if self._debounce_seconds:
-                await asyncio.sleep(self._debounce_seconds)
-            if name in self._dirty:
-                await self.process_now(name)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("[%s] topic background processing failed: %s", name, exc)
-        finally:
-            task = self._tasks.get(name)
+        # Deprecated: the private debounce loop was replaced by the activity
+        # heartbeat. Kept for compatibility with older tests/imports.
+        if name in self._dirty:
+            await self.process_now(name)
+
+    async def process_ready_topics(
+        self,
+        *,
+        lanlan_name: str | None = None,
+        lang: str | None = None,
+        now: float | None = None,
+    ) -> None:
+        if lanlan_name is not None:
+            requested_name = str(lanlan_name or "default")
+            names = {requested_name} if requested_name in self._dirty else set()
+        else:
+            names = set(self._dirty)
+        for name in sorted(names):
+            last_turn_at = self._signal_store.last_turn_at(name)
+            if last_turn_at is None:
+                self._dirty.discard(name)
+                continue
             try:
-                current_task = asyncio.current_task()
-            except RuntimeError:
-                current_task = None
-            if task is current_task:
-                self._tasks.pop(name, None)
-            if name in self._dirty:
-                self._schedule(name)
+                await self.process_now(name, lang=lang)
+            except Exception as exc:
+                logger.warning("[%s] topic background processing failed: %s", name, exc)
 
     def _cancel_trigger(self, name: str) -> None:
         task = self._trigger_tasks.pop(name, None)
@@ -414,8 +546,6 @@ class TopicHookPool:
         name: str,
         material: Mapping[str, Any],
         lang: str,
-        *,
-        expected_seq: int,
     ) -> None:
         if self._topic_trigger is None:
             return
@@ -425,11 +555,55 @@ class TopicHookPool:
         except RuntimeError:
             return
         self._trigger_tasks[name] = loop.create_task(
-            self._run_trigger_after_quiet_window(
+            self._run_trigger_when_available(
                 name,
                 deepcopy(dict(material)),
                 lang,
-                expected_seq=expected_seq,
+            ),
+            name=f"topic_trigger_{name}",
+        )
+
+    async def _run_trigger_after_retry_delay(
+        self,
+        name: str,
+        material: dict[str, Any],
+        lang: str,
+    ) -> None:
+        delay = self._trigger_retry_delay_seconds
+        if delay:
+            await asyncio.sleep(delay)
+        await self._run_trigger_when_available(name, material, lang)
+
+    async def _run_trigger_after_delay(
+        self,
+        name: str,
+        material: dict[str, Any],
+        lang: str,
+        delay: float,
+    ) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await self._run_trigger_when_available(name, material, lang)
+
+    def _reschedule_trigger_after_delay(
+        self,
+        name: str,
+        material: Mapping[str, Any],
+        lang: str,
+        delay: float,
+    ) -> None:
+        if material.get("status") != "pending":
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._trigger_tasks[name] = loop.create_task(
+            self._run_trigger_after_delay(
+                name,
+                deepcopy(dict(material)),
+                lang,
+                max(0.0, float(delay)),
             ),
             name=f"topic_trigger_{name}",
         )
@@ -439,47 +613,30 @@ class TopicHookPool:
         name: str,
         material: Mapping[str, Any],
         lang: str,
-        *,
-        expected_seq: int,
     ) -> None:
-        if self._seq.get(name, 0) != expected_seq or material.get("status") != "pending":
+        if material.get("status") != "pending":
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
         self._trigger_tasks[name] = loop.create_task(
-            self._run_trigger_after_quiet_window(
+            self._run_trigger_after_retry_delay(
                 name,
                 deepcopy(dict(material)),
                 lang,
-                expected_seq=expected_seq,
             ),
             name=f"topic_trigger_{name}",
         )
 
-    async def _run_trigger_after_quiet_window(
+    async def _run_trigger_when_available(
         self,
         name: str,
         material: dict[str, Any],
         lang: str,
-        *,
-        expected_seq: int,
     ) -> None:
         current_material: dict[str, Any] | None = None
         try:
-            wait_seconds = max(
-                self._trigger_delay_seconds,
-                self._seconds_until_next_topic_trigger(name),
-            )
-            if wait_seconds:
-                await asyncio.sleep(wait_seconds)
-            if _privacy_mode_active():
-                self._purge_character_state(name)
-                logger.info("[%s] topic material trigger cancelled: privacy mode active", name)
-                return
-            if self._seq.get(name, 0) != expected_seq:
-                return
             current = self._materials.get(name) or []
             if not current:
                 return
@@ -489,20 +646,47 @@ class TopicHookPool:
                 return
             if current_material.get("status") != "pending":
                 return
-            if self._daily_quota_reached(name) or self._topic_was_used_today(name, current_material):
+            if self._daily_quota_reached(name):
+                logger.info("[%s] topic material trigger waiting: daily quota reached", name)
+                self._reschedule_trigger_retry(name, current_material, lang)
+                return
+            if self._topic_was_recently_used(name, current_material):
                 current_material["status"] = "skipped"
                 self._materials[name] = []
-                logger.info("[%s] topic material trigger skipped: already used or daily quota reached", name)
+                await self._discard_delivered_signals_async(name, current_material)
+                logger.info("[%s] topic material trigger skipped: already used", name)
                 return
-            # "Search first, then chat": prepare a deeper, big-model-derived
-            # online lead before attempting to open. This runs in the trigger
-            # task (off the user hot path) and caches onto current_material, so
-            # a reschedule reuses it instead of re-searching. The actual open is
-            # re-gated by the delivery bridge AFTER this prepare completes.
+            trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
+            if trigger_gap_seconds > 0:
+                self._reschedule_trigger_after_delay(
+                    name,
+                    current_material,
+                    lang,
+                    trigger_gap_seconds,
+                )
+                return
+            # "Search first, then chat": once the delivery bridge looks open,
+            # prepare a deeper online lead off the user hot path. A later gate
+            # close just keeps the prepared material pending for the next retry.
+            if not self._delivery_available_now(name):
+                logger.info("[%s] topic material trigger waiting: delivery gate closed", name)
+                self._reschedule_trigger_retry(name, current_material, lang)
+                return
             await self._deepen_material(name, current_material, lang)
+            if not self._delivery_available_now(name):
+                logger.info("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
+                self._reschedule_trigger_retry(name, current_material, lang)
+                return
+            delivery_material = deepcopy(current_material)
+            delivery_material["_topic_release_available"] = (
+                lambda _name=name: self._delivery_available_now(
+                    _name,
+                    include_manager_release=False,
+                )
+            )
             triggered = await self._topic_trigger(
                 lanlan_name=name,
-                material=deepcopy(current_material),
+                material=delivery_material,
                 lang=lang,
             )
             if not triggered:
@@ -511,12 +695,14 @@ class TopicHookPool:
                     name,
                     current_material,
                     lang,
-                    expected_seq=expected_seq,
                 )
                 return
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
-            self._mark_topic_used(name, current_material)
+            self._mark_topic_used(name, current_material, persist=False)
+            await asyncio.to_thread(self._persist_used_topics)
+            self._materials[name] = []
+            await self._discard_delivered_signals_async(name, current_material)
             logger.info(
                 "[%s] topic material triggered once: %s",
                 name,
@@ -531,7 +717,6 @@ class TopicHookPool:
                     name,
                     current_material,
                     lang,
-                    expected_seq=expected_seq,
                 )
         finally:
             task = self._trigger_tasks.get(name)
@@ -548,25 +733,25 @@ class TopicHookPool:
         cheap keyword floor hint intact, and ``deep_search_done`` is set up front
         so a flaky derivation is not retried on every reschedule.
         """
-        if not self._enable_deep_search:
+        if not self._enable_online_enrichment:
             return
         if material.get("deep_search_done"):
             return
         material["deep_search_done"] = True
-        try:
-            from main_logic.activity.llm_enrichment import derive_deep_search_query
-            query = await derive_deep_search_query(
-                interest=str(material.get("interest") or ""),
-                keywords=list(material.get("keywords") or []),
-                floor_angle=str(material.get("online_angle") or ""),
-                lang=lang,
-            )
-        except Exception as exc:
-            logger.debug("[%s] deep search query derivation failed: %s", name, exc)
-            return
-        if not query:
-            return
-        material["deep_query"] = query
+        if self._enable_deep_search:
+            try:
+                from main_logic.activity.llm_enrichment import derive_deep_search_query
+                query = await derive_deep_search_query(
+                    interest=str(material.get("interest") or ""),
+                    keywords=list(material.get("keywords") or []),
+                    floor_angle=str(material.get("online_angle") or ""),
+                    lang=lang,
+                )
+            except Exception as exc:
+                logger.debug("[%s] deep search query derivation failed: %s", name, exc)
+                query = ""
+            if query:
+                material["deep_query"] = query
         # Re-run online enrichment with the derived query. Clear the floor hint
         # so the deeper result can replace it; restore the floor if the deep
         # fetch turns up nothing.
@@ -587,31 +772,62 @@ class TopicHookPool:
         elif floor_hint is not None:
             material["material_hint"] = floor_hint
 
+    def _delivery_available_now(
+        self,
+        name: str,
+        *,
+        include_manager_release: bool = True,
+    ) -> bool:
+        if self._delivery_available is None:
+            return True
+        try:
+            return bool(
+                self._delivery_available(
+                    name,
+                    include_manager_release=include_manager_release,
+                )
+            )
+        except TypeError:
+            try:
+                return bool(self._delivery_available(name))
+            except Exception as exc:
+                logger.debug("[%s] topic delivery availability check failed: %s", name, exc)
+                return False
+        except Exception as exc:
+            logger.debug("[%s] topic delivery availability check failed: %s", name, exc)
+            return False
+
     def _prune_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
         current_day = _local_day(current_time)
-        records = []
-        today_records = []
-        for record in self._used_topics.get(name, []):
-            used_at = float(record.get("used_at") or 0.0)
-            used_day = _local_day(used_at)
-            if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
-                records.append(record)
-            if used_day == current_day:
-                today_records.append(record)
-        if records:
-            self._used_topics[name] = records
-        else:
-            self._used_topics.pop(name, None)
+        with self._used_topics_lock:
+            previous_len = len(self._used_topics.get(name, []))
+            records = []
+            today_records = []
+            for record in self._used_topics.get(name, []):
+                used_at = float(record.get("used_at") or 0.0)
+                used_day = _local_day(used_at)
+                if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
+                    records.append(record)
+                if used_day == current_day:
+                    today_records.append(record)
+            if records:
+                self._used_topics[name] = records
+            else:
+                self._used_topics.pop(name, None)
+            changed = len(records) != previous_len
+        if changed:
+            self._request_used_topics_persist()
         return today_records
 
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
-        return [
-            record
-            for record in self._used_topics.get(name, [])
-            if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
-        ]
+        with self._used_topics_lock:
+            return [
+                record
+                for record in self._used_topics.get(name, [])
+                if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
+            ]
 
     def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
@@ -629,19 +845,31 @@ class TopicHookPool:
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
 
-    def _topic_was_used_today(self, name: str, material: Mapping[str, Any]) -> bool:
+    def _topic_was_recently_used(self, name: str, material: Mapping[str, Any]) -> bool:
         hook_id = str(material.get("hook_id") or "").strip()
-        interest = _clean_text(material.get("interest"), limit=90)
+        interest = _clean_text(material.get("interest"), token_limit=90)
         keywords = _material_keywords(material)
         bigram_units = _material_bigram_units(material)
-        for record in self._prune_used_topics(name):
+        hook_id_hash = _topic_fingerprint(hook_id)
+        interest_hash = _topic_fingerprint(interest)
+        keyword_hashes = _topic_fingerprints(keywords)
+        bigram_hashes = _topic_fingerprints(bigram_units)
+        self._prune_used_topics(name)
+        for record in self._recent_used_topics(name):
             if hook_id and record.get("hook_id") == hook_id:
                 return True
+            if hook_id_hash and record.get("hook_id_hash") == hook_id_hash:
+                return True
             if interest and record.get("interest") == interest:
+                return True
+            if interest_hash and record.get("interest_hash") == interest_hash:
                 return True
             # Primary: a shared LLM keyword means the same topic.
             record_keywords = set(record.get("keywords") or ())
             if keywords and record_keywords and (keywords & record_keywords):
+                return True
+            record_keyword_hashes = set(record.get("keyword_hashes") or ())
+            if keyword_hashes and record_keyword_hashes and (keyword_hashes & record_keyword_hashes):
                 return True
             # Parallel ngram veto: runs even when keywords miss. The ngram view
             # is noisy, so it only vetoes on a strict AND — sim >= 0.6 AND >= 2
@@ -655,6 +883,15 @@ class TopicHookPool:
                         name, shared, interest,
                     )
                     return True
+            record_bigram_hashes = set(record.get("bigram_hashes") or ())
+            if bigram_hashes and record_bigram_hashes:
+                shared = len(bigram_hashes & record_bigram_hashes)
+                if shared >= 2 and _topic_similarity(bigram_hashes, record_bigram_hashes) >= 0.6:
+                    logger.info(
+                        "[%s] topic dedup veto by persisted ngram fingerprint: shared=%d interest=%s",
+                        name, shared, interest,
+                    )
+                    return True
         return False
 
     def _filter_available_materials(
@@ -664,25 +901,145 @@ class TopicHookPool:
     ) -> list[dict[str, Any]]:
         available: list[dict[str, Any]] = []
         for material in materials:
-            if self._daily_quota_reached(name):
-                break
-            if self._topic_was_used_today(name, material):
-                logger.info("[%s] topic material suppressed as already used today: %s", name, _material_log_preview(material))
+            if self._topic_was_recently_used(name, material):
+                logger.info("[%s] topic material suppressed as already used recently: %s", name, _material_log_preview(material))
                 continue
             available.append(dict(material))
         return available
 
-    def _mark_topic_used(self, name: str, material: Mapping[str, Any]) -> None:
+    def _mark_topic_used(
+        self,
+        name: str,
+        material: Mapping[str, Any],
+        *,
+        persist: bool = True,
+    ) -> None:
         self._prune_used_topics(name)
-        self._used_topics[name].append(
-            {
-                "used_at": float(material.get("used_at") or time.time()),
-                "hook_id": str(material.get("hook_id") or "").strip(),
-                "interest": _clean_text(material.get("interest"), limit=90),
-                "keywords": sorted(_material_keywords(material)),
-                "bigram_units": sorted(_material_bigram_units(material)),
+        with self._used_topics_lock:
+            self._used_topics[name].append(
+                {
+                    "used_at": float(material.get("used_at") or time.time()),
+                    "hook_id": str(material.get("hook_id") or "").strip(),
+                    "hook_id_hash": _topic_fingerprint(material.get("hook_id")),
+                    "interest": _clean_text(material.get("interest"), token_limit=90),
+                    "interest_hash": _topic_fingerprint(material.get("interest")),
+                    "keywords": sorted(_material_keywords(material)),
+                    "keyword_hashes": sorted(_topic_fingerprints(_material_keywords(material))),
+                    "bigram_units": sorted(_material_bigram_units(material)),
+                    "bigram_hashes": sorted(_topic_fingerprints(_material_bigram_units(material))),
+                }
+            )
+        if persist:
+            self._request_used_topics_persist()
+
+    def _request_used_topics_persist(self) -> None:
+        if self._used_topics_path is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._persist_used_topics()
+            return
+        loop.create_task(asyncio.to_thread(self._persist_used_topics))
+
+    def _load_used_topics(self) -> None:
+        path = self._used_topics_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        characters = payload.get("characters") if isinstance(payload, dict) else None
+        if not isinstance(characters, dict):
+            return
+        for name, entries in characters.items():
+            if not isinstance(entries, list):
+                continue
+            safe_name = str(name or "default")
+            loaded: list[dict[str, Any]] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    used_at = float(entry.get("used_at"))
+                except (TypeError, ValueError):
+                    continue
+                loaded.append(
+                    {
+                        "used_at": used_at,
+                        "hook_id_hash": _stored_topic_fingerprint(
+                            entry.get("hook_id_hash") or entry.get("hook_id")
+                        ),
+                        "interest_hash": _stored_topic_fingerprint(
+                            entry.get("interest_hash") or entry.get("interest")
+                        ),
+                        "keyword_hashes": sorted(
+                            _stored_topic_fingerprints(
+                                entry.get("keyword_hashes") or entry.get("keywords") or []
+                            )
+                        ),
+                        "bigram_hashes": sorted(
+                            _stored_topic_fingerprints(
+                                entry.get("bigram_hashes") or entry.get("bigram_units") or []
+                            )
+                        ),
+                    }
+                )
+            if loaded:
+                with self._used_topics_lock:
+                    self._used_topics[safe_name].extend(loaded)
+        with self._used_topics_lock:
+            names = list(self._used_topics)
+        for name in names:
+            self._prune_used_topics(name)
+
+    def _persist_used_topics(self) -> None:
+        path = self._used_topics_path
+        if path is None:
+            return
+        with self._used_topics_write_lock:
+            with self._used_topics_lock:
+                used_topics = {
+                    name: [dict(record) for record in records]
+                    for name, records in self._used_topics.items()
+                    if records
+                }
+            payload = {
+                "version": 1,
+                "characters": {
+                    name: [
+                        {
+                            "used_at": float(record.get("used_at") or 0.0),
+                            "hook_id_hash": _stored_topic_fingerprint(
+                                record.get("hook_id_hash") or record.get("hook_id")
+                            ),
+                            "interest_hash": _stored_topic_fingerprint(
+                                record.get("interest_hash") or record.get("interest")
+                            ),
+                            "keyword_hashes": sorted(
+                                _stored_topic_fingerprints(
+                                    record.get("keyword_hashes") or record.get("keywords") or []
+                                )
+                            ),
+                            "bigram_hashes": sorted(
+                                _stored_topic_fingerprints(
+                                    record.get("bigram_hashes") or record.get("bigram_units") or []
+                                )
+                            ),
+                        }
+                        for record in records
+                        if float(record.get("used_at") or 0.0) > 0
+                    ]
+                    for name, records in used_topics.items()
+                    if records
+                },
             }
-        )
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+            except Exception:
+                logger.debug("topic used-history persistence failed", exc_info=True)
 
 
 def _default_topic_trigger():
@@ -691,7 +1048,17 @@ def _default_topic_trigger():
     return trigger_topic_hook_once
 
 
-_GLOBAL_TOPIC_POOL = TopicHookPool(topic_trigger=_default_topic_trigger())
+def _default_delivery_available():
+    from main_logic.topic.delivery import topic_hook_delivery_available
+
+    return topic_hook_delivery_available
+
+
+_GLOBAL_TOPIC_POOL = TopicHookPool(
+    topic_trigger=_default_topic_trigger(),
+    signal_store_path=_default_signal_store_path(),
+    delivery_available=_default_delivery_available(),
+)
 
 
 def get_topic_hook_pool() -> TopicHookPool:

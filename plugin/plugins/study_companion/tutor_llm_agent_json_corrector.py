@@ -8,8 +8,8 @@ from .tutor_llm_agent_common import (
     SdkError,
     robust_json_loads,
     _JSON_CORRECTION_MAX_ATTEMPTS,
-    _JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS,
-    _JSON_CORRECTION_ERROR_MAX_CHARS,
+    _JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS,
+    _JSON_CORRECTION_ERROR_MAX_TOKENS,
     _strip_code_fences,
     _bounded_prompt_text,
 )
@@ -92,7 +92,7 @@ class _JSONCorrector:
             {
                 "role": "assistant",
                 "content": _bounded_prompt_text(
-                    bad_output, max_chars=_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS
+                    bad_output, max_tokens=_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS
                 ),
             }
         )
@@ -105,7 +105,7 @@ class _JSONCorrector:
                         max_attempts=max_attempts,
                         operation=operation,
                         parse_error=_bounded_prompt_text(
-                            parse_error, max_chars=_JSON_CORRECTION_ERROR_MAX_CHARS
+                            parse_error, max_tokens=_JSON_CORRECTION_ERROR_MAX_TOKENS
                         ),
                     )
                 ),

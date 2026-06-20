@@ -298,28 +298,25 @@ async def call_open_threads(
 
 async def call_topic_candidates(
     *,
-    user_msgs: list[tuple[float, str]],
-    ai_msgs: list[tuple[float, str]],
     lang: str,
     global_signals: str = "",
     timeout: float = 8.0,
 ) -> list[dict[str, Any]] | None:
     """Extract low-frequency deeper topic hooks for the background pool.
 
-    This is intentionally a background-only helper. It summarizes raw recent
-    turns into short topic materials, so proactive chat never needs to pull raw
-    conversation text synchronously.
+    Background-only helper. Its only conversation input is the slow
+    cross-window evidence the signal store keeps (``global_signals``); it
+    distils that into short topic materials, so proactive chat never needs to
+    pull raw conversation text synchronously.
     """
     lang_key = _normalize_lang(lang)
     template = _select_lang_template(TOPIC_CANDIDATE_PROMPTS, lang_key)
 
-    if not user_msgs and not ai_msgs:
+    evidence = (global_signals or "").strip()
+    if not evidence:
         return []
 
-    prompt = template.format(
-        conversation=_format_conversation(user_msgs, ai_msgs),
-        global_signals=(global_signals or "(no global signals yet)").strip(),
-    )
+    prompt = template.format(global_signals=evidence)
 
     raw = await _invoke_emotion_tier(prompt, timeout=timeout, label='topic_candidates')
     if raw is None:
@@ -391,7 +388,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     without a live model.
     """
     from utils.config_manager import get_config_manager
-    from utils.llm_client import HumanMessage, create_chat_llm
+    from utils.llm_client import HumanMessage, create_chat_llm_async
     from utils.token_tracker import set_call_type
 
     try:
@@ -409,10 +406,11 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
 
     set_call_type('activity_enrichment')
     try:
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model, base_url, api_key,
             temperature=0.4,
             max_completion_tokens=512,
+            timeout=timeout,  # same budget the asyncio.wait_for below enforces
         )
     except Exception as e:
         logger.debug('emotion-tier llm init failed: %s', e)
@@ -421,7 +419,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     try:
         async with llm:
             resp = await asyncio.wait_for(
-                llm.ainvoke([HumanMessage(content=prompt)]),
+                llm.ainvoke([HumanMessage(content=prompt)]),  # noqa: LLM_INPUT_BUDGET  # enrichment prompt built from a bounded activity-window summary; not user free-text.
                 timeout=timeout,
             )
         return getattr(resp, 'content', '') or ''
@@ -442,7 +440,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     Returns raw response text or None on any failure.
     """
     from utils.config_manager import get_config_manager
-    from utils.llm_client import HumanMessage, create_chat_llm
+    from utils.llm_client import HumanMessage, create_chat_llm_async
     from utils.token_tracker import set_call_type
 
     try:
@@ -460,10 +458,11 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     set_call_type('topic_deep_search')
     try:
-        llm = create_chat_llm(
+        llm = await create_chat_llm_async(
             model, base_url, api_key,
             temperature=0.3,
             max_completion_tokens=128,
+            timeout=timeout,  # same budget the asyncio.wait_for below enforces
         )
     except Exception as e:
         logger.debug('summary-tier llm init failed: %s', e)
@@ -472,7 +471,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     try:
         async with llm:
             resp = await asyncio.wait_for(
-                llm.ainvoke([HumanMessage(content=prompt)]),
+                llm.ainvoke([HumanMessage(content=prompt)]),  # noqa: LLM_INPUT_BUDGET  # enrichment prompt built from a bounded activity-window summary; not user free-text.
                 timeout=timeout,
             )
         return getattr(resp, 'content', '') or ''

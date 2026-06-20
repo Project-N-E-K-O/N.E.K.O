@@ -14,6 +14,7 @@ catch contract regressions in the tool plumbing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -649,6 +650,56 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
     # base_url / api_key 必须同步到 vision 配置
     assert client.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert client.api_key == "fake-gemini-key"
+
+
+@pytest.mark.asyncio
+async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gpt-4o-mini"
+    client.base_url = "https://api.openai.com/v1"
+    client.api_key = "sk-fake"
+    client.vision_model = "vision-model"
+    client.vision_base_url = "https://vision.example/v1"
+    client.vision_api_key = "vision-key"
+    client.max_response_length = 300
+    client._genai_client = None
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    class _FakeLLM:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.closed = 0
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    old_llm = _FakeLLM("old")
+    client.llm = old_llm
+    created: list[_FakeLLM] = []
+
+    async def fake_create_chat_llm_async(*_args, **_kwargs):
+        await asyncio.sleep(0)
+        llm = _FakeLLM("vision")
+        created.append(llm)
+        return llm
+
+    monkeypatch.setattr(_ofc, "create_chat_llm_async", fake_create_chat_llm_async)
+
+    await asyncio.gather(
+        client.switch_model("vision-model", use_vision_config=True),
+        client.switch_model("vision-model", use_vision_config=True),
+    )
+
+    assert len(created) == 1
+    assert client.llm is created[0]
+    assert client.model == "vision-model"
+    assert client.base_url == "https://vision.example/v1"
+    assert client.api_key == "vision-key"
+    assert old_llm.closed == 1
 
 
 @pytest.mark.asyncio
@@ -3119,6 +3170,49 @@ async def test_stream_text_filters_tool_call_leak_before_ui_and_history(monkeypa
     ai_messages = [m for m in client._conversation_history if isinstance(m, AIMessage)]
     assert ai_messages[-1].content == "before  after"
     assert "secret" not in ai_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_stream_text_replaces_full_prompt_history_after_memory_callback(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        sent_user_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
+        assert sent_user_messages[-1].content == "full document prompt"
+        yield LLMStreamChunk(content="ok")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    transcripts: list[str] = []
+
+    async def transcript_callback(text: str) -> None:
+        transcripts.append(text)
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text(
+        "full document prompt",
+        system_prefix="callback result",
+        input_transcript_callback=transcript_callback,
+        history_replacement_text="summary only",
+    )
+
+    assert transcripts == ["full document prompt"]
+    assert isinstance(client._conversation_history[1], HumanMessage)
+    assert client._conversation_history[1].content == "callback result\n\nsummary only"
+    assert "full document prompt" not in [
+        getattr(message, "content", "") for message in client._conversation_history
+    ]
 
 
 @pytest.mark.asyncio

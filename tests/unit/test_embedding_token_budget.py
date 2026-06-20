@@ -2,17 +2,20 @@
 """Unit tests for the token-budget sub-batching in
 ``EmbeddingService._infer_blocking``.
 
-背景:之前 ``_infer_blocking`` 用 pad-to-longest + 固定 batch(BATCH_SIZE=16),
-一条粘贴进 recent 的长文本会让整批 16 条都 pad 到几千 token,激活内存
-顶到多 GB(实测把 RSS 从 1.1 GB 顶到 12.4 GB)。修复改成桶装:
-``batch_size × max_len ≤ _INFER_TOKEN_BUDGET``。
+Background: ``_infer_blocking`` previously used pad-to-longest + a fixed batch
+(BATCH_SIZE=16), so a single long text pasted into recent would pad all 16
+rows to thousands of tokens and spike activation memory into multiple GB
+(measured RSS rising from 1.1 GB to 12.4 GB). The fix switches to bucketing:
+``batch_size × max_len ≤ _INFER_BATCH_MAX_TOKENS``.
 
-测试目标:
-- 桶分边界正确(满桶 vs 必须 flush)
-- 单条 token 数 > budget 时仍能跑(空桶必接受)
-- 输出顺序跟输入对齐(桶内按长度排序,出桶时按 original idx 还原)
-- 不依赖 onnxruntime/tokenizers/numpy(用 monkeypatched session + 假
-  encoded 对象),所以本机没装这些重依赖也能跑。
+Test goals:
+- bucket boundaries are correct (full bucket vs. must-flush)
+- a single item whose token count > budget still runs (an empty bucket must
+  accept it)
+- output order matches input (sorted by length within a bucket, restored by
+  original idx on flush)
+- no dependency on onnxruntime/tokenizers/numpy (uses a monkeypatched session
+  + fake encoded objects), so it runs without those heavy deps installed.
 """
 from __future__ import annotations
 
@@ -136,12 +139,12 @@ def test_long_entries_split_into_multiple_buckets(service_with_fake_session):
 def test_single_overlong_entry_still_runs(service_with_fake_session):
     """单条 > budget 时,空桶必接受(否则永远 flush 不出去)。"""
     svc, sess, emb = service_with_fake_session
-    out = _run_with_lengths(svc, sess, emb, [emb._INFER_TOKEN_BUDGET + 1000])
+    out = _run_with_lengths(svc, sess, emb, [emb._INFER_BATCH_MAX_TOKENS + 1000])
     assert len(out) == 1
     assert len(sess.calls) == 1
     batch, seq = sess.calls[0]
     assert batch == 1
-    assert seq == emb._INFER_TOKEN_BUDGET + 1000
+    assert seq == emb._INFER_BATCH_MAX_TOKENS + 1000
 
 
 def test_mixed_length_preserves_original_order(service_with_fake_session):

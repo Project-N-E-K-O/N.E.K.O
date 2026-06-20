@@ -41,6 +41,7 @@
         "lottery": 10,
         "notice": 30
       },
+      "gift_min_rmb": 0,
       "priority": {
         "welcome": 2,
         "follow": 3,

@@ -30,6 +30,11 @@ from pathlib import Path
 #     panel for avatar/agent-callback/proactive-chat, +Prompt Preview
 #     buttons for Memory/Evaluation, +role=system chokepoint rewrite,
 #     +tester-facing manual.
+#   * v1.2.0 — 上游同步 2026-06 (2026-06-19): merged main up to 2026-07,
+#     +5 memory-subsystem semantic-contract adapters & smokes (evidence /
+#     hybrid_recall fusion / refine bookkeeping / anti-repeat BM25 / deep-
+#     topic readiness), +free-preset "unusable in testbench" warning on
+#     Settings → Models/Providers, native es/pt language coercion.
 #
 # When bumping this, remember to:
 #   1. Update ``CHANGELOG.md`` with a dated section.
@@ -42,9 +47,9 @@ from pathlib import Path
 #      testers can tell at a glance how fresh the build is without
 #      cross-referencing CHANGELOG.md.
 
-TESTBENCH_VERSION: str = "1.1.0"
-TESTBENCH_PHASE: str = "外部事件注入"
-TESTBENCH_LAST_UPDATED: str = "2026-04-24"
+TESTBENCH_VERSION: str = "1.2.0"
+TESTBENCH_PHASE: str = "上游同步 · 记忆子系统覆盖"
+TESTBENCH_LAST_UPDATED: str = "2026-06-19"
 
 # ─── Directory layout ──────────────────────────────────────────────────────
 

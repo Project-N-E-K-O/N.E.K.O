@@ -17,6 +17,7 @@ import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
+  COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
   isCompactExportMessageSelectable,
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
@@ -38,6 +39,7 @@ import {
 } from './message-schema';
 import {
   AVAILABLE_AVATAR_TOOLS,
+  DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
   resolveAvatarToolImagePaths,
@@ -186,6 +188,10 @@ const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME = 0.6;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME = 0.85;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_OVERSHOOT_RATIO = 0.18;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_VISUAL_MS = 120;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_DEFLECTION_DEG = 28;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_SHIFT_PX = 8;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_RATIO = 1;
+const COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_MS = 110;
 const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG = Math.abs(
   compactInputToolWheelDefaultVisibleSlots[2].angleDeg - compactInputToolWheelDefaultVisibleSlots[3].angleDeg,
@@ -409,6 +415,35 @@ function getCompactToolWheelChargeReleaseVisualStepCount(chargeSteps: number, it
 function normalizeCompactToolWheelStepOffset(stepOffset: number, itemCount: number): number {
   if (itemCount <= 0) return 0;
   return ((stepOffset % itemCount) + itemCount) % itemCount;
+}
+
+function getCompactToolWheelSlotForIndex(
+  toolIndex: number,
+  visualIndex: number,
+  itemCount: number,
+): number | null {
+  const forwardDistance = (toolIndex - visualIndex + itemCount) % itemCount;
+  if (forwardDistance <= 2) {
+    return forwardDistance;
+  }
+  if (forwardDistance >= itemCount - 2) {
+    return forwardDistance - itemCount;
+  }
+  return null;
+}
+
+function getCompactToolWheelSlotValueForIndex(
+  toolIndex: number,
+  visualIndex: number,
+  itemCount: number,
+): string {
+  const slot = getCompactToolWheelSlotForIndex(toolIndex, visualIndex, itemCount);
+  if (slot !== null) return String(slot);
+
+  const forwardDistance = (toolIndex - visualIndex + itemCount) % itemCount;
+  if (forwardDistance === 3) return 'hidden-forward';
+  if (forwardDistance === itemCount - 3) return 'hidden-backward';
+  return 'hidden';
 }
 
 type CompactMessagePreview = {
@@ -657,6 +692,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     const latestStreamingMessage = messages[latestStreamingAssistantIndex];
     const latestStreamingTurnId = latestStreamingMessage?.turnId;
     const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
+    const latestStreamingIsGuide = isGuideMessageId(turnMessageId);
     // Walks backward to the earliest merged bubble, so the last assignment in
     // the loop is the turn's anchor id.
     let turnStartId = latestStreamingTurnId ? `assistant-turn:${latestStreamingTurnId}` : turnMessageId;
@@ -670,7 +706,14 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       if (message.role !== 'assistant') {
         break;
       }
-      if (index !== latestStreamingAssistantIndex && latestStreamingTurnId && message.turnId !== latestStreamingTurnId) {
+      if (
+        index !== latestStreamingAssistantIndex
+        && (
+          (latestStreamingTurnId && message.turnId !== latestStreamingTurnId)
+          || latestStreamingIsGuide
+          || isGuideMessageId(message.id)
+        )
+      ) {
         break;
       }
       if (index !== latestStreamingAssistantIndex && message.status !== 'streaming') {
@@ -710,7 +753,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
         fullText: turnText,
         isStreaming: true,
         isAssistant: true,
-        isGuide: isGuideMessageId(latestStreamingMessage?.id),
+        isGuide: latestStreamingIsGuide,
       };
     }
   }
@@ -784,6 +827,18 @@ const compactCursorZoneSelector = [
   '[id^="mmd-popup-"]',
   '[data-neko-sidepanel]',
 ].join(', ');
+
+const compactToolWheelControlWheelTargetSelector = [
+  '.compact-input-tool-item',
+  '.composer-icon-popover',
+  '.avatar-tool-quickbar',
+  '.avatar-tool-quickbar-edit',
+].join(', ');
+
+const compactHistoryOpenScrollSelector = [
+  '.compact-export-history-anchor[data-compact-export-history-visibility="open"]:not(.under-choice-prompt)',
+  '.compact-export-history-scroll',
+].join(' ');
 
 type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
@@ -903,6 +958,50 @@ function loadCursorImage(imagePath: string, cacheState: AvatarToolCacheState): P
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function isPointInElementRect(element: Element, clientX: number, clientY: number): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  return clientX >= rect.left
+    && clientX <= rect.right
+    && clientY >= rect.top
+    && clientY <= rect.bottom;
+}
+
+function isCompactToolWheelControlWheelTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && !!target.closest(compactToolWheelControlWheelTargetSelector);
+}
+
+function getCompactHistoryScrollFromElement(element: Element): HTMLDivElement | null {
+  const scrollNode = element.closest<HTMLDivElement>(compactHistoryOpenScrollSelector);
+  return scrollNode instanceof HTMLDivElement ? scrollNode : null;
+}
+
+function getCompactHistoryScrollUnderCompactToolWheel(
+  event: ReactWheelEvent<HTMLDivElement>,
+): HTMLDivElement | null {
+  if (isCompactToolWheelControlWheelTarget(event.target)) return null;
+  const clientX = event.clientX;
+  const clientY = event.clientY;
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+  const fanElement = event.currentTarget;
+  const pointElements = typeof document.elementsFromPoint === 'function'
+    ? document.elementsFromPoint(clientX, clientY)
+    : [];
+
+  for (const element of pointElements) {
+    if (!(element instanceof Element)) continue;
+    if (fanElement === element || fanElement.contains(element)) continue;
+    const scrollNode = getCompactHistoryScrollFromElement(element);
+    if (scrollNode && isPointInElementRect(scrollNode, clientX, clientY)) {
+      return scrollNode;
+    }
+  }
+
+  return Array.from(document.querySelectorAll<HTMLDivElement>(compactHistoryOpenScrollSelector))
+    .find(scrollNode => isPointInElementRect(scrollNode, clientX, clientY)) ?? null;
 }
 
 async function resolveCompactCursorValue(
@@ -1373,6 +1472,7 @@ function CompactChatApp({
   composerToolsAriaLabel: _composerToolsAriaLabel,
   composerHidden = false,
   composerDisabled = false,
+  compactInputLocked = false,
   chatSurfaceMode = 'compact',
   compactMinimizeCancelSeq = 0,
   compactChatState,
@@ -1415,6 +1515,11 @@ function CompactChatApp({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  avatarToolMenuOpenRequest = null,
+  compactToolFanOpenRequest = null,
+  compactToolWheelRotateRequest = null,
+  compactToolWheelIndexRequest = null,
+  compactHistoryOpenRequest = null,
   onCompactChatStateChange,
   onCompactMinimizeRequest,
   rollbackDraft,
@@ -1424,6 +1529,7 @@ function CompactChatApp({
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
+  const compactTextEntryLocked = composerDisabled || compactInputLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
@@ -1446,10 +1552,13 @@ function CompactChatApp({
   const compactInputToolWheelDragGuardTimerRef = useRef<number | null>(null);
   const compactInputToolWheelFastAnimationTimerRef = useRef<number | null>(null);
   const compactInputToolWheelChargeReleaseTimerRef = useRef<number | null>(null);
+  const compactInputToolWheelSelectionPointerKickTimerRef = useRef<number | null>(null);
   const compactInputToolWheelLastRotationAtRef = useRef(0);
   const compactInputToolWheelChargeRef = useRef<CompactToolWheelChargeState>(createCompactToolWheelChargeState());
   const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
+  const compactInputToolWheelHoverPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const compactInputToolWheelHoveredIndexRef = useRef<number | null>(null);
   // 工具轮盘原点（toggle / fan 中心）的「按住拖动文本框」手势追踪。与轮盘旋转
   // (compactInputToolWheelPointerRef) 互斥：原点按下时不建立旋转 pointer，旋转路径自然 no-op。
   const compactToolOriginDragRef = useRef<{
@@ -1524,6 +1633,8 @@ function CompactChatApp({
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
+  const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
+  const compactCapsuleEntryLocked = compactTextEntryLocked || guideChatButtonsLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -1540,11 +1651,17 @@ function CompactChatApp({
   const [compactInputToolWheelFastAnimation, setCompactInputToolWheelFastAnimation] = useState(false);
   const [compactInputToolWheelDragActive, setCompactInputToolWheelDragActive] = useState(false);
   const [compactInputToolWheelDragOffsetRatio, setCompactInputToolWheelDragOffsetRatio] = useState(0);
+  const [compactInputToolWheelSelectionPointerKickRatio, setCompactInputToolWheelSelectionPointerKickRatio] = useState(0);
   const [compactInputToolWheelChargeRatio, setCompactInputToolWheelChargeRatio] = useState(0);
   const [compactInputToolWheelChargeDirection, setCompactInputToolWheelChargeDirection] = useState<1 | -1 | null>(null);
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactInputToolWheelChargeReleaseVisualStepOffset, setCompactInputToolWheelChargeReleaseVisualStepOffset] = useState(0);
+  const [compactInputToolWheelHoveredIndex, setCompactInputToolWheelHoveredIndex] = useState<number | null>(null);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
+  // Focus 凝神: subtle cognition indicator. Driven by the backend `focus_state`
+  // ws message (app-websocket.js → 'neko-focus-state' CustomEvent). Inert by
+  // default — the backend only emits it when FOCUS_MODE_ENABLED.
+  const [focusActive, setFocusActive] = useState(false);
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
@@ -1574,8 +1691,13 @@ function CompactChatApp({
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
+  const lastAvatarToolMenuOpenRequestIdRef = useRef('');
+  const lastCompactToolFanOpenRequestIdRef = useRef('');
+  const lastCompactToolWheelRotateRequestIdRef = useRef('');
+  const lastCompactHistoryOpenRequestIdRef = useRef('');
+  const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
-  const canSubmit = !composerDisabled && compactInputHasPayload;
+  const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
@@ -1944,6 +2066,18 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    const request = compactHistoryOpenRequest;
+    if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
+    lastCompactHistoryOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactExportHistory();
+      return;
+    }
+    closeCompactExportHistory({ persist: false });
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
+
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
@@ -2237,9 +2371,11 @@ function CompactChatApp({
   const compactSpeechPreservedText = (compactSpeechModeActive && !compactMessagePreview?.isStreaming)
     ? compactSpeechPreviewTextRef.current
     : '';
-  const compactEmptyStateText = composerHidden
-    ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
-    : i18n('chat.emptyState', getChatEmptyStateFallback());
+  const compactEmptyStateText = guideChatButtonsLocked
+    ? ''
+    : composerHidden
+      ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
+      : i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewText = compactSuppressAssistantFallback
     ? ''
     : compactSpeechModeActive
@@ -2482,6 +2618,19 @@ function CompactChatApp({
     };
   }, []);
 
+  // Focus 凝神 indicator: reflect backend enter/exit. The bridge in
+  // app-websocket.js translates the `focus_state` ws message into this event.
+  useEffect(() => {
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusActive(Boolean(detail && detail.active));
+    };
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
       setCompactAssistantStreamingGap(currentGap => {
@@ -2516,6 +2665,23 @@ function CompactChatApp({
   useEffect(() => {
     compactSpeechVisibleLengthRef.current = compactSpeechVisibleLength;
   }, [compactSpeechVisibleLength]);
+
+  useEffect(() => {
+    const syncGuideChatButtonLock = () => {
+      setGuideChatButtonsLocked(isGuideChatButtonLockActive());
+    };
+
+    syncGuideChatButtonLock();
+    const observer = new MutationObserver(syncGuideChatButtonLock);
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     if (compactMessagePreview?.isGuide) {
@@ -3042,11 +3208,12 @@ function CompactChatApp({
 
   const requestCompactChatState = useCallback((nextState: CompactChatState) => {
     if (!isCompactSurface) return;
+    if (nextState === 'input' && compactTextEntryLocked) return;
     if (!isCompactChatStateControlled) {
       setUncontrolledCompactChatState(nextState);
     }
     onCompactChatStateChange?.(nextState);
-  }, [isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
+  }, [compactTextEntryLocked, isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
@@ -3526,6 +3693,17 @@ function CompactChatApp({
     compactInputToolWheelFastAnimationTimerRef.current = null;
   }, []);
 
+  const clearCompactInputToolWheelSelectionPointerKickTimer = useCallback(() => {
+    if (compactInputToolWheelSelectionPointerKickTimerRef.current === null) return;
+    window.clearTimeout(compactInputToolWheelSelectionPointerKickTimerRef.current);
+    compactInputToolWheelSelectionPointerKickTimerRef.current = null;
+  }, []);
+
+  const resetCompactInputToolWheelSelectionPointerKick = useCallback(() => {
+    clearCompactInputToolWheelSelectionPointerKickTimer();
+    setCompactInputToolWheelSelectionPointerKickRatio(0);
+  }, [clearCompactInputToolWheelSelectionPointerKickTimer]);
+
   const clearCompactInputToolWheelChargeReleaseTimer = useCallback(() => {
     if (compactInputToolWheelChargeReleaseTimerRef.current !== null) {
       window.clearTimeout(compactInputToolWheelChargeReleaseTimerRef.current);
@@ -3586,6 +3764,24 @@ function CompactChatApp({
   const resetCompactInputToolFanHoverBlock = useCallback(() => {
     compactInputToolFanHoverInsideRef.current = false;
     compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
+  }, []);
+
+  const setCompactInputToolWheelHoveredIndexState = useCallback((toolIndex: number | null) => {
+    if (compactInputToolWheelHoveredIndexRef.current === toolIndex) return;
+    compactInputToolWheelHoveredIndexRef.current = toolIndex;
+    setCompactInputToolWheelHoveredIndex(current => (
+      current === toolIndex ? current : toolIndex
+    ));
+  }, []);
+
+  const clearCompactInputToolWheelPointerHover = useCallback(() => {
+    compactInputToolWheelHoverPointerRef.current = null;
+    setCompactInputToolWheelHoveredIndexState(null);
+  }, [setCompactInputToolWheelHoveredIndexState]);
+
+  const recordCompactInputToolWheelPointerPosition = useCallback((clientX: number, clientY: number) => {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+    compactInputToolWheelHoverPointerRef.current = { clientX, clientY };
   }, []);
 
   const resolveCompactInputToolWheelLayout = useCallback((): CompactInputToolWheelLayout => {
@@ -3657,15 +3853,17 @@ function CompactChatApp({
     setCompactInputToolWheelDragOffsetRatio(0);
     dispatchCompactToolWheelDragState(false);
     compactInputToolWheelLastRotationAtRef.current = 0;
+    resetCompactInputToolWheelSelectionPointerKick();
     resetCompactInputToolWheelCharge();
     setCompactInputToolWheelFastAnimation(false);
     setCompactInputToolWheelLayout('default');
+    clearCompactInputToolWheelPointerHover();
     setCompactInputToolFanInteractiveState(false);
     compactInputToolFanPositionSyncRef.current?.();
     compactInputToolFanOpenRef.current = false;
     setCompactInputToolFanOpen(false);
-    dispatchCompactToolFanOpenState(false);
     setToolMenuOpen(false);
+    dispatchCompactToolFanOpenState(false);
     if (!options?.afterClose) return;
     const desktopWindow = window as Window & {
       __nekoDesktopCompactLayout?: {
@@ -3683,8 +3881,10 @@ function CompactChatApp({
     clearCompactInputToolWheelDragGuardTimer,
     clearCompactInputToolWheelFastAnimationTimer,
     clearCompactInputToolWheelChargeReleaseTimer,
+    clearCompactInputToolWheelPointerHover,
     dispatchCompactToolWheelDragState,
     dispatchCompactToolFanOpenState,
+    resetCompactInputToolWheelSelectionPointerKick,
     resetCompactInputToolWheelCharge,
     setCompactInputToolFanInteractiveState,
   ]);
@@ -3759,8 +3959,8 @@ function CompactChatApp({
     syncCompactInputToolWheelLayout,
   ]);
 
-  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
-    if (composerDisabled || compactInputHasPayload) return;
+  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
+    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
     // 展开时延续上次轮盘中心索引（compactInputToolWheelIndex 是组件级 state，会话内常驻）：
     // hover 抖动重入或重新打开都不主动把用户刚滚到的位置弹回默认位。复位只随页面刷新/组件
     // 重挂发生（useState 初值为环位 0）。取舍脉络：#1697 曾在此「每次展开复位 index=0」，
@@ -3780,6 +3980,7 @@ function CompactChatApp({
       if (!compactInputToolFanOpenIntentRef.current) return;
       setCompactInputToolFanInteractiveState(true);
     }, COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS);
+    return true;
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
@@ -3859,6 +4060,12 @@ function CompactChatApp({
     });
   }, [closeCompactInputToolFan]);
 
+  const clearActiveCursorToolAndCloseCompactFan = useCallback(() => {
+    setIsCursorInsideHostWindow(true);
+    clearActiveCursorToolSelection();
+    closeCompactInputToolFanFromUserClick();
+  }, [clearActiveCursorToolSelection, closeCompactInputToolFanFromUserClick]);
+
   const closeCompactInputToolFanFromDesktopOutside = useCallback(() => {
     resetCompactInputToolFanHoverBlock();
     scheduleCompactInputToolFanTransientClose({
@@ -3886,6 +4093,15 @@ function CompactChatApp({
     ));
   }, []);
 
+  const kickCompactInputToolWheelSelectionPointer = useCallback((direction: 1 | -1) => {
+    clearCompactInputToolWheelSelectionPointerKickTimer();
+    setCompactInputToolWheelSelectionPointerKickRatio(direction * COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_RATIO);
+    compactInputToolWheelSelectionPointerKickTimerRef.current = window.setTimeout(() => {
+      compactInputToolWheelSelectionPointerKickTimerRef.current = null;
+      setCompactInputToolWheelSelectionPointerKickRatio(0);
+    }, COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_MS);
+  }, [clearCompactInputToolWheelSelectionPointerKickTimer]);
+
   const markCompactInputToolWheelMotion = useCallback((stepCount: number, options?: { forceFast?: boolean }) => {
     const now = getCompactToolWheelTimestamp();
     const elapsed = compactInputToolWheelLastRotationAtRef.current > 0
@@ -3906,10 +4122,11 @@ function CompactChatApp({
     if (stepCount <= 0) return;
     markCompactInputToolWheelMotion(stepCount, options);
     for (let step = 0; step < stepCount; step += 1) {
+      kickCompactInputToolWheelSelectionPointer(direction);
       rotateCompactInputToolWheel(direction);
       playCompactToolWheelDetentSound();
     }
-  }, [markCompactInputToolWheelMotion, rotateCompactInputToolWheel]);
+  }, [kickCompactInputToolWheelSelectionPointer, markCompactInputToolWheelMotion, rotateCompactInputToolWheel]);
 
   const recordCompactInputToolWheelCharge = useCallback((direction: 1 | -1, stepCount: number): CompactToolWheelChargeState => {
     const previous = compactInputToolWheelChargeRef.current;
@@ -4012,6 +4229,7 @@ function CompactChatApp({
 
       completedSteps += 1;
       markCompactInputToolWheelMotion(1, { forceFast: true });
+      kickCompactInputToolWheelSelectionPointer(direction);
       setCompactInputToolWheelChargeReleaseVisualStepOffset(
         normalizeCompactToolWheelStepOffset(
           direction * completedSteps,
@@ -4035,7 +4253,7 @@ function CompactChatApp({
     };
 
     compactInputToolWheelChargeReleaseTimerRef.current = window.setTimeout(runReleaseStep, 0);
-  }, [clearCompactInputToolWheelChargeReleaseTimer, markCompactInputToolWheelMotion]);
+  }, [clearCompactInputToolWheelChargeReleaseTimer, kickCompactInputToolWheelSelectionPointer, markCompactInputToolWheelMotion]);
 
   const getCompactInputToolWheelNormalizedDelta = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
     const rawDelta = Math.abs(event.deltaY) >= Math.abs(event.deltaX)
@@ -4051,16 +4269,47 @@ function CompactChatApp({
     return rawDelta;
   }, []);
 
+  const routeCompactToolWheelScrollToHistory = useCallback((
+    event: ReactWheelEvent<HTMLDivElement>,
+    normalizedDelta: number,
+  ) => {
+    if (!compactExportHistoryOpen) return false;
+    if (compactInputToolWheelDragActiveRef.current || compactInputToolWheelPointerRef.current) return false;
+    const scrollNode = getCompactHistoryScrollUnderCompactToolWheel(event);
+    if (!scrollNode) return false;
+
+    const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+    if (maxScrollTop <= 0) return false;
+
+    const nextScrollTop = clamp(scrollNode.scrollTop + normalizedDelta, 0, maxScrollTop);
+    if (nextScrollTop === scrollNode.scrollTop) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    scrollNode.scrollTop = nextScrollTop;
+    scrollNode.dispatchEvent(new CustomEvent(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, { bubbles: true }));
+    return true;
+  }, [compactExportHistoryOpen]);
+
   const rotateCompactInputToolWheelByScroll = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
     const normalizedDelta = getCompactInputToolWheelNormalizedDelta(event);
     if (Math.abs(normalizedDelta) < COMPACT_INPUT_TOOL_WHEEL_SCROLL_DEADZONE) return;
+
+    if (routeCompactToolWheelScrollToHistory(event, normalizedDelta)) return;
 
     event.preventDefault();
     event.stopPropagation();
 
     const direction: 1 | -1 = normalizedDelta > 0 ? 1 : -1;
     rotateCompactInputToolWheelSteps(direction, 1, { forceFast: true });
-  }, [getCompactInputToolWheelNormalizedDelta, rotateCompactInputToolWheelSteps]);
+  }, [
+    getCompactInputToolWheelNormalizedDelta,
+    recordCompactInputToolWheelPointerPosition,
+    rotateCompactInputToolWheelSteps,
+    routeCompactToolWheelScrollToHistory,
+  ]);
 
   const getCompactToolWheelBoundedDragPoint = useCallback((clientX: number, clientY: number): CompactToolWheelDragPoint => {
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
@@ -4228,12 +4477,14 @@ function CompactChatApp({
     clearCompactInputToolFanInteractiveTimer();
     clearCompactInputToolWheelDragGuardTimer();
     clearCompactInputToolWheelFastAnimationTimer();
+    clearCompactInputToolWheelSelectionPointerKickTimer();
     clearCompactInputToolWheelChargeReleaseTimer();
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
     clearCompactInputToolWheelDragGuardTimer,
     clearCompactInputToolWheelFastAnimationTimer,
+    clearCompactInputToolWheelSelectionPointerKickTimer,
     clearCompactInputToolWheelChargeReleaseTimer,
   ]);
 
@@ -4592,7 +4843,8 @@ function CompactChatApp({
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
-    if (!isCompactSurface || composerHidden || composerDisabled || compactInputHasPayload) {
+    const shouldCloseForDisabled = composerDisabled && !toolMenuOpen;
+    if (!isCompactSurface || composerHidden || shouldCloseForDisabled || compactInputHasPayload) {
       closeCompactInputToolFan();
     }
   }, [
@@ -4602,6 +4854,7 @@ function CompactChatApp({
     composerDisabled,
     composerHidden,
     isCompactSurface,
+    toolMenuOpen,
   ]);
 
   useEffect(() => {
@@ -4618,12 +4871,14 @@ function CompactChatApp({
     compactInputToolWheelLastRotationAtRef.current = 0;
     resetCompactInputToolWheelCharge();
     setCompactInputToolWheelFastAnimation(false);
+    clearCompactInputToolWheelPointerHover();
     dispatchCompactToolWheelDragState(false);
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolWheelDragGuardTimer,
     clearCompactInputToolWheelFastAnimationTimer,
     clearCompactInputToolWheelChargeReleaseTimer,
+    clearCompactInputToolWheelPointerHover,
     compactInputToolFanOpen,
     dispatchCompactToolWheelDragState,
     resetCompactInputToolWheelCharge,
@@ -4969,6 +5224,67 @@ function CompactChatApp({
       document.removeEventListener('keydown', closeMenuOnEscape);
     };
   }, [toolMenuOpen]);
+
+  useEffect(() => {
+    const request = avatarToolMenuOpenRequest;
+    if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
+    const requestId = request.id;
+    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
+    if (request.open) {
+      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
+      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      if (!opened) return;
+      if (activeAvatarToolIds.length === 0) {
+        setActiveAvatarToolIds([...DEFAULT_ACTIVE_AVATAR_TOOL_IDS]);
+      }
+      setActiveCursorToolId(null);
+      setToolMenuOpen(opened);
+      return;
+    }
+    setToolMenuOpen(false);
+  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, openCompactInputToolFan]);
+
+  useEffect(() => {
+    const request = compactToolFanOpenRequest;
+    if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      lastCompactToolFanOpenRequestIdRef.current = request.id;
+      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      if (!opened) return;
+      return;
+    }
+    closeCompactInputToolFan();
+  }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
+
+  useEffect(() => {
+    const request = compactToolWheelIndexRequest;
+    if (!request || !request.id || request.id === lastCompactToolWheelIndexRequestIdRef.current) return;
+    lastCompactToolWheelIndexRequestIdRef.current = request.id;
+    clearCompactInputToolWheelFastAnimationTimer();
+    clearCompactInputToolWheelChargeReleaseTimer();
+    resetCompactInputToolWheelCharge();
+    resetCompactInputToolWheelSelectionPointerKick();
+    setCompactInputToolWheelFastAnimation(false);
+    setCompactInputToolWheelIndex(request.index);
+  }, [
+    clearCompactInputToolWheelChargeReleaseTimer,
+    clearCompactInputToolWheelFastAnimationTimer,
+    compactToolWheelIndexRequest,
+    resetCompactInputToolWheelSelectionPointerKick,
+    resetCompactInputToolWheelCharge,
+  ]);
+
+  useEffect(() => {
+    const request = compactToolWheelRotateRequest;
+    if (!request || !request.id || request.id === lastCompactToolWheelRotateRequestIdRef.current) return;
+    lastCompactToolWheelRotateRequestIdRef.current = request.id;
+    const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+    if (!opened) return;
+    rotateCompactInputToolWheelSteps(request.direction, request.stepCount, {
+      forceFast: request.forceFast !== false,
+    });
+  }, [compactToolWheelRotateRequest, openCompactInputToolFan, rotateCompactInputToolWheelSteps]);
 
   useEffect(() => {
     if (!activeCursorToolId) return;
@@ -5351,7 +5667,7 @@ function CompactChatApp({
   }
 
   function submitDraft() {
-    if (composerDisabled) return;
+    if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
@@ -5404,14 +5720,11 @@ function CompactChatApp({
   ) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT;
 
   const getCompactToolWheelSlot = (toolIndex: number): number | null => {
-    const forwardDistance = (toolIndex - compactInputToolWheelVisualIndex + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT;
-    if (forwardDistance <= 2) {
-      return forwardDistance;
-    }
-    if (forwardDistance >= COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT - 2) {
-      return forwardDistance - COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT;
-    }
-    return null;
+    return getCompactToolWheelSlotForIndex(
+      toolIndex,
+      compactInputToolWheelVisualIndex,
+      COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
+    );
   };
 
   const getCompactToolWheelTabIndex = (toolIndex: number): number => {
@@ -5430,13 +5743,11 @@ function CompactChatApp({
   };
 
   const getCompactToolWheelSlotValue = (toolIndex: number): string => {
-    const slot = getCompactToolWheelSlot(toolIndex);
-    if (slot !== null) return String(slot);
-
-    const forwardDistance = (toolIndex - compactInputToolWheelVisualIndex + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT;
-    if (forwardDistance === 3) return 'hidden-forward';
-    if (forwardDistance === COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT - 3) return 'hidden-backward';
-    return 'hidden';
+    return getCompactToolWheelSlotValueForIndex(
+      toolIndex,
+      compactInputToolWheelVisualIndex,
+      COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
+    );
   };
 
   const compactInputToolFanActionsDisabled = composerDisabled
@@ -5471,10 +5782,98 @@ function CompactChatApp({
     ? COMPACT_TOOL_WHEEL_VIEWPORT_DRAG_ANGLE_STEP_DEG
     : COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG;
   const compactInputToolWheelDragAngle = compactInputToolWheelDragOffsetRatio * compactInputToolWheelDragAngleStep;
+  const compactInputToolWheelSelectionPointerDeflectionRatio = clamp(
+    compactInputToolWheelDragOffsetRatio + compactInputToolWheelSelectionPointerKickRatio,
+    -1,
+    1,
+  );
+  const compactInputToolWheelSelectionPointerDeflectionAngle = compactInputToolWheelSelectionPointerDeflectionRatio
+    * COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_DEFLECTION_DEG;
+  const compactInputToolWheelSelectionPointerDeflectionShift = compactInputToolWheelSelectionPointerDeflectionRatio
+    * COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_SHIFT_PX;
   const compactInputToolWheelDragStyle = {
     '--compact-tool-wheel-drag-angle': `${compactInputToolWheelDragAngle}deg`,
     '--compact-tool-wheel-drag-counter-angle': `${-compactInputToolWheelDragAngle}deg`,
+    '--compact-tool-wheel-selection-pointer-deflection-angle': `${compactInputToolWheelSelectionPointerDeflectionAngle}deg`,
+    '--compact-tool-wheel-selection-pointer-deflection-shift': `${compactInputToolWheelSelectionPointerDeflectionShift}px`,
   } as CSSProperties;
+  const syncCompactInputToolWheelPointerHover = useCallback((nextPointer?: { clientX: number; clientY: number }) => {
+    const pointer = nextPointer ?? compactInputToolWheelHoverPointerRef.current;
+    if (
+      !pointer
+      || compactInputToolFanActionsDisabled
+    ) {
+      setCompactInputToolWheelHoveredIndexState(null);
+      return;
+    }
+
+    const fanElement = compactInputToolFanRef.current;
+    const fanRect = fanElement?.getBoundingClientRect();
+    if (!fanElement || !fanRect) {
+      setCompactInputToolWheelHoveredIndexState(null);
+      return;
+    }
+
+    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
+    const readFanPixelVar = (name: string, fallback: number) => {
+      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
+      const parsedValue = Number.parseFloat(rawValue);
+      return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    };
+    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
+    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
+    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
+    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
+    const visibleSlots = compactInputToolWheelLayout === 'viewport-fit'
+      ? compactInputToolWheelViewportFitVisibleSlots
+      : compactInputToolWheelDefaultVisibleSlots;
+    const dragAngleRad = compactInputToolWheelDragAngle * (Math.PI / 180);
+    let hoveredIndex: number | null = null;
+    let hoveredDistanceSquared = Number.POSITIVE_INFINITY;
+
+    for (let toolIndex = 0; toolIndex < COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT; toolIndex += 1) {
+      const slot = getCompactToolWheelSlotForIndex(
+        toolIndex,
+        compactInputToolWheelVisualIndex,
+        COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
+      );
+      if (slot === null || Math.abs(slot) > 1) continue;
+      const slotVisual = visibleSlots[slot + 2];
+      if (!slotVisual) continue;
+      const angleRad = (slotVisual.angleDeg * (Math.PI / 180)) + dragAngleRad;
+      const itemCenterX = centerX + (Math.cos(angleRad) * orbitRadius);
+      const itemCenterY = centerY + (Math.sin(angleRad) * orbitRadius);
+      const hitRadius = (buttonSize * slotVisual.scale) / 2;
+      const dx = pointer.clientX - itemCenterX;
+      const dy = pointer.clientY - itemCenterY;
+      const distanceSquared = (dx * dx) + (dy * dy);
+      if (distanceSquared <= hitRadius * hitRadius && distanceSquared < hoveredDistanceSquared) {
+        hoveredIndex = toolIndex;
+        hoveredDistanceSquared = distanceSquared;
+      }
+    }
+
+    setCompactInputToolWheelHoveredIndexState(hoveredIndex);
+  }, [
+    compactInputToolFanActionsDisabled,
+    compactInputToolFanInteractive,
+    compactInputToolFanOpen,
+    compactInputToolWheelDragAngle,
+    compactInputToolWheelLayout,
+    compactInputToolWheelVisualIndex,
+    setCompactInputToolWheelHoveredIndexState,
+  ]);
+
+  useLayoutEffect(() => {
+    syncCompactInputToolWheelPointerHover();
+  }, [syncCompactInputToolWheelPointerHover]);
+
+  const getCompactToolWheelPointerHoveredValue = (toolIndex: number): 'true' | 'false' => (
+    compactInputToolWheelHoveredIndex === toolIndex
+    && !isCompactToolWheelActionDisabled(toolIndex)
+      ? 'true'
+      : 'false'
+  );
   const compactToolToggleVisible = isCompactSurface && !composerHidden;
   const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
   const compactInputToolToggleButton = compactToolToggleVisible ? (
@@ -5592,8 +5991,15 @@ function CompactChatApp({
       data-compact-tool-wheel-charge-release-active={compactInputToolWheelChargeReleaseActive ? 'true' : 'false'}
       data-compact-tool-wheel-charge-release-offset={compactInputToolWheelChargeReleaseVisualStepOffset}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
-      onPointerEnter={handleCompactInputToolHoverEnter}
-      onPointerLeave={handleCompactInputToolHoverLeave}
+      onPointerEnter={(event) => {
+        recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
+        syncCompactInputToolWheelPointerHover({ clientX: event.clientX, clientY: event.clientY });
+        handleCompactInputToolHoverEnter(event);
+      }}
+      onPointerLeave={(event) => {
+        clearCompactInputToolWheelPointerHover();
+        handleCompactInputToolHoverLeave(event);
+      }}
       onFocus={() => {
         clearCompactInputToolFanCloseTimer();
       }}
@@ -5691,6 +6097,8 @@ function CompactChatApp({
         } catch (_) {}
       }}
       onPointerMove={(event) => {
+        recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
+        syncCompactInputToolWheelPointerHover({ clientX: event.clientX, clientY: event.clientY });
         if (compactToolOriginDragRef.current) {
           updateCompactToolOriginDrag(event);
           return;
@@ -5735,6 +6143,7 @@ function CompactChatApp({
         tabIndex={getCompactToolWheelTabIndex(4)}
         aria-hidden={getCompactToolWheelAriaHidden(4)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(4)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(4)}
         onClick={compactFanRunAction(onComposerImportImage)}
       >
         <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -5748,6 +6157,7 @@ function CompactChatApp({
         tabIndex={getCompactToolWheelTabIndex(0)}
         aria-hidden={getCompactToolWheelAriaHidden(0)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(0)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(0)}
         onClick={compactFanRunAction(onComposerScreenshot)}
       >
         <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
@@ -5762,6 +6172,7 @@ function CompactChatApp({
         tabIndex={getCompactToolWheelTabIndex(6)}
         aria-hidden={getCompactToolWheelAriaHidden(6)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(6)}
         data-compact-tool-active={galgameModeEnabled ? 'true' : 'false'}
         onClick={compactFanToggleOnAction(onGalgameModeToggle)}
       >
@@ -5777,6 +6188,7 @@ function CompactChatApp({
         tabIndex={getCompactToolWheelTabIndex(2)}
         aria-hidden={getCompactToolWheelAriaHidden(2)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(2)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(2)}
         data-compact-tool-active={translateEnabled ? 'true' : 'false'}
         onClick={compactFanToggleOnAction(onTranslateToggle)}
       >
@@ -5791,6 +6203,7 @@ function CompactChatApp({
         tabIndex={getCompactToolWheelTabIndex(3)}
         aria-hidden={getCompactToolWheelAriaHidden(3)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(3)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(3)}
         onClick={compactFanRunAction(onJukeboxClick)}
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
@@ -5805,6 +6218,7 @@ function CompactChatApp({
         tabIndex={getCompactToolWheelTabIndex(5)}
         aria-hidden={getCompactToolWheelAriaHidden(5)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(5)}
         data-compact-tool-active={compactExportControlsVisible ? 'true' : 'false'}
         onClick={compactFanRunAction(handleCompactExportControlsToggle)}
       >
@@ -5818,6 +6232,7 @@ function CompactChatApp({
         ref={toolMenuRef}
         aria-hidden={getCompactToolWheelAriaHidden(1)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(1)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(1)}
         data-compact-tool-active={toolMenuOpen || activeToolItem ? 'true' : 'false'}
       >
         <button
@@ -5832,6 +6247,11 @@ function CompactChatApp({
             if (shouldSuppressCompactToolClick(event)) {
               event.preventDefault();
               event.stopPropagation();
+              return;
+            }
+            if (activeToolItem) {
+              event.stopPropagation();
+              clearActiveCursorToolAndCloseCompactFan();
               return;
             }
             compactInputToolFanOpenIntentRef.current = 'click';
@@ -5861,9 +6281,7 @@ function CompactChatApp({
                 return;
               }
               event.stopPropagation();
-              setIsCursorInsideHostWindow(true);
-              clearActiveCursorToolSelection();
-              closeCompactInputToolFanFromUserClick();
+              clearActiveCursorToolAndCloseCompactFan();
             }}
           >
             <span className="composer-tool-clear-icon" aria-hidden="true" />
@@ -6214,6 +6632,7 @@ function CompactChatApp({
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
       title={compactExportHistoryToggleLabel}
+      disabled={composerDisabled}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
       data-compact-no-drag="true"
@@ -6281,7 +6700,20 @@ function CompactChatApp({
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
       data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
+      data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {focusActive ? (
+        <div
+          className="chat-surface-focus-indicator"
+          role="status"
+          aria-live="polite"
+          title={i18n('chat.focusIndicator', '凝神中')}
+        >
+          <span className="chat-surface-focus-indicator-label">
+            {i18n('chat.focusIndicator', '凝神中')}
+          </span>
+        </div>
+      ) : null}
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
@@ -6432,9 +6864,10 @@ function CompactChatApp({
                           aria-label={inputPlaceholder}
                           rows={1}
                           value={draft}
-                          readOnly={composerDisabled}
+                          readOnly={compactTextEntryLocked}
                           disabled={composerDisabled}
                           onChange={(event) => {
+                            if (compactInputLocked && !composerDisabled) return;
                             setDraft(event.target.value);
                             if (event.target.value.trim().length > 0) {
                               closeCompactInputToolFan();
@@ -6457,10 +6890,10 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
-                          disabled={composerDisabled}
+                          disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;
-                            if (isGuideChatButtonLockActive()) return;
+                            if (compactCapsuleEntryLocked) return;
                             requestCompactChatState('input');
                           }}
                         >

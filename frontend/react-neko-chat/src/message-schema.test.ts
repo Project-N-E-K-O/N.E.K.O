@@ -54,6 +54,26 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('accepts new user icebreaker choice prompts', () => {
+    const onChoiceSelect = vi.fn();
+    const props = parseChatWindowProps({
+      choicePrompt: {
+        source: 'new_user_icebreaker',
+        sessionId: 'icebreaker-day1-session',
+        options: [
+          { choice: 'A', label: '看得差不多了' },
+          { choice: 'B', label: '还有点晕乎乎' },
+        ],
+      },
+      onChoiceSelect,
+    });
+
+    expect(props.choicePrompt?.source).toBe('new_user_icebreaker');
+    props.onChoiceSelect?.(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+    expect(onChoiceSelect).toHaveBeenCalledTimes(1);
+    expect(onChoiceSelect).toHaveBeenCalledWith(props.choicePrompt!.options[0]!, 'new_user_icebreaker');
+  });
+
   it('accepts chat surface mode props', () => {
     const props = parseChatWindowProps({
       chatSurfaceMode: 'compact',
@@ -62,6 +82,22 @@ describe('message-schema', () => {
 
     expect(props.chatSurfaceMode).toBe('compact');
     expect(props.compactChatState).toBe('input');
+  });
+
+  it('accepts compact history open requests', () => {
+    const props = parseChatWindowProps({
+      compactHistoryOpenRequest: {
+        id: 'compact-history-open-guide',
+        open: true,
+        reason: 'avatar-floating-guide-history',
+      },
+    });
+
+    expect(props.compactHistoryOpenRequest).toEqual({
+      id: 'compact-history-open-guide',
+      open: true,
+      reason: 'avatar-floating-guide-history',
+    });
   });
 
   it('accepts the revived "full" surface mode', () => {

@@ -40,6 +40,10 @@ Flat ``{lang_code: str}`` maps (resolved via ``_loc(MAP, lang)``):
   conversation snippets into 1-2 summarized deep-topic hooks. Consumed by
   ``main_logic/activity/llm_enrichment.py:call_topic_candidates``.
 
+* ``TOPIC_MEMORY_CUE_INTROS`` / ``TOPIC_MEMORY_CUE_LABELS`` — quiet
+  memory-context labels for old reflection follow-up topics. Consumed by
+  ``main_logic/topic/hooks.py:build_topic_hook_prompt``.
+
 * ``OS_DEGRADED_MARKER`` — short bracketed text appended to the
   state-section header when the backend can't read the user's OS
   signals. Consumed by
@@ -61,6 +65,36 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 """
 
 from __future__ import annotations
+
+
+# ── Old reflection follow-up memory cues ────────────────────────────
+
+# These strings intentionally stay quieter than the major "======" prompt
+# sections. The cue should be available near long-term conversation history
+# without competing with recent-chat dedup or activity-state decision blocks.
+TOPIC_MEMORY_CUE_INTROS: dict[str, str] = {
+    "zh": "回忆线索：以下旧话题距今较久，可顺手接、但没必要主动提出。",
+    "zh-CN": "回忆线索：以下旧话题距今较久，可顺手接、但没必要主动提出。",
+    "zh-TW": "回憶線索：以下舊話題距今較久，可順手接、但沒必要主動提出。",
+    "en": "Memory cues: older topics from prior conversations; okay to pick up naturally, but no need to raise proactively.",
+    "ja": "記憶の手がかり：以前の古い話題です。自然に拾ってもよいですが、無理に持ち出す必要はありません。",
+    "ko": "기억 단서: 이전 대화의 오래된 화제입니다. 자연스럽게 이어도 되지만, 먼저 꺼낼 필요는 없습니다.",
+    "es": "Pistas de memoria: temas antiguos de conversaciones previas; puedes retomarlos con naturalidad, pero no hace falta sacarlos activamente.",
+    "pt": "Pistas de memória: temas antigos de conversas anteriores; pode retomá-los naturalmente, mas não precisa puxá-los ativamente.",
+    "ru": "Подсказки памяти: старые темы из прошлых разговоров; можно естественно вернуться к ним, но не нужно поднимать их специально.",
+}
+
+TOPIC_MEMORY_CUE_LABELS: dict[str, str] = {
+    "zh": "较久前的回忆线索",
+    "zh-CN": "较久前的回忆线索",
+    "zh-TW": "較久前的回憶線索",
+    "en": "Older memory cue",
+    "ja": "古い記憶の手がかり",
+    "ko": "오래된 기억 단서",
+    "es": "Pista de memoria antigua",
+    "pt": "Pista de memória antiga",
+    "ru": "Давняя подсказка памяти",
+}
 
 
 # ── Activity guess + soft scores (emotion-tier) ─────────────────────
@@ -240,265 +274,233 @@ Exemplo:
 # ── Background topic hook candidates ────────────────────────────────
 
 TOPIC_CANDIDATE_PROMPTS: dict[str, str] = {
-    "zh": """你是一个陪伴产品的话题筛选助手。你的任务不是总结最近一句话，而是从“慢收集的全局证据 + 最近对话”里挑 1-2 个真的值得以后低频开口的深话题机会。
+    "zh": """你是一个陪伴产品的话题筛选助手。你的任务不是总结最近一句话，而是从下面这段最近对话里挑 1-2 个真的值得以后低频开口的深话题机会。
 
-======以下为慢收集的全局证据======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======以上为慢收集的全局证据======
-
-======以下为最近对话（按时间顺序）======
-{conversation}
-======以上为最近对话（按时间顺序）======
+======以上为最近对话(按时间顺序)======
 
 要求：
-- 不要复述用户原话，不要暴露“我分析了你的聊天记录”
-- 只保留和用户近期兴趣、计划、纠结、情绪、选择强相关，而且能从全局证据里看出稳定性的点
-- 不要把两个只是相邻出现的名词硬拼成一个话题；如果关联不自然，宁可不要输出
-- 寒暄、语气词、很薄的短句、问卷式问题，一律给低优先级或不要输出
-- 每个话题要像给角色的一张小抄：知道怎么自然开口，但最终开口仍交给角色生成
-- 重点是关系深度，不是触发频率；宁可少，不要硬凑
+- 不要复述用户原话，也不要暴露“我在分析聊天记录”
+- 只挑用户近期反复出现、明显稳定在意的兴趣 / 计划 / 纠结 / 情绪 / 选择
+- 寒暄、语气词、单薄短句、问卷式提问一律忽略
+- 不要因为两个词凑巧相邻就硬拼成一个话题；关联不自然就不输出
+- 宁缺毋滥：没把握就少出，甚至直接输出空列表
+- 每个话题只是给角色的开口素材，不是最终台词
 输出严格 JSON（不带 markdown 代码块）：
 {{"topics": [
   {{
     "interest": "用户最近在意、纠结、计划或反复提到的一件具体事，整理成一句，不超过30字",
-    "keywords": ["3-6个关键词，用于去重、筛选联网结果，并直接作为联网查询词；围绕用户反复在意的稳定点，不要用最近窗口里的偶然词"],
+    "keywords": ["3-6个关键词，用于去重、筛选联网结果和投递前 research seed；围绕用户反复在意的稳定点，不要用偶然冒出的词"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 评分：
-- relevance：这个话题和用户的相关度，结合证据是否稳定。明显反复出现、确实是用户在意的事 → 高分；只出现一两次、或只是顺口提一句 → 低分。如实打分，不要为了让它被采用而虚高。
+- relevance：这个话题和用户的相关度，结合它是否在对话里反复稳定出现。明显反复出现、确实是用户在意的事 → 高分；只出现一两次、或只是顺口提一句 → 低分。如实打分，不要为了让它被采用而虚高。
 - risk：主动提起这个话题会打扰、冒犯、误解或显得硬凑的风险。越可能让用户反感或觉得突兀 → 越高分。
 
 如果没有值得以后接的话题，输出 {{"topics": []}}。""",
-    "zh-TW": """你是陪伴產品的話題篩選助手。你的任務不是總結最近一句話，而是從「慢收集的全局證據 + 最近對話」裡挑 1-2 個真的值得以後低頻開口的深話題機會。
+    "zh-TW": """你是陪伴產品的話題篩選助手。你的任務不是總結最近一句話，而是從下面這段最近對話裡挑 1-2 個真的值得以後低頻開口的深話題機會。
 
-======以下為慢收集的全局證據======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======以上為慢收集的全局證據======
-
-======以下為最近對話（按時間順序）======
-{conversation}
-======以上為最近對話（按時間順序）======
+======以上为最近对话(按时间顺序)======
 
 要求：
 - 所有文字欄位必須使用繁體中文；不要輸出英文話題
-- 不要復述用戶原話，不要暴露「我分析了你的聊天記錄」
-- 只保留和用戶近期興趣、計畫、糾結、情緒、選擇強相關，而且能從全局證據裡看出穩定性的點
-- 不要把兩個只是相鄰出現的名詞硬拼成一個話題；如果關聯不自然，寧可不要輸出
-- 寒暄、語氣詞、很薄的短句、問卷式問題，一律給低優先級或不要輸出
-- 每個話題要像給角色的一張小抄：知道怎麼自然開口，但最終開口仍交給角色生成
-- 重點是關係深度，不是觸發頻率；寧可少，不要硬湊
+- 不要復述用戶原話，也不要暴露「我在分析聊天記錄」
+- 只挑用戶近期反覆出現、明顯穩定在意的興趣 / 計畫 / 糾結 / 情緒 / 選擇
+- 寒暄、語氣詞、單薄短句、問卷式提問一律忽略
+- 不要因為兩個詞湊巧相鄰就硬拼成一個話題；關聯不自然就不輸出
+- 寧缺毋濫：沒把握就少出，甚至直接輸出空列表
+- 每個話題只是給角色的開口素材，不是最終台詞
 輸出嚴格 JSON（不帶 markdown 代碼塊）：
 {{"topics": [
   {{
     "interest": "用戶最近在意、糾結、計劃或反覆提到的一件具體事，整理成一句，不超過30字",
-    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果，並直接作為聯網查詢詞；圍繞用戶反覆在意的穩定點，不要用最近窗口裡的偶然詞"],
+    "keywords": ["3-6個關鍵詞，用於去重、篩選聯網結果和投遞前 research seed；圍繞用戶反覆在意的穩定點，不要用偶然冒出的詞"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 評分：
-- relevance：這個話題和用戶的相關度，結合證據是否穩定。明顯反覆出現、確實是用戶在意的事 → 高分；只出現一兩次、或只是順口提一句 → 低分。如實打分，不要為了讓它被採用而虛高。
+- relevance：這個話題和用戶的相關度，結合它是否在對話裡反覆穩定出現。明顯反覆出現、確實是用戶在意的事 → 高分；只出現一兩次、或只是順口提一句 → 低分。如實打分，不要為了讓它被採用而虛高。
 - risk：主動提起這個話題會打擾、冒犯、誤解或顯得硬湊的風險。越可能讓用戶反感或覺得突兀 → 越高分。
 
 如果沒有值得以後接的話題，輸出 {{"topics": []}}。""",
-    "en": """You are a topic-screening assistant for a companionship product. Your job is not to summarize the last message, but to choose 1-2 genuinely worthwhile low-frequency topic opportunities from slow global evidence plus the recent conversation.
+    "en": """You are a topic-screening assistant for a companionship product. Your job is not to summarize the last message, but to choose 1-2 genuinely worthwhile low-frequency topic opportunities from the recent conversation below.
 
-======Slow global evidence======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======End slow global evidence======
-
-======Recent conversation, chronological======
-{conversation}
-======End conversation======
+======以上为最近对话(按时间顺序)======
 
 Rules:
 - Do not repeat the user's raw wording or reveal that chat logs were analyzed
-- Keep only topics strongly tied to recent interests, plans, dilemmas, emotions, or choices, with visible stability in the global evidence
-- Do not glue together two nouns just because they appeared near each other; if the association is not natural, output nothing
-- Greetings, filler, thin short replies, and survey-like prompts should be low priority or omitted
-- Each topic is a small note for the character: how to open naturally, not final copy
-- Relationship depth matters more than trigger frequency; fewer is better than forced
+- Pick only recent interests / plans / dilemmas / emotions / choices that clearly recur and the user plainly keeps caring about
+- Ignore greetings, filler, thin short replies, and survey-like prompts entirely
+- Do not glue two words into a topic just because they happened to appear next to each other; if the link is not natural, leave it out
+- When in doubt, output less — an empty list is fine
+- Each topic is only opening material for the character, not the final line
 Output strict JSON, no markdown fences:
 {{"topics": [
   {{
     "interest": "a single concrete thing the user recently cares about, worries over, plans, or keeps bringing up, max 30 words",
-    "keywords": ["3-6 short keywords used for dedup, filtering online results, and as the online search query; anchor on the user's stable recurring interest, not an accidental recent word"],
+    "keywords": ["3-6 short keywords used for dedup, filtering online results, and delivery-time research seeds; anchor on the user's stable recurring interest, not an accidental recent word"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 Scoring:
-- relevance: how relevant this topic is to the user, combined with whether the evidence is stable. Clearly recurs and genuinely matters to the user → high; appeared only once or twice, or just mentioned in passing → low. Score honestly — do not inflate to get the topic included.
+- relevance: how relevant this topic is to the user, combined with whether it recurs in the conversation. Clearly recurs and genuinely matters to the user → high; appeared only once or twice, or just mentioned in passing → low. Score honestly — do not inflate to get the topic included.
 - risk: the risk that proactively raising this topic would feel intrusive, offensive, misread, or forced. The more likely the user would feel annoyed or caught off-guard → the higher the score.
 
 If nothing is worth keeping, output {{"topics": []}}.""",
-    "ja": """あなたはコンパニオン製品の話題選別アシスタントです。直近の一言を要約するのではなく、「ゆっくり集めた全体証拠 + 最近の会話」から、あとで低頻度で自然に切り出す価値がある深めの話題を1〜2個だけ選びます。
+    "ja": """あなたはコンパニオン製品の話題選別アシスタントです。直近の一言を要約するのではなく、下記の最近の会話から、あとで低頻度で自然に切り出す価値がある深めの話題を1〜2個だけ選びます。
 
-======ゆっくり集めた全体証拠======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======全体証拠ここまで======
-
-======最近の会話（時系列）======
-{conversation}
-======最近の会話ここまで======
+======以上为最近对话(按时间顺序)======
 
 ルール：
 - すべての文字フィールドはユーザーの言語で、日本語ユーザーなら自然な日本語で書くこと
 - ユーザーの原文をそのまま繰り返さない。「チャット履歴を分析した」と明かさない
-- 最近の興味、予定、迷い、感情、選択に強く結びつき、全体証拠から安定して見える点だけ残す
-- 近くに出ただけの名詞を無理につなげない。関連が自然でなければ出力しない
-- あいさつ、相づち、薄い短文、アンケート風の問いは低優先度または除外
-- 各話題はキャラクター用の短いメモ。最終的な口調はキャラクター側に任せる
-- 大事なのは関係の深さで、頻度ではない。無理に埋めるより少なくする
+- 最近繰り返し出てきて、ユーザーが明らかに気にし続けている興味・予定・迷い・感情・選択だけを選ぶ
+- たまたま近くに出ただけの語を無理に話題にしない。関連が自然でなければ出力しない
+- あいさつ、相づち、薄い短文、アンケート風の問いはすべて無視する
+- 迷ったら少なめに。空リストでも構わない
+- 各話題はキャラクターの切り出し素材にすぎず、最終的なセリフではない
 厳密な JSON だけを出力（markdown コードブロックなし）：
 {{"topics": [
   {{
     "interest": "ユーザーが最近気にしている、悩んでいる、計画している、または繰り返し口にしている具体的な一件を一文にまとめたもの、30字以内",
-    "keywords": ["重複排除・検索結果の絞り込み・そのまま検索語として使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
+    "keywords": ["重複排除・検索結果の絞り込み・配信前のresearch seedとして使う短いキーワードを3〜6個。ユーザーが繰り返し気にしている安定した点に絞り、最近の偶発的な語は避ける"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 スコア：
-- relevance：この話題がユーザーにとってどれほど関連があるか、証拠が安定しているかを合わせた評価。明らかに繰り返し出てきて本当にユーザーが気にしていること → 高スコア；一度か二度しか出ておらず、ついでに触れた程度 → 低スコア。採用させるために水増しせず、ありのままのスコアをつけること。
+- relevance：この話題がユーザーにとってどれほど関連があるか、会話の中で繰り返し出ているかを合わせた評価。明らかに繰り返し出てきて本当にユーザーが気にしていること → 高スコア；一度か二度しか出ておらず、ついでに触れた程度 → 低スコア。採用させるために水増しせず、ありのままのスコアをつけること。
 - risk：この話題を自分から切り出したとき、邪魔・失礼・誤読・こじつけになるリスク。ユーザーが不快に感じたり唐突に思う可能性が高いほど → 高スコア。
 
 価値のある話題がなければ {{"topics": []}} を出力。""",
-    "ko": """당신은 동반자 제품의 화제 선별 도우미입니다. 최근 한마디를 요약하는 것이 아니라, "천천히 모은 전역 근거 + 최근 대화"에서 나중에 낮은 빈도로 자연스럽게 꺼낼 만한 깊은 화제 기회를 1-2개만 고릅니다.
+    "ko": """당신은 동반자 제품의 화제 선별 도우미입니다. 최근 한마디를 요약하는 것이 아니라, 아래 최근 대화에서 나중에 낮은 빈도로 자연스럽게 꺼낼 만한 깊은 화제 기회를 1-2개만 고릅니다.
 
-======천천히 모은 전역 근거======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======전역 근거 끝======
-
-======최근 대화（시간순）======
-{conversation}
-======최근 대화 끝======
+======以上为最近对话(按时间顺序)======
 
 규칙:
 - 모든 텍스트 필드는 사용자 언어로 작성하세요. 한국어 사용자라면 자연스러운 한국어로 출력하세요
 - 사용자의 원문을 그대로 반복하지 말고, "대화 기록을 분석했다"고 드러내지 마세요
-- 최근 관심사, 계획, 고민, 감정, 선택과 강하게 관련되고 전역 근거에서 안정성이 보이는 점만 남기세요
-- 가까이 나온 명사 두 개를 억지로 붙이지 마세요. 연결이 자연스럽지 않으면 출력하지 마세요
-- 인사, 추임새, 얇은 짧은 답, 설문 같은 질문은 낮은 우선순위로 두거나 제외하세요
-- 각 화제는 캐릭터를 위한 짧은 메모입니다. 최종 말투는 캐릭터 생성 단계에 맡깁니다
-- 중요한 것은 관계의 깊이이지 빈도가 아닙니다. 억지로 채우기보다 적게 출력하세요
+- 최근 반복해서 나오고 사용자가 분명히 계속 신경 쓰는 관심사 / 계획 / 고민 / 감정 / 선택만 고르세요
+- 우연히 가까이 나온 단어 두 개를 억지로 화제로 묶지 마세요. 연결이 자연스럽지 않으면 출력하지 마세요
+- 인사, 추임새, 얇은 짧은 답, 설문 같은 질문은 모두 무시하세요
+- 애매하면 적게 출력하세요. 빈 리스트도 괜찮습니다
+- 각 화제는 캐릭터의 말 꺼내기 재료일 뿐, 최종 대사가 아닙니다
 엄격한 JSON만 출력하세요（markdown 코드 블록 금지）:
 {{"topics": [
   {{
     "interest": "사용자가 최근 신경 쓰거나 고민하거나 계획하거나 반복해서 언급하는 구체적인 한 가지를 한 문장으로 정리한 것, 30자 이내",
-    "keywords": ["중복 제거, 검색 결과 선별, 그리고 검색어로도 사용할 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
+    "keywords": ["중복 제거, 검색 결과 선별, 그리고 전달 전 research seed로 쓸 핵심 키워드 3-6개. 사용자가 반복해서 신경 쓰는 안정적인 지점에 맞추고 최근의 우연한 단어는 피하세요"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 점수:
-- relevance: 이 화제가 사용자와 얼마나 관련 있는지, 근거가 안정적인지를 합산한 평가. 명확하게 반복 등장하고 사용자가 진심으로 신경 쓰는 것 → 높은 점수; 한두 번만 나왔거나 그냥 지나치듯 언급한 것 → 낮은 점수. 채택시키려고 부풀리지 말고 있는 그대로 점수를 매기세요.
+- relevance: 이 화제가 사용자와 얼마나 관련 있는지, 대화에서 반복되는지를 합산한 평가. 명확하게 반복 등장하고 사용자가 진심으로 신경 쓰는 것 → 높은 점수; 한두 번만 나왔거나 그냥 지나치듯 언급한 것 → 낮은 점수. 채택시키려고 부풀리지 말고 있는 그대로 점수를 매기세요.
 - risk: 이 화제를 먼저 꺼낼 때 방해가 되거나 무례하거나 오해하거나 억지스럽게 느껴질 위험. 사용자가 불쾌하거나 뜬금없다고 느낄 가능성이 높을수록 → 높은 점수.
 
 가치 있는 화제가 없으면 {{"topics": []}} 를 출력하세요.""",
-    "es": """Eres un asistente que selecciona temas para un producto de compañía. Tu tarea no es resumir el último mensaje, sino elegir 1-2 oportunidades de conversación profunda que valga la pena abrir con baja frecuencia a partir de evidencia global acumulada lentamente y la conversación reciente.
+    "es": """Eres un asistente que selecciona temas para un producto de compañía. Tu tarea no es resumir el último mensaje, sino elegir 1-2 oportunidades de conversación profunda que valga la pena abrir con baja frecuencia a partir de la conversación reciente de abajo.
 
-======Evidencia global acumulada lentamente======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======Fin de la evidencia global======
-
-======Conversación reciente, en orden cronológico======
-{conversation}
-======Fin de la conversación======
+======以上为最近对话(按时间顺序)======
 
 Reglas:
 - Todos los campos de texto deben estar en el idioma del usuario; para usuarios en español, escribe en español natural
 - No repitas literalmente lo que dijo el usuario ni reveles que analizaste su historial
-- Conserva solo temas muy ligados a intereses, planes, dilemas, emociones o elecciones recientes, con estabilidad visible en la evidencia global
-- No unas dos sustantivos solo porque aparecieron cerca; si la conexión no es natural, no outputes nada
-- Saludos, muletillas, respuestas muy finas o preguntas tipo encuesta deben tener baja prioridad o omitirse
-- Cada tema es una nota breve para el personaje: cómo abrir naturalmente, no el texto final
-- Importa más la profundidad de la relación que la frecuencia; mejor pocos que forzados
+- Elige solo intereses / planes / dilemas / emociones / elecciones recientes que se repiten claramente y que al usuario sigue importándole
+- No unas dos palabras en un tema solo porque aparecieron cerca; si la conexión no es natural, déjalo fuera
+- Ignora por completo saludos, muletillas, respuestas muy finas y preguntas tipo encuesta
+- Ante la duda, devuelve menos; una lista vacía está bien
+- Cada tema es solo material para abrir conversación, no la frase final
 Devuelve JSON estricto, sin bloques markdown:
 {{"topics": [
   {{
     "interest": "una sola cosa concreta que el usuario tiene en mente, le preocupa, planea o menciona repetidamente, resumida en una frase, máximo 30 palabras",
-    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como la consulta de búsqueda; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
+    "keywords": ["3-6 palabras clave, usadas para deduplicar, filtrar resultados en línea y como semillas de research antes de entregar; centradas en el interés estable y recurrente del usuario, no en una palabra reciente accidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 Puntuación:
-- relevance: qué tan relevante es este tema para el usuario, combinado con si la evidencia es estable. Aparece claramente de forma recurrente y es algo que realmente le importa → puntuación alta; apareció solo una o dos veces, o solo se mencionó de pasada → puntuación baja. Puntúa con honestidad, sin inflar para que el tema sea incluido.
+- relevance: qué tan relevante es este tema para el usuario, combinado con si se repite en la conversación. Aparece claramente de forma recurrente y es algo que realmente le importa → puntuación alta; apareció solo una o dos veces, o solo se mencionó de pasada → puntuación baja. Puntúa con honestidad, sin inflar para que el tema sea incluido.
 - risk: el riesgo de que plantear este tema activamente resulte intrusivo, ofensivo, malinterpretado o forzado. Cuanto más probable sea que el usuario se sienta molesto o sorprendido → mayor puntuación.
 
 Si no hay nada que valga la pena, devuelve {{"topics": []}}.""",
-    "pt": """Voce e um assistente de selecao de assuntos para um produto de companhia. Sua tarefa nao e resumir a ultima mensagem, mas escolher 1-2 oportunidades de conversa profunda que valem ser puxadas com baixa frequencia, usando evidencias globais coletadas aos poucos e a conversa recente.
+    "pt": """Voce e um assistente de selecao de assuntos para um produto de companhia. Sua tarefa nao e resumir a ultima mensagem, mas escolher 1-2 oportunidades de conversa profunda que valem ser puxadas com baixa frequencia, a partir da conversa recente abaixo.
 
-======Evidencias globais coletadas aos poucos======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======Fim das evidencias globais======
-
-======Conversa recente, em ordem cronologica======
-{conversation}
-======Fim da conversa======
+======以上为最近对话(按时间顺序)======
 
 Regras:
 - Todos os campos de texto devem estar no idioma do usuario; para usuarios em portugues, escreva em portugues natural
 - Nao repita literalmente a fala do usuario nem revele que voce analisou historico de conversa
-- Mantenha apenas temas muito ligados a interesses, planos, dilemas, emocoes ou escolhas recentes, com estabilidade visivel nas evidencias globais
-- Nao junte dois substantivos so porque apareceram perto; se a ligacao nao for natural, nao outpute nada
-- Cumprimentos, muletas, respostas muito finas ou perguntas com cara de questionario devem ter baixa prioridade ou ser omitidos
-- Cada tema e uma nota curta para o personagem: como abrir naturalmente, nao o texto final
-- O foco e profundidade de relacao, nao frequencia; melhor pouco do que forcado
+- Escolha apenas interesses / planos / dilemas / emocoes / escolhas recentes que se repetem claramente e que o usuario continua a se importar
+- Nao junte duas palavras num tema so porque apareceram perto; se a ligacao nao for natural, deixe de fora
+- Ignore por completo cumprimentos, muletas, respostas muito finas e perguntas com cara de questionario
+- Na duvida, retorne menos; uma lista vazia esta ok
+- Cada tema e so material para abrir conversa, nao a frase final
 Retorne JSON estrito, sem blocos markdown:
 {{"topics": [
   {{
     "interest": "uma unica coisa concreta que o usuario tem em mente, preocupa, planeja ou menciona repetidamente, resumida em uma frase, maximo 30 palavras",
-    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como a consulta de busca; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
+    "keywords": ["3-6 palavras-chave, usadas para deduplicar, filtrar resultados online e como seeds de research antes da entrega; centradas no interesse estavel e recorrente do usuario, nao em uma palavra recente acidental"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 Pontuacao:
-- relevance: o quanto este tema e relevante para o usuario, combinado com se a evidencia e estavel. Aparece claramente de forma recorrente e e algo que realmente importa ao usuario → pontuacao alta; apareceu apenas uma ou duas vezes, ou foi so uma mencao passageira → pontuacao baixa. Pontue com honestidade, sem inflar para o tema ser incluido.
+- relevance: o quanto este tema e relevante para o usuario, combinado com se ele se repete na conversa. Aparece claramente de forma recorrente e e algo que realmente importa ao usuario → pontuacao alta; apareceu apenas uma ou duas vezes, ou foi so uma mencao passageira → pontuacao baixa. Pontue com honestidade, sem inflar para o tema ser incluido.
 - risk: o risco de que trazer este tema ativamente resulte em interrupcao, ofensa, mal-entendido ou algo forcado. Quanto mais provavelmente o usuario se sentiria incomodado ou pego de surpresa → maior a pontuacao.
 
 Se nada valer a pena, retorne {{"topics": []}}.""",
-    "ru": """Ты помощник по отбору тем для companion-продукта. Твоя задача не пересказывать последнее сообщение, а выбрать 1-2 действительно ценные возможности для редкого, естественного начала более глубокого разговора на основе медленно собранных общих сигналов и недавней переписки.
+    "ru": """Ты помощник по отбору тем для companion-продукта. Твоя задача не пересказывать последнее сообщение, а выбрать 1-2 действительно ценные возможности для редкого, естественного начала более глубокого разговора на основе недавней переписки ниже.
 
-======Медленно собранные общие сигналы======
+======以下为最近对话(按时间顺序)======
 {global_signals}
-======Конец общих сигналов======
-
-======Недавняя переписка по порядку======
-{conversation}
-======Конец переписки======
+======以上为最近对话(按时间顺序)======
 
 Правила:
 - Все текстовые поля должны быть на языке пользователя; для русскоязычного пользователя пиши естественно на русском
 - Не повторяй слова пользователя дословно и не раскрывай, что анализировал историю чата
-- Оставляй только темы, тесно связанные с недавними интересами, планами, сомнениями, эмоциями или выборами пользователя, если их устойчивость видна в общих сигналах
-- Не склеивай два существительных только потому, что они оказались рядом; если связь неестественная, ничего не выводи
-- Приветствия, междометия, тонкие короткие ответы и вопросы в стиле анкеты пропускай или давай низкий приоритет
-- Каждая тема — короткая заметка для персонажа: как естественно начать, а не финальная реплика
-- Важна глубина отношений, а не частота; лучше меньше, чем натянуто
+- Бери только недавние интересы / планы / сомнения / эмоции / выборы, которые явно повторяются и о которых пользователь явно продолжает думать
+- Не склеивай два слова в тему только потому, что они оказались рядом; если связь неестественная, не выводи её
+- Полностью игнорируй приветствия, междометия, тонкие короткие ответы и вопросы в стиле анкеты
+- Сомневаешься — выводи меньше; пустой список это нормально
+- Каждая тема — лишь материал для начала разговора, а не финальная реплика
 Выводи строго JSON, без markdown-блоков:
 {{"topics": [
   {{
     "interest": "одна конкретная вещь, о которой пользователь недавно думает, переживает, планирует или постоянно упоминает, сформулированная в одном предложении, до 30 слов",
-    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и в качестве поискового запроса; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
+    "keywords": ["3-6 ключевых слов для дедупликации, фильтрации результатов из сети и как seed для research перед доставкой; вокруг устойчивого интереса пользователя, а не случайного недавнего слова"],
     "relevance": 0-100,
     "risk": 0-100
   }}
 ]}}
 
 Оценки:
-- relevance: насколько эта тема актуальна для пользователя с учётом стабильности сигналов. Явно повторяется и действительно важна пользователю → высокий балл; упомянута лишь раз-два или просто вскользь → низкий балл. Оценивай честно, не завышай ради того, чтобы тема прошла отбор.
+- relevance: насколько эта тема актуальна для пользователя с учётом того, повторяется ли она в переписке. Явно повторяется и действительно важна пользователю → высокий балл; упомянута лишь раз-два или просто вскользь → низкий балл. Оценивай честно, не завышай ради того, чтобы тема прошла отбор.
 - risk: риск того, что активное поднятие этой темы окажется навязчивым, обидным, неверно понятым или натянутым. Чем вероятнее, что пользователь почувствует раздражение или неожиданность → тем выше балл.
 
 Если достойной темы нет, выведи {{"topics": []}}.""",
@@ -1391,7 +1393,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
 #   hours_ago_fmt                — >= 3600s
 #   time_fmt                     — "{hour:02d}:00 {period}"
 #   period_morning / _afternoon / _evening / _night
-#   unfinished_thread_fmt        — {tail, age, used, cap}
+#   unfinished_thread_fmt        — {tail, age}
 #   activity_scores_label
 #   activity_guess_label
 #   open_threads_label
@@ -1412,7 +1414,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "下午",
         "period_evening": "傍晚",
         "period_night": "夜里",
-        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age},已跟进 {used}/{cap})",
+        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age})",
         "activity_scores_label": "评估",
         "activity_guess_label": "叙述",
         "open_threads_label": "开放话题",
@@ -1434,7 +1436,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "afternoon",
         "period_evening": "evening",
         "period_night": "night",
-        "unfinished_thread_fmt": 'unfinished: "…{tail}" ({age} ago, followed up {used}/{cap})',
+        "unfinished_thread_fmt": 'unfinished thread: "…{tail}" ({age} ago)',
         "activity_scores_label": "scores",
         "activity_guess_label": "narrative",
         "open_threads_label": "open threads",
@@ -1456,7 +1458,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "午後",
         "period_evening": "夕方",
         "period_night": "夜",
-        "unfinished_thread_fmt": "未完話題:「…{tail}」({age}, フォロー {used}/{cap})",
+        "unfinished_thread_fmt": "未完話題:「…{tail}」({age})",
         "activity_scores_label": "評価",
         "activity_guess_label": "叙述",
         "open_threads_label": "保留話題",
@@ -1478,7 +1480,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "오후",
         "period_evening": "저녁",
         "period_night": "밤",
-        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age}, 후속 {used}/{cap})',
+        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age})',
         "activity_scores_label": "평가",
         "activity_guess_label": "서술",
         "open_threads_label": "보류 화제",
@@ -1500,7 +1502,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "день",
         "period_evening": "вечер",
         "period_night": "ночь",
-        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад, {used}/{cap})",
+        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад)",
         "activity_scores_label": "оценки",
         "activity_guess_label": "описание",
         "open_threads_label": "открытые нити",
@@ -1522,7 +1524,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "tarde",
         "period_evening": "atardecer",
         "period_night": "noche",
-        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age}, seguimiento {used}/{cap})',
+        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age})',
         "activity_scores_label": "puntuaciones",
         "activity_guess_label": "narrativa",
         "open_threads_label": "hilos abiertos",
@@ -1544,7 +1546,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "period_afternoon": "tarde",
         "period_evening": "fim de tarde",
         "period_night": "noite",
-        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás, seguido {used}/{cap})',
+        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás)',
         "activity_scores_label": "pontuações",
         "activity_guess_label": "narrativa",
         "open_threads_label": "tópicos abertos",
@@ -1755,33 +1757,33 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
         "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de fútbol contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
         "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de futebol com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
     },
-    "basketball": {
+    "badminton": {
         "zh": "========以下是环境提示========\n"
         "{master}已经在{app}专注工作{minutes}分钟了。\n"
-        "你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局篮球投篮小游戏放松一下。\n"
-        '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起玩一局投篮"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+        "你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局羽毛球小游戏放松一下。\n"
+        '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起打一局羽毛球"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
         "========以上是环境提示========",
         "en": "========Below is Environment Notice========\n"
         "{master} has been focused on {app} for {minutes} minutes.\n"
-        "You want {master} to take a break — and you want to invite {master} to play a quick round of the basketball shooting mini-game with you to unwind.\n"
+        "You want {master} to take a break — and you want to invite {master} to play a quick round of the badminton mini-game with you to unwind.\n"
         "Talk to {master} in your own way, naturally — show that you care AND make the invite to play together clear. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
         "========Above is Environment Notice========",
         "ja": "========以下は環境通知========\n"
         "{master}は{app}に{minutes}分間ずっと集中している。\n"
-        "少し休ませてあげたくて、ついでにバスケットのシュートミニゲームを一緒にやろうって誘いたい気持ち。\n"
-        "自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒に一局シュートしよう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+        "少し休ませてあげたくて、ついでにバドミントンのミニゲームを一緒にやろうって誘いたい気持ち。\n"
+        "自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒に一局バドミントンしよう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
         "========以上は環境通知========",
         "ko": "========아래는 환경 알림========\n"
         "{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n"
-        "잠깐 쉬게 하고 싶고, 겸사겸사 같이 농구 슈팅 미니게임 한 판 하자고 권하고 싶다.\n"
-        '너다운 방식으로 자연스럽게 말을 걸어 — 걱정하는 마음을 보이면서 "같이 슛 한 판 하자"는 초대도 분명히 담아. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+        "잠깐 쉬게 하고 싶고, 겸사겸사 같이 배드민턴 미니게임 한 판 하자고 권하고 싶다.\n"
+        '너다운 방식으로 자연스럽게 말을 걸어 — 걱정하는 마음을 보이면서 "같이 배드민턴 한 판 하자"는 초대도 분명히 담아. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
         "========위는 환경 알림========",
         "ru": "========Ниже Уведомление========\n"
         "{master} уже {minutes} минут сосредоточенно работает в {app}.\n"
-        "Хочется дать {master} отдохнуть — и заодно позвать его сыграть один раунд в баскетбольный мини-челлендж на броски, чтобы развеяться.\n"
+        "Хочется дать {master} отдохнуть — и заодно позвать его сыграть один раунд в мини-игру по бадминтону, чтобы развеяться.\n"
         "Заговори с {master} так, как тебе свойственно — пусть {master} почувствует заботу, и обязательно прозвучит приглашение сыграть разок. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
         "========Выше Уведомление========",
-        "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de tiros de baloncesto contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
-        "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de arremessos de basquete com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
+        "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de bádminton contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
+        "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de badminton com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
     },
 }

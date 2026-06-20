@@ -1082,7 +1082,9 @@
     }
 
     // 停止录音（内部辅助，清理音频管道与后端通信）
-    function stopRecording() {
+    function stopRecording(options) {
+        options = options || {};
+        const notifyServer = options.notifyServer !== false;
         // 停止语音期间主动视觉定时
         if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
             window.stopProactiveVisionDuringSpeech();
@@ -1138,7 +1140,7 @@
         }
 
         // 通知服务器暂停会话
-        if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+        if (notifyServer && S.socket && S.socket.readyState === WebSocket.OPEN) {
             S.socket.send(JSON.stringify({
                 action: 'pause_session'
             }));

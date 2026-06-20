@@ -6,20 +6,12 @@ type StudyStatus = {
   status?: string;
   active_mode?: string;
   mode?: string;
-  last_reply?: string;
   last_ocr_text?: string;
   last_error?: string;
   screen_classification?: {
     screen_type?: string;
     confidence?: number;
     reason?: string;
-  };
-  current_question?: {
-    question?: string;
-    answer?: string;
-    hint?: string;
-    topic?: string;
-    difficulty?: number;
   };
   last_answer_evaluation?: {
     verdict?: string;
@@ -28,6 +20,9 @@ type StudyStatus = {
     next_action?: string;
   };
   last_session_summary?: string;
+  config?: {
+    llm_vision_max_image_px?: number;
+  };
 };
 
 type StudyMode = 'companion' | 'interactive' | 'teaching';
@@ -36,9 +31,9 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 60000,
-  study_generate_question: 75000,
-  study_evaluate_answer: 75000,
+  study_explain_text: 310000,
+  study_generate_question: 310000,
+  study_evaluate_answer: 310000,
   study_summarize_session: 90000,
 };
 
@@ -47,15 +42,29 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
   { id: 'interactive', labelKey: 'status.mode.interactive', fallback: 'Interactive' },
   { id: 'teaching', labelKey: 'status.mode.teaching', fallback: 'Teaching' },
 ];
-const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
-const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
-const KATEX_RENDER_SCRIPT_URL = '/plugin/study_companion/ui/katex-render.js';
+const KATEX_ASSET_VERSION = 'study-hotfix-20260615v';
+const KATEX_CSS_URL = `/plugin/study_companion/ui/katex.min.css?v=${KATEX_ASSET_VERSION}`;
+const KATEX_SCRIPT_URL = `/plugin/study_companion/ui/katex.min.js?v=${KATEX_ASSET_VERSION}`;
+const KATEX_RENDER_SCRIPT_URL = `/plugin/study_companion/ui/katex-render.js?v=${KATEX_ASSET_VERSION}`;
 let katexLoadPromise: Promise<void> | null = null;
 
 type MathTextPart = {
   type: 'text' | 'math';
   value: string;
   display?: boolean;
+};
+
+type StudyReplySectionVariant = 'analysis' | 'process' | 'answer' | 'transfer';
+
+type StudyReplyBlock =
+  | { type: 'text'; value: string }
+  | { type: 'section'; variant: StudyReplySectionVariant; title: string; value: string };
+
+const STUDY_REPLY_SECTION_CLASS_BY_VARIANT: Record<StudyReplySectionVariant, string> = {
+  analysis: 'study-reply-section--analysis',
+  process: 'study-reply-section--process',
+  answer: 'study-reply-section--answer',
+  transfer: 'study-reply-section--transfer',
 };
 
 type StudyMathTools = {
@@ -98,11 +107,12 @@ function ensureHostedScript(id: string, src: string) {
     };
     const existing = document.getElementById(id) as HTMLScriptElement | null;
     if (existing) {
-      if (existing.dataset.studyKatexLoaded === 'true') {
+      if (existing.getAttribute('src') !== src) {
+        existing.remove();
+      } else if (existing.dataset.studyKatexLoaded === 'true') {
         resolve();
         return;
-      }
-      if (existing.dataset.studyKatexFailed === 'true') {
+      } else if (existing.dataset.studyKatexFailed === 'true') {
         existing.remove();
       } else {
         existing.addEventListener('load', () => resolveLoad(existing), { once: true });
@@ -128,7 +138,11 @@ function ensureHostedKatex() {
     return katexLoadPromise;
   }
   katexLoadPromise = new Promise((resolve) => {
-    if (!document.getElementById('study-companion-katex-css')) {
+    const existingCss = document.getElementById('study-companion-katex-css') as HTMLLinkElement | null;
+    if (existingCss && existingCss.getAttribute('href') !== KATEX_CSS_URL) {
+      existingCss.href = KATEX_CSS_URL;
+    }
+    if (!existingCss) {
       const link = document.createElement('link');
       link.id = 'study-companion-katex-css';
       link.rel = 'stylesheet';
@@ -165,14 +179,79 @@ function renderMathSpans(root: HTMLElement | null) {
   });
 }
 
+function studyReplySectionMeta(value: string): { variant: StudyReplySectionVariant; title: string } | null {
+  const normalized = String(value || '')
+    .replace(/^#{1,4}\s+/, '')
+    .replace(/^\*\*(.+?)\*\*$/, '$1')
+    .replace(/[：:]\s*$/, '')
+    .trim()
+    .toLowerCase();
+  const variants: Record<string, { variant: StudyReplySectionVariant; title: string }> = {
+    解析: { variant: 'analysis', title: '解析' },
+    题目解析: { variant: 'analysis', title: '题目解析' },
+    題目解析: { variant: 'analysis', title: '題目解析' },
+    'problem analysis': { variant: 'analysis', title: 'Problem Analysis' },
+    解题过程: { variant: 'process', title: '解题过程' },
+    解題過程: { variant: 'process', title: '解題過程' },
+    'solution process': { variant: 'process', title: 'Solution Process' },
+    答案: { variant: 'answer', title: '答案' },
+    'final answer': { variant: 'answer', title: 'Final Answer' },
+    举一反三: { variant: 'transfer', title: '举一反三' },
+    舉一反三: { variant: 'transfer', title: '舉一反三' },
+    'transfer practice': { variant: 'transfer', title: 'Transfer Practice' },
+  };
+  return variants[normalized] || null;
+}
+
+function buildStudyReplyBlocks(text: string): StudyReplyBlock[] {
+  const lines = String(text || '').split(/\r?\n/);
+  const blocks: StudyReplyBlock[] = [];
+  let textLines: string[] = [];
+  let section: Extract<StudyReplyBlock, { type: 'section' }> | null = null;
+  const flushText = () => {
+    if (textLines.length > 0) {
+      blocks.push({ type: 'text', value: textLines.join('\n') });
+      textLines = [];
+    }
+  };
+  const flushSection = () => {
+    if (section) {
+      blocks.push(section);
+      section = null;
+    }
+  };
+  for (const line of lines) {
+    const meta = studyReplySectionMeta(line.trim());
+    if (meta) {
+      flushText();
+      flushSection();
+      section = { type: 'section', variant: meta.variant, title: meta.title, value: '' };
+      continue;
+    }
+    if (section) {
+      section.value = section.value ? `${section.value}\n${line}` : line;
+    } else {
+      textLines.push(line);
+    }
+  }
+  flushText();
+  flushSection();
+  return blocks.length > 0 ? blocks : [{ type: 'text', value: text }];
+}
+
 function MathReply({ text, label }: { text: string; label: string }) {
   const containerRef = useRef<HTMLElement | null>(null);
   const [mathReady, setMathReady] = useState(() => Boolean(getStudyMathTools()));
+  const [mathRenderTick, setMathRenderTick] = useState(0);
   useEffect(() => {
     let active = true;
     ensureHostedKatex().then(() => {
       if (active) {
-        setMathReady(Boolean(getStudyMathTools()));
+        const ready = Boolean(getStudyMathTools());
+        setMathReady(ready);
+        if (ready && hasHostedKatex()) {
+          setMathRenderTick((tick) => tick + 1);
+        }
       }
     });
     return () => {
@@ -183,9 +262,27 @@ function MathReply({ text, label }: { text: string; label: string }) {
     if (mathReady) {
       renderMathSpans(containerRef.current);
     }
-  }, [mathReady, text]);
+  }, [mathReady, mathRenderTick, text]);
   const mathTools = mathReady ? getStudyMathTools() : null;
   const parts: MathTextPart[] = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
+  const renderParts = (items: MathTextPart[], keyPrefix: string) => items.map((part, index) => {
+    if (part.type === 'math') {
+      const wrapper = part.display ? '$$' : '$';
+      return (
+        <span
+          key={`${keyPrefix}-math-${index}`}
+          data-study-math="true"
+          data-display={part.display ? 'true' : 'false'}
+          data-math={part.value}
+        >
+          {wrapper}{part.value}{wrapper}
+        </span>
+      );
+    }
+    return <span key={`${keyPrefix}-text-${index}`}>{part.value}</span>;
+  });
+  const blocks = buildStudyReplyBlocks(text);
+  const hasStudySections = blocks.some((block) => block.type === 'section');
   return (
     <div
       ref={containerRef}
@@ -194,22 +291,26 @@ function MathReply({ text, label }: { text: string; label: string }) {
       aria-live="polite"
       aria-label={label}
     >
-      {parts.map((part, index) => {
-        if (part.type === 'math') {
-          const wrapper = part.display ? '$$' : '$';
-          return (
-            <span
-              key={`math-${index}`}
-              data-study-math="true"
-              data-display={part.display ? 'true' : 'false'}
-              data-math={part.value}
-            >
-              {wrapper}{part.value}{wrapper}
-            </span>
-          );
-        }
-        return <span key={`text-${index}`}>{part.value}</span>;
-      })}
+      {hasStudySections
+        ? blocks.map((block, index) => {
+          if (block.type === 'section') {
+            const sectionParts = mathTools ? mathTools.splitByMath(block.value) : [{ type: 'text' as const, value: block.value }];
+            return (
+              <section
+                key={`section-${index}`}
+                className={`study-reply-section ${STUDY_REPLY_SECTION_CLASS_BY_VARIANT[block.variant]}`}
+              >
+                <h3 className="study-reply-section__title">{block.title}</h3>
+                <div className="study-reply-section__body">
+                  {renderParts(sectionParts, `section-${index}`)}
+                </div>
+              </section>
+            );
+          }
+          const textParts = mathTools ? mathTools.splitByMath(block.value) : [{ type: 'text' as const, value: block.value }];
+          return <span key={`text-block-${index}`}>{renderParts(textParts, `text-block-${index}`)}</span>;
+        })
+        : renderParts(parts, 'reply')}
     </div>
   );
 }
@@ -218,7 +319,7 @@ function timeoutForEntry(entryId: string) {
   return ENTRY_TIMEOUT_MS[entryId] || 60000;
 }
 
-const MAX_PASTE_IMAGE_LONG_SIDE = 1920;
+const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const TARGET_DATA_URL_LENGTH = 1_000_000;
 const LOAD_IMAGE_TIMEOUT_MS = 30000;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png']);
@@ -234,6 +335,14 @@ function assertNotAborted(signal?: AbortSignal) {
   if (signal?.aborted) {
     throw new DOMException('Aborted', 'AbortError');
   }
+}
+
+function normalizeVisionMaxImagePx(value: unknown) {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_VISION_MAX_IMAGE_PX;
+  }
+  return Math.max(64, Math.min(4096, parsed));
 }
 
 function loadImage(
@@ -308,7 +417,11 @@ function encodeJpegWithinTarget(canvas: HTMLCanvasElement) {
   return best || fallback;
 }
 
-async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null> {
+async function compressImageForStudy(
+  blob: Blob,
+  signal?: AbortSignal,
+  maxImagePx = DEFAULT_VISION_MAX_IMAGE_PX,
+): Promise<string | null> {
   if (!SUPPORTED_PASTE_IMAGE_TYPES.has(blob.type)) {
     return null;
   }
@@ -321,9 +434,10 @@ async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<
     if (!width || !height) {
       throw new Error('Image dimensions are unavailable');
     }
+    const maxLongSide = normalizeVisionMaxImagePx(maxImagePx);
     const longSide = Math.max(width, height);
-    if (longSide > MAX_PASTE_IMAGE_LONG_SIDE) {
-      const scale = MAX_PASTE_IMAGE_LONG_SIDE / longSide;
+    if (longSide > maxLongSide) {
+      const scale = maxLongSide / longSide;
       width = Math.round(width * scale);
       height = Math.round(height * scale);
     }
@@ -341,8 +455,8 @@ async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<
         0.5,
         Math.min(0.85, Math.sqrt(TARGET_DATA_URL_LENGTH / dataUrl.length) * 0.9),
       );
-      width = Math.max(320, Math.round(width * scale));
-      height = Math.max(320, Math.round(height * scale));
+      width = Math.max(1, Math.min(maxLongSide, Math.round(width * scale)));
+      height = Math.max(1, Math.min(maxLongSide, Math.round(height * scale)));
       const resized = document.createElement('canvas');
       resized.width = width;
       resized.height = height;
@@ -371,6 +485,7 @@ type PasteSetters = {
   setPasteError: (value: string) => void;
   setPastePending?: (value: boolean) => void;
   onImageAccepted?: () => void;
+  getMaxImagePx?: () => number;
   pasteErrorMessage: string;
   unsupportedTypeMessage: string;
 };
@@ -416,7 +531,11 @@ function createPasteHandler(
             continue;
           }
           try {
-            const image = await compressImageForStudy(blob, signal);
+            const image = await compressImageForStudy(
+              blob,
+              signal,
+              setters.getMaxImagePx?.() ?? DEFAULT_VISION_MAX_IMAGE_PX,
+            );
             if (signal.aborted || !isMounted()) {
               return;
             }
@@ -485,10 +604,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const explainControllerRef = useRef<AbortController | null>(null);
   const pasteControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
-  const textAutoFilledFromOcrRef = useRef(false);
   const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
+  const visionMaxImagePxRef = useRef(DEFAULT_VISION_MAX_IMAGE_PX);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const replySectionRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
 
@@ -525,6 +645,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     return busy || pastePendingRef.current;
   }
 
+  function scrollReplyIntoView() {
+    replySectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
   function modeLabel(mode: string) {
     const entry = MODE_ORDER.find((candidate) => candidate.id === mode);
     return entry ? t(entry.labelKey, entry.fallback) : String(mode || MODE_ORDER[0].id);
@@ -543,30 +667,22 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const screen = data.screen_classification && typeof data.screen_classification === 'object'
       ? data.screen_classification as Record<string, unknown>
       : undefined;
-    const question = data.current_question && typeof data.current_question === 'object'
-      ? data.current_question as Record<string, unknown>
-      : undefined;
     const evaluation = data.last_answer_evaluation && typeof data.last_answer_evaluation === 'object'
       ? data.last_answer_evaluation as Record<string, unknown>
+      : undefined;
+    const config = data.config && typeof data.config === 'object'
+      ? data.config as Record<string, unknown>
       : undefined;
     return {
       status: typeof data.status === 'string' ? data.status : undefined,
       active_mode: typeof data.active_mode === 'string' ? data.active_mode : undefined,
       mode: typeof data.mode === 'string' ? data.mode : undefined,
-      last_reply: typeof data.last_reply === 'string' ? data.last_reply : undefined,
       last_ocr_text: typeof data.last_ocr_text === 'string' ? data.last_ocr_text : undefined,
       last_error: typeof data.last_error === 'string' ? data.last_error : undefined,
       screen_classification: screen ? {
         screen_type: typeof screen.screen_type === 'string' ? screen.screen_type : undefined,
         confidence: typeof screen.confidence === 'number' ? screen.confidence : undefined,
         reason: typeof screen.reason === 'string' ? screen.reason : undefined,
-      } : undefined,
-      current_question: question ? {
-        question: typeof question.question === 'string' ? question.question : undefined,
-        answer: typeof question.answer === 'string' ? question.answer : undefined,
-        hint: typeof question.hint === 'string' ? question.hint : undefined,
-        topic: typeof question.topic === 'string' ? question.topic : undefined,
-        difficulty: typeof question.difficulty === 'number' ? question.difficulty : undefined,
       } : undefined,
       last_answer_evaluation: evaluation ? {
         verdict: typeof evaluation.verdict === 'string' ? evaluation.verdict : undefined,
@@ -575,6 +691,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         next_action: typeof evaluation.next_action === 'string' ? evaluation.next_action : undefined,
       } : undefined,
       last_session_summary: typeof data.last_session_summary === 'string' ? data.last_session_summary : undefined,
+      config: config ? {
+        llm_vision_max_image_px: typeof config.llm_vision_max_image_px === 'number'
+          ? config.llm_vision_max_image_px
+          : undefined,
+      } : undefined,
     };
   }
 
@@ -600,12 +721,6 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   function setStatusLine(data: StudyStatus) {
     setStatus({ ...data, active_mode: String(data.active_mode || data.mode || 'companion') });
-    setQuestion(data.current_question?.question || '');
-  }
-
-  function setManualText(value: string) {
-    textAutoFilledFromOcrRef.current = false;
-    setText(value);
   }
 
   function setTextImageValue(value: string) {
@@ -613,31 +728,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setTextImage(value);
   }
 
-  function clearAutoFilledTextOnImagePaste() {
-    if (!textAutoFilledFromOcrRef.current) {
-      return;
-    }
-    textAutoFilledFromOcrRef.current = false;
-    setText('');
+  function getVisionMaxImagePx() {
+    return visionMaxImagePxRef.current;
   }
 
-  async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {
-    const updateReply = options.updateReply !== false;
+  async function refresh(signal?: AbortSignal, _options: { updateReply?: boolean } = {}) {
     const data = normalizeStudyStatus(await callStudyPlugin(props.api, 'study_status', {}, signal));
     if (signal?.aborted) {
       return;
     }
+    visionMaxImagePxRef.current = normalizeVisionMaxImagePx(
+      data.config?.llm_vision_max_image_px,
+    );
     setStatusLine(data);
-    if (updateReply) {
-      setReply(data.last_reply || '');
-    }
-    setText((prev) => {
-      if (textImageRef.current || prev.trim() || !data.last_ocr_text) {
-        return prev;
-      }
-      textAutoFilledFromOcrRef.current = true;
-      return data.last_ocr_text;
-    });
   }
 
   async function setMode(mode: StudyMode) {
@@ -687,12 +790,23 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    const sourceText = text.trim();
+    if (!sourceText && !textImage) {
+      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const explainArgs: Record<string, unknown> = { text };
+    const explainArgs: Record<string, unknown> = { text: sourceText };
     if (textImage) explainArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
+      setStatus((prev) => ({
+        ...prev,
+        status: textImage ? 'solving_problem' : 'explaining',
+      }));
+      setReply(textImage ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));
+      scrollReplyIntoView();
       const data = await callStudyPlugin(props.api, 'study_explain_text', explainArgs, controller.signal) as {
         reply?: string;
         summary?: string;
@@ -727,9 +841,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    const sourceText = text.trim();
+    if (!sourceText && !textImage) {
+      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const genArgs: Record<string, unknown> = { text };
+    const genArgs: Record<string, unknown> = { text: sourceText };
     if (textImage) genArgs.vision_image_base64 = textImage;
     let shouldClearTextImage = false;
     try {
@@ -890,10 +1009,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const handleTextPaste = createPasteHandler(
     {
       setImage: setTextImageValue,
-      setTextValue: setManualText,
+      setTextValue: setText,
       setPasteError: setTextPasteError,
       setPastePending: setPastePendingState,
-      onImageAccepted: clearAutoFilledTextOnImagePaste,
+      getMaxImagePx: getVisionMaxImagePx,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
@@ -907,6 +1026,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setTextValue: setAnswer,
       setPasteError: setAnswerPasteError,
       setPastePending: setPastePendingState,
+      getMaxImagePx: getVisionMaxImagePx,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
@@ -959,7 +1079,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         </div>
         <div>
           <span>{t('ui.label.question', 'Question')}</span>
-          <strong>{compactText(question || status.current_question?.question)}</strong>
+          <strong>{compactText(question)}</strong>
         </div>
         <div>
           <span>{t('ui.label.answer', 'Answer')}</span>
@@ -971,7 +1091,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
         value={text}
         readOnly={interactionBusy}
-        onChange={(event) => setManualText(event.target.value)}
+        onChange={(event) => setText(event.target.value)}
         onPaste={handleTextPaste}
       />
       {textImage ? (
@@ -1050,8 +1170,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.summarize_session', 'Summarize Session')}
         </button>
       </div>
-      <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
-      <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
+      <div ref={replySectionRef}>
+        <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
+        <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
+      </div>
     </div>
   );
 }

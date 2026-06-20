@@ -287,10 +287,12 @@ class TestCustomApiToggle:
 
     @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
-        """enableCustomApi=true → all 8 model types can be overridden."""
+        """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
             ('summary', 'SUMMARY_MODEL'),
+            ('gameMain', 'GAME_MAIN_MODEL'),
+            ('gameSummary', 'GAME_SUMMARY_MODEL'),
             ('correction', 'CORRECTION_MODEL'),
             ('emotion', 'EMOTION_MODEL'),
             ('vision', 'VISION_MODEL'),
@@ -303,6 +305,8 @@ class TestCustomApiToggle:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameSummaryModelProvider': 'custom',
         }
         for camel_prefix, _ in model_types:
             payload[f'{camel_prefix}ModelUrl'] = f'https://{camel_prefix}.test/v1'
@@ -321,6 +325,161 @@ class TestCustomApiToggle:
                 f'{upper_url} not applied'
             assert cfg[upper_key] == f'sk-{camel_prefix}', \
                 f'{upper_key} not applied'
+
+    @pytest.mark.unit
+    def test_game_models_follow_conversation_and_summary_by_default(self, config_manager):
+        """Mini-game model slots default to the main text and summary model configs."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'https://conversation.custom.test/v1',
+            'conversationModelId': 'conversation-custom-model',
+            'conversationModelApiKey': 'sk-conversation-custom',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'https://summary.custom.test/v1',
+            'summaryModelId': 'summary-custom-model',
+            'summaryModelApiKey': 'sk-summary-custom',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert game_main['model'] == 'conversation-custom-model'
+        assert game_main['base_url'] == 'https://conversation.custom.test/v1'
+        assert game_main['api_key'] == 'sk-conversation-custom'
+        assert game_summary['model'] == 'summary-custom-model'
+        assert game_summary['base_url'] == 'https://summary.custom.test/v1'
+        assert game_summary['api_key'] == 'sk-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_main_explicit_custom_override(self, config_manager):
+        """Mini-game main model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameMainModelUrl': 'https://game-main.custom.test/v1',
+            'gameMainModelId': 'game-main-custom-model',
+            'gameMainModelApiKey': 'sk-game-main-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_main')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-main-custom-model'
+        assert result['base_url'] == 'https://game-main.custom.test/v1'
+        assert result['api_key'] == 'sk-game-main-custom'
+
+    @pytest.mark.unit
+    def test_game_summary_explicit_custom_override(self, config_manager):
+        """Mini-game summary model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameSummaryModelProvider': 'custom',
+            'gameSummaryModelUrl': 'https://game-summary.custom.test/v1',
+            'gameSummaryModelId': 'game-summary-custom-model',
+            'gameSummaryModelApiKey': 'sk-game-summary-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_summary')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-summary-custom-model'
+        assert result['base_url'] == 'https://game-summary.custom.test/v1'
+        assert result['api_key'] == 'sk-game-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_follow_conversation_and_summary_preserve_empty_api_keys(self, config_manager):
+        """Mini-game followers preserve legitimate no-auth keys from followed custom slots."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'http://localhost:8080/v1',
+            'conversationModelId': 'local-conversation-model',
+            'conversationModelApiKey': '',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'http://localhost:8081/v1',
+            'summaryModelId': 'local-summary-model',
+            'summaryModelApiKey': '',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        cfg = config_manager.get_core_config()
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert cfg['GAME_MAIN_MODEL_API_KEY'] == ''
+        assert cfg['GAME_SUMMARY_MODEL_API_KEY'] == ''
+        assert game_main['api_key'] == ''
+        assert game_summary['api_key'] == ''
+
+    @pytest.mark.unit
+    def test_game_follow_assist_derives_model_id_from_assist_profile(self, config_manager):
+        """Mini-game follow-assist slots keep model/url/key from the same assist provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'gemini',
+            'assistApiKeyGemini': 'sk-gemini',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_assist',
+            'gameMainModelId': 'stale-game-main-model',
+            'gameSummaryModelProvider': 'follow_assist',
+            'gameSummaryModelId': 'stale-game-summary-model',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        core_config = config_manager.get_core_config()
+
+        assert game_main['model'] == core_config['CONVERSATION_MODEL']
+        assert game_main['base_url'] == core_config['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-gemini'
+        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['base_url'] == core_config['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-gemini'
+
+    @pytest.mark.unit
+    def test_game_follow_core_derives_model_id_from_core_profile(self, config_manager):
+        """Mini-game follow-core slots keep model/url/key from the same core provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-openai',
+            'coreApi': 'openai',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_core',
+            'gameMainModelId': 'stale-game-main-model',
+            'gameSummaryModelProvider': 'follow_core',
+            'gameSummaryModelId': 'stale-game-summary-model',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        from utils.api_config_loader import get_assist_api_profiles
+        openai_profile = get_assist_api_profiles()['openai']
+
+        assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
+        assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-core-openai'
+        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-core-openai'
 
     @pytest.mark.unit
     def test_custom_api_key_empty_string_valid(self, config_manager):
@@ -1314,7 +1473,7 @@ class TestVllmOmniRawKeyPassthrough:
         assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
 
     @pytest.mark.unit
-    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager):
+    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):
         """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
         _write_core_config(config_manager, {
             'coreApi': 'gemini',
@@ -1333,8 +1492,8 @@ class TestVllmOmniRawKeyPassthrough:
             }
         }
         saved = {}
-        config_manager.load_characters = lambda: character_data
-        config_manager.save_characters = lambda data: saved.setdefault('data', data)
+        monkeypatch.setattr(config_manager, 'load_characters', lambda: character_data)
+        monkeypatch.setattr(config_manager, 'save_characters', lambda data: saved.setdefault('data', data))
 
         cleaned, legacy = config_manager.cleanup_invalid_voice_ids()
 
@@ -1361,6 +1520,204 @@ class TestVllmOmniRawKeyPassthrough:
         assert runtime['api_key'] == ''
         assert runtime['base_url'] != 'ws://localhost:8091/v1'
         assert config_manager.get_tts_api_key('cosyvoice') is None
+
+
+# ---------------------------------------------------------------------------
+# GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉单一真相：snapshot 在
+# get_core_config() 这一处把下拉（与 pre-#1830 存量旧 gptsovitsEnabled 开关）派生进
+# GPTSOVITS_ENABLED，13 个下游读点全部不动。派生语义：ttsModelProvider 非空即唯一
+# 真相，仅缺失/空串时才回落旧开关——不用纯 OR，避免存量切走下拉后旧 true 粘住。
+# ---------------------------------------------------------------------------
+class TestGptsovitsEnabledDerivation:
+
+    @pytest.mark.unit
+    def test_dropdown_provider_only_enables(self, config_manager):
+        """Dropdown only: ttsModelProvider=gptsovits (no legacy flag) -> GPTSOVITS_ENABLED=True."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_legacy_flag_only_enables(self, config_manager):
+        """Legacy flag only: a pre-#1830 stored config (gptsovitsEnabled=true, no
+        ttsModelProvider) still derives GPTSOVITS_ENABLED=True, so existing GSV
+        users are not silently dropped."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_neither_signal_disabled(self, config_manager):
+        """Neither signal: no dropdown and no legacy flag -> GPTSOVITS_ENABLED=False."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_dropdown_other_provider_disabled(self, config_manager):
+        """Dropdown picked another provider: ttsModelProvider=vllm_omni -> GPTSOVITS_ENABLED=False."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'vllm_omni',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_explicit_provider_authoritative_over_stale_legacy_flag(self, config_manager):
+        """An explicit (non-follow) provider wins over a stale legacy flag. After a
+        user switches the dropdown to e.g. vllm_omni, the file may still carry
+        gptsovitsEnabled=true (the frontend retired that field and the backend merges
+        partially). An explicit provider is the single source of truth and must derive
+        False — a naive OR would let the stale true stick and leave GSV stuck on."""
+        # 这就是不用纯 OR 的原因：旧 flag 在增量合并下会粘住，显式选别家也切不掉。
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+            'ttsModelProvider': 'vllm_omni',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_follow_default_provider_falls_back_to_legacy_flag(self, config_manager):
+        """⚠️ Codex PR#1850 P1 regression: a pre-#1830 user who enabled GSV via the
+        old checkbox has gptsovitsEnabled=true AND the TTS dropdown left at its default
+        'follow_assist'/'follow_core' (the older save path submitted every provider
+        dropdown). follow_* is a 'follow assist/core' sentinel — NOT an explicit
+        provider — so it must fall back to the legacy flag and keep GSV enabled, not
+        be misread as 'switched to another provider' and disabled."""
+        for follow in ('follow_assist', 'follow_core'):
+            _write_core_config(config_manager, {
+                'coreApi': 'qwen',
+                'assistApi': 'qwen',
+                'gptsovitsEnabled': True,
+                'ttsModelProvider': follow,
+            })
+            cfg = config_manager.get_core_config()
+            assert cfg['GPTSOVITS_ENABLED'] is True, f"{follow} 应回落旧 flag 保住存量 GSV"
+
+    @pytest.mark.unit
+    def test_empty_provider_falls_back_to_legacy_flag(self, config_manager):
+        """An empty ttsModelProvider (treated as unselected) falls back to the
+        legacy flag, preserving existing configs."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+            'ttsModelProvider': '',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_enabled_snapshot_self_heals_is_custom(self, config_manager):
+        """End-to-end: dropdown=gptsovits + a GSV URL -> snapshot GPTSOVITS_ENABLED=True,
+        and get_model_api_config('tts_custom') self-heals is_custom=True (no separate
+        enableCustomApi needed), which is what dispatch's _gptsovits_is_selected requires."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881',
+            'ttsVoiceId': 'gsv:my_voice',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+        tts_cfg = config_manager.get_model_api_config('tts_custom')
+        assert tts_cfg['is_custom'] is True
+
+
+# ---------------------------------------------------------------------------
+# save choke point 惰性迁移：gptsovitsEnabled 退役后，用户经下拉显式切到非 gptsovits
+# provider（含 follow_*）保存时，把残留旧 flag 落 False——否则 get_core_config 的
+# follow_* 回落分支会把旧 true 兜回来，导致切到 follow_assist 也关不掉 GSV。对偶 #1842
+# voice_id 的 access-choke-point 惰性迁移思路。
+# ---------------------------------------------------------------------------
+class TestGptsovitsEnabledSaveMigration:
+
+    @staticmethod
+    def _neutralize_side_effects(monkeypatch):
+        """Stub out the heavy post-save side effects of update_core_config so the
+        test exercises only the persisted-config logic."""
+        import asyncio
+        from main_routers import config_router
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(config_router, 'get_session_manager', lambda: {})
+        monkeypatch.setattr(config_router, 'get_initialize_character_data', lambda: _noop)
+        monkeypatch.setattr(config_router, 'ensure_default_yui_voice_for_free_api', _noop)
+        monkeypatch.setattr(config_router, '_auto_resolve_provider_urls_for_save', _noop)
+        return config_router, asyncio
+
+    class _FakeRequest:
+        def __init__(self, payload):
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+    @pytest.mark.unit
+    def test_save_non_gptsovits_provider_clears_stale_flag(self, config_manager, monkeypatch):
+        """Stored gptsovitsEnabled=true; the user explicitly switches the dropdown to
+        follow_assist and saves -> the stale flag is set to False, and the derived
+        GPTSOVITS_ENABLED becomes False (GSV is actually turned off)."""
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+            'gptsovitsEnabled': True, 'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen',
+            'ttsModelProvider': 'follow_assist',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('gptsovitsEnabled') is False
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_save_gptsovits_provider_keeps_flag_enabled(self, config_manager, monkeypatch):
+        """Saving while the dropdown stays on/returns to gptsovits does not clear the
+        legacy flag; GSV remains enabled."""
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+            'gptsovitsEnabled': True, 'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        # 切到/保持 gptsovits 不触发惰性清理，存量 true 原样保留。
+        assert saved.get('gptsovitsEnabled') is True
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ from plugin.server.application.plugins import (
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.lifecycle import ensure_plugin_messaging_started
 
 router = APIRouter()
 logger = get_logger("server.routes.plugins")
@@ -41,6 +42,7 @@ async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str,
 @router.post("/plugin/{plugin_id}/start")
 async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
+        await ensure_plugin_messaging_started()
         return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

@@ -100,6 +100,7 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
+from utils.asyncio_executor import configure_default_executor # noqa: E402
 
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
@@ -1251,13 +1252,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 old_mgr = rs.session_manager
                 # 更新prompt
                 old_mgr.lanlan_prompt = lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy
-                old_mgr.voice_id = get_reserved(
+                # 直接读 module global lanlan_basic_config，避免重复 load + deepcopy。
+                # 经 read_legacy_voice_id 容忍 voice 的扁平串 / 结构对象两形态（惰性迁移）。
+                from utils.voice_config import read_legacy_voice_id
+                old_mgr.voice_id = read_legacy_voice_id(get_reserved(
                     lanlan_basic_config[k],
                     'voice_id',
                     default='',
                     legacy_keys=('voice_id',),
-                )
+                ))
                 logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
             except Exception as e:
                 logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
@@ -1524,7 +1527,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/model_manager",
     "/live2d_parameter_editor",
     "/soccer_demo",
-    "/basketball_demo",
+    "/badminton_demo",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",
@@ -1696,6 +1699,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.avatar_drop_router import router as avatar_drop_router # noqa
 from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
@@ -1845,6 +1849,7 @@ app.include_router(storage_location_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)
+app.include_router(avatar_drop_router)
 app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
@@ -2256,6 +2261,7 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global _server_loop
         _server_loop = asyncio.get_running_loop()
+        configure_default_executor(_server_loop, logger=logger)
 
         init_shared_state(
             role_state=role_state,

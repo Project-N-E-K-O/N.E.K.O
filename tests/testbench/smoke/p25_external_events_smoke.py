@@ -758,8 +758,10 @@ def check_c_coerce(client, mock) -> list[str]:
         _check(c.get("applied") == "home", "C2.applied",
                f"applied={c.get('applied')}")
 
-        # C3 — proactive language fallback surfaces.
-        r = client.patch("/api/persona", json={"language": "es-ES"})
+        # C3 — a genuinely unsupported language (fr) still falls back to en
+        # and surfaces a language coerce. (es/pt became native in the 2026-06
+        # upstream sync — covered separately in C3b.)
+        r = client.patch("/api/persona", json={"language": "fr-FR"})
         _check(r.status_code == 200, "C3.persona_patch_status",
                f"{r.status_code} {r.text}")
         status, body = _post_event(client, "proactive", {"kind": "home"})
@@ -771,10 +773,24 @@ def check_c_coerce(client, mock) -> list[str]:
         _check(len(lang_entries) == 1, "C3.coerce_language",
                f"coerce_info={coerce_list}")
         c = lang_entries[0]
-        _check(c.get("requested") == "es-ES", "C3.lang_requested",
+        _check(c.get("requested") == "fr-FR", "C3.lang_requested",
                f"requested={c.get('requested')}")
         _check(c.get("applied") == "en", "C3.lang_applied",
                f"applied={c.get('applied')}")
+
+        # C3b — es is now a native proactive language (_normalize_prompt_language
+        # maps es->es); it must NOT surface a language coerce anymore.
+        r = client.patch("/api/persona", json={"language": "es-ES"})
+        _check(r.status_code == 200, "C3b.persona_patch_status",
+               f"{r.status_code} {r.text}")
+        status, body = _post_event(client, "proactive", {"kind": "home"})
+        r3b = _extract_result(body)
+        _check(r3b.get("accepted") is True, "C3b.accepted",
+               f"reason={r3b.get('reason')}")
+        coerce_list = r3b.get("coerce_info") or []
+        lang_entries = [c for c in coerce_list if c.get("field") == "language"]
+        _check(len(lang_entries) == 0, "C3b.no_coerce_native_es",
+               f"unexpected language coerce for native es-ES: {lang_entries}")
 
         # C4 — zh-TW is a native zh prefix; must NOT surface language coerce.
         r = client.patch("/api/persona", json={"language": "zh-TW"})
@@ -1225,24 +1241,24 @@ def check_g_diagnostics(client, mock) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Case H — persona.language={es,pt} → English silent fallback
+# Case H — persona.language={es,pt} → NATIVE dispatch (2026-06 sync)
 # ─────────────────────────────────────────────────────────────
 #
-# Upstream delta (P25 §A.8 #5 + §3 Day 3 smoke): ``prompts_sys._loc``
-# has a ``_SILENT_FALLBACK = {'es', 'pt'}`` set — for these two
-# languages, the LLM system prompt (``AGENT_CALLBACK_NOTIFICATION``)
-# silently falls back to English with no WARNING print, under the
-# assumption "LLM 能理解英文 system prompt, 输出语言由别的机制控".
-# Proactive chat's ``_normalize_prompt_language`` does the same
-# (explicit ``if startswith('es')|'pt': return 'en'``).
+# Upstream delta (2026-06 sync, see docs/UPSTREAM_SYNC_2026-06.md): es/pt
+# became *native* proactive/system languages. ``_normalize_prompt_language``
+# now maps ``es->es`` / ``pt->pt`` (no longer the old ``-> en`` fallback), and
+# both ``SYSTEM_NOTIFICATION_PASSIVE`` and ``PROACTIVE_CHAT_PROMPTS`` ship es/pt
+# keys. The previous version of this check asserted the *opposite* (silent
+# English fallback); the original author flagged that an upstream refactor
+# adding es/pt translations should flip it to "look for the es/pt text" — which
+# is exactly what this rewrite does.
 #
-# This check asserts: when ``persona.language`` = 'es' or 'pt', the
-# instruction actually pushed onto the wire contains the English
-# AGENT_CALLBACK_NOTIFICATION / proactive prompt prefix — *not* the zh
-# or ja default. If a future upstream refactor adds es/pt to the
-# localized strings, this check would FAIL, but that would be a
-# positive signal (new translations are live) rather than a
-# regression, and the check can be updated to look for the es/pt text.
+# This check now asserts: when ``persona.language`` = 'es'/'pt', the
+# instruction on the wire carries the NATIVE header (es: "Aviso del sistema",
+# pt: "Aviso do sistema") and does NOT fall back to the English
+# "[System Notice]" header — proving the testbench dispatches the same native
+# template as production. The native prefixes are derived from
+# ``SYSTEM_NOTIFICATION_PASSIVE`` at runtime so wording tweaks track upstream.
 #
 # We use the mocked ``_invoke_llm_once`` to capture ``last_wire`` and
 # inspect the final tail message's content.
@@ -1261,23 +1277,35 @@ def _set_persona_language(client, language: str) -> None:
     )
 
 
+def _native_passive_prefix(lang_key: str) -> str:
+    """Return the distinctive header token of ``SYSTEM_NOTIFICATION_PASSIVE``
+    for ``lang_key``, derived from the main program at runtime so upstream
+    wording tweaks track automatically.
+
+    e.g. es -> "Aviso del sistema", pt -> "Aviso do sistema", en -> "System Notice".
+    """
+    from config.prompts.prompts_sys import SYSTEM_NOTIFICATION_PASSIVE
+    template = str(SYSTEM_NOTIFICATION_PASSIVE.get(lang_key) or "")
+    # Header shape: "======[<prefix>] Message from {source}======". Pull the
+    # text inside the first bracket pair.
+    start = template.find("[")
+    end = template.find("]", start + 1)
+    if start >= 0 and end > start:
+        return template[start + 1:end].strip()
+    return template.strip()
+
+
 def check_h_persona_language_fallback(client, mock) -> list[str]:
-    """H — persona.language=es/pt → instruction is English (silent fallback)."""
+    """H — persona.language=es/pt → NATIVE template dispatch (no en fallback)."""
     errors: list[str] = []
 
-    # Expected English prefix substring from SYSTEM_NOTIFICATION_PASSIVE['en']
-    # — testbench renders agent_callback via the passive header now (matching
-    # the production drain path). If upstream wording changes, update here too.
-    english_callback_prefix = "System Notice"  # match passive: "[System Notice] Message from ..."
-    # Expected *absent* substrings (other languages' prefixes). We only
-    # sample a couple of non-ASCII giveaway tokens per language so tiny
-    # wording tweaks upstream don't break the test.
-    non_english_tokens = [
-        "系统通知",     # zh
-        "システム通知",  # ja
-        "시스템 알림",   # ko
-        "Системное уведомление",  # ru
-    ]
+    # Native + English passive header tokens, derived from the live main-program
+    # tables so wording tweaks upstream don't break the test.
+    english_callback_prefix = _native_passive_prefix("en")   # "System Notice"
+    native_prefix = {
+        "es": _native_passive_prefix("es"),  # "Aviso del sistema"
+        "pt": _native_passive_prefix("pt"),  # "Aviso do sistema"
+    }
 
     try:
         for lang in ("es", "pt"):
@@ -1286,7 +1314,8 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
             mock.reset()
             mock.set_reply("Mocked reply")
 
-            # H.agent_callback — agent_callback prefix must be English.
+            # H.agent_callback — header must be the NATIVE es/pt one, not the
+            # English fallback.
             _post_event(
                 client, "agent_callback",
                 {"callbacks": [f"{lang} callback test"]},
@@ -1300,24 +1329,22 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
             if wire:
                 tail_content = str(wire[-1].get("content") or "")
                 _check(
-                    english_callback_prefix in tail_content,
-                    f"H1.{lang}.callback.english_prefix",
-                    f"expected English prefix; tail_content={tail_content!r}",
+                    native_prefix[lang] in tail_content,
+                    f"H1.{lang}.callback.native_prefix",
+                    f"expected native prefix {native_prefix[lang]!r}; "
+                    f"tail_content={tail_content!r}",
                 )
-                for tok in non_english_tokens:
-                    _check(
-                        tok not in tail_content,
-                        f"H1.{lang}.callback.no_{tok[:6]}",
-                        f"non-English token {tok!r} leaked into es/pt wire",
-                    )
+                _check(
+                    english_callback_prefix not in tail_content,
+                    f"H1.{lang}.callback.no_en_fallback",
+                    f"English fallback prefix {english_callback_prefix!r} "
+                    f"leaked into native {lang} wire: {tail_content!r}",
+                )
             _delete_session(client)
 
-        # H.proactive — proactive prompt dispatch table uses the same
-        # "es/pt → en" rule. We can't inspect the exact prompt text
-        # reliably across upstream edits, but we can assert the same
-        # negative invariant: no non-English markers. A positive English
-        # assertion is harder because proactive prompts don't ship a
-        # single stable English phrase; skip that half.
+        # H.proactive — es/pt now dispatch native proactive templates. We assert
+        # the rendered wire differs from the English render of the same event
+        # (proving no silent en fallback) without depending on exact wording.
         for lang in ("es", "pt"):
             _create_session(client, f"p25_H_{lang}_pc")
             _set_persona_language(client, lang)
@@ -1326,7 +1353,7 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
 
             status, body = _post_event(
                 client, "proactive",
-                {"kind": "time_passed", "hours_since_last_interaction": 2.0},
+                {"kind": "home"},
             )
             _check(
                 status == 200,
@@ -1339,15 +1366,22 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
                 f"H2.{lang}.proactive.wire_nonempty",
                 "_invoke_llm_once not called",
             )
-            if wire:
-                tail_content = str(wire[-1].get("content") or "")
-                for tok in non_english_tokens:
-                    _check(
-                        tok not in tail_content,
-                        f"H2.{lang}.proactive.no_{tok[:6]}",
-                        f"non-English token {tok!r} leaked into es/pt "
-                        f"proactive wire",
-                    )
+            tail_native = str((wire[-1].get("content") if wire else "") or "")
+
+            # Render the same proactive event as English and assert the native
+            # es/pt render differs — proving native dispatch, not en fallback.
+            _set_persona_language(client, "en-US")
+            mock.reset()
+            mock.set_reply("Mocked reply")
+            _post_event(client, "proactive", {"kind": "home"})
+            wire_en = mock.last_wire or []
+            tail_en = str((wire_en[-1].get("content") if wire_en else "") or "")
+            _check(
+                bool(tail_native) and tail_native != tail_en,
+                f"H2.{lang}.proactive.native_differs_from_en",
+                f"native {lang} proactive render matched the English render "
+                f"(silent fallback?): {tail_native[:120]!r}",
+            )
             _delete_session(client)
 
     except AssertionFailed as exc:
@@ -1569,8 +1603,8 @@ def main() -> int:
                      check_f_append_invariants(client, mock))
     total += _report("G | diagnostics op records (correct type + detail fields)",
                      check_g_diagnostics(client, mock))
-    total += _report("H | persona.language=es/pt silent English fallback "
-                     "(upstream delta)",
+    total += _report("H | persona.language=es/pt native dispatch "
+                     "(2026-06 upstream delta)",
                      check_h_persona_language_fallback(client, mock))
     total += _report("I | SimulationResult.reason 复现表 "
                      "(§4.7: 语义契约层 only, no runtime 机制)",

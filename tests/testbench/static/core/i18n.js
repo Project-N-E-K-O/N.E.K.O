@@ -2168,6 +2168,10 @@ export const I18N = {
         api_key_status: {
           configured: '已配置 (请求时使用)',
           bundled_by_preset: '此预设内置 API Key (如免费版), 无需填写',
+          // 免费 Lanlan 预设在 testbench 里已不可用: 服务端反滥用会拦截外部
+          // 客户端 (返回 "STOP ABUSE THE API"), 该预设仅 NEKO 主程序自身可用.
+          // 详见 docs/UPSTREAM_SYNC_2026-06.md (2026-06-19 排查结论).
+          free_preset_unusable: '注意: 免费预设无法用于 testbench 真实 LLM 调用 (Lanlan 服务端反滥用拦截, 报 "STOP ABUSE THE API"), 仅 NEKO 主程序可用. 要在此跑真实对话/记忆/评分, 请改配付费 provider + API Key.',
           from_preset: name => `将使用 tests/api_keys.json 中的 ${name}`,
           missing: '未配置, 请填入或去 API Keys 页面补',
         },
@@ -2175,6 +2179,7 @@ export const I18N = {
           switched_manual: '已切换到自定义模式',
           applied: name => `已应用预设: ${name}`,
           applied_free: name => `已应用预设: ${name} (免费版, API Key 自动兜底, 可直接测试)`,
+          applied_free_unusable: name => `已应用预设: ${name} — 但免费预设无法用于 testbench 真实 LLM 调用 (服务端反滥用拦截), 仅主程序可用; 真实测试请改配付费 provider + API Key.`,
         },
         buttons: {
           apply_preset: '应用预设',
@@ -2221,6 +2226,9 @@ export const I18N = {
           api_key: 'Key 状态',
         },
         free_tag: '免费',
+        // 免费预设在 testbench 已不可用 (Lanlan 反滥用拦截外部客户端), 列表加显著标记.
+        free_unusable_tag: '免费·testbench 不可用',
+        free_unusable_title: '免费预设仅 NEKO 主程序可用; 从 testbench 直连会被 Lanlan 服务端反滥用拦截 (报 "STOP ABUSE THE API"). 要跑真实 LLM 测试请改用付费 provider + API Key. 详见 docs/UPSTREAM_SYNC_2026-06.md.',
         has_key: '✓',
         no_key: '✗',
       },

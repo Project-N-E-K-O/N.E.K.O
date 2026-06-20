@@ -81,14 +81,57 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _UPSTREAM_PATH = _PROJECT_ROOT / "main_logic" / "cross_server.py"
 _COPY_PATH = _PROJECT_ROOT / "tests" / "testbench" / "pipeline" / "avatar_dedupe.py"
+# Upstream single-source-of-truth for the window value. As of the 2026-06
+# upstream sync, ``cross_server.py`` no longer hard-codes ``8000``; it aliases
+# ``AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = AVATAR_INTERACTION_DEDUPE_WINDOW_MS``
+# where the latter lives in ``config/__init__.py``. The testbench copy keeps a
+# standalone literal (L30: no cross-package import), so this smoke compares the
+# *resolved value* + function body rather than the constant's source text.
+_CONFIG_INIT_PATH = _PROJECT_ROOT / "config" / "__init__.py"
 
 _SUCCESS_BANNER = "P25 AVATAR DEDUPE DRIFT SMOKE OK"
 
 _CONSTANT_NAME = "AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS"
+# Capture the right-hand side so we can resolve it to an int regardless of
+# whether it's a literal (copy side) or an alias identifier (upstream side).
 _CONSTANT_RE = re.compile(
-    rf"^\s*{re.escape(_CONSTANT_NAME)}\s*=\s*8000\s*$"
+    rf"^\s*{re.escape(_CONSTANT_NAME)}\s*=\s*(?P<rhs>.+?)\s*$"
 )
 _FUNC_NAME = "_should_persist_avatar_interaction_memory"
+
+
+def _resolve_module_int(text: str, name: str) -> int | None:
+    """Return the int value of a top-level ``name = <int>`` assignment in text."""
+    pat = re.compile(rf"^\s*{re.escape(name)}\s*=\s*(\d+)\s*$", re.M)
+    m = pat.search(text)
+    return int(m.group(1)) if m else None
+
+
+def _resolve_window_value(text: str) -> tuple[int | None, dict[str, int]]:
+    """Resolve ``AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS`` to an int.
+
+    Returns ``(value, alias_bindings)``. Supports a literal int rhs (the
+    testbench copy) or an alias to a config-level int (upstream, which now
+    sources the window from ``config.AVATAR_INTERACTION_DEDUPE_WINDOW_MS``).
+    ``alias_bindings`` carries any resolved alias name->value pairs so the R5
+    synthetic-exec can bind them before running the upstream function.
+    """
+    hit = _find_constant_line(text)
+    if hit is None:
+        return None, {}
+    m = _CONSTANT_RE.match(hit[1])
+    rhs = m.group("rhs").strip() if m else ""
+    if re.fullmatch(r"\d+", rhs):
+        return int(rhs), {}
+    if rhs.isidentifier():
+        try:
+            cfg_text = _CONFIG_INIT_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return None, {}
+        val = _resolve_module_int(cfg_text, rhs)
+        if val is not None:
+            return val, {rhs: val}
+    return None, {}
 
 _BEGIN_SENTINEL = "BEGIN COPY"
 _END_SENTINEL = "END COPY"
@@ -205,26 +248,21 @@ def _find_function_block(text: str, func_name: str) -> tuple[int, int, list[str]
     return None
 
 
-def extract_upstream_block(upstream_text: str) -> str:
-    """Return constant-line + function body, joined with ``\\n``.
+def _build_canonical_block(text: str, value: int) -> str:
+    """Return a value-normalised ``CONSTANT = <int>`` line + the function body.
 
-    This is the "upstream side" input to the byte-hash comparison.
+    The constant line is canonicalised to its *resolved* integer so the
+    upstream alias (``= AVATAR_INTERACTION_DEDUPE_WINDOW_MS``) and the copy
+    literal (``= 8000``) hash identically as long as the value matches. The
+    function body is extracted by ast (name-precise), so any behavioural drift
+    in ``_should_persist_avatar_interaction_memory`` still trips the hash.
     """
-    const_hit = _find_constant_line(upstream_text)
-    if const_hit is None:
-        raise RuntimeError(
-            f"extract_upstream_block: constant {_CONSTANT_NAME} not found in upstream"
-        )
-    const_line = const_hit[1]
-
-    func_hit = _find_function_block(upstream_text, _FUNC_NAME)
+    func_hit = _find_function_block(text, _FUNC_NAME)
     if func_hit is None:
         raise RuntimeError(
-            f"extract_upstream_block: function {_FUNC_NAME} not found in upstream"
+            f"_build_canonical_block: function {_FUNC_NAME} not found"
         )
-    func_lines = func_hit[2]
-
-    return const_line + "\n" + "\n".join(func_lines)
+    return f"{_CONSTANT_NAME} = {value}\n" + "\n".join(func_hit[2])
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -236,10 +274,24 @@ def check_r2_constant(upstream_text: str, copy_text: str) -> tuple[bool, str]:
     up = _find_constant_line(upstream_text)
     cp = _find_constant_line(copy_text)
     if up is None:
-        return False, f"R2 FAIL: constant {_CONSTANT_NAME}=8000 missing in {_UPSTREAM_PATH.name}"
+        return False, f"R2 FAIL: constant {_CONSTANT_NAME} missing in {_UPSTREAM_PATH.name}"
     if cp is None:
-        return False, f"R2 FAIL: constant {_CONSTANT_NAME}=8000 missing in {_COPY_PATH.name}"
-    return True, "R2 OK: constant literal present on both sides"
+        return False, f"R2 FAIL: constant {_CONSTANT_NAME} missing in {_COPY_PATH.name}"
+    up_val, _ = _resolve_window_value(upstream_text)
+    cp_val, _ = _resolve_window_value(copy_text)
+    if up_val is None:
+        return False, (
+            f"R2 FAIL: cannot resolve {_CONSTANT_NAME} value in "
+            f"{_UPSTREAM_PATH.name} (alias not found in {_CONFIG_INIT_PATH.name}?)"
+        )
+    if cp_val is None:
+        return False, f"R2 FAIL: cannot resolve {_CONSTANT_NAME} value in {_COPY_PATH.name}"
+    if up_val != cp_val:
+        return False, (
+            f"R2 FAIL: dedupe-window value drift upstream={up_val} copy={cp_val} "
+            f"— upstream sources it from config; update the copy literal to match"
+        )
+    return True, f"R2 OK: dedupe-window value matches on both sides ({up_val} ms)"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -253,8 +305,17 @@ def check_r3_byte_hash(
     begin_idx: int,
     end_idx: int,
 ) -> tuple[bool, str]:
-    upstream_block = extract_upstream_block(upstream_text)
-    copy_block = extract_between_sentinels(copy_text, begin_idx, end_idx)
+    # ``begin_idx`` / ``end_idx`` retained for call-site compatibility; the
+    # block is now extracted name-precisely via ast (see _build_canonical_block).
+    up_val, _ = _resolve_window_value(upstream_text)
+    cp_val, _ = _resolve_window_value(copy_text)
+    if up_val is None or cp_val is None:
+        return False, (
+            "R3 FAIL: cannot resolve dedupe-window value for canonical block "
+            f"(upstream={up_val} copy={cp_val})"
+        )
+    upstream_block = _build_canonical_block(upstream_text, up_val)
+    copy_block = _build_canonical_block(copy_text, cp_val)
 
     normalised_upstream = _normalise_block(upstream_block)
     normalised_copy = _normalise_block(copy_block)
@@ -350,6 +411,11 @@ def _load_upstream_function() -> object:
     compiled = compile(synthetic_module, filename=str(_UPSTREAM_PATH), mode="exec")
 
     namespace: dict[str, object] = {"time": time}
+    # Upstream now aliases the window from config, so the synthetic const
+    # assignment references ``AVATAR_INTERACTION_DEDUPE_WINDOW_MS``. Bind any
+    # such alias (resolved from config/__init__.py) so the exec doesn't NameError.
+    _, alias_bindings = _resolve_window_value(text)
+    namespace.update(alias_bindings)
     exec(compiled, namespace)
     fn = namespace.get(_FUNC_NAME)
     if fn is None:

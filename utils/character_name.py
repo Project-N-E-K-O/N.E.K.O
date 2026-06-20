@@ -62,7 +62,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "toast",
     "card_maker",
     "soccer_demo",
-    "basketball_demo",
+    "badminton_demo",
     "jukebox",
     # 静态资源 / 挂载路径
     "static",

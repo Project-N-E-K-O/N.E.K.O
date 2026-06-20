@@ -426,7 +426,7 @@ class MemoryRefineEngine:
 
         from config.prompts.prompts_memory import get_memory_refine_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
 
         template = get_memory_refine_prompt(get_global_language())
         prompt = (
@@ -441,16 +441,18 @@ class MemoryRefineEngine:
         # 的调用配置。
         set_call_type("memory_refine")
         api_config = self._cm.get_model_api_config('correction')
-        llm = create_chat_llm(
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+        llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'],
             api_config['api_key'],
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
             max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,  # 显式开 thinking（同 correction）
         )
         try:
-            resp = await llm.ainvoke(prompt)
+            resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).
         finally:
             await llm.aclose()
 

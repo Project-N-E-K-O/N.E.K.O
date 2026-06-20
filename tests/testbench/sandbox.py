@@ -30,20 +30,19 @@ from tests.testbench.logger import python_logger
 # Attributes captured and restored on ConfigManager. Kept centrally so
 # forgetting one won't leak state across sessions.
 #
-# Sync status (2026-04-21 P24 Day 1 audit):
+# Sync status (2026-06-19 upstream sync, see docs/UPSTREAM_SYNC_2026-06.md):
 #
-#   ``utils.config_manager.ConfigManager.__init__`` defines 14 ``*_dir``
-#   attributes (docs/app_docs/config/memory/plugins/live2d/vrm/vrm_animation/
-#   mmd/mmd_animation/workshop/chara/project_config/project_memory). This
-#   list covers all 14 — fully synced.
+#   ``utils.config_manager.ConfigManager.__init__`` directly assigns
+#   ``*_dir`` / ``*_path`` path *values*; the upstream 6/12→6/19 changes
+#   added ``pngtuber_dir`` and ``card_faces_dir`` (both ``app_docs_dir / …``).
+#   Directly-assigned attrs hold a frozen value that does NOT track a later
+#   ``app_docs_dir`` swap, so each must be listed here AND re-assigned in
+#   ``apply()`` — otherwise the sandbox silently leaks writes into the real
+#   user Documents folder.
 #
 #   ``tests.conftest.clean_user_data_dir`` (non-testbench pytest fixture)
-#   only covers 11; it lags by 3 fields (``plugins_dir`` / ``mmd_dir`` /
-#   ``mmd_animation_dir``). **Intentionally not fixed here** because:
-#   (a) it's a non-testbench fixture, doesn't affect our sandboxing;
-#   (b) patching it requires rewriting 9 explicit variable names in the
-#   fixture body, larger blast radius than warranted by P24 Day 1 scope.
-#   Filed as main-program-side tech debt for future standalone pass.
+#   lags behind; **intentionally not fixed here** (non-testbench fixture,
+#   larger blast radius). Filed as main-program-side tech debt.
 #
 # Invariant enforced by ``smoke/p24_sandbox_attrs_sync_smoke.py`` (Day 10):
 # inspect current ``ConfigManager`` for any new ``*_dir`` / ``*_path``
@@ -62,8 +61,21 @@ _PATCHED_ATTRS: tuple[str, ...] = (
     "mmd_animation_dir",
     "workshop_dir",
     "chara_dir",
+    "card_faces_dir",
+    "pngtuber_dir",
     "project_config_dir",
     "project_memory_dir",
+)
+
+# Non-suffix root attrs that also hold a frozen path value and must follow
+# the sandbox. ``anchor_root`` (added upstream) is the base for the cloud-save
+# hierarchy (``cloudsave_dir`` / ``local_state_dir`` etc. = ``anchor_root / …``);
+# the testbench never exercises cloud-save, but redirecting ``anchor_root``
+# keeps those @property paths from resolving to the real disk. Kept separate
+# from ``_PATCHED_ATTRS`` because the sync smoke models that tuple as
+# ``*_dir`` / ``*_path`` names only.
+_PATCHED_ROOT_ATTRS: tuple[str, ...] = (
+    "anchor_root",
 )
 
 
@@ -111,6 +123,8 @@ class Sandbox:
             "mmd/animation",
             "workshop",
             "plugins",
+            "card_faces",
+            "pngtuber",
         ):
             (self._app_docs / sub).mkdir(parents=True, exist_ok=True)
         return self
@@ -150,7 +164,10 @@ class Sandbox:
 
         cm = get_config_manager(self.app_name)
 
-        self._originals = {attr: getattr(cm, attr) for attr in _PATCHED_ATTRS}
+        self._originals = {
+            attr: getattr(cm, attr)
+            for attr in (*_PATCHED_ATTRS, *_PATCHED_ROOT_ATTRS)
+        }
 
         cm.docs_dir = self.root
         cm.app_docs_dir = self._app_docs
@@ -164,6 +181,11 @@ class Sandbox:
         cm.mmd_animation_dir = cm.mmd_dir / "animation"
         cm.workshop_dir = self._app_docs / "workshop"
         cm.chara_dir = self._app_docs / "character_cards"
+        cm.card_faces_dir = self._app_docs / "card_faces"
+        cm.pngtuber_dir = self._app_docs / "pngtuber"
+        # anchor_root normally == app_docs_dir; redirect so the cloud-save /
+        # local_state @property hierarchy (anchor_root / …) follows the sandbox.
+        cm.anchor_root = self._app_docs
         # Point "project" dirs at the sandbox, matching conftest's choice —
         # the real main app puts them under the project tree, but the
         # testbench keeps everything under the sandbox to avoid cross-talk.

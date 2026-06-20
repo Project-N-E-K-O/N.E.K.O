@@ -150,7 +150,7 @@ def test_yui_guide_handoff_token_is_backend_authoritative_and_single_use(tutoria
     created = client.post("/api/yui-guide/handoff/create", json={
         "target_page": "memory_browser",
         "target_path": "/memory_browser",
-        "resume_scene": "memory_browser_intro",
+        "resume_scene": "memory_browser",
         "source_page": "home",
         "source_path": "/",
     })
@@ -188,7 +188,7 @@ def test_yui_guide_handoff_consume_requires_expected_page(tutorial_prompt_client
     created = client.post("/api/yui-guide/handoff/create", json={
         "target_page": "memory_browser",
         "target_path": "/memory_browser",
-        "resume_scene": "memory_browser_intro",
+        "resume_scene": "memory_browser",
         "source_page": "home",
         "source_path": "/",
     })
