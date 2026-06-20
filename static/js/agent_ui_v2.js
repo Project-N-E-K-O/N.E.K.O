@@ -5,6 +5,7 @@
  */
 (function () {
     const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled', 'openfang_enabled'];
+    const AVATAR_PREFIXES = ['live2d', 'vrm', 'mmd', 'pngtuber'];
 
     const state = {
         snapshot: null,
@@ -22,6 +23,7 @@
         openclawReady: null,
         openclawReason: '',
         globalEventsBound: false,
+        lastError: '',
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -29,14 +31,15 @@
 
     const byId = (id) => document.getElementById(id);
     const getEls = (...ids) => ids.map(id => byId(id)).filter(Boolean);
+    const prefixedIds = (suffix) => AVATAR_PREFIXES.map(prefix => `${prefix}-agent-${suffix}`);
     const el = () => ({
-        master: getEls('live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master'),
-        keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard'),
-        browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
-        userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
-        openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
-        openclaw: getEls('live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw'),
-        status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
+        master: getEls(...prefixedIds('master')),
+        keyboard: getEls(...prefixedIds('keyboard')),
+        browser: getEls(...prefixedIds('browser')),
+        userPlugin: getEls(...prefixedIds('user-plugin')),
+        openfang: getEls(...prefixedIds('openfang')),
+        openclaw: getEls(...prefixedIds('openclaw')),
+        status: getEls(...prefixedIds('status')),
     });
     const sync = (cbs) => {
         if (!cbs) return;
@@ -185,9 +188,15 @@
 
     async function fetchSnapshot() {
         const token = makeSnapshotToken();
-        const snapshot = await fetchSnapshotRaw();
-        applySnapshot(snapshot, 'http', token);
-        return snapshot;
+        try {
+            const snapshot = await fetchSnapshotRaw();
+            state.lastError = '';
+            applySnapshot(snapshot, 'http', token);
+            return snapshot;
+        } catch (e) {
+            state.lastError = String(e && e.message ? e.message : e || '');
+            throw e;
+        }
     }
 
     async function sendCommand(command, payload) {
@@ -670,5 +679,36 @@
         }
         fetchSnapshot().catch(() => render(firstInit ? 'init' : 'rebind'));
         return true;
+    };
+
+    AVATAR_PREFIXES.forEach(prefix => {
+        window.addEventListener(`${prefix}-floating-buttons-ready`, () => {
+            window.initAgentUiV2();
+        });
+    });
+
+    window.getAgentUiV2DebugState = function getAgentUiV2DebugState() {
+        const controls = {};
+        AVATAR_PREFIXES.forEach(prefix => {
+            controls[prefix] = {
+                master: !!byId(`${prefix}-agent-master`),
+                keyboard: !!byId(`${prefix}-agent-keyboard`),
+                browser: !!byId(`${prefix}-agent-browser`),
+                userPlugin: !!byId(`${prefix}-agent-user-plugin`),
+                openfang: !!byId(`${prefix}-agent-openfang`),
+                openclaw: !!byId(`${prefix}-agent-openclaw`),
+                status: !!byId(`${prefix}-agent-status`),
+            };
+        });
+        return {
+            inited: !!state.inited,
+            globalEventsBound: !!state.globalEventsBound,
+            popupOpen: !!state.popupOpen,
+            hasSnapshot: !!state.snapshot,
+            revision: state.revision,
+            pending: Array.from(state.pending),
+            lastError: state.lastError || '',
+            controls,
+        };
     };
 })();

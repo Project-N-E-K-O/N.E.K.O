@@ -26,18 +26,31 @@
     'use strict';
 
     const mod = {};
+    const AGENT_AVATAR_PREFIXES = ['live2d', 'vrm', 'mmd', 'pngtuber'];
     // Shared state & constants (populated by app-state.js)
     // const S = window.appState;
     // const C = window.appConst;
 
     /**
-     * Helper: find agent checkbox across Live2D / VRM / MMD prefixes.
+     * Helper: find agent checkbox across avatar prefixes.
      * Only one model type is active at a time, so the first found wins.
      */
+    function getAgentIds(suffix) {
+        return AGENT_AVATAR_PREFIXES.map(prefix => `${prefix}-agent-${suffix}`);
+    }
+
     function getAgentEl(suffix) {
-        return document.getElementById('live2d-agent-' + suffix)
-            || document.getElementById('vrm-agent-' + suffix)
-            || document.getElementById('mmd-agent-' + suffix);
+        for (const id of getAgentIds(suffix)) {
+            const el = document.getElementById(id);
+            if (el) return el;
+        }
+        return null;
+    }
+
+    function onAvatarFloatingButtonsReady(handler) {
+        AGENT_AVATAR_PREFIXES.forEach(prefix => {
+            window.addEventListener(`${prefix}-floating-buttons-ready`, handler);
+        });
     }
 
     // ====================================================================
@@ -231,7 +244,7 @@
     // Floating agent status helper
     // ====================================================================
     function setFloatingAgentStatus(msg, taskStatus) {
-        ['live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'].forEach(id => {
+        AGENT_AVATAR_PREFIXES.map(prefix => `${prefix}-agent-status`).forEach(id => {
             const statusEl = document.getElementById(id);
             if (statusEl) {
                 statusEl.textContent = msg || '';
@@ -845,7 +858,7 @@
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
-                    const suffix = cb.id.replace(/^(live2d|vrm|mmd)-agent-/, '');
+                    const suffix = cb.id.replace(/^(live2d|vrm|mmd|pngtuber)-agent-/, '');
                     const name = names[suffix] || '';
                     cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: name }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
                     syncCheckboxUI(cb);
@@ -1218,13 +1231,14 @@
             if (agentStateMachine._popupOpen) return;
             const master = getAgentEl('master');
             if (!master || !master.checked) return;
-            const popup = master.closest('[id="live2d-popup-agent"], [id="vrm-popup-agent"], [id="mmd-popup-agent"]');
+            const popup = master.closest('[id="live2d-popup-agent"], [id="vrm-popup-agent"], [id="mmd-popup-agent"], [id="pngtuber-popup-agent"]');
             if (!popup) return;
             const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
             if (isVisible) return;
             let manager;
             if (popup.id === 'mmd-popup-agent') manager = window.mmdManager;
             else if (popup.id === 'vrm-popup-agent') manager = window.vrmManager;
+            else if (popup.id === 'pngtuber-popup-agent') manager = window.pngtuberManager;
             else manager = window.live2dManager;
             if (!manager || typeof manager.showPopup !== 'function') return;
             manager.showPopup('agent', popup);
@@ -1601,12 +1615,12 @@
             return null;
         };
 
-        const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master']);
-        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
-        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
-        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
-        const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
-        const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
+        const masterCheckbox = getEl(getAgentIds('master'));
+        const keyboardCheckbox = getEl(getAgentIds('keyboard'));
+        const browserCheckbox = getEl(getAgentIds('browser'));
+        const userPlugin = getEl(getAgentIds('user-plugin'));
+        const openclawCheckbox = getEl(getAgentIds('openclaw'));
+        const openfangCheckbox = getEl(getAgentIds('openfang'));
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
@@ -1670,7 +1684,7 @@
     // ====================================================================
     // HUD sub-checkbox change listener binding
     // ====================================================================
-    window.addEventListener('live2d-floating-buttons-ready', () => {
+    onAvatarFloatingButtonsReady(() => {
         const bindHUD = () => {
             const getEl = (ids) => {
                 for (let id of ids) {
@@ -1680,11 +1694,11 @@
                 return null;
             };
 
-            const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
-            const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
-            const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
-            const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
-            const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
+            const keyboardCheckbox = getEl(getAgentIds('keyboard'));
+            const browserCheckbox = getEl(getAgentIds('browser'));
+            const userPluginCheckbox = getEl(getAgentIds('user-plugin'));
+            const openclawCheckbox = getEl(getAgentIds('openclaw'));
+            const openfangCheckbox = getEl(getAgentIds('openfang'));
 
             if (!keyboardCheckbox || !browserCheckbox) {
                 setTimeout(bindHUD, 500);
@@ -1719,7 +1733,7 @@
     // Floating buttons ready => bind agent checkbox listeners
     // ====================================================================
     let agentReadyAutoOpenHandled = false;
-    window.addEventListener('live2d-floating-buttons-ready', () => {
+    onAvatarFloatingButtonsReady(() => {
         console.log('[App] \u6536\u5230\u6d6e\u52a8\u6309\u94ae\u5c31\u7eea\u4e8b\u4ef6\uff0c\u5f00\u59cb\u7ed1\u5b9aAgent\u5f00\u5173');
         setupAgentCheckboxListeners();
         if (agentReadyAutoOpenHandled) return;

@@ -187,6 +187,51 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
 
 
 @pytest.mark.asyncio
+async def test_pngtuber_save_infers_live2d_auto_layer_metadata(monkeypatch, tmp_path):
+    characters = _build_characters_fixture()
+    pngtuber_dir = tmp_path / "pngtuber"
+    avatar_dir = pngtuber_dir / "avatar"
+    avatar_dir.mkdir(parents=True)
+    (avatar_dir / "metadata.live2d-auto-layer.json").write_text("{}", encoding="utf-8")
+
+    config_manager = DummyConfigManager(characters)
+    config_manager.pngtuber_dir = pngtuber_dir
+
+    async def _noop_initialize():
+        return None
+
+    async def _noop_init_one(name, *, is_new=False):
+        return None
+
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'get_initialize_character_data', lambda: _noop_initialize)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
+
+    response = await characters_router_module.update_catgirl_l2d(
+        '测试角色',
+        DummyRequest({
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/user_pngtuber/avatar/idle.png',
+                'talking_image': '/user_pngtuber/avatar/talking.png',
+            },
+        }),
+    )
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    pngtuber = get_reserved(
+        config_manager.saved_characters['猫娘']['测试角色'],
+        'avatar',
+        'pngtuber',
+        default={},
+    )
+    assert pngtuber['layered_metadata'] == '/user_pngtuber/avatar/metadata.live2d-auto-layer.json'
+    assert pngtuber['adapter'] == 'layered_canvas_v1'
+
+
+@pytest.mark.asyncio
 async def test_switching_workshop_origin_character_to_local_live3d_model_updates_current_asset_source_only(monkeypatch):
     characters = _build_characters_fixture()
     catgirl = characters['猫娘']['测试角色']

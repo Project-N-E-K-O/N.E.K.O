@@ -2316,6 +2316,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 except Exception:
                     return ''
                 for filename in (
+                    'metadata.live2d-auto-layer.json',
                     'metadata.pngtube-remix.json',
                     'metadata.pngtuber-plus.json',
                     'metadata.json',

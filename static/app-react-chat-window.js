@@ -6442,7 +6442,7 @@
             setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
         });
 
-        ['live2d-floating-buttons-ready', 'vrm-model-loaded', 'mmd-model-loaded'].forEach(function (eventName) {
+        ['live2d-floating-buttons-ready', 'vrm-model-loaded', 'mmd-model-loaded', 'pngtuber-floating-buttons-ready'].forEach(function (eventName) {
             window.addEventListener(eventName, revealPendingCompactSurfaceOpen);
         });
 

@@ -4276,7 +4276,7 @@
                 }
             }
             // 恢复"请她离开"之前的锁定状态（而非强制解锁）
-            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
+            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false, pngtuber: false };
             const pngtuberLockIcon = document.getElementById('pngtuber-lock-icon');
             if (pngtuberLockIcon) {
                 pngtuberLockIcon.style.removeProperty('display');

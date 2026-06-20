@@ -95,6 +95,12 @@ MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
 MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
 PNGTUBER_USER_PATH = "/user_pngtuber"
 PNGTUBER_EXTENSIONS = {'.png', '.gif', '.jpg', '.jpeg', '.webp'}
+PNGTUBER_METADATA_FILENAMES = (
+    'metadata.live2d-auto-layer.json',
+    'metadata.pngtube-remix.json',
+    'metadata.pngtuber-plus.json',
+    'metadata.json',
+)
 
 
 def _resolve_master_display_name(master_basic_config: dict, fallback_name: str = "") -> str:
@@ -271,6 +277,60 @@ def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: 
     return ""
 
 
+def _resolve_pngtuber_metadata_path(metadata_path: str, _config_manager, target_name: str) -> str:
+    """Resolve a PNGTuber layered metadata reference to a browser-loadable URL."""
+    metadata_path = str(metadata_path or '').strip().replace('\\', '/')
+    if not metadata_path or metadata_path.lower() in {'undefined', 'null'}:
+        return ""
+    if metadata_path.startswith('http://') or metadata_path.startswith('https://'):
+        return metadata_path
+    if metadata_path.startswith('//') or metadata_path.startswith('data:'):
+        logger.warning(f"Invalid PNGTuber metadata path for {target_name}: {metadata_path}")
+        return ""
+    lookup_path = urllib.parse.urlsplit(metadata_path).path
+    if not lookup_path.lower().endswith('.json'):
+        logger.warning(f"Unsupported PNGTuber metadata extension for {target_name}: {metadata_path}")
+        return ""
+    if metadata_path.startswith('/'):
+        if lookup_path.startswith(PNGTUBER_USER_PATH + '/'):
+            rel = lookup_path[len(PNGTUBER_USER_PATH) + 1:]
+            from pathlib import PurePosixPath
+            safe_rel = PurePosixPath(rel)
+            if safe_rel.is_absolute() or '..' in safe_rel.parts:
+                logger.warning(f"Invalid PNGTuber metadata path for {target_name}: {metadata_path}")
+                return ""
+            if (_config_manager.pngtuber_dir / rel).exists():
+                return metadata_path
+            logger.warning(f"PNGTuber metadata not found for {target_name}: {metadata_path}")
+            return ""
+        return metadata_path
+
+    from pathlib import PurePosixPath
+    safe_rel = PurePosixPath(lookup_path)
+    if safe_rel.is_absolute() or '..' in safe_rel.parts:
+        logger.warning(f"Invalid PNGTuber metadata path for {target_name}: {metadata_path}")
+        return ""
+    user_path = _config_manager.pngtuber_dir / str(safe_rel)
+    if user_path.exists():
+        return f'{PNGTUBER_USER_PATH}/{safe_rel}'
+    logger.warning(f"PNGTuber metadata not found for {target_name}: {metadata_path}")
+    return ""
+
+
+def _infer_pngtuber_metadata_from_idle(idle_path: str, _config_manager) -> str:
+    """Find known layered metadata next to a resolved PNGTuber idle image URL."""
+    lookup_path = urllib.parse.urlsplit(str(idle_path or '').replace('\\', '/')).path
+    parts = [part for part in lookup_path.split('/') if part]
+    if len(parts) < 3 or parts[0] != PNGTUBER_USER_PATH.strip('/'):
+        return ""
+    model_folder = parts[1]
+    root = _config_manager.pngtuber_dir / model_folder
+    for filename in PNGTUBER_METADATA_FILENAMES:
+        if (root / filename).is_file():
+            return f'{PNGTUBER_USER_PATH}/{model_folder}/{filename}'
+    return ""
+
+
 @router.get("/page_config")
 async def get_page_config(response: Response, lanlan_name: str = ""):
     """Get page config (lanlan_name and model_path); supports Live2D, VRM and MMD (Live3D) models."""
@@ -312,6 +372,18 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
                     _config_manager,
                     target_name,
                 )
+            metadata_path = _resolve_pngtuber_metadata_path(
+                str(raw_pngtuber.get('layered_metadata') or raw_pngtuber.get('metadata') or ''),
+                _config_manager,
+                target_name,
+            )
+            if not metadata_path:
+                metadata_path = _infer_pngtuber_metadata_from_idle(
+                    pngtuber_config.get('idle_image', ''),
+                    _config_manager,
+                )
+            pngtuber_config['layered_metadata'] = metadata_path
+            pngtuber_config['adapter'] = 'layered_canvas_v1' if metadata_path else ''
             model_path = pngtuber_config.get('idle_image', '') or ''
         elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'vrm':
             live3d_sub_type = 'vrm'
