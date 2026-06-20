@@ -4229,7 +4229,7 @@
     "drawingGuess": {
         "title": "你畫我猜",
         "eyebrow": "陪伴活動",
-        "subtitle": "獨立頁面、遊戲路由和 60 秒繪畫閉環已接入，先用本地 fallback 畫圖與猜圖。",
+        "subtitle": "和貓娘一起畫畫、猜圖和聊天。",
         "status": {
             "loadingCharacter": "正在讀取目前角色",
             "missingCharacter": "等待角色資訊",
@@ -4247,8 +4247,9 @@
             "canvasTitle": "畫布",
             "tools": "繪畫工具",
             "canvasWaitingTitle": "畫布準備中",
-            "canvasWaiting": "點擊開始後會先由貓娘畫，你來猜；接著你有 60 秒畫圖給她猜。",
+            "canvasWaiting": "開始後會先由貓娘畫，你來猜；接著你有 5 分鐘畫圖給她猜。",
             "actions": "遊戲操作",
+            "sideResize": "調整模型和聊天區域比例",
             "modelTitle": "貓娘在場",
             "modelFallbackTitle": "模型槽位已預留",
             "modelFallback": "後續會在這裡載入目前角色 Live2D 或 VRM；載入失敗時也會保留同位置 fallback。",
@@ -4257,14 +4258,17 @@
         "tools": {
             "brush": "畫筆",
             "eraser": "橡皮擦",
+            "bucket": "油漆桶",
             "undo": "復原",
             "redo": "重做",
             "color": "顏色",
-            "size": "粗細"
+            "size": "粗細",
+            "basicColors": "基礎顏色",
+            "historyColors": "歷史顏色"
         },
         "tutorial": {
             "title": "開始前",
-            "intro": "這一局會各畫一次、各猜一次。你可以邊畫邊聊天，畫滿 60 秒會自動交給她猜。",
+            "intro": "這一局會各畫一次、各猜一次。你可以邊畫邊聊天，畫滿 5 分鐘會自動交給她猜。",
             "memoryTitle": "記憶選項",
             "memoryNone": "不記錄，僅本次玩。",
             "memorySummary": "可以記錄一句遊戲概要。",
@@ -4281,6 +4285,13 @@
             "downloadSvg": "下載貓娘畫作",
             "downloadPng": "下載我的畫"
         },
+        "exitConfirm": {
+            "title": "要離開嗎？",
+            "message": "最終結算已經整理好了。要離開這個小遊戲頁面嗎？",
+            "stay": "待會",
+            "leave": "離開頁面",
+            "reopen": "離開？"
+        },
         "memory": {
             "noneShort": "不記錄",
             "summaryShort": "概要",
@@ -4292,10 +4303,28 @@
             "ended": "已結束",
             "ai_drawing": "貓娘作畫中",
             "user_guessing": "你來猜",
+            "drawing_pick": "抽題中",
             "user_drawing": "你來畫",
             "ai_guessing": "貓娘猜圖中",
             "ai_guess_feedback": "給她提示",
-            "summary": "結算"
+            "summary": "結算",
+            "final_summary": "最終結算"
+        },
+        "modelStates": {
+            "loading": "模型載入中",
+            "idle": "待機中",
+            "drawing": "畫畫中",
+            "thinking": "思考中",
+            "guessing": "猜圖中",
+            "talking": "聊天中",
+            "happy": "開心中"
+        },
+        "modelControls": {
+            "group": "模型視圖調整",
+            "scale": "模型大小",
+            "x": "水平位置",
+            "y": "垂直位置",
+            "reset": "重置模型視圖"
         },
         "messages": {
             "welcome": "準備好後，我們會先確認目前角色並接管小遊戲路由。",
@@ -4305,22 +4334,30 @@
             "roundStart": "新一輪開始。",
             "aiDrawingReady": "她畫好了，輪到你猜。",
             "roundFailed": "這一輪啟動失敗：{{reason}}",
+            "requestTimeout": "請求逾時了，再試一次吧。",
             "guessTimeout": "時間到，答案是 {{answer}}。",
             "inputFailed": "這句話沒送到，再試一次。",
             "answerReveal": "答案：{{answer}}",
+            "drawingPickTitle": "抽取題目中",
+            "drawingPickSubtitle": "先別動筆，她正在從牌庫裡抽幾張題目牌。",
+            "drawingPickReady": "選一張題目牌來畫。",
+            "drawingPickReveal": "已選：{{answer}}",
             "userDrawPrompt": "你的題目是：{{answer}}。畫給她猜吧。",
             "blankCanvas": "先給她畫幾筆吧。",
+            "aiDrawingWaiting": "貓娘正在繪畫中",
             "aiGuessing": "她正在看你的畫...",
             "aiGuessLine": "她猜：{{guess}}",
-            "aiNeedsHint": "可以繼續聊天，或者給她一點提示再讓她試一次。",
+            "aiNeedsHint": "可以先繼續聊天；想讓她再猜時再給提示。",
             "summaryReady": "結算頁準備好了。",
-            "canvasCleared": "畫布已清空。"
+            "canvasCleared": "畫布已清空。",
+            "userSupplemented": "你補畫好了，她會立刻再猜一次。"
         },
         "input": {
             "placeholder": "先等路由準備好",
             "guessPlaceholder": "輸入你的猜測，或者要一個提示",
             "drawingPlaceholder": "畫畫時也可以聊天",
-            "hintPlaceholder": "繼續聊天，或輸入「提示：...」讓她再猜"
+            "hintPlaceholder": "先繼續聊天；想讓她再猜時再給提示",
+            "summaryPlaceholder": "可以聊聊這一局，或者開始下一輪"
         },
         "timer": {
             "seconds": "{{seconds}} 秒"
@@ -4335,7 +4372,10 @@
             "score": "你 {{user}} - {{neko}} 貓娘",
             "userDrawAnswer": "你的畫題：{{answer}}",
             "nekoArt": "貓娘畫作",
-            "userArt": "你的畫作"
+            "userArt": "你的畫作",
+            "finalTitle": "最終結算",
+            "roundLabel": "第 {{round}} 輪",
+            "noRounds": "還沒有完成的輪次。"
         }
     },
     "basketball": {

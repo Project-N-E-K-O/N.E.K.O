@@ -4229,7 +4229,7 @@
     "drawingGuess": {
         "title": "Drawing Guess",
         "eyebrow": "Companion activity",
-        "subtitle": "The standalone page, game route, and 60-second drawing loop are connected. The first playable version uses local fallback drawings and guesses.",
+        "subtitle": "Draw, guess, and chat together with the character.",
         "status": {
             "loadingCharacter": "Loading current character",
             "missingCharacter": "Waiting for character info",
@@ -4247,8 +4247,9 @@
             "canvasTitle": "Canvas",
             "tools": "Drawing tools",
             "canvasWaitingTitle": "Canvas is preparing",
-            "canvasWaiting": "Start a round and she will draw first. After you guess, you get 60 seconds to draw for her.",
+            "canvasWaiting": "After starting, she draws first and you guess. Then you get 5 minutes to draw something for her.",
             "actions": "Game actions",
+            "sideResize": "Resize model and chat panes",
             "modelTitle": "Neko is here",
             "modelFallbackTitle": "Model slot reserved",
             "modelFallback": "The current character's Live2D or VRM model will load here later. If it fails, the same slot keeps a fallback.",
@@ -4257,14 +4258,17 @@
         "tools": {
             "brush": "Brush",
             "eraser": "Eraser",
+            "bucket": "Bucket",
             "undo": "Undo",
             "redo": "Redo",
             "color": "Color",
-            "size": "Size"
+            "size": "Size",
+            "basicColors": "Basic colors",
+            "historyColors": "History colors"
         },
         "tutorial": {
             "title": "Before we start",
-            "intro": "This round has one drawing and one guess for each of us. You can chat while drawing; after 60 seconds, the current canvas is handed to her automatically.",
+            "intro": "This round has one drawing and one guess for each of us. You can chat while drawing; after 5 minutes, the current canvas is handed to her automatically.",
             "memoryTitle": "Memory options",
             "memoryNone": "Do not record this; only play this time.",
             "memorySummary": "Record one short game summary.",
@@ -4281,6 +4285,13 @@
             "downloadSvg": "Download SVG",
             "downloadPng": "Download PNG"
         },
+        "exitConfirm": {
+            "title": "Leave this page?",
+            "message": "The final summary is ready. Do you want to leave this mini-game page?",
+            "stay": "Later",
+            "leave": "Leave page",
+            "reopen": "Leave?"
+        },
         "memory": {
             "noneShort": "No memory",
             "summaryShort": "Summary",
@@ -4292,10 +4303,28 @@
             "ended": "Ended",
             "ai_drawing": "Neko drawing",
             "user_guessing": "Your guess",
+            "drawing_pick": "Drawing word",
             "user_drawing": "Your drawing",
             "ai_guessing": "Neko guessing",
             "ai_guess_feedback": "Give a hint",
-            "summary": "Summary"
+            "summary": "Summary",
+            "final_summary": "Final summary"
+        },
+        "modelStates": {
+            "loading": "Loading model",
+            "idle": "Idle",
+            "drawing": "Drawing",
+            "thinking": "Thinking",
+            "guessing": "Guessing",
+            "talking": "Talking",
+            "happy": "Happy"
+        },
+        "modelControls": {
+            "group": "Model view controls",
+            "scale": "Model size",
+            "x": "Horizontal position",
+            "y": "Vertical position",
+            "reset": "Reset model view"
         },
         "messages": {
             "welcome": "When ready, we will confirm the current character and take over the mini-game route.",
@@ -4305,22 +4334,30 @@
             "roundStart": "A new round is starting.",
             "aiDrawingReady": "She finished drawing. Try to guess it.",
             "roundFailed": "Round failed: {{reason}}",
+            "requestTimeout": "Request timed out. Please try again.",
             "guessTimeout": "Time is up. The answer was {{answer}}.",
             "inputFailed": "That did not go through. Try again.",
             "answerReveal": "Answer: {{answer}}",
+            "drawingPickTitle": "Drawing a word",
+            "drawingPickSubtitle": "Hold on. She is drawing a few cards from the deck.",
+            "drawingPickReady": "Pick one card to draw.",
+            "drawingPickReveal": "Chosen: {{answer}}",
             "userDrawPrompt": "Your word is: {{answer}}. Draw it for her.",
             "blankCanvas": "Give her a few lines first.",
+            "aiDrawingWaiting": "She is drawing",
             "aiGuessing": "She is looking at your drawing...",
             "aiGuessLine": "She guessed: {{guess}}",
-            "aiNeedsHint": "You can keep chatting, or give her a hint and let her try again.",
+            "aiNeedsHint": "You can just keep chatting. Give her a hint when you want another guess.",
             "summaryReady": "Round summary is ready.",
-            "canvasCleared": "Canvas cleared."
+            "canvasCleared": "Canvas cleared.",
+            "userSupplemented": "You touched up the drawing. She will guess again now."
         },
         "input": {
             "placeholder": "Wait until the route is ready",
             "guessPlaceholder": "Type your guess or ask for a hint",
             "drawingPlaceholder": "You can chat while drawing",
-            "hintPlaceholder": "Chat, or type hint: ... to let her try again"
+            "hintPlaceholder": "Keep chatting; give a hint when you want her to guess again",
+            "summaryPlaceholder": "Chat about this round, or start another one"
         },
         "timer": {
             "seconds": "{{seconds}}s"
@@ -4335,7 +4372,10 @@
             "score": "You {{user}} - {{neko}} Neko",
             "userDrawAnswer": "Your drawing answer: {{answer}}",
             "nekoArt": "Neko drawing",
-            "userArt": "Your drawing"
+            "userArt": "Your drawing",
+            "finalTitle": "Final summary",
+            "roundLabel": "Round {{round}}",
+            "noRounds": "No completed rounds yet."
         }
     },
     "basketball": {

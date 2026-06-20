@@ -1,6 +1,9 @@
+import json
+
 import pytest
 
 from main_routers import drawing_guess_router as dgr
+from main_routers import game_router
 
 
 class _FakeRequest:
@@ -26,6 +29,160 @@ def test_drawing_guess_word_bank_has_40_easy_words_with_all_locales():
         for locale in dgr.SUPPORTED_LOCALES:
             assert word.labels[locale].strip()
             assert dgr._word_hint(word, locale).strip()
+
+
+@pytest.mark.unit
+def test_drawing_guess_round_timers_are_five_minutes():
+    assert dgr.ROUND_GUESS_SECONDS == 5 * 60
+    assert dgr.ROUND_DRAW_SECONDS == 5 * 60
+    assert dgr.ROUND_AI_GUESS_SECONDS == 5 * 60
+    assert dgr.VISION_GUESS_TIMEOUT_SECONDS == float(5 * 60)
+
+
+@pytest.mark.unit
+def test_persona_game_line_prompt_gives_premise_for_free_reply():
+    system_prompt, payload_raw = dgr._build_drawing_guess_game_line_prompts(
+        session={"phase": "user_guessing", "game_chat_history": []},
+        locale="en",
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt="Teasing but warm catgirl who calls the user Master.",
+        event="user_guess_wrong",
+        details={},
+        character_profile_prompt="- 语癖强调: YUI calls herself YUI and teases Master with hearts.",
+    )
+    payload = json.loads(payload_raw)
+
+    assert system_prompt.startswith("Teasing but warm catgirl who calls the user Master.")
+    assert "Character card profile fields" in system_prompt
+    assert "YUI calls herself YUI" in system_prompt
+    assert "stronger than the mini-game premise" in system_prompt
+    assert "Temporary mini-game premise" in system_prompt
+    assert "Do not invent generic catgirl/mascot tropes" in system_prompt
+    assert "Character persona excerpt" not in system_prompt
+    assert payload["task"] == "free_in_character_game_reply"
+    assert payload["premise"].startswith("The user's latest guess is not the answer")
+    assert "event_intent" not in payload
+    assert "style" not in payload
+
+
+@pytest.mark.unit
+def test_persona_game_line_prompt_marks_ai_guess_roles_unambiguously():
+    system_prompt, payload_raw = dgr._build_drawing_guess_game_line_prompts(
+        session={"phase": "summary", "game_chat_history": []},
+        locale="zh-CN",
+        lanlan_name="水水",
+        master_name="主人",
+        lanlan_prompt="水水会调侃主人。",
+        event="ai_guess_correct",
+        details={"guess_label": "苹果", "answer_label": "苹果", "allow_answer_reveal": True},
+        character_profile_prompt="",
+    )
+    payload = json.loads(payload_raw)
+
+    assert "Follow event_roles exactly" in system_prompt
+    assert payload["premise"].startswith("The character guessed the user's drawing correctly")
+    assert payload["event_roles"]["character_role"] == "guesser"
+    assert payload["event_roles"]["user_role"] == "drawer"
+    assert "主人猜对了" in payload["event_roles"]["must_not_say"]
+
+
+@pytest.mark.unit
+def test_persona_chat_prompt_gives_premise_for_free_reply():
+    system_prompt, payload_raw = dgr._build_drawing_guess_chat_prompts(
+        session={"phase": "summary", "game_chat_history": []},
+        locale="en",
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt="Soft-spoken companion who dislikes stiff game host lines.",
+        user_text="that ending was funny",
+        event="summary_chat",
+        character_profile_prompt="- 输出内容提示词: answer as a relaxed companion, never as a host.",
+    )
+    payload = json.loads(payload_raw)
+
+    assert system_prompt.startswith("Soft-spoken companion who dislikes stiff game host lines.")
+    assert "Character card profile fields" in system_prompt
+    assert "answer as a relaxed companion" in system_prompt
+    assert "Temporary mini-game premise" in system_prompt
+    assert "Do not invent generic catgirl/mascot tropes" in system_prompt
+    assert "Character persona excerpt" not in system_prompt
+    assert payload["task"] == "free_in_character_reply"
+    assert payload["premise"].startswith("The round is over")
+    assert "event_intent" not in payload
+    assert "persona_style" not in payload
+
+
+@pytest.mark.unit
+def test_input_intent_prompt_requires_explicit_guess_word():
+    system_prompt, payload_raw = dgr._build_game_input_intent_prompts(
+        session={"phase": "user_guessing", "game_chat_history": []},
+        locale="en",
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt="Playful catgirl.",
+        user_text="something flying in the sky",
+        phase="user_guessing",
+    )
+    payload = json.loads(payload_raw)
+
+    assert "Do not infer a candidate answer from attributes or descriptions" in system_prompt
+    assert payload["rules"]["guess_text_must_be_explicitly_present_in_user_text"] is True
+    assert payload["rules"]["descriptions_without_answer_words_are_chat"] is True
+
+
+@pytest.mark.unit
+def test_word_picking_chat_context_reveals_neko_answer_without_card_options():
+    system_prompt, payload_raw = dgr._build_drawing_guess_chat_prompts(
+        session={
+            "phase": "word_picking",
+            "ai_word_id": "apple",
+            "user_word_options": ["cat", "dog", "fish"],
+            "game_chat_history": [],
+        },
+        locale="en",
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt="Playful companion.",
+        user_text="what was the answer just now?",
+        event="word_picking_chat",
+    )
+    payload = json.loads(payload_raw)
+    payload_text = json.dumps(payload, ensure_ascii=False)
+
+    assert "user card options" not in system_prompt.lower()
+    assert payload["premise"].startswith("The user already guessed your drawing")
+    assert payload["public_details"]["character_drawing_answer_label"] == "apple"
+    assert payload["public_details"]["allow_character_drawing_answer_reveal"] is True
+    assert payload["public_details"]["user_is_privately_choosing_drawing_card"] is True
+    assert payload["safety"]["do_not_reveal_or_infer_user_card_options"] is True
+    assert "cat" not in payload_text
+    assert "dog" not in payload_text
+    assert "fish" not in payload_text
+
+
+@pytest.mark.unit
+def test_game_character_profile_prompt_formats_effective_profile_fields():
+    profile = {
+        "档案名": "水水",
+        "输出内容提示词": "你将扮演{{char}}，称呼{{user}}为主人。",
+        "语癖强调": "{{char}}会用喵。",
+        "voice_id": "private-voice",
+        "_field_order": ["语癖强调", "输出内容提示词", "voice_id"],
+    }
+
+    text = game_router._format_game_character_profile_prompt(
+        profile,
+        lanlan_name="水水",
+        master_name="主人",
+    )
+
+    assert "- 语癖强调:" in text
+    assert text.index("语癖强调") < text.index("输出内容提示词")
+    assert "{{char}}" not in text
+    assert "{{user}}" not in text
+    assert "水水会用喵" in text
+    assert "voice_id" not in text
 
 
 @pytest.mark.unit
@@ -125,6 +282,23 @@ def test_vision_guess_payload_parser_accepts_natural_language_guess():
 
 
 @pytest.mark.unit
+def test_word_matching_accepts_synonyms_and_multilingual_variants():
+    assert dgr._matches_word("bunny?", dgr._WORD_BY_ID["rabbit"])
+    assert dgr._matches_word("\u6708\u7403", dgr._WORD_BY_ID["moon"])
+    assert dgr._matches_word("avion", dgr._WORD_BY_ID["airplane"])
+    assert dgr._matches_word("ma\u00e7\u00e3", dgr._WORD_BY_ID["apple"])
+
+
+@pytest.mark.unit
+def test_safe_hint_options_do_not_reveal_answer_aliases():
+    for word in dgr.WORDS:
+        hints = dgr._safe_word_hint_options(word, "en")
+        assert len(hints) >= 2
+        for hint in hints:
+            assert not dgr._mentions_word_alias(hint, word), (word.id, hint)
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_round_start_does_not_expose_candidates_or_hidden_ai_answer():
     result = await dgr.drawing_guess_round_start(_FakeRequest({
@@ -145,7 +319,7 @@ async def test_round_start_does_not_expose_candidates_or_hidden_ai_answer():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_ai_draw_and_user_guess_advance_to_user_drawing_without_candidate_leak():
+async def test_ai_draw_and_user_guess_advance_to_word_pick_before_user_drawing():
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
         "session_id": "dg-2",
@@ -153,7 +327,7 @@ async def test_ai_draw_and_user_guess_advance_to_user_drawing_without_candidate_
     }))
     session = dgr._drawing_guess_sessions["YUI:dg-2"]
     session["ai_word_id"] = "apple"
-    session["user_word_id"] = "cat"
+    session["user_word_options"] = ["cat", "dog", "fish"]
 
     drawing = await dgr.drawing_guess_ai_draw(_FakeRequest({
         "lanlan_name": "YUI",
@@ -174,10 +348,48 @@ async def test_ai_draw_and_user_guess_advance_to_user_drawing_without_candidate_
     }))
     assert guess["ok"] is True
     assert guess["correct"] is True
-    assert guess["state"]["phase"] == "user_drawing"
+    assert guess["state"]["phase"] == "word_picking"
     assert guess["state"]["scores"]["user"] == 1
-    assert guess["user_draw_answer"]["id"] == "cat"
-    assert "candidates" not in str(guess)
+    assert guess["state"]["user_draw_answer"] is None
+    assert [word["id"] for word in guess["user_draw_options"]] == ["cat", "dog", "fish"]
+    assert "aliases" not in str(guess)
+
+    choice = await dgr.drawing_guess_choose_word(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-2",
+        "i18n_language": "zh-CN",
+        "word_id": "dog",
+    }))
+    assert choice["ok"] is True
+    assert choice["state"]["phase"] == "user_drawing"
+    assert choice["user_draw_answer"]["id"] == "dog"
+    assert session["user_word_id"] == "dog"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_word_choice_rejects_words_outside_dealt_options():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-invalid-choice",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-invalid-choice"]
+    session["phase"] = "word_picking"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+
+    choice = await dgr.drawing_guess_choose_word(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-invalid-choice",
+        "i18n_language": "en",
+        "word_id": "banana",
+    }))
+
+    assert choice["ok"] is False
+    assert choice["reason"] == "invalid_word_choice"
+    assert session.get("user_word_id") is None
+    assert choice["state"]["phase"] == "word_picking"
 
 
 @pytest.mark.unit
@@ -247,6 +459,48 @@ async def test_ai_draw_uses_sanitized_model_svg_when_available(monkeypatch):
     assert drawing["drawing"]["source"] == "model_svg"
     assert drawing["drawing"]["caption"] == "curved yellow snack"
     assert "<script" not in drawing["drawing"]["svg"].lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_draw_returns_persona_game_line(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-line",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-ai-line"]
+    session["ai_word_id"] = "banana"
+
+    async def fake_generate(word, locale, lanlan_name):
+        assert word.id == "banana"
+        assert locale == "en"
+        assert lanlan_name == "YUI"
+        return {
+            "svg": '<svg viewBox="0 0 240 180"><circle cx="90" cy="90" r="35"/></svg>',
+            "caption": "",
+            "source": "model_svg",
+            "sanitizer": {"ok": True, "attempt": 1},
+        }
+
+    async def fake_game_line(**kwargs):
+        assert kwargs["event"] == "ai_drawing_ready"
+        assert kwargs["fallback"]
+        return "I finished it. Guess before I get smug.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_model_drawing", fake_generate)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_game_line)
+
+    result = await dgr.drawing_guess_ai_draw(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-line",
+        "i18n_language": "en",
+    }))
+
+    assert result["ok"] is True
+    assert result["message"] == "I finished it. Guess before I get smug."
+    assert result["message_source"] == "persona_model"
+    assert session["game_chat_history"][-1]["kind"] == "game_line"
 
 
 @pytest.mark.unit
@@ -325,6 +579,139 @@ async def test_user_guessing_plain_chat_does_not_count_as_guess(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_word_picking_chat_does_not_expose_user_card_options(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-word-pick-chat",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-word-pick-chat"]
+    session["phase"] = "word_picking"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "word_picking_chat"
+        assert kwargs["user_text"] == "what was your drawing again?"
+        return "It was apple, and your next card is your own little secret."
+
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-word-pick-chat",
+        "i18n_language": "en",
+        "text": "what was your drawing again?",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["message"] == "It was apple, and your next card is your own little secret."
+    assert session["phase"] == "word_picking"
+    assert "user_draw_options" not in result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_hint_request_uses_persona_game_line(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-hint-line",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-hint-line"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "banana"
+    hints: list[str] = []
+
+    async def fake_game_line(**kwargs):
+        assert kwargs["event"] == "hint_request"
+        assert "safe_hint" in kwargs["details"]
+        assert kwargs["details"]["safe_hint"]
+        hints.append(kwargs["details"]["safe_hint"])
+        if len(hints) == 1:
+            assert kwargs["details"]["previous_safe_hints"] == []
+            assert kwargs["details"]["safe_hint_number"] == 1
+        else:
+            assert kwargs["details"]["previous_safe_hints"] == [hints[0]]
+            assert kwargs["details"]["safe_hint_number"] == 2
+        return kwargs["details"]["safe_hint"], "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_game_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-hint-line",
+        "i18n_language": "en",
+        "text": "hint please",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "hint"
+    assert result["message_source"] == "persona_model"
+    assert result["message"] == hints[0]
+
+    second = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-hint-line",
+        "i18n_language": "en",
+        "text": "another hint please",
+    }))
+
+    assert second["ok"] is True
+    assert second["kind"] == "hint"
+    assert second["message"] == hints[1]
+    assert hints[0] != hints[1]
+    assert session["hint_count"] == 2
+    assert session["safe_hint_history"] == hints
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_hint_request_after_safe_hints_uses_direct_answer_hint(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-direct-hint",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-direct-hint"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "banana"
+    safe_hints = dgr._safe_word_hint_options(dgr._WORD_BY_ID["banana"], "en")
+    session["hint_count"] = len(safe_hints)
+    session["safe_hint_history"] = list(safe_hints)
+
+    async def fake_game_line(**kwargs):
+        assert kwargs["event"] == "hint_request"
+        details = kwargs["details"]
+        assert "safe_hint" not in details
+        assert details["safe_hints_exhausted"] is True
+        assert details["previous_safe_hints"] == safe_hints[-4:]
+        assert details["answer_label"] == "banana"
+        assert details["allow_answer_reveal"] is True
+        assert "banana" in details["direct_hint"]
+        return details["direct_hint"], "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_game_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-direct-hint",
+        "i18n_language": "en",
+        "text": "one more hint please",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "hint"
+    assert result["message_source"] == "persona_model"
+    assert result["message"] == 'Try aiming your guess right at "banana" now.'
+    assert session["hint_count"] == len(safe_hints) + 1
+    assert session["safe_hint_history"] == safe_hints
+    assert session["direct_hint_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_user_guessing_explicit_guess_still_counts():
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
@@ -346,7 +733,34 @@ async def test_user_guessing_explicit_guess_still_counts():
     assert result["kind"] == "guess"
     assert result["correct"] is True
     assert result["answer"]["id"] == "banana"
-    assert result["state"]["phase"] == "user_drawing"
+    assert result["state"]["phase"] == "word_picking"
+    assert len(result["user_draw_options"]) == dgr.USER_DRAW_OPTION_COUNT
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_guessing_synonym_counts_as_correct_guess():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-synonym-guess",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-synonym-guess"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "rabbit"
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-synonym-guess",
+        "i18n_language": "en",
+        "text": "maybe it's a bunny?",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "guess"
+    assert result["correct"] is True
+    assert result["answer"]["id"] == "rabbit"
+    assert result["state"]["phase"] == "word_picking"
 
 
 @pytest.mark.unit
@@ -379,6 +793,49 @@ async def test_user_guessing_intent_classifier_allows_mixed_guess(monkeypatch):
     assert result["kind"] == "guess"
     assert result["correct"] is True
     assert result["answer"]["id"] == "banana"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_guessing_description_inference_stays_chat(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-description-chat",
+        "i18n_language": "zh-CN",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-description-chat"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "kite"
+
+    async def fake_intent(**kwargs):
+        assert kwargs["phase"] == "user_guessing"
+        assert kwargs["user_text"] == "飞在天上的"
+        return {"intent": "guess", "guess_text": "风筝", "confidence": 0.95}
+
+    async def fake_game_line(**_kwargs):
+        raise AssertionError("description-only text should not be scored as a guess")
+
+    async def fake_chat_line(**kwargs):
+        assert kwargs["event"] == "guessing_chat"
+        assert kwargs["user_text"] == "飞在天上的"
+        return "可以先继续聊，想认真猜的时候再把答案词说出来。"
+
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", fake_intent)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_game_line)
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_chat_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-description-chat",
+        "i18n_language": "zh-CN",
+        "text": "飞在天上的",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert "answer" not in result
+    assert session["phase"] == "user_guessing"
+    assert session["user_score"] == 0
 
 
 @pytest.mark.unit
@@ -423,6 +880,81 @@ async def test_ai_guess_feedback_plain_chat_does_not_trigger_retry(monkeypatch):
     assert result["source"] == "persona_model"
     assert session["phase"] == "ai_guess_feedback"
     assert session["ai_guess_attempts"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_guess_feedback_guess_intent_still_stays_chat(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-feedback-guess-chat",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-feedback-guess-chat"]
+    session["phase"] = "ai_guess_feedback"
+    session["user_word_id"] = "banana"
+    session["ai_guess_attempts"] = 1
+
+    async def fail_vision_guess(**_kwargs):
+        raise AssertionError("guess-intent feedback chat should not force a vision retry")
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "guess_feedback_chat"
+        return "I can chat about that guess before trying again."
+
+    async def fake_intent(**kwargs):
+        assert kwargs["phase"] == "ai_guess_feedback"
+        return {"intent": "guess", "guess_text": "banana", "confidence": 0.99}
+
+    monkeypatch.setattr(dgr, "_generate_vision_guess", fail_vision_guess)
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", fake_intent)
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-feedback-guess-chat",
+        "i18n_language": "en",
+        "text": "banana? that guess was funny",
+        "image_data_url": "data:image/png;base64,not-logged",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["message"] == "I can chat about that guess before trying again."
+    assert session["phase"] == "ai_guess_feedback"
+    assert session["ai_guess_attempts"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_summary_phase_still_accepts_persona_chat(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-summary-chat",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-summary-chat"]
+    session["phase"] = "summary"
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "summary_chat"
+        assert kwargs["user_text"] == "that ending was funny"
+        return "I am absolutely counting that as dramatic teamwork."
+
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-summary-chat",
+        "i18n_language": "en",
+        "text": "that ending was funny",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["source"] == "persona_model"
+    assert result["message"] == "I am absolutely counting that as dramatic teamwork."
+    assert session["phase"] == "summary"
 
 
 @pytest.mark.unit
@@ -530,7 +1062,19 @@ async def test_vision_guess_uses_model_structured_guess(monkeypatch):
             "source": "vision_model",
         }
 
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "ai_guess_correct"
+        return "I guessed banana from that curve.", "persona_model"
+
+    async def fake_summary_evaluation(**kwargs):
+        assert kwargs["correct"] is True
+        assert kwargs["answer"].id == "banana"
+        assert kwargs["guessed_word"].id == "banana"
+        return "This drawing has a smug little banana curve.", "persona_model"
+
     monkeypatch.setattr(dgr, "_generate_vision_guess", fake_vision_guess)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", fake_summary_evaluation)
 
     result = await dgr.drawing_guess_vision_guess(_FakeRequest({
         "lanlan_name": "YUI",
@@ -546,7 +1090,8 @@ async def test_vision_guess_uses_model_structured_guess(monkeypatch):
     assert result["correct"] is True
     assert result["state"]["phase"] == "summary"
     assert result["state"]["scores"]["neko"] == 1
-    assert result["message"] == "That has to be a banana."
+    assert result["message"] == "I guessed banana from that curve."
+    assert result["evaluation"] == "This drawing has a smug little banana curve."
 
 
 @pytest.mark.unit
@@ -576,8 +1121,20 @@ async def test_vision_guess_uses_text_context_model_when_vision_unavailable(monk
             "source": "text_context_model",
         }
 
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "ai_guess_correct"
+        return "Then I will lock in banana.", "persona_model"
+
+    async def fake_summary_evaluation(**kwargs):
+        assert kwargs["correct"] is True
+        assert kwargs["answer"].id == "banana"
+        assert kwargs["guessed_word"].id == "banana"
+        return "The curved little thing reads clearly enough.", "persona_model"
+
     monkeypatch.setattr(dgr, "_generate_vision_guess", fake_vision_guess)
     monkeypatch.setattr(dgr, "_generate_text_context_guess", fake_text_context_guess)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", fake_summary_evaluation)
 
     result = await dgr.drawing_guess_vision_guess(_FakeRequest({
         "lanlan_name": "YUI",
@@ -592,7 +1149,8 @@ async def test_vision_guess_uses_text_context_model_when_vision_unavailable(monk
     assert result["confidence"] == 0.66
     assert result["correct"] is True
     assert result["state"]["phase"] == "summary"
-    assert result["message"] == "Then I will guess banana."
+    assert result["message"] == "Then I will lock in banana."
+    assert result["evaluation"] == "The curved little thing reads clearly enough."
 
 
 @pytest.mark.unit
@@ -762,3 +1320,57 @@ async def test_vision_guess_fallback_respects_three_attempt_contract(monkeypatch
     assert second["correct"] is True
     assert second["state"]["phase"] == "summary"
     assert second["state"]["scores"]["neko"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_time_expired_user_drawing_settles_after_first_missed_ai_guess(monkeypatch):
+    async def wrong_vision_guess(**_kwargs):
+        return {
+            "word": dgr._WORD_BY_ID["apple"],
+            "confidence": 0.6,
+            "message": "I am going with apple.",
+            "source": "vision_model",
+        }
+
+    monkeypatch.setattr(dgr, "_generate_vision_guess", wrong_vision_guess)
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "ai_guess_final_miss"
+        return "I missed it this time.", "persona_model"
+
+    async def fake_summary_evaluation(**kwargs):
+        assert kwargs["correct"] is False
+        assert kwargs["answer"].id == "banana"
+        assert kwargs["guessed_word"].id == "apple"
+        return "This drawing kept its little secret pretty well.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", fake_summary_evaluation)
+
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-time-expired-miss",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-time-expired-miss"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+
+    result = await dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-time-expired-miss",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-logged",
+        "settle_on_miss": True,
+    }))
+
+    assert result["ok"] is True
+    assert result["correct"] is False
+    assert result["attempt"] == 1
+    assert result["can_retry"] is False
+    assert result["answer"]["id"] == "banana"
+    assert result["state"]["phase"] == "summary"
+    assert result["state"]["scores"]["neko"] == 0
+    assert result["message"] == "I missed it this time."
+    assert result["evaluation"] == "This drawing kept its little secret pretty well."

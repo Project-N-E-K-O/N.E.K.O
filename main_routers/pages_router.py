@@ -251,14 +251,24 @@ async def badminton_demo(request: Request):
     })
 
 
-@router.get("/drawing_guess_demo", response_class=HTMLResponse)
-async def drawing_guess_demo(request: Request):
-    """Drawing guess companion mini-game demo."""
+def _render_drawing_guess_demo(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/drawing_guess_demo.html", {
         "request": request,
         **_static_assets_ctx(),
     })
+
+
+@router.get("/drawing_guess_demo", response_class=HTMLResponse)
+async def drawing_guess_demo(request: Request):
+    """Drawing guess companion mini-game demo."""
+    return _render_drawing_guess_demo(request)
+
+
+@router.get("/drawing-guess-demo", response_class=HTMLResponse)
+async def drawing_guess_demo_alias(request: Request):
+    """Hyphenated alias for the drawing guess companion mini-game demo."""
+    return _render_drawing_guess_demo(request)
 
 
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)

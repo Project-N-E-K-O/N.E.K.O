@@ -4229,7 +4229,7 @@
     "drawingGuess": {
         "title": "Desenhe e adivinhe",
         "eyebrow": "Atividade de companhia",
-        "subtitle": "A página independente, a rota do jogo e o ciclo de desenho de 60 segundos estão conectados. A primeira versão usa desenhos e palpites fallback locais.",
+        "subtitle": "Desenhe, adivinhe e converse com a personagem.",
         "status": {
             "loadingCharacter": "Carregando personagem atual",
             "missingCharacter": "Aguardando informações da personagem",
@@ -4247,8 +4247,9 @@
             "canvasTitle": "Tela",
             "tools": "Ferramentas de desenho",
             "canvasWaitingTitle": "Tela sendo preparada",
-            "canvasWaiting": "Ao iniciar, ela desenha primeiro e você tenta adivinhar. Depois você tem 60 segundos para desenhar para ela.",
+            "canvasWaiting": "Ao começar, ela desenha primeiro e você tenta adivinhar. Depois você tem 5 minutos para desenhar para ela.",
             "actions": "Ações do jogo",
+            "sideResize": "Ajustar proporcao entre modelo e chat",
             "modelTitle": "Neko está presente",
             "modelFallbackTitle": "Espaço do modelo reservado",
             "modelFallback": "Depois, o Live2D ou VRM da personagem atual será carregado aqui. Se falhar, este mesmo espaço mantém um fallback.",
@@ -4257,14 +4258,17 @@
         "tools": {
             "brush": "Pincel",
             "eraser": "Borracha",
+            "bucket": "Balde",
             "undo": "Desfazer",
             "redo": "Refazer",
             "color": "Cor",
-            "size": "Espessura"
+            "size": "Espessura",
+            "basicColors": "Cores básicas",
+            "historyColors": "Cores recentes"
         },
         "tutorial": {
             "title": "Antes de começar",
-            "intro": "Nesta rodada cada um desenha uma vez e adivinha uma vez. Você pode conversar enquanto desenha; depois de 60 segundos, a tela atual vai automaticamente para ela.",
+            "intro": "Nesta rodada cada um desenha uma vez e adivinha uma vez. Você pode conversar enquanto desenha; depois de 5 minutos, a tela atual vai automaticamente para ela.",
             "memoryTitle": "Opções de memória",
             "memoryNone": "Não registrar; jogar só desta vez.",
             "memorySummary": "Registrar um breve resumo do jogo.",
@@ -4281,6 +4285,13 @@
             "downloadSvg": "Baixar desenho dela",
             "downloadPng": "Baixar meu desenho"
         },
+        "exitConfirm": {
+            "title": "Sair desta página?",
+            "message": "O resumo final está pronto. Quer sair desta página do minijogo?",
+            "stay": "Depois",
+            "leave": "Sair da página",
+            "reopen": "Sair?"
+        },
         "memory": {
             "noneShort": "Sem memória",
             "summaryShort": "Resumo",
@@ -4292,10 +4303,28 @@
             "ended": "Encerrado",
             "ai_drawing": "Neko desenhando",
             "user_guessing": "Seu palpite",
+            "drawing_pick": "Sorteando palavra",
             "user_drawing": "Você desenha",
             "ai_guessing": "Neko adivinhando",
             "ai_guess_feedback": "Dê uma dica",
-            "summary": "Resumo"
+            "summary": "Resumo",
+            "final_summary": "Resumo final"
+        },
+        "modelStates": {
+            "loading": "Carregando modelo",
+            "idle": "Em espera",
+            "drawing": "Desenhando",
+            "thinking": "Pensando",
+            "guessing": "Adivinhando",
+            "talking": "Conversando",
+            "happy": "Feliz"
+        },
+        "modelControls": {
+            "group": "Controles de visualizacao do modelo",
+            "scale": "Tamanho do modelo",
+            "x": "Posicao horizontal",
+            "y": "Posicao vertical",
+            "reset": "Redefinir visualizacao do modelo"
         },
         "messages": {
             "welcome": "Quando estiver pronto, vamos confirmar a personagem atual e assumir a rota do minijogo.",
@@ -4305,22 +4334,30 @@
             "roundStart": "Uma nova rodada está começando.",
             "aiDrawingReady": "Ela terminou o desenho. Tente adivinhar.",
             "roundFailed": "Falha ao iniciar a rodada: {{reason}}",
+            "requestTimeout": "A solicitação expirou. Tente novamente.",
             "guessTimeout": "O tempo acabou. A resposta era {{answer}}.",
             "inputFailed": "Isso não foi enviado. Tente de novo.",
             "answerReveal": "Resposta: {{answer}}",
+            "drawingPickTitle": "Sorteando uma palavra",
+            "drawingPickSubtitle": "Espere um instante. Ela está tirando algumas cartas do baralho.",
+            "drawingPickReady": "Escolha uma carta para desenhar.",
+            "drawingPickReveal": "Escolhida: {{answer}}",
             "userDrawPrompt": "Sua palavra é: {{answer}}. Desenhe para ela adivinhar.",
             "blankCanvas": "Desenhe algumas linhas primeiro.",
+            "aiDrawingWaiting": "A Neko está desenhando",
             "aiGuessing": "Ela está olhando seu desenho...",
             "aiGuessLine": "Ela chutou: {{guess}}",
-            "aiNeedsHint": "Você pode continuar conversando ou dar uma dica para ela tentar de novo.",
+            "aiNeedsHint": "Você pode continuar conversando. Dê uma dica quando quiser que ela tente adivinhar de novo.",
             "summaryReady": "O resumo da rodada está pronto.",
-            "canvasCleared": "Tela limpa."
+            "canvasCleared": "Tela limpa.",
+            "userSupplemented": "Você retocou o desenho. Ela vai tentar adivinhar de novo agora."
         },
         "input": {
             "placeholder": "Aguarde a rota ficar pronta",
             "guessPlaceholder": "Digite seu palpite ou peça uma dica",
             "drawingPlaceholder": "Você pode conversar enquanto desenha",
-            "hintPlaceholder": "Converse ou escreva 'dica: ...' para ela tentar de novo"
+            "hintPlaceholder": "Continue conversando; dê uma dica quando quiser outra tentativa",
+            "summaryPlaceholder": "Converse sobre esta rodada ou comece outra"
         },
         "timer": {
             "seconds": "{{seconds}}s"
@@ -4335,7 +4372,10 @@
             "score": "Você {{user}} - {{neko}} Neko",
             "userDrawAnswer": "Resposta do seu desenho: {{answer}}",
             "nekoArt": "Desenho da Neko",
-            "userArt": "Seu desenho"
+            "userArt": "Seu desenho",
+            "finalTitle": "Resumo final",
+            "roundLabel": "Rodada {{round}}",
+            "noRounds": "Ainda não há rodadas concluídas."
         }
     },
     "basketball": {

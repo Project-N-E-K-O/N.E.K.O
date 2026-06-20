@@ -23,18 +23,20 @@
   <style>
     :root {
       color-scheme: light;
-      --dg-bg: #f7f4ef;
-      --dg-surface: #fffdfa;
-      --dg-surface-strong: #ffffff;
-      --dg-ink: #24303a;
-      --dg-muted: #65717d;
-      --dg-line: #d9d1c5;
-      --dg-accent: #2b7a78;
-      --dg-accent-strong: #185f5d;
-      --dg-warm: #c46a35;
-      --dg-soft: #e8f2ee;
-      --dg-danger: #9b2f32;
-      --dg-shadow: 0 18px 55px rgba(39, 49, 58, 0.14);
+      --dg-bg: #eef7ff;
+      --dg-surface: rgba(255, 255, 255, 0.76);
+      --dg-surface-strong: rgba(255, 255, 255, 0.94);
+      --dg-ink: #21364f;
+      --dg-muted: #64778f;
+      --dg-line: rgba(99, 165, 235, 0.28);
+      --dg-accent: #17a7ff;
+      --dg-accent-strong: #0b72c9;
+      --dg-accent-soft: #dff3ff;
+      --dg-warm: #4f8df1;
+      --dg-soft: #edf8ff;
+      --dg-danger: #d65364;
+      --dg-shadow: 0 18px 45px rgba(33, 101, 179, 0.14);
+      --dg-panel-shadow: inset 0 1px rgba(255, 255, 255, 0.68), 0 10px 28px rgba(33, 83, 143, 0.1);
       font-family: "Inter", "Segoe UI", "Microsoft YaHei", sans-serif;
     }
 
@@ -48,7 +50,7 @@
       min-width: 0;
       min-height: 100%;
       margin: 0;
-      background: var(--dg-bg);
+      background: linear-gradient(135deg, #e8f7ff 0%, #f8fbff 46%, #edf5ff 100%);
       color: var(--dg-ink);
     }
 
@@ -84,6 +86,9 @@
       gap: 18px;
       height: 100vh;
       padding: 18px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.12)),
+        transparent;
     }
 
     .dg-main,
@@ -94,21 +99,53 @@
 
     .dg-main {
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-rows: auto minmax(0, 1fr);
       gap: 12px;
     }
 
     .dg-header {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
       gap: 16px;
       min-width: 0;
+      padding: 12px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.54);
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(75, 212, 253, 0.82), rgba(23, 167, 255, 0.78), rgba(91, 141, 239, 0.8));
+      color: #ffffff;
+      box-shadow: var(--dg-panel-shadow);
+      overflow: hidden;
+    }
+
+    .dg-header-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .dg-header-icon {
+      flex: 0 0 auto;
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.92), 0 12px 26px rgba(14, 88, 158, 0.24);
+    }
+
+    .dg-header-icon img {
+      width: 36px;
+      height: 36px;
+      object-fit: contain;
+      filter: saturate(1.35) contrast(1.2) drop-shadow(0 3px 7px rgba(11, 114, 201, 0.22));
     }
 
     .dg-kicker {
       margin: 0 0 4px;
-      color: var(--dg-accent-strong);
+      color: rgba(255, 255, 255, 0.88);
       font-size: 13px;
       font-weight: 700;
       letter-spacing: 0;
@@ -124,19 +161,13 @@
     .dg-subtitle {
       max-width: 680px;
       margin: 8px 0 0;
-      color: var(--dg-muted);
+      color: rgba(255, 255, 255, 0.86);
       font-size: 14px;
       line-height: 1.6;
     }
 
     .dg-status {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 6px;
-      min-width: 230px;
-      color: var(--dg-muted);
-      font-size: 13px;
+      display: none;
     }
 
     .dg-status-pill {
@@ -144,7 +175,7 @@
       padding: 7px 10px;
       border: 1px solid var(--dg-line);
       border-radius: 8px;
-      background: var(--dg-surface);
+      background: rgba(255, 255, 255, 0.84);
       color: var(--dg-ink);
       font-weight: 700;
       overflow: hidden;
@@ -155,28 +186,44 @@
     .dg-board {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
+      min-width: 0;
       min-height: 0;
       border: 1px solid var(--dg-line);
-      border-radius: 8px;
+      border-radius: 14px;
       background: var(--dg-surface-strong);
       box-shadow: var(--dg-shadow);
+      backdrop-filter: blur(18px) saturate(1.35);
       overflow: hidden;
     }
 
     .dg-toolbar {
+      position: relative;
+      z-index: 18;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       padding: 12px;
       border-bottom: 1px solid var(--dg-line);
-      background: #fbfaf7;
+      background: rgba(255, 255, 255, 0.68);
+      backdrop-filter: blur(16px) saturate(1.35);
+      overflow: visible;
     }
 
     .dg-toolbar-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
       margin: 0;
       font-size: 16px;
       line-height: 1.3;
+    }
+
+    .dg-heading-icon {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      filter: drop-shadow(0 4px 9px rgba(23, 167, 255, 0.18));
     }
 
     .dg-tools {
@@ -184,6 +231,12 @@
       align-items: center;
       gap: 8px;
       min-width: 0;
+    }
+
+    .dg-tool-popover {
+      position: relative;
+      display: grid;
+      place-items: center;
     }
 
     .dg-tool {
@@ -194,6 +247,7 @@
       border-color: var(--dg-line);
       background: var(--dg-surface);
       color: var(--dg-ink);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.76);
     }
 
     .dg-tool svg {
@@ -207,31 +261,318 @@
       fill: none;
     }
 
+    .dg-tool svg[hidden],
+    .dg-tool[data-brush-kind="brush"] .dg-bucket-icon,
+    .dg-tool[data-brush-kind="bucket"] .dg-brush-icon {
+      display: none;
+    }
+
+    .dg-tool[data-brush-kind="bucket"] .dg-bucket-icon,
+    .dg-tool[data-brush-kind="brush"] .dg-brush-icon {
+      display: block;
+    }
+
     .dg-tool[aria-pressed="true"] {
       border-color: var(--dg-accent);
       background: var(--dg-soft);
       color: var(--dg-accent-strong);
+      box-shadow: 0 0 0 2px rgba(23, 167, 255, 0.13);
     }
 
-    .dg-swatch {
-      width: 36px;
-      height: 36px;
-      border: 1px solid var(--dg-line);
-      border-radius: 8px;
-      background: var(--dg-surface);
-      padding: 4px;
+    .dg-tool-popover::after {
+      content: "";
+      position: absolute;
+      left: -154px;
+      right: -10px;
+      top: 100%;
+      height: 28px;
+      pointer-events: none;
+    }
+
+    .dg-tool-menu {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      z-index: 12;
+      width: 190px;
+      padding: 12px;
+      border: 1px solid rgba(99, 165, 235, 0.32);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 18px 36px rgba(33, 101, 179, 0.18);
+      backdrop-filter: blur(18px) saturate(1.3);
+      opacity: 0;
+      transform: translateY(-4px);
+      pointer-events: none;
+      transition: opacity 140ms ease 120ms, transform 140ms ease 120ms, pointer-events 0s linear 260ms;
+    }
+
+    .dg-tool-menu::before {
+      content: "";
+      position: absolute;
+      top: -6px;
+      right: 14px;
+      width: 10px;
+      height: 10px;
+      border-left: 1px solid rgba(99, 165, 235, 0.32);
+      border-top: 1px solid rgba(99, 165, 235, 0.32);
+      background: rgba(255, 255, 255, 0.96);
+      transform: rotate(45deg);
+    }
+
+    .dg-tool-popover.is-open .dg-tool-menu {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+      transition-delay: 0ms;
+    }
+
+    .dg-tool-popover.is-open::after {
+      pointer-events: auto;
+    }
+
+    .dg-tool-control {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .dg-tool-mode-group {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .dg-tool-mode {
+      min-width: 0;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border-color: var(--dg-line);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--dg-ink);
+    }
+
+    .dg-tool-mode svg {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
+      stroke: currentColor;
+      stroke-width: 2.1;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
+
+    .dg-tool-mode span {
+      display: none;
+    }
+
+    .dg-tool-mode[aria-pressed="true"] {
+      border-color: var(--dg-accent);
+      background: var(--dg-soft);
+      color: var(--dg-accent-strong);
+      box-shadow: 0 0 0 2px rgba(23, 167, 255, 0.12);
+    }
+
+    .dg-tool-menu[data-brush-kind="bucket"] .dg-brush-size-control {
+      display: none;
+    }
+
+    .dg-tool-menu[data-brush-kind="bucket"] .dg-brush-only-control {
+      display: none;
+    }
+
+    .dg-tool-color-button {
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 0 10px;
+      border-color: var(--dg-line);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--dg-ink);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .dg-color-dot {
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255, 255, 255, 0.86);
+      border-radius: 999px;
+      background: var(--dg-current-color, #24303a);
+      box-shadow: 0 0 0 1px rgba(99, 165, 235, 0.4), 0 5px 14px rgba(33, 101, 179, 0.14);
+    }
+
+    .dg-tool-control-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--dg-muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.2;
     }
 
     .dg-size {
-      width: 96px;
+      width: 100%;
+      min-width: 0;
+      accent-color: var(--dg-accent);
+    }
+
+    .dg-color-panel {
+      position: fixed;
+      top: 112px;
+      right: 72px;
+      z-index: 28;
+      width: 238px;
+      padding: 12px;
+      border: 1px solid rgba(99, 165, 235, 0.36);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 22px 48px rgba(33, 101, 179, 0.22);
+      backdrop-filter: blur(18px) saturate(1.35);
+      color: var(--dg-ink);
+    }
+
+    .dg-color-panel[hidden] {
+      display: none;
+    }
+
+    .dg-color-panel.is-dragging {
+      user-select: none;
+    }
+
+    .dg-color-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      cursor: move;
+      touch-action: none;
+    }
+
+    .dg-color-panel-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .dg-color-current {
+      width: 22px;
+      height: 22px;
+      border: 2px solid #ffffff;
+      border-radius: 999px;
+      background: var(--dg-current-color, #24303a);
+      box-shadow: 0 0 0 1px rgba(99, 165, 235, 0.42), 0 8px 18px rgba(33, 101, 179, 0.14);
+    }
+
+    .dg-color-panel-close {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border-color: var(--dg-line);
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--dg-muted);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .dg-color-wheel {
+      position: relative;
+      width: 148px;
+      height: 148px;
+      margin: 6px auto 12px;
+      border: 8px solid #ffffff;
+      border-radius: 999px;
+      background:
+        radial-gradient(circle, #ffffff 0 14%, rgba(255, 255, 255, 0) 42%),
+        conic-gradient(#ff3b58, #ffb72e, #f4ff4f, #33d66b, #25d8ff, #3478ff, #a855f7, #ff3b58);
+      box-shadow: 0 12px 30px rgba(33, 101, 179, 0.18), inset 0 0 0 1px rgba(33, 54, 79, 0.08);
+      cursor: crosshair;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    .dg-color-wheel::after {
+      content: "";
+      position: absolute;
+      left: var(--dg-color-cursor-x, 50%);
+      top: var(--dg-color-cursor-y, 50%);
+      width: 14px;
+      height: 14px;
+      border: 2px solid #ffffff;
+      border-radius: 999px;
+      box-shadow: 0 0 0 1px rgba(33, 54, 79, 0.42), 0 5px 12px rgba(33, 101, 179, 0.18);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+
+    .dg-color-wheel input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .dg-color-section {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .dg-color-section-title {
+      color: var(--dg-muted);
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .dg-color-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 7px;
+    }
+
+    .dg-color-chip {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 2px solid rgba(255, 255, 255, 0.92);
+      border-radius: 999px;
+      background: var(--chip-color, #24303a);
+      box-shadow: 0 0 0 1px rgba(99, 165, 235, 0.36), 0 5px 12px rgba(33, 101, 179, 0.12);
+    }
+
+    .dg-color-chip:hover,
+    .dg-color-chip:focus-visible {
+      box-shadow: 0 0 0 2px rgba(23, 167, 255, 0.28), 0 8px 18px rgba(33, 101, 179, 0.16);
+      transform: translateY(-1px);
+      outline: none;
     }
 
     .dg-canvas-wrap {
       position: relative;
+      z-index: 1;
       display: grid;
       min-width: 0;
       min-height: 0;
-      background: #fffdfa;
+      background: rgba(255, 255, 255, 0.7);
     }
 
     .dg-canvas-stage {
@@ -242,10 +583,38 @@
       min-height: 0;
       display: grid;
       place-items: center;
-      background: #fffdfa;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(249, 253, 255, 0.92));
       color: var(--dg-muted);
       text-align: center;
       overflow: hidden;
+    }
+
+    .dg-size-preview {
+      position: absolute;
+      inset: 0;
+      z-index: 18;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+
+    .dg-size-preview[hidden] {
+      display: none !important;
+    }
+
+    .dg-size-preview-ring {
+      width: var(--dg-size-preview-diameter, 20px);
+      height: var(--dg-size-preview-diameter, 20px);
+      border: var(--dg-size-preview-border, 2px) solid var(--dg-size-preview-color, var(--dg-accent-strong));
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.22);
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86), 0 10px 28px rgba(33, 101, 179, 0.24);
+    }
+
+    .dg-size-preview[data-preview-tool="eraser"] .dg-size-preview-ring {
+      border-style: dashed;
+      border-color: rgba(33, 54, 79, 0.72);
+      background: rgba(255, 255, 255, 0.34);
     }
 
     .dg-canvas-stage strong {
@@ -259,11 +628,276 @@
       padding: 24px;
     }
 
+    .dg-draw-pick,
     .dg-ai-drawing,
     .dg-user-canvas,
     .dg-summary {
       width: 100%;
       height: 100%;
+    }
+
+    .dg-draw-pick {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(255, 255, 255, 0.74);
+      text-align: center;
+    }
+
+    .dg-draw-pick-inner {
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+      width: min(100%, 700px);
+    }
+
+    .dg-draw-pick-cards {
+      position: relative;
+      width: min(100%, 620px);
+      height: 360px;
+      margin-bottom: 4px;
+      perspective: 900px;
+    }
+
+    .dg-pick-deck,
+    .dg-pick-card {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      width: 154px;
+      height: 204px;
+      display: grid;
+      place-items: center;
+      color: var(--dg-accent-strong);
+      font-size: 24px;
+      font-weight: 800;
+      transform: translateX(-50%) rotate(-7deg);
+      transform-origin: 50% 145%;
+    }
+
+    .dg-pick-deck {
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: linear-gradient(145deg, #dff3ff, #ffffff);
+      color: transparent;
+      box-shadow: 0 14px 30px rgba(33, 101, 179, 0.14);
+      z-index: 1;
+    }
+
+    .dg-pick-deck::before,
+    .dg-pick-deck::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.94);
+    }
+
+    .dg-pick-deck::before {
+      transform: translate(6px, -6px) rotate(4deg);
+      z-index: -1;
+    }
+
+    .dg-pick-deck::after {
+      transform: translate(12px, -12px) rotate(8deg);
+      z-index: -2;
+    }
+
+    .dg-pick-card {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      z-index: 2;
+      transform-style: preserve-3d;
+    }
+
+    .dg-draw-pick-dealing .dg-pick-card-0 {
+      animation: dg-deal-card-0 1.12s cubic-bezier(0.2, 0.78, 0.22, 1) forwards;
+    }
+
+    .dg-draw-pick-dealing .dg-pick-card-1 {
+      animation: dg-deal-card-1 1.12s cubic-bezier(0.2, 0.78, 0.22, 1) 0.12s forwards;
+    }
+
+    .dg-draw-pick-dealing .dg-pick-card-2 {
+      animation: dg-deal-card-2 1.12s cubic-bezier(0.2, 0.78, 0.22, 1) 0.24s forwards;
+    }
+
+    .dg-draw-pick-spread .dg-pick-card-0 {
+      transform: translate(-300px, 136px) rotate(-10deg);
+      z-index: 3;
+    }
+
+    .dg-draw-pick-spread .dg-pick-card-1 {
+      transform: translate(-50%, 108px) rotate(0deg);
+      z-index: 4;
+    }
+
+    .dg-draw-pick-spread .dg-pick-card-2 {
+      transform: translate(146px, 136px) rotate(10deg);
+      z-index: 5;
+    }
+
+    .dg-draw-pick-ready .dg-pick-card-0 {
+      transform: translate(-154px, 136px) rotate(-14deg);
+      z-index: 3;
+    }
+
+    .dg-draw-pick-ready .dg-pick-card-1 {
+      transform: translate(-50%, 108px) rotate(0deg);
+      z-index: 4;
+    }
+
+    .dg-draw-pick-ready .dg-pick-card-2 {
+      transform: translate(0, 136px) rotate(14deg);
+      z-index: 5;
+    }
+
+    .dg-pick-option {
+      color: var(--dg-ink);
+      font: inherit;
+      font-size: 21px;
+      font-weight: 800;
+      cursor: default;
+      transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+
+    .dg-draw-pick-ready .dg-pick-option {
+      cursor: pointer;
+    }
+
+    .dg-pick-card-inner {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: block;
+      transform-style: preserve-3d;
+      transition: transform 480ms cubic-bezier(0.2, 0.74, 0.22, 1);
+    }
+
+    .dg-pick-card-0 .dg-pick-card-inner {
+      transition-delay: 0ms;
+    }
+
+    .dg-pick-card-1 .dg-pick-card-inner {
+      transition-delay: 80ms;
+    }
+
+    .dg-pick-card-2 .dg-pick-card-inner {
+      transition-delay: 160ms;
+    }
+
+    .dg-draw-pick-revealed .dg-pick-card-inner {
+      transform: rotateY(180deg);
+    }
+
+    .dg-pick-face {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      border: 1px solid var(--dg-line);
+      border-radius: 8px;
+      box-shadow: 0 16px 34px rgba(33, 101, 179, 0.14);
+      backface-visibility: hidden;
+      overflow: hidden;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .dg-pick-face-back {
+      background: linear-gradient(145deg, #dff3ff, #ffffff);
+      color: var(--dg-accent-strong);
+      font-size: 34px;
+    }
+
+    .dg-pick-face-front {
+      background: var(--dg-surface);
+      color: var(--dg-ink);
+      transform: rotateY(180deg);
+    }
+
+    .dg-draw-pick-ready .dg-pick-option:hover:not(:disabled),
+    .dg-draw-pick-ready .dg-pick-option:focus-visible {
+      outline: none;
+    }
+
+    .dg-draw-pick-ready .dg-pick-option.dg-pick-card-0:hover:not(:disabled),
+    .dg-draw-pick-ready .dg-pick-option.dg-pick-card-0:focus-visible {
+      transform: translate(-154px, 124px) rotate(-14deg);
+    }
+
+    .dg-draw-pick-ready .dg-pick-option.dg-pick-card-1:hover:not(:disabled),
+    .dg-draw-pick-ready .dg-pick-option.dg-pick-card-1:focus-visible {
+      transform: translate(-50%, 96px) rotate(0deg);
+    }
+
+    .dg-draw-pick-ready .dg-pick-option.dg-pick-card-2:hover:not(:disabled),
+    .dg-draw-pick-ready .dg-pick-option.dg-pick-card-2:focus-visible {
+      transform: translate(0, 124px) rotate(14deg);
+    }
+
+    .dg-draw-pick-ready .dg-pick-option:hover:not(:disabled) .dg-pick-face-front,
+    .dg-draw-pick-ready .dg-pick-option:focus-visible .dg-pick-face-front {
+      border-color: var(--dg-accent-strong);
+      background: #edf8ff;
+      box-shadow: 0 20px 38px rgba(33, 101, 179, 0.18);
+    }
+
+    .dg-pick-option.is-selected .dg-pick-face-front {
+      border-color: var(--dg-accent-strong);
+      background: var(--dg-accent);
+      color: #ffffff;
+    }
+
+    .dg-draw-pick-revealed .dg-pick-option:disabled:not(.is-selected) {
+      cursor: default;
+      opacity: 0.55;
+    }
+
+    .dg-draw-pick-subtitle {
+      color: var(--dg-muted);
+      line-height: 1.6;
+    }
+
+    .dg-draw-pick-reveal {
+      min-height: 26px;
+      padding-top: 2px;
+      color: var(--dg-warm);
+      font-size: 16px;
+      font-weight: 800;
+    }
+
+    @keyframes dg-deal-card-0 {
+      0% {
+        transform: translateX(-50%) rotate(-7deg);
+      }
+
+      100% {
+        transform: translate(-300px, 136px) rotate(-10deg);
+      }
+    }
+
+    @keyframes dg-deal-card-1 {
+      0% {
+        transform: translateX(-50%) rotate(-7deg);
+      }
+
+      100% {
+        transform: translate(-50%, 108px) rotate(0deg);
+      }
+    }
+
+    @keyframes dg-deal-card-2 {
+      0% {
+        transform: translateX(-50%) rotate(-7deg);
+      }
+
+      100% {
+        transform: translate(146px, 136px) rotate(10deg);
+      }
     }
 
     .dg-ai-drawing {
@@ -272,7 +906,7 @@
       display: grid;
       place-items: center;
       padding: clamp(18px, 3vw, 36px);
-      background: #fffdfa;
+      background: rgba(255, 255, 255, 0.86);
       overflow: hidden;
     }
 
@@ -282,11 +916,15 @@
       max-width: none;
       max-height: none;
       display: block;
+      transform-box: fill-box;
+      transform-origin: center center;
     }
 
     .dg-user-canvas {
+      position: relative;
+      z-index: 1;
       display: block;
-      background: #fffdfa;
+      background: rgba(255, 255, 255, 0.92);
       cursor: crosshair;
       touch-action: none;
       object-fit: fill;
@@ -300,18 +938,61 @@
       padding: 7px 10px;
       border: 1px solid var(--dg-line);
       border-radius: 8px;
-      background: rgba(255, 253, 250, 0.92);
+      background: rgba(255, 255, 255, 0.92);
       color: var(--dg-ink);
       font-size: 13px;
       font-weight: 700;
     }
 
+    .dg-canvas-actions {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 8;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: auto;
+    }
+
+    .dg-canvas-actions .dg-button {
+      min-height: 34px;
+      padding: 0 12px;
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 8px 22px rgba(33, 101, 179, 0.13);
+    }
+
+    .dg-canvas-actions .dg-button:not(:disabled):hover,
+    .dg-canvas-actions .dg-button:not(:disabled):focus-visible {
+      border-color: var(--dg-accent);
+      background: #edf8ff;
+      color: var(--dg-accent-strong);
+      box-shadow: 0 10px 26px rgba(33, 101, 179, 0.16), 0 0 0 2px rgba(23, 167, 255, 0.16);
+      outline: none;
+    }
+
+    .dg-canvas-actions .dg-button-primary {
+      background: var(--dg-accent);
+      color: #ffffff;
+    }
+
+    .dg-canvas-actions .dg-button-primary:not(:disabled):hover,
+    .dg-canvas-actions .dg-button-primary:not(:disabled):focus-visible {
+      background: var(--dg-accent-strong);
+      color: #ffffff;
+    }
+
     .dg-summary {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      gap: 14px;
-      padding: 18px;
+      gap: 10px;
+      padding: 16px;
       text-align: left;
+      overflow: hidden;
+    }
+
+    .dg-summary.dg-summary-final {
+      display: block;
       overflow: auto;
     }
 
@@ -321,23 +1002,71 @@
       letter-spacing: 0;
     }
 
+    .dg-summary-evaluation {
+      max-width: min(760px, 100%);
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(99, 165, 235, 0.28);
+      border-radius: 8px;
+      background: #edf8ff;
+      color: var(--dg-ink);
+      line-height: 1.45;
+    }
+
+    .dg-summary-list {
+      min-height: 0;
+    }
+
+    .dg-summary:not(.dg-summary-final) .dg-summary-list {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .dg-summary.dg-summary-final .dg-summary-list {
+      display: grid;
+      gap: 12px;
+    }
+
     .dg-summary-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
+      height: 100%;
       min-height: 0;
+    }
+
+    .dg-round-summary {
+      min-height: 0;
+      margin: 0;
+    }
+
+    .dg-summary:not(.dg-summary-final) .dg-round-summary {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 8px;
+      height: 100%;
+    }
+
+    .dg-round-summary > h4 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .dg-round-summary > p {
+      margin: 0;
     }
 
     .dg-thumb {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
-      gap: 8px;
+      gap: 6px;
       min-width: 0;
       min-height: 0;
       padding: 10px;
       border: 1px solid var(--dg-line);
       border-radius: 8px;
       background: var(--dg-surface);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.7);
     }
 
     .dg-thumb h4 {
@@ -346,40 +1075,35 @@
     }
 
     .dg-thumb-preview {
-      min-height: 160px;
+      min-height: 0;
+      height: 100%;
       display: grid;
       place-items: center;
       border: 1px dashed var(--dg-line);
       border-radius: 8px;
-      background: #ffffff;
+      background: rgba(255, 255, 255, 0.86);
       overflow: hidden;
     }
 
-    .dg-thumb-preview img,
+    .dg-thumb .dg-button {
+      min-height: 32px;
+    }
+
     .dg-thumb-preview svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .dg-thumb-preview img {
       max-width: 100%;
       max-height: 100%;
+      object-fit: contain;
+      display: block;
     }
 
     .dg-hidden {
       display: none !important;
-    }
-
-    .dg-actions {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 12px;
-      border: 1px solid var(--dg-line);
-      border-radius: 8px;
-      background: var(--dg-surface);
-    }
-
-    .dg-action-group {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
     }
 
     .dg-button {
@@ -391,6 +1115,15 @@
       font-weight: 700;
     }
 
+    .dg-button:not(:disabled):hover,
+    .dg-button:not(:disabled):focus-visible {
+      border-color: var(--dg-accent);
+      background: #edf8ff;
+      color: var(--dg-accent-strong);
+      box-shadow: 0 0 0 2px rgba(23, 167, 255, 0.14);
+      outline: none;
+    }
+
     .dg-button-primary {
       border-color: var(--dg-accent);
       background: var(--dg-accent);
@@ -399,6 +1132,7 @@
 
     .dg-button-primary:not(:disabled):hover {
       background: var(--dg-accent-strong);
+      color: #ffffff;
     }
 
     .dg-button-danger {
@@ -406,18 +1140,65 @@
       color: var(--dg-danger);
     }
 
+    .dg-button-danger:not(:disabled):hover,
+    .dg-button-danger:not(:disabled):focus-visible {
+      border-color: rgba(155, 47, 50, 0.55);
+      background: #fff0f3;
+      color: var(--dg-danger);
+      box-shadow: 0 0 0 2px rgba(214, 83, 100, 0.13);
+    }
+
     .dg-side {
       display: grid;
-      grid-template-rows: minmax(220px, 0.8fr) minmax(280px, 1fr);
-      gap: 12px;
+      grid-template-rows: minmax(220px, 64%) 12px minmax(280px, 1fr);
+      gap: 0;
+      min-height: 512px;
+    }
+
+    .dg-side.is-resizing,
+    .dg-side.is-resizing * {
+      cursor: row-resize !important;
+      user-select: none;
+    }
+
+    .dg-side-resizer {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 12px;
+      cursor: row-resize;
+      color: var(--dg-muted);
+      touch-action: none;
+    }
+
+    .dg-side-resizer::before {
+      content: "";
+      width: 46px;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(100, 119, 143, 0.34);
+      transition: background 160ms ease, width 160ms ease;
+    }
+
+    .dg-side-resizer:hover::before,
+    .dg-side-resizer:focus-visible::before,
+    .dg-side.is-resizing .dg-side-resizer::before {
+      width: 64px;
+      background: var(--dg-accent);
+    }
+
+    .dg-side-resizer:focus-visible {
+      outline: none;
     }
 
     .dg-panel {
       min-width: 0;
       min-height: 0;
       border: 1px solid var(--dg-line);
-      border-radius: 8px;
+      border-radius: 14px;
       background: var(--dg-surface);
+      box-shadow: var(--dg-panel-shadow);
+      backdrop-filter: blur(18px) saturate(1.35);
       overflow: hidden;
     }
 
@@ -428,57 +1209,203 @@
       gap: 10px;
       padding: 12px;
       border-bottom: 1px solid var(--dg-line);
-      background: #fbfaf7;
+      background: rgba(255, 255, 255, 0.68);
+      backdrop-filter: blur(16px) saturate(1.35);
     }
 
     .dg-panel-heading h2 {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
       margin: 0;
       font-size: 15px;
       letter-spacing: 0;
     }
 
-    .dg-model-body {
-      height: calc(100% - 48px);
-      display: grid;
-      grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1fr);
-      gap: 14px;
-      padding: 14px;
-      align-items: center;
+    .dg-model-panel {
+      position: relative;
+      height: 100%;
     }
 
-    .dg-avatar {
-      min-width: 120px;
-      aspect-ratio: 1;
+    .dg-model-stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-height: 220px;
       display: grid;
       place-items: center;
-      border: 1px solid var(--dg-line);
-      border-radius: 8px;
-      background: #fff7ed;
+      padding: 0;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 252, 255, 0.9)),
+        var(--dg-surface-strong);
       overflow: hidden;
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
     }
 
-    .dg-avatar img {
-      max-width: 86%;
-      max-height: 86%;
-      object-fit: contain;
+    .dg-model-stage.is-dragging {
+      cursor: grabbing;
     }
 
-    .dg-model-copy {
+    .dg-model-controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 4;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      pointer-events: none;
+    }
+
+    .dg-model-reset svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      stroke: currentColor;
+      stroke-width: 2.1;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
+
+    .dg-model-reset {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-color: var(--dg-line);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--dg-ink);
+      box-shadow: 0 8px 18px rgba(33, 101, 179, 0.12);
+      opacity: 0.74;
+      pointer-events: auto;
+      transition: opacity 160ms ease, background 160ms ease;
+    }
+
+    .dg-model-reset:hover,
+    .dg-model-reset:focus-visible {
+      background: rgba(255, 255, 255, 0.98);
+      opacity: 1;
+    }
+
+    .dg-model-renderer,
+    .dg-model-loading,
+    .dg-model-fallback {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
       min-width: 0;
+      min-height: 0;
+    }
+
+    .dg-model-renderer[hidden],
+    .dg-model-loading[hidden],
+    .dg-model-fallback[hidden] {
+      display: none;
+    }
+
+    .dg-model-loading {
+      z-index: 2;
       color: var(--dg-muted);
       font-size: 14px;
-      line-height: 1.55;
+      font-weight: 800;
+      text-align: center;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(237, 248, 255, 0.62));
     }
 
-    .dg-model-copy strong {
+    .dg-model-loading span {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border: 1px solid rgba(99, 165, 235, 0.28);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.86);
+      box-shadow: 0 12px 26px rgba(33, 101, 179, 0.12);
+    }
+
+    .dg-model-loading span::before {
+      content: "";
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(23, 167, 255, 0.25);
+      border-top-color: var(--dg-accent);
+      border-radius: 999px;
+      animation: dg-model-loading-spin 780ms linear infinite;
+    }
+
+    @keyframes dg-model-loading-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .dg-model-renderer canvas {
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 100%;
       display: block;
-      margin-bottom: 6px;
-      color: var(--dg-ink);
+      pointer-events: none;
+    }
+
+    .dg-model-fallback {
+      transition: transform 180ms ease;
+    }
+
+    .dg-model-fallback img {
+      width: min(72%, 210px);
+      max-height: 82%;
+      object-fit: contain;
+      filter: drop-shadow(0 16px 22px rgba(33, 101, 179, 0.14));
+      transform: translate(var(--dg-model-offset-x, 0), var(--dg-model-offset-y, 0)) scale(var(--dg-model-scale, 1));
+      transform-origin: center center;
+      transition: transform 160ms ease;
+    }
+
+    .dg-model-stage[data-model-mood="drawing"] .dg-model-fallback {
+      animation: dg-model-draw 1300ms ease-in-out infinite;
+    }
+
+    .dg-model-stage[data-model-mood="thinking"] .dg-model-fallback,
+    .dg-model-stage[data-model-mood="guessing"] .dg-model-fallback {
+      animation: dg-model-think 1100ms ease-in-out infinite;
+    }
+
+    .dg-model-stage[data-model-mood="talking"] .dg-model-fallback {
+      animation: dg-model-talk 360ms ease-in-out infinite;
+    }
+
+    .dg-model-stage[data-model-mood="happy"] .dg-model-fallback {
+      animation: dg-model-happy 760ms ease-in-out 2;
+    }
+
+    @keyframes dg-model-draw {
+      0%, 100% { transform: translateY(0) rotate(-1deg); }
+      50% { transform: translateY(-5px) rotate(2deg); }
+    }
+
+    @keyframes dg-model-think {
+      0%, 100% { transform: translateY(0) scale(1); }
+      50% { transform: translateY(-3px) scale(1.025); }
+    }
+
+    @keyframes dg-model-talk {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-2px); }
+    }
+
+    @keyframes dg-model-happy {
+      0%, 100% { transform: translateY(0) scale(1); }
+      45% { transform: translateY(-8px) scale(1.04); }
     }
 
     .dg-chat {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
+      height: 100%;
     }
 
     .dg-log {
@@ -492,14 +1419,36 @@
       margin-bottom: 10px;
       padding: 10px 12px;
       border-radius: 8px;
-      background: #eef5f2;
+      background: #edf8ff;
       color: var(--dg-ink);
       font-size: 14px;
       line-height: 1.5;
     }
 
     .dg-message-system {
-      background: #f8eee5;
+      background: #f3f8ff;
+    }
+
+    .dg-message-neko {
+      margin-right: auto;
+      background: rgba(237, 248, 255, 0.9);
+      border: 1px solid rgba(99, 165, 235, 0.26);
+    }
+
+    .dg-message-user {
+      margin-left: auto;
+      background: var(--dg-accent);
+      color: #ffffff;
+    }
+
+    .dg-message-event {
+      max-width: 100%;
+      margin: 8px auto 12px;
+      padding: 3px 0;
+      background: transparent;
+      color: var(--dg-muted);
+      font-size: 12px;
+      text-align: center;
     }
 
     .dg-input-row {
@@ -507,7 +1456,8 @@
       gap: 8px;
       padding: 12px;
       border-top: 1px solid var(--dg-line);
-      background: #fbfaf7;
+      background: rgba(255, 255, 255, 0.68);
+      backdrop-filter: blur(16px) saturate(1.35);
     }
 
     .dg-input-row input {
@@ -518,7 +1468,7 @@
       border-radius: 8px;
       padding: 0 12px;
       color: var(--dg-ink);
-      background: #ffffff;
+      background: rgba(255, 255, 255, 0.92);
     }
 
     .dg-tutorial {
@@ -527,7 +1477,7 @@
       display: grid;
       place-items: center;
       padding: 24px;
-      background: rgba(36, 48, 58, 0.42);
+      background: rgba(33, 54, 79, 0.42);
       z-index: 20;
     }
 
@@ -538,9 +1488,10 @@
     .dg-dialog {
       width: min(620px, 100%);
       border: 1px solid var(--dg-line);
-      border-radius: 8px;
+      border-radius: 14px;
       background: var(--dg-surface-strong);
       box-shadow: var(--dg-shadow);
+      backdrop-filter: blur(18px) saturate(1.35);
       overflow: hidden;
     }
 
@@ -573,7 +1524,7 @@
       padding: 10px;
       border: 1px solid var(--dg-line);
       border-radius: 8px;
-      background: #fbfaf7;
+      background: rgba(255, 255, 255, 0.74);
       cursor: pointer;
     }
 
@@ -587,7 +1538,84 @@
       gap: 8px;
       padding: 14px 20px;
       border-top: 1px solid var(--dg-line);
-      background: #fbfaf7;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .dg-exit-confirm {
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 30;
+      width: min(360px, calc(100vw - 36px));
+      padding: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.58);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 18px 44px rgba(33, 101, 179, 0.18);
+      backdrop-filter: blur(18px) saturate(1.35);
+      transform: translateX(calc(100% + 28px));
+      opacity: 0;
+      transition: transform 240ms cubic-bezier(0.2, 0.78, 0.22, 1), opacity 180ms ease;
+      pointer-events: none;
+    }
+
+    .dg-exit-confirm.is-open {
+      transform: translateX(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .dg-exit-confirm h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+
+    .dg-exit-confirm p {
+      margin: 0;
+      color: var(--dg-muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .dg-exit-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .dg-exit-reopen {
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 29;
+      min-width: 52px;
+      height: 42px;
+      padding: 0 12px;
+      border-color: rgba(23, 167, 255, 0.38);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--dg-accent-strong);
+      box-shadow: 0 14px 34px rgba(33, 101, 179, 0.18);
+      backdrop-filter: blur(14px) saturate(1.35);
+      opacity: 0;
+      transform: translateY(-8px) scale(0.96);
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 180ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .dg-exit-reopen.is-visible {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+    }
+
+    .dg-exit-reopen:not(:disabled):hover,
+    .dg-exit-reopen:not(:disabled):focus-visible {
+      border-color: var(--dg-accent);
+      background: #edf8ff;
+      outline: none;
     }
 
     @media (max-width: 900px) {
@@ -602,7 +1630,21 @@
       }
 
       .dg-side {
-        grid-template-rows: minmax(220px, auto) minmax(280px, auto);
+        grid-template-rows: minmax(220px, auto) 12px minmax(280px, auto);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dg-draw-pick-dealing .dg-pick-card {
+        animation: none;
+      }
+
+      .dg-pick-card-inner {
+        transition: none;
+      }
+
+      .dg-model-stage .dg-model-fallback {
+        animation: none !important;
       }
     }
   </style>
@@ -611,10 +1653,14 @@
   <main class="dg-page">
     <section class="dg-main" aria-labelledby="drawing-guess-title">
       <header class="dg-header">
-        <div>
-          <p class="dg-kicker" data-i18n="drawingGuess.eyebrow">陪伴活动</p>
-          <h1 id="drawing-guess-title" class="dg-title" data-i18n="drawingGuess.title">你画我猜</h1>
-          <p class="dg-subtitle" data-i18n="drawingGuess.subtitle">先把独立页面和游戏路由接起来，后续再接绘画、猜图和猫娘模型。</p>
+        <div class="dg-header-brand">
+          <span class="dg-header-icon" aria-hidden="true">
+          <img src="/static/icons/icon_systray.ico" alt="">
+          </span>
+          <div>
+            <p class="dg-kicker" data-i18n="drawingGuess.eyebrow">陪伴活动</p>
+            <h1 id="drawing-guess-title" class="dg-title" data-i18n="drawingGuess.title">你画我猜</h1>
+          </div>
         </div>
         <div class="dg-status" aria-live="polite">
           <span id="route-status" class="dg-status-pill" data-i18n="drawingGuess.status.loadingCharacter">正在读取当前角色</span>
@@ -625,22 +1671,65 @@
 
       <section class="dg-board" aria-labelledby="canvas-title">
         <div class="dg-toolbar">
-          <h2 id="canvas-title" class="dg-toolbar-title" data-i18n="drawingGuess.layout.canvasTitle">画布</h2>
+          <h2 id="canvas-title" class="dg-toolbar-title">
+            <img class="dg-heading-icon" src="/static/icons/image_icon.svg" alt="" aria-hidden="true">
+            <span data-i18n="drawingGuess.layout.canvasTitle">画布</span>
+          </h2>
           <div class="dg-tools" aria-label="Drawing tools" data-i18n-aria="drawingGuess.layout.tools">
-            <button id="brush-tool" class="dg-tool" type="button" aria-pressed="true" aria-label="Brush" title="Brush" data-i18n-aria="drawingGuess.tools.brush" data-i18n-title="drawingGuess.tools.brush">
-              <svg aria-hidden="true" viewBox="0 0 24 24">
-                <path d="M9.5 14.5 18.2 5.8a2.2 2.2 0 0 1 3.1 3.1l-8.7 8.7"/>
-                <path d="M12.4 17.6c-1.1 2.6-3.2 4-6.4 4 .3-2.9 1.8-5.2 4.4-6.7"/>
-                <path d="M7.8 18.2 5.5 15.9"/>
-              </svg>
-            </button>
-            <button id="eraser-tool" class="dg-tool" type="button" aria-pressed="false" aria-label="Eraser" title="Eraser" data-i18n-aria="drawingGuess.tools.eraser" data-i18n-title="drawingGuess.tools.eraser">
-              <svg aria-hidden="true" viewBox="0 0 24 24">
-                <path d="m7 21 10.8-10.8a2.8 2.8 0 0 0 0-4L15.6 4a2.8 2.8 0 0 0-4 0L2.8 12.8a2.8 2.8 0 0 0 0 4L7 21Z"/>
-                <path d="m5 11 8 8"/>
-                <path d="M12 21h9"/>
-              </svg>
-            </button>
+            <div class="dg-tool-popover">
+              <button id="brush-tool" class="dg-tool" type="button" aria-pressed="true" aria-label="Brush" title="Brush" data-i18n-aria="drawingGuess.tools.brush" data-i18n-title="drawingGuess.tools.brush" data-brush-kind="brush">
+                <svg class="dg-brush-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M9.5 14.5 18.2 5.8a2.2 2.2 0 0 1 3.1 3.1l-8.7 8.7"/>
+                  <path d="M12.4 17.6c-1.1 2.6-3.2 4-6.4 4 .3-2.9 1.8-5.2 4.4-6.7"/>
+                  <path d="M7.8 18.2 5.5 15.9"/>
+                </svg>
+                <svg class="dg-bucket-icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m3 11 8-8 9 9-8 8-9-9Z"/>
+                  <path d="m7 7 10 10"/>
+                  <path d="M20 16c1.2 1.4 2 2.7 2 3.7a2 2 0 0 1-4 0c0-1 .8-2.3 2-3.7Z"/>
+                </svg>
+              </button>
+              <div id="brush-tool-menu" class="dg-tool-menu" role="group" aria-label="Brush tools" data-i18n-aria="drawingGuess.tools.brush" data-brush-kind="brush">
+                <div class="dg-tool-mode-group" role="group" aria-label="Brush tool mode" data-i18n-aria="drawingGuess.tools.brush">
+                  <button id="brush-mode-brush" class="dg-tool-mode" type="button" aria-label="Brush" aria-pressed="true" data-brush-tool="brush" data-i18n-aria="drawingGuess.tools.brush" data-i18n-title="drawingGuess.tools.brush" title="Brush">
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M9.5 14.5 18.2 5.8a2.2 2.2 0 0 1 3.1 3.1l-8.7 8.7"/>
+                      <path d="M12.4 17.6c-1.1 2.6-3.2 4-6.4 4 .3-2.9 1.8-5.2 4.4-6.7"/>
+                    </svg>
+                  </button>
+                  <button id="brush-mode-bucket" class="dg-tool-mode" type="button" aria-label="Bucket" aria-pressed="false" data-brush-tool="bucket" data-i18n-aria="drawingGuess.tools.bucket" data-i18n-title="drawingGuess.tools.bucket" title="Bucket">
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="m3 11 8-8 9 9-8 8-9-9Z"/>
+                      <path d="m7 7 10 10"/>
+                      <path d="M20 16c1.2 1.4 2 2.7 2 3.7a2 2 0 0 1-4 0c0-1 .8-2.3 2-3.7Z"/>
+                    </svg>
+                  </button>
+                </div>
+                <button id="color-panel-toggle" class="dg-tool-color-button" type="button" aria-label="Color" title="Color" data-i18n-aria="drawingGuess.tools.color" data-i18n-title="drawingGuess.tools.color">
+                  <span data-i18n="drawingGuess.tools.color">Color</span>
+                  <span id="color-trigger-preview" class="dg-color-dot" aria-hidden="true"></span>
+                </button>
+                <label class="dg-tool-control dg-brush-size-control" for="brush-size">
+                  <span class="dg-tool-control-label" data-i18n="drawingGuess.tools.size">Size</span>
+                  <input id="brush-size" class="dg-size" type="range" min="2" max="28" value="7" title="Size" data-i18n-title="drawingGuess.tools.size">
+                </label>
+              </div>
+            </div>
+            <div class="dg-tool-popover">
+              <button id="eraser-tool" class="dg-tool" type="button" aria-pressed="false" aria-label="Eraser" title="Eraser" data-i18n-aria="drawingGuess.tools.eraser" data-i18n-title="drawingGuess.tools.eraser">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m7 21 10.8-10.8a2.8 2.8 0 0 0 0-4L15.6 4a2.8 2.8 0 0 0-4 0L2.8 12.8a2.8 2.8 0 0 0 0 4L7 21Z"/>
+                  <path d="m5 11 8 8"/>
+                  <path d="M12 21h9"/>
+                </svg>
+              </button>
+              <div class="dg-tool-menu" role="group" aria-label="Eraser size" data-i18n-aria="drawingGuess.tools.size">
+                <label class="dg-tool-control" for="eraser-size">
+                  <span class="dg-tool-control-label" data-i18n="drawingGuess.tools.size">Size</span>
+                  <input id="eraser-size" class="dg-size" type="range" min="4" max="56" value="13" title="Size" data-i18n-title="drawingGuess.tools.size">
+                </label>
+              </div>
+            </div>
             <button id="undo-tool" class="dg-tool" type="button" disabled aria-label="Undo" title="Undo" data-i18n-aria="drawingGuess.tools.undo" data-i18n-title="drawingGuess.tools.undo">
               <svg aria-hidden="true" viewBox="0 0 24 24">
                 <path d="M9 14 4 9l5-5"/>
@@ -653,63 +1742,91 @@
                 <path d="M20 9h-9a7 7 0 0 0-7 7v1"/>
               </svg>
             </button>
-            <input id="brush-color" class="dg-swatch" type="color" value="#24303a" title="Color" data-i18n-title="drawingGuess.tools.color">
-            <input id="brush-size" class="dg-size" type="range" min="2" max="28" value="7" title="Size" data-i18n-title="drawingGuess.tools.size">
+            <button id="clear-canvas-button" class="dg-tool" type="button" disabled aria-label="Clear canvas" title="Clear canvas" data-i18n-aria="drawingGuess.actions.clearCanvas" data-i18n-title="drawingGuess.actions.clearCanvas">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M3 6h18"/>
+                <path d="M8 6V4h8v2"/>
+                <path d="m19 6-1 14H6L5 6"/>
+                <path d="M10 11v5"/>
+                <path d="M14 11v5"/>
+              </svg>
+            </button>
           </div>
         </div>
         <div class="dg-canvas-wrap">
           <div id="canvas-stage" class="dg-canvas-stage">
             <div id="canvas-badge" class="dg-canvas-badge dg-hidden"></div>
+            <div class="dg-canvas-actions" aria-label="Game actions" data-i18n-aria="drawingGuess.layout.actions">
+              <button id="done-button" class="dg-button dg-button-primary" type="button" disabled data-i18n="drawingGuess.actions.done">画好了</button>
+              <button id="next-round-button" class="dg-button" type="button" disabled data-i18n="drawingGuess.actions.nextRound">下一轮</button>
+              <button id="end-button" class="dg-button dg-button-danger" type="button" disabled data-i18n="drawingGuess.actions.end">结束</button>
+            </div>
             <div id="canvas-placeholder" class="dg-placeholder">
               <strong data-i18n="drawingGuess.layout.canvasWaitingTitle">画布准备中</strong>
-              <span data-i18n="drawingGuess.layout.canvasWaiting">步骤 1 先建立页面和路由生命周期，玩法闭环会在下一步接入。</span>
+              <span id="canvas-placeholder-detail" data-i18n="drawingGuess.layout.canvasWaiting">开始后会先由猫娘画，你来猜；随后你有 5 分钟画图给她猜。</span>
+            </div>
+            <div id="draw-pick" class="dg-draw-pick dg-hidden" aria-live="polite">
+              <div class="dg-draw-pick-inner">
+                <div class="dg-draw-pick-cards" aria-hidden="true">
+                  <span class="dg-pick-deck"></span>
+                  <span class="dg-pick-card">?</span>
+                  <span class="dg-pick-card">?</span>
+                  <span class="dg-pick-card">?</span>
+                </div>
+                <strong class="dg-draw-pick-title" data-i18n="drawingGuess.messages.drawingPickTitle">抽取题目中</strong>
+                <span class="dg-draw-pick-subtitle" data-i18n="drawingGuess.messages.drawingPickSubtitle">先别动笔，她正在从牌库里抽几张题目牌。</span>
+                <span class="dg-draw-pick-reveal"></span>
+              </div>
             </div>
             <div id="ai-drawing" class="dg-ai-drawing dg-hidden"></div>
             <canvas id="user-canvas" class="dg-user-canvas dg-hidden" width="800" height="600"></canvas>
+            <div id="brush-size-preview" class="dg-size-preview" hidden>
+              <span id="brush-size-preview-ring" class="dg-size-preview-ring" aria-hidden="true"></span>
+            </div>
             <div id="summary-view" class="dg-summary dg-hidden"></div>
           </div>
         </div>
       </section>
 
-      <section class="dg-actions" aria-label="Game actions" data-i18n-aria="drawingGuess.layout.actions">
-        <div class="dg-action-group">
-          <button id="start-button" class="dg-button dg-button-primary" type="button" data-i18n="drawingGuess.actions.start">开始</button>
-          <button id="done-button" class="dg-button dg-button-primary" type="button" disabled data-i18n="drawingGuess.actions.done">画好了</button>
-          <button id="next-round-button" class="dg-button" type="button" disabled data-i18n="drawingGuess.actions.nextRound">下一轮</button>
-          <button id="end-button" class="dg-button dg-button-danger" type="button" disabled data-i18n="drawingGuess.actions.end">结束</button>
-        </div>
-        <div class="dg-action-group">
-          <button id="clear-canvas-button" class="dg-button" type="button" disabled data-i18n="drawingGuess.actions.clearCanvas">清空画布</button>
-          <button id="reload-character-button" class="dg-button" type="button" data-i18n="drawingGuess.actions.retryCharacter">重新读取角色</button>
-        </div>
-      </section>
     </section>
 
-    <aside class="dg-side">
-      <section class="dg-panel">
-        <div class="dg-panel-heading">
-          <h2 data-i18n="drawingGuess.layout.modelTitle">猫娘在场</h2>
-          <span id="model-state" class="dg-status-pill" data-i18n="drawingGuess.phases.tutorial">教程</span>
-        </div>
-        <div class="dg-model-body">
-          <div class="dg-avatar" aria-hidden="true">
+    <aside id="side-pane" class="dg-side">
+      <section class="dg-panel dg-model-panel">
+        <div id="model-stage" class="dg-model-stage" data-model-kind="loading" data-model-mood="idle" data-model-load-state="loading">
+          <div id="model-loading" class="dg-model-loading" aria-live="polite">
+            <span data-i18n="drawingGuess.modelStates.loading">模型加载中</span>
+          </div>
+          <div id="live2d-container" class="dg-model-renderer" hidden>
+            <canvas id="live2d-canvas"></canvas>
+          </div>
+          <div id="vrm-container" class="dg-model-renderer" hidden>
+            <canvas id="vrm-canvas"></canvas>
+          </div>
+          <div id="model-fallback-container" class="dg-model-fallback" aria-hidden="true" hidden>
             <img src="/static/assets/neko-idle/cat-idle-cat1.gif" alt="">
           </div>
-          <p class="dg-model-copy">
-            <strong data-i18n="drawingGuess.layout.modelFallbackTitle">模型槽位已预留</strong>
-            <span data-i18n="drawingGuess.layout.modelFallback">后续会在这里加载当前角色 Live2D 或 VRM；加载失败时也会保留同位置 fallback。</span>
-          </p>
+          <div class="dg-model-controls" aria-label="Model position controls" data-i18n-aria="drawingGuess.modelControls.group">
+            <button id="model-reset-control" class="dg-model-reset" type="button" aria-label="Reset model view" title="Reset model view" data-i18n-aria="drawingGuess.modelControls.reset" data-i18n-title="drawingGuess.modelControls.reset">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M3 12a9 9 0 1 0 3-6.7"/>
+                <path d="M3 4v6h6"/>
+              </svg>
+            </button>
+          </div>
         </div>
       </section>
+
+      <div id="side-resizer" class="dg-side-resizer" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Resize model and chat panes" data-i18n-aria="drawingGuess.layout.sideResize"></div>
 
       <section class="dg-panel dg-chat">
         <div class="dg-panel-heading">
-          <h2 data-i18n="drawingGuess.layout.chatTitle">游戏聊天</h2>
+          <h2>
+            <img class="dg-heading-icon" src="/static/icons/chat_icon.png" alt="" aria-hidden="true">
+            <span data-i18n="drawingGuess.layout.chatTitle">游戏聊天</span>
+          </h2>
           <span id="memory-state" class="dg-status-pill" data-i18n="drawingGuess.memory.noneShort">不记录</span>
         </div>
-        <div id="message-log" class="dg-log" aria-live="polite">
-          <div class="dg-message dg-message-system" data-i18n="drawingGuess.messages.welcome">准备好后，我们会先确认当前角色并接管小游戏路由。</div>
-        </div>
+        <div id="message-log" class="dg-log" aria-live="polite"></div>
         <form id="chat-form" class="dg-input-row">
           <input id="chat-input" type="text" autocomplete="off" data-i18n-placeholder="drawingGuess.input.placeholder" placeholder="先等路由准备好">
           <button class="dg-button" type="submit" disabled data-i18n="drawingGuess.actions.send">发送</button>
@@ -718,11 +1835,50 @@
     </aside>
   </main>
 
+  <section id="color-panel" class="dg-color-panel" role="dialog" aria-label="Color" data-i18n-aria="drawingGuess.tools.color" hidden>
+    <div id="color-panel-handle" class="dg-color-panel-header">
+      <span class="dg-color-panel-title">
+        <span id="color-panel-preview" class="dg-color-current" aria-hidden="true"></span>
+        <span data-i18n="drawingGuess.tools.color">Color</span>
+      </span>
+      <button id="color-panel-close" class="dg-color-panel-close" type="button" aria-label="Close" title="Close" data-i18n-aria="common.close" data-i18n-title="common.close">×</button>
+    </div>
+    <div id="color-wheel" class="dg-color-wheel" aria-label="Color wheel" data-i18n-aria="drawingGuess.tools.color">
+      <input id="brush-color" type="color" value="#24303a" title="Color" data-i18n-title="drawingGuess.tools.color">
+    </div>
+    <div class="dg-color-section">
+      <span class="dg-color-section-title" data-i18n="drawingGuess.tools.basicColors">Basic colors</span>
+      <div class="dg-color-grid" aria-label="Basic colors" data-i18n-aria="drawingGuess.tools.basicColors">
+        <button class="dg-color-chip" type="button" data-color="#24303a" style="--chip-color: #24303a" title="#24303a"></button>
+        <button class="dg-color-chip" type="button" data-color="#ffffff" style="--chip-color: #ffffff" title="#ffffff"></button>
+        <button class="dg-color-chip" type="button" data-color="#ff4d6d" style="--chip-color: #ff4d6d" title="#ff4d6d"></button>
+        <button class="dg-color-chip" type="button" data-color="#ffb703" style="--chip-color: #ffb703" title="#ffb703"></button>
+        <button class="dg-color-chip" type="button" data-color="#2ec4b6" style="--chip-color: #2ec4b6" title="#2ec4b6"></button>
+        <button class="dg-color-chip" type="button" data-color="#17a7ff" style="--chip-color: #17a7ff" title="#17a7ff"></button>
+        <button class="dg-color-chip" type="button" data-color="#7c3aed" style="--chip-color: #7c3aed" title="#7c3aed"></button>
+      </div>
+    </div>
+    <div class="dg-color-section">
+      <span class="dg-color-section-title" data-i18n="drawingGuess.tools.historyColors">History colors</span>
+      <div id="color-history-colors" class="dg-color-grid" aria-label="History colors" data-i18n-aria="drawingGuess.tools.historyColors"></div>
+    </div>
+  </section>
+
+  <section id="exit-confirm" class="dg-exit-confirm" role="dialog" aria-live="polite" aria-labelledby="exit-confirm-title" hidden>
+    <h2 id="exit-confirm-title" data-i18n="drawingGuess.exitConfirm.title">要离开吗？</h2>
+    <p data-i18n="drawingGuess.exitConfirm.message">最终结算已经整理好了。要离开这个小游戏页面吗？</p>
+    <div class="dg-exit-actions">
+      <button id="exit-stay-button" class="dg-button" type="button" data-i18n="drawingGuess.exitConfirm.stay">先留下</button>
+      <button id="exit-leave-button" class="dg-button dg-button-primary" type="button" data-i18n="drawingGuess.exitConfirm.leave">离开页面</button>
+    </div>
+  </section>
+  <button id="exit-reopen-button" class="dg-exit-reopen" type="button" data-i18n="drawingGuess.exitConfirm.reopen" hidden>离开？</button>
+
   <div id="tutorial-overlay" class="dg-tutorial" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
     <section class="dg-dialog">
       <div class="dg-dialog-body">
         <h2 id="tutorial-title" data-i18n="drawingGuess.tutorial.title">开始前</h2>
-        <p data-i18n="drawingGuess.tutorial.intro">这一局会各画一次、各猜一次。你可以边画边聊天，画满 60 秒会自动交给她猜。</p>
+        <p data-i18n="drawingGuess.tutorial.intro">这一局会各画一次、各猜一次。你可以边画边聊天，画满 5 分钟会自动交给她猜。</p>
         <div class="dg-memory" role="radiogroup" aria-label="Memory options" data-i18n-aria="drawingGuess.tutorial.memoryTitle">
           <label>
             <input type="radio" name="memory-consent" value="none" checked>
@@ -764,7 +1920,6 @@
         routeStatus: document.getElementById('route-status'),
         characterName: document.getElementById('character-name'),
         sessionId: document.getElementById('session-id'),
-        modelState: document.getElementById('model-state'),
         memoryState: document.getElementById('memory-state'),
         startButton: document.getElementById('start-button'),
         endButton: document.getElementById('end-button'),
@@ -808,8 +1963,6 @@
 
       function setPhase(phase) {
         state.phase = phase;
-        els.modelState.setAttribute('data-i18n', 'drawingGuess.phases.' + phase);
-        els.modelState.textContent = text('drawingGuess.phases.' + phase, phase);
       }
 
       function updateIdentity() {
@@ -902,7 +2055,6 @@
           state.routeActive = true;
           if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
           setStatus('active', 'Active');
-          addMessage('drawingGuess.messages.routeActive', 'Game route is active for {{name}}.', { name: state.lanlanName });
           startHeartbeat();
         }).catch(function () {
           setStatus('failed', 'Start failed');
@@ -1021,6 +2173,14 @@
       }
     })();
   </script>
+  <script src="/static/libs/live2dcubismcore.min.js"></script>
+  <script src="/static/libs/live2d.min.js"></script>
+  <script src="/static/libs/pixi.min.js"></script>
+  <script src="/static/libs/index.min.js"></script>
+  <script src="/static/live2d-core.js?v={{ static_asset_version }}"></script>
+  <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
+  <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>
+  <script src="/static/live2d-model.js?v={{ static_asset_version }}"></script>
   <script src="/static/game/games/drawing_guess/drawing-guess-demo.js?v={{ static_asset_version }}"></script>
 </body>
 </html>

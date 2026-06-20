@@ -4229,7 +4229,7 @@
     "drawingGuess": {
         "title": "그림 맞히기",
         "eyebrow": "함께하는 놀이",
-        "subtitle": "독립 페이지, 게임 라우트, 60초 그리기 흐름을 연결했습니다. 먼저 로컬 fallback 그림과 추측으로 동작합니다.",
+        "subtitle": "고양이 소녀와 함께 그리고, 맞히고, 이야기하세요.",
         "status": {
             "loadingCharacter": "현재 캐릭터를 읽는 중",
             "missingCharacter": "캐릭터 정보 대기 중",
@@ -4247,8 +4247,9 @@
             "canvasTitle": "캔버스",
             "tools": "그리기 도구",
             "canvasWaitingTitle": "캔버스 준비 중",
-            "canvasWaiting": "시작하면 먼저 고양이 소녀가 그리고, 당신이 맞힙니다. 그다음 60초 동안 그녀가 맞힐 그림을 그립니다.",
+            "canvasWaiting": "시작하면 먼저 고양이 소녀가 그리고 당신이 맞힙니다. 그다음 5분 동안 그녀가 맞힐 그림을 그립니다.",
             "actions": "게임 동작",
+            "sideResize": "모델과 채팅 영역 비율 조절",
             "modelTitle": "네코가 함께 있음",
             "modelFallbackTitle": "모델 영역 예약됨",
             "modelFallback": "나중에 현재 캐릭터의 Live2D 또는 VRM 모델을 여기에 불러옵니다. 실패해도 같은 자리에 fallback을 유지합니다.",
@@ -4257,14 +4258,17 @@
         "tools": {
             "brush": "브러시",
             "eraser": "지우개",
+            "bucket": "페인트통",
             "undo": "실행 취소",
             "redo": "다시 실행",
             "color": "색상",
-            "size": "굵기"
+            "size": "굵기",
+            "basicColors": "기본 색상",
+            "historyColors": "최근 색상"
         },
         "tutorial": {
             "title": "시작하기 전에",
-            "intro": "이번 판은 서로 한 번씩 그리고 한 번씩 맞힙니다. 그리면서 대화할 수 있고, 60초가 지나면 현재 캔버스가 자동으로 그녀에게 넘어갑니다.",
+            "intro": "이번 판은 서로 한 번씩 그리고 한 번씩 맞힙니다. 그리면서 대화할 수 있고, 5분이 지나면 현재 캔버스가 자동으로 그녀에게 넘어갑니다.",
             "memoryTitle": "기억 옵션",
             "memoryNone": "기록하지 않고 이번에만 플레이합니다.",
             "memorySummary": "짧은 게임 요약 한 줄을 기록합니다.",
@@ -4281,6 +4285,13 @@
             "downloadSvg": "고양이 소녀 그림 저장",
             "downloadPng": "내 그림 저장"
         },
+        "exitConfirm": {
+            "title": "페이지를 나갈까요?",
+            "message": "최종 정산이 준비됐어요. 이 미니게임 페이지를 나갈까요?",
+            "stay": "나중에",
+            "leave": "페이지 나가기",
+            "reopen": "나갈까요?"
+        },
         "memory": {
             "noneShort": "기록 안 함",
             "summaryShort": "요약",
@@ -4292,10 +4303,28 @@
             "ended": "종료됨",
             "ai_drawing": "고양이 소녀가 그리는 중",
             "user_guessing": "당신이 맞힐 차례",
+            "drawing_pick": "제시어 뽑는 중",
             "user_drawing": "당신이 그릴 차례",
             "ai_guessing": "고양이 소녀가 맞히는 중",
             "ai_guess_feedback": "힌트 주기",
-            "summary": "결산"
+            "summary": "결산",
+            "final_summary": "최종 정산"
+        },
+        "modelStates": {
+            "loading": "모델 불러오는 중",
+            "idle": "대기 중",
+            "drawing": "그리는 중",
+            "thinking": "생각 중",
+            "guessing": "맞히는 중",
+            "talking": "말하는 중",
+            "happy": "기쁜 상태"
+        },
+        "modelControls": {
+            "group": "모델 보기 조절",
+            "scale": "모델 크기",
+            "x": "가로 위치",
+            "y": "세로 위치",
+            "reset": "모델 보기 초기화"
         },
         "messages": {
             "welcome": "준비되면 현재 캐릭터를 확인하고 미니게임 라우트를 연결합니다.",
@@ -4305,22 +4334,30 @@
             "roundStart": "새 라운드를 시작합니다.",
             "aiDrawingReady": "그녀가 다 그렸어요. 맞혀 보세요.",
             "roundFailed": "라운드 시작 실패: {{reason}}",
+            "requestTimeout": "요청 시간이 초과됐어요. 다시 시도해 주세요.",
             "guessTimeout": "시간이 끝났어요. 정답은 {{answer}}입니다.",
             "inputFailed": "전송되지 않았어요. 다시 시도해 주세요.",
             "answerReveal": "정답: {{answer}}",
+            "drawingPickTitle": "제시어를 뽑는 중",
+            "drawingPickSubtitle": "잠깐만요. 그녀가 카드 더미에서 제시어 카드를 몇 장 뽑고 있어요.",
+            "drawingPickReady": "그릴 카드 한 장을 골라 주세요.",
+            "drawingPickReveal": "선택: {{answer}}",
             "userDrawPrompt": "당신의 제시어는 {{answer}}입니다. 그녀가 맞힐 수 있게 그려 주세요.",
             "blankCanvas": "먼저 몇 줄이라도 그려 주세요.",
+            "aiDrawingWaiting": "고양이 소녀가 그림을 그리는 중",
             "aiGuessing": "그녀가 당신의 그림을 보고 있어요...",
             "aiGuessLine": "그녀의 추측: {{guess}}",
-            "aiNeedsHint": "계속 이야기해도 되고, 힌트를 주고 다시 맞히게 해도 돼요.",
+            "aiNeedsHint": "그냥 계속 이야기해도 돼요. 다시 맞히게 하고 싶을 때 힌트를 주세요.",
             "summaryReady": "결산 페이지가 준비됐어요.",
-            "canvasCleared": "캔버스를 비웠어요."
+            "canvasCleared": "캔버스를 비웠어요.",
+            "userSupplemented": "그림을 보완했어요. 그녀가 바로 다시 맞혀 볼 거예요."
         },
         "input": {
             "placeholder": "라우트가 준비될 때까지 기다려 주세요",
             "guessPlaceholder": "추측을 입력하거나 힌트를 요청하세요",
             "drawingPlaceholder": "그리면서 채팅할 수 있어요",
-            "hintPlaceholder": "대화하거나, '힌트: ...'로 다시 맞히게 하기"
+            "hintPlaceholder": "먼저 계속 대화하고, 다시 맞히게 하고 싶을 때 힌트 주기",
+            "summaryPlaceholder": "이번 라운드 이야기를 하거나 다음 라운드를 시작하세요"
         },
         "timer": {
             "seconds": "{{seconds}}초"
@@ -4335,7 +4372,10 @@
             "score": "당신 {{user}} - {{neko}} 고양이 소녀",
             "userDrawAnswer": "당신의 제시어: {{answer}}",
             "nekoArt": "고양이 소녀 그림",
-            "userArt": "당신의 그림"
+            "userArt": "당신의 그림",
+            "finalTitle": "최종 정산",
+            "roundLabel": "{{round}} 라운드",
+            "noRounds": "아직 완료된 라운드가 없습니다."
         }
     },
     "basketball": {

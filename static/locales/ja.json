@@ -4229,7 +4229,7 @@
     "drawingGuess": {
         "title": "お絵かき当てっこ",
         "eyebrow": "一緒に遊ぶ時間",
-        "subtitle": "独立ページ、ゲームルート、60 秒のお絵かきループを接続しました。まずはローカル fallback の絵と当てっこで動きます。",
+        "subtitle": "猫娘と一緒に描いて、当てて、話します。",
         "status": {
             "loadingCharacter": "現在のキャラクターを読み込み中",
             "missingCharacter": "キャラクター情報待ち",
@@ -4247,8 +4247,9 @@
             "canvasTitle": "キャンバス",
             "tools": "お絵かきツール",
             "canvasWaitingTitle": "キャンバス準備中",
-            "canvasWaiting": "開始すると先に猫娘が描きます。あなたが当てたら、次は 60 秒で彼女に見せる絵を描きます。",
+            "canvasWaiting": "開始すると先に猫娘が描きます。あなたが当てたら、次は 5 分で彼女に見せる絵を描きます。",
             "actions": "ゲーム操作",
+            "sideResize": "モデルとチャットの比率を調整",
             "modelTitle": "猫娘がそばにいる",
             "modelFallbackTitle": "モデル枠を確保済み",
             "modelFallback": "あとで現在のキャラクターの Live2D または VRM をここに読み込みます。失敗しても同じ場所に fallback を表示します。",
@@ -4257,14 +4258,17 @@
         "tools": {
             "brush": "ブラシ",
             "eraser": "消しゴム",
+            "bucket": "塗りつぶし",
             "undo": "元に戻す",
             "redo": "やり直す",
             "color": "色",
-            "size": "太さ"
+            "size": "太さ",
+            "basicColors": "基本色",
+            "historyColors": "履歴の色"
         },
         "tutorial": {
             "title": "始める前に",
-            "intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。60 秒たつと今のキャンバスを自動で彼女に渡します。",
+            "intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。5 分たつと今のキャンバスを自動で彼女に渡します。",
             "memoryTitle": "記憶オプション",
             "memoryNone": "記録せず、今回だけ遊ぶ。",
             "memorySummary": "短いゲーム概要を一つ記録する。",
@@ -4281,6 +4285,13 @@
             "downloadSvg": "猫娘の絵を保存",
             "downloadPng": "自分の絵を保存"
         },
+        "exitConfirm": {
+            "title": "このページを離れる？",
+            "message": "最終結果をまとめたよ。このミニゲームページを離れる？",
+            "stay": "あとで",
+            "leave": "ページを離れる",
+            "reopen": "離れる？"
+        },
         "memory": {
             "noneShort": "記録なし",
             "summaryShort": "概要",
@@ -4292,10 +4303,28 @@
             "ended": "終了",
             "ai_drawing": "猫娘がお絵かき中",
             "user_guessing": "あなたが当てる番",
+            "drawing_pick": "お題を抽選中",
             "user_drawing": "あなたが描く番",
             "ai_guessing": "猫娘が当てる番",
             "ai_guess_feedback": "ヒントを渡す",
-            "summary": "結果"
+            "summary": "結果",
+            "final_summary": "最終結果"
+        },
+        "modelStates": {
+            "loading": "モデル読み込み中",
+            "idle": "待機中",
+            "drawing": "描画中",
+            "thinking": "考え中",
+            "guessing": "推理中",
+            "talking": "おしゃべり中",
+            "happy": "ごきげん"
+        },
+        "modelControls": {
+            "group": "モデル表示コントロール",
+            "scale": "モデルの大きさ",
+            "x": "左右位置",
+            "y": "上下位置",
+            "reset": "モデル表示をリセット"
         },
         "messages": {
             "welcome": "準備できたら、現在のキャラクターを確認してミニゲームルートを接続します。",
@@ -4305,22 +4334,30 @@
             "roundStart": "新しいラウンドを始めます。",
             "aiDrawingReady": "彼女が描き終わりました。当ててみてください。",
             "roundFailed": "ラウンド開始に失敗しました: {{reason}}",
+            "requestTimeout": "リクエストがタイムアウトしました。もう一度試してください。",
             "guessTimeout": "時間です。答えは {{answer}} でした。",
             "inputFailed": "送れませんでした。もう一度試してください。",
             "answerReveal": "答え: {{answer}}",
+            "drawingPickTitle": "お題を選んでいます",
+            "drawingPickSubtitle": "少し待って。彼女が山札からお題カードを何枚か引いています。",
+            "drawingPickReady": "描くカードを1枚選んでください。",
+            "drawingPickReveal": "選択: {{answer}}",
             "userDrawPrompt": "あなたのお題は {{answer}} です。彼女に見せる絵を描きましょう。",
             "blankCanvas": "まず少し描いてあげましょう。",
+            "aiDrawingWaiting": "猫娘が描いています",
             "aiGuessing": "彼女があなたの絵を見ています...",
             "aiGuessLine": "彼女の答え: {{guess}}",
-            "aiNeedsHint": "そのまま話してもいいし、ヒントを渡してもう一度当ててもらえます。",
+            "aiNeedsHint": "そのまま話していて大丈夫です。もう一度当ててほしい時だけヒントを渡してください。",
             "summaryReady": "結果ページを表示しました。",
-            "canvasCleared": "キャンバスを消しました。"
+            "canvasCleared": "キャンバスを消しました。",
+            "userSupplemented": "描き足しました。彼女がすぐにもう一度当てます。"
         },
         "input": {
             "placeholder": "ルートの準備を待っています",
             "guessPlaceholder": "答えを書くか、ヒントを頼む",
             "drawingPlaceholder": "描きながら話せます",
-            "hintPlaceholder": "会話するか、「ヒント: ...」でもう一度当ててもらう"
+            "hintPlaceholder": "まずは会話を続けて、もう一度当ててほしい時にヒントを渡す",
+            "summaryPlaceholder": "このラウンドのことを話すか、次のラウンドへ"
         },
         "timer": {
             "seconds": "{{seconds}} 秒"
@@ -4335,7 +4372,10 @@
             "score": "あなた {{user}} - {{neko}} 猫娘",
             "userDrawAnswer": "あなたのお題: {{answer}}",
             "nekoArt": "猫娘の絵",
-            "userArt": "あなたの絵"
+            "userArt": "あなたの絵",
+            "finalTitle": "最終結果",
+            "roundLabel": "第 {{round}} ラウンド",
+            "noRounds": "完了したラウンドはまだありません。"
         }
     },
     "basketball": {

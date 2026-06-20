@@ -4229,7 +4229,7 @@
     "drawingGuess": {
         "title": "Dibuja y adivina",
         "eyebrow": "Actividad de compañía",
-        "subtitle": "La página independiente, la ruta del juego y el ciclo de dibujo de 60 segundos ya están conectados. La primera versión usa dibujos y adivinanzas fallback locales.",
+        "subtitle": "Dibuja, adivina y conversa con el personaje.",
         "status": {
             "loadingCharacter": "Cargando personaje actual",
             "missingCharacter": "Esperando información del personaje",
@@ -4247,8 +4247,9 @@
             "canvasTitle": "Lienzo",
             "tools": "Herramientas de dibujo",
             "canvasWaitingTitle": "El lienzo se está preparando",
-            "canvasWaiting": "Al empezar, ella dibuja primero y tú adivinas. Luego tienes 60 segundos para dibujar algo para ella.",
+            "canvasWaiting": "Al empezar, ella dibuja primero y tú adivinas. Luego tienes 5 minutos para dibujar algo para ella.",
             "actions": "Acciones del juego",
+            "sideResize": "Ajustar proporción entre modelo y chat",
             "modelTitle": "Neko está presente",
             "modelFallbackTitle": "Espacio de modelo reservado",
             "modelFallback": "Más adelante se cargará aquí el Live2D o VRM del personaje actual. Si falla, este mismo espacio mantendrá un fallback.",
@@ -4257,14 +4258,17 @@
         "tools": {
             "brush": "Pincel",
             "eraser": "Borrador",
+            "bucket": "Bote",
             "undo": "Deshacer",
             "redo": "Rehacer",
             "color": "Color",
-            "size": "Grosor"
+            "size": "Grosor",
+            "basicColors": "Colores básicos",
+            "historyColors": "Colores recientes"
         },
         "tutorial": {
             "title": "Antes de empezar",
-            "intro": "En esta ronda cada persona dibuja una vez y adivina una vez. Puedes chatear mientras dibujas; tras 60 segundos, el lienzo actual se le entrega automáticamente.",
+            "intro": "En esta ronda cada persona dibuja una vez y adivina una vez. Puedes chatear mientras dibujas; tras 5 minutos, el lienzo actual se le entrega automáticamente.",
             "memoryTitle": "Opciones de memoria",
             "memoryNone": "No registrar; solo jugar esta vez.",
             "memorySummary": "Registrar un breve resumen del juego.",
@@ -4281,6 +4285,13 @@
             "downloadSvg": "Descargar dibujo de ella",
             "downloadPng": "Descargar mi dibujo"
         },
+        "exitConfirm": {
+            "title": "¿Salir de esta página?",
+            "message": "El resumen final está listo. ¿Quieres salir de la página del minijuego?",
+            "stay": "Luego",
+            "leave": "Salir",
+            "reopen": "¿Salir?"
+        },
         "memory": {
             "noneShort": "Sin memoria",
             "summaryShort": "Resumen",
@@ -4292,10 +4303,28 @@
             "ended": "Terminado",
             "ai_drawing": "Neko dibujando",
             "user_guessing": "Tu adivinanza",
+            "drawing_pick": "Sorteando palabra",
             "user_drawing": "Tú dibujas",
             "ai_guessing": "Neko adivinando",
             "ai_guess_feedback": "Dale una pista",
-            "summary": "Resumen"
+            "summary": "Resumen",
+            "final_summary": "Resumen final"
+        },
+        "modelStates": {
+            "loading": "Cargando modelo",
+            "idle": "En espera",
+            "drawing": "Dibujando",
+            "thinking": "Pensando",
+            "guessing": "Adivinando",
+            "talking": "Hablando",
+            "happy": "Contenta"
+        },
+        "modelControls": {
+            "group": "Controles de vista del modelo",
+            "scale": "Tamano del modelo",
+            "x": "Posicion horizontal",
+            "y": "Posicion vertical",
+            "reset": "Restablecer vista del modelo"
         },
         "messages": {
             "welcome": "Cuando esté listo, confirmaremos el personaje actual y tomaremos la ruta del minijuego.",
@@ -4305,22 +4334,30 @@
             "roundStart": "Empieza una nueva ronda.",
             "aiDrawingReady": "Ella terminó de dibujar. Intenta adivinar.",
             "roundFailed": "No se pudo iniciar la ronda: {{reason}}",
+            "requestTimeout": "La solicitud agotó el tiempo. Inténtalo de nuevo.",
             "guessTimeout": "Se acabó el tiempo. La respuesta era {{answer}}.",
             "inputFailed": "Eso no se envió. Inténtalo otra vez.",
             "answerReveal": "Respuesta: {{answer}}",
+            "drawingPickTitle": "Sorteando una palabra",
+            "drawingPickSubtitle": "Espera un momento. Ella está sacando algunas cartas del mazo.",
+            "drawingPickReady": "Elige una carta para dibujar.",
+            "drawingPickReveal": "Elegida: {{answer}}",
             "userDrawPrompt": "Tu palabra es: {{answer}}. Dibújala para que ella adivine.",
             "blankCanvas": "Dibuja unas líneas primero.",
+            "aiDrawingWaiting": "La Neko está dibujando",
             "aiGuessing": "Ella está mirando tu dibujo...",
             "aiGuessLine": "Ella adivinó: {{guess}}",
-            "aiNeedsHint": "Puedes seguir conversando o darle una pista para que lo intente otra vez.",
+            "aiNeedsHint": "Puedes seguir conversando. Dale una pista cuando quieras que intente adivinar otra vez.",
             "summaryReady": "El resumen de la ronda está listo.",
-            "canvasCleared": "Lienzo limpio."
+            "canvasCleared": "Lienzo limpio.",
+            "userSupplemented": "Retocaste el dibujo. Ella volverá a adivinar ahora."
         },
         "input": {
             "placeholder": "Espera a que la ruta esté lista",
             "guessPlaceholder": "Escribe tu respuesta o pide una pista",
             "drawingPlaceholder": "Puedes charlar mientras dibujas",
-            "hintPlaceholder": "Conversa o escribe 'pista: ...' para que lo intente otra vez"
+            "hintPlaceholder": "Sigue conversando; dale una pista cuando quieras otro intento",
+            "summaryPlaceholder": "Habla sobre esta ronda o empieza otra"
         },
         "timer": {
             "seconds": "{{seconds}}s"
@@ -4335,7 +4372,10 @@
             "score": "Tú {{user}} - {{neko}} Neko",
             "userDrawAnswer": "Respuesta de tu dibujo: {{answer}}",
             "nekoArt": "Dibujo de Neko",
-            "userArt": "Tu dibujo"
+            "userArt": "Tu dibujo",
+            "finalTitle": "Resumen final",
+            "roundLabel": "Ronda {{round}}",
+            "noRounds": "Aún no hay rondas completadas."
         }
     },
     "basketball": {

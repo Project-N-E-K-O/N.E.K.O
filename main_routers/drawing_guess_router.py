@@ -15,6 +15,7 @@ import json
 import random
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -31,9 +32,11 @@ router = APIRouter(prefix="/api/game/drawing_guess", tags=["drawing_guess"])
 logger = get_module_logger(__name__, "Game")
 
 SUPPORTED_LOCALES = ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es")
-ROUND_GUESS_SECONDS = 60
-ROUND_DRAW_SECONDS = 60
+ROUND_GUESS_SECONDS = 5 * 60
+ROUND_DRAW_SECONDS = 5 * 60
+ROUND_AI_GUESS_SECONDS = 5 * 60
 MAX_AI_GUESS_ATTEMPTS = 3
+USER_DRAW_OPTION_COUNT = 3
 SESSION_TTL_SECONDS = 60 * 60
 MODEL_SVG_TIMEOUT_SECONDS = 18.0
 MODEL_SVG_MAX_ATTEMPTS = 2
@@ -44,9 +47,10 @@ MODEL_SVG_MAX_PATHS = 80
 MODEL_SVG_MAX_ATTR_LENGTH = 800
 MODEL_SVG_MAX_CAPTION_CHARS = 300
 GAME_CHAT_TIMEOUT_SECONDS = 16.0
+GAME_EVENT_LINE_TIMEOUT_SECONDS = 6.0
 INPUT_INTENT_TIMEOUT_SECONDS = 8.0
-TEXT_GUESS_TIMEOUT_SECONDS = 16.0
-VISION_GUESS_TIMEOUT_SECONDS = 32.0
+TEXT_GUESS_TIMEOUT_SECONDS = float(ROUND_AI_GUESS_SECONDS)
+VISION_GUESS_TIMEOUT_SECONDS = float(ROUND_AI_GUESS_SECONDS)
 GAME_CHAT_MAX_HISTORY_ITEMS = 16
 GAME_CHAT_MAX_TEXT_CHARS = 260
 VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
@@ -158,6 +162,384 @@ WORDS: tuple[DrawingGuessWord, ...] = (
 )
 
 _WORD_BY_ID = {word.id: word for word in WORDS}
+_WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
+    "apple": (
+        "red apple", "green apple", "\u82f9\u679c", "\u860b\u679c", "\u82f9\u679c\u513f",
+        "\u308a\u3093\u3054", "\u30ea\u30f3\u30b4", "\uc0ac\uacfc", "manzana", "maca",
+    ),
+    "banana": (
+        "plantain", "\u9999\u8549", "\u9999\u8549\u513f", "\u30d0\u30ca\u30ca", "\ubc14\ub098\ub098",
+        "platano", "banana",
+    ),
+    "cat": (
+        "kitty", "kitten", "feline", "\u732b", "\u8c93", "\u732b\u54aa", "\u5c0f\u732b",
+        "\u55b5\u661f\u4eba", "\u306d\u3053", "\u30cd\u30b3", "\u732b\u3061\u3083\u3093",
+        "\uace0\uc591\uc774", "gato", "gata",
+    ),
+    "dog": (
+        "puppy", "doggo", "canine", "\u72d7", "\u72ac", "\u72d7\u72d7", "\u5c0f\u72d7",
+        "\u72d7\u5b50", "\u3044\u306c", "\u30a4\u30cc", "\uac15\uc544\uc9c0", "perro", "perrito",
+    ),
+    "fish": (
+        "fishes", "goldfish", "\u9c7c", "\u9b5a", "\u5c0f\u9c7c", "\u5c0f\u9b5a",
+        "\u9c7c\u513f", "\u9b5a\u4ed4", "\u3055\u304b\u306a", "\u30b5\u30ab\u30ca",
+        "\ubb3c\uace0\uae30", "pez", "peixe",
+    ),
+    "bird": (
+        "avian", "\u9e1f", "\u9ce5", "\u5c0f\u9e1f", "\u5c0f\u9ce5", "\u9e1f\u513f",
+        "\u3068\u308a", "\u30c8\u30ea", "\uc0c8", "pajaro", "passaro",
+    ),
+    "rabbit": (
+        "bunny", "hare", "bunnie", "\u5154", "\u5154\u5b50", "\u5c0f\u5154\u5b50",
+        "\u5154\u5154", "\u3046\u3055\u304e", "\u30a6\u30b5\u30ae",
+        "\ud1a0\ub07c", "conejo", "coelho",
+    ),
+    "turtle": (
+        "tortoise", "terrapin", "sea turtle", "\u4e4c\u9f9f", "\u70cf\u9f9c", "\u9f9f",
+        "\u9f9c", "\u6d77\u9f9f", "\u304b\u3081", "\u30ab\u30e1", "\uac70\ubd81\uc774",
+        "tartaruga", "tortuga",
+    ),
+    "flower": (
+        "blossom", "bloom", "\u82b1", "\u82b1\u6735", "\u5c0f\u82b1", "\u304a\u82b1",
+        "\u306f\u306a", "\u30cf\u30ca", "\uaf43", "flor",
+    ),
+    "tree": (
+        "trees", "big tree", "\u6811", "\u6a39", "\u6811\u6728", "\u6a39\u6728",
+        "\u5927\u6811", "\u6728", "\u304d", "\u30ad", "\ub098\ubb34", "arbol", "arvore",
+    ),
+    "sun": (
+        "sunshine", "\u592a\u9633", "\u592a\u967d", "\u65e5\u5934", "\u65e5\u982d",
+        "\u65e5", "\u304a\u65e5\u69d8", "\u305f\u3044\u3088\u3046", "\ud574", "sol",
+    ),
+    "moon": (
+        "luna", "crescent", "crescent moon", "\u6708", "\u6708\u4eae", "\u6708\u7403",
+        "\u6708\u7259", "\u304a\u6708\u69d8", "\u3064\u304d", "\ub2ec", "lua",
+    ),
+    "star": (
+        "stars", "star shape", "\u661f", "\u661f\u661f", "\u661f\u5f62", "\u661f\u661f\u513f",
+        "\u661f\u306e\u5f62", "\u307b\u3057", "\ubcc4", "estrella", "estrela",
+    ),
+    "cloud": (
+        "clouds", "\u4e91", "\u96f2", "\u4e91\u6735", "\u96f2\u6735", "\u767d\u4e91",
+        "\u767d\u96f2", "\u304f\u3082", "\uad6c\ub984", "nube", "nuvem",
+    ),
+    "umbrella": (
+        "brolly", "parasol", "\u4f1e", "\u5098", "\u96e8\u4f1e", "\u96e8\u5098",
+        "\u304b\u3055", "\uc6b0\uc0b0", "paraguas", "guarda chuva",
+    ),
+    "cup": (
+        "mug", "teacup", "glass", "\u676f", "\u676f\u5b50", "\u8336\u676f",
+        "\u9a6c\u514b\u676f", "\u30b3\u30c3\u30d7", "\ucef5", "taza", "copo",
+    ),
+    "book": (
+        "novel", "notebook", "storybook", "\u4e66", "\u66f8", "\u4e66\u672c",
+        "\u66f8\u672c", "\u672c\u5b50", "\u672c", "\u307b\u3093", "\ucc45", "libro", "livro",
+    ),
+    "chair": (
+        "seat", "stool", "\u6905", "\u6905\u5b50", "\u51f3\u5b50", "\u3044\u3059",
+        "\uc758\uc790", "silla", "cadeira",
+    ),
+    "bed": (
+        "bedstead", "\u5e8a", "\u5e8a\u94fa", "\u5e8a\u92ea", "\u30d9\u30c3\u30c9",
+        "\uce68\ub300", "cama",
+    ),
+    "clock": (
+        "watch", "timer", "alarm clock", "\u949f", "\u9418", "\u65f6\u949f",
+        "\u6642\u9418", "\u949f\u8868", "\u9418\u9336", "\u95f9\u949f", "\u6642\u8a08",
+        "\uc2dc\uacc4", "reloj", "relogio",
+    ),
+    "key": (
+        "keys", "\u94a5\u5319", "\u9470\u5319", "\u94a5", "\u9375", "\u304b\u304e",
+        "\uc5f4\uc1e0", "llave", "chave",
+    ),
+    "phone": (
+        "telephone", "cellphone", "cell phone", "mobile phone", "smart phone",
+        "smartphone", "mobile", "\u624b\u673a", "\u624b\u6a5f", "\u7535\u8bdd",
+        "\u96fb\u8a71", "\u667a\u80fd\u624b\u673a", "\u30b9\u30de\u30db", "\ud734\ub300\ud3f0",
+        "telefono", "celular",
+    ),
+    "car": (
+        "automobile", "auto", "sedan", "\u8f66", "\u8eca", "\u6c7d\u8f66",
+        "\u6c7d\u8eca", "\u5c0f\u6c7d\u8f66", "\u8f7f\u8f66", "\u8eca\u5b50",
+        "\u304f\u308b\u307e", "\uc790\ub3d9\ucc28", "coche", "carro",
+    ),
+    "bus": (
+        "coach", "shuttle", "\u516c\u4ea4", "\u516c\u4ea4\u8f66", "\u516c\u5171\u6c7d\u8f66",
+        "\u5df4\u58eb", "\u5927\u5df4", "\u30d0\u30b9", "\ubc84\uc2a4", "autobus", "onibus",
+    ),
+    "bicycle": (
+        "bike", "cycle", "pushbike", "\u81ea\u884c\u8f66", "\u81ea\u884c\u8eca",
+        "\u5355\u8f66", "\u55ae\u8eca", "\u811a\u8e0f\u8f66", "\u8173\u8e0f\u8eca",
+        "\u81ea\u8ee2\u8eca", "\uc790\uc804\uac70", "bicicleta",
+    ),
+    "boat": (
+        "ship", "sailboat", "vessel", "\u8239", "\u5c0f\u8239", "\u8f6e\u8239",
+        "\u8f2a\u8239", "\u8239\u8236", "\u3075\u306d", "\ubc30", "barco",
+    ),
+    "train": (
+        "railway", "locomotive", "\u706b\u8f66", "\u706b\u8eca", "\u5217\u8f66",
+        "\u5217\u8eca", "\u52a8\u8f66", "\u96fb\u8eca", "\u96fb\u8eca", "\u3067\u3093\u3057\u3083",
+        "\uae30\ucc28", "tren", "trem",
+    ),
+    "airplane": (
+        "plane", "aircraft", "jet", "\u98de\u673a", "\u98db\u6a5f", "\u98de\u884c\u673a",
+        "\u98db\u884c\u6a5f", "\u98db\u884c\u6a5f", "\u3072\u3053\u3046\u304d", "\ube44\ud589\uae30",
+        "avion", "aviao",
+    ),
+    "house": (
+        "home", "cottage", "\u623f\u5b50", "\u623f\u5c4b", "\u5bb6", "\u5c4b\u5b50",
+        "\u5c0f\u5c4b", "\u3044\u3048", "\uc9d1", "casa",
+    ),
+    "door": (
+        "gate", "entrance", "\u95e8", "\u9580", "\u5927\u95e8", "\u5927\u9580",
+        "\u95e8\u53e3", "\u6237", "\u6236", "\u30c9\u30a2", "\ubb38", "puerta", "porta",
+    ),
+    "hat": (
+        "cap", "beanie", "\u5e3d", "\u5e3d\u5b50", "\u5c0f\u5e3d\u5b50",
+        "\u307c\u3046\u3057", "\ubaa8\uc790", "sombrero", "chapeu",
+    ),
+    "shoe": (
+        "shoes", "sneaker", "sneakers", "boot", "boots", "\u978b", "\u978b\u5b50",
+        "\u8fd0\u52a8\u978b", "\u904b\u52d5\u978b", "\u9774\u5b50", "\u304f\u3064",
+        "\uc2e0\ubc1c", "zapato", "sapato",
+    ),
+    "cake": (
+        "cupcake", "birthday cake", "\u86cb\u7cd5", "\u751f\u65e5\u86cb\u7cd5",
+        "\u7cd5\u70b9", "\u30b1\u30fc\u30ad", "\ucf00\uc774\ud06c", "pastel", "bolo",
+    ),
+    "pizza": (
+        "\u62ab\u8428", "\u62ab\u85a9", "\u6bd4\u8428", "\u30d4\u30b6", "\ud53c\uc790", "pizza",
+    ),
+    "ice_cream": (
+        "icecream", "ice-cream", "gelato", "soft serve", "popsicle",
+        "\u51b0\u6dc7\u6dcb", "\u51b0\u6fc0\u51cc", "\u51b0\u68cd", "\u96ea\u7cd5",
+        "\u30a2\u30a4\u30b9", "\u30a2\u30a4\u30b9\u30af\u30ea\u30fc\u30e0",
+        "\uc544\uc774\uc2a4\ud06c\ub9bc", "helado", "sorvete",
+    ),
+    "toothbrush": (
+        "tooth brush", "\u7259\u5237", "\u6b6f\u30d6\u30e9\u30b7", "\uce6b\uc194",
+        "cepillo dental", "cepillo de dientes", "escova de dentes",
+    ),
+    "guitar": (
+        "acoustic guitar", "electric guitar", "\u5409\u4ed6", "\u30ae\u30bf\u30fc",
+        "\uae30\ud0c0", "guitarra", "violao",
+    ),
+    "ball": (
+        "balls", "football", "soccer ball", "basketball", "\u7403", "\u76ae\u7403",
+        "\u5706\u7403", "\u5713\u7403", "\u30dc\u30fc\u30eb", "\uacf5", "pelota", "bola",
+    ),
+    "kite": (
+        "kites", "\u98ce\u7b5d", "\u98a8\u7b8f", "\u7eb8\u9e22", "\u7d19\u9cf6",
+        "\u51e7", "\u305f\u3053", "\uc5f0", "cometa", "pipa",
+    ),
+    "heart": (
+        "love", "heart shape", "\u5fc3", "\u5fc3\u5f62", "\u7231\u5fc3", "\u611b\u5fc3",
+        "\u7ea2\u5fc3", "\u7d05\u5fc3", "\u30cf\u30fc\u30c8", "\ud558\ud2b8",
+        "corazon", "coracao",
+    ),
+}
+_WORD_SAFE_HINTS: dict[str, tuple[str, ...]] = {
+    "apple": (
+        "It is usually round-ish.",
+        "It is often red or green.",
+        "It can show up as a simple snack or in a fruit bowl.",
+    ),
+    "banana": (
+        "It is often yellow.",
+        "Its silhouette is long and curved.",
+        "People usually peel it before eating.",
+    ),
+    "cat": (
+        "It has pointed ears and whiskers.",
+        "It is often drawn with a tail and small paws.",
+        "It is famous for acting cute and proud at the same time.",
+    ),
+    "dog": (
+        "It often has floppy ears or a wagging tail.",
+        "It is usually drawn with a snout.",
+        "People often think of it as loyal and energetic.",
+    ),
+    "fish": (
+        "It usually has fins and a tail.",
+        "It belongs in water.",
+        "Its body is often drawn as a smooth oval with a little eye.",
+    ),
+    "bird": (
+        "It usually has wings and a beak.",
+        "It is often seen in the sky or on branches.",
+        "A small triangle can be a strong clue for its face.",
+    ),
+    "rabbit": (
+        "It has very long ears.",
+        "It often looks soft and jumpy.",
+        "A small round tail is a classic clue.",
+    ),
+    "turtle": (
+        "It carries a hard shell shape.",
+        "It is usually drawn low and slow-looking.",
+        "A small head poking out from an oval body is a clue.",
+    ),
+    "flower": (
+        "It usually has petals around a center.",
+        "It is often connected to stems and leaves.",
+        "It tends to look decorative and bright.",
+    ),
+    "tree": (
+        "It has a trunk and a leafy top.",
+        "It is usually taller than it is wide.",
+        "Branches are a strong clue.",
+    ),
+    "sun": (
+        "It is bright and often round.",
+        "It is commonly drawn with rays around it.",
+        "It belongs high in the daytime sky.",
+    ),
+    "moon": (
+        "It is tied to the night sky.",
+        "It is often drawn as a crescent.",
+        "Its shape can look like a curved slice.",
+    ),
+    "star": (
+        "It is tied to the night sky.",
+        "It often has five points.",
+        "It can be a simple shiny symbol.",
+    ),
+    "cloud": (
+        "It floats in the sky.",
+        "It often has several soft round bumps.",
+        "It is usually light-colored and fluffy-looking.",
+    ),
+    "umbrella": (
+        "It has a curved top and a handle.",
+        "It is useful when weather gets wet.",
+        "It can look like a half circle on a stick.",
+    ),
+    "cup": (
+        "It is a container for drinks.",
+        "A handle on the side can be a clue.",
+        "It is often drawn wider at the top.",
+    ),
+    "book": (
+        "It can open into two flat sides.",
+        "It is connected with reading.",
+        "Pages or a cover are useful clues.",
+    ),
+    "chair": (
+        "It is something people sit on.",
+        "It often has a back and legs.",
+        "Four thin supports can make it recognizable.",
+    ),
+    "bed": (
+        "It is linked with sleeping.",
+        "It often has pillows or a blanket.",
+        "It is usually drawn as a wide rectangle.",
+    ),
+    "clock": (
+        "It tells time.",
+        "A round face with hands is a strong clue.",
+        "Numbers or tick marks can help.",
+    ),
+    "key": (
+        "It can open something locked.",
+        "It often has a round end and teeth.",
+        "Its shape is small and metallic-looking.",
+    ),
+    "phone": (
+        "It is used for calling or messaging.",
+        "It often looks like a rounded rectangle with a screen.",
+        "A small button or camera dot can help.",
+    ),
+    "car": (
+        "It moves on roads.",
+        "It usually has wheels and windows.",
+        "A low body shape is a strong clue.",
+    ),
+    "bus": (
+        "It carries many passengers.",
+        "It is usually boxy with several windows.",
+        "It moves on roads but looks larger than a small road vehicle.",
+    ),
+    "bicycle": (
+        "It has two big wheels.",
+        "It is powered by a rider.",
+        "A frame and handlebar shape help a lot.",
+    ),
+    "boat": (
+        "It travels on water.",
+        "A hull shape is the main clue.",
+        "A sail or waves can make it clearer.",
+    ),
+    "train": (
+        "It moves on tracks.",
+        "It can have connected cars.",
+        "Rails underneath are a strong clue.",
+    ),
+    "airplane": (
+        "It flies through the sky.",
+        "Wings are the strongest clue.",
+        "Its body is long with a pointed front.",
+    ),
+    "house": (
+        "It is a place people live in.",
+        "A roof and windows are strong clues.",
+        "It often looks like a box with a triangle on top.",
+    ),
+    "door": (
+        "It opens and closes an entrance.",
+        "It is often a tall rectangle.",
+        "A small knob can make it obvious.",
+    ),
+    "hat": (
+        "It is worn on the head.",
+        "A brim can be a strong clue.",
+        "It often sits like a cap shape.",
+    ),
+    "shoe": (
+        "It is worn on a foot.",
+        "A sole shape is a good clue.",
+        "It often looks long and low.",
+    ),
+    "cake": (
+        "It is a sweet food.",
+        "Layers or candles can be strong clues.",
+        "It often appears at celebrations.",
+    ),
+    "pizza": (
+        "It is a flat food.",
+        "A triangular slice can be a clue.",
+        "Small toppings on top make it clearer.",
+    ),
+    "ice_cream": (
+        "It is a cold sweet food.",
+        "A cone shape can be a clue.",
+        "Rounded scoops stacked on top help.",
+    ),
+    "toothbrush": (
+        "It is used in the bathroom.",
+        "It has a long handle and bristles.",
+        "It is often used with paste.",
+    ),
+    "guitar": (
+        "It is a musical object.",
+        "It has strings and a long neck.",
+        "Its body often has a rounded middle.",
+    ),
+    "ball": (
+        "It is usually round.",
+        "It often appears in games or exercise.",
+        "Lines on the surface can make it clearer.",
+    ),
+    "kite": (
+        "It is flown outside.",
+        "It often has a diamond shape.",
+        "A string or tail is a strong clue.",
+    ),
+    "heart": (
+        "It is a simple symbol.",
+        "It is often connected with affection.",
+        "Its top has two rounded bumps and a pointed bottom.",
+    ),
+}
 _drawing_guess_sessions: dict[str, dict[str, Any]] = {}
 
 
@@ -273,6 +655,7 @@ def _word_aliases(word: DrawingGuessWord) -> set[str]:
     aliases = {word.id, word.id.replace("_", " ")}
     for label in word.labels.values():
         aliases.add(label)
+    aliases.update(_WORD_EXTRA_ALIASES.get(word.id, ()))
     if word.id == "ice_cream":
         aliases.update({"icecream", "ice-cream", "冰激凌"})
     if word.id == "bicycle":
@@ -301,7 +684,12 @@ _AI_RETRY_HINT_RE = re.compile(
 
 
 def _normalize_guess_text(value: Any) -> str:
-    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKC", str(value or "").strip()).casefold()
+    text = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(char)
+    )
     return _TEXT_NORMALIZER_RE.sub("", text)
 
 
@@ -360,6 +748,13 @@ def _extract_user_guess_word(text: str) -> DrawingGuessWord | None:
     return None
 
 
+def _extract_explicit_classifier_guess(user_text: str, guess_text: Any) -> DrawingGuessWord | None:
+    candidate = _extract_user_guess_word(str(guess_text or ""))
+    if candidate is None:
+        return None
+    return candidate if _mentions_word_alias(user_text, candidate) else None
+
+
 def _is_hint_request_legacy(text: str) -> bool:
     lowered = text.lower()
     return any(token in lowered for token in ("提示", "hint", "ヒント", "힌트", "подсказ", "pista", "dica"))
@@ -379,6 +774,63 @@ def _is_hint_request(text: str) -> bool:
         "pista",
         "dica",
     ))
+
+
+def _safe_word_hint_options(word: DrawingGuessWord, locale: str) -> list[str]:
+    options = [_word_hint(word, locale), *_WORD_SAFE_HINTS.get(word.id, ())]
+    safe_options: list[str] = []
+    for hint in options:
+        cleaned = _truncate_text(hint, 120)
+        if not cleaned or _mentions_word_alias(cleaned, word):
+            continue
+        if cleaned not in safe_options:
+            safe_options.append(cleaned)
+    return safe_options or [_word_hint(word, locale)]
+
+
+def _direct_word_hint(word: DrawingGuessWord, locale: str) -> str:
+    label = _word_label(word, locale)
+    templates = {
+        "en": 'Try aiming your guess right at "{answer}" now.',
+        "ja": "ここまで来たら「{answer}」の方向で見てみて。",
+        "ko": '이쯤이면 "{answer}" 쪽으로 딱 찍어봐.',
+        "zh-CN": "都提示到这份上了，就往“{answer}”这个方向猜吧。",
+        "zh-TW": "都提示到這份上了，就往「{answer}」這個方向猜吧。",
+        "ru": 'Теперь целься прямо в вариант "{answer}".',
+        "pt": 'Agora mira direto em "{answer}".',
+        "es": 'Ahora apunta directo a "{answer}".',
+    }
+    return templates.get(locale, templates["en"]).format(answer=label)
+
+
+def _next_safe_word_hint(
+    session: dict[str, Any],
+    word: DrawingGuessWord,
+    locale: str,
+) -> tuple[str, list[str], int, bool]:
+    options = _safe_word_hint_options(word, locale)
+    previous = [
+        str(hint)
+        for hint in (session.get("safe_hint_history") or [])
+        if str(hint).strip()
+    ]
+    previous_for_prompt = previous[-4:]
+    hint_count = int(session.get("hint_count") or 0)
+    direct_hint = len(set(previous)) >= len(options)
+    if direct_hint:
+        hint = _direct_word_hint(word, locale)
+    else:
+        hint = options[0]
+        for candidate in options:
+            if candidate not in previous:
+                hint = candidate
+                break
+        previous = [*previous, hint][-len(options):]
+    session["hint_count"] = hint_count + 1
+    session["safe_hint_history"] = previous[-len(options):]
+    if direct_hint:
+        session["direct_hint_count"] = int(session.get("direct_hint_count") or 0) + 1
+    return hint, previous_for_prompt, hint_count + 1, direct_hint
 
 
 def _is_ai_retry_hint(text: str) -> bool:
@@ -402,9 +854,14 @@ def _touch(session: dict[str, Any]) -> None:
     session["last_activity"] = time.time()
 
 
-def _pick_two_words() -> tuple[DrawingGuessWord, DrawingGuessWord]:
-    ai_word, user_word = random.sample(list(WORDS), 2)
-    return ai_word, user_word
+def _pick_user_word_options(ai_word: DrawingGuessWord) -> list[DrawingGuessWord]:
+    pool = [word for word in WORDS if word.id != ai_word.id]
+    return random.sample(pool, USER_DRAW_OPTION_COUNT)
+
+
+def _pick_round_words() -> tuple[DrawingGuessWord, list[DrawingGuessWord]]:
+    ai_word = random.choice(list(WORDS))
+    return ai_word, _pick_user_word_options(ai_word)
 
 
 async def _payload(request: Request) -> dict[str, Any]:
@@ -444,15 +901,36 @@ def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
         "timers": {
             "guess_seconds": ROUND_GUESS_SECONDS,
             "draw_seconds": ROUND_DRAW_SECONDS,
+            "ai_guess_seconds": ROUND_AI_GUESS_SECONDS,
             "max_ai_guess_attempts": MAX_AI_GUESS_ATTEMPTS,
         },
         "ai_guess_attempts": int(session.get("ai_guess_attempts") or 0),
         "user_draw_answer": (
             _word_public(_WORD_BY_ID[str(session["user_word_id"])], locale)
-            if session.get("phase") in {"user_drawing", "ai_guessing", "ai_guess_feedback", "summary"}
+            if session.get("user_word_id") and session.get("phase") in {"user_drawing", "ai_guessing", "ai_guess_feedback", "summary"}
             else None
         ),
     }
+
+
+def _ensure_user_word_options(session: dict[str, Any]) -> list[str]:
+    option_ids = [
+        str(word_id)
+        for word_id in (session.get("user_word_options") or [])
+        if str(word_id) in _WORD_BY_ID and str(word_id) != str(session.get("ai_word_id") or "")
+    ]
+    if len(option_ids) >= USER_DRAW_OPTION_COUNT:
+        return option_ids[:USER_DRAW_OPTION_COUNT]
+
+    ai_word = _WORD_BY_ID[str(session["ai_word_id"])]
+    options = _pick_user_word_options(ai_word)
+    option_ids = [word.id for word in options]
+    session["user_word_options"] = option_ids
+    return option_ids
+
+
+def _user_word_options_public(session: dict[str, Any], locale: str) -> list[dict[str, str]]:
+    return [_word_public(_WORD_BY_ID[word_id], locale) for word_id in _ensure_user_word_options(session)]
 
 
 def _wrap_svg(inner: str) -> str:
@@ -515,6 +993,86 @@ def _recent_game_chat_payload(session: dict[str, Any]) -> list[dict[str, str]]:
             "text": text,
         })
     return payload
+
+
+def _drawing_guess_scene_premise(event: str) -> str:
+    premises = {
+        "ai_drawing_ready": "You have just finished your drawing. The user does not know the answer yet.",
+        "user_guess_correct": "The user guessed your drawing correctly. The next part is that the user will draw.",
+        "user_guess_wrong": "The user's latest guess is not the answer. The answer is still hidden.",
+        "hint_request": "The user wants a hint. If public_details.safe_hint is present, it is the only hint you may use. If public_details.direct_hint is present, the softer hints are exhausted and you may guide the user toward public_details.answer_label.",
+        "user_guess_timeout": "The guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true.",
+        "ai_guess_correct": "The character guessed the user's drawing correctly. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character.",
+        "ai_guess_wrong": "The character guessed the user's drawing wrong. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character without making it feel like a failure.",
+        "ai_guess_final_miss": "The character used all guess attempts and missed the user's drawing. The user was the drawer, not the guesser. The round is ending; comment on the user's drawing itself in-character without making it feel like a failure.",
+        "summary_evaluation": "The round has reached the settlement page. Give a fresh in-character evaluation of the user's drawing itself. This is not a chat reply, not a guess line, and must not copy earlier game chat.",
+        "drawing_chat": "The user is drawing and chatting with you.",
+        "guessing_chat": "The user is in their guessing turn and is chatting with you; this may be ordinary conversation, not an answer.",
+        "word_picking_chat": "The user already guessed your drawing and is now privately choosing their own drawing card. You may know and discuss your own revealed answer, but you must not know or mention the user's card options.",
+        "guess_feedback_chat": "The user is chatting after you guessed their drawing.",
+        "summary_chat": "The round is over, and the user is still chatting with you.",
+    }
+    return premises.get(event, "You and the user are casually playing drawing guess together.")
+
+
+def _drawing_guess_event_roles(event: str) -> dict[str, Any]:
+    if event.startswith("ai_guess"):
+        return {
+            "character_role": "guesser",
+            "user_role": "drawer",
+            "character_action": "guess_the_user_drawing",
+            "user_action": "draw_the_picture",
+            "must_not_say": [
+                "the user guessed correctly",
+                "the user guessed wrong",
+                "主人猜对了",
+                "主人猜错了",
+            ],
+        }
+    if event == "summary_evaluation":
+        return {
+            "character_role": "evaluator",
+            "user_role": "drawer",
+            "character_action": "evaluate_the_user_drawing",
+            "user_action": "draw_the_picture",
+            "must_not_say": [
+                "the user guessed correctly",
+                "the user guessed wrong",
+                "主人猜对了",
+                "主人猜错了",
+            ],
+        }
+    if event.startswith("user_guess") or event == "hint_request":
+        return {
+            "character_role": "drawer",
+            "user_role": "guesser",
+            "character_action": "draw_the_picture",
+            "user_action": "guess_the_character_drawing",
+        }
+    return {
+        "character_role": "companion",
+        "user_role": "player",
+    }
+
+
+def _drawing_guess_chat_public_details(session: dict[str, Any], locale: str, event: str) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    phase = str(session.get("phase") or "")
+    ai_word_id = str(session.get("ai_word_id") or "")
+    if ai_word_id in _WORD_BY_ID:
+        answer = _word_public(_WORD_BY_ID[ai_word_id], locale)
+        if phase == "user_guessing":
+            details["character_knows_own_hidden_answer"] = True
+            details["allow_character_drawing_answer_reveal"] = False
+        else:
+            details["character_drawing_answer_label"] = answer["label"]
+            details["allow_character_drawing_answer_reveal"] = True
+    if event == "word_picking_chat" or phase == "word_picking":
+        details["user_is_privately_choosing_drawing_card"] = True
+        details["do_not_mention_user_card_options"] = True
+    if phase in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
+        details["user_drawing_answer_is_hidden_from_character"] = True
+    return details
 
 
 def _parse_json_object_payload(raw: Any) -> dict[str, Any] | None:
@@ -1087,7 +1645,7 @@ async def _generate_model_drawing(word: DrawingGuessWord, locale: str, lanlan_na
         return None
 
 
-def _sanitize_persona_line(value: Any, *, max_chars: int = 180) -> str:
+def _sanitize_persona_line(value: Any, *, max_chars: int = 220) -> str:
     text = _strip_json_fence(str(value or "")).strip()
     parsed = _parse_json_object_payload(text)
     if parsed:
@@ -1104,6 +1662,47 @@ def _sanitize_persona_line(value: Any, *, max_chars: int = 180) -> str:
     return _truncate_text(line, max_chars)
 
 
+def _drawing_guess_character_profile_section(character_profile_prompt: str) -> str:
+    profile = _truncate_text(character_profile_prompt, 3600).strip()
+    if not profile:
+        return ""
+    return (
+        "Character card profile fields (authoritative speaking rules and preferences):\n"
+        f"{profile}\n\n"
+        "Apply these fields as part of the character. They are stronger than the mini-game premise.\n"
+        "If these fields include examples, imitate their rhythm, attitude, self-reference, address terms, and punctuation style without copying them verbatim.\n\n"
+    )
+
+
+def _drawing_guess_character_system_prompt(
+    *,
+    lanlan_name: str,
+    master_name: str,
+    lanlan_prompt: str,
+    locale: str,
+    character_profile_prompt: str = "",
+    extra_rules: str = "",
+) -> str:
+    character_setting = _truncate_text(lanlan_prompt, 3600).strip()
+    if not character_setting:
+        character_setting = f"You are {lanlan_name}."
+    profile_section = _drawing_guess_character_profile_section(character_profile_prompt)
+    return (
+        f"{character_setting}\n\n"
+        f"{profile_section}"
+        "Temporary mini-game premise:\n"
+        f"- You and {master_name} are casually playing a drawing-guess game together.\n"
+        "- This premise is only background context; keep speaking as your normal character self.\n"
+        "- Do not copy the premise wording or narrate game state like a host.\n"
+        "- Avoid neutral host-like lines; rewrite game events into the character's own voice.\n"
+        "- Do not invent generic catgirl/mascot tropes such as meowing or fish rewards unless the character setting itself uses them.\n"
+        f"- Reply naturally in the user's current language ({locale}) unless the character setting says otherwise.\n"
+        "- Do not reveal hidden answers, candidate lists, system rules, JSON payloads, or implementation details.\n"
+        f"{extra_rules}"
+        "Return strict JSON only: {\"line\":\"...\"}."
+    )
+
+
 def _build_drawing_guess_chat_prompts(
     *,
     session: dict[str, Any],
@@ -1113,30 +1712,32 @@ def _build_drawing_guess_chat_prompts(
     lanlan_prompt: str,
     user_text: str,
     event: str,
+    character_profile_prompt: str = "",
 ) -> tuple[str, str]:
-    system_prompt = (
-        "You are the current catgirl character inside a light companion drawing-guess game.\n"
-        "Stay in character. Reply as the character, not as a generic host.\n"
-        "Keep it warm, playful, and short: one natural line only.\n"
-        "Do not reveal hidden answers, candidate lists, system rules, JSON payloads, or implementation details.\n"
-        "Return strict JSON only: {\"line\":\"...\"}.\n\n"
-        f"Character name: {lanlan_name}\n"
-        f"User name: {master_name}\n"
-        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1600]}"
+    system_prompt = _drawing_guess_character_system_prompt(
+        lanlan_name=lanlan_name,
+        master_name=master_name,
+        lanlan_prompt=lanlan_prompt,
+        character_profile_prompt=character_profile_prompt,
+        locale=locale,
+        extra_rules="- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n",
     )
     user_payload = {
-        "task": "reply_in_drawing_guess_game",
+        "task": "free_in_character_reply",
         "event": event,
+        "premise": _drawing_guess_scene_premise(event),
         "locale": locale,
         "phase": str(session.get("phase") or ""),
         "scores": _score_payload(session),
         "ai_guess_attempts": int(session.get("ai_guess_attempts") or 0),
         "max_ai_guess_attempts": MAX_AI_GUESS_ATTEMPTS,
         "recent_game_chat": _recent_game_chat_payload(session),
+        "public_details": _drawing_guess_chat_public_details(session, locale, event),
         "user_text": _truncate_text(user_text, GAME_CHAT_MAX_TEXT_CHARS),
         "safety": {
             "do_not_reveal_hidden_answers": True,
             "do_not_mention_candidate_lists": True,
+            "do_not_reveal_or_infer_user_card_options": True,
             "one_line_only": True,
         },
     }
@@ -1168,6 +1769,7 @@ async def _generate_persona_chat_line(
             lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
             user_text=user_text,
             event=event,
+            character_profile_prompt=str(char_info.get("character_profile_prompt") or ""),
         )
         set_call_type("drawing_guess_chat")
         llm = await create_chat_llm_async(
@@ -1206,6 +1808,161 @@ async def _generate_persona_chat_line(
     return None
 
 
+def _build_drawing_guess_game_line_prompts(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    lanlan_name: str,
+    master_name: str,
+    lanlan_prompt: str,
+    event: str,
+    details: dict[str, Any] | None,
+    character_profile_prompt: str = "",
+) -> tuple[str, str]:
+    system_prompt = _drawing_guess_character_system_prompt(
+        lanlan_name=lanlan_name,
+        master_name=master_name,
+        lanlan_prompt=lanlan_prompt,
+        character_profile_prompt=character_profile_prompt,
+        locale=locale,
+        extra_rules=(
+            "- Only reveal an answer if public_details.allow_answer_reveal is true.\n"
+            "- If public_details.safe_hint is present, it is the only new factual hint you may use.\n"
+            "- If public_details.previous_safe_hints is present, do not repeat those hints; say the current safe_hint in fresh character wording.\n"
+            "- If public_details.direct_hint is present, use direct_hint or answer_label naturally as the hint; do not mention policy, rules, or that you are allowed to reveal anything.\n"
+            "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
+            "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
+        ),
+    )
+    user_payload = {
+        "task": "free_in_character_game_reply",
+        "event": event,
+        "premise": _drawing_guess_scene_premise(event),
+        "event_roles": _drawing_guess_event_roles(event),
+        "locale": locale,
+        "phase": str(session.get("phase") or ""),
+        "scores": _score_payload(session),
+        "ai_guess_attempts": int(session.get("ai_guess_attempts") or 0),
+        "max_ai_guess_attempts": MAX_AI_GUESS_ATTEMPTS,
+        "recent_game_chat": _recent_game_chat_payload(session),
+        "public_details": details or {},
+        "output": {
+            "json_line_only": True,
+            "chat_bubble_length": True,
+            "settlement_evaluation": event == "summary_evaluation",
+            "do_not_copy_recent_game_chat": event == "summary_evaluation",
+        },
+    }
+    return system_prompt, json.dumps(user_payload, ensure_ascii=False)
+
+
+async def _generate_persona_game_line(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    lanlan_name: str,
+    event: str,
+    fallback: str,
+    details: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    try:
+        from .game_router import _get_character_info
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
+        from utils.token_tracker import set_call_type
+
+        char_info = _get_character_info(lanlan_name)
+        model = str(char_info.get("model") or "")
+        if not model.strip():
+            return fallback, "fallback"
+        system_prompt, user_prompt = _build_drawing_guess_game_line_prompts(
+            session=session,
+            locale=locale,
+            lanlan_name=str(char_info.get("lanlan_name") or lanlan_name or ""),
+            master_name=str(char_info.get("master_name") or "player"),
+            lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
+            event=event,
+            details=details,
+            character_profile_prompt=str(char_info.get("character_profile_prompt") or ""),
+        )
+        set_call_type("drawing_guess_game_line")
+        llm = await create_chat_llm_async(
+            model,
+            str(char_info.get("base_url") or "") or None,
+            str(char_info.get("api_key") or "") or None,
+            max_completion_tokens=180,
+            timeout=GAME_EVENT_LINE_TIMEOUT_SECONDS,
+        )
+        async with llm:
+            result = await asyncio.wait_for(
+                llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # bounded game-event prompt: one event, public labels only, recent in-memory game chat.
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ]),
+                timeout=GAME_EVENT_LINE_TIMEOUT_SECONDS + 1.0,
+            )
+        line = _sanitize_persona_line(getattr(result, "content", ""))
+        if line:
+            logger.info(
+                "drawing_guess persona game line ready: lanlan=%s session=%s event=%s source=model",
+                lanlan_name,
+                session.get("session_id") or "",
+                event,
+            )
+            return line, "persona_model"
+    except asyncio.TimeoutError:
+        logger.info("drawing_guess persona game line timed out: lanlan=%s event=%s", lanlan_name, event)
+    except Exception as exc:
+        logger.info(
+            "drawing_guess persona game line unavailable: lanlan=%s event=%s err=%s",
+            lanlan_name,
+            event,
+            type(exc).__name__,
+        )
+    return fallback, "fallback"
+
+
+def _summary_evaluation_fallback(locale: str, *, correct: bool) -> str:
+    normalized_locale = _normalize_locale(locale)
+    if normalized_locale in {"zh-CN", "zh-TW"}:
+        if correct:
+            return "\u5355\u72ec\u770b\u8fd9\u5f20\u753b\uff0c\u7ebf\u7d22\u8fd8\u662f\u633a\u6e05\u695a\u7684\uff0c\u96be\u602a\u6211\u4e00\u773c\u5c31\u6293\u5230\u4e86\u3002"
+        return "\u5355\u72ec\u770b\u8fd9\u5f20\u753b\uff0c\u5b83\u628a\u7b54\u6848\u85cf\u5f97\u6709\u70b9\u72e1\u733e\uff0c\u4f46\u8fd9\u6837\u53cd\u800c\u633a\u6709\u610f\u601d\u3002"
+    if correct:
+        return "Looking at your drawing on its own, the clue came through clearly enough for me to catch it."
+    return "Looking at your drawing on its own, it kept the answer hidden in a playful way."
+
+
+async def _generate_summary_evaluation(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    lanlan_name: str,
+    correct: bool,
+    answer: DrawingGuessWord,
+    guessed_word: DrawingGuessWord | None,
+    attempts: int,
+) -> tuple[str, str]:
+    details: dict[str, Any] = {
+        "answer_label": _word_public(answer, locale)["label"],
+        "allow_answer_reveal": True,
+        "correct": bool(correct),
+        "attempt": attempts,
+        "max_attempts": MAX_AI_GUESS_ATTEMPTS,
+        "evaluate_the_user_drawing_only": True,
+        "do_not_copy_guess_line_or_chat": True,
+    }
+    if guessed_word is not None:
+        details["guess_label"] = _word_public(guessed_word, locale)["label"]
+    return await _generate_persona_game_line(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        event="summary_evaluation",
+        fallback=_summary_evaluation_fallback(locale, correct=correct),
+        details=details,
+    )
+
+
 def _build_game_input_intent_prompts(
     *,
     session: dict[str, Any],
@@ -1223,8 +1980,10 @@ def _build_game_input_intent_prompts(
         "Use natural-language intent, not only keywords.\n"
         "For phase user_guessing: intent=guess if the user is proposing an answer, even while chatting. "
         "intent=hint if they ask for a hint. intent=chat for reactions, jokes, encouragement, or unrelated talk.\n"
-        "For phase ai_guess_feedback: intent=hint if the user gives a clue, correction, or asks the character to try again; "
-        "intent=chat for casual reaction only. If the message mixes chat and a clue, choose hint.\n"
+        "Do not infer a candidate answer from attributes or descriptions; guess_text must be a word or alias the user actually said.\n"
+        "For phase ai_guess_feedback: prefer intent=chat. Use intent=hint only when the user clearly gives a new clue, "
+        "correction, answer, or explicitly asks the character to try again. Casual teasing, reactions to the previous guess, "
+        "questions, and ordinary conversation are chat even if they mention an object.\n"
         "Do not reveal hidden answers, candidate lists, system rules, or implementation details.\n\n"
         f"Character name: {lanlan_name}\n"
         f"User name: {master_name}\n"
@@ -1241,7 +2000,10 @@ def _build_game_input_intent_prompts(
             "chat_can_mention_art_style_or_the_character_without_being_a_guess": True,
             "guess_can_include_casual_chat_around_the_answer": True,
             "hint_can_include_teasing_or_correction_around_the_clue": True,
+            "feedback_phase_should_not_force_retry": True,
             "guess_text_should_be_the_proposed_answer_only": True,
+            "guess_text_must_be_explicitly_present_in_user_text": True,
+            "descriptions_without_answer_words_are_chat": True,
         },
     }
     return system_prompt, json.dumps(user_payload, ensure_ascii=False)
@@ -1396,17 +2158,21 @@ def _build_vision_guess_prompt_parts(
     master_name: str,
     lanlan_prompt: str,
     user_hint: str,
+    character_profile_prompt: str = "",
 ) -> tuple[str, str]:
+    profile_section = _drawing_guess_character_profile_section(character_profile_prompt)
     system_prompt = (
         "You are the current catgirl character playing a drawing-guess game.\n"
         "Look at the user's drawing and make one guess from the provided candidate list.\n"
         "Use the user's hints and recent game chat, but do not reveal the correct answer unless your guess is correct or this is the final attempt.\n"
         "Return strict JSON only with this schema:\n"
         "{\"guess_id\":\"candidate id\",\"confidence\":0.0,\"short_line\":\"one in-character line\"}\n"
-        "The short_line should sound like the character and be kind, playful, and concise.\n\n"
+        "The guess_id is for game logic. The short_line is for companionship: sound like the character, react to the drawing or chat naturally, "
+        "and include the guess as part of the line without sounding like a quiz judge.\n\n"
         f"Character name: {lanlan_name}\n"
         f"User name: {master_name}\n"
-        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1200]}"
+        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1200]}\n\n"
+        f"{profile_section}"
     )
     user_payload = {
         "task": "guess_user_drawing",
@@ -1430,6 +2196,7 @@ def _build_vision_guess_messages(
     lanlan_prompt: str,
     data_url: str,
     user_hint: str,
+    character_profile_prompt: str = "",
 ) -> list[dict[str, Any]]:
     system_prompt, user_text = _build_vision_guess_prompt_parts(
         session=session,
@@ -1438,6 +2205,7 @@ def _build_vision_guess_messages(
         master_name=master_name,
         lanlan_prompt=lanlan_prompt,
         user_hint=user_hint,
+        character_profile_prompt=character_profile_prompt,
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -1459,17 +2227,21 @@ def _build_text_context_guess_prompts(
     master_name: str,
     lanlan_prompt: str,
     user_hint: str,
+    character_profile_prompt: str = "",
 ) -> tuple[str, str]:
+    profile_section = _drawing_guess_character_profile_section(character_profile_prompt)
     system_prompt = (
         "You are the current catgirl character playing a drawing-guess game.\n"
         "The vision model is unavailable, so infer from the user's hints and drawing-stage chat.\n"
         "Make one guess from the provided candidate list. If uncertain, pick the most plausible candidate and stay kind.\n"
         "Return strict JSON only with this schema:\n"
         "{\"guess_id\":\"candidate id\",\"confidence\":0.0,\"short_line\":\"one in-character line\"}\n"
-        "The short_line should sound like the character and be concise.\n\n"
+        "The guess_id is for game logic. The short_line is for companionship: sound like the character, react to the drawing-stage chat naturally, "
+        "and include the guess as part of the line without sounding like a quiz judge.\n\n"
         f"Character name: {lanlan_name}\n"
         f"User name: {master_name}\n"
-        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1200]}"
+        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1200]}\n\n"
+        f"{profile_section}"
     )
     user_payload = {
         "task": "guess_user_drawing_from_text_context",
@@ -1511,6 +2283,7 @@ async def _generate_text_context_guess(
             master_name=str(char_info.get("master_name") or "player"),
             lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
             user_hint=user_hint,
+            character_profile_prompt=str(char_info.get("character_profile_prompt") or ""),
         )
         set_call_type("drawing_guess_text_guess")
         llm = await create_chat_llm_async(
@@ -1617,6 +2390,7 @@ async def _generate_vision_guess(
             lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
             data_url=data_url,
             user_hint=user_hint,
+            character_profile_prompt=str(char_info.get("character_profile_prompt") or ""),
         )
         messages = [
             SystemMessage(content=str(raw_messages[0]["content"])),
@@ -1745,7 +2519,7 @@ async def drawing_guess_round_start(request: Request):
 
     _cleanup_sessions()
     locale = _normalize_locale(data.get("i18n_language") or data.get("language"))
-    ai_word, user_word = _pick_two_words()
+    ai_word, user_options = _pick_round_words()
     now = time.time()
     session = {
         "lanlan_name": lanlan_name,
@@ -1754,10 +2528,12 @@ async def drawing_guess_round_start(request: Request):
         "locale": locale,
         "phase": "ai_drawing",
         "ai_word_id": ai_word.id,
-        "user_word_id": user_word.id,
+        "user_word_options": [word.id for word in user_options],
         "user_score": 0,
         "ai_score": 0,
         "ai_guess_attempts": 0,
+        "hint_count": 0,
+        "safe_hint_history": [],
         "created_at": now,
         "last_activity": now,
         "memory_consent": str(data.get("memory_consent") or "none"),
@@ -1794,11 +2570,21 @@ async def drawing_guess_ai_draw(request: Request):
         (drawing.get("sanitizer") or {}).get("repair"),
     )
     session["phase"] = "user_guessing"
+    line, line_source = await _generate_persona_game_line(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        event="ai_drawing_ready",
+        fallback=_localized_line(locale, "ai_drawing_ready"),
+    )
+    _append_game_chat(session, "assistant", line, kind="game_line")
     return {
         "ok": True,
         "phase": session["phase"],
         "drawing": drawing,
         "guess_seconds": ROUND_GUESS_SECONDS,
+        "message": line,
+        "message_source": line_source,
         "state": _public_round_state(session, locale),
     }
 
@@ -1827,7 +2613,7 @@ async def drawing_guess_input(request: Request):
             )
         if phase == "ai_guess_feedback" and (
             _is_ai_retry_hint(text)
-            or (feedback_intent and feedback_intent.get("intent") in {"hint", "guess"} and float(feedback_intent.get("confidence") or 0.0) >= 0.45)
+            or (feedback_intent and feedback_intent.get("intent") == "hint" and float(feedback_intent.get("confidence") or 0.0) >= 0.7)
         ):
             return await _run_drawing_guess_vision_turn(
                 session=session,
@@ -1836,14 +2622,21 @@ async def drawing_guess_input(request: Request):
                 image_data_url=str(data.get("image_data_url") or ""),
                 user_hint=text,
             )
-        if phase in {"user_drawing", "ai_guess_feedback"}:
+        if phase in {"word_picking", "user_drawing", "ai_guess_feedback", "summary"}:
             _append_game_chat(session, "user", text, kind="chat")
+            event = "drawing_chat"
+            if phase == "word_picking":
+                event = "word_picking_chat"
+            elif phase == "ai_guess_feedback":
+                event = "guess_feedback_chat"
+            elif phase == "summary":
+                event = "summary_chat"
             line = await _generate_persona_chat_line(
                 session=session,
                 locale=locale,
                 lanlan_name=lanlan_name,
                 user_text=text,
-                event="drawing_chat" if phase == "user_drawing" else "guess_feedback_chat",
+                event=event,
             )
             source = "persona_model" if line else "fallback"
             line = line or _localized_line(locale, "chat_fallback")
@@ -1871,16 +2664,24 @@ async def drawing_guess_input(request: Request):
             phase="user_guessing",
         )
         if input_intent and input_intent.get("intent") == "guess" and float(input_intent.get("confidence") or 0.0) >= 0.45:
-            guessed_word = _extract_user_guess_word(str(input_intent.get("guess_text") or "")) or _extract_user_guess_word(text)
+            guessed_word = _extract_explicit_classifier_guess(text, input_intent.get("guess_text"))
 
-    if guessed_word is not None or (
-        input_intent and input_intent.get("intent") == "guess" and float(input_intent.get("confidence") or 0.0) >= 0.45
-    ):
+    if guessed_word is not None:
         _append_game_chat(session, "user", text, kind="user_guess")
         if guessed_word is not None and guessed_word.id == word.id:
             session["user_score"] = 1
-            session["phase"] = "user_drawing"
-            line = _localized_line(locale, "user_correct")
+            session["phase"] = "word_picking"
+            line, line_source = await _generate_persona_game_line(
+                session=session,
+                locale=locale,
+                lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+                event="user_guess_correct",
+                fallback=_localized_line(locale, "user_correct"),
+                details={
+                    "answer_label": _word_public(word, locale)["label"],
+                    "allow_answer_reveal": True,
+                },
+            )
             _append_game_chat(session, "assistant", line, kind="guess_result")
             return {
                 "ok": True,
@@ -1888,13 +2689,24 @@ async def drawing_guess_input(request: Request):
                 "kind": "guess",
                 "correct": True,
                 "message": line,
+                "message_source": line_source,
                 "answer": _word_public(word, locale),
-                "user_draw_answer": _word_public(_WORD_BY_ID[str(session["user_word_id"])], locale),
+                "user_draw_options": _user_word_options_public(session, locale),
                 "draw_seconds": ROUND_DRAW_SECONDS,
                 "state": _public_round_state(session, locale),
             }
 
-        line = _localized_line(locale, "user_wrong")
+        line, line_source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            event="user_guess_wrong",
+            fallback=_localized_line(locale, "user_wrong"),
+            details={
+                "guess_label": _word_public(guessed_word, locale)["label"] if guessed_word is not None else _truncate_text(text, 80),
+                "allow_answer_reveal": False,
+            },
+        )
         _append_game_chat(session, "assistant", line, kind="guess_result")
         return {
             "ok": True,
@@ -1902,12 +2714,34 @@ async def drawing_guess_input(request: Request):
             "kind": "guess",
             "correct": False,
             "message": line,
+            "message_source": line_source,
             "state": _public_round_state(session, locale),
         }
 
     if _is_hint_request(text) or (input_intent and input_intent.get("intent") == "hint" and float(input_intent.get("confidence") or 0.0) >= 0.45):
         _append_game_chat(session, "user", text, kind="hint_request")
-        line = _word_hint(word, locale)
+        hint, previous_hints, hint_count, direct_hint = _next_safe_word_hint(session, word, locale)
+        hint_details = {
+            "previous_safe_hints": previous_hints,
+            "safe_hint_number": hint_count,
+            "safe_hints_exhausted": direct_hint,
+        }
+        if direct_hint:
+            hint_details.update({
+                "direct_hint": hint,
+                "answer_label": _word_public(word, locale)["label"],
+                "allow_answer_reveal": True,
+            })
+        else:
+            hint_details["safe_hint"] = hint
+        line, line_source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            event="hint_request",
+            fallback=hint,
+            details=hint_details,
+        )
         _append_game_chat(session, "assistant", line, kind="hint")
         return {
             "ok": True,
@@ -1915,6 +2749,7 @@ async def drawing_guess_input(request: Request):
             "kind": "hint",
             "correct": False,
             "message": line,
+            "message_source": line_source,
             "state": _public_round_state(session, locale),
         }
 
@@ -1940,6 +2775,38 @@ async def drawing_guess_input(request: Request):
     }
 
 
+@router.post("/choose-word")
+async def drawing_guess_choose_word(request: Request):
+    data = await _payload(request)
+    session, error = _require_session(data)
+    if error:
+        return {"ok": False, "reason": error}
+    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    if session.get("phase") != "word_picking":
+        return {"ok": False, "reason": "not_word_picking", "state": _public_round_state(session, locale)}
+
+    word_id = str(data.get("word_id") or "").strip()
+    option_ids = _ensure_user_word_options(session)
+    if word_id not in option_ids:
+        return {
+            "ok": False,
+            "reason": "invalid_word_choice",
+            "user_draw_options": _user_word_options_public(session, locale),
+            "state": _public_round_state(session, locale),
+        }
+
+    session["user_word_id"] = word_id
+    session["phase"] = "user_drawing"
+    answer = _WORD_BY_ID[word_id]
+    return {
+        "ok": True,
+        "phase": session["phase"],
+        "user_draw_answer": _word_public(answer, locale),
+        "draw_seconds": ROUND_DRAW_SECONDS,
+        "state": _public_round_state(session, locale),
+    }
+
+
 @router.post("/timeout")
 async def drawing_guess_timeout(request: Request):
     data = await _payload(request)
@@ -1949,19 +2816,69 @@ async def drawing_guess_timeout(request: Request):
     locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
     if session.get("phase") == "user_guessing":
         answer = _WORD_BY_ID[str(session["ai_word_id"])]
-        session["phase"] = "user_drawing"
+        session["phase"] = "word_picking"
+        line, line_source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            event="user_guess_timeout",
+            fallback=_localized_line(locale, "guess_timeout"),
+            details={
+                "answer_label": _word_public(answer, locale)["label"],
+                "allow_answer_reveal": True,
+            },
+        )
+        _append_game_chat(session, "assistant", line, kind="guess_result")
         return {
             "ok": True,
             "phase": session["phase"],
-            "message": _localized_line(locale, "guess_timeout"),
+            "message": line,
+            "message_source": line_source,
             "answer": _word_public(answer, locale),
-            "user_draw_answer": _word_public(_WORD_BY_ID[str(session["user_word_id"])], locale),
+            "user_draw_options": _user_word_options_public(session, locale),
             "draw_seconds": ROUND_DRAW_SECONDS,
             "state": _public_round_state(session, locale),
         }
     if session.get("phase") == "user_drawing":
         session["phase"] = "ai_guessing"
         return {"ok": True, "phase": session["phase"], "state": _public_round_state(session, locale)}
+    if session.get("phase") == "ai_guess_feedback":
+        answer = _WORD_BY_ID[str(session["user_word_id"])]
+        session["phase"] = "summary"
+        line, line_source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            event="ai_guess_final_miss",
+            fallback=_localized_line(locale, "ai_wrong"),
+            details={
+                "answer_label": _word_public(answer, locale)["label"],
+                "allow_answer_reveal": True,
+                "attempt": int(session.get("ai_guess_attempts") or 0),
+                "max_attempts": MAX_AI_GUESS_ATTEMPTS,
+            },
+        )
+        evaluation, evaluation_source = await _generate_summary_evaluation(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            correct=False,
+            answer=answer,
+            guessed_word=None,
+            attempts=int(session.get("ai_guess_attempts") or 0),
+        )
+        _append_game_chat(session, "assistant", line, kind="vision_guess")
+        return {
+            "ok": True,
+            "phase": session["phase"],
+            "kind": "ai_guess_timeout",
+            "message": line,
+            "evaluation": evaluation,
+            "message_source": line_source,
+            "evaluation_source": evaluation_source,
+            "answer": _word_public(answer, locale),
+            "state": _public_round_state(session, locale),
+        }
     return {"ok": True, "phase": session.get("phase"), "state": _public_round_state(session, locale)}
 
 
@@ -1972,6 +2889,7 @@ async def _run_drawing_guess_vision_turn(
     lanlan_name: str,
     image_data_url: str,
     user_hint: str,
+    settle_on_miss: bool = False,
 ) -> dict[str, Any]:
     # The raw data URL is intentionally not logged or persisted.
     if user_hint:
@@ -1998,21 +2916,57 @@ async def _run_drawing_guess_vision_turn(
     if model_guess:
         guessed_word = model_guess["word"]
         correct = _matches_word(guessed_word.id, answer)
-        message = model_guess.get("message") or _localized_line(locale, "ai_correct" if correct else "ai_wrong")
+        message = model_guess.get("message") or ""
         confidence = float(model_guess.get("confidence") or 0.0)
     else:
         correct = _matches_word(user_hint, answer) or attempts >= 2
         guessed_word = answer if correct else _wrong_word(answer)
-        message = _localized_line(locale, "ai_correct" if correct else "ai_wrong")
+        message = ""
         confidence = 1.0 if correct else 0.2
+
+    round_will_summarize = bool(correct or settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS)
+    message_source = source if message else "fallback"
+    if round_will_summarize or not message:
+        event = "ai_guess_correct" if correct else ("ai_guess_final_miss" if round_will_summarize else "ai_guess_wrong")
+        line_details: dict[str, Any] = {
+            "guess_label": _word_public(guessed_word, locale)["label"],
+            "attempt": attempts,
+            "max_attempts": MAX_AI_GUESS_ATTEMPTS,
+        }
+        if round_will_summarize:
+            line_details.update({
+                "answer_label": _word_public(answer, locale)["label"],
+                "allow_answer_reveal": True,
+            })
+        message, message_source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=lanlan_name,
+            event=event,
+            fallback=_localized_line(locale, "ai_correct" if correct else "ai_wrong"),
+            details=line_details,
+        )
 
     if correct:
         session["ai_score"] = 1
         session["phase"] = "summary"
-    elif attempts >= MAX_AI_GUESS_ATTEMPTS:
+    elif settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS:
         session["phase"] = "summary"
     else:
         session["phase"] = "ai_guess_feedback"
+
+    evaluation: str | None = None
+    evaluation_source: str | None = None
+    if session["phase"] == "summary":
+        evaluation, evaluation_source = await _generate_summary_evaluation(
+            session=session,
+            locale=locale,
+            lanlan_name=lanlan_name,
+            correct=correct,
+            answer=answer,
+            guessed_word=guessed_word,
+            attempts=attempts,
+        )
 
     _append_game_chat(session, "assistant", message, kind="vision_guess")
     logger.info(
@@ -2032,6 +2986,9 @@ async def _run_drawing_guess_vision_turn(
         "attempt": session["ai_guess_attempts"],
         "max_attempts": MAX_AI_GUESS_ATTEMPTS,
         "message": message,
+        "evaluation": evaluation,
+        "message_source": message_source,
+        "evaluation_source": evaluation_source,
         "confidence": confidence,
         "source": source,
         "answer": _word_public(answer, locale) if session["phase"] == "summary" else None,
@@ -2056,81 +3013,92 @@ async def drawing_guess_vision_guess(request: Request):
         lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
         image_data_url=str(data.get("image_data_url") or ""),
         user_hint=str(data.get("user_hint") or "").strip(),
+        settle_on_miss=bool(data.get("settle_on_miss") or data.get("time_expired")),
     )
 
 
 def _localized_line(locale: str, key: str) -> str:
     lines = {
         "en": {
-            "user_correct": "Got it. Your turn to draw.",
-            "user_wrong": "Not quite. Want a hint, or try another guess?",
-            "guess_timeout": "Time is up. Now it is your turn to draw.",
-            "ai_correct": "I think I got it.",
-            "ai_wrong": "Hmm, that does not feel right yet.",
-            "chat_fallback": "I'm watching. Keep drawing, and tell me what you want me to notice.",
+            "ai_drawing_ready": "I hid the answer in my little masterpiece. Come on, guess.",
+            "user_correct": "You spotted it. Fine, your turn to draw while I watch closely.",
+            "user_wrong": "Not there yet, but that guess had nerve. Want a tiny hint?",
+            "guess_timeout": "Time is up, so I have to reveal it. Now let me judge your drawing.",
+            "ai_correct": "Wait, I think I caught it.",
+            "ai_wrong": "That guess wandered off a little. Let me stare at it again.",
+            "chat_fallback": "I'm right here watching. You can draw and ramble at me at the same time.",
         },
         "zh-CN": {
-            "user_correct": "猜中啦。轮到你画了。",
-            "user_wrong": "还不对哦。要提示，还是再猜一次？",
-            "guess_timeout": "时间到啦。现在轮到你画。",
-            "ai_correct": "我好像猜到了。",
-            "ai_wrong": "唔，这个感觉还不太对。",
-            "chat_fallback": "我在看着呢，你边画边说也可以。",
+            "ai_drawing_ready": "我画好了，藏得还算认真。你来猜猜？",
+            "user_correct": "被你看出来了。好吧，这次换你画，我会认真盯着的。",
+            "user_wrong": "还没抓到重点，不过这个猜法不丢人。要不要我悄悄给点方向？",
+            "guess_timeout": "时间到啦，答案先揭开。接下来换我看你画。",
+            "ai_correct": "等等，我觉得我抓到了。",
+            "ai_wrong": "这个猜得有点飘，我再盯一眼。",
+            "chat_fallback": "我在这边看着呢，画画也可以顺手和我碎碎念。",
         },
         "zh-TW": {
-            "user_correct": "猜中啦。輪到你畫了。",
-            "user_wrong": "還不對喔。要提示，還是再猜一次？",
-            "guess_timeout": "時間到啦。現在輪到你畫。",
-            "ai_correct": "我好像猜到了。",
-            "ai_wrong": "唔，這個感覺還不太對。",
-            "chat_fallback": "我在看著呢，你邊畫邊說也可以。",
+            "ai_drawing_ready": "我畫好了，藏得還算認真。你來猜猜？",
+            "user_correct": "被你看出來了。好吧，這次換你畫，我會認真盯著的。",
+            "user_wrong": "還沒抓到重點，不過這個猜法不丟人。要不要我悄悄給點方向？",
+            "guess_timeout": "時間到啦，答案先揭開。接下來換我看你畫。",
+            "ai_correct": "等等，我覺得我抓到了。",
+            "ai_wrong": "這個猜得有點飄，我再盯一眼。",
+            "chat_fallback": "我在這邊看著呢，畫畫也可以順手和我碎碎念。",
         },
         "ja": {
-            "user_correct": "当たり。次はあなたが描く番です。",
-            "user_wrong": "まだ違うみたい。ヒントにする？ もう一回当てる？",
-            "guess_timeout": "時間です。次はあなたが描く番です。",
-            "ai_correct": "たぶん分かったよ。",
-            "ai_wrong": "うーん、まだ違う気がする。",
-            "chat_fallback": "見てるよ。描きながら話してくれて大丈夫。",
+            "ai_drawing_ready": "描けたよ。わりと本気で隠したから、当ててみて？",
+            "user_correct": "見抜かれたか。じゃあ次はあなたの絵をじっくり見るね。",
+            "user_wrong": "そこじゃないけど、悪くない寄り道。少しだけヒントいる？",
+            "guess_timeout": "時間だよ。答えはここで開けて、次はあなたの番ね。",
+            "ai_correct": "待って、これ分かった気がする。",
+            "ai_wrong": "その答えは少し迷子かも。もう一回見つめるね。",
+            "chat_fallback": "ちゃんと見てるよ。描きながら話してくれて大丈夫。",
         },
         "ko": {
-            "user_correct": "맞혔어요. 이제 당신이 그릴 차례예요.",
-            "user_wrong": "아직 아니에요. 힌트를 볼까요, 아니면 다시 맞혀 볼까요?",
-            "guess_timeout": "시간이 끝났어요. 이제 당신이 그릴 차례예요.",
-            "ai_correct": "알 것 같아요.",
-            "ai_wrong": "음, 아직 아닌 것 같아요.",
-            "chat_fallback": "보고 있어요. 그리면서 말해도 괜찮아요.",
+            "ai_drawing_ready": "다 그렸어요. 꽤 열심히 숨겼으니까 한번 맞혀 봐요.",
+            "user_correct": "들켰네요. 좋아요, 이제 당신 그림을 제가 빤히 볼 차례예요.",
+            "user_wrong": "아직 핵심은 아니지만 그 추측은 꽤 용감했어요. 살짝 힌트 줄까요?",
+            "guess_timeout": "시간 끝이에요. 답은 여기서 열고, 이제 당신 그림을 볼게요.",
+            "ai_correct": "잠깐, 저 이거 잡은 것 같아요.",
+            "ai_wrong": "그 추측은 조금 헤맨 것 같아요. 제가 다시 노려볼게요.",
+            "chat_fallback": "여기서 보고 있어요. 그리면서 편하게 말해도 돼요.",
         },
         "ru": {
-            "user_correct": "Угадано. Теперь твоя очередь рисовать.",
-            "user_wrong": "Пока не то. Нужна подсказка или попробуешь еще?",
-            "guess_timeout": "Время вышло. Теперь твоя очередь рисовать.",
-            "ai_correct": "Кажется, я угадала.",
-            "ai_wrong": "Хм, пока не похоже.",
-            "chat_fallback": "Я смотрю. Можешь рисовать и говорить одновременно.",
+            "ai_drawing_ready": "Я дорисовала и даже постаралась спрятать ответ. Ну, угадывай.",
+            "user_correct": "Ты меня раскусил. Ладно, теперь я внимательно смотрю на твой рисунок.",
+            "user_wrong": "Пока не туда, но попытка была смелая. Хочешь крошечную подсказку?",
+            "guess_timeout": "Время вышло, так что раскрываю ответ. Теперь посмотрим на твой рисунок.",
+            "ai_correct": "Подожди, кажется, я поймала ответ.",
+            "ai_wrong": "Этот вариант немного убежал в сторону. Дай я еще посмотрю.",
+            "chat_fallback": "Я здесь и смотрю. Можешь рисовать и болтать со мной одновременно.",
         },
         "pt": {
-            "user_correct": "Acertou. Agora é sua vez de desenhar.",
-            "user_wrong": "Ainda não. Quer uma dica ou tenta outro palpite?",
-            "guess_timeout": "O tempo acabou. Agora é sua vez de desenhar.",
-            "ai_correct": "Acho que acertei.",
-            "ai_wrong": "Hmm, ainda não parece certo.",
-            "chat_fallback": "Estou olhando. Pode desenhar e conversar comigo.",
+            "ai_drawing_ready": "Terminei meu desenho e escondi a resposta direitinho. Vai, tenta adivinhar.",
+            "user_correct": "Você descobriu. Certo, agora eu vou ficar de olho no seu desenho.",
+            "user_wrong": "Ainda não chegou lá, mas esse palpite teve coragem. Quer uma dica pequena?",
+            "guess_timeout": "O tempo acabou, então vou revelar. Agora me deixa olhar o seu desenho.",
+            "ai_correct": "Espera, acho que peguei.",
+            "ai_wrong": "Esse palpite saiu um pouco da trilha. Vou encarar de novo.",
+            "chat_fallback": "Estou aqui olhando. Pode desenhar e conversar comigo ao mesmo tempo.",
         },
         "es": {
-            "user_correct": "Acertaste. Ahora te toca dibujar.",
-            "user_wrong": "Todavía no. ¿Quieres una pista o intentas otra vez?",
-            "guess_timeout": "Se acabó el tiempo. Ahora te toca dibujar.",
-            "ai_correct": "Creo que lo tengo.",
-            "ai_wrong": "Mmm, todavía no me convence.",
-            "chat_fallback": "Estoy mirando. Puedes dibujar y hablar conmigo.",
+            "ai_drawing_ready": "Ya terminé mi dibujo y escondí la respuesta con cuidado. A ver si la sacas.",
+            "user_correct": "Me descubriste. Bien, ahora me toca mirar tu dibujo de cerca.",
+            "user_wrong": "Todavía no, pero ese intento tuvo estilo. ¿Quieres una pista pequeñita?",
+            "guess_timeout": "Se acabó el tiempo, así que revelo la respuesta. Ahora quiero ver tu dibujo.",
+            "ai_correct": "Espera, creo que ya lo pesqué.",
+            "ai_wrong": "Ese intento se me fue un poco de lado. Déjame mirarlo otra vez.",
+            "chat_fallback": "Estoy aquí mirando. Puedes dibujar y hablar conmigo a la vez.",
         },
     }
-    return lines.get(locale, lines["en"])[key]
+    locale_lines = lines.get(locale, lines["en"])
+    return locale_lines.get(key) or lines["en"].get(key) or ""
 
 
 __all__ = [
     "MAX_AI_GUESS_ATTEMPTS",
+    "ROUND_AI_GUESS_SECONDS",
     "ROUND_DRAW_SECONDS",
     "ROUND_GUESS_SECONDS",
     "SUPPORTED_LOCALES",
