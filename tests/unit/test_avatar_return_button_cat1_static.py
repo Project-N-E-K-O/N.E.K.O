@@ -74,6 +74,8 @@ def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_stra
     assert "_clearNekoIdleCat1WalkApproachSide(" in finish_block
 
 
+
+
 def test_cat1_walk_speed_rate_relaxes_when_converging():
     """Catch-up speed rate must relax while converging, so one momentary distance spike does not pin the speed at maxRate forever."""
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
@@ -91,6 +93,7 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
 
     assert "function _resolveNekoIdleCat1TargetFacing" in source
     assert "function _resolveNekoIdleCat1FinalTargetFacing" in source
+
     walk_step_block = source.split("function _stepNekoIdleCat1Walk", 1)[1].split(
         "function _startNekoIdleCat1Walk",
         1,
@@ -163,22 +166,20 @@ def test_cat1_compact_top_edge_to_minimized_side_transition_forces_walk():
     assert journey_sync_block.index("const switchingFromCompactTopEdgeToMinimizedSide =") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
 
 
-def test_cat1_settled_minimized_side_retargets_when_ball_moves():
+def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     journey_sync_block = source.split("function _syncNekoIdleCat1Journey", 1)[1].split(
         "function _scheduleNekoIdleCat1JourneySync",
         1,
     )[0]
-    assert "const followingMovedMinimizedSideTarget =" in journey_sync_block
-    assert "previousTargetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in journey_sync_block
-    assert "target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in journey_sync_block
-    assert "state.actionSettled &&" in journey_sync_block
-    assert "followingMovedMinimizedSideTarget" in journey_sync_block
-    assert "if (switchingFromCompactTopEdgeToMinimizedSide || followingMovedMinimizedSideTarget)" in journey_sync_block
+    assert "const followingMovedMinimizedSideTarget =" not in journey_sync_block
+    assert "target.distance >= profile.target.enterDistancePx" in journey_sync_block
+    assert "if (switchingFromCompactTopEdgeToMinimizedSide) {" in journey_sync_block
+    assert "if (switchingFromCompactTopEdgeToMinimizedSide ||" not in journey_sync_block
     assert "state.pendingWalkReady = true;" in journey_sync_block
     assert "state.pendingWalkDelayMs = 0;" in journey_sync_block
-    assert journey_sync_block.index("const followingMovedMinimizedSideTarget =") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
+    assert journey_sync_block.index("target.distance >= profile.target.enterDistancePx") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
 
 
 def test_cat1_settled_minimized_side_bypasses_small_desktop_move_filter():

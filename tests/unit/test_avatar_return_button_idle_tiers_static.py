@@ -1832,7 +1832,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
-    assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = -12' in source
+    assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = -5' in source
     assert '_NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35' in source
     assert 'function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect)' in source
     assert 'if (facingRight) return 0;' in source
