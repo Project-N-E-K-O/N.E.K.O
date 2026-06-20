@@ -72,6 +72,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/agent_ui_v2.js",
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
+    _PROJECT_ROOT / "static/neko-pngtuber-protocol.js",
     _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-export.js",

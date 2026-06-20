@@ -12,14 +12,22 @@ from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from .pngtuber_importers import PNGTuberImportError, import_pngtuber_package
+from .pngtuber_protocol import (
+    NEKO_PNGTUBER_ADAPTER,
+    NEKO_PNGTUBER_METADATA_FORMAT,
+    PNGTUBER_EXTENSIONS,
+    PNGTUBER_IMAGE_KEYS,
+    PNGTUBER_USER_PATH,
+    adapter_for_metadata,
+    is_neko_pngtuber_v1_model,
+    validate_neko_pngtuber_v1_package,
+)
 from .shared_state import get_config_manager
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/pngtuber", tags=["pngtuber"])
 logger = get_module_logger(__name__, "Main")
 
-PNGTUBER_USER_PATH = "/user_pngtuber"
-PNGTUBER_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
 MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_PACKAGE_SIZE = 250 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
@@ -89,18 +97,7 @@ def _read_model_json(package_dir: Path) -> dict:
 def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
     raw = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
     result: dict = {}
-    image_fields = [
-        "idle_image",
-        "talking_image",
-        "drag_image",
-        "click_image",
-        "happy_image",
-        "sad_image",
-        "angry_image",
-        "surprised_image",
-    ]
-
-    for field in image_fields:
+    for field in PNGTUBER_IMAGE_KEYS:
         value = raw.get(field, "")
         if not isinstance(value, str) or not value.strip():
             result[field] = ""
@@ -125,11 +122,13 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
 
     adapter = raw.get("adapter")
     if isinstance(adapter, str):
-        result["adapter"] = adapter
+        result["adapter"] = adapter_for_metadata(result["layered_metadata"], adapter)
     elif result["layered_metadata"]:
-        result["adapter"] = "layered_canvas_v1"
+        result["adapter"] = adapter_for_metadata(result["layered_metadata"])
     else:
         result["adapter"] = ""
+    result["metadata"] = result["layered_metadata"]
+    result["protocol"] = NEKO_PNGTUBER_METADATA_FORMAT if result["adapter"] == NEKO_PNGTUBER_ADAPTER else ""
 
     result["scale"] = raw.get("scale", 1)
     result["offset_x"] = raw.get("offset_x", 0)
@@ -143,6 +142,11 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
 def _validate_model_package(package_dir: Path, model_json: dict) -> tuple[bool, str]:
     if model_json.get("model_type") != "pngtuber":
         return False, "model.json 的 model_type 必须是 pngtuber"
+
+    if is_neko_pngtuber_v1_model(model_json):
+        ok, error = validate_neko_pngtuber_v1_package(package_dir, model_json)
+        if not ok:
+            return False, error
 
     config = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
     idle_image = config.get("idle_image")

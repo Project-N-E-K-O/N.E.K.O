@@ -257,6 +257,17 @@
                     <div id="pngtuber-state-preview-dropdown" class="pngtuber-state-preview-dropdown" style="display: none;"></div>
                 </div>
             </div>
+            <div id="pngtuber-diagnostics-panel" class="pngtuber-diagnostics-panel" style="display: none;">
+                <div class="pngtuber-diagnostics-header">
+                    <span class="pngtuber-diagnostics-title">PNGTuber 诊断</span>
+                    <span id="pngtuber-diagnostics-status" class="pngtuber-diagnostics-status is-idle">未加载</span>
+                </div>
+                <div id="pngtuber-diagnostics-rows" class="pngtuber-diagnostics-rows"></div>
+                <div class="pngtuber-diagnostics-actions">
+                    <button id="pngtuber-diagnostics-refresh-btn" class="pngtuber-diagnostics-action" type="button">刷新</button>
+                    <button id="pngtuber-diagnostics-copy-btn" class="pngtuber-diagnostics-action" type="button">复制 JSON</button>
+                </div>
+            </div>
         </div>
 
         <div class="control-group" id="persistent-expression-group">
@@ -661,6 +672,7 @@
     </script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
     <script src="/static/avatar-portrait.js"></script>
+    <script src="/static/neko-pngtuber-protocol.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
     <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>

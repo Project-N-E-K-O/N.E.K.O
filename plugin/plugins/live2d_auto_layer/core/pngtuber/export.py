@@ -7,6 +7,12 @@ import shutil
 import zipfile
 from pathlib import Path
 
+from main_routers.pngtuber_protocol import (
+    NEKO_PNGTUBER_ADAPTER,
+    NEKO_PNGTUBER_METADATA_FILENAME,
+    NEKO_PNGTUBER_METADATA_FORMAT,
+    NEKO_PNGTUBER_PACKAGE_FORMAT,
+)
 from PIL import Image
 
 from ..types import LayerArtifact, ProcessResult
@@ -14,7 +20,7 @@ from ..types import LayerArtifact, ProcessResult
 PNGTUBER_DIR_NAME = "pngtuber_model"
 PNGTUBER_ZIP_NAME = "pngtuber_model.zip"
 PNGTUBER_MODEL_NAME = "model.json"
-PNGTUBER_METADATA_NAME = "metadata.live2d-auto-layer.json"
+PNGTUBER_METADATA_NAME = NEKO_PNGTUBER_METADATA_FILENAME
 
 
 def export_pngtuber_model(
@@ -82,8 +88,8 @@ def export_pngtuber_model(
         "pngtuber_metadata_path": str(package_dir / PNGTUBER_METADATA_NAME),
         "layer_count": len(rows),
         "canvas_size": list(canvas_size),
-        "message": f"Exported NEKO PNGTuber package with {len(rows)} layer(s)",
-        "warning": "This is a NEKO PNGTuber layered_canvas_v1 package, not a Cubism model3/moc3 package.",
+        "message": f"Exported NEKO PNGTuber v1 package with {len(rows)} layer(s)",
+        "warning": "This is a NEKO PNGTuber v1 package, not a Cubism model3/moc3 package.",
     }
 
 
@@ -131,6 +137,7 @@ def _build_layered_metadata(
             "rotation": 0,
         }
         layer: dict[str, object] = {
+            "id": f"layer_{int(row['order']):02d}_{_sanitize_name(str(row['name'])).lower()}",
             "order": int(row["order"]),
             "name": str(row["name"]),
             "image": str(row["file"]),
@@ -148,12 +155,16 @@ def _build_layered_metadata(
         metadata_layers.append(layer)
 
     return {
-        "runtime": "layered_canvas",
-        "format": "neko.pngtuber.layered_canvas.v1",
+        "format": NEKO_PNGTUBER_METADATA_FORMAT,
+        "runtime": "neko_layered_canvas",
         "source_format": "live2d_auto_layer",
         "source_session_id": result.session_id,
         "source_manifest": result.manifest_path,
         "canvas": {"width": canvas_size[0], "height": canvas_size[1]},
+        "fallback": {
+            "idle": "idle.png",
+            "talking": "talking.png",
+        },
         "capabilities": {
             "layered": True,
             "speech_state": True,
@@ -169,17 +180,19 @@ def _build_layered_metadata(
             "duration_ms": 140,
         },
         "state_count": 2,
-        "states": {
-            "idle": {"image": "idle.png"},
-            "talking": {
+        "states": [
+            {"id": "idle", "label": "Idle", "image": "idle.png"},
+            {
+                "id": "talking",
+                "label": "Talking",
                 "image": "talking.png",
                 "mouth_transform": "vertical_open_v1",
             },
-        },
+        ],
         "layers": metadata_layers,
         "notes": [
             "Generated from Live2D Auto Layer transparent parts.",
-            "The package targets NEKO PNGTuber layered_canvas_v1 runtime.",
+            "The package targets NEKO PNGTuber v1 runtime.",
             "It is not a Cubism model package.",
         ],
     }
@@ -193,6 +206,7 @@ def _build_model_json(
 ) -> dict[str, object]:
     clean_name = model_name.strip() or result.session_id or "Live2D Auto Layer PNGTuber"
     return {
+        "format": NEKO_PNGTUBER_PACKAGE_FORMAT,
         "name": clean_name,
         "version": 1,
         "model_type": "pngtuber",
@@ -207,7 +221,8 @@ def _build_model_json(
         "pngtuber": {
             "idle_image": "idle.png",
             "talking_image": "talking.png",
-            "adapter": "layered_canvas_v1",
+            "adapter": NEKO_PNGTUBER_ADAPTER,
+            "metadata": PNGTUBER_METADATA_NAME,
             "layered_metadata": PNGTUBER_METADATA_NAME,
             "source_type": "live2d_auto_layer",
             "scale": 1,
@@ -297,7 +312,7 @@ def _readme(result: ProcessResult) -> str:
 
 This archive was generated from N.E.K.O Live2D Auto Layer session `{result.session_id}`.
 
-It is an importable NEKO PNGTuber package using the `layered_canvas_v1` adapter.
+It is an importable NEKO PNGTuber v1 package using the `{NEKO_PNGTUBER_ADAPTER}` adapter.
 It is not a Cubism `.model3.json` or `.moc3` package.
 
 Contents:

@@ -63,6 +63,23 @@ def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
     assert "iconAltKey: 'live2d.pngtuberStatePreview'" in config_block
 
 
+def test_model_manager_pngtuber_delete_uses_folder_not_display_name_for_bound_check():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    start = script.index("// 获取当前使用中的模型标识")
+    end = script.index("const checkbox = document.createElement('input');", start)
+    bound_block = script[start:end]
+
+    assert "const currentPNGTuberFolder" in bound_block
+    assert "const currentPNGTuberUrl" in bound_block
+    assert "currentPNGTuberFolder === modelFolder" in bound_block
+    assert "currentPNGTuberUrl === modelUrl" in bound_block
+    assert "!hasStableModelKey && currentModelInfo.name === model.name" in bound_block
+
+    checkbox_start = script.index("checkbox.value =", end)
+    checkbox_block = script[checkbox_start: script.index("checkbox.setAttribute('data-type'", checkbox_start)]
+    assert "`${model.type}:${model.deleteKey}`" in checkbox_block
+
+
 def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     start = script.index("function getPNGTuberCaptureDrawable()")

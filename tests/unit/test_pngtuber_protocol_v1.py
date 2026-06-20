@@ -1,0 +1,101 @@
+import json
+
+from main_routers.pngtuber_importers import import_pngtuber_package
+from main_routers.pngtuber_protocol import (
+    NEKO_PNGTUBER_ADAPTER,
+    NEKO_PNGTUBER_METADATA_FORMAT,
+    NEKO_PNGTUBER_PACKAGE_FORMAT,
+    is_neko_pngtuber_v1_model,
+    validate_neko_pngtuber_v1_package,
+)
+from main_routers.pngtuber_router import _normalize_pngtuber_config, _validate_model_package
+
+
+def _write_minimal_neko_pngtuber_v1_package(package_dir):
+    assets_dir = package_dir / "assets"
+    layers_dir = assets_dir / "layers"
+    layers_dir.mkdir(parents=True)
+    for rel_path in [
+        "assets/idle.png",
+        "assets/talking.png",
+        "assets/layers/00_body.png",
+        "assets/layers/01_eye_open.png",
+        "assets/layers/02_eye_closed.png",
+        "assets/layers/03_mouth_closed.png",
+        "assets/layers/04_mouth_open.png",
+    ]:
+        (package_dir / rel_path).write_bytes(b"png")
+
+    model_json = {
+        "format": NEKO_PNGTUBER_PACKAGE_FORMAT,
+        "name": "NEKO PNGTuber v1 Minimal Sample",
+        "version": 1,
+        "model_type": "pngtuber",
+        "source_format": "neko_pngtuber_v1",
+        "pngtuber": {
+            "adapter": NEKO_PNGTUBER_ADAPTER,
+            "idle_image": "assets/idle.png",
+            "talking_image": "assets/talking.png",
+            "metadata": "metadata.neko-pngtuber.v1.json",
+            "layered_metadata": "metadata.neko-pngtuber.v1.json",
+            "scale": 1,
+            "offset_x": 0,
+            "offset_y": 0,
+            "mirror": False,
+        },
+    }
+    metadata = {
+        "format": NEKO_PNGTUBER_METADATA_FORMAT,
+        "runtime": "neko_layered_canvas",
+        "canvas": {"width": 192, "height": 192},
+        "layers": [
+            {"id": "body", "role": "body", "order": 0, "image": "assets/layers/00_body.png"},
+            {"id": "eye_open", "role": "eye", "order": 1, "image": "assets/layers/01_eye_open.png", "showBlink": 1},
+            {"id": "eye_closed", "role": "eye", "order": 2, "image": "assets/layers/02_eye_closed.png", "showBlink": 2},
+            {"id": "mouth_closed", "role": "mouth", "order": 3, "image": "assets/layers/03_mouth_closed.png", "showTalk": 1},
+            {"id": "mouth_open", "role": "mouth", "order": 4, "image": "assets/layers/04_mouth_open.png", "showTalk": 2},
+        ],
+    }
+    (package_dir / "model.json").write_text(json.dumps(model_json), encoding="utf-8")
+    (package_dir / "metadata.neko-pngtuber.v1.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return model_json
+
+
+def test_neko_pngtuber_v1_sample_package_validates(tmp_path):
+    package_dir = tmp_path / "sample"
+    package_dir.mkdir()
+    model_json = _write_minimal_neko_pngtuber_v1_package(package_dir)
+
+    assert is_neko_pngtuber_v1_model(model_json) is True
+    assert validate_neko_pngtuber_v1_package(package_dir, model_json) == (True, "")
+    assert _validate_model_package(package_dir, model_json) == (True, "")
+
+
+def test_neko_pngtuber_v1_sample_import_and_normalize_contract(tmp_path):
+    package_dir = tmp_path / "sample"
+    package_dir.mkdir()
+    _write_minimal_neko_pngtuber_v1_package(package_dir)
+
+    imported = import_pngtuber_package(package_dir, "fallback")
+    normalized = _normalize_pngtuber_config("sample_v1", imported.model_json)
+
+    assert imported.source_format == NEKO_PNGTUBER_PACKAGE_FORMAT
+    assert imported.model_name == "NEKO PNGTuber v1 Minimal Sample"
+    assert normalized["adapter"] == NEKO_PNGTUBER_ADAPTER
+    assert normalized["protocol"] == NEKO_PNGTUBER_METADATA_FORMAT
+    assert normalized["metadata"] == "/user_pngtuber/sample_v1/metadata.neko-pngtuber.v1.json"
+    assert normalized["layered_metadata"] == normalized["metadata"]
+    assert normalized["idle_image"] == "/user_pngtuber/sample_v1/assets/idle.png"
+
+
+def test_neko_pngtuber_v1_validator_rejects_missing_layer_asset(tmp_path):
+    package_dir = tmp_path / "sample"
+    package_dir.mkdir()
+    model_json = _write_minimal_neko_pngtuber_v1_package(package_dir)
+    missing = package_dir / "assets" / "layers" / "04_mouth_open.png"
+    missing.unlink()
+
+    ok, error = validate_neko_pngtuber_v1_package(package_dir, model_json)
+
+    assert ok is False
+    assert "metadata.layers[4].image" in error

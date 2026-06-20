@@ -3634,6 +3634,120 @@ input:checked + .toggle-slider:before {
     letter-spacing: 0;
 }
 
+.pngtuber-diagnostics-panel {
+    width: var(--model-manager-control-width);
+    min-width: var(--model-manager-control-width);
+    max-width: var(--model-manager-control-width);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid rgba(91, 151, 184, 0.38);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 2px 10px rgba(36, 77, 105, 0.10);
+    color: #25445a;
+}
+
+.pngtuber-diagnostics-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.pngtuber-diagnostics-title {
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pngtuber-diagnostics-status {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0;
+    border: 1px solid rgba(82, 120, 148, 0.25);
+    background: rgba(236, 244, 248, 0.9);
+    color: #446276;
+}
+
+.pngtuber-diagnostics-status.is-ok {
+    background: rgba(218, 244, 230, 0.9);
+    color: #217046;
+}
+
+.pngtuber-diagnostics-status.is-warning {
+    background: rgba(255, 244, 207, 0.95);
+    color: #8a6100;
+}
+
+.pngtuber-diagnostics-status.is-error {
+    background: rgba(255, 226, 226, 0.95);
+    color: #9d2f38;
+}
+
+.pngtuber-diagnostics-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.pngtuber-diagnostics-row {
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 8px;
+    align-items: baseline;
+    min-height: 18px;
+    font-size: 11px;
+}
+
+.pngtuber-diagnostics-key {
+    color: rgba(37, 68, 90, 0.68);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pngtuber-diagnostics-value {
+    min-width: 0;
+    color: #203d52;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pngtuber-diagnostics-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.pngtuber-diagnostics-action {
+    min-width: 0;
+    min-height: 30px;
+    border: 1px solid rgba(91, 151, 184, 0.42);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.74);
+    color: #25445a;
+    cursor: pointer;
+    font-size: 12px;
+    letter-spacing: 0;
+}
+
+.pngtuber-diagnostics-action:hover {
+    background: rgba(229, 246, 255, 0.84);
+}
+
 #backToMainBtn span:not(.dropdown-arrow),
 #upload-btn span:not(.dropdown-arrow),
 #model-type-select-btn span:not(.dropdown-arrow),

@@ -297,7 +297,7 @@ class ProcessRouter(PluginRouter):
         name=tr("entries.exportPNGTuberModel.name", default="Export NEKO PNGTuber model package"),
         description=tr(
             "entries.exportPNGTuberModel.description",
-            default="Generate an importable NEKO PNGTuber ZIP with model.json, layered_canvas_v1 metadata, ordered PNG layers, and fallback composite images. This is not a Cubism model3/moc3 package.",
+            default="Generate an importable NEKO PNGTuber v1 ZIP with model.json, metadata.neko-pngtuber.v1.json, ordered PNG layers, and fallback composite images. This is not a Cubism model3/moc3 package.",
         ),
         input_schema={
             "type": "object",
@@ -351,7 +351,7 @@ class ProcessRouter(PluginRouter):
         name=tr("entries.installPNGTuberModel.name", default="Install NEKO PNGTuber model package"),
         description=tr(
             "entries.installPNGTuberModel.description",
-            default="Export a session as NEKO PNGTuber layered_canvas_v1 and install it into the user PNGTuber model library.",
+            default="Export a session as NEKO PNGTuber v1 and install it into the user PNGTuber model library.",
         ),
         input_schema={
             "type": "object",

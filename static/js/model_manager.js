@@ -2035,6 +2035,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const pngtuberStatePreviewSelect = document.getElementById('pngtuber-state-preview-select');
     const pngtuberStatePreviewSelectBtn = document.getElementById('pngtuber-state-preview-select-btn');
     const pngtuberStatePreviewDropdown = document.getElementById('pngtuber-state-preview-dropdown');
+    const pngtuberDiagnosticsPanel = document.getElementById('pngtuber-diagnostics-panel');
+    const pngtuberDiagnosticsStatus = document.getElementById('pngtuber-diagnostics-status');
+    const pngtuberDiagnosticsRows = document.getElementById('pngtuber-diagnostics-rows');
+    const pngtuberDiagnosticsRefreshBtn = document.getElementById('pngtuber-diagnostics-refresh-btn');
+    const pngtuberDiagnosticsCopyBtn = document.getElementById('pngtuber-diagnostics-copy-btn');
     const vrmFileUpload = document.getElementById('vrm-file-upload');
     const motionFileUpload = document.getElementById('motion-file-upload');
     const expressionFileUpload = document.getElementById('expression-file-upload');
@@ -4634,6 +4639,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     let pngtuberTalkPreviewTimer = null;
+    let lastPNGTuberDiagnosticsSnapshot = null;
+    let lastPNGTuberDiagnosticsMetadata = null;
+    let lastPNGTuberDiagnosticsConfig = null;
+    let lastPNGTuberDiagnosticsMetadataError = '';
+    let lastPNGTuberLayerAssetCheck = null;
+    const PNGTUBER_DIAGNOSTIC_LAYER_CHECK_LIMIT = 80;
+    const PNGTUBER_DIAGNOSTIC_IMAGE_TIMEOUT_MS = 3500;
 
     function clearPNGTuberPreviewControls() {
         if (pngtuberTalkPreviewTimer) {
@@ -4661,6 +4673,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (pngtuberPreviewGroup) {
             pngtuberPreviewGroup.style.display = 'none';
         }
+        if (pngtuberDiagnosticsPanel) {
+            pngtuberDiagnosticsPanel.style.display = 'none';
+        }
+        lastPNGTuberDiagnosticsSnapshot = null;
+        lastPNGTuberDiagnosticsMetadata = null;
+        lastPNGTuberDiagnosticsConfig = null;
+        lastPNGTuberDiagnosticsMetadataError = '';
+        lastPNGTuberLayerAssetCheck = null;
     }
 
     function updatePNGTuberStatePreviewButtonText() {
@@ -4674,18 +4694,267 @@ document.addEventListener('DOMContentLoaded', async () => {
         textSpan.setAttribute('data-text', '状态预览');
     }
 
-    async function fetchPNGTuberLayeredMetadata(pngtuberConfig) {
-        const metadataUrl = pngtuberConfig && typeof pngtuberConfig.layered_metadata === 'string'
-            ? pngtuberConfig.layered_metadata.trim()
+    function getPNGTuberDiagnosticMetadataUrl(pngtuberConfig) {
+        const protocol = window.NekoPNGTuberProtocol;
+        if (protocol && typeof protocol.normalizeConfig === 'function') {
+            try {
+                const normalized = protocol.normalizeConfig(pngtuberConfig || {});
+                const normalizedUrl = normalized && (normalized.layered_metadata || normalized.metadata);
+                if (normalizedUrl) return String(normalizedUrl).trim();
+            } catch (error) {
+                console.warn('[PNGTuber] 诊断 metadata 路径规范化失败:', error);
+            }
+        }
+        const metadataUrl = pngtuberConfig && (typeof pngtuberConfig.layered_metadata === 'string' || typeof pngtuberConfig.metadata === 'string')
+            ? String(pngtuberConfig.layered_metadata || pngtuberConfig.metadata || '').trim()
             : '';
-        if (!metadataUrl) return null;
+        return metadataUrl;
+    }
+
+    async function fetchPNGTuberLayeredMetadata(pngtuberConfig) {
+        const metadataUrl = getPNGTuberDiagnosticMetadataUrl(pngtuberConfig);
+        if (!metadataUrl) {
+            lastPNGTuberDiagnosticsMetadataError = '';
+            return null;
+        }
         try {
+            lastPNGTuberDiagnosticsMetadataError = '';
             const response = await fetch(metadataUrl, { cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return await response.json();
         } catch (error) {
             console.warn('[PNGTuber] 读取分层 metadata 失败:', error);
+            lastPNGTuberDiagnosticsMetadataError = error && error.message ? error.message : String(error || 'unknown error');
             return null;
+        }
+    }
+
+    function resolvePNGTuberDiagnosticAsset(baseUrl, value) {
+        if (!value) return '';
+        const protocol = window.NekoPNGTuberProtocol;
+        if (protocol && typeof protocol.resolveSiblingAsset === 'function') {
+            return protocol.resolveSiblingAsset(baseUrl || '', value);
+        }
+        const raw = String(value || '').trim().replace(/\\/g, '/');
+        if (!raw || /^https?:\/\//i.test(raw) || raw.startsWith('/')) return raw;
+        const base = String(baseUrl || '').trim().replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+        return base ? `${base}/${raw}` : raw;
+    }
+
+    function probePNGTuberDiagnosticImage(src) {
+        return new Promise((resolve) => {
+            const image = new Image();
+            let settled = false;
+            const finish = (ok, reason = '') => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                image.onload = null;
+                image.onerror = null;
+                resolve({ ok, reason });
+            };
+            const timer = setTimeout(() => finish(false, 'timeout'), PNGTUBER_DIAGNOSTIC_IMAGE_TIMEOUT_MS);
+            image.onload = () => finish(true, '');
+            image.onerror = () => finish(false, 'load error');
+            image.src = src;
+        });
+    }
+
+    async function inspectPNGTuberLayerAssets(metadata, metadataUrl) {
+        const layers = metadata && Array.isArray(metadata.layers) ? metadata.layers : [];
+        if (!layers.length) {
+            return {
+                total: 0,
+                checked: 0,
+                missing: 0,
+                invalidRefs: 0,
+                skipped: 0,
+                missingSamples: [],
+            };
+        }
+        const candidates = [];
+        let invalidRefs = 0;
+        layers.forEach((layer, index) => {
+            const imageRef = layer && (layer.image || layer.src || layer.path);
+            const resolved = resolvePNGTuberDiagnosticAsset(metadataUrl, imageRef);
+            if (!resolved) {
+                invalidRefs += 1;
+                return;
+            }
+            candidates.push({
+                index,
+                role: layer && layer.role ? String(layer.role) : '',
+                src: resolved,
+            });
+        });
+
+        const checkable = candidates.slice(0, PNGTUBER_DIAGNOSTIC_LAYER_CHECK_LIMIT);
+        const results = await Promise.all(checkable.map(async (item) => {
+            const result = await probePNGTuberDiagnosticImage(item.src);
+            return { ...item, ...result };
+        }));
+        const missingItems = results.filter((item) => !item.ok);
+        return {
+            total: layers.length,
+            checked: results.length,
+            missing: missingItems.length,
+            invalidRefs,
+            skipped: Math.max(0, candidates.length - checkable.length),
+            missingSamples: missingItems.slice(0, 3).map((item) => `${item.role || `#${item.index + 1}`}: ${shortPNGTuberPath(item.src)}`),
+        };
+    }
+
+    function shortPNGTuberPath(value) {
+        const text = String(value || '').trim();
+        if (!text) return '-';
+        if (text.length <= 48) return text;
+        return `${text.slice(0, 18)}...${text.slice(-24)}`;
+    }
+
+    function getPNGTuberDiagnosticsSnapshot(metadata = null, layerAssetCheck = null) {
+        const debugState = typeof window.getPNGTuberDebugState === 'function'
+            ? window.getPNGTuberDebugState()
+            : { mode: 'unloaded', lastError: 'debug API unavailable' };
+        const layers = metadata && Array.isArray(metadata.layers) ? metadata.layers : [];
+        const assetCheck = layerAssetCheck || lastPNGTuberLayerAssetCheck || {
+            total: layers.length,
+            checked: 0,
+            missing: 0,
+            invalidRefs: 0,
+            skipped: 0,
+            missingSamples: [],
+        };
+        const roles = layers.reduce((acc, layer) => {
+            const role = String(layer && layer.role || 'unknown').trim() || 'unknown';
+            acc[role] = (acc[role] || 0) + 1;
+            return acc;
+        }, {});
+        const canvas = metadata && metadata.canvas && typeof metadata.canvas === 'object'
+            ? metadata.canvas
+            : {};
+        const plannedLayered = debugState && debugState.plannedMode === 'layered';
+        const fellBack = plannedLayered && debugState.mode !== 'layered';
+        const fallbackReason = debugState.lastError
+            || (lastPNGTuberDiagnosticsMetadataError ? `metadata fetch failed: ${lastPNGTuberDiagnosticsMetadataError}` : '')
+            || (fellBack ? `planned layered but runtime mode is ${debugState.mode || 'unknown'}` : '')
+            || (Number(assetCheck.missing || 0) > 0 ? 'one or more layer images failed to load' : '')
+            || (Number(assetCheck.invalidRefs || 0) > 0 ? 'one or more layer image refs are empty' : '');
+        return {
+            ...debugState,
+            metadataFormat: metadata && metadata.format ? String(metadata.format) : '',
+            metadataRuntime: metadata && metadata.runtime ? String(metadata.runtime) : '',
+            metadataError: lastPNGTuberDiagnosticsMetadataError,
+            canvas: canvas.width && canvas.height ? `${canvas.width} x ${canvas.height}` : '',
+            roleSummary: Object.keys(roles).length
+                ? Object.entries(roles).map(([role, count]) => `${role}:${count}`).join(', ')
+                : '',
+            hasMouthLayer: !!roles.mouth,
+            hasEyeLayer: !!(roles.eye || roles.eye_l || roles.eye_r),
+            metadataLayerCount: layers.length,
+            layerAssetTotal: Number(assetCheck.total || 0),
+            layerAssetChecked: Number(assetCheck.checked || 0),
+            missingLayerImages: Number(assetCheck.missing || 0),
+            invalidLayerRefs: Number(assetCheck.invalidRefs || 0),
+            skippedLayerImages: Number(assetCheck.skipped || 0),
+            missingLayerSamples: Array.isArray(assetCheck.missingSamples) ? assetCheck.missingSamples : [],
+            fallbackReason,
+        };
+    }
+
+    function setPNGTuberDiagnosticsStatus(snapshot) {
+        if (!pngtuberDiagnosticsStatus) return;
+        const hasError = !!(snapshot && (snapshot.lastError || snapshot.metadataError || snapshot.fallbackReason));
+        const plannedLayered = snapshot && snapshot.plannedMode === 'layered';
+        const fellBack = plannedLayered && snapshot.mode !== 'layered';
+        const hasMissingAssets = Number(snapshot?.missingLayerImages || 0) > 0 || Number(snapshot?.invalidLayerRefs || 0) > 0;
+        const partialLayers = Number(snapshot?.layerCount || 0) > 0
+            && Number(snapshot?.loadedLayerImages || 0) < Number(snapshot?.layerCount || 0);
+        let label = 'OK';
+        let className = 'pngtuber-diagnostics-status is-ok';
+        if (!snapshot || snapshot.mode === 'unloaded') {
+            label = '未加载';
+            className = 'pngtuber-diagnostics-status is-idle';
+        } else if (hasError || fellBack || hasMissingAssets) {
+            label = 'Fallback';
+            className = 'pngtuber-diagnostics-status is-error';
+        } else if (partialLayers) {
+            label = '部分加载';
+            className = 'pngtuber-diagnostics-status is-warning';
+        } else if (snapshot.mode === 'image') {
+            label = 'Image';
+            className = 'pngtuber-diagnostics-status is-warning';
+        } else if (snapshot.mode === 'layered') {
+            label = 'Layered';
+        }
+        pngtuberDiagnosticsStatus.textContent = label;
+        pngtuberDiagnosticsStatus.className = className;
+    }
+
+    function renderPNGTuberDiagnosticsRows(snapshot) {
+        if (!pngtuberDiagnosticsRows) return;
+        const rows = [
+            ['模式', `${snapshot?.mode || '-'} / planned ${snapshot?.plannedMode || '-'}`],
+            ['Adapter', snapshot?.adapter || '-'],
+            ['Metadata', shortPNGTuberPath(snapshot?.metadataUrl || '')],
+            ['Metadata Check', snapshot?.metadataError ? `失败: ${snapshot.metadataError}` : (snapshot?.metadataUrl ? 'OK' : '-')],
+            ['Format', snapshot?.metadataFormat || snapshot?.metadataRuntime || '-'],
+            ['Layers', `${snapshot?.loadedLayerImages || 0}/${snapshot?.layerCount || 0} runtime / ${snapshot?.metadataLayerCount || 0} metadata`],
+            ['Layer Assets', `${snapshot?.layerAssetChecked || 0}/${snapshot?.layerAssetTotal || 0} checked, missing ${snapshot?.missingLayerImages || 0}, invalid ${snapshot?.invalidLayerRefs || 0}, skipped ${snapshot?.skippedLayerImages || 0}`],
+            ['Missing', snapshot?.missingLayerSamples && snapshot.missingLayerSamples.length ? snapshot.missingLayerSamples.join('; ') : '-'],
+            ['Canvas', snapshot?.canvas || '-'],
+            ['Roles', snapshot?.roleSummary || '-'],
+            ['Mouth/Eye', `${snapshot?.hasMouthLayer ? 'mouth' : '-'} / ${snapshot?.hasEyeLayer ? 'eye' : '-'}`],
+            ['State', `${snapshot?.currentState || '-'}${snapshot?.isSpeaking ? ' · speaking' : ''}`],
+            ['Fallback', snapshot?.fallbackReason || '-'],
+            ['Error', snapshot?.lastError || '-'],
+        ];
+        const fragment = document.createDocumentFragment();
+        rows.forEach(([label, value]) => {
+            const row = document.createElement('div');
+            row.className = 'pngtuber-diagnostics-row';
+            const key = document.createElement('span');
+            key.className = 'pngtuber-diagnostics-key';
+            key.textContent = label;
+            const val = document.createElement('span');
+            val.className = 'pngtuber-diagnostics-value';
+            val.title = String(value || '');
+            val.textContent = String(value || '-');
+            row.append(key, val);
+            fragment.appendChild(row);
+        });
+        pngtuberDiagnosticsRows.replaceChildren(fragment);
+    }
+
+    function renderPNGTuberDiagnosticsPanel(metadata = null, layerAssetCheck = null) {
+        if (!pngtuberDiagnosticsPanel) return;
+        if (arguments.length >= 1) lastPNGTuberDiagnosticsMetadata = metadata || null;
+        if (arguments.length >= 2) lastPNGTuberLayerAssetCheck = layerAssetCheck || null;
+        const snapshot = getPNGTuberDiagnosticsSnapshot(
+            metadata || lastPNGTuberDiagnosticsMetadata,
+            layerAssetCheck || lastPNGTuberLayerAssetCheck
+        );
+        lastPNGTuberDiagnosticsSnapshot = snapshot;
+        pngtuberDiagnosticsPanel.style.display = currentModelType === 'pngtuber' ? 'flex' : 'none';
+        setPNGTuberDiagnosticsStatus(snapshot);
+        renderPNGTuberDiagnosticsRows(snapshot);
+    }
+
+    async function refreshPNGTuberDiagnosticsFromConfig() {
+        if (!lastPNGTuberDiagnosticsConfig) {
+            renderPNGTuberDiagnosticsPanel();
+            return;
+        }
+        if (pngtuberDiagnosticsRefreshBtn) pngtuberDiagnosticsRefreshBtn.disabled = true;
+        try {
+            const metadata = await fetchPNGTuberLayeredMetadata(lastPNGTuberDiagnosticsConfig);
+            const layerAssetCheck = await inspectPNGTuberLayerAssets(
+                metadata,
+                getPNGTuberDiagnosticMetadataUrl(lastPNGTuberDiagnosticsConfig)
+            );
+            if (currentModelType !== 'pngtuber') return;
+            renderPNGTuberDiagnosticsPanel(metadata, layerAssetCheck);
+        } finally {
+            if (pngtuberDiagnosticsRefreshBtn) pngtuberDiagnosticsRefreshBtn.disabled = false;
         }
     }
 
@@ -4743,9 +5012,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (pngtuberBasicPreviewSection) pngtuberBasicPreviewSection.style.display = 'flex';
         if (pngtuberTalkPreviewBtn) pngtuberTalkPreviewBtn.disabled = false;
 
+        lastPNGTuberDiagnosticsConfig = { ...(pngtuberConfig || {}) };
         const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
+        const layerAssetCheck = await inspectPNGTuberLayerAssets(
+            metadata,
+            getPNGTuberDiagnosticMetadataUrl(pngtuberConfig || {})
+        );
         if (currentModelType !== 'pngtuber') return;
         renderPNGTuberStatePreviewDropdown(metadata);
+        renderPNGTuberDiagnosticsPanel(metadata, layerAssetCheck);
     }
 
     if (pngtuberTalkPreviewBtn) {
@@ -4758,6 +5033,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuberTalkPreviewBtn.disabled = true;
             pngtuberTalkPreviewBtn.classList.add('active');
             window.pngtuberManager.setSpeaking(true);
+            renderPNGTuberDiagnosticsPanel();
             pngtuberTalkPreviewTimer = setTimeout(() => {
                 pngtuberTalkPreviewTimer = null;
                 if (window.pngtuberManager && typeof window.pngtuberManager.setSpeaking === 'function') {
@@ -4765,6 +5041,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 pngtuberTalkPreviewBtn.disabled = false;
                 pngtuberTalkPreviewBtn.classList.remove('active');
+                renderPNGTuberDiagnosticsPanel();
             }, 1800);
         });
     }
@@ -4777,6 +5054,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.playPNGTuberAnimation(stateNumber);
             }
             updatePNGTuberStatePreviewButtonText();
+            renderPNGTuberDiagnosticsPanel();
         });
     }
 
@@ -4789,8 +5067,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (pngtuberStatePreviewSelect.value !== nextValue) {
             pngtuberStatePreviewSelect.value = nextValue;
         }
+        renderPNGTuberDiagnosticsPanel();
         updatePNGTuberStatePreviewButtonText();
     });
+
+    if (pngtuberDiagnosticsRefreshBtn) {
+        pngtuberDiagnosticsRefreshBtn.addEventListener('click', async () => {
+            await refreshPNGTuberDiagnosticsFromConfig();
+        });
+    }
+
+    if (pngtuberDiagnosticsCopyBtn) {
+        pngtuberDiagnosticsCopyBtn.addEventListener('click', async () => {
+            const snapshot = lastPNGTuberDiagnosticsSnapshot || getPNGTuberDiagnosticsSnapshot();
+            const text = JSON.stringify(snapshot, null, 2);
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.setAttribute('readonly', 'readonly');
+                    textarea.style.position = 'fixed';
+                    textarea.style.left = '-9999px';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    document.execCommand('copy');
+                    textarea.remove();
+                }
+                showStatus('PNGTuber 诊断 JSON 已复制', 1800);
+            } catch (error) {
+                console.warn('[PNGTuber] 复制诊断 JSON 失败:', error);
+                showStatus('复制诊断 JSON 失败', 2200);
+            }
+        });
+    }
 
     // VRM模型选择按钮点击事件已由 DropdownManager 处理
 
@@ -9587,6 +9898,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 获取当前使用中的模型标识
             const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
             const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+            const currentPNGTuberFolder = currentModelInfo && currentModelInfo.type === 'pngtuber'
+                ? String(currentModelInfo.folder || '')
+                : '';
+            const currentPNGTuberUrl = currentModelInfo && currentModelInfo.type === 'pngtuber'
+                ? String(currentModelInfo.url || currentModelInfo.path || '')
+                : '';
 
             allUserModels.forEach(model => {
                 const item = document.createElement('div');
@@ -9597,8 +9914,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (model.type === 'live2d') {
                     isBound = currentLive2DName === model.name;
                 } else if (model.type === 'pngtuber') {
+                    const modelFolder = String(model.folder || '');
+                    const modelUrl = String(model.url || '');
+                    const hasStableModelKey = !!(modelFolder || modelUrl || currentPNGTuberFolder || currentPNGTuberUrl);
                     isBound = currentModelType === 'pngtuber' && currentModelInfo && (
-                        currentModelInfo.folder === model.folder || currentModelInfo.name === model.name
+                        (!!modelFolder && !!currentPNGTuberFolder && currentPNGTuberFolder === modelFolder)
+                        || (!!modelUrl && !!currentPNGTuberUrl && currentPNGTuberUrl === modelUrl)
+                        || (!hasStableModelKey && currentModelInfo.name === model.name)
                     );
                 } else {
                     isBound = currentLive3DUrl === model.url;
@@ -9607,7 +9929,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.id = 'del-' + model.id;
-                checkbox.value = model.id;
+                checkbox.value = `${model.type}:${model.deleteKey}`;
                 checkbox.setAttribute('data-type', model.type);
                 checkbox.setAttribute('data-delete-key', model.deleteKey);
 

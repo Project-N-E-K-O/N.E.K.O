@@ -6,6 +6,7 @@
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
+    const getProtocol = () => window.NekoPNGTuberProtocol || null;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -62,6 +63,13 @@
     }
 
     function normalizeConfig(config) {
+        const protocol = getProtocol();
+        if (protocol && typeof protocol.normalizeConfig === 'function') {
+            return protocol.normalizeConfig(config, {
+                placeholder: DEFAULT_PLACEHOLDER,
+                centerPreview: isModelManagerPage(),
+            });
+        }
         const source = config && typeof config === 'object' ? config : {};
         const normalized = Object.assign({}, source);
         IMAGE_KEYS.forEach((key) => {
@@ -83,6 +91,34 @@
         return normalized;
     }
 
+    function createLoadPlan(config) {
+        const protocol = getProtocol();
+        if (protocol && typeof protocol.createLoadPlan === 'function') {
+            return protocol.createLoadPlan(config, {
+                placeholder: DEFAULT_PLACEHOLDER,
+                centerPreview: isModelManagerPage(),
+            });
+        }
+        const normalized = normalizeConfig(config);
+        const hasLayeredMetadata = !!normalized.layered_metadata;
+        return {
+            protocol: 'neko.pngtuber.load_plan.legacy',
+            mode: normalized.adapter === 'layered_canvas_v1' && hasLayeredMetadata ? 'layered' : 'image',
+            renderer: normalized.adapter === 'layered_canvas_v1' && hasLayeredMetadata ? 'layered_canvas' : 'image',
+            adapter: normalized.adapter,
+            metadataUrl: normalized.layered_metadata || '',
+            config: normalized,
+            fallback: {
+                idle: normalized.idle_image,
+                talking: normalized.talking_image,
+            },
+            diagnostics: {
+                hasMetadata: hasLayeredMetadata,
+                sourceFormat: normalized.source_format || '',
+            },
+        };
+    }
+
     class PNGTuberManager {
         constructor(containerId = 'pngtuber-container') {
             this.containerId = containerId;
@@ -90,9 +126,11 @@
             this.image = null;
             this.imageElement = null;
             this.canvasElement = null;
-            this.config = normalizeConfig({});
+            this.loadPlan = createLoadPlan({});
+            this.config = this.loadPlan.config;
             this.layeredMetadata = null;
             this.layeredImages = new Map();
+            this.lastError = '';
             this.layeredBlinking = false;
             this.layeredBlinkTimer = null;
             this.layeredBlinkEndTimer = null;
@@ -163,6 +201,11 @@
         }
 
         isLayeredConfigured() {
+            if (this.loadPlan && this.loadPlan.mode === 'layered' && this.loadPlan.metadataUrl) return true;
+            const protocol = getProtocol();
+            if (protocol && typeof protocol.isLayeredAdapter === 'function') {
+                return protocol.isLayeredAdapter(this.config.adapter, this.config.layered_metadata);
+            }
             return this.config.adapter === 'layered_canvas_v1' && !!this.config.layered_metadata;
         }
 
@@ -425,15 +468,20 @@
             this.layeredStateIndex = 0;
             if (!this.isLayeredConfigured()) return false;
             try {
-                const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
+                const metadataUrl = this.loadPlan?.metadataUrl || this.config.layered_metadata;
+                const response = await fetch(metadataUrl, { cache: 'no-cache' });
                 if (!response.ok) throw new Error(`metadata ${response.status}`);
                 const metadata = await response.json();
                 const layers = Array.isArray(metadata.layers) ? metadata.layers : [];
-                if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
+                const protocol = getProtocol();
+                if (protocol && typeof protocol.validateMetadata === 'function') {
+                    const validation = protocol.validateMetadata(metadata);
+                    if (!validation.valid) throw new Error(validation.reason || 'invalid metadata');
+                } else if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
                     throw new Error('metadata is not layered_canvas');
                 }
                 await Promise.all(layers.map(async (layer, index) => {
-                    const src = resolveSiblingAsset(this.config.layered_metadata, layer.image);
+                    const src = resolveSiblingAsset(metadataUrl, layer.image);
                     if (!src) return;
                     const img = await loadImageElement(src);
                     this.layeredImages.set(index, img);
@@ -452,9 +500,11 @@
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
                 this.attachLayeredPlayEvent();
+                this.lastError = '';
                 return true;
             } catch (error) {
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
+                this.lastError = String(error && error.message ? error.message : error || '');
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
                 return false;
@@ -1138,7 +1188,8 @@
 
         async load(config) {
             this.detachDragListeners();
-            this.config = normalizeConfig(config || {});
+            this.loadPlan = createLoadPlan(config || {});
+            this.config = this.loadPlan.config;
             await this.setupLayeredAdapter();
             this.ensureContainer();
             this.preloadImages();
@@ -1152,6 +1203,28 @@
             }
             this.setupHTMLLockIcon();
             return true;
+        }
+
+        getDebugState() {
+            const layers = this.layeredMetadata && Array.isArray(this.layeredMetadata.layers)
+                ? this.layeredMetadata.layers
+                : [];
+            return {
+                protocol: this.loadPlan?.protocol || '',
+                mode: this.isLayeredActive() ? 'layered' : 'image',
+                plannedMode: this.loadPlan?.mode || '',
+                adapter: this.config.adapter || '',
+                metadataUrl: this.loadPlan?.metadataUrl || this.config.layered_metadata || '',
+                layerCount: layers.length,
+                loadedLayerImages: this.layeredImages ? this.layeredImages.size : 0,
+                currentState: this.state,
+                isSpeaking: !!this.isSpeaking,
+                lastError: this.lastError || '',
+                fallback: this.loadPlan?.fallback || {
+                    idle: this.config.idle_image || '',
+                    talking: this.config.talking_image || '',
+                },
+            };
         }
 
         stateToSrc(state) {
@@ -1813,4 +1886,22 @@
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
+    window.getPNGTuberDebugState = function getPNGTuberDebugState() {
+        if (!window.pngtuberManager || typeof window.pngtuberManager.getDebugState !== 'function') {
+            return {
+                protocol: '',
+                mode: 'unloaded',
+                plannedMode: '',
+                adapter: '',
+                metadataUrl: '',
+                layerCount: 0,
+                loadedLayerImages: 0,
+                currentState: '',
+                isSpeaking: false,
+                lastError: 'PNGTuber manager is not loaded',
+                fallback: { idle: '', talking: '' },
+            };
+        }
+        return window.pngtuberManager.getDebugState();
+    };
 })();

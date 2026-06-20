@@ -6,6 +6,11 @@ from main_routers.config_router import (
     _resolve_pngtuber_image_path,
     _resolve_pngtuber_metadata_path,
 )
+from main_routers.pngtuber_protocol import (
+    NEKO_PNGTUBER_ADAPTER,
+    adapter_for_metadata,
+    normalize_pngtuber_runtime_config,
+)
 
 
 def test_resolve_pngtuber_user_image_keeps_cache_buster_for_existing_file(tmp_path):
@@ -74,3 +79,46 @@ def test_infer_pngtuber_metadata_from_idle_prefers_auto_layer_metadata(tmp_path)
         )
         == f"{PNGTUBER_USER_PATH}/avatar/metadata.live2d-auto-layer.json"
     )
+
+
+def test_infer_pngtuber_metadata_prefers_neko_v1_metadata(tmp_path):
+    pngtuber_dir = tmp_path / "pngtuber"
+    model_dir = pngtuber_dir / "avatar"
+    model_dir.mkdir(parents=True)
+    (model_dir / "metadata.neko-pngtuber.v1.json").write_text("{}", encoding="utf-8")
+    (model_dir / "metadata.live2d-auto-layer.json").write_text("{}", encoding="utf-8")
+
+    config_manager = SimpleNamespace(pngtuber_dir=pngtuber_dir)
+
+    assert (
+        _infer_pngtuber_metadata_from_idle(
+            f"{PNGTUBER_USER_PATH}/avatar/idle.png",
+            config_manager,
+        )
+        == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v1.json"
+    )
+
+
+def test_pngtuber_protocol_normalizes_neko_v1_runtime_config(tmp_path):
+    pngtuber_dir = tmp_path / "pngtuber"
+    model_dir = pngtuber_dir / "avatar"
+    model_dir.mkdir(parents=True)
+    (model_dir / "idle.png").write_bytes(b"png")
+    (model_dir / "metadata.neko-pngtuber.v1.json").write_text("{}", encoding="utf-8")
+
+    config_manager = SimpleNamespace(pngtuber_dir=pngtuber_dir)
+
+    config = normalize_pngtuber_runtime_config(
+        {"idle_image": "avatar/idle.png"},
+        config_manager,
+        "Neko",
+    )
+
+    assert config["idle_image"] == f"{PNGTUBER_USER_PATH}/avatar/idle.png"
+    assert config["metadata"] == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v1.json"
+    assert config["layered_metadata"] == config["metadata"]
+    assert config["adapter"] == NEKO_PNGTUBER_ADAPTER
+
+
+def test_pngtuber_protocol_keeps_legacy_layered_adapter_for_legacy_metadata():
+    assert adapter_for_metadata("/user_pngtuber/avatar/metadata.live2d-auto-layer.json") == "layered_canvas_v1"
