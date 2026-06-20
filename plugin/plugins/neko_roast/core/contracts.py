@@ -87,7 +87,11 @@ class RoastConfig:
             roast_strength=roast_strength,  # type: ignore[arg-type]
             co_stream_output_policy=str(raw.get("co_stream_output_policy") or "auto_low_interrupt"),
             solo_output_policy=str(raw.get("solo_output_policy") or "auto_rate_limited"),
-            avatar_fetch_timeout_seconds=float(raw.get("avatar_fetch_timeout_seconds") or 8),
+            avatar_fetch_timeout_seconds=float(
+                raw.get("avatar_fetch_timeout_seconds")
+                if raw.get("avatar_fetch_timeout_seconds") is not None
+                else 8
+            ),
             recent_limit=max(1, min(int(raw.get("recent_limit") or 30), 200)),
             rate_limit_seconds=max(0, min(int(raw.get("rate_limit_seconds") if raw.get("rate_limit_seconds") is not None else 20), 3600)),
             queue_limit=max(1, min(int(raw.get("queue_limit") or 5), 100)),

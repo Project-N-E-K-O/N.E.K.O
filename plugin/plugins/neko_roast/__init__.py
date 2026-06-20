@@ -73,7 +73,9 @@ class NekoRoastPlugin(NekoPluginBase):
 
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
-        runtime = self._runtime()
+        if self.runtime is None:
+            return Ok({"status": "ready", "runtime": "pending"})
+        runtime = self.runtime
         await runtime.reload_config()
         self._sync_developer_entries()
         await runtime.inject_instructions(force=True)

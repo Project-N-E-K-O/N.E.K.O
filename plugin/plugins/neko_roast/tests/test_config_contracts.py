@@ -14,6 +14,10 @@ def test_roast_config_preserves_explicit_dry_run_false_for_real_output_window():
     assert RoastConfig.from_mapping({"dry_run": False}).dry_run is False
 
 
+def test_roast_config_preserves_explicit_avatar_timeout_zero():
+    assert RoastConfig.from_mapping({"avatar_fetch_timeout_seconds": 0}).avatar_fetch_timeout_seconds == 0
+
+
 def test_utc_now_iso_returns_timezone_aware_utc_timestamp():
     assert utc_now_iso().endswith("+00:00")
 
