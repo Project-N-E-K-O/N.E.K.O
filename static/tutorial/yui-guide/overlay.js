@@ -66,10 +66,15 @@
                 window.localStorage.setItem('yuiGuidePcOverlayRunId', nextRunId);
             } catch (_) {}
         };
+        const readStoredRunId = () => {
+            try {
+                return window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+            } catch (_) {
+                return '';
+            }
+        };
         let runId = '';
-        try {
-            runId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
-        } catch (_) {}
+        runId = readStoredRunId();
         if (!runId) {
             runId = createRunId();
             storeRunId(runId);
@@ -100,6 +105,19 @@
             lastKey = '';
             return runId;
         };
+        const adoptRunId = (nextRunId) => {
+            if (!nextRunId || nextRunId === runId) {
+                return false;
+            }
+            runId = nextRunId;
+            sequence = 0;
+            active = false;
+            remoteReady = false;
+            failed = false;
+            lastKey = '';
+            return true;
+        };
+        const syncRunIdFromStorage = () => adoptRunId(readStoredRunId());
 
         const nextSequence = () => {
             const wallSequence = Date.now() * 1000;
@@ -124,11 +142,19 @@
             if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
                 return;
             }
+            if (syncRunIdFromStorage()) {
+                send(patch, force, true);
+                return;
+            }
             rotateRunId();
             send(patch, force, true);
         };
         const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId) => {
             if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
+                return;
+            }
+            if (syncRunIdFromStorage()) {
+                sendCursorOnly(cursor, true);
                 return;
             }
             rotateRunId();
@@ -195,6 +221,7 @@
             if (cleared) {
                 return;
             }
+            syncRunIdFromStorage();
             const payload = completeStateStore.applyPatch(patch || {});
             const key = JSON.stringify(payload || {});
             if (!force && key === lastKey && remoteReady) {
@@ -260,8 +287,8 @@
             if (cleared || !cursor) {
                 return;
             }
-            const patch = { cursor: cursor };
-            const payload = completeStateStore.applyPatch(patch);
+            syncRunIdFromStorage();
+            const payload = completeStateStore.applyPatch({ cursor: cursor });
             if (!active) {
                 active = true;
                 const beginRunId = runId;
@@ -1048,9 +1075,8 @@
             this.document.body.classList.toggle('yui-taking-over', !!active);
             this.root.classList.toggle('is-taking-over', !!active);
             this.setInteractionShieldEnabled(!!active && !this.interactionShieldSuppressed);
-            var cursorValue = active ? 'none' : '';
-            this.document.documentElement.style.cursor = cursorValue;
-            this.document.body.style.cursor = cursorValue;
+            this.document.documentElement.style.cursor = '';
+            this.document.body.style.cursor = '';
         }
 
         setInteractionShieldSuppressed(active) {
@@ -1317,11 +1343,15 @@
             this.syncSpotlightTracking();
         }
 
-        clearSpotlight() {
+        clearSpotlight(options) {
+            const preservePcOverlaySpotlights = !!(
+                options
+                && options.preservePcOverlaySpotlights === true
+            );
             this.ensureRoot();
             this.stopSpotlightTracking();
             this.spotlightState.clearAll();
-            if (this.isPcOverlayActive()) {
+            if (this.isPcOverlayActive() && !preservePcOverlaySpotlights) {
                 if (this.pcCursorOutputSuppressed === true) {
                     this.overlayRenderer.clearCursorCache();
                 }

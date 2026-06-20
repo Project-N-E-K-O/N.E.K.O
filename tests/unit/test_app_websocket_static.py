@@ -52,7 +52,7 @@ def test_blocked_greeting_check_reports_home_tutorial_state_before_retry():
     assert "_scheduleGreetingCheckRetry();" in blocked_branch
 
 
-def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
+def test_tutorial_release_greeting_check_bypasses_icebreaker_consumption():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
     send_block = source.split("function _sendGreetingCheckIfReady()", 1)[1].split(
@@ -71,9 +71,9 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
         "function sendHomeTutorialState(reason)",
         1,
     )[0]
-    assert "if (isNewUserIcebreakerPeriodActive()) return true;" in blocking_block
-    assert "tutorial-completed" in blocking_block
-    assert "tutorial-skipped" in blocking_block
+    assert "if (isTutorialReleaseGreetingReason(normalizedReason))" in blocking_block
+    assert "return false;" in blocking_block
+    assert "return isNewUserIcebreakerPeriodActive();" in blocking_block
     period_block = source.split("function isNewUserIcebreakerPeriodActive()", 1)[1].split(
         "function isNewUserIcebreakerBlockingGreeting(reason)",
         1,
@@ -81,10 +81,15 @@ def test_icebreaker_greeting_check_is_consumed_without_retry_loop():
     assert "readNewUserIcebreakerStore()" in period_block
     assert "window.newUserIcebreaker.getActiveSession()" in period_block
     assert "return false;" in period_block
+    assert "if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;" in consume_block
     assert "sendHomeTutorialState('greeting-check-consumed-by-icebreaker')" in consume_block
     assert "S._greetingCheckPending = false;" in consume_block
     assert "_resetGreetingCheckRetry(true);" in consume_block
     assert "_scheduleGreetingCheckRetry();" not in consume_block
+    assert "var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');" in send_block
+    assert "var homeTutorialStateReason = isTutorialReleaseGreetingReason(greetingReason)" in send_block
+    assert "sendHomeTutorialState(homeTutorialStateReason)" in send_block
+    assert "reason: greetingReason" in send_block
 
     tutorial_block = source.split("function _isTutorialBlockingGreeting()", 1)[1].split(
         "function _isGreetingCheckBlocked()",

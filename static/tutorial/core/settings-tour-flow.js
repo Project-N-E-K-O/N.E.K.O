@@ -344,6 +344,9 @@
                 ? null
                 : director.getAvatarFloatingIntroSpotlightTarget(scene);
             if (introExternalizedChatSpotlightKind) {
+                if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                    director.clearHomeSpotlightsForExternalizedChat();
+                }
                 director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     director.interactionTakeover.setExternalizedChatCursor(

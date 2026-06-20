@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const standIn = require('./tutorial/avatar/yui-standin.js');
+const repoRoot = path.resolve(__dirname, '..');
 const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
 const visualControllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/visual/controllers.js'), 'utf8');
 const avatarStandInControllerSource = fs.readFileSync(
@@ -14,6 +15,30 @@ const petalTransitionControllerSource = fs.readFileSync(
     path.join(__dirname, 'tutorial/visual/petal-transition-controller.js'),
     'utf8'
 );
+
+test('tutorial pages load the canonical stand-in cue table before the stand-in controller', () => {
+    for (const templatePath of [
+        'templates/index.html',
+        'templates/api_key_settings.html',
+        'templates/memory_browser.html'
+    ]) {
+        const source = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
+        const cueTableIndex = source.indexOf('/static/tutorial/avatar/yui-standin.js');
+        const controllerIndex = source.indexOf('/static/tutorial/avatar/standin-controller.js');
+
+        assert.notEqual(cueTableIndex, -1, templatePath + ' should load tutorial/avatar/yui-standin.js');
+        assert.notEqual(controllerIndex, -1, templatePath + ' should load tutorial/avatar/standin-controller.js');
+        assert.ok(
+            cueTableIndex < controllerIndex,
+            templatePath + ' should load the stand-in cue table before the stand-in controller'
+        );
+        assert.equal(
+            source.includes('/static/tutorial/yui-guide/avatar-standin.js'),
+            false,
+            templatePath + ' should not load the stale yui-guide/avatar-standin.js cue table'
+        );
+    }
+});
 
 test('returns fixed stand-in cues for the selected tutorial scenes', () => {
     assert.deepEqual(standIn.getCue(2, 'day2_intro_context'), {

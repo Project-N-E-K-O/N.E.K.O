@@ -316,7 +316,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const isYuiGuideDragLocked = () => {
         const body = document.body;
         return !!(body && (
-            body.classList.contains('yui-guide-home-driver-hidden')
+            body.classList.contains('yui-guide-home-ui-suppressed')
             || body.classList.contains('yui-taking-over')
         ));
     };

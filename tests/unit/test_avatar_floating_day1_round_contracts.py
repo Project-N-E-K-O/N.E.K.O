@@ -211,7 +211,7 @@ def test_day3_round_targets_new_compact_tool_flow():
     assert "avatar_floating_day3_avatar_tools_more" not in round_block
     assert "show-galgame-in-compact-tool-fan" not in round_block
     assert "cursorAction: 'wobble'" not in round_block
-    assert "target: 'chat-input'" in intro_block
+    assert "target: 'chat-capsule-input'" in intro_block
     assert "cursorAction: 'move'" in intro_block
     assert "operation: 'open-compact-tool-fan'" not in intro_block
     assert "persistent: 'chat-tool-toggle'" in avatar_tools_block
@@ -542,8 +542,8 @@ def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_sp
         1,
     )[0]
 
-    assert "const patch = { cursor: cursor };" in cursor_only_block
-    assert "const payload = completeStateStore.applyPatch(patch);" in cursor_only_block
+    assert "const payload = completeStateStore.applyPatch({ cursor: cursor });" in cursor_only_block
+    assert "const payload = { cursor: cursor };" not in cursor_only_block
     assert "handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);" in cursor_only_block
     assert "result && result.ok === false" in cursor_only_block
     assert "moveCursorOnlyTo(x, y, durationMs, effect, effectDurationMs)" in overlay_source
@@ -762,6 +762,34 @@ def test_day1_intro_basic_voice_moves_from_history_handle_anchor():
     assert "getAvatarFloatingSceneCursorAnchor('day1_history_handle')" in showcase_block
     assert "this.cursor.showAt(historyHandleAnchor.x, historyHandleAnchor.y);" in showcase_block
     assert "await this.moveCursorToElement(voiceControlButton, moveDurationMs);" in showcase_block
+
+
+def test_day1_takeover_restores_original_agent_switches():
+    director = DIRECTOR_PATH.read_text(encoding="utf-8")
+    operations = (ROOT / "static" / "tutorial/core/operation-registry.js").read_text(encoding="utf-8")
+    restore_block = director.split("async restoreDay1TakeoverAgentSwitches(reason)", 1)[1].split(
+        "async clickAgentSidePanelAction",
+        1,
+    )[0]
+    capture_operation = operations.split("async runDay1TakeoverCaptureCursor(scene)", 1)[1].split(
+        "async runCleanup(scene)",
+        1,
+    )[0]
+    cleanup_operation = operations.split("async runCleanup(scene)", 1)[1].split(
+        "async runDay6PluginOpenAgentPanelFlow",
+        1,
+    )[0]
+
+    assert "this.takeoverOriginalAgentSwitches = null;" in director
+    assert "async captureDay1TakeoverAgentSwitches()" in director
+    assert "await director.captureDay1TakeoverAgentSwitches();" in capture_operation
+    assert "sceneId === 'day1_takeover_return_control'" in cleanup_operation
+    assert "restoreDay1TakeoverAgentSwitches('day1-return-control')" in cleanup_operation
+    assert "return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');" in cleanup_operation
+    assert "setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)" in restore_block
+    assert "setAgentMasterEnabled(false)" in restore_block
+    assert "restoreDay1TakeoverAgentSwitches('termination_cleanup')" in director
+    assert "restoreDay1TakeoverAgentSwitches('destroy')" in director
 
 
 def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():

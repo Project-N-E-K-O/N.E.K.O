@@ -609,25 +609,6 @@ html #chat-container {
   color: var(--neko-popup-text);
 }
 
-/* ===== 暗色模式：教程引导（driver.js） ===== */
-[data-theme="dark"] .driver-popover {
-  background: #2d2d2d !important;
-  color: #e0e0e0 !important;
-}
-
-[data-theme="dark"] .driver-popover-title {
-  color: #ffffff !important;
-}
-
-[data-theme="dark"] .driver-popover-description {
-  color: #e0e0e0 !important;
-}
-
-[data-theme="dark"] .driver-popover-footer button {
-  background: #2a7bc4 !important;
-  color: #fff !important;
-}
-
 [data-theme="dark"] #neko-tutorial-skip-btn{
   color: #b1b1b1 ;
   border: 3px solid rgb(178, 178, 178);

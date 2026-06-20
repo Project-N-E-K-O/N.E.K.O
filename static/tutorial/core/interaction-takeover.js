@@ -296,6 +296,15 @@
             return typeof configName === 'string' ? configName : '';
         }
 
+        getExternalizedChatTutorialRunId() {
+            try {
+                const storage = this.window && this.window.localStorage;
+                return storage ? String(storage.getItem('yuiGuidePcOverlayRunId') || '') : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         postExternalChatCommand(action, payload, options) {
             if (!this.isHomeChatExternalized()) {
                 return false;
@@ -316,6 +325,13 @@
             if (!message.lanlan_name) {
                 const lanlanName = this.resolveLanlanName();
                 message.lanlan_name = lanlanName;
+            }
+            const tutorialRunId = this.getExternalizedChatTutorialRunId();
+            if (tutorialRunId && !message.tutorialRunId) {
+                message.tutorialRunId = tutorialRunId;
+            }
+            if (tutorialRunId && !message.pcOverlayRunId) {
+                message.pcOverlayRunId = tutorialRunId;
             }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
@@ -349,17 +365,28 @@
         }
 
         setExternalizedChatSpotlight(kind) {
+            const previousKind = this.externalizedChatSpotlightKind;
             this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
             const message = {
                 kind: this.externalizedChatSpotlightKind
             };
             if (
-                this.externalizedChatSpotlightKind
+                (this.externalizedChatSpotlightKind || previousKind)
                 && safeInvoke(this.isResistancePaused, [], false) === true
             ) {
                 message.preserveDuringResistance = true;
             }
             this.postExternalChatCommand('yui_guide_set_chat_spotlight', message);
+        }
+
+        preserveExternalizedChatSpotlightDuringResistance() {
+            if (!this.externalizedChatSpotlightKind) {
+                return false;
+            }
+            return this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+                kind: this.externalizedChatSpotlightKind,
+                preserveDuringResistance: true
+            });
         }
 
         setExternalizedChatCursor(kind, options) {

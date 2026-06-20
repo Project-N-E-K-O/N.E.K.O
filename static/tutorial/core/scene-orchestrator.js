@@ -424,6 +424,9 @@
             let primaryTarget = null;
             let secondaryTarget = null;
             if (introExternalizedChatSpotlightKind) {
+                if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                    director.clearHomeSpotlightsForExternalizedChat();
+                }
                 director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
@@ -495,6 +498,9 @@
                         director.interactionTakeover
                         && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
                     ) {
+                        if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                            director.clearHomeSpotlightsForExternalizedChat();
+                        }
                         director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
                     }
                 } else {
