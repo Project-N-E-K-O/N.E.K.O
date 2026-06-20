@@ -861,7 +861,7 @@
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            live2dContainer.style.setProperty('opacity', '1', 'important');
+            live2dContainer.style.removeProperty('opacity');
             live2dContainer.style.removeProperty('pointer-events');
         }
 

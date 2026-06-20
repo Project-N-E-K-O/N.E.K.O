@@ -1428,7 +1428,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "document.body.classList.remove('yui-guide-live2d-preparing');" in restore_live2d_surface_block
     assert "document.body.classList.remove('yui-guide-return-petal-fade');" in restore_live2d_surface_block
     assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in restore_live2d_surface_block
-    assert "live2dContainer.style.setProperty('opacity', '1', 'important');" in restore_live2d_surface_block
+    assert "live2dContainer.style.removeProperty('opacity');" in restore_live2d_surface_block
+    assert "live2dContainer.style.setProperty('opacity', '1', 'important');" not in restore_live2d_surface_block
     assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in restore_live2d_surface_block
     assert "live2dCanvas.style.setProperty('visibility', 'visible', 'important');" in restore_live2d_surface_block
     assert "app.renderer.render(app.stage);" in app_ui_source
