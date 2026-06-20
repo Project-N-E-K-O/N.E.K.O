@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from plugin.plugins.neko_roast.core.contracts import LiveEvent
 from plugin.plugins.neko_roast.core.event_bus import EventBus
+from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
 
 
 class _Audit:
@@ -111,3 +113,14 @@ def test_live_event_to_dict_excludes_raw():
     assert data["uid"] == "42"
     assert data["payload"] == {"text": "hi"}
     assert "raw" not in data
+
+
+def test_super_chat_jpn_routes_to_super_chat_bus_key():
+    module = BiliLiveIngestModule()
+    event = SimpleNamespace(uid=42, nickname="SCUser", text="こんにちは", room_id=100, guard_level=0)
+
+    live_event = module._to_live_event("SUPER_CHAT_MESSAGE_JPN", event)
+
+    assert live_event.type == "super_chat"
+    assert live_event.uid == "42"
+    assert live_event.payload["raw_type"] == "SUPER_CHAT_MESSAGE_JPN"

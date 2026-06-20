@@ -234,6 +234,7 @@ def test_brotli_missing_uses_supplied_log_callback(monkeypatch):
     monkeypatch.setitem(sys.modules, "brotli", None)
     logs: list[tuple[str, str]] = []
 
-    assert _decompress(b"", PROTOCOL_VERSION_BROTLI, lambda msg, level: logs.append((msg, level))) == b""
+    result = _decompress(b"", PROTOCOL_VERSION_BROTLI, lambda msg, level: logs.append((msg, level)))
 
+    assert result == b""
     assert logs == [("brotli 库未安装，无法解压 brotli 数据包，跳过", "warning")]

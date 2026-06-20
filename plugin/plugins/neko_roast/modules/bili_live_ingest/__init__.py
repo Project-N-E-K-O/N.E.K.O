@@ -114,13 +114,20 @@ class BiliLiveIngestModule(BaseModule):
         if listener is not None:
             try:
                 await asyncio.wait_for(listener.stop(), timeout=2.0)
-            except BaseException:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self.ctx is not None:
+                    self.ctx.audit.record("live_listener_stop_failed", str(exc)[:200], level="warning")
         if task is not None and not task.done():
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except BaseException:
+            except asyncio.CancelledError:
+                # The task was cancelled above as part of the normal shutdown path.
                 pass
+            except Exception as exc:
+                if self.ctx is not None:
+                    self.ctx.audit.record("live_listener_task_failed", str(exc)[:200], level="warning")
         if self.ctx is not None and listener is not None:
             self.ctx.audit.record("live_listener_stopped", "danmaku listener stopped", detail={"room_id": self._room_id})
 
@@ -129,6 +136,7 @@ class BiliLiveIngestModule(BaseModule):
         "DANMU_MSG": "danmaku",
         "SEND_GIFT": "gift",
         "SUPER_CHAT_MESSAGE": "super_chat",
+        "SUPER_CHAT_MESSAGE_JPN": "super_chat",
         "GUARD_BUY": "guard",
         "INTERACT_WORD": "entry",
     }
@@ -146,8 +154,8 @@ class BiliLiveIngestModule(BaseModule):
         if event is not None and getattr(event, "room_id", 0) in (0, None):
             try:
                 event.room_id = self._room_id
-            except Exception:
-                pass
+            except Exception as exc:
+                self.ctx.audit.record("live_event_room_id_fill_failed", str(exc)[:200], level="warning")
         bus = getattr(self.ctx, "event_bus", None)
         if bus is None:
             return

@@ -354,8 +354,8 @@ class DanmakuListener:
             if self.credential:
                 try:
                     buvid3 = getattr(self.credential, "buvid3", "") or ""
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"credential cookie extraction failed: {e}", "debug")
 
             # buvid3 为空时自动获取临时值，避免 -352 风控
             if not buvid3:
@@ -365,8 +365,8 @@ class DanmakuListener:
                 if buvid3 and self.credential:
                     try:
                         self.credential.buvid3 = buvid3
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log(f"credential buvid3 writeback failed: {e}", "debug")
                 # 即使没有 credential 也记下来
                 self._buvid3_temp = buvid3
 
@@ -386,8 +386,8 @@ class DanmakuListener:
                     })
                     # 过滤空值
                     cookies = {k: v for k, v in cookies.items() if v}
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"credential cookie extraction failed: {e}", "debug")
 
             # ── WBI 签名 ────────────────────────────────────────────
             params = {"id": real_room_id, "type": 0}
@@ -494,10 +494,11 @@ class DanmakuListener:
                 if self.running and self._ws:
                     try:
                         await self._ws.send(_pack(OPERATION_HEARTBEAT, b"[object Object]"))
-                    except Exception:
+                    except Exception as e:
+                        self._log(f"heartbeat send failed: {e}", "debug")
                         break
         except asyncio.CancelledError:
-            pass
+            self._log("heartbeat loop cancelled", "debug")
 
     async def _dispatch_message(self, cmd: str, data: dict):
         """根据 cmd 分发事件"""
@@ -537,8 +538,8 @@ class DanmakuListener:
                         medal_level = int(info[3][0])
                         medal_name = str(info[3][1])
                         medal_text = f"[{medal_name}{medal_level}]"
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log(f"fans medal parse failed: {e}", "debug")
 
                 await self._emit("on_danmaku", {
                     "time": time_str,
@@ -557,8 +558,8 @@ class DanmakuListener:
                     ld = _LD.from_danmaku(data)
                     if ld.text:
                         await self._emit("on_event", "DANMU_MSG", ld)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"LiveDanmaku DANMU_MSG parse failed: {e}", "debug")
 
             elif cmd == "SEND_GIFT":
                 inner = data.get("data", {})
@@ -576,8 +577,8 @@ class DanmakuListener:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_gift(data)
                     await self._emit("on_event", "SEND_GIFT", ld)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"LiveDanmaku SEND_GIFT parse failed: {e}", "debug")
 
             elif cmd == "SUPER_CHAT_MESSAGE":
                 inner = data.get("data", {})
@@ -594,8 +595,8 @@ class DanmakuListener:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_sc(data)
                     await self._emit("on_event", "SUPER_CHAT_MESSAGE", ld)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"LiveDanmaku SUPER_CHAT_MESSAGE parse failed: {e}", "debug")
 
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
@@ -610,8 +611,8 @@ class DanmakuListener:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_interact(data)
                     await self._emit("on_event", "INTERACT_WORD", ld)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"LiveDanmaku INTERACT_WORD parse failed: {e}", "debug")
 
             elif cmd == "LIVE":
                 await self._emit("on_live")
@@ -771,8 +772,8 @@ class DanmakuListener:
                         self._log(f"📊 人气值: {viewer_count:,}")
                     # 可选：触发人气值变化回调
                     await self._emit("on_viewer_count", viewer_count)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"viewer count callback failed: {e}", "debug")
 
         elif operation == OPERATION_AUTH_REPLY:
             try:
@@ -1087,8 +1088,8 @@ class DanmakuListener:
         if self._ws:
             try:
                 await self._ws.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"WebSocket close failed: {e}", "debug")
         self._ws = None
 
     def is_running(self) -> bool:
