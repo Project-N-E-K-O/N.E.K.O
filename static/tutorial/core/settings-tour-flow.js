@@ -558,6 +558,22 @@
             const guardedNarrationPromise = resolvedNarrationPromise.finally(() => {
                 narrationDone = true;
             });
+            const narrationSettledPromise = guardedNarrationPromise.catch(() => {});
+            const ellipseYieldMs = Math.min(160, Math.max(16, Math.round(durationMs / 60)));
+            const waitForEllipseYield = async () => {
+                if (narrationDone || director.isStopping()) {
+                    return;
+                }
+                const delayPromise = typeof director.waitForSceneDelay === 'function'
+                    ? director.waitForSceneDelay(ellipseYieldMs)
+                    : new Promise((resolve) => {
+                        const timerApi = typeof window !== 'undefined' && window.setTimeout
+                            ? window
+                            : globalThis;
+                        timerApi.setTimeout(resolve, ellipseYieldMs);
+                    });
+                await Promise.race([narrationSettledPromise, delayPromise]);
+            };
             const ellipsePromise = (async () => {
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(false);
@@ -578,7 +594,9 @@
                     }
                     if (!moved) {
                         await director.waitUntilSceneResumed();
+                        continue;
                     }
+                    await waitForEllipseYield();
                 }
             })();
             await Promise.all([guardedNarrationPromise, ellipsePromise]);

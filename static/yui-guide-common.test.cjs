@@ -1360,6 +1360,14 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
         /runPanelNarrationEllipse[\s\S]*director\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
     );
     assert.match(
+        settingsTourFlowSource,
+        /const waitForEllipseYield = async \(\) => \{[\s\S]*Promise\.race\(\[narrationSettledPromise,\s*delayPromise\]\)/
+    );
+    assert.match(
+        settingsTourFlowSource,
+        /director\.cursor\.runPauseAwareEllipse[\s\S]*await waitForEllipseYield\(\);/
+    );
+    assert.match(
         source,
         /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToRect/
     );

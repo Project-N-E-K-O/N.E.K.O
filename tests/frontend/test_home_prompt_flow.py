@@ -4748,9 +4748,6 @@ def test_day2_personalization_detail_clicks_character_settings_then_ellipses_sid
                 hasPosition: () => true,
                 runPauseAwareEllipse: async (x, y, radiusX, radiusY) => {
                     calls.push({ type: 'ellipse', x, y, radiusX, radiusY });
-                    if (releaseNarration) {
-                        releaseNarration();
-                    }
                     return true;
                 },
                 cancel: () => calls.push({ type: 'cancel' }),
