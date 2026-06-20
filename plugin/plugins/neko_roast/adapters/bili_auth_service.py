@@ -146,6 +146,7 @@ class BiliAuthService:
             }
             ok = await self._credential_saver(payload)
             if not ok:
+                self.clear_qr_session()
                 raise RuntimeError("登录成功，但保存加密凭据失败。")
             await self._credential_reloader()
             self.clear_qr_session()

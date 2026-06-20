@@ -144,6 +144,59 @@ async def test_bili_login_check_none_state_stays_waiting():
 
 
 @pytest.mark.asyncio
+async def test_bili_login_check_clears_session_when_credential_save_fails():
+    class Events:
+        NONE = object()
+        SCAN = object()
+        CONF = object()
+        TIMEOUT = object()
+        DONE = object()
+
+    class Credential:
+        sessdata = "sess"
+        bili_jct = "jct"
+        dedeuserid = "42"
+        buvid3 = "buvid"
+
+    class Session:
+        async def check_state(self):
+            return Events.DONE
+
+        def get_credential(self):
+            return Credential()
+
+    cleanup_calls = 0
+
+    async def save_fails(_payload):
+        return False
+
+    async def no_credential():
+        return None
+
+    async def reload_unused():
+        raise AssertionError("credential reload should not run after save failure")
+
+    def cleanup():
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+
+    service = BiliAuthService(
+        credential_provider=no_credential,
+        credential_saver=save_fails,
+        credential_reloader=reload_unused,
+        cleanup_callback=cleanup,
+    )
+    service._login_session = Session()
+    service._require_login_sdk = lambda: (object, Events)
+
+    with pytest.raises(RuntimeError):
+        await service.login_check()
+
+    assert service._login_session is None
+    assert cleanup_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
     class Audit:
         def __init__(self):
