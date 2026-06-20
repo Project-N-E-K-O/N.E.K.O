@@ -148,7 +148,7 @@ async def test_disconnect_during_room_update_is_not_undone_by_stale_listener_sna
     await runtime.plugin.config.update_entered.wait()
     await runtime.disconnect_live_room()
     runtime.plugin.config.resume_update.set()
-    await update_task
+    _ = await update_task
 
     assert runtime.config.live_room_id == 200
     assert runtime.config.live_enabled is False

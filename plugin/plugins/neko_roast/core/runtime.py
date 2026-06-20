@@ -250,7 +250,7 @@ class RoastRuntime:
         async with self._get_config_lock():
             data = self.config.to_dict()
             data.update(clean)
-            config = self._activate_config(RoastConfig.from_mapping(data))
+            self._activate_config(RoastConfig.from_mapping(data))
             if "developer_tools_enabled" in clean:
                 await self.sync_developer_mode(announce=False)
             await self._persist_config_best_effort(clean)
