@@ -38,8 +38,8 @@ def test_from_danmaku_full_payload_parses_without_error():
                 "great stream!",
                 # 用户数组：admin=1, vip=0, svip=0
                 [123456, "CaptainUser", 1, 0, 0, 10000, 1, "#ff0000"],
-                # 粉丝牌：level, name, color, up_name, ?, anchor_roomid
-                [21, "MyMedal", 6126494, "UpName", 0, 22333],
+                # 粉丝牌：level, name, up_name, anchor_roomid, color
+                [21, "MyMedal", "UpName", 22333, 6126494],
                 [25],  # user_level
                 ["", ""],
                 0,
@@ -60,6 +60,9 @@ def test_from_danmaku_full_payload_parses_without_error():
     assert ld.medal is not None
     assert ld.medal.name == "MyMedal"
     assert ld.medal.level == 21
+    assert ld.medal.up_name == "UpName"
+    assert ld.medal.anchor_roomid == 22333
+    assert ld.medal.color == 6126494
     assert ld.fans_medal_name == "MyMedal"
     assert ld.fans_medal_level == 21
 
@@ -227,6 +230,18 @@ def test_preparing_marks_live_ended():
 
     assert listener._live_ended is True
     assert seen == ["preparing"]
+
+
+def test_enhanced_cmd_handler_table_keeps_static_handlers_callable():
+    """Class-level enhanced handlers should stay callable from _CMD_HANDLERS."""
+    handler = DanmakuListener._CMD_HANDLERS["SUPER_CHAT_MESSAGE_JPN"]
+
+    ld = handler({"cmd": "SUPER_CHAT_MESSAGE_JPN", "data": {"uid": 9, "user_info": {"uname": "JP"}, "message": "hi"}})
+
+    assert ld.msg_type == MessageType.MSG_SUPER_CHAT
+    assert ld.uid == 9
+    assert ld.nickname == "JP"
+    assert ld.text == "hi"
 
 
 def test_brotli_missing_uses_supplied_log_callback(monkeypatch):

@@ -15,7 +15,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Optional
+from typing import Optional
 
 
 # ── 消息类型枚举 ─────────────────────────────────────────────────
@@ -188,9 +188,9 @@ class LiveDanmaku:
                 medal = MedalInfo(
                     name=str(medal_info[1] or ""),
                     level=int(medal_info[0]),
-                    up_name=str(medal_info[3] or ""),
-                    color=int(medal_info[2]) if len(medal_info) > 2 else 0,
-                    anchor_roomid=int(medal_info[5]) if len(medal_info) > 5 else 0,
+                    up_name=str(medal_info[2] or "") if len(medal_info) > 2 else "",
+                    anchor_roomid=int(medal_info[3]) if len(medal_info) > 3 else 0,
+                    color=int(medal_info[4]) if len(medal_info) > 4 else 0,
                 )
             except (TypeError, ValueError):
                 medal = None

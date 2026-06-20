@@ -18,9 +18,8 @@ import json
 import struct
 import time
 import zlib
-import random
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 from urllib.parse import urlencode
 
 # ── WBI 签名常量 ──────────────────────────────────────────────────
@@ -636,16 +635,19 @@ class DanmakuListener:
 
     # ── 增强协议指令处理器 ─────────────────────────────────────
 
+    @staticmethod
     def _handle_guard_buy(data: dict):
         """GUARD_BUY — 上舰（大航海）"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_guard_buy(data)
 
+    @staticmethod
     def _handle_entry_effect(data: dict):
         """ENTRY_EFFECT — 高能用户进场特效"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_entry_effect(data)
 
+    @staticmethod
     def _handle_combo_send(data: dict):
         """COMBO_SEND — 礼物连击"""
         from .livedanmaku import LiveDanmaku as _LD, GiftInfo, MessageType, MedalInfo
@@ -670,36 +672,43 @@ class DanmakuListener:
             ) if d.get("medal_info") else None,
         )
 
+    @staticmethod
     def _handle_like(data: dict):
         """LIKE_INFO_V3_CLICK — 点赞"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_like(data)
 
+    @staticmethod
     def _handle_online_rank(data: dict):
         """ONLINE_RANK_V2 / ONLINE_RANK_TOP3 — 高能榜"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_online_rank(data)
 
+    @staticmethod
     def _handle_notice(data: dict):
         """NOTICE_MSG — 公告"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_notice(data)
 
+    @staticmethod
     def _handle_anchor_lot(data: dict):
         """ANCHOR_LOT_START / ANCHOR_LOT_END — 天选抽奖"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_anchor_lot(data)
 
+    @staticmethod
     def _handle_block(data: dict):
         """ROOM_BLOCK_MSG — 禁言"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_block(data)
 
+    @staticmethod
     def _handle_watched_change(data: dict):
         """WATCHED_CHANGE — 看过人数变化"""
         from .livedanmaku import LiveDanmaku as _LD
         return _LD.from_watched_change(data)
 
+    @staticmethod
     def _handle_room_update(data: dict):
         """ROOM_REAL_TIME_MESSAGE_UPDATE — 直播间实时数据更新"""
         from .livedanmaku import LiveDanmaku as _LD, MessageType
@@ -713,6 +722,7 @@ class DanmakuListener:
             extra_json=__import__('json').dumps(data, ensure_ascii=False),
         )
 
+    @staticmethod
     def _handle_room_change(data: dict):
         """ROOM_CHANGE — 直播间信息变更"""
         from .livedanmaku import LiveDanmaku as _LD, MessageType
@@ -732,6 +742,7 @@ class DanmakuListener:
             extra_json=__import__('json').dumps(data, ensure_ascii=False),
         )
 
+    @staticmethod
     def _handle_sc_jpn(data: dict):
         """SUPER_CHAT_MESSAGE_JPN — 日文 SC（复用 SC handler）"""
         from .livedanmaku import LiveDanmaku as _LD
