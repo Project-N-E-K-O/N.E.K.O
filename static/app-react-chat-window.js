@@ -867,6 +867,7 @@
         if (element) {
             element.hidden = true;
             element.removeAttribute('data-active');
+            element.removeAttribute('data-neko-cat1-wide-art');
             element.style.removeProperty('left');
             element.style.removeProperty('top');
             element.style.removeProperty('width');
@@ -931,6 +932,11 @@
         if (image) {
             var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            if (src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif') !== -1) {
+                element.setAttribute('data-neko-cat1-wide-art', 'true');
+            } else {
+                element.removeAttribute('data-neko-cat1-wide-art');
+            }
             image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
         }
         element.style.left = rect.left + 'px';

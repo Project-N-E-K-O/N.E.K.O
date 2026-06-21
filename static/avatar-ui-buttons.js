@@ -64,6 +64,7 @@ function _removeFloatingButtonsElement(el) {
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1PlayAction(returnButton, { restoreArt: false });
             _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1Journey(returnButton);
         }
@@ -246,6 +247,7 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50;
+const _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.2;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
@@ -300,6 +302,9 @@ const _NEKO_IDLE_CAT1_EAT_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat1-ea
 const _NEKO_IDLE_CAT1_EAT_SOUND_URL = '/static/assets/neko-idle/cat1-voice-eat.mp3';
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.16;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
+const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif';
+const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3';
+const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.14;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540;
@@ -782,9 +787,14 @@ function _playNekoIdleCat1EatAction(button) {
     if (!art) return false;
 
     _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const state = _getNekoIdleCat1EatActionState(button);
     const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
-    const shouldResumeJourney = !!(journey && !journey.paused);
+    const shouldResumeJourney = !!(journey &&
+        !journey.paused &&
+        journey.profile &&
+        (journey.substate === journey.profile.walkingSubstate ||
+            journey.substate === journey.profile.finishingSubstate));
     if (journey) {
         _pauseNekoIdleCat1Journey(button);
     }
@@ -858,6 +868,191 @@ function _playNekoIdleCat1EatAction(button) {
         audio.addEventListener('error', markAudioDone, { once: true });
         scheduleAudioFallback();
     }
+    finishIfReady();
+    return true;
+}
+
+function _getNekoIdleCat1PlayActionState(button) {
+    if (!button) return null;
+    if (!button.__nekoIdleCat1PlayActionState) {
+        button.__nekoIdleCat1PlayActionState = {
+            active: false,
+            token: 0,
+            timer: 0,
+            audioTimer: 0,
+            audio: null,
+            fadeFrame: 0,
+            fadeToken: 0,
+            resumeJourney: false
+        };
+    }
+    return button.__nekoIdleCat1PlayActionState;
+}
+
+function _isNekoIdleCat1PlayActionActive(button) {
+    const state = button && button.__nekoIdleCat1PlayActionState;
+    return !!(state && state.active);
+}
+
+function _isAnyNekoIdleCat1PlayActionActive() {
+    let active = false;
+    _forEachNekoIdleReturnButton((button) => {
+        if (active) return;
+        active = _isNekoIdleCat1PlayActionActive(button);
+    });
+    return active;
+}
+
+function _isNekoIdleCat1IndependentActionActive(button) {
+    return _isNekoIdleCat1EatActionActive(button) || _isNekoIdleCat1PlayActionActive(button);
+}
+
+function _isAnyNekoIdleCat1IndependentActionActive() {
+    return _isAnyNekoIdleCat1EatActionActive() || _isAnyNekoIdleCat1PlayActionActive();
+}
+
+function _clearNekoIdleCat1PlayActionTimers(state) {
+    if (!state) return;
+    if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = 0;
+    }
+    if (state.audioTimer) {
+        clearTimeout(state.audioTimer);
+        state.audioTimer = 0;
+    }
+}
+
+function _setNekoIdleCat1PlayActionClass(button, active) {
+    if (!button) return;
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    button.classList.toggle('is-cat1-playing', !!active);
+    if (container) {
+        container.classList.toggle('is-cat1-playing', !!active);
+    }
+}
+
+function _restoreNekoIdleCat1PlayActionArt(button, state, options = {}) {
+    if (!button || options.restoreArt === false) return;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier !== _NEKO_IDLE_TIER_CAT1 || _isNekoIdleReturnDragActionActive(button)) return;
+
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        _setNekoIdleReturnArtSource(
+            art,
+            _getNekoIdleReturnCurrentArtUrl(button, tier),
+            tier,
+            { animate: options.animate !== false }
+        );
+    }
+
+    if (state && state.resumeJourney) {
+        _resumeNekoIdleCat1Journey(button);
+    } else {
+        _scheduleNekoIdleCat1JourneySync(button);
+    }
+
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    _syncNekoIdleCat1CompactMirrorReaction(
+        button,
+        container,
+        _getNekoIdleReturnCurrentArtUrl(button, tier),
+        options.reason || 'cat1-play-action-finished'
+    );
+}
+
+function _cancelNekoIdleCat1PlayAction(button, options = {}) {
+    const state = button && button.__nekoIdleCat1PlayActionState;
+    if (!state) return;
+    const wasActive = !!state.active;
+    state.token += 1;
+    state.active = false;
+    _clearNekoIdleCat1PlayActionTimers(state);
+    _stopNekoIdleSoundAudio(state);
+    _setNekoIdleCat1PlayActionClass(button, false);
+    _restoreNekoIdleCat1PlayActionArt(button, state, options);
+    state.resumeJourney = false;
+    if (wasActive && options.restoreArt !== false) {
+        _syncNekoIdleCat1AmbientSoundForTier(button.getAttribute('data-neko-idle-tier'));
+    }
+}
+
+function _finishNekoIdleCat1PlayAction(button, token) {
+    const state = button && button.__nekoIdleCat1PlayActionState;
+    if (!state || !state.active || state.token !== token) return;
+    _cancelNekoIdleCat1PlayAction(button, {
+        animate: false,
+        reason: 'cat1-play-action-finished'
+    });
+}
+
+function _playNekoIdleCat1PlayAction(button) {
+    if (!button) return false;
+    if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
+    if (_isNekoIdleReturnDragActionActive(button)) return false;
+    if (_isNekoIdleCat1PlayActionActive(button)) return false;
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    if (!container || container.style.display === 'none') return false;
+    const art = button.querySelector('.neko-idle-return-art');
+    if (!art) return false;
+
+    _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+    const state = _getNekoIdleCat1PlayActionState(button);
+    const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+    const shouldResumeJourney = !!(journey && !journey.paused);
+    if (journey) {
+        _pauseNekoIdleCat1Journey(button);
+    }
+
+    _stopNekoIdleCat1AmbientSoundAudio();
+    _fadeOutNekoIdleCat1DragSound();
+    _clearNekoIdleHoverPlayback(art);
+    _cleanupNekoIdleArtTransition(art);
+    _clearNekoIdleGifPlaybackSource(art);
+
+    state.active = true;
+    state.token += 1;
+    state.resumeJourney = shouldResumeJourney;
+    const token = state.token;
+    const startedAt = Date.now();
+    let gifDone = false;
+
+    _setNekoIdleCat1PlayActionClass(button, true);
+    _setNekoIdleReturnArtSource(
+        art,
+        _NEKO_IDLE_CAT1_PLAY_ASSET_URL,
+        _NEKO_IDLE_TIER_CAT1,
+        { animate: false }
+    );
+    _syncNekoIdleCat1CompactMirrorReaction(
+        button,
+        container,
+        _NEKO_IDLE_CAT1_PLAY_ASSET_URL,
+        'cat1-play-action'
+    );
+
+    const finishIfReady = () => {
+        const latestState = button.__nekoIdleCat1PlayActionState;
+        if (!latestState || !latestState.active || latestState.token !== token) return;
+        if (!gifDone) return;
+        _finishNekoIdleCat1PlayAction(button, token);
+    };
+    const markGifDone = () => {
+        gifDone = true;
+        finishIfReady();
+    };
+
+    _getNekoIdleGifDurationMs(_NEKO_IDLE_CAT1_PLAY_ASSET_URL).then((durationMs) => {
+        const latestState = button.__nekoIdleCat1PlayActionState;
+        if (!latestState || !latestState.active || latestState.token !== token) return;
+        const elapsedMs = Math.max(0, Date.now() - startedAt);
+        const delayMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);
+        latestState.timer = setTimeout(markGifDone, delayMs);
+    });
+
+    _playNekoIdleSound(state, _NEKO_IDLE_CAT1_PLAY_SOUND_URL, _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME);
     finishIfReady();
     return true;
 }
@@ -1153,7 +1348,7 @@ function _pickNekoIdleCat1AmbientSoundUrl() {
 function _playNekoIdleCat1AmbientSound(token) {
     if (!_nekoIdleCat1AmbientSoundState.active ||
         token !== _nekoIdleCat1AmbientSoundState.token ||
-        _isAnyNekoIdleCat1EatActionActive() ||
+        _isAnyNekoIdleCat1IndependentActionActive() ||
         _isAnyNekoIdleReturnDragActionActive()) {
         return;
     }
@@ -1401,7 +1596,6 @@ let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;
 let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';
 let _nekoIdleCompactSurfaceDragging = false;
 let _nekoIdleCompactSurfaceSettleTimer = 0;
-
 function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {
     const timestamp = Number(detail && detail.timestamp);
     if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
@@ -1724,6 +1918,9 @@ function _applyNekoIdleGifPlaybackRate(art, baseSrc, rate) {
 
 function _getNekoIdleReturnCurrentArtUrl(button, tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier || (button && button.getAttribute('data-neko-idle-tier')));
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PlayActionActive(button)) {
+        return _NEKO_IDLE_CAT1_PLAY_ASSET_URL;
+    }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EatActionActive(button)) {
         return _NEKO_IDLE_CAT1_EAT_ASSET_URL;
     }
@@ -2209,6 +2406,7 @@ function _prepareNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
     _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
     if (currentState &&
         currentState.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
@@ -2229,6 +2427,7 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
     _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (tier === _NEKO_IDLE_TIER_NONE) return;
     const state = _getNekoIdleReturnDragActionState(button);
@@ -4010,6 +4209,7 @@ function _setNekoIdleCat1Substate(button, substate, options = {}) {
 function _finishNekoIdleCat1Walk(button) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
+    const targetKind = state.targetKind || (state.target && state.target.kind) || '';
     _cancelNekoIdleCat1Frame(state);
     _clearNekoIdleCat1WalkApproachSide(_getNekoIdleReturnContainerFromButton(button));
     _dispatchNekoIdleCat1MotionInputRegionState(state, false, 'cat1-walk-finish');
@@ -4017,6 +4217,17 @@ function _finishNekoIdleCat1Walk(button) {
     state.lastStepAt = 0;
     state.actionSettled = false;
     _resetNekoIdleCat1WalkSpeed(state);
+    if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE &&
+        Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY) {
+        state.substate = state.profile.idleSubstate;
+        state.targetKind = targetKind;
+        state.actionSettled = true;
+        _setNekoIdleCat1Classes(button, state);
+        if (_playNekoIdleCat1PlayAction(button)) {
+            return;
+        }
+        state.actionSettled = false;
+    }
     _setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });
 }
 
@@ -4281,7 +4492,7 @@ function _startNekoIdleCat1Walk(button, target) {
         return;
     }
     if (_isNekoIdleReturnDragActionActive(button)) return;
-    if (_isNekoIdleCat1EatActionActive(button)) return;
+    if (_isNekoIdleCat1IndependentActionActive(button)) return;
     const walkContainer = _getNekoIdleReturnContainerFromButton(button);
     const walkDragging = walkContainer && walkContainer.getAttribute('data-dragging');
     if (walkDragging && walkDragging !== 'false') return;
@@ -4312,7 +4523,7 @@ function _startNekoIdleCat1Walk(button, target) {
 function _scheduleNekoIdleCat1WalkStart(button, target) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.paused) return;
-    if (_isNekoIdleCat1EatActionActive(button)) return;
+    if (_isNekoIdleCat1IndependentActionActive(button)) return;
     if (_isNekoIdleCat1EdgePeekActive(button)) {
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return;
@@ -4369,7 +4580,7 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
 function _canScheduleNekoIdleCat1PairMove(button, state) {
     if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return false;
     if (_isNekoIdleCat1EdgePeekActive(button)) return false;
-    if (_isNekoIdleCat1EatActionActive(button)) return false;
+    if (_isNekoIdleCat1IndependentActionActive(button)) return false;
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     if (state.substate !== profile.idleSubstate || !state.actionSettled) return false;
     if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return false;
@@ -4571,6 +4782,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
     const initialDragging = initialContainer && initialContainer.getAttribute('data-dragging');
     if (initialDragging && initialDragging !== 'false') return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier || button.getAttribute('data-neko-idle-tier'));
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1IndependentActionActive(button)) return;
     const profile = _getNekoIdleReturnSubactionProfile(normalizedTier);
     const state = _getNekoIdleReturnSubactionState(button, profile);
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -4815,7 +5027,7 @@ function _playNekoIdleHoverArt(art, tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const button = _getNekoIdleReturnButtonFromArt(art);
     if (_isNekoIdleReturnDragActionActive(button)) return;
-    if (_isNekoIdleCat1EatActionActive(button)) return;
+    if (_isNekoIdleCat1IndependentActionActive(button)) return;
     const profile = _getNekoIdleReturnSubactionProfile(normalizedTier);
     const subactionState = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (subactionState && subactionState.profile === profile) {
@@ -4859,7 +5071,7 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
 
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     if (_isNekoIdleReturnDragActionActive(_getNekoIdleReturnButtonFromArt(art))) return;
-    if (_isNekoIdleCat1EatActionActive(_getNekoIdleReturnButtonFromArt(art))) return;
+    if (_isNekoIdleCat1IndependentActionActive(_getNekoIdleReturnButtonFromArt(art))) return;
     const token = art.__nekoIdleHoverToken || 0;
     const startedAt = art.__nekoIdleHoverStartedAt || 0;
     const hoverSrc = art.__nekoIdleHoverSrc || _getNekoIdleReturnClickAssetUrl(normalizedTier);
@@ -4907,6 +5119,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     _syncNekoIdleCat1AmbientSoundForTier(normalizedTier);
     if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
         _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
         _cancelNekoIdleCat1Journey(button);
     }
     if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
@@ -4926,9 +5139,17 @@ function _applyNekoIdleReturnPresentation(button, tier) {
 
     const art = button.querySelector('.neko-idle-return-art');
     const eatActionActive = _isNekoIdleCat1EatActionActive(button);
+    const playActionActive = _isNekoIdleCat1PlayActionActive(button);
     if (art) {
         if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_NONE) {
             _setNekoIdleReturnDragActionArt(button, normalizedTier);
+        } else if (playActionActive && normalizedTier === _NEKO_IDLE_TIER_CAT1) {
+            _setNekoIdleReturnArtSource(
+                art,
+                _NEKO_IDLE_CAT1_PLAY_ASSET_URL,
+                normalizedTier,
+                { animate: false }
+            );
         } else if (eatActionActive && normalizedTier === _NEKO_IDLE_TIER_CAT1) {
             _setNekoIdleReturnArtSource(
                 art,
@@ -4943,7 +5164,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
             _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(normalizedTier), normalizedTier);
         }
     }
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && !dragActive && !eatActionActive) {
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && !dragActive && !eatActionActive && !playActionActive) {
         _scheduleNekoIdleCat1JourneySync(button);
     }
 }
@@ -5627,6 +5848,7 @@ const AvatarButtonMixin = {
                 }
                 e.stopPropagation();
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
                 _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1Journey(returnBtn);
                 const rect = returnButtonContainer.getBoundingClientRect();

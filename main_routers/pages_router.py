@@ -75,6 +75,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-eat.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-play-1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2-click.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.gif",

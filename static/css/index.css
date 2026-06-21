@@ -563,6 +563,13 @@ body.neko-game-active [id$="-lock-icon"] {
     object-position: center;
 }
 
+.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art {
+    width: 175%;
+    min-width: 175%;
+    max-width: none;
+    height: 100%;
+}
+
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
     position: relative;
@@ -585,6 +592,13 @@ body.neko-game-active [id$="-lock-icon"] {
     will-change: opacity, transform, filter;
     transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);
     transform-origin: center center;
+}
+
+.neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art {
+    width: 175% !important;
+    min-width: 175%;
+    max-width: none;
+    height: 100% !important;
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,

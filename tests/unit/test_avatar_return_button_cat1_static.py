@@ -5,8 +5,11 @@ from main_routers import pages_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
+CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -29,7 +32,69 @@ def test_cat1_return_button_assets_are_version_tracked():
     assert AVATAR_UI_BUTTONS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert INDEX_CSS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH.is_file()
+    assert CAT1_PLAY_ASSET_PATH.is_file()
+
+
+def test_cat1_play_action_module_is_independent_from_eat_action():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    css = INDEX_CSS_PATH.read_text(encoding="utf-8")
+    chat_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source
+    assert "function _playNekoIdleCat1PlayAction(button)" in source
+
+    play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
+        "function _clearNekoIdleThoughtBubble",
+        1,
+    )[0]
+    assert "_cancelNekoIdleCat1EatAction(button, { restoreArt: false });" in play_block
+    assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL" in play_block
+    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL" in play_block
+    assert "'cat1-play-action'" in play_block
+    assert "let audioDone" not in play_block
+    assert "markAudioDone" not in play_block
+    assert "if (!gifDone) return;" in play_block
+    assert "_playNekoIdleSound(state, _NEKO_IDLE_CAT1_PLAY_SOUND_URL, _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME);" in play_block
+    assert "idle_cat1_play_yarn_visibility" not in source
+    assert "neko:idle-cat1-play-yarn-visibility" not in chat_source
+
+    assert ".neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art" in css
+    cat1_play_style_block = css.split(
+        ".neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art",
+        1,
+    )[1].split("}", 1)[0]
+    assert "width: 175% !important" in cat1_play_style_block
+    assert "min-width: 175%" in cat1_play_style_block
+    assert "height: 100% !important" in cat1_play_style_block
+    assert "max-width: none" in cat1_play_style_block
+
+    assert 'data-neko-cat1-wide-art' in chat_source
+    assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
+    assert '.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art' in css
+    assert "body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art" in app_ui_source
+    assert "width:175%!important" in app_ui_source
+
+
+def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.2" in source
+    finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
+        "function _finishNekoIdleCat1CompactTopEdgeWalk",
+        1,
+    )[0]
+    assert "targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in finish_block
+    assert "Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY" in finish_block
+    assert "_playNekoIdleCat1PlayAction(button)" in finish_block
+    assert "return;" in finish_block
+    assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
+    assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
+        "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate"
+    )
 
 
 def test_cat1_minimized_side_target_separates_look_and_move_direction():
