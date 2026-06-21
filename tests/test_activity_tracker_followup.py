@@ -960,6 +960,52 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
+def test_narration_suppressed_check_defaults_and_injection():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    tracker = UserActivityTracker('test_lanlan')
+
+    # No predicate injected → never suppressed (old behavior preserved).
+    assert tracker._is_narration_suppressed() is False
+
+    # Predicate returning True → suppressed.
+    tracker.set_narration_suppressed_check(lambda: True)
+    assert tracker._is_narration_suppressed() is True
+
+    # Predicate returning False → not suppressed.
+    tracker.set_narration_suppressed_check(lambda: False)
+    assert tracker._is_narration_suppressed() is False
+
+    # Raising predicate → fail-open (don't suppress, don't crash the heartbeat).
+    def _boom():
+        raise RuntimeError('boom')
+
+    tracker.set_narration_suppressed_check(_boom)
+    assert tracker._is_narration_suppressed() is False
+
+    # Cleared → back to never suppressed.
+    tracker.set_narration_suppressed_check(None)
+    assert tracker._is_narration_suppressed() is False
+
+
+def test_activity_guess_loop_skips_llm_when_narration_suppressed():
+    """The narration-suppressed gate sits with the other no-consumer skips:
+    after the proactive-disabled gate, before the away bail, and uses the
+    fail-open helper rather than calling the predicate inline."""
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    assert "if self._is_narration_suppressed():" in source
+    assert (
+        source.index("if not _proactive_chat_enabled():")
+        < source.index("if self._is_narration_suppressed():")
+    )
+    assert (
+        source.index("if self._is_narration_suppressed():")
+        < source.index("if rule_snap.state == 'away':")
+    )
+
+
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():
     from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
 

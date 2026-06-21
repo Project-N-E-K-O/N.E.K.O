@@ -1092,6 +1092,12 @@ class LLMSessionManager:
                 )
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
 
+        # activity_guess narration 的「下游消费方」门控：会话 goodbye_silent（猫娘挂机
+        # 静默）时，proactive Phase 2 一进门就 bail，narration 没人读。把 is_goodbye_silent
+        # 注入 tracker，让 20s 心跳在静默期跳过昂贵的 emotion-tier LLM 外呼（规则心跳照跑）。
+        # tracker 跨 session 长存、心跳不随 End Session 取消，否则挂机后会一直空烧 LLM。
+        self._activity_tracker.set_narration_suppressed_check(self.is_goodbye_silent)
+
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
         # 文本判断是否问问号 → 触发 unfinished_thread 机制（5 分钟内允许至多 2
