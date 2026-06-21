@@ -3638,6 +3638,22 @@
             await window.stopScreenSharing();
         }
 
+        // 「语音时自动共享屏幕」开关：默认关（隐私安全）——只想开麦的用户不会被静默录屏
+        // （Electron 下若存过采集源，startScreenSharing 会无提示直接续采）。想要旧的
+        // 「语音=顺带共享屏幕」统一体验的人可显式打开；localStorage 持久化，可被设置项同步覆盖。
+        function voiceAutoScreenEnabled() {
+            try { return localStorage.getItem('neko_voice_auto_screen') === '1'; }
+            catch (_) { return false; }
+        }
+        try {
+            window.nekoVoiceAutoScreen = {
+                get: voiceAutoScreenEnabled,
+                set: function (on) {
+                    try { localStorage.setItem('neko_voice_auto_screen', on ? '1' : '0'); } catch (_) {}
+                },
+            };
+        } catch (_) {}
+
         function waitForVoiceRecordingReady(timeoutMs) {
             const startedAt = Date.now();
             return new Promise((resolve) => {
@@ -3660,15 +3676,17 @@
                 } else if (!S.isRecording && typeof window.startMicCapture === 'function') {
                     await window.startMicCapture();
                 }
-                if (S.isRecording) {
+                // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
+                if (S.isRecording && voiceAutoScreenEnabled()) {
                     await startScreenSharingFromVoiceButton();
                 }
             } else {
                 if (!S.isRecording) {
-                    await stopScreenSharingFromVoiceButton();
+                    // 默认关时不替用户停掉他自己用屏幕按钮开的共享（麦/屏互不联动）。
+                    if (voiceAutoScreenEnabled()) await stopScreenSharingFromVoiceButton();
                     return;
                 }
-                await stopScreenSharingFromVoiceButton();
+                if (voiceAutoScreenEnabled()) await stopScreenSharingFromVoiceButton();
                 if (typeof window.stopMicCapture === 'function') {
                     await window.stopMicCapture();
                 }
