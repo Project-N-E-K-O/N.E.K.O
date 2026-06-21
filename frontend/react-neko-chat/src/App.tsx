@@ -1736,29 +1736,40 @@ function CompactChatApp({
   useEffect(() => {
     if (chatSurfaceMode === 'minimized') return undefined;
     const win = window as unknown as { isInTutorial?: boolean };
-    let exposureTimer = 0;
+    let exposureTimer: number | null = null;
     let fallbackTimer = 0;
-    const applyExperimentDefault = () => {
-      if (compactHistoryExperimentAppliedRef.current) return;
-      const variant = readCompactHistoryExperimentVariant();
-      compactHistoryExperimentAppliedRef.current = true;
-      if (variant === null) return; // 用户已有显式偏好 / 不在实验
-      if (variant === 'open') {
-        setCompactExportHistoryMounted(true);
-        setCompactExportHistoryOpen(true);
-      }
+    // 曝光重试独立于「套用」guard：已套用但本会话还没成功上报的，重新可见（minimized→compact）时要能继续
+    // 补报——否则首报失败后一旦最小化打断，曝光就永久漏掉、A/B 指标被低估。sessionStorage 保证只投一次。
+    const startExposureReporting = () => {
+      if (exposureTimer !== null) return;
       if (reportCompactHistoryExperimentExposure()) return;
       let tries = 0;
       exposureTimer = window.setInterval(() => {
-        if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) window.clearInterval(exposureTimer);
+        if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) {
+          if (exposureTimer !== null) { window.clearInterval(exposureTimer); exposureTimer = null; }
+        }
       }, 1000);
+    };
+    const applyExperimentDefault = () => {
+      if (!compactHistoryExperimentAppliedRef.current) {
+        const variant = readCompactHistoryExperimentVariant();
+        compactHistoryExperimentAppliedRef.current = true;
+        if (variant === 'open') {
+          setCompactExportHistoryMounted(true);
+          setCompactExportHistoryOpen(true);
+        }
+      }
+      startExposureReporting();
     };
     const onTutorialEnd = () => applyExperimentDefault();
     window.addEventListener('neko:tutorial-completed', onTutorialEnd);
     window.addEventListener('neko:tutorial-ended-without-completion', onTutorialEnd);
-    // 本次不跑教程的老用户：教程启动会置 window.isInTutorial=true / body 加 guide-active 类。给它一点时间，
-    // 到时仍非教程态就直接套用；教程态则等上面的结束事件。
-    if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) {
+    if (compactHistoryExperimentAppliedRef.current) {
+      // 上次可见时已套用（过了教程/兜底），但曝光可能还没成功 → 重新可见时继续补报。
+      startExposureReporting();
+    } else if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) {
+      // 本次不跑教程的老用户：教程启动会置 window.isInTutorial=true / body 加 guide-active 类。给它一点
+      // 时间，到时仍非教程态就直接套用；教程态则等上面的结束事件。
       fallbackTimer = window.setTimeout(() => {
         if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) applyExperimentDefault();
       }, COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS);
@@ -1767,7 +1778,7 @@ function CompactChatApp({
       window.removeEventListener('neko:tutorial-completed', onTutorialEnd);
       window.removeEventListener('neko:tutorial-ended-without-completion', onTutorialEnd);
       if (fallbackTimer) window.clearTimeout(fallbackTimer);
-      if (exposureTimer) window.clearInterval(exposureTimer);
+      if (exposureTimer !== null) window.clearInterval(exposureTimer);
     };
   }, [chatSurfaceMode]);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
@@ -2444,7 +2455,7 @@ function CompactChatApp({
       const id = typeof m?.id === 'string' ? m.id : '';
       const at = typeof m?.createdAt === 'number' ? m.createdAt : null;
       const sameTurnMusic = id.startsWith('music-') && memeAt !== null && at !== null
-        && at - memeAt <= COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS;
+        && at - memeAt >= 0 && at - memeAt <= COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS;
       if (sameTurnMusic) continue;
       return null;
     }

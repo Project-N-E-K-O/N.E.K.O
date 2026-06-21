@@ -561,7 +561,7 @@ describe('App', () => {
 
   it('keeps compact history collapsed by default and only applies the open variant after the tutorial ends', () => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.setItem('neko.experiment.compactHistoryDefault', 'open');
+    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'open');
     const message = parseChatMessage({
       id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
       blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
