@@ -1,13 +1,16 @@
-"""主动搭话"素材级去重"契约（ANTI_REPEAT_EXEMPT_SOURCE_TAGS 用）。
+"""Material-level dedup contract for proactive chat (ANTI_REPEAT_EXEMPT_SOURCE_TAGS).
 
-素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
-MUSIC 看曲目（title|artist），MEME 看搜索关键词（不是图片）。覆盖：
+Material-push channels (MUSIC/MEME) are exempt from caption-level repeat checks and
+deduped on the material itself: MUSIC keys on the track, MEME on the search keyword
+(not the image). Coverage:
 
-1. _proactive_material_key：MUSIC 取曲目、MEME 取搜索关键词、非素材 channel /
-   空素材 → 空 key；归一化（大小写 + 折叠空白）。
-2. _is_recent_proactive_material：同素材近期算雷同、异素材不算、空 key 永不算。
-3. 近期窗口按 _RECENT_CHAT_MAX_AGE_SECONDS 过期。
-4. _record_proactive_material：空 key 不记录；按 source_tag 分桶互不串。
+1. _proactive_material_key: MUSIC -> track, MEME -> search keyword, non-material
+   channel / empty material -> empty key; normalized (lowercase + collapsed space).
+2. _is_recent_proactive_material: same material recently = repeat, different = not,
+   empty key = never a repeat.
+3. Recent window expires after _RECENT_CHAT_MAX_AGE_SECONDS.
+4. _record_proactive_material: empty key not recorded; per-source_tag buckets stay
+   separate.
 """
 import os
 import sys
@@ -33,7 +36,7 @@ def test_material_key_music_is_title_artist():
 def test_material_key_meme_is_search_keyword_not_image():
     # MEME 取搜索关键词，与 url/title 无关
     key = sr._proactive_material_key(
-        "MEME", None, {"keyword": "Disaster Girl", "url": "http://x/y.png"}
+        "MEME", None, {"keyword": "Disaster Girl", "url": "https://x/y.png"}
     )
     assert key == "disaster girl"
 
