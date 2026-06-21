@@ -2778,6 +2778,20 @@
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
+                    // 跨模式 fail 守卫（与上方 session_started 守卫对偶）：用户的启动正在
+                    // await 时，并发的后台会话（如 proactive 自起的 text）若启动失败会发
+                    // session_failed(text)。它不该 reject 用户那次 audio 启动——后端跨模式
+                    // 撞车会等 in-flight 落定后改起 audio（见 core.py start_session），用户的
+                    // 真正 ack 随后到达。模式不一致就忽略这条 fail。session_failed 一定带
+                    // input_mode（见后端 send_session_failed），故 mismatch 判定可靠。
+                    if (S._pendingSessionStartMode
+                            && S.sessionStartedRejecter
+                            && response.input_mode
+                            && response.input_mode !== S._pendingSessionStartMode) {
+                        console.log('[App] ignore cross-mode session_failed', response.input_mode,
+                            'while pending', S._pendingSessionStartMode);
+                        return;
+                    }
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;

@@ -103,6 +103,7 @@ def _make_starting_manager(*, starting_input_mode):
     mgr._starting_input_mode = starting_input_mode
     mgr.session = object()
     mgr.is_active = True
+    mgr._audio_stream_epoch = 0
     return mgr
 
 
@@ -120,7 +121,7 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
 
     ws = object()
     start_task = asyncio.create_task(
-        LLMSessionManager.start_session(mgr, ws, False, "audio")
+        LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
     )
     # 让它先进入跨模式等待循环，再放行 in-flight 落定。
     await asyncio.sleep(0.1)
@@ -128,7 +129,10 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
     mgr._starting_session_count = 0
     await start_task
 
-    restart_mock.assert_awaited_once_with(ws, False, "audio")
+    # 重入禁用二次跨模式重启（深度封顶 1）。
+    restart_mock.assert_awaited_once_with(
+        ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
+    )
 
 
 @pytest.mark.unit
@@ -141,7 +145,47 @@ async def test_cross_mode_start_gives_up_when_inflight_never_settles(monkeypatch
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    await LLMSessionManager.start_session(mgr, object(), False, "audio")
+    await LLMSessionManager.start_session(mgr, object(), False, "audio", user_initiated=True)
 
     restart_mock.assert_not_awaited()
     assert mgr._starting_session_count == 1  # in-flight guard 原样保留
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cross_mode_background_start_does_not_restart():
+    """后台 proactive/greeting 的跨模式 auto-start（user_initiated=False）撞车时
+    维持原静默 return，绝不等待+重启——否则后台 text 启动会反过来顶掉用户
+    正在飞的语音会话。"""
+    mgr = _make_starting_manager(starting_input_mode="audio")
+    restart_mock = AsyncMock()
+    mgr.start_session = restart_mock
+
+    # 后台 text 撞上在飞的 audio：默认 user_initiated=False。
+    await LLMSessionManager.start_session(mgr, object(), False, "text")
+
+    restart_mock.assert_not_awaited()
+    assert mgr._starting_session_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():
+    """等待期间发生 end_session（前端 15s 超时会发，_audio_stream_epoch 递增、
+    且把 count 清 0）时，不重启——区分真落定与"用户已放弃 + 被清零"，避免起
+    一个 UI 已 reject 的孤儿会话。"""
+    mgr = _make_starting_manager(starting_input_mode="text")
+    restart_mock = AsyncMock()
+    mgr.start_session = restart_mock
+
+    ws = object()
+    start_task = asyncio.create_task(
+        LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
+    )
+    await asyncio.sleep(0.1)
+    # 模拟 end_session：清零 count 的同时 bump epoch（与真实 end_session 一致）。
+    mgr._audio_stream_epoch += 1
+    mgr._starting_session_count = 0
+    await start_task
+
+    restart_mock.assert_not_awaited()

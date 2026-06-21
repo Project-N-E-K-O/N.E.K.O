@@ -5399,7 +5399,14 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
-    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
+    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio',
+                            *, user_initiated=False, _allow_cross_mode_restart=True):
+        # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
+        # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
+        # 落定后改起目标模式；后台 proactive / greeting 的 auto-start 跨模式撞车
+        # 仍走静默 return（保持原行为，避免后台 text 启动反过来顶掉用户的语音会话）。
+        # _allow_cross_mode_restart：跨模式重启重入时置 False，把递归深度封到 1，
+        # 二次并发撞车回落静默 return 而非无界递归。
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
         # 前端 i18n 真值（例如 Steam=zh / 系统=en 时正确的 'zh-CN'）一律打回错的
@@ -5460,28 +5467,41 @@ class LLMSessionManager:
                 # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
                 if self._starting_session_count == 0 and self.session and self.is_active:
                     await self.send_session_started(input_mode)
-            else:
-                # 跨模式撞车：典型是 proactive（主动搭话 / greeting）自起的 text 会话
-                # 还在飞，而用户此刻显式点了"开始语音对话"（audio）。早期实现静默
-                # return，但用户的 audio 请求是显式意图：静默丢弃会让前端干等 15s
-                # ack 超时，且超时时发的 end_session 还会把正在建立的 proactive text
-                # 会话一并撕掉（proactive 语音也播不出）。改为：等 in-flight 那次启动
-                # 落定（_starting_session_count 归 0）后，递归重入起一个本模式的新
-                # 会话——它会按上面 5588 行的旧 session 清理逻辑替换掉刚建好的旧模式
-                # 会话。不复用 in-flight 的 ack（跨模式复用会按错模式切 UI，见上）。
+            elif user_initiated and _allow_cross_mode_restart:
+                # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
+                # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
+                # （audio）。早期实现静默 return，但用户的 audio 请求是显式意图：
+                # 静默丢弃会让前端干等 15s ack 超时，且超时时发的 end_session 还会把
+                # 正在建立的 proactive text 会话一并撕掉（proactive 语音也播不出）。
+                # 改为：等 in-flight 那次启动落定（_starting_session_count 归 0）后，
+                # 递归重入起一个本模式的新会话——它会按 5588 行的旧 session 清理逻辑
+                # 替换掉刚建好的旧模式会话。不复用 in-flight 的 ack（跨模式复用会按
+                # 错模式切 UI，见上）。
                 logger.warning("⚠️ Session正在启动中（跨模式），等 in-flight 落定后改起 %s 会话", input_mode)
+                # 快照拆除计数：仅在 end_session（前端 15s 超时会发 end_session）里
+                # 递增。in-flight 真正落定时 count 由其自身 finally 归 0、epoch 不变；
+                # 而前端超时的 end_session 也会把 count 清 0 但 epoch 会变。只在
+                # 「count 归 0 且 epoch 未变」时重启——区分真落定与"用户已放弃 +
+                # 被 end_session 清零"，避免在 UI 已 reject 后凭空起一个孤儿会话
+                # （Codex P2）。epoch 因别的清理误增时回落"不重启"（安全侧）。
+                _teardown_epoch = self._audio_stream_epoch
                 _waited = 0.0
                 while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
                     await asyncio.sleep(0.05)
                     _waited += 0.05
-                if self._starting_session_count == 0:
-                    # in-flight 已落定，count 归 0：递归重入会穿过本 guard 走正常启动
-                    # 路径并自行发 session_started。guard 检查（5431）前无 await，重入
-                    # 是原子的；若期间又有别的启动抢入，递归调用会再次落到本等待分支，
-                    # 由 FRONTEND_START_SESSION_TIMEOUT_SECONDS 兜底防失控递归。
-                    await self.start_session(websocket, new, input_mode)
-                else:
+                if self._starting_session_count != 0:
                     logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs），放弃改起 %s", _waited, input_mode)
+                elif self._audio_stream_epoch != _teardown_epoch:
+                    logger.warning("⚠️ 跨模式等待期间发生 end_session（用户已放弃 / in-flight 被拆），不再改起 %s", input_mode)
+                else:
+                    # in-flight 干净落定：递归重入起目标模式。重入禁用跨模式重启
+                    # （_allow_cross_mode_restart=False），把递归深度封到 1——若重入
+                    # 时又撞上新的并发启动，回落静默 return 而非无界递归（greptile P2）。
+                    # guard 检查（5431）前无 await，count==0 的判定到重入是原子的。
+                    await self.start_session(websocket, new, input_mode,
+                                             user_initiated=True, _allow_cross_mode_restart=False)
+            else:
+                logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
             return
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
