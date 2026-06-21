@@ -56,6 +56,7 @@ def test_badminton_improvement_static_contract():
         "function setBadmintonLoadingProgress(",
         "function startBadmintonFakeProgress(",
         "function completeBadmintonLoading()",
+        "function settleBadmintonLoadingPromise(",
         "function afterInitialPaint(",
         "function isBadmintonLoadingActive()",
         'id="badminton-loading-bar"',
@@ -127,6 +128,9 @@ def test_badminton_improvement_static_contract():
     assert "return !!(badmintonLoading && !badmintonLoading.hidden);" in html
     assert "badmintonLoading.classList.contains('hide')" not in html
     assert "badmintonLoading.hidden = true;\n      window.__badmintonInitialLoadingHidden = true;" in html
+    assert "setTimeout(finish, 5000);" in html
+    assert "return settleBadmintonLoadingPromise(promise, 5000);" in html
+    assert "if (badmintonLoadingProgress >= 92) {\n        clearInterval(badmintonLoadingTimer);" in html
     assert "自由练习" not in html
     assert "挥拍挑战" not in html
     assert 'viewBox="0 0 78 168"' in racket_sprite

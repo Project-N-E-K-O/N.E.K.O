@@ -6707,7 +6707,16 @@
   }
   function waitForFirstFrame() {
     if (firstFrameRendered) return Promise.resolve();
-    return new Promise(function (resolve) { firstFrameCallbacks.push(resolve); });
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      firstFrameCallbacks.push(finish);
+      setTimeout(finish, 5000);
+    });
   }
   function hideBadmintonLoading() {
     if (!badmintonLoading || badmintonLoading.hidden) return;
@@ -6727,7 +6736,11 @@
     clearInterval(badmintonLoadingTimer);
     setBadmintonLoadingProgress(8);
     badmintonLoadingTimer = setInterval(function () {
-      if (badmintonLoadingProgress >= 92) return;
+      if (badmintonLoadingProgress >= 92) {
+        clearInterval(badmintonLoadingTimer);
+        badmintonLoadingTimer = 0;
+        return;
+      }
       var remaining = 92 - badmintonLoadingProgress;
       var step = remaining > 35 ? 6 : (remaining > 14 ? 3 : 1);
       setBadmintonLoadingProgress(Math.min(92, badmintonLoadingProgress + step));
@@ -6739,13 +6752,25 @@
     setBadmintonLoadingProgress(100);
     setTimeout(hideBadmintonLoading, 220);
   }
+  function settleBadmintonLoadingPromise(promise, timeoutMs) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      setTimeout(finish, timeoutMs || 5000);
+      Promise.resolve(promise).then(finish).catch(finish);
+    });
+  }
   function scheduleBadmintonLoadingDismiss(loadPromises) {
     if (!badmintonLoading) return;
     window.__badmintonInitialLoadingHidden = false;
     startBadmintonFakeProgress();
     var minimumVisible = new Promise(function (resolve) { setTimeout(resolve, 350); });
     var loadReady = Promise.all((loadPromises || []).map(function (promise) {
-      return Promise.resolve(promise).catch(function () {});
+      return settleBadmintonLoadingPromise(promise, 5000);
     }));
     Promise.all([minimumVisible, waitForFirstFrame(), loadReady]).then(completeBadmintonLoading).catch(completeBadmintonLoading);
   }
