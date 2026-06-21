@@ -2339,6 +2339,13 @@ const expectedKnowledge = zhBundle['ui.settings.knowledge.loaded_summary']
 const expectedMemory = zhBundle['ui.settings.memory.loaded_summary']
   .replace('{cards}', '12')
   .replace('{due}', '3');
+const initialOcrSummary = document.getElementById('settingsOcrSummary').textContent.trim();
+const initialKnowledgeSummary = document.getElementById('settingsKnowledgeSummary').textContent.trim();
+const initialMemorySummary = document.getElementById('settingsMemorySummary').textContent.trim();
+window.eval("updateStudySummaries({ habit: { available: true, checkin: { checked_in: true }, pomodoro: { state: 'idle' } } });");
+const checkedInStatus = document.getElementById('quickCheckinStatus').textContent.trim();
+window.eval("updateStudySummaries({ habit: { available: true, checkin: { checked_in: false }, pomodoro: { state: 'idle' } } });");
+const pendingCheckinStatus = document.getElementById('quickCheckinStatus').textContent.trim();
 
 const checks = [
   ['eyebrow', document.querySelector('.hero__eyebrow').textContent, zhBundle['ui.eyebrow']],
@@ -2347,11 +2354,13 @@ const checks = [
   ['duration value', document.getElementById('summaryDuration').textContent.trim(), '42 min'],
   ['goal label', document.querySelector('[data-summary-goal-label]').textContent.trim(), zhBundle['ui.label.goal']],
   ['goal value', document.getElementById('summaryGoal').textContent.trim(), '2/5'],
+  ['checked-in status', checkedInStatus, zhBundle['ui.status.checkin_done']],
+  ['pending checkin status', pendingCheckinStatus, zhBundle['ui.status.checkin_pending']],
   ['knowledge tab', document.getElementById('tab-knowledge').textContent.trim(), zhBundle['ui.settings.tab.knowledge']],
   ['first run title', document.getElementById('firstRunTitle').textContent.trim(), zhBundle['ui.onboarding.title']],
-  ['OCR summary', document.getElementById('settingsOcrSummary').textContent.trim(), expectedOcr],
-  ['knowledge summary', document.getElementById('settingsKnowledgeSummary').textContent.trim(), expectedKnowledge],
-  ['memory summary', document.getElementById('settingsMemorySummary').textContent.trim(), expectedMemory],
+  ['OCR summary', initialOcrSummary, expectedOcr],
+  ['knowledge summary', initialKnowledgeSummary, expectedKnowledge],
+  ['memory summary', initialMemorySummary, expectedMemory],
 ];
 for (const [label, actual, expected] of checks) {
   if (actual !== expected) {
