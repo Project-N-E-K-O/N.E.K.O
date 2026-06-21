@@ -90,9 +90,15 @@ function scheduleLive2DConfigRetry(reason) {
             // 不在此 await 的话，自愈会在存储弹窗仍开着时抢跑、用错/未批准的存储位置（PR #1920 review P1）。
             // 预算也只在哨兵解析、确实要重取时才扣减，避免长时间等待用户决定期间空耗预算。
             if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
-                await Promise.resolve(window.__nekoStorageLocationStartupBarrier).catch(() => {});
+                try {
+                    await window.__nekoStorageLocationStartupBarrier;
+                } catch (_) {
+                    // 哨兵被拒绝（存储未批准/取消）：不放行、不重取、不加载，与 startPageConfigLoad 一致。
+                    return;
+                }
             }
-            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight) return;
+            // 哨兵可能等待很久：解析后重新校验是否仍应自愈（其间可能已切到 vrm/pngtuber/模型管理等）。
+            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight || !_nekoShouldSelfHealLive2D()) return;
             _nekoLive2DConfigRetryCount += 1;
             try {
                 if (typeof window.reloadPageConfig === 'function') {
@@ -409,8 +415,14 @@ async function _initLive2DModelInner() {
     // 存储位置启动哨兵必须始终等待——不设超时、不因已知路径而跳过：它是用户存储/迁移决定的门，
     // 抢跑会让头像/主界面用错或未批准的存储位置（PR #1920 review P1）。已解析则瞬时返回；
     // 若用户迟迟不决定（或哨兵真卡死），保持等待与 startPageConfigLoad 一致，也比抢跑安全。
+    // 哨兵被拒绝（存储未批准/取消）不能当成放行：直接中止本次初始化，绝不对未批准存储加载（PR #1920 review）。
     if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
-        await Promise.resolve(window.__nekoStorageLocationStartupBarrier).catch(() => {});
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) {
+            console.warn('[Live2D Init] 存储位置哨兵被拒绝，中止本次 Live2D 初始化');
+            return;
+        }
     }
 
     // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
