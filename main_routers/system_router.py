@@ -7009,15 +7009,36 @@ async def proactive_chat(request: Request):
         # 下面的 BM25 regen/drop）一律豁免，免得模板化 intro 被误判为复读、把自
         # 发推歌/推图压到极低频。素材雷同（反复推同一曲目 / 同一关键词）才回落
         # 到正常台词判定。一次算清，下面两道门共用。
-        _material_key = _proactive_material_key(source_tag, selected_music_link, meme_content)
+        #
+        # 归类按"真实投递 channel"而非模型原始 source_tag——gate 在
+        # build_proactive_response 之前，用 Phase-1 已定的 selected_*/active_channels
+        # 预测最终投递（Codex P2）：
+        # - music-only 且已选中曲目 → 无论模型出 [CHAT] 还是 [MUSIC]，下面的
+        #   should_try_music_fallback 都会挂上曲目，本轮等于一次音乐投递，fresh
+        #   曲目不该被 CHAT 文案的字面相似度 / BM25 连带 drop/regen。
+        # - 模型出 [MEME] 但没选中表情包（selected_meme_link 为空）→ 最终
+        #   build_proactive_response 回退 web/vision/plain、meme 没真发出，按非豁免
+        #   走正常台词判定（不能凭模型 tag 就豁免）。
+        _music_only_pending = (
+            'music' in active_channels and selected_music_link is not None
+            and not is_playing_music and not music_cooldown
+            and not any(ch in ('vision', 'web', 'meme') for ch in active_channels)
+        )
+        if _music_only_pending and source_tag != 'MUSIC':
+            _dedup_tag = 'MUSIC'
+        elif source_tag == 'MEME' and selected_meme_link is None:
+            _dedup_tag = 'CHAT'
+        else:
+            _dedup_tag = source_tag
+        _material_key = _proactive_material_key(_dedup_tag, selected_music_link, meme_content)
         _exempt_text_dedup = (
-            source_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
-            and not _is_recent_proactive_material(lanlan_name, source_tag, _material_key)
+            _dedup_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+            and not _is_recent_proactive_material(lanlan_name, _dedup_tag, _material_key)
         )
         if _exempt_text_dedup:
             logger.info(
-                "[%s] proactive text-dedup exempt: tag=%s material=%r (fresh material, skip similarity+BM25)",
-                lanlan_name, source_tag, _material_key or "(none)",
+                "[%s] proactive text-dedup exempt: tag=%s (model_tag=%s) material=%r (fresh material, skip similarity+BM25)",
+                lanlan_name, _dedup_tag, source_tag, _material_key or "(none)",
             )
 
         is_duplicate, similarity_score = (False, 0.0)
@@ -7325,14 +7346,26 @@ async def proactive_chat(request: Request):
             if not music_already_appended:
                 _append_music_recommendations(source_links, music_content)
 
-        # anti-repeat / 素材去重按"真实投递的 channel"归类，而非模型原始 source_tag：
-        # Phase 1 只有音乐时模型可能合法出 [CHAT]，随后 should_try_music_fallback 仍
-        # 追加曲目并置 is_music_used=True——此时实际投递的是音乐。若仍按 CHAT 记录，
-        # finish_proactive_delivery 会把模板化 intro 录进 BM25 corpus、且曲目 key 不
-        # 记，恰好重新引入本 PR 要消除的 fallback 推歌污染（Codex P2）。曲目优先取
-        # selected_music_link；regen 把 tag 降级 CHAT 时它已被清空，则从已追加的
-        # source_links（source=='音乐推荐'）里取首条。
-        _delivered_tag = 'MUSIC' if (is_music_used and source_tag != 'MUSIC') else source_tag
+        # anti-repeat / 素材去重按"真实投递的 channel"归类，而非模型原始 source_tag
+        # （此处 primary_channel 已由 build_proactive_response 按实际 source_links 定下，
+        # 比 gate 的 Phase-1 预测更准）（Codex P2）：
+        # - is_music_used（含模型出 [CHAT] 但 should_try_music_fallback 追加了曲目）
+        #   或 primary_channel=='music' → 实际投递音乐 → MUSIC：否则模板 intro 会被
+        #   按 CHAT 录进 BM25 corpus、且曲目 key 不记，重新引入 fallback 推歌污染。
+        # - 仅当 primary_channel=='meme' 且确有表情包链接（selected_meme_link 非空，
+        #   build_proactive_response 此时才真 append 图）才算 MEME 投递；模型出 [MEME]
+        #   但选空时它已回退别的 channel（甚至 primary 仍是 'meme' 但无链接），不能按
+        #   MEME 记——否则模板文案漏录 corpus，且把没发出的关键词记成已投递，害得之后
+        #   同关键词的真表情包被当复读跳过。
+        # - 其余落到非豁免 CHAT（WEB/vision 同样非豁免，对 anti-repeat 等价）。
+        if is_music_used or primary_channel == 'music':
+            _delivered_tag = 'MUSIC'
+        elif primary_channel == 'meme' and selected_meme_link is not None:
+            _delivered_tag = 'MEME'
+        else:
+            _delivered_tag = 'CHAT'
+        # 曲目优先取 selected_music_link；regen 把 tag 降级 CHAT 时它已被清空，则从已
+        # 追加的 source_links（source=='音乐推荐'）里取首条。
         _delivered_music_link = selected_music_link
         if _delivered_tag == 'MUSIC' and not _delivered_music_link:
             _delivered_music_link = next(
