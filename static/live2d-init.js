@@ -32,7 +32,21 @@ window.LanLan1 = window.LanLan1 || {};
 let _nekoLive2DInitInFlight = false;
 let _nekoLive2DModelLoadedOnce = false;
 let _nekoLive2DConfigRetryCount = 0;
+// 同一时刻只允许一个重取在排队/进行中：去重多个看门狗 + 空路径分支堆叠的计时器，
+// 并在 reloadPageConfig await 窗口里挡住并发 timer 双消耗预算。
+let _nekoLive2DRetryPending = false;
 const NEKO_LIVE2D_CONFIG_RETRY_MAX = 6;
+// 启动等待（storageLocation 哨兵 / pageConfigReady）一旦永不 resolve，会让
+// _initLive2DModelInner 永远卡在 await、_nekoLive2DInitInFlight 永远为 true，
+// 进而令看门狗重试每次都被在途守卫挡掉、无法自愈（见 PR #1920 review）。
+// 用超时兜底把这两个等待变为"有界"：超时即继续，后续空路径分支会触发重取自愈。
+const NEKO_LIVE2D_AWAIT_TIMEOUT_MS = 5000;
+function _nekoAwaitWithTimeout(thenable, ms) {
+    return Promise.race([
+        Promise.resolve(thenable).catch(() => {}),
+        new Promise((resolve) => { setTimeout(resolve, ms); }),
+    ]);
+}
 
 // 仅对"本应显示 Live2D"的会话自愈；pngtuber/vrm/mmd 的空 cubism4Model 是正常态。
 function _nekoShouldSelfHealLive2D() {
@@ -53,30 +67,39 @@ function _nekoShouldSelfHealLive2D() {
 function scheduleLive2DConfigRetry(reason) {
     if (_nekoLive2DModelLoadedOnce) return;
     if (!_nekoShouldSelfHealLive2D()) return;
+    // 去重：已有重取在排队/进行中就不再叠加新计时器（修复多个看门狗 + 空路径分支堆叠 timer，
+    // 以及在下方 reloadPageConfig await 窗口内被并发 timer 双消耗预算的问题，PR #1920 review）。
+    if (_nekoLive2DRetryPending) return;
     if (_nekoLive2DConfigRetryCount >= NEKO_LIVE2D_CONFIG_RETRY_MAX) {
         console.warn('[Live2D Init] 模型路径重试已达上限，停止自愈:', reason);
         return;
     }
+    _nekoLive2DRetryPending = true;
     // 退避按"已消耗预算 + 1"估算；但预算只在真正执行重取时扣减（见下方 setTimeout 内），
     // 避免首次正常慢加载期间被空转的看门狗轮次提前耗尽真正的重试次数。
     const delayMs = Math.min(4000, 600 * (_nekoLive2DConfigRetryCount + 1));
     console.log('[Live2D Init] 模型路径缺失，安排配置重取自愈，原因:', reason);
     setTimeout(async () => {
-        if (_nekoLive2DModelLoadedOnce || !_nekoShouldSelfHealLive2D()) return;
-        // 正在初始化中（可能是首次正常慢加载）：本轮不消耗预算、不打扰；
-        // 若该次初始化最终因空路径失败，会从 early-return 分支再次安排重试。
-        if (_nekoLive2DInitInFlight) return;
-        if (_nekoLive2DConfigRetryCount >= NEKO_LIVE2D_CONFIG_RETRY_MAX) return;
-        _nekoLive2DConfigRetryCount += 1;
         try {
-            if (typeof window.reloadPageConfig === 'function') {
-                await window.reloadPageConfig();
+            if (_nekoLive2DModelLoadedOnce || !_nekoShouldSelfHealLive2D()) return;
+            // 正在初始化中（可能是首次正常慢加载）：本轮不消耗预算、不打扰；
+            // 若该次初始化最终因空路径失败，会从 early-return 分支再次安排重试。
+            if (_nekoLive2DInitInFlight) return;
+            if (_nekoLive2DConfigRetryCount >= NEKO_LIVE2D_CONFIG_RETRY_MAX) return;
+            _nekoLive2DConfigRetryCount += 1;
+            try {
+                if (typeof window.reloadPageConfig === 'function') {
+                    await window.reloadPageConfig();
+                }
+            } catch (error) {
+                console.warn('[Live2D Init] 自愈重取配置失败:', error);
             }
-        } catch (error) {
-            console.warn('[Live2D Init] 自愈重取配置失败:', error);
+            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight) return;
+            initLive2DModel();
+        } finally {
+            // 计时器跑完即解除去重位；若初始化仍失败，会从空路径分支再排下一轮（受预算上限约束）。
+            _nekoLive2DRetryPending = false;
         }
-        if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight) return;
-        initLive2DModel();
     }, delayMs);
 }
 
@@ -378,7 +401,8 @@ async function _initLive2DModelInner() {
     // 自愈重入时若已拿到模型路径，跳过 storageLocation 哨兵等待，规避哨兵卡死导致模型永远加载不出来。
     const _preInitModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
     if (!_preInitModelPath && window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
-        await window.__nekoStorageLocationStartupBarrier;
+        // 有界等待：哨兵卡死时超时即继续，避免 init 永久挂起、令看门狗重试无法自愈。
+        await _nekoAwaitWithTimeout(window.__nekoStorageLocationStartupBarrier, NEKO_LIVE2D_AWAIT_TIMEOUT_MS);
     }
 
     // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
@@ -411,8 +435,9 @@ async function _initLive2DModelInner() {
     }
 
     // 等待配置加载完成（如果存在）；自愈重入若已拿到模型路径，则不再等待，规避 pageConfigReady 卡死。
+    // 有界等待：pageConfigReady 卡死时超时即继续，空路径分支随后会触发重取自愈。
     if (!_preInitModelPath && window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
-        await window.pageConfigReady;
+        await _nekoAwaitWithTimeout(window.pageConfigReady, NEKO_LIVE2D_AWAIT_TIMEOUT_MS);
     }
 
     // 获取模型路径
