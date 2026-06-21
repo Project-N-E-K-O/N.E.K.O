@@ -2747,6 +2747,15 @@
                         window.syncVoiceChatComposerHidden(_shouldHide);
                     }
 
+                    // 立即清掉启动超时：匹配的 ack 已到（已过上方 mode 守卫），若拖到下面
+                    // 500ms 后才清，贴近 15s deadline 的 ack（如 14.8s，尤其跨模式等待+重启
+                    // 链路）会被先一步触发的超时误 reject + end_session，把后端已接受的会话
+                    // 打断（Codex P2）。resolve 仍延后做（留时间收尾 UI），但超时此刻就拆。
+                    if (S.sessionStartedResolver && window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {

@@ -218,25 +218,29 @@ async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
-    """If the in-flight start fails internally (its by_server cleanup bumps
-    _audio_stream_epoch but NOT _user_session_abandon_epoch), the user's
-    explicit audio request should STILL restart — otherwise the user's audio
-    promise gets no ack and hangs the full 15s (the very bug being fixed)."""
+    """If the in-flight start fails internally, its cleanup() clears
+    self.websocket to None (and bumps _audio_stream_epoch) WITHOUT bumping
+    _user_session_abandon_epoch — yet the browser connection (the request's own
+    ws param) is still open. The user's explicit audio request should STILL
+    restart; otherwise the audio promise gets no ack and hangs the full 15s
+    (the very bug being fixed)."""
     mgr = _make_starting_manager(starting_input_mode="text")
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    ws = mgr.websocket
+    ws = mgr.websocket  # the request's ws stays connected throughout
     start_task = asyncio.create_task(
         LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
     )
     await asyncio.sleep(0.1)
-    # In-flight text start failed → internal by_server cleanup bumps the audio
-    # stream epoch but NOT the user-abandon epoch, and zeroes the count.
+    # In-flight text start failed → cleanup() clears self.websocket to None and
+    # bumps the audio stream epoch, but NOT the user-abandon epoch; count→0.
     mgr._audio_stream_epoch += 1
+    mgr.websocket = None
     mgr._starting_session_count = 0
     await start_task
 
+    # param ws still connected + self.websocket is None ⇒ restart proceeds.
     restart_mock.assert_awaited_once_with(
         ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
     )

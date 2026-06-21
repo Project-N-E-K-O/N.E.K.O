@@ -5506,17 +5506,29 @@ class LLMSessionManager:
                 while self._starting_session_count > 0 and _waited < CROSS_MODE_RESTART_WAIT_SECONDS:
                     await asyncio.sleep(0.05)
                     _waited += 0.05
+                # 重启前的连接校验，两个条件都要满足：
+                #   1) 本请求那把 ws（param）仍连接。in-flight 失败时
+                #      _handle_session_start_exception→cleanup() 会把 self.websocket 清成
+                #      None，但浏览器连接其实还开着——这种必须能重启，否则用户 audio 干等
+                #      15s（Codex P2）。判据用 param ws 的连接态，不看 self.websocket：浏览器
+                #      真刷新/断连时这把 param ws 会变 DISCONNECTED。
+                #   2) self.websocket 仍是这把或已被清空（None）。若已被换成另一条新连接，
+                #      说明发生了重连，别用旧 ws 重启去和新连接打架（Codex P2 stale ws）。
+                try:
+                    _param_ws_connected = (
+                        websocket is not None
+                        and hasattr(websocket, 'client_state')
+                        and websocket.client_state == websocket.client_state.CONNECTED
+                    )
+                except Exception:  # noqa: BLE001
+                    _param_ws_connected = False
+                _self_ws_ok = self.websocket is websocket or self.websocket is None
                 if self._starting_session_count != 0:
                     logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs，留余量给重启），放弃改起 %s", _waited, input_mode)
                 elif self._user_session_abandon_epoch != _abandon_epoch:
                     logger.warning("⚠️ 跨模式等待期间用户主动结束了启动（已放弃），不再改起 %s", input_mode)
-                elif not (self.websocket is websocket and self._has_connected_websocket()):
-                    # 等待期间浏览器刷新/断连：disconnect cleanup 走 cleanup→end_session
-                    # (by_server=True)，不会 bump abandon epoch，但此刻 self.websocket 已被
-                    # 换成新连接或清空。用这把 stale ws 递归起会话，其 session_started 无处
-                    # 可送 → 孤儿活动会话（Codex P2）。要求"当前 ws 仍是本请求那把且仍连接"
-                    # 才重启。
-                    logger.warning("⚠️ 跨模式等待期间 websocket 已失效/被替换，不再改起 %s", input_mode)
+                elif not (_param_ws_connected and _self_ws_ok):
+                    logger.warning("⚠️ 跨模式等待期间 websocket 已断连/被新连接替换，不再改起 %s", input_mode)
                 else:
                     # in-flight 干净落定且连接仍在：递归重入起目标模式。
                     # 先清熔断：用户显式请求按 websocket_router 语义本应清，但当时
