@@ -3329,13 +3329,168 @@
     bindStandaloneChatIdleActivityRelay();
     drainPendingYuiGuideChatBridgeQueue();
 
+    var yuiGuideStandaloneInteractionShield = null;
+    var yuiGuideStandaloneInteractionShieldBlocker = null;
+    var yuiGuideStandaloneGlobalInteractionShieldInstalled = false;
+    var yuiGuideStandaloneInteractionShieldEvents = [
+        'pointerdown',
+        'pointerup',
+        'pointermove',
+        'mousedown',
+        'mouseup',
+        'mousemove',
+        'click',
+        'dblclick',
+        'contextmenu',
+        'touchstart',
+        'touchmove',
+        'touchend',
+        'wheel',
+        'dragstart'
+    ];
+
+    function isYuiGuideStandaloneSkipTarget(target) {
+        var element = target && typeof target.closest === 'function'
+            ? target
+            : target && target.parentElement && typeof target.parentElement.closest === 'function'
+            ? target.parentElement
+            : null;
+        return !!(
+            element
+            && element.closest('#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]')
+        );
+    }
+
+    function isYuiGuideStandaloneMovementEvent(event) {
+        return !!(
+            event
+            && (
+                event.type === 'pointermove'
+                || event.type === 'mousemove'
+                || event.type === 'touchmove'
+            )
+        );
+    }
+
+    function blockYuiGuideStandaloneInteraction(event) {
+        if (!event || isYuiGuideStandaloneSkipTarget(event.target || null)) {
+            return;
+        }
+        if (isYuiGuideStandaloneMovementEvent(event)) {
+            return;
+        }
+        if (event.isTrusted === false) {
+            return;
+        }
+        if (typeof event.preventDefault === 'function' && event.cancelable !== false) {
+            event.preventDefault();
+        }
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+        if (typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+        }
+    }
+
+    function setYuiGuideStandaloneGlobalInteractionShieldEnabled(enabled) {
+        var shouldEnable = enabled === true;
+        if (shouldEnable && yuiGuideStandaloneGlobalInteractionShieldInstalled) {
+            return;
+        }
+        if (!shouldEnable && !yuiGuideStandaloneGlobalInteractionShieldInstalled) {
+            return;
+        }
+        if (!yuiGuideStandaloneInteractionShieldBlocker) {
+            yuiGuideStandaloneInteractionShieldBlocker = blockYuiGuideStandaloneInteraction;
+        }
+        yuiGuideStandaloneInteractionShieldEvents.forEach(function (type) {
+            var options = type.indexOf('touch') === 0 || type === 'wheel'
+                ? { capture: true, passive: false }
+                : true;
+            if (shouldEnable) {
+                window.addEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
+            } else {
+                window.removeEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
+            }
+        });
+        yuiGuideStandaloneGlobalInteractionShieldInstalled = shouldEnable;
+    }
+
+    function ensureYuiGuideStandaloneInteractionShield() {
+        if (yuiGuideStandaloneInteractionShield && yuiGuideStandaloneInteractionShield.isConnected) {
+            return yuiGuideStandaloneInteractionShield;
+        }
+        if (!document.body) {
+            return null;
+        }
+
+        var shield = document.getElementById('yui-guide-standalone-interaction-shield');
+        if (!shield) {
+            shield = document.createElement('div');
+            shield.id = 'yui-guide-standalone-interaction-shield';
+            shield.setAttribute('aria-hidden', 'true');
+            shield.setAttribute('data-yui-cursor-hidden', 'true');
+            shield.style.position = 'fixed';
+            shield.style.inset = '0';
+            shield.style.zIndex = '2147483001';
+            shield.style.background = 'transparent';
+            shield.style.pointerEvents = 'auto';
+            shield.style.touchAction = 'none';
+            shield.style.userSelect = 'none';
+            document.body.appendChild(shield);
+        }
+
+        if (!yuiGuideStandaloneInteractionShieldBlocker) {
+            yuiGuideStandaloneInteractionShieldBlocker = blockYuiGuideStandaloneInteraction;
+        }
+        if (!shield.__yuiGuideStandaloneInteractionShieldInstalled) {
+            yuiGuideStandaloneInteractionShieldEvents.forEach(function (type) {
+                var options = type.indexOf('touch') === 0 || type === 'wheel'
+                    ? { capture: true, passive: false }
+                    : true;
+                shield.addEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
+            });
+            shield.__yuiGuideStandaloneInteractionShieldInstalled = true;
+        }
+        yuiGuideStandaloneInteractionShield = shield;
+        return shield;
+    }
+
+    function setYuiGuideStandaloneInteractionShieldEnabled(enabled) {
+        var shouldEnable = enabled === true;
+        if (!shouldEnable) {
+            if (yuiGuideStandaloneInteractionShield) {
+                yuiGuideStandaloneInteractionShield.hidden = true;
+                yuiGuideStandaloneInteractionShield.style.pointerEvents = 'none';
+            }
+            if (document.body) {
+                document.body.classList.remove('yui-guide-standalone-input-shield-active');
+            }
+            setYuiGuideStandaloneGlobalInteractionShieldEnabled(false);
+            return;
+        }
+
+        var shield = ensureYuiGuideStandaloneInteractionShield();
+        if (!shield) {
+            return;
+        }
+        shield.hidden = false;
+        shield.style.pointerEvents = 'auto';
+        if (document.body) {
+            document.body.classList.add('yui-guide-standalone-input-shield-active');
+        }
+        setYuiGuideStandaloneGlobalInteractionShieldEnabled(true);
+    }
+
     function applyYuiGuideChatLockState(disabled) {
         if (!document.body) {
             return;
         }
 
         var locked = disabled !== false;
-        document.body.classList.toggle('yui-guide-chat-buttons-disabled', locked);
+        document.body.classList.remove('yui-guide-chat-buttons-disabled');
+        setYuiGuideStandaloneInteractionShieldEnabled(locked);
 
         var activeElement = document.activeElement;
         if (
@@ -3347,62 +3502,6 @@
         ) {
             activeElement.blur();
         }
-
-        var readonlyTargets = document.querySelectorAll(
-            '#react-chat-window-shell textarea, '
-            + '#react-chat-window-shell input, '
-            + '#text-input-area textarea, '
-            + '#text-input-area input'
-        );
-        readonlyTargets.forEach(function (element) {
-            if (!element || !('readOnly' in element)) {
-                return;
-            }
-
-            if (locked) {
-                if (!element.hasAttribute('data-yui-guide-prev-readonly')) {
-                    element.setAttribute('data-yui-guide-prev-readonly', element.readOnly ? 'true' : 'false');
-                }
-                element.readOnly = true;
-                return;
-            }
-
-            var prevReadOnly = element.getAttribute('data-yui-guide-prev-readonly');
-            if (prevReadOnly !== null) {
-                element.readOnly = prevReadOnly === 'true';
-                element.removeAttribute('data-yui-guide-prev-readonly');
-            } else {
-                element.readOnly = false;
-            }
-        });
-
-        var contentEditableTargets = document.querySelectorAll(
-            '#react-chat-window-shell [contenteditable=\"true\"], '
-            + '#react-chat-window-shell [contenteditable=\"plaintext-only\"], '
-            + '#react-chat-window-shell [data-yui-guide-prev-contenteditable]'
-        );
-        contentEditableTargets.forEach(function (element) {
-            if (!element || typeof element.getAttribute !== 'function') {
-                return;
-            }
-
-            if (locked) {
-                if (!element.hasAttribute('data-yui-guide-prev-contenteditable')) {
-                    element.setAttribute(
-                        'data-yui-guide-prev-contenteditable',
-                        element.getAttribute('contenteditable') || 'true'
-                    );
-                }
-                element.setAttribute('contenteditable', 'false');
-                return;
-            }
-
-            var prevContentEditable = element.getAttribute('data-yui-guide-prev-contenteditable');
-            if (prevContentEditable !== null) {
-                element.setAttribute('contenteditable', prevContentEditable);
-                element.removeAttribute('data-yui-guide-prev-contenteditable');
-            }
-        });
     }
 
     function getReactChatWindowHost() {

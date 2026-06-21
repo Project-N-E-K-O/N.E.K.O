@@ -507,7 +507,40 @@
             this.root = null;
             this.stage = null;
             this.interactionShield = null;
+            this.tutorialInputShieldActive = false;
+            this.takingOverActive = false;
             this.interactionShieldSuppressed = false;
+            this.interactionShieldEventBlocker = this.blockInteractionShieldEvent.bind(this);
+            this.globalInteractionShieldEventBlocker = this.blockInteractionShieldEvent.bind(this);
+            this.globalInteractionShieldBlockerInstalled = false;
+            this.interactionShieldDesiredActive = false;
+            this.interactionShieldSystemDialogSuspended = false;
+            this.systemDialogShieldSyncTimer = null;
+            this.systemDialogObserver = null;
+            this.systemDialogSelector = [
+                '#storage-location-overlay:not([hidden])',
+                '#storage-location-overlay:not([hidden]) .storage-location-modal',
+                '.storage-location-completion-card',
+                '#prominent-notice-overlay',
+                '.modal-overlay',
+                '.modal-dialog'
+            ].join(', ');
+            this.interactionShieldEventTypes = [
+                'pointerdown',
+                'pointerup',
+                'pointermove',
+                'mousedown',
+                'mouseup',
+                'mousemove',
+                'click',
+                'dblclick',
+                'contextmenu',
+                'touchstart',
+                'touchmove',
+                'touchend',
+                'wheel',
+                'dragstart'
+            ];
             this.backdrop = null;
             this.backdropMask = null;
             this.backdropBase = null;
@@ -860,7 +893,228 @@
             }
 
             this.root = root;
+            this.installInteractionShieldBlocker();
             return root;
+        }
+
+        isSkipControlEventTarget(target) {
+            const element = target && typeof target.closest === 'function'
+                ? target
+                : target && target.parentElement && typeof target.parentElement.closest === 'function'
+                ? target.parentElement
+                : null;
+            return !!(
+                element
+                && element.closest('#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]')
+            );
+        }
+
+        isSystemDialogEventTarget(target) {
+            const element = target && typeof target.closest === 'function'
+                ? target
+                : target && target.parentElement && typeof target.parentElement.closest === 'function'
+                ? target.parentElement
+                : null;
+            return !!(
+                element
+                && this.systemDialogSelector
+                && element.closest(this.systemDialogSelector)
+            );
+        }
+
+        isVisibleSystemDialogElement(element) {
+            if (!element || element.hidden === true) {
+                return false;
+            }
+            if (typeof element.closest === 'function' && element.closest('[hidden]')) {
+                return false;
+            }
+            if (typeof element.getAttribute === 'function' && element.getAttribute('aria-hidden') === 'true') {
+                return false;
+            }
+
+            const view = this.document.defaultView || window;
+            const getComputedStyleFn = view && typeof view.getComputedStyle === 'function'
+                ? view.getComputedStyle.bind(view)
+                : null;
+            if (!getComputedStyleFn) {
+                return true;
+            }
+
+            let current = element;
+            while (current && current.nodeType === 1) {
+                const style = getComputedStyleFn(current);
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+                    return false;
+                }
+                current = current.parentElement;
+            }
+            return true;
+        }
+
+        hasOpenSystemDialog() {
+            if (!this.systemDialogSelector || !this.document || typeof this.document.querySelectorAll !== 'function') {
+                return false;
+            }
+            const dialogNodes = this.document.querySelectorAll(this.systemDialogSelector);
+            return Array.prototype.some.call(dialogNodes, (element) => this.isVisibleSystemDialogElement(element));
+        }
+
+        isMovementTrackingEvent(event) {
+            return !!(
+                event
+                && (
+                    event.type === 'pointermove'
+                    || event.type === 'mousemove'
+                    || event.type === 'touchmove'
+                )
+            );
+        }
+
+        blockInteractionShieldEvent(event) {
+            const target = event ? event.target || null : null;
+            if (!event || this.isSkipControlEventTarget(target) || this.isSystemDialogEventTarget(target)) {
+                return;
+            }
+            if (this.hasOpenSystemDialog()) {
+                this.syncInteractionShield();
+                return;
+            }
+            if (event.isTrusted === false) {
+                return;
+            }
+            if (this.isMovementTrackingEvent(event)) {
+                return;
+            }
+            if (typeof event.preventDefault === 'function' && event.cancelable !== false) {
+                event.preventDefault();
+            }
+            if (typeof event.stopImmediatePropagation === 'function') {
+                event.stopImmediatePropagation();
+            }
+            if (typeof event.stopPropagation === 'function') {
+                event.stopPropagation();
+            }
+        }
+
+        installInteractionShieldBlocker() {
+            if (!this.interactionShield) {
+                return;
+            }
+            const previousBlocker = this.interactionShield.__yuiGuideInputShieldBlocker || null;
+            if (
+                this.interactionShield.__yuiGuideInputShieldBlockerInstalled
+                && previousBlocker === this.interactionShieldEventBlocker
+            ) {
+                return;
+            }
+            if (previousBlocker && previousBlocker !== this.interactionShieldEventBlocker) {
+                this.interactionShieldEventTypes.forEach((type) => {
+                    this.interactionShield.removeEventListener(type, previousBlocker, true);
+                });
+            }
+            this.interactionShieldEventTypes.forEach((type) => {
+                const options = type.indexOf('touch') === 0 || type === 'wheel'
+                    ? { capture: true, passive: false }
+                    : true;
+                this.interactionShield.addEventListener(type, this.interactionShieldEventBlocker, options);
+            });
+            this.interactionShield.__yuiGuideInputShieldBlockerInstalled = true;
+            this.interactionShield.__yuiGuideInputShieldBlocker = this.interactionShieldEventBlocker;
+        }
+
+        installGlobalInteractionShieldBlocker() {
+            const view = this.document.defaultView || window;
+            if (!view || this.globalInteractionShieldBlockerInstalled) {
+                return;
+            }
+            this.interactionShieldEventTypes.forEach((type) => {
+                const options = type.indexOf('touch') === 0 || type === 'wheel'
+                    ? { capture: true, passive: false }
+                    : true;
+                view.addEventListener(type, this.globalInteractionShieldEventBlocker, options);
+            });
+            this.globalInteractionShieldBlockerInstalled = true;
+        }
+
+        removeGlobalInteractionShieldBlocker() {
+            const view = this.document.defaultView || window;
+            if (!view || !this.globalInteractionShieldBlockerInstalled) {
+                return;
+            }
+            this.interactionShieldEventTypes.forEach((type) => {
+                view.removeEventListener(type, this.globalInteractionShieldEventBlocker, true);
+            });
+            this.globalInteractionShieldBlockerInstalled = false;
+        }
+
+        scheduleSystemDialogShieldSync() {
+            if (this.systemDialogShieldSyncTimer !== null || !this.interactionShieldDesiredActive) {
+                return;
+            }
+            const view = this.document.defaultView || window;
+            const setTimeoutFn = view && typeof view.setTimeout === 'function'
+                ? view.setTimeout.bind(view)
+                : window.setTimeout.bind(window);
+            this.systemDialogShieldSyncTimer = setTimeoutFn(() => {
+                this.systemDialogShieldSyncTimer = null;
+                if (this.interactionShieldDesiredActive) {
+                    this.syncInteractionShield();
+                }
+            }, 0);
+        }
+
+        clearSystemDialogShieldSyncTimer() {
+            if (this.systemDialogShieldSyncTimer === null) {
+                return;
+            }
+            const view = this.document.defaultView || window;
+            const clearTimeoutFn = view && typeof view.clearTimeout === 'function'
+                ? view.clearTimeout.bind(view)
+                : window.clearTimeout.bind(window);
+            clearTimeoutFn(this.systemDialogShieldSyncTimer);
+            this.systemDialogShieldSyncTimer = null;
+        }
+
+        installSystemDialogObserver() {
+            if (this.systemDialogObserver) {
+                return;
+            }
+            const view = this.document.defaultView || window;
+            const MutationObserverClass = view && view.MutationObserver;
+            const target = this.document.body || this.document.documentElement;
+            if (!MutationObserverClass || !target) {
+                return;
+            }
+            this.systemDialogObserver = new MutationObserverClass(() => {
+                this.scheduleSystemDialogShieldSync();
+            });
+            this.systemDialogObserver.observe(target, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class', 'hidden', 'style', 'aria-hidden']
+            });
+        }
+
+        removeSystemDialogObserver() {
+            this.clearSystemDialogShieldSyncTimer();
+            if (!this.systemDialogObserver) {
+                return;
+            }
+            this.systemDialogObserver.disconnect();
+            this.systemDialogObserver = null;
+        }
+
+        removeInteractionShieldBlocker() {
+            if (!this.interactionShield || !this.interactionShield.__yuiGuideInputShieldBlockerInstalled) {
+                return;
+            }
+            this.interactionShieldEventTypes.forEach((type) => {
+                this.interactionShield.removeEventListener(type, this.interactionShieldEventBlocker, true);
+            });
+            delete this.interactionShield.__yuiGuideInputShieldBlockerInstalled;
+            delete this.interactionShield.__yuiGuideInputShieldBlocker;
         }
 
         ensureExtraSpotlightEntry(index) {
@@ -1072,9 +1326,10 @@
 
         setTakingOver(active) {
             this.ensureRoot();
-            this.document.body.classList.toggle('yui-taking-over', !!active);
-            this.root.classList.toggle('is-taking-over', !!active);
-            this.setInteractionShieldEnabled(!!active && !this.interactionShieldSuppressed);
+            this.takingOverActive = active === true;
+            this.document.body.classList.toggle('yui-taking-over', this.takingOverActive);
+            this.root.classList.toggle('is-taking-over', this.takingOverActive);
+            this.syncInteractionShield();
             this.document.documentElement.style.cursor = '';
             this.document.body.style.cursor = '';
         }
@@ -1082,10 +1337,36 @@
         setInteractionShieldSuppressed(active) {
             this.ensureRoot();
             this.interactionShieldSuppressed = active === true;
-            this.setInteractionShieldEnabled(
-                !!(this.document.body && this.document.body.classList.contains('yui-taking-over'))
-                && !this.interactionShieldSuppressed
-            );
+            this.syncInteractionShield();
+        }
+
+        setTutorialInputShieldActive(active) {
+            this.ensureRoot();
+            this.tutorialInputShieldActive = active === true;
+            if (this.document.body) {
+                this.document.body.classList.toggle('yui-guide-input-shield-active', this.tutorialInputShieldActive);
+            }
+            if (this.root) {
+                this.root.classList.toggle('is-tutorial-input-shield-active', this.tutorialInputShieldActive);
+            }
+            this.syncInteractionShield();
+        }
+
+        syncInteractionShield() {
+            const desiredActive = !this.interactionShieldSuppressed
+                && (this.tutorialInputShieldActive || this.takingOverActive);
+            this.interactionShieldDesiredActive = desiredActive;
+            if (desiredActive) {
+                this.installSystemDialogObserver();
+            } else {
+                this.removeSystemDialogObserver();
+            }
+            const suspendedForSystemDialog = desiredActive && this.hasOpenSystemDialog();
+            this.interactionShieldSystemDialogSuspended = suspendedForSystemDialog;
+            if (this.root) {
+                this.root.classList.toggle('is-interaction-shield-system-dialog-suspended', suspendedForSystemDialog);
+            }
+            this.setInteractionShieldEnabled(desiredActive && !suspendedForSystemDialog);
         }
 
         setInteractionShieldEnabled(active) {
@@ -1093,7 +1374,17 @@
             if (!this.interactionShield) {
                 return;
             }
-            this.interactionShield.hidden = !(active === true && !this.interactionShieldSuppressed);
+            const isEnabled = active === true;
+            this.interactionShield.hidden = !isEnabled;
+            this.root.classList.toggle('is-interaction-shield-enabled', isEnabled);
+            if (this.stage) {
+                this.stage.classList.toggle('is-interaction-shield-enabled', isEnabled);
+            }
+            if (isEnabled) {
+                this.installGlobalInteractionShieldBlocker();
+            } else {
+                this.removeGlobalInteractionShieldBlocker();
+            }
         }
 
         setAngry(active) {
@@ -1722,15 +2013,24 @@
             this.clearAvatarStandIn();
             this.overlayRenderer.clear();
             this.document.body.classList.remove('yui-taking-over');
+            this.document.body.classList.remove('yui-guide-input-shield-active');
             this.document.documentElement.style.cursor = '';
             this.document.body.style.cursor = '';
             this.clearSpotlight();
+            this.removeGlobalInteractionShieldBlocker();
+            this.removeInteractionShieldBlocker();
+            this.removeSystemDialogObserver();
             if (this.root && this.root.isConnected) {
                 this.root.remove();
             }
             this.root = null;
             this.stage = null;
             this.interactionShield = null;
+            this.tutorialInputShieldActive = false;
+            this.takingOverActive = false;
+            this.interactionShieldSuppressed = false;
+            this.interactionShieldDesiredActive = false;
+            this.interactionShieldSystemDialogSuspended = false;
             this.backdrop = null;
             this.backdropMask = null;
             this.backdropBase = null;

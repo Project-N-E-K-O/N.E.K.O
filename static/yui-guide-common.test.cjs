@@ -979,7 +979,7 @@ test('director streams guide chat text over voice duration without an empty plac
 test('interaction takeover delegates external chat commands to the command bus boundary', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/interaction-takeover.js'), 'utf8');
     const constructorBlock = source.split('        constructor(options) {')[1].split(
-        '            this.interactionGuardHandler =',
+        '        setActive(active) {',
         1
     )[0];
     const commandsBlock = source.split('        setExternalizedChatButtonsDisabled(disabled) {')[1].split(
@@ -988,6 +988,9 @@ test('interaction takeover delegates external chat commands to the command bus b
     )[0];
 
     assert.match(constructorBlock, /this\.externalChatCommandBus = this\.createExternalChatCommandBus\(\);/);
+    assert.doesNotMatch(constructorBlock, /addEventListener\((?:'pointerdown'|'click')/);
+    assert.doesNotMatch(source, /interactionGuardHandler/);
+    assert.doesNotMatch(source, /onInteractionGuard/);
     assert.match(source, /createExternalChatCommandBus\(\) \{[\s\S]*this\.window\.YuiGuideCommon[\s\S]*createTutorialBridgeCommandBus/);
     assert.match(source, /resolveLanlanName\(\) \{/);
     assert.doesNotMatch(source, /message\.lanlan_name = this\.resolveLanlanName\(\);/);
@@ -1011,6 +1014,33 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.doesNotMatch(clearFxBlock, /yui_guide_clear_chat_messages/);
     assert.doesNotMatch(commandsBlock, /getExternalChatChannel\(\)/);
     assert.doesNotMatch(commandsBlock, /channel\.postMessage/);
+});
+
+test('standalone chat guide lock uses a transparent shield instead of per-input locks', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const lockBlock = source.split('    function applyYuiGuideChatLockState(disabled) {')[1].split(
+        '    function getReactChatWindowHost() {',
+        1
+    )[0];
+
+    assert.match(source, /function ensureYuiGuideStandaloneInteractionShield\(\) \{/);
+    assert.match(source, /function setYuiGuideStandaloneGlobalInteractionShieldEnabled\(enabled\) \{/);
+    assert.match(source, /shield\.id = 'yui-guide-standalone-interaction-shield';/);
+    assert.match(source, /shield\.addEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /window\.addEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /window\.removeEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /function isYuiGuideStandaloneMovementEvent\(event\) \{/);
+    assert.match(source, /event\.type === 'pointermove'/);
+    assert.match(source, /event\.type === 'mousemove'/);
+    assert.match(source, /event\.type === 'touchmove'/);
+    assert.match(source, /if \(isYuiGuideStandaloneMovementEvent\(event\)\) \{[\s\S]*?return;/);
+    assert.match(source, /event\.isTrusted === false/);
+    assert.match(source, /document\.body\.classList\.add\('yui-guide-standalone-input-shield-active'\);/);
+    assert.match(lockBlock, /setYuiGuideStandaloneInteractionShieldEnabled\(locked\);/);
+    assert.match(lockBlock, /document\.body\.classList\.remove\('yui-guide-chat-buttons-disabled'\);/);
+    assert.doesNotMatch(lockBlock, /readOnly\s*=/);
+    assert.doesNotMatch(lockBlock, /contenteditable/);
+    assert.doesNotMatch(lockBlock, /classList\.toggle\('yui-guide-chat-buttons-disabled'/);
 });
 
 test('interaction takeover preserves external chat spotlight clears during resistance pause', () => {
@@ -1963,7 +1993,7 @@ test('director routes termination requests through TutorialTerminationRouter', (
         1
     )[0];
     const pageHideBlock = directorSource.split('        onPageHide() {')[1].split(
-        '        get mobileTouchInteractionPassthrough() {',
+        '        hasOpenSystemDialog() {',
         1
     )[0];
     const pluginSkipBlock = directorSource.split('        async handlePluginDashboardSkipRequest(data) {')[1].split(

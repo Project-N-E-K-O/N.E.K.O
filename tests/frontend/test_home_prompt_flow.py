@@ -224,7 +224,7 @@ def _has_playwright_browser() -> bool:
 
 
 @pytest.mark.frontend
-def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
+def test_yui_intro_activation_targets_compact_chat_input_shell_without_click_whitelist(mock_page: Page):
     _bootstrap_page(
         mock_page,
         script_names=("tutorial/yui-guide/director.js",),
@@ -256,15 +256,17 @@ def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
 
                 const shellDirector = buildDirector('shell');
                 const shell = document.querySelector('#react-chat-window-root .composer-input-shell');
-                window.__activationResults.shell.allowed =
-                    shellDirector.isAllowedTutorialInteractionTarget(shell, new MouseEvent('click'));
-                window.__activationResults.shell.awaiting = shellDirector.awaitingIntroActivation;
+                window.__activationResults.shell.target =
+                    shellDirector.isIntroActivationTarget(shell);
+                window.__activationResults.shell.hasClickWhitelist =
+                    typeof shellDirector.isAllowedTutorialInteractionTarget === 'function';
 
                 const panelDirector = buildDirector('panel');
                 const panel = document.querySelector('#react-chat-window-root .composer-panel');
-                window.__activationResults.panel.allowed =
-                    panelDirector.isAllowedTutorialInteractionTarget(panel, new MouseEvent('click'));
-                window.__activationResults.panel.awaiting = panelDirector.awaitingIntroActivation;
+                window.__activationResults.panel.target =
+                    panelDirector.isIntroActivationTarget(panel);
+                window.__activationResults.panel.hasClickWhitelist =
+                    typeof panelDirector.isAllowedTutorialInteractionTarget === 'function';
             }
         """,
     )
@@ -272,8 +274,8 @@ def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
     result = mock_page.evaluate("window.__activationResults")
 
     assert result == {
-        "shell": {"resolved": True, "allowed": True, "awaiting": False},
-        "panel": {"resolved": True, "allowed": True, "awaiting": False},
+        "shell": {"resolved": False, "target": True, "hasClickWhitelist": False},
+        "panel": {"resolved": False, "target": True, "hasClickWhitelist": False},
     }
 
 

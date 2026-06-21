@@ -424,19 +424,42 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         "createElement('div', 'yui-guide-interaction-shield')",
         "stage.appendChild(interactionShield);",
         "this.interactionShieldSuppressed = false;",
+        "this.tutorialInputShieldActive = false;",
         "setInteractionShieldSuppressed(active)",
+        "setTutorialInputShieldActive(active)",
+        "syncInteractionShield()",
         "setInteractionShieldEnabled(active)",
-        "this.setInteractionShieldEnabled(!!active && !this.interactionShieldSuppressed);",
+        "this.tutorialInputShieldActive",
+        "!this.interactionShieldSuppressed",
+        "(this.tutorialInputShieldActive || this.takingOverActive)",
+        "isSkipControlEventTarget(target)",
+        "isSystemDialogEventTarget(target)",
+        "hasOpenSystemDialog()",
+        "is-interaction-shield-system-dialog-suspended",
+        "#storage-location-overlay:not([hidden])",
+        "#prominent-notice-overlay",
+        ".modal-overlay",
+        "isMovementTrackingEvent(event)",
+        "event.type === 'mousemove'",
+        "if (this.isMovementTrackingEvent(event))",
     ):
         assert expected in overlay_source
 
     for expected in (
-        "allowWindowPassthrough: true,",
-        "this.overlay.setInteractionShieldEnabled(false);",
-        "this.overlay.setInteractionShieldEnabled(",
-        "document.body.classList.contains('yui-taking-over')",
+        "this.overlay.setTutorialInputShieldActive(isActive);",
+        "const shouldRestoreTutorialInputShield = !!(",
+        "this.overlay.tutorialInputShieldActive === true",
+        "this.overlay.setTutorialInputShieldActive(false);",
+        "shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()",
+        "this.overlay.setInteractionShieldSuppressed(true);",
+        "this.overlay.setInteractionShieldSuppressed(false);",
     ):
         assert expected in director_source
+
+    interaction_takeover_source = Path("static/tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    assert "allowWindowPassthrough" not in director_source
+    assert "allowWindowPassthrough" not in interaction_takeover_source
+    assert "this.overlay.setInteractionShieldSuppressed(this.active" not in interaction_takeover_source
 
     for expected in (
         ".yui-guide-interaction-shield {",
@@ -773,6 +796,13 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     assert "waitForLive2DContext(waitBudget)" in source
     assert "revealPreparedTutorialLive2D(live2dResult.reason || live2dResult.result)" in source
     assert "removeBlockingGuideOverlay(this.document)" in source
+    cleanup_block = source.split("function removeBlockingGuideOverlay(doc)", 1)[1].split(
+        "function revealPreparedTutorialLive2D(reason)",
+        1,
+    )[0]
+    assert "#yui-guide-overlay" not in cleanup_block
+    assert "yui-taking-over" not in cleanup_block
+    assert ".yui-guide-wakeup-stage" in cleanup_block
     assert "shouldReduceMotion()" in source
     assert "live2d_session_unavailable" in source
     assert "avatar_stage_unavailable" in source
@@ -1302,7 +1332,21 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "element.style.removeProperty('pointer-events');" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = activeLocked ? 'none' : 'auto';" in avatar_interaction_restore_block
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
+    assert ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))" in tutorial_source
     assert ".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))" in tutorial_source
+    assert tutorial_source.index(".then(() => this.restoreTutorialAvatarOverride())") < tutorial_source.index(
+        ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
+    )
+    assert tutorial_source.index(
+        ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
+    ) < tutorial_source.index(".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))")
+    assert "async clearTutorialYuiLive2dRuntimeResidue(reason = '')" in tutorial_source
+    assert "this.isCurrentRuntimeModelLive2d()" in tutorial_source
+    assert "await manager.removeModel({ skipCloseWindows: true });" in tutorial_source
+    assert "manager._lastLoadedModelPath = null;" in tutorial_source
+    assert "manager.modelRootPath = null;" in tutorial_source
+    assert "manager.modelName = null;" in tutorial_source
+    assert "this.hideTutorialLive2dRuntimeSurfaceAfterResidueClear();" in tutorial_source
     assert "clearTutorialLive2dPreparingStyles()" in tutorial_source
     assert "element.style.removeProperty('opacity');" in tutorial_source
     assert "element.style.removeProperty('visibility');" in tutorial_source
@@ -1389,6 +1433,12 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "this.startYuiGuideSceneSequence(sceneIds" not in tutorial_source
     assert "getDirectYuiGuideSceneIdsForCurrentPage" not in tutorial_source
     assert "useYuiOnlyHomeFlow" not in tutorial_source
+    start_round_block = tutorial_source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
+        "async playAvatarFloatingRoundPrelude",
+        1,
+    )[0]
+    assert "await this.waitForTutorialTeardownSettled('avatar-floating-guide-start');" in start_round_block
+    assert "async waitForTutorialTeardownSettled(reason = '')" in tutorial_source
     assert "suppressInitialIdle: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
     assert "var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;" in interpage_source
@@ -1457,7 +1507,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "await director.requestTermination('skip', 'skip');" not in plugin_skip_block
     assert "console.debug('[YuiGuide] interrupt_resist_light step config missing" in resistance_source
     pagehide_block = director_source.split("onPageHide() {", 1)[1].split(
-        "get mobileTouchInteractionPassthrough()",
+        "hasOpenSystemDialog()",
         1,
     )[0]
     assert "try {" in pagehide_block
@@ -1470,6 +1520,25 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "临时切换 YUI 失败，中止教程" in round_prelude_source
     assert "确认 YUI 模型失败，中止教程" in round_prelude_source
     assert "继续教程" not in round_prelude_source
+    assert "const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;" in round_prelude_source
+    assert "if (!deferRevealPrepared) {" in round_prelude_source
+    assert "this.ensureVisible(sceneId, {" in round_prelude_source
+    assert "deferRevealPrepared: Number(round) === 1" in tutorial_source
+    ensure_visible_block = tutorial_source.split(
+        "async ensureTutorialYuiLive2dVisible(reason = '', options = {}) {",
+        1,
+    )[1].split("isLive2dModelLoadBusy()", 1)[0]
+    assert "const deferRevealPrepared = options && options.deferRevealPrepared === true;" in ensure_visible_block
+    assert "if (!deferRevealPrepared) {" in ensure_visible_block
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui', {" in ensure_visible_block
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load', {" in ensure_visible_block
+    render_active_block = tutorial_source.split(
+        "ensureTutorialLive2dRenderActive(reason = '', options = {}) {",
+        1,
+    )[1].split("getTutorialLive2dScreenBounds", 1)[0]
+    assert "const deferRevealPrepared = options.deferRevealPrepared === true;" in render_active_block
+    assert "preservePreparingOpacity: deferRevealPrepared" in render_active_block
+    assert "deferRevealPrepared: deferRevealPrepared" in render_active_block
     cooperative_end_block = tutorial_source.split(
         "requestAvatarFloatingGuideCooperativeEnd(reason = 'skip') {",
         1,
@@ -1505,18 +1574,33 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "restorePreviousModelUiAfterFailedSwitch" not in interpage_source
     assert "failed to restore previous model UI after switch failure" not in interpage_source
     assert "ensureTutorialLive2dRenderActive(reason = '', options = {})" in tutorial_source
-    assert "restoreTutorialLive2dDisplayState(reason = '')" in tutorial_source
-    assert "this.restoreTutorialLive2dDisplayState(reason);" in tutorial_source
+    assert "restoreTutorialLive2dDisplayState(reason = '', options = {})" in tutorial_source
+    assert "this.restoreTutorialLive2dDisplayState(reason, {" in tutorial_source
     assert "document.body.classList.remove('yui-guide-return-petal-fade');" in tutorial_source
     assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in tutorial_source
     assert "_tutorialLive2dRenderActivationToken" in tutorial_source
     assert "this.ensureTutorialLive2dRenderActive('load-temporary-tutorial-model');" in tutorial_source
-    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');" in tutorial_source
-    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load');" in tutorial_source
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui', {" in tutorial_source
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load', {" in tutorial_source
     assert "options.scheduleDelayed !== false" in tutorial_source
     assert "activationToken !== this._tutorialLive2dRenderActivationToken" in tutorial_source
     assert "[80, 300].forEach((delayMs)" in tutorial_source
-    assert "model.visible = true;" in tutorial_source
+    renderable_block = tutorial_source.split(
+        "hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null) {",
+        1,
+    )[1].split("async ensureTutorialYuiLive2dVisible", 1)[0]
+    placement_block = tutorial_source.split("async applyTutorialLive2dViewportPlacement()", 1)[1].split(
+        "ensureTutorialLive2dViewportPlacementWatcher",
+        1,
+    )[0]
+    assert "isTutorialLive2dModelAttachedToStage(stage, model)" in tutorial_source
+    assert "isTutorialLive2dRendererViewReady(app, renderer)" in tutorial_source
+    assert "&& !model.destroyed" in renderable_block
+    assert "&& internalModel.coreModel" in renderable_block
+    assert "&& this.isTutorialLive2dModelAttachedToStage(stage, model)" in renderable_block
+    assert "&& this.isTutorialLive2dRendererViewReady(app, renderer)" in renderable_block
+    assert "if (!this.hasTutorialYuiLive2dRenderableModel(manager)) {" in placement_block
+    assert "if (model && !model.destroyed) {" in tutorial_source
     assert "model.alpha = 1;" in tutorial_source
     assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in tutorial_source
     assert "temporaryConfig" in interpage_source
@@ -1536,6 +1620,21 @@ def test_day1_round_activation_keeps_wakeup_after_step_registry_split():
     assert "await this.runWakeupPrelude();" in activation_block
     assert "this.getStep('intro_basic')" not in activation_block
     assert activation_block.index("await this.runWakeupPrelude();") < activation_block.index("this.introFlowStarted = true;")
+    assert "await this.waitForIntroActivationTransition();" in activation_block
+    assert "const INTRO_ACTIVATION_AUTO_ADVANCE_MS = 2600;" in director_source
+    assert "const INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS = 720;" in director_source
+    assert "const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';" in director_source
+    assert "点一下这里，我就能开始说话啦～" not in director_source
+
+    transition_block = director_source.split("waitForIntroActivationTransition() {", 1)[1].split(
+        "\n        shouldReduceTutorialMotion() {",
+        1,
+    )[0]
+    assert "this.shouldReduceTutorialMotion()" in transition_block
+    assert "INTRO_ACTIVATION_AUTO_ADVANCE_MS" in transition_block
+    assert "INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS" in transition_block
+    assert "return wait(waitMs);" in transition_block
+    assert "wait(360)" not in transition_block
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():

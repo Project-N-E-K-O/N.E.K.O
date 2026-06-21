@@ -487,7 +487,9 @@
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
-    const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
+    const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';
+    const INTRO_ACTIVATION_AUTO_ADVANCE_MS = 2600;
+    const INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS = 720;
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X = 18;
     const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_Y = 10;
@@ -2650,19 +2652,6 @@
                 ? window.TutorialInteractionTakeover.createController({
                     page: this.page,
                     overlay: this.overlay,
-                    allowTarget: (target, event) => this.isAllowedTutorialInteractionTarget(target, event),
-                    isSystemDialogTarget: (target, event) => this.isSystemDialogInteractionTarget(target, event),
-                    allowWindowPassthrough: true,
-                    allowTouchPassthrough: (event, controller) => {
-                        return !!(
-                            this.mobileTouchInteractionPassthrough
-                            && controller
-                            && typeof controller.isTouchInteractionEvent === 'function'
-                            && controller.isTouchInteractionEvent(event)
-                            && !this.awaitingIntroActivation
-                            && !this.manualPluginDashboardOpenAllowed
-                        );
-                    },
                     isDestroyed: () => this.destroyed,
                     isResistancePaused: () => this.scenePausedForResistance === true,
                     externalizedChatDetector: () => this.isHomeChatExternalized(),
@@ -3005,6 +2994,9 @@
         setAvatarFloatingGuideTutorialMode(active) {
             const isActive = active === true;
             try {
+                if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                    this.overlay.setTutorialInputShieldActive(isActive);
+                }
                 if (isActive) {
                     if (!this.avatarFloatingGuideTutorialModeActive) {
                         this.avatarFloatingGuidePreviousIsInTutorial = window.isInTutorial === true;
@@ -3124,64 +3116,13 @@
             return !!target.closest('[data-guide-message="true"] .message-action-button');
         }
 
-        finishIntroActivation() {
-            if (!this.awaitingIntroActivation) {
-                return false;
-            }
-
+        waitForIntroActivationTransition() {
             this.awaitingIntroActivation = false;
-            if (typeof this._introActivationResolve === 'function') {
-                this._introActivationResolve();
-            }
-            return true;
-        }
-
-        waitForIntroActivationClick() {
-            this.awaitingIntroActivation = true;
-            return new Promise((resolve) => {
-                let resolved = false;
-
-                const cleanup = () => {
-                    document.removeEventListener('pointerdown', onPointerLike, true);
-                    document.removeEventListener('mousedown', onPointerLike, true);
-                    document.removeEventListener('touchstart', onPointerLike, true);
-                    document.removeEventListener('click', onPointerLike, true);
-                    document.removeEventListener('keydown', onKeyDown, true);
-                    this._introActivationResolve = null;
-                };
-                const complete = () => {
-                    if (resolved) {
-                        return;
-                    }
-                    resolved = true;
-                    cleanup();
-                    this.awaitingIntroActivation = false;
-                    resolve();
-                };
-                const onPointerLike = (event) => {
-                    if (!event || !this.isIntroActivationTarget(event.target)) {
-                        return;
-                    }
-                    complete();
-                };
-                const onKeyDown = (event) => {
-                    if (
-                        !event
-                        || (event.key !== 'Enter' && event.key !== ' ')
-                        || !this.isIntroActivationTarget(event.target)
-                    ) {
-                        return;
-                    }
-                    complete();
-                };
-
-                this._introActivationResolve = complete;
-                document.addEventListener('pointerdown', onPointerLike, true);
-                document.addEventListener('mousedown', onPointerLike, true);
-                document.addEventListener('touchstart', onPointerLike, true);
-                document.addEventListener('click', onPointerLike, true);
-                document.addEventListener('keydown', onKeyDown, true);
-            });
+            this._introActivationResolve = null;
+            const waitMs = this.shouldReduceTutorialMotion()
+                ? INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS
+                : INTRO_ACTIVATION_AUTO_ADVANCE_MS;
+            return wait(waitMs);
         }
 
         shouldReduceTutorialMotion() {
@@ -7926,7 +7867,7 @@
                     bubbleEl.style.left = Math.round(bLeft) + 'px';
                     bubbleEl.style.top = Math.round(bTop) + 'px';
                 }
-                await this.waitForIntroActivationClick();
+                await this.waitForIntroActivationTransition();
                 if (sceneRunId !== this.sceneRunId || this.isStopping()) {
                     return false;
                 }
@@ -8906,8 +8847,15 @@
             this.manualPluginDashboardOpenAllowed = true;
             this.manualPluginDashboardOpenTarget = managementButton;
             this.manualPluginDashboardOpenUserClicked = false;
-            if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
-                this.overlay.setInteractionShieldEnabled(false);
+            const shouldRestoreTutorialInputShield = !!(
+                this.overlay
+                && this.overlay.tutorialInputShieldActive === true
+            );
+            if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
+                this.overlay.setInteractionShieldSuppressed(true);
+            }
+            if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                this.overlay.setTutorialInputShieldActive(false);
             }
             this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
                 targetPage: 'plugin_dashboard'
@@ -8965,10 +8913,13 @@
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
                 this.manualPluginDashboardOpenUserClicked = false;
-                if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
-                    this.overlay.setInteractionShieldEnabled(
-                        !!(document.body && document.body.classList.contains('yui-taking-over'))
+                if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                    this.overlay.setTutorialInputShieldActive(
+                        shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()
                     );
+                }
+                if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
+                    this.overlay.setInteractionShieldSuppressed(false);
                 }
                 if (runId === this.sceneRunId && !this.isStopping()) {
                     this.overlay.hideBubble();
@@ -11744,81 +11695,6 @@
                 return;
             }
             this.destroy();
-        }
-
-        get mobileTouchInteractionPassthrough() {
-            return this.shouldUseMobileTouchInteractionPassthrough();
-        }
-
-        shouldUseMobileTouchInteractionPassthrough() {
-            const coarsePointer = !!(
-                window.matchMedia
-                && window.matchMedia('(hover: none), (pointer: coarse)').matches
-            );
-            const narrowViewport = Math.max(
-                window.innerWidth || 0,
-                document.documentElement ? document.documentElement.clientWidth || 0 : 0
-            ) <= 768;
-            const touchCapable = !!(
-                'ontouchstart' in window
-                || (navigator && Number(navigator.maxTouchPoints || 0) > 0)
-            );
-
-            // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
-            return !!((coarsePointer || touchCapable) && narrowViewport);
-        }
-
-        isAllowedTutorialInteractionTarget(target) {
-            if (!target || typeof target.closest !== 'function') {
-                return false;
-            }
-
-            if (target.closest('#neko-tutorial-skip-btn')) {
-                return true;
-            }
-
-            if (this.isGuideMessageActionTarget(target)) {
-                return true;
-            }
-
-            if (this.awaitingIntroActivation) {
-                if (this.isIntroActivationTarget(target)) {
-                    this.finishIntroActivation();
-                    return true;
-                }
-            }
-
-            if (this.manualPluginDashboardOpenAllowed && this.manualPluginDashboardOpenTarget) {
-                const manualTarget = this.manualPluginDashboardOpenTarget;
-                if (
-                    target === manualTarget
-                    || (manualTarget.contains && manualTarget.contains(target))
-                    || (
-                        target.closest
-                        && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
-                    )
-                ) {
-                    this.manualPluginDashboardOpenUserClicked = true;
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        isSystemDialogInteractionTarget(target) {
-            if (!target || typeof target.closest !== 'function') {
-                return false;
-            }
-
-            return !!target.closest([
-                '#prominent-notice-overlay',
-                '.modal-overlay',
-                '.modal-dialog',
-                '.storage-location-completion-card',
-                '#storage-location-overlay',
-                '.storage-location-modal'
-            ].join(', '));
         }
 
         hasOpenSystemDialog() {

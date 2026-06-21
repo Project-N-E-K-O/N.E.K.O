@@ -101,7 +101,9 @@ function getEffectiveCompactChatState(
 }
 
 function isGuideChatButtonLockActive(): boolean {
-  return document.body?.classList.contains('yui-guide-chat-buttons-disabled') === true;
+  const body = document.body;
+  return body?.classList.contains('yui-guide-standalone-input-shield-active') === true
+    || body?.classList.contains('yui-guide-chat-buttons-disabled') === true;
 }
 
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
@@ -1587,7 +1589,8 @@ function CompactChatApp({
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
-  const compactTextEntryLocked = composerDisabled || compactInputLocked;
+  const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
+  const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
@@ -1691,8 +1694,7 @@ function CompactChatApp({
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
-  const [guideChatButtonsLocked, setGuideChatButtonsLocked] = useState(isGuideChatButtonLockActive);
-  const compactCapsuleEntryLocked = compactTextEntryLocked || guideChatButtonsLocked;
+  const compactCapsuleEntryLocked = compactTextEntryLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -7025,7 +7027,7 @@ function CompactChatApp({
                           readOnly={compactTextEntryLocked}
                           disabled={composerDisabled}
                           onChange={(event) => {
-                            if (compactInputLocked && !composerDisabled) return;
+                            if (compactTextEntryLocked) return;
                             setDraft(event.target.value);
                             if (event.target.value.trim().length > 0) {
                               closeCompactInputToolFan();
