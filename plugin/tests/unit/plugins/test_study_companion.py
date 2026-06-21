@@ -92,6 +92,7 @@ from plugin.plugins.study_companion.models import (
     StudyConfig,
     TutorReply,
     build_config,
+    public_current_question_payload,
 )
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
@@ -294,12 +295,16 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_auto_opens_static_ui(
+async def test_study_plugin_startup_auto_opens_panel_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[str] = []
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
     monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
+    monkeypatch.delenv("NEKO_STUDY_COMPANION_PANEL_URL", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_URL", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_BASE_URL", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_PORT", raising=False)
     monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
     ctx = _Ctx(
         tmp_path,
@@ -314,18 +319,50 @@ async def test_study_plugin_startup_auto_opens_static_ui(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == ["http://127.0.0.1:49888/plugin/study_companion/ui/"]
+        assert opened == [
+            "http://127.0.0.1:49888/plugin/study_companion/ui/"
+        ]
+        assert plugin.get_list_actions()[0]["target"] == (
+            "/plugin/study_companion/ui/"
+        )
     finally:
         await plugin.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_falls_back_for_invalid_port(
+async def test_study_plugin_startup_auto_open_can_be_disabled_by_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[str] = []
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "70000")
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
+    monkeypatch.delenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", raising=False)
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_open_uses_configured_panel_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_STUDY_COMPANION_PANEL_URL", "http://127.0.0.1:48916/ui")
     monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
     ctx = _Ctx(
         tmp_path,
@@ -340,7 +377,67 @@ async def test_study_plugin_startup_auto_open_falls_back_for_invalid_port(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == ["http://127.0.0.1:48916/plugin/study_companion/ui/"]
+        assert opened == [
+            "http://127.0.0.1:48916/plugin/study_companion/ui/"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_open_can_be_disabled_by_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", "true")
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_open_falls_back_for_invalid_manager_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.delenv("NEKO_STUDY_COMPANION_PANEL_URL", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_URL", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_BASE_URL", raising=False)
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "70000")
+    monkeypatch.setenv("NEKO_PLUGIN_MANAGER_PORT", "5173")
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": True},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == [
+            "http://127.0.0.1:48916/plugin/study_companion/ui/"
+        ]
     finally:
         await plugin.shutdown()
 
@@ -1685,6 +1782,7 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
             {
                 "id": "number_axis",
                 "name": "Number Axis",
+                "stage": "junior_high",
                 "prerequisites": [
                     {"id": "real_number_concept", "required_mastery": 0.55}
                 ],
@@ -1706,6 +1804,8 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         "to": "absolute_value",
         "relation": "next",
     } in payload["edges"]
+    assert payload["nodes"][0]["stage"] == "junior_high"
+    assert payload["summary"]["stage_counts"]["junior_high"] == 1
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])
 
 
@@ -1839,8 +1939,11 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
-    guide_ids = {surface["id"] for surface in config["plugin"]["ui"]["guide"]}
-    assert "quickstart" not in guide_ids
+    panel_ids = {surface["id"] for surface in config["plugin"]["ui"]["panel"]}
+    assert "quickstart" not in panel_ids
+    assert not config["plugin"]["ui"].get("guide")
+    assert "study-panel" in panel_ids
+    assert "memory-deck-list" in panel_ids
 
     quickstart_path = plugin_dir / "surfaces" / "quickstart.tsx"
     assert quickstart_path.exists()
@@ -1927,8 +2030,10 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "origin === 'null'" not in main_js
     assert "const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set" in main_js
     assert "function isTrustedStudySurfaceMessage(message)" in main_js
-    assert "kind: 'guide'" in main_js
-    assert "kind: 'panel'" not in main_js
+    assert "renderSurfaceDrawerBody(surfaceId)" in main_js
+    assert "/ui/plugins" not in main_js
+    assert "surfaceDrawerFrame" not in main_js
+    assert "kind: 'guide'" not in main_js
 
     assert "export const BRAND_CSS" in surface_utils
     assert "export function ensureBrandCSS()" in surface_utils
@@ -1990,6 +2095,7 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -2057,6 +2163,7 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
+window.eval(surfacePanelsJs);
 window.eval(mainJs);
 
 async function waitFor(predicate, label) {
@@ -2374,6 +2481,7 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -2457,6 +2565,7 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
+window.eval(surfacePanelsJs);
 window.eval(mainJs);
 
 async function waitFor(predicate, label) {
@@ -2593,24 +2702,73 @@ if (document.activeElement !== document.getElementById('panel-data')) {
   throw new Error(`Tab key did not move focus into active panel: ${document.activeElement && document.activeElement.id}`);
 }
 
-document.querySelector('#panel-memory [data-open-surface="due-review-panel"]').click();
-if (!parentMessages.some((message) => message.type === 'neko-study-open-surface' && message.payload?.surfaceId === 'due-review-panel')) {
-  throw new Error(`surface open message missing: ${JSON.stringify(parentMessages)}`);
+function assertSurfaceDrawer(surfaceId) {
+  const drawer = document.getElementById('surfaceDrawer');
+  const body = document.getElementById('surfaceDrawerBody');
+  if (drawer.dataset.open !== 'true') {
+    throw new Error(`surface drawer did not open for ${surfaceId}`);
+  }
+  if (drawer.dataset.surfaceId !== surfaceId) {
+    throw new Error(`surface drawer opened ${drawer.dataset.surfaceId} instead of ${surfaceId}`);
+  }
+  if (document.getElementById('surfaceDrawerFrame')) {
+    throw new Error('surface drawer should not render an iframe');
+  }
+  if (!body || !body.textContent.trim()) {
+    throw new Error(`surface drawer local body missing for ${surfaceId}`);
+  }
+  if (body.innerHTML.includes('/ui/plugins')) {
+    throw new Error(`surface drawer leaked plugin manager URL for ${surfaceId}: ${body.innerHTML}`);
+  }
 }
+
+document.querySelector('#panel-memory [data-open-surface="due-review-panel"]').click();
+assertSurfaceDrawer('due-review-panel');
 
 for (const surfaceId of ['memory-importer', 'habit-dashboard', 'pomodoro-panel', 'daily-goal-editor']) {
   document.querySelector(`#advancedSettings [data-open-surface="${surfaceId}"]`).click();
-  if (!parentMessages.some((message) => message.type === 'neko-study-open-surface' && message.payload?.surfaceId === surfaceId)) {
-    throw new Error(`advanced settings surface open message missing for ${surfaceId}: ${JSON.stringify(parentMessages)}`);
-  }
+  assertSurfaceDrawer(surfaceId);
 }
 
 for (const surfaceId of ['pomodoro-panel', 'due-review-panel', 'habit-dashboard']) {
   document.querySelector(`.quick-panels [data-open-surface="${surfaceId}"]`).click();
-  if (!parentMessages.some((message) => message.type === 'neko-study-open-surface' && message.payload?.surfaceId === surfaceId)) {
-    throw new Error(`quick panel surface open message missing for ${surfaceId}: ${JSON.stringify(parentMessages)}`);
-  }
+  assertSurfaceDrawer(surfaceId);
 }
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_memory_due_reviews'),
+  'due review drawer load',
+);
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_pomodoro_status'),
+  'pomodoro drawer load',
+);
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_checkin_status')
+    && runEntries.some((entry) => entry.entry_id === 'study_goals'),
+  'habit drawer load',
+);
+
+document.querySelector('[data-feature-action="knowledge"]').click();
+assertSurfaceDrawer('knowledge-map');
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_knowledge_map'),
+  'knowledge map drawer load',
+);
+
+document.querySelector('[data-feature-action="memory"]').click();
+assertSurfaceDrawer('memory-deck-list');
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_memory_list_decks'),
+  'memory deck drawer load',
+);
+
+document.querySelector('[data-feature-action="export"]').click();
+assertSurfaceDrawer('note-exporter');
+document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]').click();
+await waitFor(
+  () => runEntries.some((entry) => entry.entry_id === 'study_export_notes' && entry.args.fmt),
+  'export drawer preview',
+);
 
 const statusRunCountBeforeMessage = runEntries.filter((entry) => entry.entry_id === 'study_status').length;
 window.dispatchEvent(new window.MessageEvent('message', {
@@ -2705,7 +2863,7 @@ def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
-    for surface in config["plugin"]["ui"]["guide"]:
+    for surface in config["plugin"]["ui"]["panel"]:
         assert surface["context"] == "study", surface["id"]
         assert "action:call" in surface["permissions"], surface["id"]
 
@@ -2775,7 +2933,9 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "readOnly={interactionBusy}" in source
     assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
     assert "status: textImage ? 'solving_problem' : 'explaining'" in source
-    assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
+    assert "study_generate_targeted_question" in source
+    assert "selection_context_id: context.selection_context_id" in source
+    assert "genArgs.vision_image_base64 = textImage" not in source
     assert "ui.error.missing_study_input" in source
     assert "if (!answer.trim() && !answerImage)" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
@@ -2950,8 +3110,10 @@ def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
     assert "data.new_mode" in set_mode
     assert "data && data.changed === false" in set_mode
     assert "setModeButtons(currentMode, false)" in set_mode
-    assert "answerInput.value = data.answer;" in static_source
-    assert "answerInput.value = '';" not in static_source
+    assert "answerInput.value = data.answer;" not in static_source
+    assert "study_generate_targeted_question" in static_source
+    assert "question_id: currentQuestion.question_id" in static_source
+    assert "attempt_id: currentQuestion.attempt_id" in static_source
 
 
 def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_fails() -> (
@@ -3948,6 +4110,191 @@ async def test_study_generate_question_without_content_returns_err(
 
         assert isinstance(question_empty, Err)
         assert question_empty.error.code == "MISSING_TEXT"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_targeted_question_context_generate_and_attempt_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TargetedTutorAgent(_FakeTutorAgent):
+        async def question_generate(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.inputs.append((text, dict(context or {}), mode))
+            return TutorReply(
+                operation="question_generate",
+                input_text=text,
+                reply="practice question",
+                payload={
+                    "question": "What is the derivative of x^2?",
+                    "answer": "2x",
+                    "reference_answer": "2x",
+                    "accepted_answers": ["2 x"],
+                    "key_points": ["power rule", "coefficient"],
+                    "rubric": {"power rule": 70, "coefficient": 30},
+                    "solution_steps": ["Apply the power rule", "Reduce exponent"],
+                    "hint": "Use the power rule.",
+                    "difficulty": 2,
+                    "topic": "power rule",
+                    "question_type": "math_exact",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _TargetedTutorAgent()
+
+    try:
+        empty_context = await plugin.study_question_context()
+        assert isinstance(empty_context, Ok)
+        assert empty_context.value["selection_reason"] == "no_data"
+        assert not empty_context.value["selection_context_id"]
+
+        retry_selection = plugin._selection_from_question_params(
+            {
+                "retry_wrong_question": {
+                    "id": 7,
+                    "topic_id": "derivatives",
+                    "error_type": "missing_power_rule",
+                    "verdict": "partial",
+                    "user_answer": "x",
+                    "expected_answer": "2x",
+                }
+            }
+        )
+        wrong_question_summary = retry_selection["selection_reason_payload"][
+            "wrong_question"
+        ]
+        assert wrong_question_summary == {
+            "id": 7,
+            "topic_id": "derivatives",
+            "error_type": "missing_power_rule",
+            "verdict": "partial",
+        }
+        assert "user_answer" not in wrong_question_summary
+        assert "expected_answer" not in wrong_question_summary
+
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        plugin._store.append_mastery_snapshot(
+            {
+                "topic_id": "derivatives",
+                "mastery": 0.2,
+                "accuracy": 0.2,
+                "recency": 1.0,
+                "consistency": 0.5,
+                "confidence": 0.8,
+                "level": "weak",
+                "attempts": 2,
+                "flags": [],
+            }
+        )
+
+        context_result = await plugin.study_question_context()
+        assert isinstance(context_result, Ok)
+        selection_context_id = context_result.value["selection_context_id"]
+        assert selection_context_id
+        assert context_result.value["selection_reason"] == "weak_topic"
+
+        generated = await plugin.study_generate_targeted_question(
+            selection_context_id=selection_context_id
+        )
+        assert isinstance(generated, Ok)
+        for private_key in (
+            "answer",
+            "reference_answer",
+            "accepted_answers",
+            "key_points",
+            "rubric",
+            "solution_steps",
+            "internal_private_payload",
+        ):
+            assert private_key not in generated.value
+        assert generated.value["question_id"]
+        assert generated.value["attempt_id"]
+        assert generated.value["selected_topic_id"] == "derivatives"
+        assert generated.value["topic"] == "derivatives"
+
+        consumed_context = await plugin.study_generate_targeted_question(
+            selection_context_id=selection_context_id
+        )
+        assert isinstance(consumed_context, Err)
+        assert consumed_context.error.code == "SELECTION_CONTEXT_EXPIRED"
+        assert len(plugin._agent.inputs) == 1
+
+        async with plugin._lock:
+            current_question = dict(plugin._state.current_question)
+            public_question = public_current_question_payload(current_question)
+        assert current_question["answer"] == "2x"
+        assert current_question["accepted_answers"] == ["2 x"]
+        assert current_question["topic"] == "derivatives"
+        assert public_question["question"] == "What is the derivative of x^2?"
+        assert "answer" not in public_question
+        assert "accepted_answers" not in public_question
+        persisted_question = plugin._store.load_state(
+            build_initial_state()
+        ).current_question
+        assert persisted_question["answer"] == "2x"
+        assert persisted_question["accepted_answers"] == ["2 x"]
+
+        missing_identity = await plugin.study_evaluate_answer(answer="2x")
+        assert isinstance(missing_identity, Err)
+        assert missing_identity.error.code == "QUESTION_MISMATCH"
+
+        supplied_same_question_without_identity = await plugin.study_evaluate_answer(
+            answer="2x",
+            question=generated.value["question"],
+        )
+        assert isinstance(supplied_same_question_without_identity, Err)
+        assert supplied_same_question_without_identity.error.code == "QUESTION_MISMATCH"
+
+        async with plugin._lock:
+            plugin._state.current_question["attempt_evaluation_pending"] = True
+        pending = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id=generated.value["question_id"],
+            attempt_id=generated.value["attempt_id"],
+            selected_topic_id=generated.value["selected_topic_id"],
+        )
+        assert isinstance(pending, Err)
+        assert pending.error.code == "ATTEMPT_ALREADY_EVALUATED"
+        async with plugin._lock:
+            plugin._state.current_question.pop("attempt_evaluation_pending", None)
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id=generated.value["question_id"],
+            attempt_id=generated.value["attempt_id"],
+            selected_topic_id=generated.value["selected_topic_id"],
+        )
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["question_id"] == generated.value["question_id"]
+
+        duplicate = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id=generated.value["question_id"],
+            attempt_id=generated.value["attempt_id"],
+            selected_topic_id=generated.value["selected_topic_id"],
+        )
+        assert isinstance(duplicate, Err)
+        assert duplicate.error.code == "ATTEMPT_ALREADY_EVALUATED"
     finally:
         await plugin.shutdown()
 

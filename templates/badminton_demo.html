@@ -36,6 +36,47 @@
     display: block; position: fixed; inset: 0; z-index: 15;
     pointer-events: none;
   }
+  #badminton-loading {
+    position: fixed; inset: 0; z-index: 70;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 9, 14, 0.88);
+    color: #f7fbff; pointer-events: auto; cursor: wait;
+    opacity: 1; transition: opacity .28s ease;
+  }
+  #badminton-loading.hide { opacity: 0; }
+  #badminton-loading[hidden] { display: none !important; }
+  .badminton-loading-panel {
+    width: min(340px, calc(100vw - 48px));
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px; padding: 22px 24px;
+    background: rgba(9,16,24,0.76);
+    box-shadow: 0 18px 46px rgba(0,0,0,0.34);
+    text-align: center;
+  }
+  .badminton-loading-progress {
+    position: relative; width: 172px; height: 4px; margin: 0 auto 16px;
+    overflow: hidden; border-radius: 999px;
+    background: rgba(255,255,255,0.16);
+  }
+  #badminton-loading-bar {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 8%;
+    background: #ffca3a;
+    border-radius: inherit;
+    transition: width .22s ease;
+  }
+  .badminton-loading-title {
+    font: 600 17px/1.35 "PingFang SC", "Segoe UI", sans-serif;
+    margin-bottom: 6px;
+  }
+  .badminton-loading-subtitle {
+    font: 13px/1.45 "PingFang SC", "Segoe UI", sans-serif;
+    color: rgba(247,251,255,0.72);
+  }
+  #badminton-loading-percent {
+    margin-top: 9px;
+    font: 12px/1 "Segoe UI", Arial, sans-serif;
+    color: rgba(247,251,255,0.62);
+  }
   #hud {
     position: fixed; left: 16px; top: 14px; z-index: 20;
     display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
@@ -373,6 +414,14 @@
 </style>
 </head>
 <body>
+<div id="badminton-loading" role="status" aria-live="polite" aria-atomic="true">
+  <div class="badminton-loading-panel">
+    <div class="badminton-loading-progress" aria-hidden="true"><div id="badminton-loading-bar"></div></div>
+    <div class="badminton-loading-title" data-i18n="badminton.loading.title" data-i18n-fallback="正在进入羽毛球场">正在进入羽毛球场</div>
+    <div class="badminton-loading-subtitle" data-i18n="badminton.loading.subtitle" data-i18n-fallback="加载场地、角色和音效...">加载场地、角色和音效...</div>
+    <div id="badminton-loading-percent" aria-hidden="true">8%</div>
+  </div>
+</div>
 <canvas id="game" width="900" height="500"></canvas>
 <canvas id="aiming-canvas" width="900" height="500"></canvas>
 <div id="hud" aria-live="polite">
@@ -609,6 +658,13 @@
   var ctx = canvas.getContext('2d');
   var aimingCanvas = document.getElementById('aiming-canvas');
   var aimingCtx = aimingCanvas.getContext('2d');
+  var badmintonLoading = document.getElementById('badminton-loading');
+  var badmintonLoadingBar = document.getElementById('badminton-loading-bar');
+  var badmintonLoadingPercent = document.getElementById('badminton-loading-percent');
+  var firstFrameRendered = false;
+  var firstFrameCallbacks = [];
+  var badmintonLoadingProgress = 8;
+  var badmintonLoadingTimer = 0;
   var YUI_SHOOTER_W = 244;
   var YUI_SHOOTER_H = 366;
   var YUI_SHOOTER_SCALE = 0.86;
@@ -775,8 +831,8 @@
   var NET_BALL_FRICTION = 0.018;
   var NET_BALL_RADIUS = BALL_R + 6;
   var NET_CONTACT_RADIUS = 42;
-  var NET_CONTACT_IMPULSE = 240;
-  var NET_CONTACT_HOLD_MS = 180;
+  var NET_CONTACT_IMPULSE = 320;
+  var NET_CONTACT_HOLD_MS = 230;
   var PLAYER_MOVE_SPEED = 1040;
   var PLAYER_JUMP_SPEED = 430;
   var PLAYER_JUMP_GRAVITY = 1350;
@@ -807,6 +863,7 @@
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
   var debugMode = modeParams ? modeParams.get('debug') === '1' : false;
   var currentMode = 'duel';
+  var netContactEffects = [];
   var DUEL_DIFFICULTY = [
     { name: 'max', skillBase: 0.88, growth: 0.010, pressure: 0.07, angleVar: 0.6, powerVar: 1.2, windupMs: 200, reactionMs: 300 },
     { name: 'lv2', skillBase: 0.78, growth: 0.007, pressure: 0.05, angleVar: 1.5, powerVar: 2.5, windupMs: 450, reactionMs: 550 },
@@ -3257,7 +3314,7 @@
       nekoScore: 0,
       playerMisses: 0,
       nekoMisses: 0,
-      maxMisses: 3,
+      maxMisses: 11,
       round: 1,
       rallyHits: 0,
       activeShooter: 'player',
@@ -3271,6 +3328,7 @@
     },
     tutorialStep: localStorage.getItem('bd_tutorial_done') === '1' ? 3 : 0
   };
+  var lastPlayerPointer = null;
 
   function resize() {
     var dpr = window.devicePixelRatio || 1;
@@ -3310,6 +3368,14 @@
     game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);
     game.playerCourt.targetY = PLAYER_START_Y;
   }
+  function rememberPlayerPointer(ev) {
+    if (!ev || !Number.isFinite(ev.clientX) || !Number.isFinite(ev.clientY)) return;
+    lastPlayerPointer = { clientX: ev.clientX, clientY: ev.clientY };
+  }
+  function syncPlayerCourtTargetFromPointer() {
+    if (!lastPlayerPointer || !canPlayerMoveCourt()) return;
+    updatePlayerCourtTarget(lastPlayerPointer.clientX, lastPlayerPointer.clientY);
+  }
   function updateYuiCourtTarget() {
     var targetX = YUI_START_X;
     var targetY = YUI_START_Y;
@@ -3326,6 +3392,7 @@
   }
   function updateCourtMovement(dt) {
     updateYuiCourtTarget();
+    syncPlayerCourtTargetFromPointer();
     game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);
     game.playerCourt.targetY = PLAYER_START_Y;
     game.playerCourt.y = PLAYER_START_Y;
@@ -3363,8 +3430,9 @@
   }
   function canPlayerJump() {
     if (!game.playerJump) return false;
-    if (game.state !== 'ready' || game.pendingSwing || !isPlayerTurn()) return false;
-    if (isPositionTransitioning) return false;
+    if (isBadmintonLoadingActive()) return false;
+    if (game.pendingSwing && game.pendingSwing.shooter === 'player') return false;
+    if (!canPlayerMoveCourt()) return false;
     if (game.playerJump.active || getPlayerJumpOffset() > 0) return false;
     return performance.now() >= (game.playerJump.cooldownUntil || 0);
   }
@@ -3761,15 +3829,22 @@
     if (isDuelMode()) return game.duel.activeShooter === 'player';
     return true;
   }
+  function isBadmintonLoadingActive() {
+    return !!(badmintonLoading && !badmintonLoading.hidden);
+  }
   function canPlayerControlShot() {
+    if (isBadmintonLoadingActive()) return false;
     if (game.state !== 'ready' || game.pendingSwing || !isPlayerTurn()) return false;
     if (isPlayerReceivingReturn()) return canPlayerReturnIncomingShuttle();
     return !isPositionTransitioning;
   }
   function canPlayerMoveCourt() {
+    if (isBadmintonLoadingActive()) return false;
     var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;
+    var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;
+    var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';
     var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';
-    return isDuelMode() && (canPlayerControlShot() || incomingYuiBall || yuiSwinging);
+    return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
   }
   function isPlayerReceivingReturn() {
     return !!(game.ball && game.ball.awaitingReturnBy === 'player');
@@ -3787,7 +3862,7 @@
     return normalized <= 1;
   }
   function canPlayerReturnIncomingShuttle() {
-    return isPlayerReceivingReturn() && !game.ball.resolved && isIncomingPlayerShuttleInReach(game.ball);
+    return isPlayerReceivingReturn() && !game.ball.resolved && !game.ball.hitNet && isIncomingPlayerShuttleInReach(game.ball);
   }
   function shouldDrawHeldShuttle() {
     return game.heldShuttleVisible && !game.ball && !game.pendingSwing && game.state === 'ready' && isPlayerTurn();
@@ -3953,7 +4028,7 @@
     var incomingSpeed = typeof ball.speed === 'function'
       ? ball.speed()
       : Math.sqrt((ball.vx || 0) * (ball.vx || 0) + (ball.vy || 0) * (ball.vy || 0));
-    var impact = clamp(incomingSpeed / 360, 0.55, 1.35);
+    var impact = clamp(incomingSpeed / 330, 0.68, 1.55);
     var centerCol = Math.floor(NET_COLS / 2);
     for (var col = 0; col < NET_COLS; col++) {
       var colSpread = centerCol > 0 ? (col - centerCol) / centerCol : 0;
@@ -3968,18 +4043,52 @@
         if (falloff <= 0) continue;
         var rowT = getNetSpanT(row, NET_ROWS);
         var weight = falloff * columnFalloff * (0.72 + Math.sin(rowT * Math.PI) * 0.28);
-        var recoilX = (direction * 0.14 + colSpread * 0.035) * NET_CONTACT_IMPULSE * impact * weight;
-        var rippleY = (rowT - 0.5) * 0.12 * NET_CONTACT_IMPULSE * impact * weight;
+        var recoilX = (direction * 0.18 + colSpread * 0.045) * NET_CONTACT_IMPULSE * impact * weight;
+        var rippleY = (rowT - 0.5) * 0.16 * NET_CONTACT_IMPULSE * impact * weight;
         node.vx += recoilX;
         node.vy += rippleY;
-        node.x += (direction * 0.9 + colSpread * 0.35) * weight;
-        node.y += (rowT - 0.5) * 0.55 * weight;
+        node.x += (direction * 1.7 + colSpread * 0.52) * weight * impact;
+        node.y += (rowT - 0.5) * 0.9 * weight * impact;
       }
+    }
+  }
+  function spawnNetContactEffect(ball, crossing) {
+    var contactX = crossing && Number.isFinite(crossing.screenX) ? crossing.screenX : (ball ? ball.x : BADMINTON.netX);
+    var contactY = crossing && Number.isFinite(crossing.screenY) ? crossing.screenY : (ball ? ball.y : BADMINTON.netTop);
+    var speed = ball && typeof ball.speed === 'function'
+      ? ball.speed()
+      : Math.sqrt(Math.pow(ball && ball.vx || 0, 2) + Math.pow(ball && ball.vy || 0, 2));
+    var strength = clamp(speed / 430, 0.56, 1.24);
+    var now = performance.now();
+    netContactEffects.push({
+      x: contactX,
+      y: contactY,
+      startAt: now,
+      duration: 560,
+      strength: strength,
+      direction: ball && ball.direction === -1 ? -1 : 1
+    });
+    if (netContactEffects.length > 5) netContactEffects = netContactEffects.slice(netContactEffects.length - 5);
+    if (debugMode) {
+      window.__badmintonNetEffectDebug = {
+        count: netContactEffects.length,
+        x: contactX,
+        y: contactY,
+        strength: strength,
+        startedAt: now
+      };
     }
   }
   function resetGame() {
     clearTimeout(resultTimer);
     resultTimer = 0;
+    netContactEffects = [];
+    if (debugMode && window.__badmintonNetEffectDebug) {
+      window.__badmintonNetEffectDebug = {
+        count: 0,
+        clearedAt: performance.now()
+      };
+    }
     var shouldRestartRoute = endedRoute || routeActive || heartbeatTimer || drainTimer;
     if (shouldRestartRoute) {
       if (!endedRoute) endRoute(false);
@@ -4271,6 +4380,7 @@
     return true;
   }
   function shoot() {
+    if (isBadmintonLoadingActive()) return;
     if (returnIncomingPlayerShuttle()) return;
     if (!canPlayerControlShot()) return;
     resumeAudio();
@@ -4395,8 +4505,9 @@
     ball.netContactAt = performance.now();
     ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;
     applyNetContactImpulse(ball, crossing);
-    ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.22, 32, 130);
-    ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.18 + 115, 115);
+    spawnNetContactEffect(ball, crossing);
+    ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.14, 24, 88);
+    ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + 132, 132);
     syncShuttleCourtCoordinates(ball);
   }
   function checkShuttleLanding(ball) {
@@ -4418,8 +4529,8 @@
       var targetRight = direction > 0 ? BADMINTON.courtRight : BADMINTON.netX - ballRadius * 0.5;
       var inTargetX = ball.x >= targetLeft && ball.x <= targetRight;
       var inTargetY = ball.y >= BADMINTON.targetTop && ball.y <= BADMINTON.courtBottom + ballRadius;
-      var scored = ball.crossedNet && inTargetX && inTargetY;
-      var shotType = ball.crossedNet ? 'out' : 'net';
+      var scored = !ball.hitNet && ball.crossedNet && inTargetX && inTargetY;
+      var shotType = ball.hitNet ? 'net' : (ball.crossedNet ? 'out' : 'net');
       if (scored) {
         var nearBaseline = direction > 0 ? ball.x > targetRight - 34 : ball.x < targetLeft + 34;
         var nearNet = direction > 0 ? ball.x < targetLeft + 34 : ball.x > targetRight - 34;
@@ -4471,6 +4582,7 @@
   }
   function maybePlayerReceiveIncomingShuttle(ball) {
     if (!isDuelMode() || !ball || ball.resolved || game.pendingSwing) return false;
+    if (ball.hitNet) return false;
     if (ball.shooter !== 'neko' || ball.direction !== -1 || ball.awaitingReturnBy) return false;
     var shuttleCourtY = getShuttleCourtY(ball, false);
     var shuttleZ = getShuttleCourtZ(ball, false);
@@ -5027,8 +5139,10 @@
         b.prevZ = getShuttleCourtZ(b, false);
         stepBallPhysics(b, subDt);
         checkShuttleLanding(b);
-        if (maybeYuiReturnIncomingShuttle(b)) break;
-        if (maybePlayerReceiveIncomingShuttle(b)) break;
+        if (!b.hitNet) {
+          if (maybeYuiReturnIncomingShuttle(b)) break;
+          if (maybePlayerReceiveIncomingShuttle(b)) break;
+        }
         updateNetPhysics(subDt);
         b.trail.push({ x: b.x, y: b.y });
         if (b.trail.length > 20) b.trail.shift();
@@ -5941,6 +6055,58 @@
     ctx.lineTo(bottomRight.x, bottomRight.y);
     ctx.stroke();
     ctx.restore();
+    drawNetContactEffects();
+  }
+
+  function drawNetContactEffects() {
+    if (!netContactEffects.length) return;
+    var now = performance.now();
+    netContactEffects = netContactEffects.filter(function (effect) {
+      return now - effect.startAt < effect.duration;
+    });
+    if (!netContactEffects.length) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = 0; i < netContactEffects.length; i++) {
+      var effect = netContactEffects[i];
+      var age = clamp((now - effect.startAt) / effect.duration, 0, 1);
+      var alpha = (1 - age) * effect.strength;
+      var spread = 8 + age * 54 * effect.strength;
+      var lift = Math.sin(age * Math.PI) * 8 * effect.strength;
+      var x = clamp(effect.x, BADMINTON.netX - 34, BADMINTON.netX + 34);
+      var y = clamp(effect.y - lift, NET_TOP - 18, NET_BOTTOM + 24);
+
+      ctx.shadowColor = 'rgba(255,244,190,' + (0.26 * alpha).toFixed(3) + ')';
+      ctx.shadowBlur = 7 + 8 * alpha;
+      ctx.strokeStyle = 'rgba(255,245,204,' + (0.22 * alpha).toFixed(3) + ')';
+      ctx.lineWidth = 5.8 * alpha;
+      ctx.beginPath();
+      ctx.moveTo(x - 3, y - spread * 0.55);
+      ctx.quadraticCurveTo(x + effect.direction * (5 + spread * 0.08), y, x - 2, y + spread * 0.55);
+      ctx.stroke();
+
+      ctx.shadowBlur = 3 + 6 * alpha;
+      ctx.strokeStyle = 'rgba(236,255,248,' + (0.46 * alpha).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(0.65, 1.45 * alpha);
+      ctx.beginPath();
+      ctx.moveTo(x, y - spread);
+      ctx.quadraticCurveTo(x + effect.direction * (4 + spread * 0.10), y, x, y + spread);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(255,236,170,' + (0.42 * alpha).toFixed(3) + ')';
+      for (var spark = 0; spark < 4; spark++) {
+        var sparkPhase = spark * 1.7 + age * 2.6;
+        var sparkX = x + effect.direction * (6 + spark * 4 + age * 18) + Math.sin(sparkPhase) * 3;
+        var sparkY = y + (spark - 1.5) * 9 - age * (8 + spark * 2);
+        var sparkR = Math.max(0.7, (1.9 - spark * 0.2) * alpha);
+        ctx.beginPath();
+        ctx.arc(sparkX, sparkY, sparkR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   function drawNetCord() {
@@ -6607,6 +6773,89 @@
   }
   function drawAiming() {
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
+    drawPlayerReturnHitCue();
+  }
+  function drawPlayerReturnHitCue() {
+    if (!isPlayerReceivingReturn() || !canPlayerReturnIncomingShuttle()) return;
+    var ball = game.ball;
+    var contact = getRacketContactPoint('player');
+    var yui = getYuiShotOrigin();
+    if (!ball || !contact || !yui) return;
+    var dx = yui.x - contact.x;
+    var dy = yui.y - contact.y;
+    var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    var ux = dx / len;
+    var uy = dy / len;
+    var nx = -uy;
+    var ny = ux;
+    var now = performance.now();
+    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
+    var shimmer = 0.5 + 0.5 * Math.sin(now / 96);
+    var radius = ball.radius || BALL_R;
+    var startX = ball.x - ux * 32 + nx * 10;
+    var startY = ball.y - uy * 32 + ny * 10;
+    var controlX = ball.x + ux * 2 + nx * 24;
+    var controlY = ball.y + uy * 2 + ny * 24;
+    var endX = ball.x + ux * 38 + nx * 7;
+    var endY = ball.y + uy * 38 + ny * 7;
+
+    aimingCtx.save();
+    aimingCtx.globalCompositeOperation = 'lighter';
+    aimingCtx.shadowColor = 'rgba(255,221,122,.26)';
+    aimingCtx.shadowBlur = 5 + pulse * 3;
+    aimingCtx.strokeStyle = 'rgba(255,236,168,.075)';
+    aimingCtx.lineWidth = 7 + pulse * 1.5;
+    aimingCtx.lineCap = 'round';
+    aimingCtx.beginPath();
+    aimingCtx.moveTo(startX, startY);
+    aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
+    aimingCtx.stroke();
+
+    var cueGradient = aimingCtx.createLinearGradient(startX, startY, endX, endY);
+    cueGradient.addColorStop(0, 'rgba(255,255,255,0)');
+    cueGradient.addColorStop(0.42, 'rgba(255,246,190,.16)');
+    cueGradient.addColorStop(1, 'rgba(255,210,96,.30)');
+    aimingCtx.shadowBlur = 3 + pulse * 2;
+    aimingCtx.strokeStyle = cueGradient;
+    aimingCtx.lineWidth = 1.8 + pulse * 0.55;
+    aimingCtx.beginPath();
+    aimingCtx.moveTo(startX, startY);
+    aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
+    aimingCtx.stroke();
+
+    var tangentX = endX - controlX;
+    var tangentY = endY - controlY;
+    var tangentLen = Math.max(1, Math.sqrt(tangentX * tangentX + tangentY * tangentY));
+    tangentX /= tangentLen;
+    tangentY /= tangentLen;
+    var sideX = -tangentY;
+    var sideY = tangentX;
+    var head = 6 + shimmer * 1.5;
+    aimingCtx.fillStyle = 'rgba(255,218,102,.24)';
+    aimingCtx.shadowBlur = 3;
+    aimingCtx.beginPath();
+    aimingCtx.moveTo(endX + tangentX * 4, endY + tangentY * 4);
+    aimingCtx.lineTo(endX - tangentX * head + sideX * head * 0.32, endY - tangentY * head + sideY * head * 0.32);
+    aimingCtx.lineTo(endX - tangentX * head - sideX * head * 0.22, endY - tangentY * head - sideY * head * 0.22);
+    aimingCtx.closePath();
+    aimingCtx.fill();
+
+    var glowRadius = radius + 3 + pulse * 2;
+    var glow = aimingCtx.createRadialGradient(ball.x, ball.y, Math.max(2, radius * 0.4), ball.x, ball.y, glowRadius + 7);
+    glow.addColorStop(0, 'rgba(255,255,255,.055)');
+    glow.addColorStop(0.45, 'rgba(255,232,150,.085)');
+    glow.addColorStop(1, 'rgba(255,216,94,0)');
+    aimingCtx.fillStyle = glow;
+    aimingCtx.beginPath();
+    aimingCtx.arc(ball.x, ball.y, glowRadius + 7, 0, Math.PI * 2);
+    aimingCtx.fill();
+    aimingCtx.strokeStyle = 'rgba(255,242,183,.18)';
+    aimingCtx.lineWidth = 0.9;
+    aimingCtx.shadowBlur = 2;
+    aimingCtx.beginPath();
+    aimingCtx.arc(ball.x, ball.y, glowRadius, 0, Math.PI * 2);
+    aimingCtx.stroke();
+    aimingCtx.restore();
   }
   function drawBall() {
     if (!game.ball) return;
@@ -6625,6 +6874,88 @@
     drawNetCord();
     drawStreakEffect();
   }
+  function markFirstFrameRendered() {
+    if (firstFrameRendered) return;
+    firstFrameRendered = true;
+    var callbacks = firstFrameCallbacks.splice(0);
+    callbacks.forEach(function (resolve) { resolve(); });
+  }
+  function waitForFirstFrame() {
+    if (firstFrameRendered) return Promise.resolve();
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      firstFrameCallbacks.push(finish);
+      setTimeout(finish, 5000);
+    });
+  }
+  function hideBadmintonLoading() {
+    if (!badmintonLoading || badmintonLoading.hidden) return;
+    badmintonLoading.classList.add('hide');
+    setTimeout(function () {
+      if (!badmintonLoading) return;
+      badmintonLoading.hidden = true;
+      window.__badmintonInitialLoadingHidden = true;
+    }, 320);
+  }
+  function setBadmintonLoadingProgress(value) {
+    badmintonLoadingProgress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+    if (badmintonLoadingBar) badmintonLoadingBar.style.width = badmintonLoadingProgress + '%';
+    if (badmintonLoadingPercent) badmintonLoadingPercent.textContent = badmintonLoadingProgress + '%';
+  }
+  function startBadmintonFakeProgress() {
+    clearInterval(badmintonLoadingTimer);
+    setBadmintonLoadingProgress(8);
+    badmintonLoadingTimer = setInterval(function () {
+      if (badmintonLoadingProgress >= 92) {
+        clearInterval(badmintonLoadingTimer);
+        badmintonLoadingTimer = 0;
+        return;
+      }
+      var remaining = 92 - badmintonLoadingProgress;
+      var step = remaining > 35 ? 6 : (remaining > 14 ? 3 : 1);
+      setBadmintonLoadingProgress(Math.min(92, badmintonLoadingProgress + step));
+    }, 180);
+  }
+  function completeBadmintonLoading() {
+    clearInterval(badmintonLoadingTimer);
+    badmintonLoadingTimer = 0;
+    setBadmintonLoadingProgress(100);
+    setTimeout(hideBadmintonLoading, 220);
+  }
+  function settleBadmintonLoadingPromise(promise, timeoutMs) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      setTimeout(finish, timeoutMs || 5000);
+      Promise.resolve(promise).then(finish).catch(finish);
+    });
+  }
+  function scheduleBadmintonLoadingDismiss(loadPromises) {
+    if (!badmintonLoading) return;
+    window.__badmintonInitialLoadingHidden = false;
+    startBadmintonFakeProgress();
+    var minimumVisible = new Promise(function (resolve) { setTimeout(resolve, 350); });
+    var loadReady = Promise.all((loadPromises || []).map(function (promise) {
+      return settleBadmintonLoadingPromise(promise, 5000);
+    }));
+    Promise.all([minimumVisible, waitForFirstFrame(), loadReady]).then(completeBadmintonLoading).catch(completeBadmintonLoading);
+  }
+  function afterInitialPaint(callback) {
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        setTimeout(callback, 0);
+      });
+    });
+  }
   function loop(ts) {
     var dt = game.lastTs ? Math.min(0.033, (ts - game.lastTs) / 1000) : 0.016;
     game.lastTs = ts;
@@ -6632,6 +6963,7 @@
     render();
     drawAiming();
     renderYuiLive2dRacket();
+    markFirstFrameRendered();
     requestAnimationFrame(loop);
   }
 
@@ -6717,7 +7049,7 @@
     return routeStartPromise;
   }
   function startRouteAfterCharacterReady() {
-    loadBadmintonCharacter().finally(function () { startRoute(); });
+    return loadBadmintonCharacter().finally(function () { return startRoute(); });
   }
   function endRoute(useBeacon) {
     if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
@@ -7085,7 +7417,7 @@
   function shouldIgnoreBadmintonPointerEvent(ev) {
     var target = ev && ev.target;
     if (!target || typeof target.closest !== 'function') return false;
-    return !!target.closest('#utility-controls, #result-panel, #leaderboard-panel, #stats-panel, #game-audio-controls, #bd-debug-panel, button, input, select, textarea, a, label');
+    return !!target.closest('#badminton-loading, #utility-controls, #result-panel, #leaderboard-panel, #stats-panel, #game-audio-controls, #bd-debug-panel, button, input, select, textarea, a, label');
   }
   function shouldIgnoreBadmintonKeyboardEvent(ev) {
     var target = ev && ev.target;
@@ -7093,7 +7425,9 @@
     return !!target.closest('button, input, select, textarea, a, [contenteditable="true"]');
   }
   function handleBadmintonPointerMove(ev) {
+    if (isBadmintonLoadingActive()) return;
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
+    rememberPlayerPointer(ev);
     if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);
     if (!canPlayerControlShot()) return;
     var y = ev.clientY / Math.max(1, window.innerHeight);
@@ -7104,6 +7438,7 @@
     }
   }
   function handleBadmintonPointerDown(ev) {
+    if (isBadmintonLoadingActive()) return;
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
     if (ev && ev.__badmintonPointerDownHandled) return;
     if (ev) ev.__badmintonPointerDownHandled = true;
@@ -7137,6 +7472,7 @@
     returnIncomingPlayerShuttle();
   }, true);
   window.addEventListener('mouseup', function () {
+    if (isBadmintonLoadingActive()) return;
     if (game.charging && canPlayerControlShot()) shoot();
     else {
       game.charging = false;
@@ -7146,6 +7482,10 @@
     }
   });
   window.addEventListener('keydown', function (ev) {
+    if (isBadmintonLoadingActive()) {
+      if (ev.key === ' ' || ev.code === 'Space') ev.preventDefault();
+      return;
+    }
     var key = ev.key.toLowerCase();
     if ((key === ' ' || ev.code === 'Space') && !shouldIgnoreBadmintonKeyboardEvent(ev)) {
       ev.preventDefault();
@@ -7254,10 +7594,13 @@
   if (lastFinalStreak >= 15) applyNekoControl({ expression: 'anticipate', intensity: 'medium' }, {});
   updateTutorial(_i18n('tutorial.aim', '上下移动鼠标调整挥拍角度'));
   checkSeasonalEasterEggs();
-  startRouteAfterCharacterReady();
-  initPlayerAvatar();
-  initNekoAvatar();
   requestAnimationFrame(loop);
+  afterInitialPaint(function () {
+    var routeReady = startRouteAfterCharacterReady();
+    var playerAvatarReady = initPlayerAvatar();
+    var nekoAvatarReady = initNekoAvatar();
+    scheduleBadmintonLoadingDismiss([routeReady, playerAvatarReady, nekoAvatarReady]);
+  });
 })();
 {% endraw %}
 </script>

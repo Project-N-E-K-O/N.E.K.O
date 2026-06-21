@@ -4244,6 +4244,10 @@
     },
      "badminton": {
          "title": "샷 챌린지 - Badminton",
+         "loading": {
+             "title": "배드민턴 코트 입장 중",
+             "subtitle": "코트, 캐릭터, 오디오를 불러오는 중..."
+         },
          "modeSwitcher": "배드민턴 모드",
          "mode": {
              "spectator": "자유 연습",

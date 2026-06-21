@@ -816,6 +816,53 @@ function setModelManagerStatusText(message) {
     if (statusSpan) statusSpan.textContent = message;
 }
 
+const MODEL_MANAGER_SETTINGS_WAITING_EVENT = 'neko-model-manager-settings-waiting-change';
+
+function getModelManagerSettingsWaitingMessage() {
+    return window._modelManagerSettingsWaitingMessage
+        || modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
+}
+
+function isModelManagerSettingsWaiting() {
+    return window._modelManagerSettingsWaiting === true
+        || Number(window._modelManagerSettingsWaitingCount || 0) > 0;
+}
+
+function dispatchModelManagerSettingsWaitingChange() {
+    const waiting = isModelManagerSettingsWaiting();
+    window._modelManagerSettingsWaiting = waiting;
+    try {
+        window.dispatchEvent(new CustomEvent(MODEL_MANAGER_SETTINGS_WAITING_EVENT, {
+            detail: {
+                waiting,
+                message: getModelManagerSettingsWaitingMessage()
+            }
+        }));
+    } catch (_) {}
+}
+
+function beginModelManagerSettingsWaiting(message) {
+    const waitingMessage = message || getModelManagerSettingsWaitingMessage();
+    window._modelManagerSettingsWaitingCount = Number(window._modelManagerSettingsWaitingCount || 0) + 1;
+    window._modelManagerSettingsWaitingMessage = waitingMessage;
+    dispatchModelManagerSettingsWaitingChange();
+
+    let finished = false;
+    return () => {
+        if (finished) return;
+        finished = true;
+        window._modelManagerSettingsWaitingCount = Math.max(
+            0,
+            Number(window._modelManagerSettingsWaitingCount || 0) - 1
+        );
+        if (window._modelManagerSettingsWaitingCount === 0) {
+            window._modelManagerSettingsWaiting = false;
+            window._modelManagerSettingsWaitingMessage = '';
+        }
+        dispatchModelManagerSettingsWaitingChange();
+    };
+}
+
 async function resolveModelManagerLanlanName() {
     if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
         rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
@@ -1504,6 +1551,10 @@ async function captureDefaultCardFaceModelImage(state = {}, width, height) {
 async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, options = {}) {
     const abortSignal = options.signal || null;
     const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const waitingMessage = modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
+    const finishSettingsWaiting = options.skipSettingsWaiting
+        ? null
+        : beginModelManagerSettingsWaiting(waitingMessage);
     const throwIfCancelled = () => {
         if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
             const error = new Error('默认卡面生成已取消');
@@ -1512,78 +1563,84 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
         }
     };
 
-    throwIfCancelled();
-    setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
-
-    const cardW = 600;
-    const cardH = 800;
-    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
-    throwIfCancelled();
-    const sourceCanvas = modelImage.canvas;
-    const output = document.createElement('canvas');
-    output.width = cardW;
-    output.height = cardH;
-    const ctx = output.getContext('2d');
-    if (!ctx) throw new Error('card_canvas_context_failed');
-
-    ctx.fillStyle = '#E8F4F8';
-    ctx.fillRect(0, 0, cardW, cardH);
-
-    drawImageCover(
-        ctx,
-        sourceCanvas,
-        0,
-        0,
-        cardW,
-        cardH,
-        modelImage.drawOptions || {}
-    );
-
-    const cardBlob = await canvasToPngBlob(output);
-    throwIfCancelled();
-    const formData = new FormData();
-    formData.append('image', cardBlob, 'card_face.png');
-
-    const controller = new AbortController();
-    const abortFallbackUpload = () => controller.abort();
-    if (abortSignal) {
-        if (abortSignal.aborted) {
-            abortFallbackUpload();
-        } else {
-            abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
-        }
-    }
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-    let response;
     try {
         throwIfCancelled();
-        response = await fetch(
-            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
-            { method: 'PUT', body: formData, signal: controller.signal }
-        );
-    } catch (error) {
-        if (error && error.name === 'AbortError') {
-            if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
-                const abortError = new Error('默认卡面生成已取消');
-                abortError.name = 'AbortError';
-                throw abortError;
-            }
-            throw new Error('默认卡面上传超时，请稍后重试');
-        }
-        throw error;
-    } finally {
-        clearTimeout(timeoutId);
-        if (abortSignal) {
-            abortSignal.removeEventListener('abort', abortFallbackUpload);
-        }
-    }
-    throwIfCancelled();
-    if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `HTTP ${response.status}`);
-    }
+        setModelManagerStatusText(waitingMessage);
 
-    notifyCardFaceUpdatedFromModelManager(lanlanName);
+        const cardW = 600;
+        const cardH = 800;
+        const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
+        throwIfCancelled();
+        const sourceCanvas = modelImage.canvas;
+        const output = document.createElement('canvas');
+        output.width = cardW;
+        output.height = cardH;
+        const ctx = output.getContext('2d');
+        if (!ctx) throw new Error('card_canvas_context_failed');
+
+        ctx.fillStyle = '#E8F4F8';
+        ctx.fillRect(0, 0, cardW, cardH);
+
+        drawImageCover(
+            ctx,
+            sourceCanvas,
+            0,
+            0,
+            cardW,
+            cardH,
+            modelImage.drawOptions || {}
+        );
+
+        const cardBlob = await canvasToPngBlob(output);
+        throwIfCancelled();
+        const formData = new FormData();
+        formData.append('image', cardBlob, 'card_face.png');
+
+        const controller = new AbortController();
+        const abortFallbackUpload = () => controller.abort();
+        if (abortSignal) {
+            if (abortSignal.aborted) {
+                abortFallbackUpload();
+            } else {
+                abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
+            }
+        }
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
+        let response;
+        try {
+            throwIfCancelled();
+            response = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+                { method: 'PUT', body: formData, signal: controller.signal }
+            );
+        } catch (error) {
+            if (error && error.name === 'AbortError') {
+                if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+                    const abortError = new Error('默认卡面生成已取消');
+                    abortError.name = 'AbortError';
+                    throw abortError;
+                }
+                throw new Error('默认卡面上传超时，请稍后重试');
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeoutId);
+            if (abortSignal) {
+                abortSignal.removeEventListener('abort', abortFallbackUpload);
+            }
+        }
+        throwIfCancelled();
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${response.status}`);
+        }
+
+        notifyCardFaceUpdatedFromModelManager(lanlanName);
+    } finally {
+        if (typeof finishSettingsWaiting === 'function') {
+            finishSettingsWaiting();
+        }
+    }
 }
 
 async function offerCardFaceAfterModelSave(state = {}) {
@@ -1908,6 +1965,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ═══ 早期绑定"返回主页"按钮，确保即使初始化失败也能导航 ═══
     const _earlyBackBtn = document.getElementById('backToMainBtn');
     const _earlyBackHandler = () => {
+        if (isModelManagerSettingsWaiting()) {
+            setModelManagerStatusText(getModelManagerSettingsWaitingMessage());
+            return;
+        }
         if (window.opener && !window.opener.closed) {
             window.close();
         } else {
@@ -2945,6 +3006,118 @@ document.addEventListener('DOMContentLoaded', async () => {
             }, duration);
         }
     };
+
+    const showSettingsWaitingNotice = () => {
+        const message = getModelManagerSettingsWaitingMessage();
+        showStatus(message, 0);
+        showModelManagerToast(message, 0, 'loading');
+    };
+
+    const restoreStatusAfterSettingsWaiting = () => {
+        if (currentModelInfo && currentModelInfo.name) {
+            showStatus(
+                t('live2d.currentModel', `当前模型: ${currentModelInfo.name}`, { model: currentModelInfo.name }),
+                0
+            );
+        }
+    };
+
+    const blockSettingsWaitingSidebarInteraction = (event) => {
+        if (!isModelManagerSettingsWaiting()) return;
+        const target = event.target;
+        if (!(target instanceof Element) || !target.closest('#sidebar')) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+        showSettingsWaitingNotice();
+    };
+
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) {
+        ['click', 'pointerdown', 'mousedown', 'keydown', 'input', 'change'].forEach(eventName => {
+            sidebar.addEventListener(eventName, blockSettingsWaitingSidebarInteraction, true);
+        });
+    }
+
+    const setModelManagerSettingsWaitingControls = (waiting, message) => {
+        const waitingMessage = message || getModelManagerSettingsWaitingMessage();
+        document.body?.classList.toggle('model-manager-settings-waiting', waiting);
+
+        document.querySelectorAll(
+            '#sidebar button, #sidebar select, #sidebar input, #sidebar textarea, #sidebar a[href], #sidebar [role="button"]'
+        ).forEach(control => {
+            if (!(control instanceof HTMLElement)) return;
+            const supportsDisabled = control instanceof HTMLButtonElement
+                || control instanceof HTMLSelectElement
+                || control instanceof HTMLInputElement
+                || control instanceof HTMLTextAreaElement;
+            if (waiting) {
+                if (supportsDisabled && !control.disabled) {
+                    control.dataset.modelManagerSettingsWaitingDisabled = '1';
+                    control.disabled = true;
+                }
+                if (control.dataset.modelManagerSettingsWaitingTabindex === undefined) {
+                    control.dataset.modelManagerSettingsWaitingTabindex = control.hasAttribute('tabindex')
+                        ? control.getAttribute('tabindex')
+                        : '';
+                }
+                if (control.dataset.modelManagerSettingsWaitingAriaDisabled === undefined) {
+                    control.dataset.modelManagerSettingsWaitingAriaDisabled = control.getAttribute('aria-disabled') || '';
+                }
+                control.setAttribute('tabindex', '-1');
+                control.setAttribute('aria-disabled', 'true');
+                control.setAttribute('aria-busy', 'true');
+            } else {
+                control.removeAttribute('aria-busy');
+                if (control.dataset.modelManagerSettingsWaitingDisabled === '1') {
+                    control.disabled = false;
+                    delete control.dataset.modelManagerSettingsWaitingDisabled;
+                }
+                if (control.dataset.modelManagerSettingsWaitingTabindex !== undefined) {
+                    const previousTabIndex = control.dataset.modelManagerSettingsWaitingTabindex;
+                    if (previousTabIndex === '') {
+                        control.removeAttribute('tabindex');
+                    } else {
+                        control.setAttribute('tabindex', previousTabIndex);
+                    }
+                    delete control.dataset.modelManagerSettingsWaitingTabindex;
+                }
+                if (control.dataset.modelManagerSettingsWaitingAriaDisabled !== undefined) {
+                    const previousAriaDisabled = control.dataset.modelManagerSettingsWaitingAriaDisabled;
+                    if (previousAriaDisabled === '') {
+                        control.removeAttribute('aria-disabled');
+                    } else {
+                        control.setAttribute('aria-disabled', previousAriaDisabled);
+                    }
+                    delete control.dataset.modelManagerSettingsWaitingAriaDisabled;
+                }
+            }
+        });
+
+        if (waiting) {
+            document.querySelectorAll('#sidebar [id$="-dropdown"]').forEach(dropdown => {
+                if (dropdown instanceof HTMLElement) {
+                    dropdown.style.display = 'none';
+                }
+            });
+            showStatus(waitingMessage, 0);
+            showModelManagerToast(waitingMessage, 0, 'loading');
+        } else {
+            restoreStatusAfterSettingsWaiting();
+            showModelManagerToast('', 0);
+        }
+    };
+
+    window.addEventListener(MODEL_MANAGER_SETTINGS_WAITING_EVENT, event => {
+        const detail = event.detail || {};
+        setModelManagerSettingsWaitingControls(detail.waiting === true, detail.message);
+    });
+    if (isModelManagerSettingsWaiting()) {
+        setModelManagerSettingsWaitingControls(true, getModelManagerSettingsWaitingMessage());
+    }
 
     try {
         if (!window.live2dManager) {
@@ -8714,6 +8887,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         _earlyBackBtn.removeEventListener('click', _earlyBackHandler);
     }
     backToMainBtn.addEventListener('click', async () => {
+        if (isModelManagerSettingsWaiting()) {
+            const message = getModelManagerSettingsWaitingMessage();
+            showStatus(message, 0);
+            showModelManagerToast(message, 0, 'loading');
+            return;
+        }
         // 退出前：比对当前设置和已保存快照，完全一致则视为无更改
         if (window.hasUnsavedChanges && window._savedModelSnapshot && !window._modelManagerParameterEditedSinceSave) {
             if (snapshotsEqual(window._savedModelSnapshot, captureSettingsSnapshot())) {
@@ -10551,6 +10730,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 // 监听页面卸载事件，确保返回时主界面可见
 window.addEventListener('beforeunload', (e) => {
     notifyCardMakerFallbackOwnerClosing();
+
+    if (isModelManagerSettingsWaiting()) {
+        const message = getModelManagerSettingsWaitingMessage();
+        setModelManagerStatusText(message);
+        e.preventDefault();
+        e.returnValue = message;
+        return message;
+    }
 
     // 尝试退出全屏
     if (isFullscreen()) {

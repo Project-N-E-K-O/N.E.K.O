@@ -4956,6 +4956,15 @@ const AvatarButtonMixin = {
                 this._returnButtonDragHandlers = null;
             }
 
+            // 移除自身锁图标 ticker —— 下方会把旧锁图标 DOM 一并删掉，但 _removeFloatingButtonsElement
+            // 只调用 el.remove() 不会摘除 ticker。若不在此处摘除，旧 ticker 会变成孤儿，继续每帧 mutate
+            // 已脱离文档的节点（CPU 泄漏，跨 goodbye/return、模型切换循环累积）。镜像 setupHTMLLockIcon /
+            // cleanupFloatingButtons 的拆除逻辑；全新锁图标会在 setupHTMLLockIcon 里重新 add ticker。
+            if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._lockIconTicker); } catch (_) {}
+                this._lockIconTicker = null;
+            }
+
             // 清理旧 DOM（自身类型）—— 先清理旧容器上的入场动画状态，避免定时器残留
             document.querySelectorAll(`#${options.containerElementId}, #${options.lockIconId}, #${options.returnContainerId}`)
                 .forEach(el => {
@@ -5916,6 +5925,19 @@ const AvatarButtonMixin = {
             if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
                 cancelAnimationFrame(this._uiUpdateLoopId);
                 this._uiUpdateLoopId = null;
+            }
+
+            // 摘除浮动按钮 / 锁图标 ticker —— 下方会删掉它们的 DOM，但 _removeFloatingButtonsElement
+            // 只调 el.remove() 不会摘 ticker；与 setupFloatingButtonsBase 同病：不在此处摘除，旧 ticker 会
+            // 变成孤儿继续每帧 mutate 已脱离文档的节点（CPU 泄漏）。换模型时本方法被用于清理“切出去”的旧
+            // manager（见 setupFloatingButtonsBase 的 otherPrefixes 分支、card_maker 等），正是该泄漏的真实触发点。
+            if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._lockIconTicker); } catch (_) {}
+                this._lockIconTicker = null;
+            }
+            if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._floatingButtonsTicker); } catch (_) {}
+                this._floatingButtonsTicker = null;
             }
 
             // 移除 DOM 元素（先清理自己的入场动画状态）

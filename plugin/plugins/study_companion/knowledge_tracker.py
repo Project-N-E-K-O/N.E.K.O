@@ -911,7 +911,9 @@ class KnowledgeTracker:
             ],
         }
 
-    def get_next_question_params(self, topic_id: str = "") -> dict[str, Any]:
+    def get_next_question_params(
+        self, topic_id: str = "", *, record_prompt_usage: bool = True
+    ) -> dict[str, Any]:
         resolved = self._resolve_topic_id(topic_id)
         weak_topics = self.get_weak_topics(limit=5)
         review_queue = self.get_review_queue(limit=5)
@@ -929,18 +931,10 @@ class KnowledgeTracker:
         candidate_evidence = self.quality.prompt_evidence_summary(
             topic_id=resolved, limit=5
         )
-        for item in candidate_evidence:
-            try:
-                self.quality.add_evidence(
-                    str(item.get("id") or ""),
-                    KnowledgeEvidenceType.USED_IN_PROMPT.value,
-                    0.35,
-                    {"source": "question_prompt", "topic_id": resolved},
-                )
-            except Exception as exc:
-                self._log_quality_warning(
-                    "record prompt candidate evidence failed: {}", exc
-                )
+        if record_prompt_usage:
+            self.record_prompt_usage_for_question_params(
+                {"target_topic_id": resolved, "candidate_evidence": candidate_evidence}
+            )
         return {
             "target_topic_id": resolved,
             "target_topic": topic or {},
@@ -955,6 +949,35 @@ class KnowledgeTracker:
                 mastery_value, blockers=blockers, retry=retry
             ),
         }
+
+    def preview_next_question_params(self, topic_id: str = "") -> dict[str, Any]:
+        return self.get_next_question_params(topic_id, record_prompt_usage=False)
+
+    def record_prompt_usage_for_question_params(
+        self, params: dict[str, Any] | None
+    ) -> int:
+        payload = dict(params or {})
+        topic_id = str(payload.get("target_topic_id") or "").strip()
+        recorded = 0
+        seen_ids: set[str] = set()
+        for item in payload.get("candidate_evidence") or []:
+            evidence_id = str((item or {}).get("id") or "").strip()
+            if not evidence_id or evidence_id in seen_ids:
+                continue
+            seen_ids.add(evidence_id)
+            try:
+                self.quality.add_evidence(
+                    evidence_id,
+                    KnowledgeEvidenceType.USED_IN_PROMPT.value,
+                    0.35,
+                    {"source": "question_prompt", "topic_id": topic_id},
+                )
+                recorded += 1
+            except Exception as exc:
+                self._log_quality_warning(
+                    "record prompt candidate evidence failed: {}", exc
+                )
+        return recorded
 
     def get_session_summary(self) -> dict[str, Any]:
         return {

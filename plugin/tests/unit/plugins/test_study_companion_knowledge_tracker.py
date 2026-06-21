@@ -1150,6 +1150,7 @@ def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(
                     {
                         "id": "bad_numeric_topic",
                         "name": "Bad Numeric Topic",
+                        "stage": "senior_high",
                         "depth": "not-an-int",
                         "difficulty": "not-a-float",
                     }
@@ -1165,6 +1166,7 @@ def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(
     try:
         topic = store.get_topic("bad_numeric_topic")
         assert topic is not None
+        assert topic["stage"] == "senior_high"
         assert topic["depth"] == 1
         assert topic["difficulty"] == 0.5
 
@@ -1172,14 +1174,19 @@ def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(
             {
                 "id": "bad_runtime_topic",
                 "name": "Bad Runtime Topic",
+                "stage": "college",
                 "depth": "still-not-an-int",
                 "difficulty": "still-not-a-float",
             }
         )
         runtime_topic = store.get_topic("bad_runtime_topic")
         assert runtime_topic is not None
+        assert runtime_topic["stage"] == "college"
         assert runtime_topic["depth"] == 1
         assert runtime_topic["difficulty"] == 0.5
+        assert [item["id"] for item in store.list_topics(stage="college")] == [
+            "bad_runtime_topic"
+        ]
 
         store.upsert_topic(
             {

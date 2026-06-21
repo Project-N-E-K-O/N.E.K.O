@@ -17,6 +17,7 @@ from .entry_common import (
     _detect_mastery_threshold_crossed,
     _plugin_lock,
 )
+from .models import public_current_question_payload
 
 
 class _TutorContextSupportMixin:
@@ -77,6 +78,8 @@ class _TutorContextSupportMixin:
         snapshot = self._state_snapshot()
         history_limit = max(5, min(12, int(self._cfg.history_limit or 10)))
         history = await asyncio.to_thread(self._store.list_interactions, history_limit)
+        current_question = snapshot.get("current_question") or {}
+        public_current_question = public_current_question_payload(current_question)
         context = {
             "operation": operation,
             "input_text": input_text,
@@ -87,7 +90,8 @@ class _TutorContextSupportMixin:
                 "recent_screen_classifications"
             )
             or [],
-            "current_question": snapshot.get("current_question") or {},
+            "current_question": public_current_question,
+            "public_current_question": public_current_question,
             "last_answer_evaluation": snapshot.get("last_answer_evaluation") or {},
             "session_summary_seed": snapshot.get("session_summary_seed") or {},
             "recent_learning_events": (snapshot.get("recent_learning_events") or [])[
@@ -101,10 +105,18 @@ class _TutorContextSupportMixin:
             hint = ""
             if extra:
                 hint = str(extra.get("topic_hint") or extra.get("topic") or "").strip()
-            context["knowledge_question_params"] = await asyncio.to_thread(
-                self._knowledge_tracker.get_next_question_params,
-                hint,
+            supplied_params = (
+                extra.get("knowledge_question_params")
+                if isinstance(extra, dict)
+                else None
             )
+            if isinstance(supplied_params, dict):
+                context["knowledge_question_params"] = dict(supplied_params)
+            else:
+                context["knowledge_question_params"] = await asyncio.to_thread(
+                    self._knowledge_tracker.get_next_question_params,
+                    hint,
+                )
         elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
             context["knowledge_session_summary"] = await asyncio.to_thread(
                 self._knowledge_tracker.get_session_summary
@@ -192,6 +204,7 @@ class _TutorContextSupportMixin:
         history_kind: str,
         metadata: dict[str, Any],
         extra_context: dict[str, Any] | None = None,
+        public_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self._record_tutor_result(operation, reply, extra=extra_context)
         diagnostic = str(reply.diagnostic or "")
@@ -206,10 +219,30 @@ class _TutorContextSupportMixin:
             metadata=metadata,
             history_limit=self._cfg.history_limit,
         )
+        tracking_enrichment: dict[str, Any] = {}
         if operation != LLM_OPERATION_SUMMARIZE_SESSION:
-            await self._track_learning(operation, reply, extra_context=extra_context)
+            tracking_enrichment = await self._track_learning(
+                operation,
+                reply,
+                extra_context=extra_context,
+                public_payload=public_payload,
+            )
         await self._persist_state()
-        return build_tutor_payload(reply)
+        if public_payload is not None:
+            payload = {
+                "operation": reply.operation,
+                "input_text": reply.input_text,
+                "reply": reply.reply,
+                "degraded": reply.degraded,
+                "diagnostic": reply.diagnostic,
+                "created_at": reply.created_at or utc_now_iso(),
+                **public_payload,
+            }
+            payload.setdefault("summary", reply.reply)
+        else:
+            payload = build_tutor_payload(reply)
+        payload.update(tracking_enrichment)
+        return payload
 
     async def _track_learning(
         self,
@@ -217,16 +250,17 @@ class _TutorContextSupportMixin:
         reply: TutorReply,
         *,
         extra_context: dict[str, Any] | None = None,
-    ) -> None:
+        public_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self._agent is None or not hasattr(self._agent, "knowledge_track"):
-            return
+            return {}
         try:
             track_context = await self._build_learning_context(
                 LLM_OPERATION_KNOWLEDGE_TRACK,
                 input_text=reply.input_text,
                 extra={
                     "operation": operation,
-                    "result": reply.payload or {"reply": reply.reply},
+                    "result": public_payload or reply.payload or {"reply": reply.reply},
                     "reply": reply.reply,
                     "degraded": reply.degraded,
                     "diagnostic": reply.diagnostic,
@@ -259,9 +293,10 @@ class _TutorContextSupportMixin:
             )
         await self._record_tutor_result(LLM_OPERATION_KNOWLEDGE_TRACK, track_reply)
         if operation == LLM_OPERATION_ANSWER_EVALUATE:
-            await self._record_answer_knowledge(
+            return await self._record_answer_knowledge(
                 reply, track_reply, extra_context=extra_context
             )
+        return {}
 
     async def _record_answer_knowledge(
         self,
@@ -269,7 +304,7 @@ class _TutorContextSupportMixin:
         track_reply: TutorReply,
         *,
         extra_context: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         context = dict(extra_context or {})
         track_payload = dict(track_reply.payload or {})
         eval_payload = dict(eval_reply.payload or {})
@@ -334,7 +369,7 @@ class _TutorContextSupportMixin:
             )
         except Exception as exc:
             self.logger.warning("study knowledge tracker persistence failed: {}", exc)
-            return
+            return {}
         tracked_topic = str(tracking_result.get("topic_id") or topic).strip()
         mastery_after: float | None = None
         if tracked_topic:
@@ -370,6 +405,14 @@ class _TutorContextSupportMixin:
                     },
                 )
             )
+        if mastery_before is None or mastery_after is None or not tracked_topic:
+            return {}
+        return {
+            "selected_topic_id": tracked_topic,
+            "mastery_before": mastery_before,
+            "mastery_after": mastery_after,
+            "mastery_delta": round(mastery_after - mastery_before, 4),
+        }
 
     @staticmethod
     def _guess_track_topic(reply: TutorReply) -> str:
