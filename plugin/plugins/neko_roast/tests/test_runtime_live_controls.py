@@ -444,6 +444,66 @@ async def test_trigger_idle_hosting_skips_when_live_state_is_not_idle(runtime: R
 
 
 @pytest.mark.asyncio
+async def test_auto_idle_hosting_triggers_when_solo_stream_is_idle(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    result = await runtime.maybe_trigger_idle_hosting()
+
+    assert result is not None
+    assert result.status == "dry_run"
+    assert result.event.source == "idle_hosting"
+    assert runtime.recent_results[-1]["event"]["source"] == "idle_hosting"
+
+
+@pytest.mark.asyncio
+async def test_auto_idle_hosting_does_not_record_skip_when_not_candidate(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    result = await runtime.maybe_trigger_idle_hosting()
+
+    assert result is None
+    assert list(runtime.recent_results) == []
+
+
+@pytest.mark.asyncio
+async def test_auto_idle_hosting_respects_minimum_interval(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._idle_hosting_last_attempt_at = 100.0
+    runtime._idle_hosting_now = lambda: 150.0
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    result = await runtime.maybe_trigger_idle_hosting()
+
+    assert result is None
+    assert list(runtime.recent_results) == []
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_idle_hosting_loop(runtime: RoastRuntime) -> None:
+    runtime._start_idle_hosting_loop()
+    task = runtime._idle_hosting_task
+    assert task is not None
+
+    await runtime.stop()
+
+    assert task.done()
+
+
+@pytest.mark.asyncio
 async def test_config_store_health_row_tracks_successful_persist(runtime: RoastRuntime) -> None:
     runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
 

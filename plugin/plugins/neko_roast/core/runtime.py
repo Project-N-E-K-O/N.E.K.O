@@ -43,6 +43,9 @@ class RoastRuntime:
     _CONFIG_PERSIST_BUDGET_SECONDS = 4.0
     _LIVE_STATE_ENGAGED_SECONDS = 60.0
     _LIVE_STATE_IDLE_SECONDS = 180.0
+    _IDLE_HOSTING_CHECK_INTERVAL_SECONDS = 5.0
+    _IDLE_HOSTING_MIN_INTERVAL_SECONDS = 120.0
+    _IDLE_HOSTING_FAILURE_LIMIT = 3
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -73,6 +76,11 @@ class RoastRuntime:
         self._config_last_error: str = ""
         # 串行化插件自身的配置写，避免并发 update_config 内存 apply 互踩 / 叠加持久化。
         # 懒初始化，避免构造时无运行 loop。
+        self._idle_hosting_task: asyncio.Task[Any] | None = None
+        self._idle_hosting_last_attempt_at: float = 0.0
+        self._idle_hosting_consecutive_failures: int = 0
+        self._idle_hosting_sleep = asyncio.sleep
+        self._idle_hosting_now = time.monotonic
         self._config_lock: asyncio.Lock | None = None
 
         self.bili_live_ingest = BiliLiveIngestModule()
@@ -104,6 +112,7 @@ class RoastRuntime:
         await self.reload_config()
         await self.reload_credential()  # 载入此前已加密保存的 B站 登录凭据（若有）
         await self.registry.setup_all(self)
+        self._start_idle_hosting_loop()
         self.audit.record("runtime_start", "neko_roast runtime ready")
 
     async def reload_credential(self) -> None:
@@ -133,6 +142,7 @@ class RoastRuntime:
         return {"logged_out": True, "removed": removed, "logged_in": False}
 
     async def stop(self) -> None:
+        await self._stop_idle_hosting_loop()
         await self.restore_developer_instructions()
         await self.restore_instructions()
         await self.registry.teardown_all()
@@ -456,6 +466,29 @@ class RoastRuntime:
             return self._record_idle_hosting_skip(event, "idle_hosting.not_candidate")
         return await self.pipeline.handle_event(event)
 
+    async def maybe_trigger_idle_hosting(self) -> InteractionResult | None:
+        if self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT:
+            return None
+        now = float(self._idle_hosting_now())
+        if now - self._idle_hosting_last_attempt_at < self._IDLE_HOSTING_MIN_INTERVAL_SECONDS:
+            return None
+        live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
+        if not bool(live_state.get("idle_hosting_candidate")):
+            return None
+
+        self._idle_hosting_last_attempt_at = now
+        result = await self.trigger_idle_hosting()
+        if result.status == "failed":
+            self._idle_hosting_consecutive_failures += 1
+            if self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT:
+                self.audit.record("idle_hosting_auto_disabled", "idle hosting disabled after repeated failures", level="warning")
+        elif result.status in {"dry_run", "pushed"}:
+            self._idle_hosting_consecutive_failures = 0
+        return result
+
     def _idle_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:
         return ViewerEvent(
             uid="__neko_idle__",
@@ -480,6 +513,34 @@ class RoastRuntime:
         self.audit.record("idle_hosting_skipped", reason, level="info", detail={"mode": self.config.live_mode})
         self.record_result(result)
         return result
+
+    def _start_idle_hosting_loop(self) -> None:
+        task = self._idle_hosting_task
+        if task is not None and not task.done():
+            return
+        self._idle_hosting_task = asyncio.create_task(self._idle_hosting_loop())
+
+    async def _stop_idle_hosting_loop(self) -> None:
+        task = self._idle_hosting_task
+        self._idle_hosting_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _idle_hosting_loop(self) -> None:
+        while True:
+            await self._idle_hosting_sleep(self._IDLE_HOSTING_CHECK_INTERVAL_SECONDS)
+            try:
+                await self.maybe_trigger_idle_hosting()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                message = f"idle_hosting_loop_failed: {type(exc).__name__}"
+                self.audit.record("idle_hosting_loop_failed", message, level="warning")
 
     async def dashboard_state(self) -> dict[str, Any]:
         profiles = await self.viewer_store.recent_profiles(self.config.recent_limit)
