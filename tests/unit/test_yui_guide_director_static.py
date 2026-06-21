@@ -108,6 +108,13 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
     assert "!this.interactionShieldSuppressed" in overlay_source
     assert "(this.tutorialInputShieldActive || this.takingOverActive)" in overlay_source
     assert "#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]" in overlay_source
+    assert "isSystemDialogEventTarget(target)" in overlay_source
+    assert "hasOpenSystemDialog()" in overlay_source
+    assert "this.isSystemDialogEventTarget(target)" in overlay_source
+    assert "#storage-location-overlay:not([hidden])" in overlay_source
+    assert "#prominent-notice-overlay" in overlay_source
+    assert ".modal-overlay" in overlay_source
+    assert "is-interaction-shield-system-dialog-suspended" in overlay_source
     assert "event.stopImmediatePropagation();" in overlay_source
     assert "installGlobalInteractionShieldBlocker()" in overlay_source
     assert "event.isTrusted === false" in overlay_source

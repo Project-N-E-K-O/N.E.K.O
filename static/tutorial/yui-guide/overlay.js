@@ -513,6 +513,18 @@
             this.interactionShieldEventBlocker = this.blockInteractionShieldEvent.bind(this);
             this.globalInteractionShieldEventBlocker = this.blockInteractionShieldEvent.bind(this);
             this.globalInteractionShieldBlockerInstalled = false;
+            this.interactionShieldDesiredActive = false;
+            this.interactionShieldSystemDialogSuspended = false;
+            this.systemDialogShieldSyncTimer = null;
+            this.systemDialogObserver = null;
+            this.systemDialogSelector = [
+                '#storage-location-overlay:not([hidden])',
+                '#storage-location-overlay:not([hidden]) .storage-location-modal',
+                '.storage-location-completion-card',
+                '#prominent-notice-overlay',
+                '.modal-overlay',
+                '.modal-dialog'
+            ].join(', ');
             this.interactionShieldEventTypes = [
                 'pointerdown',
                 'pointerup',
@@ -897,6 +909,57 @@
             );
         }
 
+        isSystemDialogEventTarget(target) {
+            const element = target && typeof target.closest === 'function'
+                ? target
+                : target && target.parentElement && typeof target.parentElement.closest === 'function'
+                ? target.parentElement
+                : null;
+            return !!(
+                element
+                && this.systemDialogSelector
+                && element.closest(this.systemDialogSelector)
+            );
+        }
+
+        isVisibleSystemDialogElement(element) {
+            if (!element || element.hidden === true) {
+                return false;
+            }
+            if (typeof element.closest === 'function' && element.closest('[hidden]')) {
+                return false;
+            }
+            if (typeof element.getAttribute === 'function' && element.getAttribute('aria-hidden') === 'true') {
+                return false;
+            }
+
+            const view = this.document.defaultView || window;
+            const getComputedStyleFn = view && typeof view.getComputedStyle === 'function'
+                ? view.getComputedStyle.bind(view)
+                : null;
+            if (!getComputedStyleFn) {
+                return true;
+            }
+
+            let current = element;
+            while (current && current.nodeType === 1) {
+                const style = getComputedStyleFn(current);
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+                    return false;
+                }
+                current = current.parentElement;
+            }
+            return true;
+        }
+
+        hasOpenSystemDialog() {
+            if (!this.systemDialogSelector || !this.document || typeof this.document.querySelectorAll !== 'function') {
+                return false;
+            }
+            const dialogNodes = this.document.querySelectorAll(this.systemDialogSelector);
+            return Array.prototype.some.call(dialogNodes, (element) => this.isVisibleSystemDialogElement(element));
+        }
+
         isMovementTrackingEvent(event) {
             return !!(
                 event
@@ -909,7 +972,12 @@
         }
 
         blockInteractionShieldEvent(event) {
-            if (!event || this.isSkipControlEventTarget(event.target || null)) {
+            const target = event ? event.target || null : null;
+            if (!event || this.isSkipControlEventTarget(target) || this.isSystemDialogEventTarget(target)) {
+                return;
+            }
+            if (this.hasOpenSystemDialog()) {
+                this.syncInteractionShield();
                 return;
             }
             if (event.isTrusted === false) {
@@ -978,6 +1046,64 @@
                 view.removeEventListener(type, this.globalInteractionShieldEventBlocker, true);
             });
             this.globalInteractionShieldBlockerInstalled = false;
+        }
+
+        scheduleSystemDialogShieldSync() {
+            if (this.systemDialogShieldSyncTimer !== null || !this.interactionShieldDesiredActive) {
+                return;
+            }
+            const view = this.document.defaultView || window;
+            const setTimeoutFn = view && typeof view.setTimeout === 'function'
+                ? view.setTimeout.bind(view)
+                : window.setTimeout.bind(window);
+            this.systemDialogShieldSyncTimer = setTimeoutFn(() => {
+                this.systemDialogShieldSyncTimer = null;
+                if (this.interactionShieldDesiredActive) {
+                    this.syncInteractionShield();
+                }
+            }, 0);
+        }
+
+        clearSystemDialogShieldSyncTimer() {
+            if (this.systemDialogShieldSyncTimer === null) {
+                return;
+            }
+            const view = this.document.defaultView || window;
+            const clearTimeoutFn = view && typeof view.clearTimeout === 'function'
+                ? view.clearTimeout.bind(view)
+                : window.clearTimeout.bind(window);
+            clearTimeoutFn(this.systemDialogShieldSyncTimer);
+            this.systemDialogShieldSyncTimer = null;
+        }
+
+        installSystemDialogObserver() {
+            if (this.systemDialogObserver) {
+                return;
+            }
+            const view = this.document.defaultView || window;
+            const MutationObserverClass = view && view.MutationObserver;
+            const target = this.document.body || this.document.documentElement;
+            if (!MutationObserverClass || !target) {
+                return;
+            }
+            this.systemDialogObserver = new MutationObserverClass(() => {
+                this.scheduleSystemDialogShieldSync();
+            });
+            this.systemDialogObserver.observe(target, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class', 'hidden', 'style', 'aria-hidden']
+            });
+        }
+
+        removeSystemDialogObserver() {
+            this.clearSystemDialogShieldSyncTimer();
+            if (!this.systemDialogObserver) {
+                return;
+            }
+            this.systemDialogObserver.disconnect();
+            this.systemDialogObserver = null;
         }
 
         removeInteractionShieldBlocker() {
@@ -1227,9 +1353,20 @@
         }
 
         syncInteractionShield() {
-            const active = !this.interactionShieldSuppressed
+            const desiredActive = !this.interactionShieldSuppressed
                 && (this.tutorialInputShieldActive || this.takingOverActive);
-            this.setInteractionShieldEnabled(active);
+            this.interactionShieldDesiredActive = desiredActive;
+            if (desiredActive) {
+                this.installSystemDialogObserver();
+            } else {
+                this.removeSystemDialogObserver();
+            }
+            const suspendedForSystemDialog = desiredActive && this.hasOpenSystemDialog();
+            this.interactionShieldSystemDialogSuspended = suspendedForSystemDialog;
+            if (this.root) {
+                this.root.classList.toggle('is-interaction-shield-system-dialog-suspended', suspendedForSystemDialog);
+            }
+            this.setInteractionShieldEnabled(desiredActive && !suspendedForSystemDialog);
         }
 
         setInteractionShieldEnabled(active) {
@@ -1882,6 +2019,7 @@
             this.clearSpotlight();
             this.removeGlobalInteractionShieldBlocker();
             this.removeInteractionShieldBlocker();
+            this.removeSystemDialogObserver();
             if (this.root && this.root.isConnected) {
                 this.root.remove();
             }
@@ -1891,6 +2029,8 @@
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
             this.interactionShieldSuppressed = false;
+            this.interactionShieldDesiredActive = false;
+            this.interactionShieldSystemDialogSuspended = false;
             this.backdrop = null;
             this.backdropMask = null;
             this.backdropBase = null;

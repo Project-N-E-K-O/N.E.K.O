@@ -215,7 +215,9 @@ describe('App', () => {
   });
 
   it('keeps compact capsule clicks from entering input while the tutorial locks chat buttons', () => {
-    document.body.classList.add('yui-guide-standalone-input-shield-active');
+    act(() => {
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
+    });
     const onCompactChatStateChange = vi.fn();
     const { container } = render(
       <App chatSurfaceMode="compact" onCompactChatStateChange={onCompactChatStateChange} />,
@@ -226,6 +228,35 @@ describe('App', () => {
     expect(container.querySelector('.composer-input')).toBeNull();
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
     expect(onCompactChatStateChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps compact text input and keyboard submit locked while the tutorial shield is active', async () => {
+    const onComposerSubmit = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Keyboard bypass attempt' } });
+    expect(input).toHaveValue('Keyboard bypass attempt');
+
+    act(() => {
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
+    });
+    await waitFor(() => {
+      expect(input).toHaveAttribute('readonly');
+    });
+
+    fireEvent.change(input, { target: { value: 'Changed while locked' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(input).toHaveValue('Keyboard bypass attempt');
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
   it('exposes explicit surface mode state on the rendered shell', () => {
@@ -7172,7 +7203,8 @@ describe('App', () => {
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
 
     expect(onComposerSubmit).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(input).toHaveValue('');
+    expect(screen.getByRole('button', { name: '更多工具' })).toBeDisabled();
   });
 
   it('locks only compact text entry while tutorial input lock is active', async () => {
