@@ -610,6 +610,54 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
   });
 
+  it('does not allocate the history experiment variant when starting on a full surface (keeps compact A/B clean)', () => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.removeItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
+    const message = parseChatMessage({
+      id: 'assistant-full-gate', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
+    });
+    render(<App chatSurfaceMode="full" messages={[message]} />);
+    act(() => {
+      window.dispatchEvent(new Event('neko:tutorial-completed'));
+    });
+    // full → FullChatSurface（CompactChatApp 不 mount），实验 effect 不跑：不分配 variant、不上报曝光，
+    // full-surface 用户没见过紧凑历史面板，不该进入 compact A/B 样本。
+    expect(window.localStorage.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY)).toBeNull();
+  });
+
+  it('still reports the exposure when sessionStorage access throws (privacy mode)', () => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'closed');
+    const telemetry = vi.fn(() => true);
+    (window as unknown as { appTelemetry?: { event: (n: string, f?: Record<string, unknown>) => boolean } }).appTelemetry = { event: telemetry };
+    // 只让 sessionStorage.getItem 抛（隐私浏览器/webview），localStorage 仍可读 cohort——
+    // 二者共享 Storage.prototype，按 this 区分。
+    const realGetItem = Storage.prototype.getItem;
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (this === window.sessionStorage) throw new DOMException('denied', 'SecurityError');
+      return realGetItem.call(this, key);
+    });
+    try {
+      const message = parseChatMessage({
+        id: 'assistant-privacy-exposure', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+        blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
+      });
+      render(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
+      act(() => {
+        window.dispatchEvent(new Event('neko:tutorial-completed'));
+      });
+      // sessionStorage 去重读失败不能吞掉曝光：有 variant 的用户仍要发出 experiment_exposure。
+      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', expect.objectContaining({
+        experiment: 'compact_history_default',
+        variant: 'closed',
+      }));
+    } finally {
+      getItemSpy.mockRestore();
+      delete (window as unknown as { appTelemetry?: unknown }).appTelemetry;
+    }
+  });
+
   it('keeps the proactive meme overlay through the same-turn assistant caption that follows it', () => {
     // 回归：主动分享是「发表情包 + 说台词」，台词是 assistant 消息、紧随 meme 落地。
     // 旧逻辑「有新消息就收起」会让图一瞬间被台词顶掉（线上实测：图闪一下就没）。
