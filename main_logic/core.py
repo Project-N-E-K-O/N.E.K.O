@@ -5265,7 +5265,12 @@ class LLMSessionManager:
 
         # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
         await self.send_session_failed(input_mode)
-        await self.cleanup()
+        # reset_starting_count=False：本函数从失败的 start_session 的 except 里调用，
+        # 那次 start_session 的 finally 才是 _starting_session_count guard 的唯一所有者
+        # 并会在最后递减它。若让这里的 cleanup 提前把 count 清 0，会开出一个"失败任务
+        # 尚未完全收尾、但 count 已 0"的窗口，等待中的跨模式重启会据此重入，随后被
+        # 失败任务残余的 cleanup（清 websocket）和 finally（减 guard）clobber（Codex P2）。
+        await self.cleanup(reset_starting_count=False)
 
     @property
     def is_starting(self) -> bool:
@@ -9625,23 +9630,34 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
             logger.info("End Session: Resources cleaned up.")
 
-    async def cleanup(self, expected_websocket=None, *, expected_session=None):
+    async def cleanup(self, expected_websocket=None, *, expected_session=None, reset_starting_count=True):
         """
         Clean up session resources.
-        
+
         Args:
             expected_websocket: optional, the expected websocket instance.
                                If provided and it doesn't match the current websocket, skip cleanup.
                                Prevents an old connection from wrongly cleaning up a new connection's resources (race protection).
             expected_session: optional, the expected session instance.
                              Session-level guard from lifecycle callbacks, passed through to end_session.
+            reset_starting_count: forwarded to end_session. Pass False when the
+                             caller is itself a start_session that owns the
+                             _starting_session_count guard and will decrement it
+                             in its own finally — letting cleanup reset it to 0
+                             early opens a premature-0 window where a concurrent
+                             start (e.g. the cross-mode restart wait) sees the
+                             guard freed before the failing start has fully
+                             unwound, then gets its websocket/guard clobbered by
+                             the still-running teardown (Codex P2). Same rationale
+                             as the in-start old-session cleanup at line ~5610.
         """
         if expected_websocket is not None and self.websocket is not None:
             if self.websocket != expected_websocket:
                 logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
                 return
-        
-        await self.end_session(by_server=True, expected_session=expected_session)
+
+        await self.end_session(by_server=True, expected_session=expected_session,
+                               reset_starting_count=reset_starting_count)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
         if self.websocket_lock:
