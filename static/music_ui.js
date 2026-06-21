@@ -492,17 +492,27 @@
         let node = element;
         while (node && node instanceof Element) {
             if (node.hidden) return true;
-            if (node.getAttribute('aria-hidden') === 'true') return true;
-            if (node.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
-            try {
-                const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
-                if (style && (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse')) {
-                    return true;
-                }
-            } catch (_) { /* ignore */ }
             node = node.parentElement;
         }
         return false;
+    }
+
+    function isMusicMountUnavailable(mount) {
+        if (!mount || isElementInHiddenTree(mount)) return true;
+        if (mount.getAttribute('aria-hidden') === 'true') return true;
+        if (mount.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
+        try {
+            const style = window.getComputedStyle ? window.getComputedStyle(mount) : null;
+            const emptyCompactMount = mount.getAttribute('data-music-player-mount') === 'compact-surface'
+                && !mount.firstElementChild;
+            return !!(style && (
+                (style.display === 'none' && !emptyCompactMount)
+                || style.visibility === 'hidden'
+                || style.visibility === 'collapse'
+            ));
+        } catch (_) {
+            return false;
+        }
     }
 
     function hasUsableLocalChatMusicSurface() {
@@ -511,11 +521,7 @@
         const mount = mode === 'compact'
             ? getCompactMusicMountTarget()
             : (mode === 'full' ? getFullMusicMountTarget() : (getFullMusicMountTarget() || getCompactMusicMountTarget()));
-        if (!mount || isElementInHiddenTree(mount)) return false;
-
-        const overlay = document.getElementById('react-chat-window-overlay');
-        if (overlay && isElementInHiddenTree(overlay)) return false;
-        return true;
+        return !isMusicMountUnavailable(mount);
     }
 
     function isLocalChatMusicSurfaceFocused() {
