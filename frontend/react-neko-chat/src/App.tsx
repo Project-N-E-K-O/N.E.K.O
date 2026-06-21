@@ -115,9 +115,6 @@ const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExp
 const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
 // A/B 变体「套用」的兜底延迟：本次不跑教程的老用户在此延迟后若仍非教程态，就直接套用变体默认值。
 const COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS = 3000;
-// 同一 proactive turn 里音乐卡（music_ui executePlay 异步 append）会按 APlayer 加载时机晚于 meme 落地，
-// 但仍属同一轮——这个时间窗内的音乐卡豁免（不收起表情包）；超出则视为新一轮、照常收起。
-const COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS = 8000;
 const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
@@ -2451,18 +2448,12 @@ function CompactChatApp({
     }
     if (memeIdx < 0) return null;
     const meme = messages[memeIdx];
-    const memeAt = typeof meme.createdAt === 'number' ? meme.createdAt : null;
-    // meme 之后只要有「真正的新内容」就收起；唯一豁免：同一 proactive turn、紧随其后落地的音乐卡
-    // （dispatchMusicPlay 早于 music_ui executePlay append 返回，按 APlayer 加载时机晚到、createdAt 接近）。
-    // 「新一轮纯音乐 turn」的音乐卡 createdAt 明显更晚（超窗），不豁免、照常收起。
+    // 表情包是「仿音乐条」的独立常显挂件：发出后一直挂着，直到用户开口（出现下一条 role==='user'
+    // 的消息）才收起。猫娘同一轮、乃至后续若干轮的台词(assistant)和音乐卡都不算「对话换场」，
+    // 不收起——否则主动分享时紧随表情包落地的台词消息会在一瞬间把图顶掉。下一张新表情包由上面
+    // 「从尾部取最新 meme」自然替换，无需在这里显式清掉旧图。
     for (let i = memeIdx + 1; i < messages.length; i += 1) {
-      const m = messages[i];
-      const id = typeof m?.id === 'string' ? m.id : '';
-      const at = typeof m?.createdAt === 'number' ? m.createdAt : null;
-      const sameTurnMusic = id.startsWith('music-') && memeAt !== null && at !== null
-        && at - memeAt >= 0 && at - memeAt <= COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS;
-      if (sameTurnMusic) continue;
-      return null;
+      if (messages[i]?.role === 'user') return null;
     }
     for (const block of meme.blocks ?? []) {
       if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
