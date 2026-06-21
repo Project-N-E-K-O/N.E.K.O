@@ -1710,14 +1710,19 @@ function CompactChatApp({
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
   // A/B 曝光上报：挂载后触发（去重在 reportCompactHistoryExperimentExposure 内用 sessionStorage 做，
   // 跨真实重挂载 / StrictMode 双 effect 都只报一次），把 telemetry 副作用移出 render 阶段。首次若因
-  // WS 未 OPEN 没投出去，挂一次 socket 'open' 重试——否则首启 socket 还在连接时曝光会丢。
+  // WS 未 OPEN 没投出去，用有界轮询重试——否则首启 socket 还在连接时曝光会丢。
   useEffect(() => {
     if (reportCompactHistoryExperimentExposure()) return;
-    const socket = (window as unknown as { appState?: { socket?: WebSocket } }).appState?.socket;
-    if (!socket) return;
-    const onOpen = () => { reportCompactHistoryExperimentExposure(); };
-    socket.addEventListener('open', onOpen);
-    return () => socket.removeEventListener('open', onOpen);
+    // WS 未就绪：用有界轮询重试，比监听某个 socket 实例的 'open' 更稳——覆盖 socket 此刻还没创建
+    // （startup 慢路径，appState.socket 为 undefined）、「report 失败到注册监听之间 socket 已 OPEN」
+    // 的竞态、以及断线重连换 socket 实例等情况。成功（或本会话已报过）即停，最多重试约 20s。
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) {
+        window.clearInterval(timer);
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
   }, []);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
