@@ -86,6 +86,13 @@ function scheduleLive2DConfigRetry(reason) {
             // 若该次初始化最终因空路径失败，会从 early-return 分支再次安排重试。
             if (_nekoLive2DInitInFlight) return;
             if (_nekoLive2DConfigRetryCount >= NEKO_LIVE2D_CONFIG_RETRY_MAX) return;
+            // 重取前等存储位置哨兵：reloadPageConfig 直接 fetch、不经 startPageConfigLoad 的等待，
+            // 不在此 await 的话，自愈会在存储弹窗仍开着时抢跑、用错/未批准的存储位置（PR #1920 review P1）。
+            // 预算也只在哨兵解析、确实要重取时才扣减，避免长时间等待用户决定期间空耗预算。
+            if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+                await Promise.resolve(window.__nekoStorageLocationStartupBarrier).catch(() => {});
+            }
+            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight) return;
             _nekoLive2DConfigRetryCount += 1;
             try {
                 if (typeof window.reloadPageConfig === 'function') {
@@ -398,11 +405,12 @@ async function initLive2DModel() {
 
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
 async function _initLive2DModelInner() {
-    // 自愈重入时若已拿到模型路径，跳过 storageLocation 哨兵等待，规避哨兵卡死导致模型永远加载不出来。
     const _preInitModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
-    if (!_preInitModelPath && window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
-        // 有界等待：哨兵卡死时超时即继续，避免 init 永久挂起、令看门狗重试无法自愈。
-        await _nekoAwaitWithTimeout(window.__nekoStorageLocationStartupBarrier, NEKO_LIVE2D_AWAIT_TIMEOUT_MS);
+    // 存储位置启动哨兵必须始终等待——不设超时、不因已知路径而跳过：它是用户存储/迁移决定的门，
+    // 抢跑会让头像/主界面用错或未批准的存储位置（PR #1920 review P1）。已解析则瞬时返回；
+    // 若用户迟迟不决定（或哨兵真卡死），保持等待与 startPageConfigLoad 一致，也比抢跑安全。
+    if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        await Promise.resolve(window.__nekoStorageLocationStartupBarrier).catch(() => {});
     }
 
     // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
