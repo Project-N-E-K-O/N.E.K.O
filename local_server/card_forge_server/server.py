@@ -50,11 +50,12 @@ def _resolve_cors_origins() -> list[str]:
     """
     raw = os.environ.get("NEKO_CARD_FORGE_ALLOWED_ORIGINS", "").strip()
     if not raw:
+        # 只放行本机 card-forge 前端 (5173)。不含社区服务 (:8080)——/forge/facts 返回的是
+        # 个人化本地记忆，社区 Web App 不应跨源读取；如确需放行，由
+        # NEKO_CARD_FORGE_ALLOWED_ORIGINS 显式加入。
         return [
             "http://127.0.0.1:5173",
             "http://localhost:5173",
-            "http://127.0.0.1:8080",
-            "http://localhost:8080",
         ]
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -153,6 +154,11 @@ def _select_forge_facts_with_stats(
             fid_key = str(fid)
         hash_key = raw_hash_key or (hashlib.sha1(text_key.encode("utf-8")).hexdigest() if text_key else "")
         if fid_key in exclude_ids or (hash_key and hash_key in exclude_hashes):
+            excluded_count += 1
+            continue
+        # 私有 / 已脱敏的事实不可导出（与 card_drop_router._read_local_facts 一致）：
+        # 不进锻造候选，避免 min_importance=0 时敏感本地记忆被展示或喂进故事生成。
+        if item.get("private") is True or item.get("redacted") is True:
             excluded_count += 1
             continue
         if not include_absorbed and item.get("absorbed"):

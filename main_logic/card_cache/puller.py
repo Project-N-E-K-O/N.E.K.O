@@ -111,7 +111,11 @@ async def _pull_once() -> int:
             continue
         # 简单 sanitize 防路径穿越
         safe_lanlan = lanlan_name.replace("/", "_").replace("\\", "_").replace("..", "_")[:64]
-        path = memory_dir / safe_lanlan / "cards" / f"{card_id}.json"
+        # card_id 来自云端：Path(...).name 去掉任意目录分隔符与 ..，杜绝写到 cards/ 目录外。
+        safe_card_id = Path(card_id).name
+        if not safe_card_id or safe_card_id.startswith("."):
+            continue
+        path = memory_dir / safe_lanlan / "cards" / f"{safe_card_id}.json"
         if path.exists():
             continue  # M5：已存在不覆写；M6 加 updated_at 比对再覆写
         try:

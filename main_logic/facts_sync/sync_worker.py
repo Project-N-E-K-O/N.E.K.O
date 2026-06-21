@@ -159,7 +159,7 @@ async def _ensure_client_registered(base_url: str, client_id: str) -> bool:
         except (httpx.HTTPError, OSError) as exc:
             logger.warning("facts_sync: client register HTTP failed: %s", exc)
             return False
-        if r.status_code == 200:
+        if r.status_code < 300:
             _client_registered[cache_key] = True
             logger.info("facts_sync: client %s… registered with Servers", client_id[:8])
             return True

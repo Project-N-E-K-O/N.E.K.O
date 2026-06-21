@@ -1729,7 +1729,6 @@ from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
 from main_routers.card_drop_router import router as card_drop_router # noqa
-from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
