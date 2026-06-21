@@ -2892,14 +2892,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: none;
 }
 
-/* 主动分享表情包 overlay：与音乐条并列的常显挂件，显示最新一张表情包，常显到下一条新消息出现即收起。
-   默认叠在音乐条上方（offset-y 比音乐条 12px 大），位置可用 --compact-meme-overlay-offset-y 微调。
+/* 主动分享表情包 overlay：常显挂件，显示最新一张表情包，常显到用户开口（下一条 role==='user'
+   消息）才收起。默认贴近胶囊（offset-y 28px）；位置可用 --compact-meme-overlay-offset-y 微调。
    ⚠️ 像素位置需在三条链路（index 宽屏 / 窄宽手机 / chat.html Electron）实测微调。 */
 .compact-meme-overlay {
   --compact-meme-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  --compact-meme-overlay-offset-y: 28px;
   position: fixed;
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-meme-surface-width) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + var(--compact-meme-overlay-offset-y, 96px));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + var(--compact-meme-overlay-offset-y));
   box-sizing: border-box;
   width: min(calc(var(--compact-meme-surface-width) - 16px), 240px, calc(100vw - 24px));
   transform: translateX(-50%);
@@ -2907,6 +2908,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   /* 被动展示，不接收指针事件——让点击穿透到桌面/下层，且不被 Electron pass-through 当可交互 island。 */
   pointer-events: none;
   -webkit-app-region: no-drag;
+}
+
+/* 同一轮既推表情包又放歌时，音乐条占据胶囊正上方那一档；表情包上移到音乐条上方让位，避免重叠。
+   只有这种共存场景才需要大 offset，单表情包仍贴近胶囊（上面的 28px）。 */
+.app-shell:has(#music-player-mount.compact-music-player-mount:not(:empty)) .compact-meme-overlay {
+  --compact-meme-overlay-offset-y: 96px;
 }
 
 .compact-meme-overlay img {
