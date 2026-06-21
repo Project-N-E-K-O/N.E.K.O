@@ -79,8 +79,8 @@
 
 | 字段 | 值 | 说明 |
 |------|-----|------|
-| `default_headers` | `{"x-dashscope-session-cache": "enable"}` | 开启会话级缓存 |
-| `enable_cache_control` | `True` | 启用缓存控制 |
+| `default_headers` | `{"x-dashscope-session-cache": "enable"}` | 开启会话级缓存（DashScope 走 **header 路**，缓存由此 header 启用） |
+| `enable_cache_control` | `False` | body 级 cache_control 标记开关，与 header 正交。DashScope 不需要 body 级标记（它是 OpenAI 兼容端点，不认 Anthropic 风格 `cache_control`），故为 `False`；缓存仍由上面的 header 生效。仅 `requires_body_flag=True` 的 provider（Anthropic 直连 / Anthropic-compat 网关）才置 `True`。 |
 
 ### 遥测字段 (Token Usage)
 
