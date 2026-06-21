@@ -3415,6 +3415,27 @@ function _getNekoIdleCat1TargetMoveDirection(rect, targetLeft) {
     return dx > 0;
 }
 
+function _getNekoIdleCat1YarnLookX(chatRect) {
+    const left = Number(chatRect && chatRect.left);
+    const width = Number(chatRect && chatRect.width);
+    if (!Number.isFinite(left) || !Number.isFinite(width) || width <= 0) return NaN;
+    const trailingStringPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(false, chatRect);
+    return left + Math.max(1, width - trailingStringPx) / 2;
+}
+
+function _resolveNekoIdleCat1StretchFacing(rect, chatRect, fallbackFacingRight) {
+    const rectLeft = Number(rect && rect.left);
+    const rectWidth = Number(rect && rect.width);
+    const yarnLookX = _getNekoIdleCat1YarnLookX(chatRect);
+    if (Number.isFinite(rectLeft) && Number.isFinite(rectWidth) && rectWidth > 0 && Number.isFinite(yarnLookX)) {
+        const rectCenterX = rectLeft + rectWidth / 2;
+        if (Math.abs(yarnLookX - rectCenterX) > _NEKO_IDLE_CAT1_MINIMIZED_BACKWARD_RETREAT_TOLERANCE_PX) {
+            return yarnLookX > rectCenterX;
+        }
+    }
+    return !!fallbackFacingRight;
+}
+
 function _resolveNekoIdleCat1TargetFacing(rect, target) {
     if (!target) return false;
     const moveFacingRight = _getNekoIdleCat1TargetMoveDirection(rect, target.left);
@@ -3427,6 +3448,9 @@ function _resolveNekoIdleCat1TargetFacing(rect, target) {
 
 function _resolveNekoIdleCat1FinalTargetFacing(target) {
     if (!target) return false;
+    if (Object.prototype.hasOwnProperty.call(target, 'stretchFacingRight')) {
+        return !!target.stretchFacingRight;
+    }
     if (Object.prototype.hasOwnProperty.call(target, 'lookFacingRight')) {
         return !!target.lookFacingRight;
     }
@@ -3447,12 +3471,19 @@ function _makeNekoIdleCat1SideTarget(rect, chatRect, options) {
     const dx = targetCenterX - currentCenterX;
     const dy = targetCenterY - currentCenterY;
     const moveFacingRight = _getNekoIdleCat1TargetMoveDirection(rect, clamped.left);
+    const stretchFacingRight = _resolveNekoIdleCat1StretchFacing({
+        left: clamped.left,
+        top: clamped.top,
+        width: rect.width,
+        height: rect.height
+    }, chatRect, facingRight);
     return {
         left: clamped.left,
         top: clamped.top,
         distance: Math.hypot(dx, dy),
         facingRight: facingRight,
         lookFacingRight: facingRight,
+        stretchFacingRight: stretchFacingRight,
         moveFacingRight: moveFacingRight,
         approachOffsetPx: approachOffsetPx,
         kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
@@ -3531,6 +3562,7 @@ function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options) {
         distance: 0,
         facingRight: facingRight,
         lookFacingRight: facingRight,
+        stretchFacingRight: _resolveNekoIdleCat1StretchFacing(rect, chatRect, facingRight),
         moveFacingRight: null,
         approachOffsetPx: _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect),
         kind: _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE

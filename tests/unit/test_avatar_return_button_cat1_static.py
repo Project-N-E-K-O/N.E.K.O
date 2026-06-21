@@ -45,6 +45,7 @@ def test_cat1_minimized_side_target_separates_look_and_move_direction():
     assert "alternateTarget.moveFacingRight === null || alternateTarget.moveFacingRight === lookFacingRight" in forward_pick_block
     assert "facingRight: facingRight," in source
     assert "lookFacingRight: facingRight" in source
+    assert "stretchFacingRight: stretchFacingRight" in source
     assert "moveFacingRight: moveFacingRight" in source
 
 
@@ -92,7 +93,15 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function _resolveNekoIdleCat1TargetFacing" in source
+    assert "function _resolveNekoIdleCat1StretchFacing" in source
     assert "function _resolveNekoIdleCat1FinalTargetFacing" in source
+
+    final_facing_block = source.split("function _resolveNekoIdleCat1FinalTargetFacing", 1)[1].split(
+        "function _makeNekoIdleCat1SideTarget",
+        1,
+    )[0]
+    assert "stretchFacingRight" in final_facing_block
+    assert final_facing_block.index("stretchFacingRight") < final_facing_block.index("lookFacingRight")
 
     walk_step_block = source.split("function _stepNekoIdleCat1Walk", 1)[1].split(
         "function _startNekoIdleCat1Walk",
