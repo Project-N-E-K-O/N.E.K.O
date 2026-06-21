@@ -237,6 +237,7 @@
         }
         S.sessionStartedResolver = null;
         S.sessionStartedRejecter = null;
+        S._pendingSessionStartMode = null;
     };
 
     // ======================== 工具函数 ========================

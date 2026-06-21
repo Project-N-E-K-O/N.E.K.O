@@ -639,6 +639,13 @@ IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 # 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
 FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
 
+# 跨模式重启时「等 in-flight 落定」的等待上限。必须明显短于前端超时：等完之后
+# 还要花几秒真正起目标模式会话，若把整个 15s 都耗在等待上，重启发出的
+# session_started 会晚于前端 deadline，前端照样超时、甚至 reset 后才收到 ack 起孤儿
+# 会话（Codex P2）。给重启留 ~1/3 余量，in-flight 没在这窗口内落定就放弃（回落
+# baseline：前端超时，无孤儿）。in-flight（text）正常 1~3s 落定，远在窗口内。
+CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS * 2 / 3
+
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
 # 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
@@ -839,6 +846,12 @@ class LLMSessionManager:
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
         self._audio_stream_epoch = 0
+        # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
+        # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
+        # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——
+        # 它在所有 end_session cleanup（含 by_server=True 的 in-flight 失败收口）
+        # 里都会涨，会把用户仍在等待的 audio 请求误判为已放弃（CodeRabbit）。
+        self._user_session_abandon_epoch = 0
         self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -5478,21 +5491,23 @@ class LLMSessionManager:
                 # 替换掉刚建好的旧模式会话。不复用 in-flight 的 ack（跨模式复用会按
                 # 错模式切 UI，见上）。
                 logger.warning("⚠️ Session正在启动中（跨模式），等 in-flight 落定后改起 %s 会话", input_mode)
-                # 快照拆除计数：仅在 end_session（前端 15s 超时会发 end_session）里
-                # 递增。in-flight 真正落定时 count 由其自身 finally 归 0、epoch 不变；
-                # 而前端超时的 end_session 也会把 count 清 0 但 epoch 会变。只在
-                # 「count 归 0 且 epoch 未变」时重启——区分真落定与"用户已放弃 +
-                # 被 end_session 清零"，避免在 UI 已 reject 后凭空起一个孤儿会话
-                # （Codex P2）。epoch 因别的清理误增时回落"不重启"（安全侧）。
-                _teardown_epoch = self._audio_stream_epoch
+                # 快照"用户放弃"计数：仅在前端/用户主动 end_session 时递增（见
+                # end_session 顶部）。in-flight 真正落定时 count 由其自身 finally 归 0、
+                # abandon epoch 不变；而前端 15s 超时发的 end_session 会把 count 清 0
+                # 且 abandon epoch +1。只在「count 归 0 且 abandon epoch 未变」时重启——
+                # 区分"真落定"与"用户已放弃 + 被 end_session 清零"，避免在 UI 已 reject
+                # 后凭空起孤儿会话（Codex P2）。关键：不能用 _audio_stream_epoch——它在
+                # in-flight 启动失败的 by_server cleanup 里也会涨，会把用户仍在等待的
+                # audio 误判成放弃、回到 15s 干等（CodeRabbit）。
+                _abandon_epoch = self._user_session_abandon_epoch
                 _waited = 0.0
-                while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
+                while self._starting_session_count > 0 and _waited < CROSS_MODE_RESTART_WAIT_SECONDS:
                     await asyncio.sleep(0.05)
                     _waited += 0.05
                 if self._starting_session_count != 0:
-                    logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs），放弃改起 %s", _waited, input_mode)
-                elif self._audio_stream_epoch != _teardown_epoch:
-                    logger.warning("⚠️ 跨模式等待期间发生 end_session（用户已放弃 / in-flight 被拆），不再改起 %s", input_mode)
+                    logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs，留余量给重启），放弃改起 %s", _waited, input_mode)
+                elif self._user_session_abandon_epoch != _abandon_epoch:
+                    logger.warning("⚠️ 跨模式等待期间用户主动结束了启动（已放弃），不再改起 %s", input_mode)
                 else:
                     # in-flight 干净落定：递归重入起目标模式。重入禁用跨模式重启
                     # （_allow_cross_mode_restart=False），把递归深度封到 1——若重入
@@ -9426,6 +9441,14 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
+        # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
+        # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
+        # 内部 recovery（reset_starting_count=False）与各类 by_server=True cleanup
+        # 不算，避免把 in-flight 启动失败误判成"用户放弃"而误杀跨模式重启
+        # （见 start_session 跨模式分支的 _user_session_abandon_epoch 守卫）。放在所有
+        # 早退之前，确保 in-flight（尚未 active）期间前端 end_session 也能计上。
+        if not by_server and reset_starting_count:
+            self._user_session_abandon_epoch += 1
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False

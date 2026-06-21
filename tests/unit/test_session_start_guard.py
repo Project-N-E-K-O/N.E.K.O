@@ -21,6 +21,7 @@ def _make_inactive_manager(*, starting_count=1):
     mgr.tts_request_queue = Queue()
     mgr.tts_response_queue = Queue()
     mgr._audio_stream_epoch = 0
+    mgr._user_session_abandon_epoch = 0
     mgr._reset_tts_retry_state = lambda: None
     mgr._clear_audio_stream_queue = lambda reason: None
     mgr._cancel_audio_stream_worker = lambda reason: None
@@ -104,6 +105,7 @@ def _make_starting_manager(*, starting_input_mode):
     mgr.session = object()
     mgr.is_active = True
     mgr._audio_stream_epoch = 0
+    mgr._user_session_abandon_epoch = 0
     return mgr
 
 
@@ -143,7 +145,7 @@ async def test_cross_mode_start_gives_up_when_inflight_never_settles(monkeypatch
     """When the in-flight start never settles (count never drops to 0), the
     cross-mode branch gives up at the timeout and does not re-enter (avoids
     stacking a second session while the in-flight one is still stuck)."""
-    monkeypatch.setattr("main_logic.core.FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("main_logic.core.CROSS_MODE_RESTART_WAIT_SECONDS", 0.2)
     mgr = _make_starting_manager(starting_input_mode="text")
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
@@ -175,10 +177,11 @@ async def test_cross_mode_background_start_does_not_restart():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():
-    """When an end_session happens during the wait (the frontend 15s timeout
-    sends one, which bumps _audio_stream_epoch and zeroes the count), do NOT
-    restart — this distinguishes a genuine settle from "user gave up + count
-    was zeroed", avoiding an orphan session whose UI was already rejected."""
+    """When the user actively ends the start during the wait (the frontend 15s
+    timeout sends end_session, which bumps _user_session_abandon_epoch and
+    zeroes the count), do NOT restart — this distinguishes a genuine settle
+    from "user gave up + count was zeroed", avoiding an orphan session whose UI
+    was already rejected."""
     mgr = _make_starting_manager(starting_input_mode="text")
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
@@ -188,9 +191,37 @@ async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():
         LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
     )
     await asyncio.sleep(0.1)
-    # 模拟 end_session：清零 count 的同时 bump epoch（与真实 end_session 一致）。
-    mgr._audio_stream_epoch += 1
+    # Simulate a frontend-initiated end_session: zero the count AND bump the
+    # abandon epoch (mirrors end_session's not-by_server path).
+    mgr._user_session_abandon_epoch += 1
     mgr._starting_session_count = 0
     await start_task
 
     restart_mock.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
+    """If the in-flight start fails internally (its by_server cleanup bumps
+    _audio_stream_epoch but NOT _user_session_abandon_epoch), the user's
+    explicit audio request should STILL restart — otherwise the user's audio
+    promise gets no ack and hangs the full 15s (the very bug being fixed)."""
+    mgr = _make_starting_manager(starting_input_mode="text")
+    restart_mock = AsyncMock()
+    mgr.start_session = restart_mock
+
+    ws = object()
+    start_task = asyncio.create_task(
+        LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
+    )
+    await asyncio.sleep(0.1)
+    # In-flight text start failed → internal by_server cleanup bumps the audio
+    # stream epoch but NOT the user-abandon epoch, and zeroes the count.
+    mgr._audio_stream_epoch += 1
+    mgr._starting_session_count = 0
+    await start_task
+
+    restart_mock.assert_awaited_once_with(
+        ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
+    )

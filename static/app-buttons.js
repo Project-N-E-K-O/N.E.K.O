@@ -2040,6 +2040,7 @@
                         var rejecter = S.sessionStartedRejecter;
                         S.sessionStartedResolver = null;
                         S.sessionStartedRejecter = null;
+                        S._pendingSessionStartMode = null;
                         window.sessionTimeoutId = null;
 
                         if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2128,6 +2129,7 @@
                 rejectPendingTextSessionStart(error);
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
+                S._pendingSessionStartMode = null;
 
                 if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -2393,6 +2395,7 @@
                             var rejecter = S.sessionStartedRejecter;
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
+                            S._pendingSessionStartMode = null;
                             window.sessionTimeoutId = null;
 
                             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2633,6 +2636,7 @@
                                     var rejecter = S.sessionStartedRejecter;
                                     S.sessionStartedResolver = null;
                                     S.sessionStartedRejecter = null;
+                                    S._pendingSessionStartMode = null;
                                     mod._textSessionStartRejecter = null;
                                     window.sessionTimeoutId = null;
 

@@ -2820,6 +2820,7 @@
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
+                    S._pendingSessionStartMode = null;
 
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
@@ -2835,6 +2836,7 @@
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
+                    S._pendingSessionStartMode = null;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
