@@ -558,6 +558,36 @@ describe('App', () => {
     }
   });
 
+  it('shows the proactive meme overlay until a newer message arrives', () => {
+    const meme = parseChatMessage({
+      id: 'meme-abc123',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }],
+      status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+    );
+    const img = container.querySelector('.compact-meme-overlay img');
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
+
+    const text = parseChatMessage({
+      id: 'assistant-newer',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'hi' }],
+      status: 'sent',
+    });
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, text]} />);
+    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+  });
+
   it('defaults compact history open and preserves history controls through visibility toggles', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({

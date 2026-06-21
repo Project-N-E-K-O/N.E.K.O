@@ -2378,6 +2378,17 @@ function CompactChatApp({
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
   const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
+  // 主动分享的表情包是 image-only 消息（id 以 'meme-' 开头），原本只活在会折叠的历史里。把「最新一条
+  // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到下一条新消息出现（最新消息不再是表情包）即收起。
+  const compactMemeOverlay = useMemo<{ url: string; alt: string } | null>(() => {
+    if (!isCompactSurface) return null;
+    const last = messages[messages.length - 1];
+    if (!last || typeof last.id !== 'string' || !last.id.startsWith('meme-')) return null;
+    for (const block of last.blocks ?? []) {
+      if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
+    }
+    return null;
+  }, [messages, isCompactSurface]);
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
@@ -6704,6 +6715,16 @@ function CompactChatApp({
   // 音乐条可见性与「聊天历史折叠」解耦：只要有音乐内容就常显（空态由 CSS `:empty { display:none }`
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
+  const compactMemeOverlayNode = isCompactSurface && compactMemeOverlay ? (
+    <div
+      className="compact-meme-overlay"
+      data-compact-meme-overlay="compact-surface"
+      data-compact-geometry-owner="surface"
+      data-compact-no-drag="true"
+    >
+      <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="lazy" />
+    </div>
+  ) : null;
   const compactMusicPlayerMountNode = isCompactSurface ? (
     <div
       id="music-player-mount"
@@ -6774,6 +6795,7 @@ function CompactChatApp({
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
+      {compactMemeOverlayNode}
       {compactChoiceLayerNode}
       <AvatarToolItemManager
         open={isCompactSurface && avatarToolManagerOpen}

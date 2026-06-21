@@ -2892,6 +2892,33 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: none;
 }
 
+/* 主动分享表情包 overlay：与音乐条并列的常显挂件，显示最新一张表情包，常显到下一条新消息出现即收起。
+   默认叠在音乐条上方（offset-y 比音乐条 12px 大），位置可用 --compact-meme-overlay-offset-y 微调。
+   ⚠️ 像素位置需在三条链路（index 宽屏 / 窄宽手机 / chat.html Electron）实测微调。 */
+.compact-meme-overlay {
+  --compact-meme-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  position: fixed;
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-meme-surface-width) / 2));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + var(--compact-meme-overlay-offset-y, 96px));
+  box-sizing: border-box;
+  width: min(calc(var(--compact-meme-surface-width) - 16px), 240px, calc(100vw - 24px));
+  transform: translateX(-50%);
+  z-index: 8;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.compact-meme-overlay img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 200px;
+  margin: 0 auto;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
 #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],
 #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {
   opacity: 0;
