@@ -135,6 +135,20 @@ async def test_selection_audit_records_winner_and_dropped_candidates():
     assert all("text" not in item for item in dropped)
 
 
+async def test_selection_status_tracks_last_decision_for_health_rows():
+    ctx = _FakeCtx(remaining=5.0)
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("1", text="plain"))
+    hub.submit(_danmaku("2", text="captain", guard=1))
+    await _drain(hub)
+
+    status = hub.status()
+    assert status["last_decision_at"] > 0
+    assert status["last_selected_type"] == "danmaku"
+    assert status["last_candidate_count"] == 2
+
+
 async def test_cooldown_window_allows_high_value_gift_to_beat_danmaku():
     ctx = _FakeCtx(remaining=5.0)
     hub = await _make_hub(ctx)

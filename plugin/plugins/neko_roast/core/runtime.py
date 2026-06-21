@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +67,8 @@ class RoastRuntime:
         self.live_connection_state = "disconnected"
         self.instructions_injected = False
         self.developer_instructions_injected = False
+        self._config_last_persist_at: float = 0.0
+        self._config_last_error: str = ""
         # 串行化插件自身的配置写，避免并发 update_config 内存 apply 互踩 / 叠加持久化。
         # 懒初始化，避免构造时无运行 loop。
         self._config_lock: asyncio.Lock | None = None
@@ -307,7 +311,10 @@ class RoastRuntime:
                 self._persist_config_update(clean),
                 timeout=self._CONFIG_PERSIST_BUDGET_SECONDS,
             )
+            self._config_last_persist_at = time.time()
+            self._config_last_error = ""
         except asyncio.TimeoutError:
+            self._config_last_error = "config_persist_timeout"
             self.audit.record(
                 "config_persist_timeout",
                 f"config persistence exceeded {self._CONFIG_PERSIST_BUDGET_SECONDS}s budget; "
@@ -315,6 +322,7 @@ class RoastRuntime:
                 level="warning",
             )
         except Exception as exc:
+            self._config_last_error = f"config_persist_failed:{type(exc).__name__}"
             self.audit.record(
                 "config_persist_failed",
                 f"config persistence failed, using runtime config: {type(exc).__name__}",
@@ -443,8 +451,126 @@ class RoastRuntime:
             "recent_sandbox_results": list(reversed(self.recent_sandbox_results)),
             "recent_audit": self.audit.recent(self.config.recent_limit),
             "avatar_cache": self.avatar_cache.status(),
+            "health_rows": self.runtime_health_rows(),
             "actions": self.dashboard_actions(),
         }
+
+    @staticmethod
+    def _age_sec(timestamp: Any) -> float | None:
+        try:
+            value = float(timestamp)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        return round(max(0.0, time.time() - value), 1)
+
+    @staticmethod
+    def _iso_age_sec(value: Any) -> float | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return round(max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds()), 1)
+
+    @staticmethod
+    def _status_from_outcome(outcome: str) -> str:
+        if outcome == "failed":
+            return "failed"
+        if outcome == "skipped":
+            return "blocked"
+        if outcome in {"dry_run", "pushed", "ok"}:
+            return "healthy"
+        return "idle"
+
+    @staticmethod
+    def _module_status(module: Any) -> dict[str, Any]:
+        status = getattr(module, "status", None)
+        if not callable(status):
+            return {}
+        try:
+            data = status()
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def runtime_health_rows(self) -> list[dict[str, Any]]:
+        ingest = self._module_status(self.bili_live_ingest)
+        event_bus = self._module_status(self.event_bus)
+        selection = self._module_status(self.live_events)
+        latest = self.recent_results[-1] if self.recent_results else {}
+        latest_status = str(latest.get("status") or "") if isinstance(latest, dict) else ""
+        latest_reason = str(latest.get("reason") or "") if isinstance(latest, dict) else ""
+        latest_age = self._iso_age_sec(latest.get("created_at")) if isinstance(latest, dict) else None
+        steps = latest.get("steps") if isinstance(latest, dict) else []
+        dispatcher_step = None
+        if isinstance(steps, list):
+            dispatcher_step = next(
+                (step for step in reversed(steps) if isinstance(step, dict) and step.get("id") == "neko_dispatcher"),
+                None,
+            )
+        dispatcher_outcome = latest_status if dispatcher_step else ""
+        safety_state = self.safety_guard.status()
+        config_status = "failed" if self._config_last_error else ("healthy" if self._config_last_persist_at else "idle")
+        return [
+            {
+                "id": "live_ingest",
+                "stage": "ingest",
+                "status": "healthy" if ingest.get("last_event_at") else "idle",
+                "age_sec": self._age_sec(ingest.get("last_event_at")),
+                "last_outcome": ingest.get("last_event_type", ""),
+            },
+            {
+                "id": "event_bus",
+                "stage": "event_bus",
+                "status": "healthy" if event_bus.get("publish_count") else "idle",
+                "count": int(event_bus.get("publish_count") or 0),
+                "age_sec": self._age_sec(event_bus.get("last_publish_at")),
+                "last_outcome": event_bus.get("last_event_type", ""),
+            },
+            {
+                "id": "selection",
+                "stage": "selection",
+                "status": "healthy" if selection.get("last_decision_at") else "idle",
+                "count": int(selection.get("last_candidate_count") or 0),
+                "age_sec": self._age_sec(selection.get("last_decision_at")),
+                "last_outcome": selection.get("last_selected_type", ""),
+            },
+            {
+                "id": "pipeline",
+                "stage": "pipeline",
+                "status": self._status_from_outcome(latest_status),
+                "age_sec": latest_age,
+                "last_outcome": latest_status,
+                "last_skip_reason": latest_reason if latest_status in {"dry_run", "skipped", "failed"} else "",
+            },
+            {
+                "id": "safety_guard",
+                "stage": "safety_guard",
+                "status": "healthy" if safety_state == "running" else ("degraded" if safety_state == "degraded" else "blocked"),
+                "current_state": safety_state,
+                "cooldown_remaining": round(float(self.safety_guard.output_cooldown_remaining()), 1),
+            },
+            {
+                "id": "dispatcher",
+                "stage": "dispatcher",
+                "status": self._status_from_outcome(dispatcher_outcome),
+                "age_sec": latest_age if dispatcher_step else None,
+                "last_outcome": dispatcher_outcome,
+                "last_skip_reason": latest_reason if dispatcher_outcome in {"dry_run", "skipped", "failed"} else "",
+            },
+            {
+                "id": "config_store",
+                "stage": "config_store",
+                "status": config_status,
+                "age_sec": self._age_sec(self._config_last_persist_at),
+                "last_error": self._config_last_error,
+            },
+        ]
 
     def dashboard_actions(self) -> list[dict[str, str]]:
         action_ids = [

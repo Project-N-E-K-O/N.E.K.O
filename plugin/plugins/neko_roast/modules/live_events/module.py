@@ -66,6 +66,9 @@ class LiveEventsModule(BaseModule):
         # 可注入：单测里替换成确定性的 sleep / 时钟。
         self._sleep = asyncio.sleep
         self._now = time.time
+        self._last_decision_at: float = 0.0
+        self._last_selected_type: str = ""
+        self._last_candidate_count: int = 0
         # EventBus 订阅句柄（fake ctx 无 event_bus 时保持空列表）。
         self._unsubscribes: list[Any] = []
 
@@ -128,6 +131,9 @@ class LiveEventsModule(BaseModule):
             "enabled": self.enabled,
             "buffered": self._buffered_count,
             "window_open": self._flush_task is not None,
+            "last_decision_at": self._last_decision_at,
+            "last_selected_type": self._last_selected_type,
+            "last_candidate_count": self._last_candidate_count,
         }
 
     def submit(self, event: Any) -> None:
@@ -241,6 +247,9 @@ class LiveEventsModule(BaseModule):
         selected = next((item for item in (candidates or []) if item.get("order") == winner_order), None)
         if selected is None:
             selected = self._candidate_summary(event, score, winner_order or 1)
+        self._last_decision_at = self._now()
+        self._last_selected_type = event_type
+        self._last_candidate_count = count
         dropped_candidates = []
         for item in candidates or []:
             if item.get("order") == selected.get("order"):

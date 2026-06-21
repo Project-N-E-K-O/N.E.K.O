@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin.plugins.neko_roast.core.contracts import InteractionResult, PipelineStep, ViewerEvent
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
 
 
@@ -166,3 +167,47 @@ async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: 
 
     assert runtime.plugin.config.ensure_payloads == [{"neko_roast": {"dry_run": False}}]
     assert runtime.plugin.config.updates == [{"neko_roast": {"dry_run": False}}]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_state_exposes_runtime_health_rows(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(uid="42", nickname="dry", danmaku_text="hi", source="live_danmaku")
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="dry_run",
+            event=event,
+            reason="dispatcher.dry_run",
+            steps=[PipelineStep("neko_dispatcher", "dry_run", "dry_run(target=none)")],
+        )
+    )
+
+    state = await runtime.dashboard_state()
+
+    rows = {row["id"]: row for row in state["health_rows"]}
+    assert {
+        "live_ingest",
+        "event_bus",
+        "selection",
+        "pipeline",
+        "safety_guard",
+        "dispatcher",
+        "config_store",
+    }.issubset(rows)
+    assert rows["pipeline"]["last_outcome"] == "dry_run"
+    assert rows["dispatcher"]["last_outcome"] == "dry_run"
+    assert rows["dispatcher"]["last_skip_reason"] == "dispatcher.dry_run"
+    assert rows["safety_guard"]["current_state"] == runtime.safety_guard.status()
+
+
+@pytest.mark.asyncio
+async def test_config_store_health_row_tracks_successful_persist(runtime: RoastRuntime) -> None:
+    runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
+
+    await runtime.update_config({"dry_run": True})
+    state = await runtime.dashboard_state()
+
+    rows = {row["id"]: row for row in state["health_rows"]}
+    assert rows["config_store"]["status"] == "healthy"
+    assert rows["config_store"]["age_sec"] is not None
+    assert rows["config_store"]["last_error"] == ""

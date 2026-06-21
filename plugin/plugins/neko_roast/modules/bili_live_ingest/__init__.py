@@ -50,13 +50,21 @@ class BiliLiveIngestModule(BaseModule):
         self._lookup_buvid3_ttl: float = 6 * 3600.0
         self._room_status_cache: "dict[int, tuple[LiveRoomStatus, float]]" = {}
         self._room_status_ttl: float = 60.0
+        self._last_event_at: float = 0.0
+        self._last_event_type: str = ""
 
     async def teardown(self) -> None:
         await self.stop_listening()
         await super().teardown()
 
     def status(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "listening": self.is_listening(), "room_id": self._room_id}
+        return {
+            "enabled": self.enabled,
+            "listening": self.is_listening(),
+            "room_id": self._room_id,
+            "last_event_at": self._last_event_at,
+            "last_event_type": self._last_event_type,
+        }
 
     def is_listening(self) -> bool:
         return self._listener is not None
@@ -160,6 +168,8 @@ class BiliLiveIngestModule(BaseModule):
         if bus is None:
             return
         live_event = self._to_live_event(cmd, event)
+        self._last_event_at = live_event.ts or time.time()
+        self._last_event_type = live_event.type
         bus.publish(live_event.type, live_event)
 
     def _to_live_event(self, cmd: str, event: Any) -> LiveEvent:
