@@ -529,6 +529,9 @@
         try {
             if (document.visibilityState === 'hidden') return false;
         } catch (_) { /* ignore */ }
+        if (getChatMusicSurfaceMode() === 'full' && isDedicatedChatMusicSurface()) {
+            return true;
+        }
         try {
             return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
         } catch (_) {
@@ -556,23 +559,27 @@
         };
     }
 
-    function hasBridgeActiveChatMusicSurface() {
+    function getValidBridgeActiveChatMusicSurface() {
         if (!musicPlayerBridgeActiveSurface) return false;
         if ((musicPlayerBridgeActiveSurface.expireAt || 0) <= Date.now()) {
             musicPlayerBridgeActiveSurface = null;
             return false;
         }
-        if (musicPlayerBridgeActiveSurface.sender === MUSIC_COORD_SENDER_ID) return false;
-        return !!(
+        if (!(
             musicPlayerBridgeActiveSurface.active ||
             musicPlayerBridgeActiveSurface.focused ||
             musicPlayerBridgeActiveSurface.visible
-        );
+        )) return false;
+        return musicPlayerBridgeActiveSurface;
     }
 
     function shouldRenderMusicBarInThisSurface() {
-        if (isLocalChatMusicSurfaceFocused()) return true;
-        if (hasBridgeActiveChatMusicSurface()) return false;
+        const bridgeSurface = getValidBridgeActiveChatMusicSurface();
+        const localActive = isLocalChatMusicSurfaceFocused();
+        if (bridgeSurface && bridgeSurface.sender !== MUSIC_COORD_SENDER_ID) {
+            return localActive && getChatMusicSurfaceMode() === 'full';
+        }
+        if (localActive) return true;
         if (isDedicatedChatMusicSurface()) return hasUsableLocalChatMusicSurface();
         return hasUsableLocalChatMusicSurface();
     }
