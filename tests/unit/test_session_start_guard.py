@@ -136,9 +136,7 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
 async def test_cross_mode_start_gives_up_when_inflight_never_settles(monkeypatch):
     """in-flight 启动一直不落定（count 不归 0）时，跨模式分支等到上限后放弃，
     不递归重入（避免在 in-flight 仍卡着时叠起第二个会话）。"""
-    import main_logic.core as core_mod
-
-    monkeypatch.setattr(core_mod, "FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("main_logic.core.FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.2)
     mgr = _make_starting_manager(starting_input_mode="text")
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
