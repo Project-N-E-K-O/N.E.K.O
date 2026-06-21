@@ -1762,8 +1762,10 @@ function CompactChatApp({
       startExposureReporting();
     };
     const onTutorialEnd = () => applyExperimentDefault();
-    window.addEventListener('neko:tutorial-completed', onTutorialEnd);
-    window.addEventListener('neko:tutorial-ended-without-completion', onTutorialEnd);
+    // 教程结束的三种信号都要监听：完成 / 未完成结束 / 跳过——skip 路径只派发 neko:tutorial-skipped，
+    // 不发另外两个，否则跳过新手教程的用户永远等不到变体套用 + 曝光（回应 Codex）。
+    const tutorialEndEvents = ['neko:tutorial-completed', 'neko:tutorial-ended-without-completion', 'neko:tutorial-skipped'];
+    tutorialEndEvents.forEach((name) => window.addEventListener(name, onTutorialEnd));
     if (compactHistoryExperimentAppliedRef.current) {
       // 上次可见时已套用（过了教程/兜底），但曝光可能还没成功 → 重新可见时继续补报。
       startExposureReporting();
@@ -1775,8 +1777,7 @@ function CompactChatApp({
       }, COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS);
     }
     return () => {
-      window.removeEventListener('neko:tutorial-completed', onTutorialEnd);
-      window.removeEventListener('neko:tutorial-ended-without-completion', onTutorialEnd);
+      tutorialEndEvents.forEach((name) => window.removeEventListener(name, onTutorialEnd));
       if (fallbackTimer) window.clearTimeout(fallbackTimer);
       if (exposureTimer !== null) window.clearInterval(exposureTimer);
     };
