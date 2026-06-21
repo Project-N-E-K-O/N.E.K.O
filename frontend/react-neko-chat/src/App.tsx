@@ -1755,8 +1755,10 @@ function CompactChatApp({
         const variant = readCompactHistoryExperimentVariant();
         compactHistoryExperimentAppliedRef.current = true;
         if (variant === 'open') {
-          setCompactExportHistoryMounted(true);
-          setCompactExportHistoryOpen(true);
+          // 用 openCompactExportHistory({persist:false}) 而非直接 set state：会清掉 close 留下的 560ms
+          // unmount 定时器（否则它会在展开后触发把 mounted 设回 false，留下 open=true 但面板不渲染），
+          // 且 persist:false 不把 A/B 自动展开写成用户偏好。
+          openCompactExportHistory({ persist: false });
         }
       }
       startExposureReporting();
@@ -2214,7 +2216,7 @@ function CompactChatApp({
     if (chatSurfaceMode === 'compact' && prev !== 'compact'
       && compactHistoryReopenAfterRestoreRef.current) {
       compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory();
+      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
     }
     // 方向性 reveal 擦除只在毛线球 minimized→compact 恢复时播（full→compact 不播）。~340ms 后复位。
     // useLayoutEffect 让首帧绘制前就挂 mask，消除 web 端首帧闪（壳侧有 opacity-0 门、Electron 看不出）。
@@ -2258,7 +2260,7 @@ function CompactChatApp({
       // 不渲染（受 isCompactSurface 门控），无副作用。正常折叠走 minimized→compact 重开、不到这里。
       if (compactHistoryReopenAfterRestoreRef.current) {
         compactHistoryReopenAfterRestoreRef.current = false;
-        openCompactExportHistory();
+        openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
       }
     }, 600);
     return () => window.clearTimeout(t);
@@ -2274,7 +2276,7 @@ function CompactChatApp({
     setCompactCollapsing(false);
     if (compactHistoryReopenAfterRestoreRef.current) {
       compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory();
+      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
     }
   }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
