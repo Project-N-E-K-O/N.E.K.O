@@ -1706,8 +1706,11 @@ function CompactChatApp({
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
-  const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
-  const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
+  // 快照一次再复用：readPersistedCompactExportHistoryOpen 在无偏好时会随机分组，若两个 useState 各调
+  // 一次、且 localStorage 写入静默失败，两次 Math.random 可能抽到不同分支 → open/mounted 分裂初态。
+  const [initialCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(initialCompactExportHistoryOpen);
+  const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(initialCompactExportHistoryOpen);
   // A/B 曝光上报：挂载后触发（去重在 reportCompactHistoryExperimentExposure 内用 sessionStorage 做，
   // 跨真实重挂载 / StrictMode 双 effect 都只报一次），把 telemetry 副作用移出 render 阶段。首次若因
   // WS 未 OPEN 没投出去，用有界轮询重试——否则首启 socket 还在连接时曝光会丢。
