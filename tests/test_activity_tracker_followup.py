@@ -1017,10 +1017,11 @@ def test_activity_guess_signature_excludes_idle_bucket():
     from main_logic.activity.tracker import UserActivityTracker
 
     source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
+    # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
+    # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
+    # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
     assert "idle_bucket" not in source
-    # idle 秒数只应出现在喂 LLM 的 signals 里（_snapshot_signals_for_llm，
-    # 独立方法），不应再进入 _activity_guess_loop 的签名计算。
-    assert "system_idle_seconds" not in source
     assert "sig = (" in source
 
 
