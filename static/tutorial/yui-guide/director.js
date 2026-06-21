@@ -195,15 +195,18 @@
         return true;
     }
 
-    function translateGuideText(textKey, fallbackText) {
+    function translateGuideText(textKey, fallbackText, interpolation) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
         if (!normalizedKey || typeof window.t !== 'function') {
             return normalizedFallback;
         }
 
+        const hasInterpolation = interpolation && typeof interpolation === 'object';
         try {
-            const translated = window.t(normalizedKey);
+            const translated = hasInterpolation
+                ? window.t(normalizedKey, interpolation)
+                : window.t(normalizedKey);
             if (typeof translated === 'string' && translated.trim() && translated !== normalizedKey) {
                 return translated;
             }
@@ -3181,23 +3184,10 @@
             const current = index + 1;
             const total = order.length;
             const progressFallback = '主页引导 ' + current + '/' + total;
-            if (typeof window.t === 'function') {
-                try {
-                    const translatedProgress = window.t('tutorial.yuiGuide.bubbleMeta.homeProgress', {
-                        current: current,
-                        total: total,
-                        defaultValue: progressFallback
-                    });
-                    if (
-                        typeof translatedProgress === 'string'
-                        && translatedProgress.trim()
-                        && translatedProgress !== 'tutorial.yuiGuide.bubbleMeta.homeProgress'
-                    ) {
-                        return translatedProgress;
-                    }
-                } catch (_) {}
-            }
-            return progressFallback;
+            return this.resolveGuideCopy('tutorial.yuiGuide.bubbleMeta.homeProgress', progressFallback, {
+                current: current,
+                total: total
+            });
         }
 
         showGuideBubble(text, options, sceneId) {
@@ -3468,8 +3458,8 @@
             return this.petalTransitionController.playReturn(options);
         }
 
-        resolveGuideCopy(textKey, fallbackText) {
-            return translateGuideText(textKey, fallbackText);
+        resolveGuideCopy(textKey, fallbackText, interpolation) {
+            return translateGuideText(textKey, fallbackText, interpolation);
         }
 
         resolveAvatarFloatingSceneText(scene) {
