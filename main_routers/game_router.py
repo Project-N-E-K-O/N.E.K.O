@@ -24,6 +24,7 @@ Currently implemented: soccer. The generic route /{game_type}/chat supports exte
 """
 
 import asyncio
+import html
 import json
 import math
 import random
@@ -48,6 +49,7 @@ _SSML_TAG_PATTERN = re.compile(
 )
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
 from config.prompts.prompts_game import (
     get_badminton_pregame_context_formatter_labels,
@@ -98,12 +100,120 @@ from utils.game_route_state import (
     is_game_route_active,
     register_voice_transcript_handler,
 )
+from utils.game_log import (
+    append_game_session_debug_log as _append_game_session_debug_log,
+    find_game_session_debug_log as _find_game_session_debug_log,
+    GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
+    list_game_session_debug_log_summaries,
+    mark_game_session_debug_log_active as _mark_game_session_debug_log_active,
+    mark_game_session_debug_log_ended as _mark_game_session_debug_log_ended,
+    public_game_session_debug_log,
+)
 from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Game")
 
 router = APIRouter(tags=["game"], prefix="/api/game")
+
+
+@router.get("/logs")
+async def game_logs(session_id: str = "", game_type: str = "", since: int = 0, limit: int = 300):
+    if session_id:
+        entry = _find_game_session_debug_log(session_id, game_type)
+        if not entry:
+            return {"ok": True, "missing": True, "entries": [], "session_id": session_id, "game_type": game_type}
+        return {"ok": True, "log": public_game_session_debug_log(entry, since=since, limit=limit)}
+    return {
+        "ok": True,
+        "sessions": list_game_session_debug_log_summaries(str(game_type or "").strip()),
+        "retention": {
+            "entry_limit": GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
+            "ended_session_cleanup": "disabled",
+        },
+    }
+
+
+@router.get("/logs/view", response_class=HTMLResponse)
+async def game_log_view(session_id: str = "", game_type: str = "", limit: int = 300):
+    game_type_s = str(game_type or "").strip()
+    session_id_s = str(session_id or "").strip()
+    entry = _find_game_session_debug_log(session_id_s, game_type_s) if session_id_s else None
+    if entry:
+        payload = public_game_session_debug_log(entry, limit=limit)
+        title = f"{entry.get('game_type') or 'game'} / {session_id_s}"
+        body = json.dumps(payload, ensure_ascii=False, indent=2)
+    else:
+        title = "小游戏诊断日志"
+        body = json.dumps({
+            "ok": True,
+            "message": "请带上 session_id，或查看 sessions 列表。",
+            "sessions": list_game_session_debug_log_summaries(game_type_s),
+        }, ensure_ascii=False, indent=2)
+    safe_title = html.escape(title)
+    safe_body = html.escape(body)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{safe_title}</title>
+<style>
+body {{ font-family: ui-monospace, Consolas, monospace; margin: 16px; background: #101418; color: #e8eef4; }}
+a {{ color: #8cc8ff; }}
+pre {{ white-space: pre-wrap; word-break: break-word; line-height: 1.35; }}
+.hint {{ color: #9fb0c0; margin-bottom: 12px; }}
+</style>
+</head>
+<body>
+<div class="hint">小游戏场次诊断日志 | JSON: /api/game/logs?session_id=...</div>
+<pre>{safe_body}</pre>
+</body>
+</html>"""
+    )
+
+
+@router.post("/logs")
+async def game_log_ingest(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    session_id = str(data.get("session_id") or data.get("sessionId") or "").strip()
+    game_type = str(data.get("game_type") or data.get("gameType") or "game").strip()
+    lanlan_name = str(data.get("lanlan_name") or data.get("lanlanName") or "").strip()
+    if not session_id:
+        return {"ok": False, "reason": "missing_session_id"}
+    ignored = {
+        "session_id", "sessionId", "game_type", "gameType", "lanlan_name", "lanlanName", "level",
+        "category", "event", "type", "source", "message",
+        "sensitive_possible", "sensitivePossible",
+        "preserve_message", "preserveMessage", "preserve_details", "preserveDetails",
+        "no_truncate", "noTruncate",
+    }
+    preserve_message = bool(data.get("preserve_message") or data.get("preserveMessage") or data.get("no_truncate") or data.get("noTruncate"))
+    preserve_details = bool(data.get("preserve_details") or data.get("preserveDetails") or data.get("no_truncate") or data.get("noTruncate"))
+    item = _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        level=str(data.get("level") or "info"),
+        category=str(data.get("category") or "frontend"),
+        event=str(data.get("event") or data.get("type") or "client_event"),
+        source=str(data.get("source") or "frontend"),
+        message=str(data.get("message") or ""),
+        details=data.get("details") if isinstance(data.get("details"), dict) else {
+            key: value for key, value in data.items()
+            if key not in ignored
+        },
+        sensitive_possible=bool(data.get("sensitive_possible") or data.get("sensitivePossible")),
+        preserve_message=preserve_message,
+        preserve_details=preserve_details,
+    )
+    return {"ok": item is not None, "seq": item.get("seq") if isinstance(item, dict) else None}
+
 
 # ── Session 池 ─────────────────────────────────────────────────────
 # key = f"{lanlan_name}:{game_type}:{session_id}"
@@ -6253,6 +6363,21 @@ async def _run_game_chat(
     lanlan_name = ""
     if isinstance(event, dict):
         lanlan_name = str(event.get("lanlan_name") or event.get("lanlanName") or "").strip()
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="llm",
+        event="game_chat_requested",
+        message="小游戏主 LLM 请求开始",
+        details={
+            "allow_postgame": allow_postgame,
+            "kind": event.get("kind") if isinstance(event, dict) else "",
+            "round": event.get("round") if isinstance(event, dict) else None,
+            "event_type": type(event).__name__,
+        },
+        sensitive_possible=isinstance(event, dict) and any(event.get(key) for key in ("textRaw", "userText", "userVoiceText")),
+    )
 
     if game_type == "soccer" and isinstance(event, dict):
         balance_hint = _build_soccer_balance_hint(event)
@@ -6451,6 +6576,16 @@ async def _run_game_chat(
                 )
             except asyncio.TimeoutError:
                 logger.warning("🎮 游戏 LLM 响应超时: game=%s sid=%s", game_type, session_id)
+                _append_game_session_debug_log(
+                    game_type,
+                    session_id,
+                    lanlan_name=lanlan_name,
+                    level="warning",
+                    category="llm",
+                    event="game_chat_timeout",
+                    message="小游戏主 LLM 响应超时，返回空台词",
+                    details={"timeout_seconds": 15.0},
+                )
                 err_result: Dict[str, Any] = {"error": "LLM 响应超时", "line": "", "control": {}}
                 if allow_postgame:
                     err_result["_postgame_entry"] = entry
@@ -6458,6 +6593,16 @@ async def _run_game_chat(
                 return err_result
             except Exception as e:
                 logger.error("🎮 游戏 LLM 调用失败: %s", e)
+                _append_game_session_debug_log(
+                    game_type,
+                    session_id,
+                    lanlan_name=lanlan_name,
+                    level="error",
+                    category="llm",
+                    event="game_chat_exception",
+                    message="小游戏主 LLM 调用失败",
+                    details={"error_type": type(e).__name__, "error": str(e)},
+                )
                 err_result = {"error": f"LLM 调用失败: {e}", "line": "", "control": {}}
                 if allow_postgame:
                     err_result["_postgame_entry"] = entry
@@ -6512,8 +6657,23 @@ async def _run_game_chat(
         game_type, session_id, llm_elapsed_ms, total_elapsed_ms,
         event_text[:80], result['line'][:60],
     )
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="llm",
+        event="game_chat_completed",
+        message="小游戏主 LLM 返回完成",
+        details={
+            "llm_ms": llm_elapsed_ms,
+            "total_ms": total_elapsed_ms,
+            "line_length": len(result.get("line") or ""),
+            "control_keys": sorted((result.get("control") or {}).keys()) if isinstance(result.get("control"), dict) else [],
+            "kind": event.get("kind") if isinstance(event, dict) else "",
+            "round": event.get("round") if isinstance(event, dict) else None,
+        },
+    )
     return result
-
 
 # ── 路由端点 ───────────────────────────────────────────────────────
 
@@ -6620,6 +6780,20 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
+    _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="route",
+        event="route_start_requested",
+        message="小游戏路由开始请求",
+        details={
+            "neko_initiated": bool(data.get("nekoInitiated")),
+            "mode": data.get("mode") or "",
+            "memory_tail_count": data.get("game_memory_tail_count", data.get("gameMemoryTailCount")),
+        },
+    )
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
     # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
@@ -6763,6 +6937,16 @@ async def game_route_start(game_type: str, request: Request):
                 )
         except Exception as exc:
             logger.warning("🎮 开局上下文构建异常，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
+            _append_game_session_debug_log(
+                game_type,
+                session_id,
+                lanlan_name=lanlan_name,
+                level="warning",
+                category="route",
+                event="pregame_context_exception",
+                message="开局上下文构建异常，使用兜底上下文",
+                details={"error_type": type(exc).__name__, "error": str(exc)},
+            )
             if _is_badminton_game_type(game_type):
                 context = _default_badminton_pregame_context(mode=str(state.get("mode") or data.get("mode") or "spectator"))
             else:
@@ -6775,8 +6959,37 @@ async def game_route_start(game_type: str, request: Request):
         state["heartbeat_enabled"] = True
         state["last_heartbeat_at"] = now
         state["last_activity"] = now
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            category="route",
+            event="route_start_completed",
+            message="小游戏路由开始完成",
+            details={
+                "pre_game_context_source": source,
+                "pre_game_context_error": error,
+                "before_game_external_mode": state.get("before_game_external_mode"),
+                "before_game_external_active": state.get("before_game_external_active"),
+                "heartbeat_enabled": state.get("heartbeat_enabled"),
+            },
+        )
     if state.get("before_game_external_mode") == "audio" and state.get("before_game_external_active"):
         await route_external_stream_message(lanlan_name, {"input_type": "audio"})
+    if not (game_type == "soccer" or _is_badminton_game_type(game_type)):
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            category="route",
+            event="route_start_completed",
+            message="小游戏路由开始完成",
+            details={
+                "before_game_external_mode": state.get("before_game_external_mode"),
+                "before_game_external_active": state.get("before_game_external_active"),
+                "heartbeat_enabled": state.get("heartbeat_enabled"),
+            },
+        )
     return {"ok": True, "state": _public_route_state(state)}
 
 
@@ -6943,14 +7156,54 @@ async def _speak_game_line_via_project_tts(
         session_id=session_id,
         event=event if isinstance(event, dict) else {},
     )
-    return await speak(
-        line,
-        metadata=metadata,
-        request_id=request_id,
-        mirror_text=mirror_text,
-        emit_turn_end_after=emit_turn_end,
-        interrupt_audio=interrupt_audio,
-    )
+    before_state = _project_tts_pipeline_state(mgr)
+    try:
+        result = await speak(
+            line,
+            metadata=metadata,
+            request_id=request_id,
+            mirror_text=mirror_text,
+            emit_turn_end_after=emit_turn_end,
+            interrupt_audio=interrupt_audio,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "project_tts_exception",
+            "audio_sent": False,
+            "audio_queued": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "tts_pipeline": {
+                "before": before_state,
+                "after": _project_tts_pipeline_state(mgr),
+            },
+            "voice_source": {"provider": "project_tts", "method": "project_tts"},
+        }
+    if isinstance(result, dict):
+        result.setdefault("tts_pipeline", {})
+        result["tts_pipeline"] = {
+            "before": before_state,
+            "after": _project_tts_pipeline_state(mgr),
+        }
+    return result
+
+
+def _project_tts_pipeline_state(mgr: Any) -> dict[str, Any]:
+    tts_thread = getattr(mgr, "tts_thread", None)
+    pending_chunks = getattr(mgr, "tts_pending_chunks", None)
+    try:
+        pending_count = len(pending_chunks) if pending_chunks is not None else 0
+    except Exception:
+        pending_count = None
+    return {
+        "tts_thread_alive": bool(tts_thread and tts_thread.is_alive()),
+        "tts_ready": bool(getattr(mgr, "tts_ready", False)),
+        "tts_pending_chunks": pending_count,
+        "tts_done_queued_for_turn": bool(getattr(mgr, "_tts_done_queued_for_turn", False)),
+        "tts_done_pending_until_ready": bool(getattr(mgr, "_tts_done_pending_until_ready", False)),
+        "current_speech_id": str(getattr(mgr, "current_speech_id", "") or ""),
+    }
 
 
 def _game_route_event_has_user_input(event: dict | None) -> bool:
@@ -7246,7 +7499,34 @@ async def game_project_speak(game_type: str, request: Request):
         method="project_tts",
     )
     if stale_response:
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            level="warning",
+            category="speech",
+            event="project_speech_skipped",
+            message="小游戏项目语音请求被跳过",
+            details={"reason": stale_response.get("reason"), "method": "project_tts"},
+        )
         return stale_response
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="speech",
+        event="project_speech_requested",
+        message="小游戏项目语音请求开始",
+        details={
+            "request_id": str(data.get("request_id") or ""),
+            "line_length": len(line),
+            "interrupt_audio": interrupt_audio,
+            "mirror_text": data.get("mirror_text", True) is not False,
+            "emit_turn_end": data.get("emit_turn_end", True) is not False,
+            "event_kind": data.get("event", {}).get("kind") if isinstance(data.get("event"), dict) else "",
+        },
+        sensitive_possible=True,
+    )
     result = await _speak_game_line_via_project_tts(
         mgr,
         line,
@@ -7265,6 +7545,29 @@ async def game_project_speak(game_type: str, request: Request):
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_tts")
     result.setdefault("voice_source", {"provider": "project_tts", "method": "project_tts"})
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        level="info" if result.get("ok", True) else "warning",
+        category="speech",
+        event="project_speech_result",
+        message="小游戏项目语音请求结束",
+        details={
+            "ok": result.get("ok"),
+            "reason": result.get("reason"),
+            "audio_sent": result.get("audio_sent"),
+            "audio_queued": result.get("audio_queued"),
+            "speech_id": result.get("speech_id"),
+            "turn_end_emitted": result.get("turn_end_emitted"),
+            "interrupt_audio": result.get("interrupt_audio"),
+            "error_type": result.get("error_type"),
+            "error": result.get("error"),
+            "tts_pipeline": result.get("tts_pipeline"),
+            "voice_source": result.get("voice_source"),
+        },
+        preserve_details=True,
+    )
     return result
 
 
@@ -7418,6 +7721,23 @@ async def _route_external_transcript_to_game(
     game_type = str(state.get("game_type") or "soccer")
     session_id = str(state.get("session_id") or "default")
     memory_enabled = _game_memory_player_interaction_enabled(state)
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="external_input",
+        event="external_input_routed",
+        message="外部输入已转入小游戏路由",
+        details={
+            "source": source,
+            "mode": mode,
+            "kind": kind,
+            "request_id": request_id or "",
+            "text_length": len(text),
+            "memory_enabled": memory_enabled,
+        },
+        sensitive_possible=True,
+    )
     memory_fields = _game_memory_policy_fields(game_type)
     memory_player_camel_key = _game_memory_camel_key(
         _normalize_game_memory_type(game_type),
@@ -7803,13 +8123,29 @@ async def game_realtime_context(game_type: str, request: Request):
     # mgr.user_language），与其他 soccer 端点的 _absorb_request_language 调用同形。
     language = _resolve_game_prompt_language(lanlan_name, data=data)
     text = _compact_realtime_context_text(game_type, data, language)
+    session_id = str((data.get("state") or {}).get("sessionId") or data.get("session_id") or "")
     _log_game_debug_material(
         "realtime_context",
         text,
         game_type=game_type,
-        session_id=str((data.get("state") or {}).get("sessionId") or data.get("session_id") or ""),
+        session_id=session_id,
         lanlan_name=lanlan_name,
         source=str(data.get("source") or ""),
+    )
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="realtime_context",
+        event="realtime_context_requested",
+        message="小游戏 Realtime 上下文注入请求",
+        details={
+            "source": data.get("source") or "",
+            "bytes": len(text),
+            "items": len(data.get("pendingItems") or []),
+            "request_id": str(data.get("request_id") or ""),
+        },
+        sensitive_possible=True,
     )
 
     if _is_gemini_realtime_session(session):
@@ -7818,6 +8154,15 @@ async def game_realtime_context(game_type: str, request: Request):
             game_type,
             lanlan_name,
             len(text),
+        )
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            category="realtime_context",
+            event="realtime_context_skipped",
+            message="Realtime 上下文注入跳过",
+            details={"reason": "gemini_no_session_update", "bytes": len(text)},
         )
         return {
             "ok": True,
@@ -7851,15 +8196,49 @@ async def game_realtime_context(game_type: str, request: Request):
         )
     except Exception as e:
         logger.warning("🎮 Realtime 上下文注入失败: game=%s lanlan=%s err=%s", game_type, lanlan_name, e)
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            level="warning",
+            category="realtime_context",
+            event="realtime_context_failed",
+            message="Realtime 上下文注入失败",
+            details={"error_type": type(e).__name__, "error": str(e)},
+        )
         return {"ok": False, "reason": f"inject_failed: {e}", "lanlan_name": lanlan_name}
     if not getattr(append_result, "appended", False) and not getattr(append_result, "deduped", False):
+        reason = getattr(append_result, "reason", None) or "inject_failed"
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            level="warning",
+            category="realtime_context",
+            event="realtime_context_failed",
+            message="Realtime 上下文未写入",
+            details={"reason": reason},
+        )
         return {
             "ok": False,
-            "reason": getattr(append_result, "reason", None) or "inject_failed",
+            "reason": reason,
             "lanlan_name": lanlan_name,
         }
 
     logger.info("🎮 Realtime 上下文已注入: game=%s lanlan=%s bytes=%d", game_type, lanlan_name, len(text))
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="realtime_context",
+        event="realtime_context_completed",
+        message="Realtime 上下文已注入",
+        details={
+            "bytes": len(text),
+            "items": len(data.get("pendingItems") or []),
+            "deduped": getattr(append_result, "deduped", False),
+        },
+    )
     return {
         "ok": True,
         "lanlan_name": lanlan_name,
@@ -7882,6 +8261,19 @@ async def _complete_game_end_from_payload(
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="route",
+        event="route_end_requested",
+        message="小游戏路由结束请求",
+        details={
+            "reason": exit_reason,
+            "matched_active_route": bool(state and str(state.get("session_id") or "") == session_id),
+            "postgame_enabled": postgame_options.get("enabled"),
+        },
+    )
     archive = None
     archive_memory = None
     postgame_result = None
@@ -7971,6 +8363,22 @@ async def _complete_game_end_from_payload(
         result["should_resume_external_on_exit"] = state.get("should_resume_external_on_exit")
         result["before_game_external_mode"] = state.get("before_game_external_mode")
         result["state"] = _public_route_state(state)
+    _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="route",
+        event="route_end_completed",
+        message="小游戏路由结束完成",
+        details={
+            "reason": exit_reason,
+            "closed": closed,
+            "route_closed": bool(archive),
+            "archive_memory_status": archive_memory.get("status") if isinstance(archive_memory, dict) else None,
+            "postgame_status": postgame_result.get("status") if isinstance(postgame_result, dict) else None,
+        },
+    )
+    _mark_game_session_debug_log_ended(game_type, session_id, lanlan_name=lanlan_name, reason=exit_reason)
     return result
 
 
@@ -8002,11 +8410,14 @@ async def game_quick_lines(game_type: str, request: Request):
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}
 
     fallback_language = None
+    session_id = ""
+    requested_name = ""
     try:
         try:
             data = await request.json()
         except Exception:
             data = {}
+        session_id = str(data.get("session_id") or data.get("sessionId") or "").strip()
         try:
             current_name = _get_current_character_info().get("lanlan_name") or ""
         except Exception:
@@ -8031,6 +8442,15 @@ async def game_quick_lines(game_type: str, request: Request):
             cached = _badminton_quick_lines_cache.get(cache_key)
             if cached:
                 _badminton_quick_lines_cache.move_to_end(cache_key)
+                _append_game_session_debug_log(
+                    game_type,
+                    session_id,
+                    lanlan_name=requested_name,
+                    category="quick_lines",
+                    event="quick_lines_cached",
+                    message="游戏快路径台词命中缓存",
+                    details={"character": char_info["lanlan_name"], "mode": cache_mode, "keys": sorted(cached.keys())},
+                )
                 return {
                     "ok": True,
                     "character": char_info["lanlan_name"],
@@ -8084,6 +8504,21 @@ async def game_quick_lines(game_type: str, request: Request):
             "🎮 生成游戏快路径台词: game=%s character=%s keys=%d missing=%s",
             game_type, char_info['lanlan_name'], len(lines), missing,
         )
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=requested_name,
+            category="quick_lines",
+            event="quick_lines_completed",
+            message="游戏快路径台词生成完成",
+            details={
+                "character": char_info["lanlan_name"],
+                "keys": sorted(lines.keys()),
+                "missing": missing,
+                "raw_length": len(raw),
+            },
+            sensitive_possible=True,
+        )
         return {
             "ok": bool(lines),
             "character": char_info['lanlan_name'],
@@ -8093,6 +8528,16 @@ async def game_quick_lines(game_type: str, request: Request):
         }
     except Exception as e:
         logger.warning("🎮 生成游戏快路径台词失败: game=%s err=%s", game_type, e, exc_info=True)
+        _append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=requested_name,
+            level="warning",
+            category="quick_lines",
+            event="quick_lines_failed",
+            message="游戏快路径台词生成失败",
+            details={"error_type": type(e).__name__, "error": str(e)},
+        )
         if _is_badminton_game_type(game_type):
             return {
                 "ok": True,

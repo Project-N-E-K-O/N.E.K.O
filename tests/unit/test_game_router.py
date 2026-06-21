@@ -16,6 +16,7 @@ from .game_route_test_helpers import (
 from main_routers import game_router, system_router
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
 from main_logic.core import LLMSessionManager
+from utils import game_log
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -93,6 +94,13 @@ class _FakeAppendContextManager:
         return self.result
 
 
+@pytest.fixture(autouse=True)
+def _clear_game_session_debug_logs():
+    game_log._game_session_debug_logs.clear()
+    yield
+    game_log._game_session_debug_logs.clear()
+
+
 @pytest.mark.unit
 def test_badminton_removed_modes_are_not_public_or_scored():
     assert game_router._normalize_badminton_mode("horse") == "spectator"
@@ -125,6 +133,52 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
         assert result["state"]["session_id"] == "debug-badminton"
         assert result["state"]["mode"] == "shooter"
         assert game_router._route_state_key("Lan", "badminton") in game_router._game_route_states
+        debug_log = await game_router.game_logs(session_id="debug-badminton", game_type="badminton")
+        events = [item["event"] for item in debug_log["log"]["entries"]]
+        assert "session_active" in events
+        assert "route_start_requested" in events
+        assert "route_start_completed" in events
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_and_query():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-1",
+            "game_type": "soccer",
+            "lanlan_name": "Lan",
+            "level": "error",
+            "category": "frontend",
+            "event": "window_error",
+            "message": "boom",
+            "details": {"filename": "soccer_demo.html", "line": 12},
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["seq"] == 1
+    queried = await game_router.game_logs(session_id="soccer-debug-1", game_type="soccer")
+    assert queried["ok"] is True
+    assert queried["log"]["lanlan_name"] == "Lan"
+    assert queried["log"]["entries"][0]["event"] == "window_error"
+    assert queried["log"]["entries"][0]["details"]["filename"] == "soccer_demo.html"
+
+
+@pytest.mark.unit
+def test_game_debug_logs_do_not_drop_ended_sessions_when_new_sessions_open():
+    for index in range(14):
+        session_id = f"soccer-old-{index}"
+        game_log.mark_game_session_debug_log_active("soccer", session_id, lanlan_name="Lan")
+        game_log.mark_game_session_debug_log_ended("soccer", session_id, lanlan_name="Lan", reason="test")
+
+    game_log.mark_game_session_debug_log_active("soccer", "soccer-new", lanlan_name="Lan")
+    summaries = game_log.list_game_session_debug_log_summaries("soccer")
+
+    session_ids = {item["session_id"] for item in summaries}
+    assert "soccer-old-0" in session_ids
+    assert "soccer-old-13" in session_ids
+    assert "soccer-new" in session_ids
 
 
 @pytest.mark.unit
