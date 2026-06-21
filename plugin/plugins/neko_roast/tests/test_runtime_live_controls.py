@@ -201,6 +201,63 @@ async def test_dashboard_state_exposes_runtime_health_rows(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
+async def test_dashboard_state_says_ready_when_connected_and_output_enabled(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_status"]["summary"] == "ready_to_stream"
+    assert state["live_status"]["reason"] == "ready"
+    assert state["live_status"]["can_output"] is True
+
+
+@pytest.mark.asyncio
+async def test_dashboard_state_says_test_only_when_dry_run_is_enabled(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_status"]["summary"] == "test_only"
+    assert state["live_status"]["reason"] == "dry_run"
+    assert state["live_status"]["can_output"] is False
+
+
+@pytest.mark.asyncio
+async def test_dashboard_state_explains_manual_pause_as_temporarily_not_speaking(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    runtime.pause()
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_status"]["summary"] == "temporarily_not_speaking"
+    assert state["live_status"]["reason"] == "manual_paused"
+    assert state["live_status"]["can_output"] is False
+
+
+@pytest.mark.asyncio
+async def test_dashboard_state_says_cannot_stream_without_room(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 0
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_status"]["summary"] == "cannot_stream"
+    assert state["live_status"]["reason"] == "room_not_configured"
+    assert state["live_status"]["can_output"] is False
+
+
+@pytest.mark.asyncio
 async def test_config_store_health_row_tracks_successful_persist(runtime: RoastRuntime) -> None:
     runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
 

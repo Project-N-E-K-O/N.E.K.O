@@ -437,9 +437,11 @@ class RoastRuntime:
     async def dashboard_state(self) -> dict[str, Any]:
         profiles = await self.viewer_store.recent_profiles(self.config.recent_limit)
         storage = self.viewer_store.storage_status()
+        live_connection = self.live_connection_snapshot()
         return {
             "config": self.config.to_dict(),
-            "live_connection": self.live_connection_snapshot(),
+            "live_connection": live_connection,
+            "live_status": self.live_status_summary(live_connection),
             # 观众档案改走本地 JSON（不依赖宿主 PluginStore，见 docs/devlog.md）。
             # store_enabled 保留旧字段名兼容面板，现指"档案目录是否可写=能否持久化"。
             "store_enabled": bool(storage.get("writable")),
@@ -453,6 +455,57 @@ class RoastRuntime:
             "avatar_cache": self.avatar_cache.status(),
             "health_rows": self.runtime_health_rows(),
             "actions": self.dashboard_actions(),
+        }
+
+    def live_status_summary(self, live_connection: dict[str, Any] | None = None) -> dict[str, Any]:
+        connection = live_connection or self.live_connection_snapshot()
+        room_id = int(self.config.live_room_id or connection.get("room_id") or 0)
+        connected = bool(connection.get("connected"))
+        safety_status = self.safety_guard.status()
+        cooldown_remaining = round(float(self.safety_guard.output_cooldown_remaining()), 1)
+
+        summary = "ready_to_stream"
+        reason = "ready"
+        can_output = True
+
+        if room_id <= 0:
+            summary = "cannot_stream"
+            reason = "room_not_configured"
+            can_output = False
+        elif not connected:
+            summary = "cannot_stream"
+            reason = "live_ingest_disconnected"
+            can_output = False
+        elif safety_status == "paused":
+            summary = "temporarily_not_speaking"
+            reason = "manual_paused"
+            can_output = False
+        elif safety_status == "tripped":
+            summary = "cannot_stream"
+            reason = "safety_tripped"
+            can_output = False
+        elif safety_status == "degraded":
+            summary = "temporarily_not_speaking"
+            reason = "safety_degraded"
+            can_output = False
+        elif self.config.dry_run:
+            summary = "test_only"
+            reason = "dry_run"
+            can_output = False
+        elif cooldown_remaining > 0:
+            summary = "temporarily_not_speaking"
+            reason = "cooldown"
+            can_output = False
+
+        return {
+            "summary": summary,
+            "reason": reason,
+            "can_output": can_output,
+            "room_id": room_id,
+            "connected": connected,
+            "dry_run": bool(self.config.dry_run),
+            "safety_status": safety_status,
+            "cooldown_remaining": cooldown_remaining,
         }
 
     @staticmethod
