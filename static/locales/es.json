@@ -4244,6 +4244,10 @@
     },
      "badminton": {
          "title": "Desafío de bádminton",
+         "loading": {
+             "title": "Entrando a la cancha de bádminton",
+             "subtitle": "Cargando la cancha, los personajes y el audio..."
+         },
          "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",

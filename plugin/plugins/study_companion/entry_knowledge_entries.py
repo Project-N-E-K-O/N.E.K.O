@@ -81,15 +81,24 @@ class _KnowledgeEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 200}},
+            "properties": {
+                "limit": {"type": "integer", "default": 200},
+                "stage": {"type": "string", "default": ""},
+            },
         },
         llm_result_fields=["summary", "nodes", "edges"],
     )
-    async def study_knowledge_map(self, limit: int = 200, **_):
+    async def study_knowledge_map(self, limit: int = 200, stage: str = "", **_):
         try:
             safe_limit = max(1, min(1000, int(limit or 200)))
+            stage_key = str(stage or "").strip()
             topics, mastery, weak_topics, wrong_questions = await asyncio.gather(
-                asyncio.to_thread(self._store.list_topics, safe_limit),
+                asyncio.to_thread(
+                    self._store.list_topics,
+                    safe_limit,
+                    None,
+                    stage_key or None,
+                ),
                 asyncio.to_thread(self._store.list_mastery_overview, safe_limit),
                 asyncio.to_thread(
                     self._knowledge_tracker.get_weak_topics, limit=min(50, safe_limit)

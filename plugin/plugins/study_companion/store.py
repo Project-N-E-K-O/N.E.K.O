@@ -417,6 +417,7 @@ class StudyStore:
             "name": str(row["name"]),
             "subject": str(row["subject"]),
             "chapter": str(row["chapter"] or ""),
+            "stage": str(row["stage"] or ""),
             "depth": safe_int(row["depth"], 1),
             "difficulty": safe_float(row["difficulty"], 0.5),
             "prerequisites": StudyStore._json_loads(row["prerequisites"], []),
@@ -994,14 +995,15 @@ class StudyStore:
         conn.execute(
             """
             INSERT INTO topics (
-                id, name, subject, chapter, depth, difficulty,
+                id, name, subject, chapter, stage, depth, difficulty,
                 prerequisites, related, typical_misconceptions, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
                 subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
                 chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
+                stage = CASE WHEN topics.source = 'seed' THEN topics.stage ELSE excluded.stage END,
                 depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
                 difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
                 prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
@@ -1015,6 +1017,13 @@ class StudyStore:
                 name,
                 str(topic.get("subject") or "math"),
                 str(topic.get("chapter") or ""),
+                str(
+                    topic.get("stage")
+                    or topic.get("grade_level")
+                    or topic.get("education_level")
+                    or topic.get("course_level")
+                    or ""
+                ),
                 safe_int(topic.get("depth"), 1),
                 safe_float(topic.get("difficulty"), 0.5),
                 self._json_dumps(

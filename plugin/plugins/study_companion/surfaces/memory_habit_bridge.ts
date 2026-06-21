@@ -1,5 +1,6 @@
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, text } from './memory_shared';
+import { goalUnitLabel } from './study_surface_utils';
 
 type HostedApi = PluginSurfaceProps['api'];
 
@@ -73,14 +74,7 @@ export function startedNewFocusSession(before: PomodoroStatus, after: PomodoroSt
 }
 
 export function deckGoalUnitLabel(props: PluginSurfaceProps, unit: unknown): string {
-  const normalized = String(unit || '').trim().toLowerCase();
-  if (normalized === 'minutes') {
-    return text(props, 'ui.daily_goal.deck_unit_minutes', 'minutes');
-  }
-  if (normalized === 'attempts') {
-    return text(props, 'ui.daily_goal.deck_unit_attempts', 'attempts');
-  }
-  return text(props, 'ui.daily_goal.deck_unit_cards', 'cards');
+  return goalUnitLabel(props, unit);
 }
 
 export function deckGoalSavedMessage(
