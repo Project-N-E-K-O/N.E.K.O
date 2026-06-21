@@ -3747,9 +3747,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-wheel-charge-first-angle: 0deg;
   --compact-tool-wheel-charge-second-angle: 0deg;
   --compact-tool-wheel-charge-third-angle: 0deg;
-  --compact-tool-wheel-selection-angle: 29.59deg;
-  --compact-tool-wheel-selection-pointer-deflection-angle: 0deg;
-  --compact-tool-wheel-selection-pointer-deflection-shift: 0px;
+  --compact-tool-wheel-selection-angle: 45deg;
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
@@ -3892,13 +3890,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform:
     translate(-1px, -50%)
     rotate(var(--compact-tool-wheel-selection-angle))
-    translateX(43px)
-    translateY(var(--compact-tool-wheel-selection-pointer-deflection-shift))
-    rotate(var(--compact-tool-wheel-selection-pointer-deflection-angle));
+    translateX(43px);
   transform-origin: 1px 50%;
   transition:
     opacity 0.16s ease,
-    transform 0.08s cubic-bezier(0.18, 0.86, 0.32, 1.24);
+    transform 0.14s cubic-bezier(0.22, 0.78, 0.24, 1);
   z-index: 4;
 }
 
