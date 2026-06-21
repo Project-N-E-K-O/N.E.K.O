@@ -532,13 +532,13 @@ function readPersistedCompactExportHistoryOpen(): boolean {
   try {
     const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     if (persisted !== null) return persisted === 'true';
-    // 无持久化偏好 → A/B 首启分组（一次性随机+持久化+telemetry 曝光上报）
+    // 无持久化偏好 → A/B 首启分组：这里只做「分配 variant + 持久化」这一纯粹的初始值决策。
+    // 曝光(experiment_exposure)上报带副作用、且走 WS（挂载前 socket 多半未 OPEN，过早上报会被
+    // 静默丢弃），移到组件挂载后的 useEffect，见 reportCompactHistoryExperimentExposure。
     let variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
     if (variant !== 'open' && variant !== 'closed') {
       variant = Math.random() < 0.5 ? 'open' : 'closed';
       window.localStorage?.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, variant);
-      (window as unknown as { appTelemetry?: { event?: (n: string, f?: Record<string, unknown>) => void } })
-        .appTelemetry?.event?.('experiment_exposure', { experiment: 'compact_history_default', variant });
     }
     return variant === 'open';
   } catch {
@@ -552,6 +552,24 @@ function persistCompactExportHistoryOpen(open: boolean) {
     window.localStorage?.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, open ? 'true' : 'false');
   } catch {
     // localStorage can be unavailable in restricted hosts; keep the in-memory state.
+  }
+}
+
+// A/B「聊天历史首启默认」曝光上报。刻意从 readPersistedCompactExportHistoryOpen（useState
+// 初始化器/render 阶段）里抽出，挪到组件挂载后的 useEffect 调用：(1) telemetry 是带副作用的
+// fire-and-forget，不该在 render 阶段触发；(2) 上报走 appTelemetry→WS，挂载前 socket 多半未
+// OPEN，过早上报会被静默丢弃。仅在「用户无显式开/合偏好 + 已分配实验 variant」时上报。
+function reportCompactHistoryExperimentExposure() {
+  if (typeof window === 'undefined') return;
+  try {
+    const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    if (persisted !== null) return;
+    const variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
+    if (variant !== 'open' && variant !== 'closed') return;
+    (window as unknown as { appTelemetry?: { event?: (n: string, f?: Record<string, unknown>) => void } })
+      .appTelemetry?.event?.('experiment_exposure', { experiment: 'compact_history_default', variant });
+  } catch {
+    // telemetry 不阻塞业务，吞掉异常
   }
 }
 
@@ -1677,6 +1695,13 @@ function CompactChatApp({
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
+  // A/B 曝光上报：挂载后跑一次（ref 去重，含 StrictMode 双挂载），把 telemetry 副作用移出 render。
+  const compactHistoryExposureReportedRef = useRef(false);
+  useEffect(() => {
+    if (compactHistoryExposureReportedRef.current) return;
+    compactHistoryExposureReportedRef.current = true;
+    reportCompactHistoryExperimentExposure();
+  }, []);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
