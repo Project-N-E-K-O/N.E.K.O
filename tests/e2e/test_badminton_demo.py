@@ -46,6 +46,13 @@ def _goto_badminton(page: Page, running_server: str, mode: str) -> None:
     )
     expect(page.locator("#game")).to_be_attached(timeout=15000)
     page.wait_for_function("window.BadmintonDemo && window.BadmintonDemo.getState")
+    page.wait_for_function(
+        """() => {
+          const loading = document.getElementById('badminton-loading');
+          return !loading || window.__badmintonInitialLoadingHidden === true || loading.hidden === true;
+        }""",
+        timeout=10000,
+    )
 
 
 def _force_shot_result(page: Page, scored: bool = True) -> None:
@@ -85,18 +92,18 @@ def test_badminton_legacy_modes_fall_back_to_duel(mock_page: Page, running_serve
 
 
 @pytest.mark.e2e
-def test_badminton_duel_three_player_misses_and_restart(mock_page: Page, running_server: str):
+def test_badminton_duel_eleven_player_misses_and_restart(mock_page: Page, running_server: str):
     page = mock_page
     _goto_badminton(page, running_server, "shooter")
 
-    for _ in range(3):
+    for _ in range(11):
         _force_shot_result(page, False)
 
     expect(page.locator("#result-panel")).to_have_class(re.compile(r"\bshow\b"))
     state = page.evaluate("window.BadmintonDemo.getState()")
     assert state["state"] == "game_over"
     assert state["mode"] == "duel"
-    assert state["duel"]["player_misses"] == 3
+    assert state["duel"]["player_misses"] == 11
     assert state["score"] == 0
     page.locator("#restart-button").click()
     page.wait_for_function("window.BadmintonDemo.getState().score === 0")
@@ -118,7 +125,7 @@ def test_badminton_local_leaderboard_records_game(mock_page: Page, running_serve
     _goto_badminton(page, running_server, "duel")
 
     _force_shot_result(page, True)
-    for _ in range(3):
+    for _ in range(11):
         _force_shot_result(page, False)
 
     page.locator("#leaderboard-button").click()
@@ -174,6 +181,43 @@ def test_badminton_player_swing_hides_held_shuttle_then_launches_physical_shuttl
     assert shuttle["dragPerSecond"] == 0.42
     assert shuttle["swingForce"] >= 0
     assert shuttle["shooter"] == "player"
+
+
+@pytest.mark.e2e
+def test_badminton_player_can_move_while_own_shuttle_is_in_flight(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready' && window.BadmintonDemo.getState().canControlShot")
+    before_shot = page.evaluate("window.BadmintonDemo.getState().playerCourt")
+    page.evaluate("window.BadmintonDemo.shoot()")
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.state === 'in_flight' &&
+            state.currentShuttle && state.currentShuttle.shooter === 'player';
+        }"""
+    )
+
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    page.mouse.move(viewport["width"] - 8, 24)
+    page.wait_for_function(
+        """(beforeX) => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.playerCourt &&
+            state.playerCourt.targetX > beforeX + 16 &&
+            state.playerCourt.x > beforeX + 16;
+        }""",
+        arg=before_shot["targetX"],
+    )
+
+    moved = page.evaluate("window.BadmintonDemo.getState()")
+    assert moved["state"] == "in_flight"
+    assert moved["currentShuttle"]["shooter"] == "player"
+    assert moved["playerCourt"]["targetX"] > before_shot["targetX"]
+    assert moved["playerCourt"]["x"] > before_shot["x"]
+    assert moved["charging"] is False
+    assert moved["pendingSwing"] is None
 
 
 @pytest.mark.e2e
@@ -268,13 +312,18 @@ def test_badminton_space_jump_turns_air_swing_into_smash(mock_page: Page, runnin
 
 
 @pytest.mark.e2e
-def test_badminton_player_serve_hint_draws_shuttle_above_player(mock_page: Page, running_server: str):
+def test_badminton_player_serve_hint_draws_or_attaches_shuttle_above_player(mock_page: Page, running_server: str):
     page = mock_page
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready' && window.BadmintonDemo.getState().heldShuttleVisible")
-    bright_pixels = page.evaluate(
+    page.wait_for_function(
         """() => {
+          const container = document.getElementById('player-sensei-vrm-container');
+          if (container && container.dataset.heldShuttle3d === 'ready') {
+            window.__bdHeldShuttleSample = { heldShuttle3d: true, brightPixels: 0 };
+            return true;
+          }
           const state = window.BadmintonDemo.getState();
           const canvas = document.getElementById('game');
           const ctx = canvas.getContext('2d');
@@ -289,12 +338,15 @@ def test_badminton_player_serve_hint_draws_shuttle_above_player(mock_page: Page,
           const data = ctx.getImageData(sx, sy, sw, sh).data;
           let bright = 0;
           for (let i = 0; i < data.length; i += 4) {
-            if (data[i] > 210 && data[i + 1] > 210 && data[i + 2] > 210 && data[i + 3] > 120) bright++;
-          }
-          return bright;
-        }"""
+              if (data[i] > 210 && data[i + 1] > 210 && data[i + 2] > 210 && data[i + 3] > 120) bright++;
+            }
+          window.__bdHeldShuttleSample = { heldShuttle3d: false, brightPixels: bright };
+          return bright > 12;
+        }""",
+        timeout=2000,
     )
-    assert bright_pixels > 12
+    sample = page.evaluate("window.__bdHeldShuttleSample")
+    assert sample["heldShuttle3d"] is True or sample["brightPixels"] > 12
 
 
 @pytest.mark.e2e
@@ -656,6 +708,8 @@ def test_badminton_player_return_requires_shuttle_to_enter_character_reach(mock_
     assert near["incomingReturnInReach"] is True
     assert near["canControlShot"] is True
 
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    page.mouse.move(viewport["width"] * 0.5, viewport["height"] * 0.9)
     page.evaluate("window.BadmintonDemo.shoot()")
     swinging = page.evaluate("window.BadmintonDemo.getState()")
     assert swinging["state"] in {"swinging", "in_flight"}
@@ -704,7 +758,7 @@ def test_badminton_vrm_overlay_does_not_block_player_swing(mock_page: Page, runn
 
 
 @pytest.mark.e2e
-def test_badminton_blocks_player_input_during_yui_turn(mock_page: Page, running_server: str):
+def test_badminton_allows_player_movement_but_blocks_shot_during_yui_turn(mock_page: Page, running_server: str):
     page = mock_page
     _goto_badminton(page, running_server, "duel")
 
@@ -716,18 +770,26 @@ def test_badminton_blocks_player_input_during_yui_turn(mock_page: Page, running_
           return state && state.state === 'neko_thinking' && state.duel.active_shooter === 'neko';
         }"""
     )
+    before_move = page.evaluate("window.BadmintonDemo.getState().playerCourt")
 
-    page.evaluate(
-        """() => {
-          const canvas = document.getElementById('game');
-          canvas.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: 12 }));
-          canvas.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-          window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-          window.BadmintonDemo.shoot();
-        }"""
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    page.mouse.move(viewport["width"] - 8, 12)
+    page.mouse.down()
+    page.mouse.up()
+    page.evaluate("window.BadmintonDemo.shoot()")
+    page.wait_for_function(
+        """(beforeX) => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.playerCourt &&
+            state.playerCourt.targetX > beforeX + 16 &&
+            state.playerCourt.x > beforeX + 16;
+        }""",
+        arg=before_move["targetX"],
     )
 
     state = page.evaluate("window.BadmintonDemo.getState()")
+    assert state["playerCourt"]["targetX"] > before_move["targetX"]
+    assert state["playerCourt"]["x"] > before_move["x"]
     assert state["charging"] is False
     assert not (state["pendingSwing"] and state["pendingSwing"]["shooter"] == "player")
     assert not (state["currentShuttle"] and state["currentShuttle"]["shooter"] == "player")
@@ -779,7 +841,44 @@ def test_badminton_route_and_public_api(mock_page: Page, running_server: str):
 
     expect(page).to_have_url(re.compile(r"/badminton_demo"))
     expect(page).to_have_title(re.compile("羽毛球挑战"))
+    expect(page.locator("#badminton-loading")).to_have_count(1)
+    page.wait_for_function(
+        """() => {
+          const loading = document.getElementById('badminton-loading');
+          return window.__badmintonInitialLoadingHidden === true ||
+            (loading && loading.hidden === true);
+        }""",
+        timeout=10000,
+    )
+    expect(page.locator("#badminton-loading")).not_to_be_visible()
     assert page.evaluate("typeof window.BadmintonDemo.getState") == "function"
     assert page.evaluate("typeof window.BadmintonDemo.shoot") == "function"
+    page.evaluate(
+        """() => {
+          const loading = document.getElementById('badminton-loading');
+          loading.hidden = false;
+          loading.classList.remove('hide');
+          window.__badmintonInitialLoadingHidden = false;
+        }"""
+    )
+    blocked_before = page.evaluate("window.BadmintonDemo.getState()")
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    page.mouse.move(viewport["width"] - 8, 18)
+    page.mouse.down()
+    page.mouse.up()
+    page.evaluate("window.BadmintonDemo.shoot()")
+    blocked_after = page.evaluate("window.BadmintonDemo.getState()")
+    assert blocked_after["canControlShot"] is False
+    assert blocked_after["playerCourt"]["targetX"] == blocked_before["playerCourt"]["targetX"]
+    assert blocked_after["pendingSwing"] is None
+    assert blocked_after["currentShuttle"] is None
+    page.evaluate(
+        """() => {
+          const loading = document.getElementById('badminton-loading');
+          loading.classList.add('hide');
+          loading.hidden = true;
+          window.__badmintonInitialLoadingHidden = true;
+        }"""
+    )
     state = page.evaluate("window.BadmintonDemo.getState()")
     assert state["mode"] == "duel"

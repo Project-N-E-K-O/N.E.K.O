@@ -4244,6 +4244,10 @@
     },
      "badminton": {
          "title": "Desafio de badminton",
+         "loading": {
+             "title": "Entrando na quadra de badminton",
+             "subtitle": "Carregando a quadra, os personagens e o áudio..."
+         },
          "modeSwitcher": "Modo de badminton",
          "mode": {
              "spectator": "Treino livre",

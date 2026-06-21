@@ -4244,6 +4244,10 @@
     },
      "badminton": {
          "title": "羽毛球挑戰 - Badminton",
+         "loading": {
+             "title": "正在進入羽毛球場",
+             "subtitle": "載入場地、角色和音效..."
+         },
          "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由練習",
