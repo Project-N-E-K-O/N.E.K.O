@@ -65,6 +65,7 @@
     };
 
     let currentPlayingTrack = null;
+    let currentMusicPlaybackId = null;
     let localPlayer = null;
     let musicCardMessageId = null;
     let aplayerLoadPromise = null;
@@ -97,6 +98,7 @@
     // sender_id -> expireAt
     const remoteMusicSenders = new Map();
     let musicPlayerBridgeSeq = 0;
+    let musicPlayerBridgePollInFlight = false;
     let musicPlayerBridgePollTimer = null;
     let musicPlayerBridgeSurfacePulseTimer = null;
     let musicPlayerBridgeRemoteActiveUntil = 0;
@@ -115,6 +117,7 @@
                 } else if (data.type === 'music_pending') {
                     remoteMusicSenders.set(sid, Date.now() + REMOTE_MUSIC_PENDING_TTL_MS);
                 } else if (data.type === 'music_ended') {
+                    if (sid === mirrorBarLeaderSender && !isCurrentMirrorPlayback(data)) return;
                     remoteMusicSenders.delete(sid);
                 }
             };
@@ -125,6 +128,7 @@
                         musicCoordChannel.postMessage({
                             type: 'music_ended',
                             sender: MUSIC_COORD_SENDER_ID,
+                            playbackId: getCurrentMusicPlaybackId(),
                             ts: Date.now()
                         });
                         musicCoordChannel.close();
@@ -138,12 +142,13 @@
     }
 
     const broadcastMusicCoord = (type) => {
+        const playbackId = getCurrentMusicPlaybackId();
         if (musicCoordChannel) {
             try {
-                musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, ts: Date.now() });
+                musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, playbackId, ts: Date.now() });
             } catch (_) { /* ignore */ }
         }
-        postMusicPlayerBridgeEvent('coord', { coordType: type });
+        postMusicPlayerBridgeEvent('coord', { coordType: type, playbackId });
     };
 
     // 心跳：当本地正在播时定期广播，防止其他窗口误以为对方已退出
@@ -179,6 +184,15 @@
         }
         return remoteMusicSenders.size > 0;
     };
+
+    function createMusicPlaybackId(trackInfo, token) {
+        const trackPart = trackInfo && trackInfo.url ? String(trackInfo.url).slice(0, 256) : 'unknown';
+        return MUSIC_COORD_SENDER_ID + ':' + String(token || Date.now()) + ':' + trackPart;
+    }
+
+    function getCurrentMusicPlaybackId() {
+        return currentMusicPlaybackId || '';
+    }
 
     // --- 跨窗口 React 聊天镜像：把本窗口写入 reactChatWindowHost 的
     // append/update 动作同步广播给其他窗口，解决 PR #780 之后的问题 ——
@@ -266,8 +280,21 @@
     // follower 记录当前镜像绑定的 leader sender id。所有 ctrl/destroyed 校验
     // 都要比对这个值，避免 leader 切换重叠时别的 owner 被误触发 pause/close。
     let mirrorBarLeaderSender = null;
+    let mirrorBarLeaderSource = null;
     const processedBarCtrlIds = new Set();
     const processedBarCtrlOrder = [];
+
+    function setMirrorBarLeader(sender, source) {
+        const leaderChanged = sender !== mirrorBarLeaderSender;
+        mirrorBarLeaderSender = sender || null;
+        if (!sender) {
+            mirrorBarLeaderSource = null;
+            return;
+        }
+        if (source === 'broadcast' || leaderChanged || mirrorBarLeaderSource !== 'broadcast') {
+            mirrorBarLeaderSource = source || null;
+        }
+    }
 
     function shouldSkipProcessedBarCtrl(ctrlId) {
         if (!ctrlId) return false;
@@ -283,24 +310,28 @@
     const isBarOwner = () => !!localPlayer;
 
     const broadcastBarState = (patch) => {
+        const statePayload = Object.assign({}, patch || {});
+        if (!statePayload.playbackId) statePayload.playbackId = getCurrentMusicPlaybackId();
         const message = Object.assign({
             type: 'state',
             sender: MUSIC_COORD_SENDER_ID,
             ts: Date.now()
-        }, patch);
+        }, statePayload);
         if (musicBarChannel) {
             try {
                 musicBarChannel.postMessage(message);
             } catch (_) { /* ignore */ }
         }
-        postMusicPlayerBridgeEvent('bar_state', patch || {});
+        postMusicPlayerBridgeEvent('bar_state', statePayload);
     };
 
     const broadcastBarDestroyed = (fullTeardown) => {
+        const playbackId = getCurrentMusicPlaybackId();
         const message = {
             type: 'destroyed',
             sender: MUSIC_COORD_SENDER_ID,
             ts: Date.now(),
+            playbackId: playbackId,
             fullTeardown: !!fullTeardown
         };
         if (musicBarChannel) {
@@ -308,7 +339,7 @@
                 musicBarChannel.postMessage(message);
             } catch (_) { /* ignore */ }
         }
-        postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: !!fullTeardown });
+        postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: !!fullTeardown, playbackId: playbackId });
     };
 
     const broadcastBarCtrl = (action, value) => {
@@ -353,7 +384,8 @@
             currentTime: audio ? (audio.currentTime || 0) : 0,
             duration: audio && isFinite(audio.duration) ? (audio.duration || 0) : 0,
             volume: (typeof localPlayer.volume === 'function') ? (localPlayer.volume() || 0) : 0,
-            loadError: !!localPlayer._loadError
+            loadError: !!localPlayer._loadError,
+            playbackId: getCurrentMusicPlaybackId()
         };
     };
 
@@ -390,6 +422,7 @@
             duration: 0,
             volume: MUSIC_CONFIG.defaultVolume,
             loadError: false,
+            playbackId: getCurrentMusicPlaybackId(),
             initial: true
         });
     };
@@ -457,6 +490,14 @@
         let node = element;
         while (node && node instanceof Element) {
             if (node.hidden) return true;
+            if (node.getAttribute('aria-hidden') === 'true') return true;
+            if (node.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
+            try {
+                const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse')) {
+                    return true;
+                }
+            } catch (_) { /* ignore */ }
             node = node.parentElement;
         }
         return false;
@@ -471,7 +512,7 @@
         if (!mount || isElementInHiddenTree(mount)) return false;
 
         const overlay = document.getElementById('react-chat-window-overlay');
-        if (overlay && overlay.hidden) return false;
+        if (overlay && isElementInHiddenTree(overlay)) return false;
         return true;
     }
 
@@ -524,7 +565,7 @@
     function shouldRenderMusicBarInThisSurface() {
         if (isLocalChatMusicSurfaceFocused()) return true;
         if (hasBridgeActiveChatMusicSurface()) return false;
-        if (isDedicatedChatMusicSurface()) return false;
+        if (isDedicatedChatMusicSurface()) return hasUsableLocalChatMusicSurface();
         return hasUsableLocalChatMusicSurface();
     }
 
@@ -611,12 +652,15 @@
     function isMusicMountMutationNode(node) {
         if (!(node instanceof Element)) return false;
         if (node.id === 'music-player-mount' || node.getAttribute('data-music-player-mount') === 'compact-surface') return true;
-        return !!(node.querySelector && node.querySelector('#music-player-mount, [data-music-player-mount="compact-surface"]'));
+        if (node.id === 'react-chat-window-shell' || node.id === 'react-chat-window-overlay') return true;
+        return !!(node.querySelector && node.querySelector('#music-player-mount, [data-music-player-mount="compact-surface"], #react-chat-window-shell, #react-chat-window-overlay'));
     }
 
     function isMusicMountMutationTarget(node) {
         if (!(node instanceof Element)) return false;
         return node.id === 'music-player-mount'
+            || node.id === 'react-chat-window-shell'
+            || node.id === 'react-chat-window-overlay'
             || node.getAttribute('data-music-player-mount') === 'compact-surface';
     }
 
@@ -636,7 +680,11 @@
             musicMountRelocationFrame = 0;
             const musicBar = pendingDetachedMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
             pendingDetachedMusicBar = null;
-            mountMusicBar(musicBar);
+            if (musicBar) {
+                mountMusicBar(musicBar);
+            } else if (!isBarOwner() && mirrorBarLastState) {
+                renderMirrorBar(mirrorBarLastState);
+            }
         });
     }
 
@@ -678,6 +726,9 @@
             attributeFilter: [
                 'class',
                 'data-music-player-mount',
+                'data-chat-surface-mode',
+                'aria-hidden',
+                'hidden',
                 'style'
             ]
         });
@@ -695,6 +746,23 @@
             return null;
         }
         return headers;
+    }
+
+    function getMusicPlayerBridgeCachedMutationHeaders(body) {
+        const headers = { 'Content-Type': 'application/json' };
+        const sec = window.nekoLocalMutationSecurity;
+        if (!sec || typeof sec.peekCachedToken !== 'function') {
+            return null;
+        }
+        try {
+            const token = sec.peekCachedToken();
+            if (!token) return null;
+            headers['X-CSRF-Token'] = token;
+            if (body && typeof body === 'object') body._csrf_token = token;
+            return headers;
+        } catch (_) {
+            return null;
+        }
     }
 
     async function isMusicPlayerBridgeCsrfFailure(response) {
@@ -715,6 +783,21 @@
             payload: payload || {},
             surface: options.surface || getMusicBridgeSurfaceState(type)
         };
+        if (options.cachedOnly) {
+            const headers = getMusicPlayerBridgeCachedMutationHeaders(body);
+            if (!headers) return;
+            try {
+                const request = fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(body),
+                    keepalive: true,
+                    cache: 'no-store'
+                });
+                if (request && typeof request.catch === 'function') request.catch(() => { /* ignore */ });
+            } catch (_) { /* ignore */ }
+            return;
+        }
         (async () => {
             let headers = await getMusicPlayerBridgeMutationHeaders();
             if (!headers) return;
@@ -902,6 +985,12 @@
     };
 
     let mirrorBarLastState = null; // 供 seek UI 计算 currentTime 显示
+
+    function isCurrentMirrorPlayback(payload) {
+        const currentPlaybackId = mirrorBarLastState && mirrorBarLastState.playbackId;
+        if (!currentPlaybackId) return true;
+        return !!(payload && payload.playbackId === currentPlaybackId);
+    }
 
     const renderMirrorBar = (state) => {
         if (!state) return;
@@ -1132,13 +1221,14 @@
         }
     };
 
-    function applyMusicPlayerBridgeCoord(sender, coordType) {
+    function applyMusicPlayerBridgeCoord(sender, coordType, payload) {
         if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
         if (coordType === 'music_started' || coordType === 'music_heartbeat') {
             remoteMusicSenders.set(sender, Date.now() + REMOTE_MUSIC_TTL_MS);
         } else if (coordType === 'music_pending') {
             remoteMusicSenders.set(sender, Date.now() + REMOTE_MUSIC_PENDING_TTL_MS);
         } else if (coordType === 'music_ended') {
+            if (sender === mirrorBarLeaderSender && !isCurrentMirrorPlayback(payload)) return;
             remoteMusicSenders.delete(sender);
         }
     }
@@ -1150,19 +1240,20 @@
         const payload = event.payload || {};
         try {
             if (event.type === 'coord') {
-                applyMusicPlayerBridgeCoord(sender, payload.coordType);
+                applyMusicPlayerBridgeCoord(sender, payload.coordType, payload);
             } else if (event.type === 'bar_state') {
                 if (isBarOwner()) return;
-                mirrorBarLeaderSender = sender;
+                setMirrorBarLeader(sender, 'bridge');
                 renderMirrorBar(payload);
             } else if (event.type === 'bar_destroyed') {
                 if (isBarOwner()) return;
                 if (sender !== mirrorBarLeaderSender) return;
-                mirrorBarLeaderSender = null;
+                if (!isCurrentMirrorPlayback(payload)) return;
+                setMirrorBarLeader(null);
                 teardownMirrorBar(!!payload.fullTeardown);
             } else if (event.type === 'bar_ctrl') {
                 if (!isBarOwner()) return;
-                if (payload.target && payload.target !== MUSIC_COORD_SENDER_ID) return;
+                if (payload.target !== MUSIC_COORD_SENDER_ID) return;
                 if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return;
                 handleRemoteBarCtrl(payload.action, payload.value);
             }
@@ -1172,6 +1263,8 @@
     }
 
     async function pollMusicPlayerBridge() {
+        if (musicPlayerBridgePollInFlight) return;
+        musicPlayerBridgePollInFlight = true;
         try {
             const surface = getMusicBridgeSurfaceState('poll');
             const params = new URLSearchParams({
@@ -1186,8 +1279,12 @@
             const data = await response.json();
             if (!data || data.success === false) return;
 
-            if (typeof data.seq === 'number' && data.seq > musicPlayerBridgeSeq) {
-                musicPlayerBridgeSeq = data.seq;
+            if (typeof data.seq === 'number') {
+                if (data.seq < musicPlayerBridgeSeq) {
+                    musicPlayerBridgeSeq = 0;
+                } else if (data.seq > musicPlayerBridgeSeq) {
+                    musicPlayerBridgeSeq = data.seq;
+                }
             }
 
             if (data.active_surface && data.active_surface.sender) {
@@ -1202,21 +1299,31 @@
                 ? Date.now() + MUSIC_PLAYER_BRIDGE_POLL_MS + 1400
                 : 0;
 
+            let sawOwnerBarStateEvent = false;
+            const latestPlaybackId = data.latest_state && data.latest_state.playbackId;
             if (Array.isArray(data.events)) {
-                for (const event of data.events) applyMusicPlayerBridgeEvent(event);
+                for (const event of data.events) {
+                    applyMusicPlayerBridgeEvent(event);
+                    if (event && event.type === 'bar_state' && event.sender === data.owner
+                        && (!latestPlaybackId || (event.payload && event.payload.playbackId === latestPlaybackId))) {
+                        sawOwnerBarStateEvent = true;
+                    }
+                }
             }
 
-            if (data.owner && data.owner !== MUSIC_COORD_SENDER_ID && data.latest_state && !isBarOwner()) {
-                mirrorBarLeaderSender = data.owner;
+            if (data.owner && data.owner !== MUSIC_COORD_SENDER_ID && data.latest_state && !isBarOwner() && !sawOwnerBarStateEvent) {
+                setMirrorBarLeader(data.owner, 'bridge');
                 renderMirrorBar(data.latest_state);
-            } else if (!data.owner && mirrorBarLeaderSender && !isBarOwner()) {
-                mirrorBarLeaderSender = null;
+            } else if (!data.owner && mirrorBarLeaderSender && mirrorBarLeaderSource === 'bridge' && !isBarOwner()) {
+                setMirrorBarLeader(null);
                 teardownMirrorBar(false);
             }
 
             if (surface.active || surface.visible) scheduleMusicBarRelocation();
         } catch (_) {
             // Bridge is best-effort; BroadcastChannel/local owner remain usable.
+        } finally {
+            musicPlayerBridgePollInFlight = false;
         }
     }
 
@@ -1241,10 +1348,11 @@
             postMusicPlayerBridgeEvent('surface_state', Object.assign(
                 getMusicBridgeSurfaceState('unload'),
                 { active: false, focused: false, visible: false, reason: 'unload' }
-            ));
+            ), { cachedOnly: true });
             if (isBarOwner()) {
-                postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: true });
-                postMusicPlayerBridgeEvent('coord', { coordType: 'music_ended' });
+                const playbackId = getCurrentMusicPlaybackId();
+                postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: true, playbackId: playbackId }, { cachedOnly: true });
+                postMusicPlayerBridgeEvent('coord', { coordType: 'music_ended', playbackId: playbackId }, { cachedOnly: true });
             }
             if (musicPlayerBridgePollTimer) {
                 window.clearInterval(musicPlayerBridgePollTimer);
@@ -1274,20 +1382,21 @@
                         if (isBarOwner()) return;
                         // 绑定/切换到当前 leader —— 后续 ctrl 会带 target 指向它，
                         // destroyed 也只接受来自它的那一条，避免多 leader 交接时串窗
-                        mirrorBarLeaderSender = data.sender;
+                        setMirrorBarLeader(data.sender, 'broadcast');
                         renderMirrorBar(data);
                     } else if (data.type === 'destroyed') {
                         if (isBarOwner()) return;
                         // 只尊重来自当前绑定 leader 的 destroyed；别的 owner 退出
                         // 不应该把我当前镜像的那条 bar 也一起摘掉
                         if (data.sender !== mirrorBarLeaderSender) return;
-                        mirrorBarLeaderSender = null;
+                        if (!isCurrentMirrorPlayback(data)) return;
+                        setMirrorBarLeader(null);
                         teardownMirrorBar(!!data.fullTeardown);
                     } else if (data.type === 'ctrl') {
                         // owner 只响应明确 target 到自己的 ctrl，避免别的 leader
                         // 被 follower 的指令误触（leader 交接瞬间最容易发生）
                         if (!isBarOwner()) return;
-                        if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+                        if (data.target !== MUSIC_COORD_SENDER_ID) return;
                         if (shouldSkipProcessedBarCtrl(data.ctrlId)) return;
                         handleRemoteBarCtrl(data.action, data.value);
                     }
@@ -1711,6 +1820,7 @@
         // bar 镜像：让 follower 同步摘掉镜像 bar。fullTeardown 传下去
         // 是为了 follower 能走淡出动画而不是硬删。
         if (removeDOM) broadcastBarDestroyed(fullTeardown);
+        currentMusicPlaybackId = null;
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -1796,7 +1906,7 @@
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
             // 自己升成 owner 后就不再持有"绑定到某个 leader"的状态
-            mirrorBarLeaderSender = null;
+            setMirrorBarLeader(null);
         }
 
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
@@ -1864,6 +1974,7 @@
         const previousCardId = musicCardMessageId;
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
+        currentMusicPlaybackId = createMusicPlaybackId(trackInfo, currentToken);
         currentPlayingTrack = trackInfo;
         // 广播一次占位 state —— APlayer 还在初始化/切曲，但 follower 现在
         // 就能把 bar 刷新到新 track，避免旧歌信息停留或 bar 空白。
