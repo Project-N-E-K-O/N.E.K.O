@@ -1,6 +1,6 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
-import { callPlugin, ensureBrandCSS } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, exportFormatLabel, exportStyleLabel } from './study_surface_utils';
 
 type ExportFormat = 'markdown' | 'pdf' | 'docx' | 'xmind';
 type ExportNotesPayload = {
@@ -10,11 +10,11 @@ type ExportNotesPayload = {
   content_type?: string;
 };
 
-const EXPORT_FORMAT_OPTIONS: Array<{ value: ExportFormat; label: string }> = [
-  { value: 'markdown', label: 'Markdown' },
-  { value: 'pdf', label: 'PDF' },
-  { value: 'docx', label: 'DOCX' },
-  { value: 'xmind', label: 'XMind' },
+const EXPORT_FORMAT_OPTIONS: Array<{ value: ExportFormat }> = [
+  { value: 'markdown' },
+  { value: 'pdf' },
+  { value: 'docx' },
+  { value: 'xmind' },
 ];
 const DEFAULT_EXPORT_TIMEOUT_MS = 80_000;
 const POLL_TIMEOUT_BUFFER_MS = 5_000;
@@ -122,16 +122,16 @@ export default function NoteExporter(props: PluginSurfaceProps) {
           <select value={selectedFmt} disabled={busy || exportUnavailable} onChange={(event) => setFmt(event.target.value)}>
             {EXPORT_FORMAT_OPTIONS
               .filter((option) => allowedFormats.includes(option.value))
-              .map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              .map((option) => <option key={option.value} value={option.value}>{exportFormatLabel(props, option.value)}</option>)}
           </select>
         </label>
         {xmindUnavailable ? <span>{text(props, 'ui.status.xmind_disabled', 'XMind export is disabled by doc_export.xmind_enabled')}</span> : null}
         <label>
           <span>{text(props, 'ui.label.style', 'Style')}</span>
           <select value={style} disabled={busy || exportUnavailable} onChange={(event) => setStyle(event.target.value)}>
-            <option value="neko">Neko</option>
-            <option value="academic">Academic</option>
-            <option value="compact">Compact</option>
+            <option value="neko">{exportStyleLabel(props, 'neko')}</option>
+            <option value="academic">{exportStyleLabel(props, 'academic')}</option>
+            <option value="compact">{exportStyleLabel(props, 'compact')}</option>
           </select>
         </label>
         <button type="button" disabled={busy || exportUnavailable} onClick={() => exportNotes(true)}>

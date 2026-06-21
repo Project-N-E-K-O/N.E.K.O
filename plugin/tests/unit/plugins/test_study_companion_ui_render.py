@@ -33,10 +33,33 @@ REQUIRED_STATIC_UI_KEYS = [
     "ui.quick.due",
     "ui.quick.checkin",
     "ui.quick.focus_default",
+    "ui.feature.nav_label",
+    "ui.feature.memory.title",
+    "ui.feature.memory.body",
+    "ui.feature.review.title",
+    "ui.feature.review.body",
+    "ui.feature.knowledge.title",
+    "ui.feature.knowledge.body",
+    "ui.feature.pomodoro.title",
+    "ui.feature.pomodoro.body",
+    "ui.feature.checkin.title",
+    "ui.feature.checkin.body",
+    "ui.feature.export.title",
+    "ui.feature.export.body",
+    "ui.surface_drawer.label",
+    "ui.surface_drawer.title",
+    "ui.button.close",
     "ui.status.pending",
     "ui.label.study_workspace",
-    "ui.label.ocr_prompt",
-    "ui.label.question_panel",
+    "ui.label.explain_input",
+    "ui.label.practice_flow",
+    "ui.practice.title",
+    "ui.practice.context_label",
+    "ui.practice.context_loading",
+    "ui.practice.context_loading_body",
+    "ui.practice.empty_question",
+    "ui.label.answer_panel",
+    "ui.practice.feedback_title",
     "ui.label.reply_panel",
     "ui.button.advanced_settings",
     "ui.label.advanced_settings",
@@ -254,6 +277,11 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "function prefersReducedMotion()" in main_js
     assert "matchMedia('(prefers-reduced-motion: reduce)')" in main_js
     assert "if (prefersReducedMotion())" in main_js
+    assert "role', 'dialog'" in main_js
+    assert "aria-modal', 'true'" in main_js
+    assert "learning-profile-modal" in style_css
+    assert "knowledge-stage-selector" in style_css
+    assert "knowledgeMapActiveStage" in main_js
     assert '<span class="hero-paw" aria-hidden="true">🐾</span>' in index_html
     assert '<span class="hero-title__cat" aria-hidden="true">🐱</span>' in index_html
     assert '<span data-i18n="ui.title">Study Companion</span>' in index_html
@@ -268,9 +296,9 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "(=^・ω・^=)" in style_css
 
     assert len(index_html.splitlines()) <= 1000
-    assert len(style_css.splitlines()) <= 2100
-    assert len(main_js.encode("utf-8")) <= 52000
-    assert len(gzip.compress(main_js.encode("utf-8"))) <= 15360
+    assert len(style_css.splitlines()) <= 2270
+    assert len(main_js.encode("utf-8")) <= 82500
+    assert len(gzip.compress(main_js.encode("utf-8"))) <= 19500
 
 
 def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> None:
@@ -284,6 +312,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         "index.html": ("text/html", (STATIC_DIR / "index.html").read_text(encoding="utf-8")),
         "style.css": ("text/css", (STATIC_DIR / "style.css").read_text(encoding="utf-8")),
         "i18n.js": ("text/javascript", (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")),
+        "surface-panels.js": ("text/javascript", (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")),
         "main.js": ("text/javascript", (STATIC_DIR / "main.js").read_text(encoding="utf-8")),
         "katex.min.js": ("text/javascript", (STATIC_DIR / "katex.min.js").read_text(encoding="utf-8")),
         "katex-render.js": ("text/javascript", (STATIC_DIR / "katex-render.js").read_text(encoding="utf-8")),
@@ -541,9 +570,30 @@ def test_study_companion_static_ui_copy_is_i18n_backed() -> None:
             assert broken == [], f"{locale}: {broken}"
 
 
-def test_study_companion_quick_panels_open_hosted_surfaces() -> None:
+def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    surface_panels_js = (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")
+
+    feature_dock = re.search(
+        r'<nav class="feature-dock"(?P<body>.*?)</nav>',
+        index_html,
+        flags=re.DOTALL,
+    )
+    assert feature_dock is not None
+    feature_html = feature_dock.group("body")
+    for action in (
+        "memory",
+        "review",
+        "knowledge",
+        "pomodoro",
+        "checkin",
+        "export",
+    ):
+        assert f'data-feature-action="{action}"' in feature_html
+    assert 'data-feature-action="memory" data-open-surface="memory-deck-list"' in feature_html
+    assert 'data-feature-action="practice"' not in feature_html
+    assert 'data-feature-action="explain"' not in feature_html
 
     quick_panel = re.search(
         r'<div class="quick-panels"(?P<body>.*?)</div>',
@@ -562,9 +612,31 @@ def test_study_companion_quick_panels_open_hosted_surfaces() -> None:
         assert f'data-open-surface="{surface_id}"' in quick_panel_html
 
     assert "const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));" in main_js
-    assert "openHostedSurface(button.getAttribute('data-open-surface'));" in main_js
-    assert "window.parent === window" in main_js
-    assert "`/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide&surface=${encodeURIComponent(surfaceId)}`" in main_js
+    assert "const featureActionButtons = Array.from(document.querySelectorAll('[data-feature-action]'));" in main_js
+    assert "const surfaceDrawerBody = document.getElementById('surfaceDrawerBody');" in main_js
+    assert "renderSurfaceDrawerBody(surfaceId)" in main_js
+    assert "surfaceDrawerBody.replaceChildren" in main_js
+    assert "StudyCompanionSurfacePanels" in main_js
+    assert "surface-panels.js" in index_html
+    assert "study_knowledge_map" in main_js
+    assert "loadKnowledgeMapIntoDrawer" in main_js
+    assert "study-panel surface-shell" in main_js
+    assert "knowledge-node" in main_js
+    for entry_id in (
+        "study_memory_due_reviews",
+        "study_memory_list_decks",
+        "study_pomodoro_status",
+        "study_checkin_status",
+        "study_export_notes",
+    ):
+        assert entry_id in surface_panels_js
+    assert "pomodoro-ring" in surface_panels_js
+    assert ".surface-shell" in (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert "window.location.assign(managerUrl)" not in main_js
+    assert "window.parent === window" not in main_js
+    assert "/ui/plugins" not in main_js
+    assert "surfaceDrawerFrame" not in main_js
+    assert 'id="surfaceDrawerFrame"' not in index_html
 
 
 def test_study_companion_advanced_settings_surface_entries_are_complete() -> None:

@@ -7,17 +7,22 @@ const LOAD_IMAGE_TIMEOUT_MS = 30000;
 const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
+const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
+const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'postgraduate', 'custom'];
 const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 310000,
   study_generate_question: 310000,
+  study_question_context: 30000,
+  study_generate_targeted_question: 310000,
   study_evaluate_answer: 310000,
   study_summarize_session: 90000,
   study_memory_card_upsert: 30000,
   study_memory_deck: 30000,
   study_memory_card_review: 30000,
+  study_export_notes: 90000,
 };
 const STUDY_SURFACE_MESSAGE_TYPES = Object.freeze({
   openSurface: 'neko-study-open-surface',
@@ -32,6 +37,7 @@ const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set([
 ]);
 let currentMode = 'companion';
 let currentMemoryCard = null;
+let mapRequestId=0;
 
 const statusLine = document.getElementById('statusLine');
 const replyText = document.getElementById('replyText');
@@ -52,6 +58,17 @@ const answerInputImage = document.getElementById('answerInputImage');
 const answerInputImageRemove = document.getElementById('answerInputImageRemove');
 const answerInputPasteError = document.getElementById('answerInputPasteError');
 const questionText = document.getElementById('questionText');
+const questionContextCard = document.getElementById('questionContextCard');
+const selectedTopicName = document.getElementById('selectedTopicName');
+const selectionReason = document.getElementById('selectionReason');
+const questionTopicMeta = document.getElementById('questionTopicMeta');
+const questionDifficultyMeta = document.getElementById('questionDifficultyMeta');
+const questionAttemptMeta = document.getElementById('questionAttemptMeta');
+const hintToggleBtn = document.getElementById('hintToggleBtn');
+const hintText = document.getElementById('hintText');
+const feedbackPanel = document.getElementById('feedbackPanel');
+const feedbackText = document.getElementById('feedbackText');
+const masteryDeltaText = document.getElementById('masteryDeltaText');
 const screenType = document.getElementById('screenType');
 const questionStatus = document.getElementById('questionStatus');
 const evaluationStatus = document.getElementById('evaluationStatus');
@@ -66,6 +83,7 @@ const modeSelect = document.getElementById('modeSelect');
 const summaryMode = document.getElementById('summaryMode');
 const summaryDuration = document.getElementById('summaryDuration');
 const summaryGoal = document.getElementById('summaryGoal');
+const summaryStage = document.getElementById('summaryStage');
 const quickFocusState = document.getElementById('quickFocusState');
 const quickReviewCount = document.getElementById('quickReviewCount');
 const quickCheckinStatus = document.getElementById('quickCheckinStatus');
@@ -80,10 +98,17 @@ const advancedSettings = document.getElementById('advancedSettings');
 const settingsTabs = Array.from(document.querySelectorAll('[data-settings-tab]'));
 const settingsTabPanels = Array.from(document.querySelectorAll('[data-settings-tab-panel]'));
 const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));
+const featureActionButtons = Array.from(document.querySelectorAll('[data-feature-action]'));
+const surfaceDrawer = document.getElementById('surfaceDrawer');
+const surfaceDrawerTitle = document.getElementById('surfaceDrawerTitle');
+const surfaceDrawerBody = document.getElementById('surfaceDrawerBody');
+const surfaceDrawerCloseBtn = document.getElementById('surfaceDrawerCloseBtn');
 const settingsConfigForm = document.getElementById('settingsConfigForm');
 const settingsSaveBtn = document.getElementById('settingsSaveBtn');
 const settingsConfigStatus = document.getElementById('settingsConfigStatus');
 const settingsDefaultMode = document.getElementById('settingsDefaultMode');
+const settingsLearningProfileSummary = document.getElementById('settingsLearningProfileSummary');
+const settingsLearningStage = document.getElementById('settingsLearningStage');
 const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
 const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
 const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
@@ -102,11 +127,17 @@ let firstRunDismissed = false;
 let advancedSettingsOpen = false;
 let modeChangeInFlight = false;
 let refreshPending = false;
+let learningProfileModal = null;
 let lastReplyValue = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
 let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
+let currentQuestion = null;
+let currentSelectionContext = null;
+let learningProfile = readLearningProfile();
+let knowledgeMapStage = '';
+let lastKnowledgeMapPayload = null;
 const pasteControllers = { study: null, answer: null };
 
 function t(key, fallback) {
@@ -123,6 +154,60 @@ function tf(key, fallback, values = {}) {
     ));
 }
 
+function readLearningProfile() {
+  try { return JSON.parse(window.localStorage?.getItem(LEARNING_PROFILE_STORAGE_KEY) || '{}') || {}; } catch (error) { return {}; }
+}
+
+function writeLearningProfile(nextProfile) {
+  learningProfile = { ...(nextProfile || {}) };
+  try { window.localStorage?.setItem(LEARNING_PROFILE_STORAGE_KEY, JSON.stringify(learningProfile)); } catch (error) {}
+}
+
+function normalizeLearningStage(value) {
+  const normalized = String(value || '').trim().toLowerCase().replaceAll('-', '_');
+  return LEARNING_STAGE_OPTIONS.includes(normalized) ? normalized : '';
+}
+
+function learningStageLabel(value = learningProfile.stage) {
+  const stage = normalizeLearningStage(value);
+  return t(stage ? `ui.profile.stage.${stage}` : 'ui.profile.stage_unset', stage || 'Not set');
+}
+
+function syncLearningProfileUi() {
+  const label = learningStageLabel();
+  if (summaryStage) {
+    summaryStage.textContent = label;
+  }
+  if (settingsLearningStage) {
+    settingsLearningStage.value = normalizeLearningStage(learningProfile.stage);
+  }
+  if (settingsLearningProfileSummary) {
+    settingsLearningProfileSummary.textContent = normalizeLearningStage(learningProfile.stage)
+      ? tf('ui.profile.current_stage', 'Current stage: {stage}', { stage: label })
+      : t('ui.profile.settings_summary', 'Choose a learning stage so the knowledge map and practice stay in range.');
+  }
+}
+
+function learningProfileNeedsSetup() {
+  return !normalizeLearningStage(learningProfile.stage) && !learningProfile.completed && !learningProfile.skipped;
+}
+
+function setLearningProfileStage(stage, options = {}) {
+  const normalized = normalizeLearningStage(stage);
+  writeLearningProfile({
+    ...learningProfile,
+    stage: normalized,
+    skipped: Boolean(options.skipped),
+    completed: Boolean(normalized) || Boolean(options.skipped),
+  });
+  syncLearningProfileUi();
+  closeLearningProfileModal();
+  renderFirstRunGuide(lastStatusPayload);
+  if (surfaceDrawer?.dataset.surfaceId === 'knowledge-map' && surfaceDrawerBody) {
+    surfaceDrawerBody.replaceChildren(renderKnowledgePanel());
+  }
+}
+
 function setStatus(text) {
   statusLine.textContent = text;
 }
@@ -132,6 +217,10 @@ function setStatus(text) {
 // a code path that skips escapeHTML().
 function setReply(text) {
   const value = text || '';
+  const replyPanel = replyText?.closest('.reply-panel');
+  if (replyPanel) {
+    replyPanel.hidden = value.trim().length === 0;
+  }
   lastReplyValue = value;
   if (window.renderMathInText && typeof window.renderMathInText === 'function') {
     replyText.innerHTML = window.renderMathInText(value);
@@ -155,7 +244,7 @@ function setReply(text) {
 
 function scrollReplyIntoView() {
   const replyPanel = replyText?.closest('.reply-panel');
-  if (!replyPanel || typeof replyPanel.scrollIntoView !== 'function') {
+  if (!replyPanel || replyPanel.hidden || typeof replyPanel.scrollIntoView !== 'function') {
     return;
   }
   replyPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -170,6 +259,105 @@ function screenLabel(type) {
   const normalized = String(type || 'idle');
   const known = ['idle', 'reading', 'question', 'answering', 'review', 'notes', 'summary'].includes(normalized);
   return known ? t(`ui.status.screen.${normalized}`, normalized) : normalized;
+}
+
+function selectionReasonLabel(reason) {
+  const normalized = String(reason || 'no_data');
+  const known = ['retry', 'due_review', 'weak_topic', 'recommended', 'no_data', 'loading'].includes(normalized);
+  return known ? t(`ui.practice.reason.${normalized}`, normalized) : normalized;
+}
+
+function setQuestionContext(data = {}) {
+  currentSelectionContext = data && typeof data === 'object' ? data : null;
+  const reason = String(currentSelectionContext?.selection_reason || 'no_data');
+  if (questionContextCard) {
+    questionContextCard.dataset.selectionReason = reason;
+  }
+  if (selectedTopicName) {
+    selectedTopicName.textContent = currentSelectionContext?.selected_topic_name
+      || currentSelectionContext?.selected_topic_id
+      || t('ui.practice.no_data_title', 'Not enough study records yet');
+  }
+  if (selectionReason) {
+    selectionReason.textContent = currentSelectionContext?.no_data
+      ? t('ui.practice.no_data_body', 'Review cards, open the knowledge map, or save notes first; this view does not use manual or OCR text to make practice questions.')
+      : tf('ui.practice.selection_reason_fmt', 'Reason: {reason}', { reason: selectionReasonLabel(reason) });
+  }
+}
+
+function setGeneratedQuestion(data = {}) {
+  currentQuestion = data && typeof data === 'object' ? data : null;
+  if (questionText) {
+    questionText.textContent = currentQuestion?.question || t('ui.practice.empty_question', 'Generate a practice question to begin.');
+  }
+  if (questionStatus) {
+    questionStatus.textContent = compactText(currentQuestion?.question || '');
+  }
+  if (questionTopicMeta) {
+    questionTopicMeta.textContent = currentQuestion?.selected_topic_name
+      || currentQuestion?.selected_topic_id
+      || currentQuestion?.topic
+      || '-';
+  }
+  if (questionDifficultyMeta) {
+    questionDifficultyMeta.textContent = currentQuestion?.difficulty
+      ? tf('ui.practice.difficulty_fmt', 'Difficulty {difficulty}', { difficulty: currentQuestion.difficulty })
+      : '-';
+  }
+  if (questionAttemptMeta) {
+    questionAttemptMeta.textContent = currentQuestion?.attempt_id
+      ? t('ui.practice.new_attempt', 'New attempt')
+      : '-';
+  }
+  const hint = String(currentQuestion?.hint || '').trim();
+  if (hintToggleBtn) {
+    hintToggleBtn.hidden = !hint;
+    hintToggleBtn.setAttribute('aria-expanded', 'false');
+  }
+  if (hintText) {
+    hintText.textContent = hint;
+    hintText.hidden = true;
+  }
+}
+
+function clearFeedback() {
+  if (feedbackPanel) feedbackPanel.hidden = true;
+  if (feedbackText) feedbackText.textContent = '';
+  if (masteryDeltaText) masteryDeltaText.textContent = '';
+  if (evaluationStatus) evaluationStatus.textContent = t('ui.status.ready', 'Ready');
+}
+
+function renderFeedback(data = {}) {
+  if (evaluationStatus) {
+    evaluationStatus.textContent = data.verdict ? `${data.verdict}${Number.isFinite(Number(data.score)) ? ` / ${data.score}` : ''}` : '-';
+  }
+  const masteryBefore = Number(data.mastery_before);
+  const masteryAfter = Number(data.mastery_after);
+  if (masteryDeltaText) {
+    masteryDeltaText.textContent = Number.isFinite(masteryBefore) && Number.isFinite(masteryAfter)
+      ? tf('ui.practice.mastery_delta_fmt', 'Mastery {before} -> {after}', {
+        before: masteryBefore.toFixed(2),
+        after: masteryAfter.toFixed(2),
+      })
+      : '';
+  }
+  const lines = [
+    data.feedback || data.reply || '',
+    Array.isArray(data.covered_points) && data.covered_points.length
+      ? `${t('ui.practice.covered_points', 'Covered')}: ${data.covered_points.join(', ')}`
+      : '',
+    Array.isArray(data.missing_points) && data.missing_points.length
+      ? `${t('ui.practice.missing_points', 'Missing')}: ${data.missing_points.join(', ')}`
+      : '',
+    data.reference_answer ? `${t('ui.practice.reference_answer', 'Reference')}: ${data.reference_answer}` : '',
+    data.next_action ? `${t('ui.practice.next_action', 'Next')}: ${data.next_action}` : '',
+  ].filter(Boolean);
+  if (feedbackText) {
+    feedbackText.textContent = lines.join('\n');
+  }
+  if (feedbackPanel) {
+    feedbackPanel.hidden = lines.length === 0 && !masteryDeltaText?.textContent;
+  }
 }
 
 function formatPluginError(error) {
@@ -401,13 +589,6 @@ function compactText(value, fallback = '-') {
   return text.length > 72 ? `${text.slice(0, 72)}...` : text;
 }
 
-function firstRunFromStatus(data = {}) {
-  if (Object.prototype.hasOwnProperty.call(data, 'is_first_run')) {
-    return data.is_first_run !== false;
-  }
-  return true;
-}
-
 function buildFirstRunSteps() {
   return [
     {
@@ -428,12 +609,93 @@ function buildFirstRunSteps() {
   ];
 }
 
-function renderFirstRunGuide(data = {}) {
+function closeLearningProfileModal() {
+  if (!learningProfileModal) return;
+  learningProfileModal.hidden = true;
+  learningProfileModal.setAttribute('aria-hidden', 'true');
+}
+
+function buildLearningProfileModal() {
+  const modal = drawerElement('aside', 'learning-profile-modal');
+  modal.id = 'learningProfileModal';
+  modal.hidden = true;
+  modal.setAttribute('aria-hidden', 'true');
+  modal.setAttribute('aria-labelledby', 'learningProfileModalTitle');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('role', 'dialog');
+  const panel = drawerElement('div', 'learning-profile-modal__panel');
+  const header = drawerElement('header', 'learning-profile-modal__header');
+  const mark = drawerElement('span', 'learning-profile-modal__mark', 'N');
+  mark.setAttribute('aria-hidden', 'true');
+  const titleWrap = drawerElement('div');
+  const eyebrow = drawerElement('span', 'diagnosis-label', t('ui.onboarding.label', 'First launch'));
+  const title = drawerElement('h2', '', t('ui.profile.prompt_title', 'Choose your learning stage'));
+  title.id = 'learningProfileModalTitle';
+  titleWrap.append(
+    eyebrow,
+    title,
+    drawerElement('p', 'learning-profile-modal__body', t('ui.profile.prompt_body', 'The selected stage is used as the default scope for knowledge maps and adaptive practice.')),
+  );
+  const skip = drawerElement('button', 'button button-secondary', t('ui.button.skip', 'Skip'));
+  skip.type = 'button';
+  skip.addEventListener('click', () => setLearningProfileStage('', { skipped: true }));
+  header.append(mark, titleWrap, skip);
+  panel.appendChild(header);
+  const actions = drawerElement('div', 'learning-stage-actions learning-stage-actions--modal');
+  [
+    ['junior_high', '01'],
+    ['senior_high', '02'],
+    ['college', '03'],
+  ].forEach(([stage, order]) => {
+    const button = drawerElement('button', 'learning-stage-card');
+    button.type = 'button';
+    button.dataset.stage = stage;
+    button.append(
+      drawerElement('span', 'learning-stage-card__order', order),
+      drawerElement('strong', '', learningStageLabel(stage)),
+    );
+    button.addEventListener('click', () => setLearningProfileStage(stage));
+    actions.appendChild(button);
+  });
+  const more = drawerElement('button', 'learning-stage-more', t('ui.profile.more_stages', 'More stages'));
+  more.type = 'button';
+  more.addEventListener('click', () => {
+    closeLearningProfileModal();
+    setAdvancedSettingsOpen(true);
+    setSettingsTab('study', { focus: true });
+    settingsLearningStage?.focus?.();
+  });
+  actions.appendChild(more);
+  panel.appendChild(actions);
+  modal.appendChild(panel);
+  return modal;
+}
+
+function openLearningProfileModal() {
+  if (!learningProfileModal) {
+    learningProfileModal = buildLearningProfileModal();
+    document.body.appendChild(learningProfileModal);
+  }
+  const wasHidden = learningProfileModal.hidden;
+  learningProfileModal.hidden = false;
+  learningProfileModal.setAttribute('aria-hidden', 'false');
+  if (wasHidden) {
+    learningProfileModal.querySelector('[data-stage]')?.focus?.();
+  }
+}
+
+function renderFirstRunGuide() {
   if (!firstRunGuide || !firstRunSteps) {
     return;
   }
-  const shouldShow = firstRunFromStatus(data) && !firstRunDismissed && !advancedSettingsOpen;
+  const profileNeedsSetup = learningProfileNeedsSetup();
+  const shouldShow = profileNeedsSetup && !firstRunDismissed && !advancedSettingsOpen;
   firstRunGuide.hidden = !shouldShow;
+  if (shouldShow) {
+    openLearningProfileModal();
+  } else {
+    closeLearningProfileModal();
+  }
   if (!shouldShow) {
     return;
   }
@@ -538,13 +800,26 @@ function renderDiagnosis(data = {}) {
   diagnosisBody.textContent = diagnosis.body;
 }
 
+function pomodoroStateLabel(value) {
+  const normalized = String(value || 'idle').trim().toLowerCase();
+  const labels = {
+    idle: ['ui.status.pomodoro.idle', 'Idle'],
+    focusing: ['ui.status.pomodoro.focusing', 'Focusing'],
+    paused: ['ui.status.pomodoro.paused', 'Paused'],
+    short_break: ['ui.status.pomodoro.short_break', 'Short break'],
+    long_break: ['ui.status.pomodoro.long_break', 'Long break'],
+    cancelled: ['ui.status.pomodoro.cancelled', 'Stopped'],
+    completed: ['ui.status.pomodoro.completed', 'Completed'],
+  };
+  const pair = labels[normalized];
+  return pair ? t(pair[0], pair[1]) : normalized;
+}
+
 function updateStudySummaries(data = {}) {
   const habit = data.habit || {};
   const pomodoro = habit.pomodoro || {};
   if (quickFocusState) {
-    quickFocusState.textContent = pomodoro.state
-      ? String(pomodoro.state)
-      : t('ui.status.screen.idle', 'Idle');
+    quickFocusState.textContent = pomodoroStateLabel(pomodoro.state);
   }
   if (quickCheckinStatus) {
     const checkin = habit.checkin || {};
@@ -720,6 +995,7 @@ function setStatusLine(data) {
   const modeValue = String(data.active_mode || data.mode || 'companion');
   const statusLabel = t(`status.state.${statusValue}`, statusValue);
   setStatus(`${statusLabel} / ${modeLabel(modeValue)}`);
+  syncLearningProfileUi();
   renderDiagnosis(data);
   renderFirstRunGuide(data);
   updateStudySummaries(data);
@@ -776,23 +1052,406 @@ function handleSettingsTabKeydown(event) {
   setSettingsTab(settingsTabs[nextIndex].getAttribute('data-settings-tab'), { focus: true });
 }
 
-function openHostedSurface(surfaceId) {
+function hostedSurfaceLabel(surfaceId) {
+  const labels = {
+    'due-review-panel': t('ui.feature.review.title', 'Review'),
+    'knowledge-map': t('ui.feature.knowledge.title', 'Knowledge Map'),
+    'pomodoro-panel': t('ui.feature.pomodoro.title', 'Pomodoro'),
+    'habit-dashboard': t('ui.feature.checkin.title', 'Check-in'),
+    'note-exporter': t('ui.feature.export.title', 'Export'),
+    'memory-deck-list': t('ui.button.open_decks', 'Open Decks'),
+    'memory-importer': t('ui.button.import_memory', 'Import Cards'),
+    'knowledge-contribution-settings': t('ui.button.contribution_settings', 'Contribution Settings'),
+    'daily-goal-editor': t('ui.button.edit_daily_goal', 'Edit Daily Goal'),
+    'session-summary': t('ui.button.session_summary', 'Session Summary'),
+  };
+  return labels[surfaceId] || surfaceId;
+}
+
+function setActiveFeature(action) {
+  featureActionButtons.forEach((button) => {
+    button.classList.toggle('is-active', button.getAttribute('data-feature-action') === action);
+  });
+}
+
+function focusAfterScroll(target, focusTarget) {
+  if (!target) return;
+  if (typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    window.setTimeout(() => focusTarget.focus(), 220);
+  }
+}
+
+function closeSurfaceDrawer() {
+  if (!surfaceDrawer) return;
+  mapRequestId += 1;
+  window.StudyCompanionSurfacePanels?.close?.();
+  surfaceDrawer.dataset.open = 'false';
+  surfaceDrawer.setAttribute('aria-hidden', 'true');
+}
+
+function drawerElement(tag, className = '', text = '') {
+  const node = document.createElement(tag);
+  if (className) {
+    node.className = className;
+  }
+  if (text) {
+    node.textContent = text;
+  }
+  return node;
+}
+
+function surfacePanel(surfaceId, subtitle = '') {
+  const root = drawerElement('div', 'study-panel surface-shell');
+  const header = drawerElement('header', 'study-panel__header');
+  const titleWrap = drawerElement('div');
+  titleWrap.append(
+    drawerElement('h1', '', hostedSurfaceLabel(surfaceId)),
+    drawerElement('span', '', subtitle || t('ui.status.ready', 'Ready')),
+  );
+  header.appendChild(titleWrap);
+  root.appendChild(header);
+  return root;
+}
+
+function appendPanelState(parent, label, value) {
+  const item = drawerElement('div');
+  item.append(
+    drawerElement('span', '', label),
+    drawerElement('strong', '', value),
+  );
+  parent.appendChild(item);
+}
+
+function renderDrawerActions(actions = []) {
+  const row = drawerElement('div', 'study-panel__actions');
+  actions.forEach((action) => {
+    const button = drawerElement('button', action.primary ? 'button button-primary' : 'button button-secondary', action.label);
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await action.handler();
+      } catch (error) {
+        setStatus(t('ui.status.error', 'Error'));
+        setReply(formatPluginError(error));
+      } finally {
+        button.disabled = false;
+      }
+    });
+    row.appendChild(button);
+  });
+  return row;
+}
+
+function masteryLevelForPanel(item = {}) {
+  if (item.weak) {
+    return 'weak';
+  }
+  const level = String(item.level || '').toLowerCase();
+  if (['new', 'weak', 'progress', 'good', 'mastered'].includes(level)) {
+    return level;
+  }
+  const mastery = Number(item.mastery);
+  if (!Number.isFinite(mastery)) return 'new';
+  if (mastery >= 0.85) return 'mastered';
+  if (mastery >= 0.6) return 'good';
+  if (mastery >= 0.3) return 'progress';
+  return 'weak';
+}
+
+function stageValueFromNode(node = {}) {
+  const raw = String(
+    node.grade_level
+    || node.education_level
+    || node.stage
+    || node.course_level
+    || '',
+  ).trim().toLowerCase().replaceAll('-', '_');
+  const aliases = {
+    elementary: 'primary',
+    primary_school: 'primary',
+    middle_school: 'junior_high',
+    junior: 'junior_high',
+    high_school: 'senior_high',
+    senior: 'senior_high',
+    university: 'college',
+    undergraduate: 'college',
+    graduate: 'postgraduate',
+    master: 'postgraduate',
+  };
+  return normalizeLearningStage(aliases[raw] || raw);
+}
+
+function knowledgeStageLabel(stage) {
+  const normalized = normalizeLearningStage(stage);
+  return normalized ? learningStageLabel(normalized) : t('ui.profile.stage_uncategorized', 'Uncategorized');
+}
+
+function knowledgeMapActiveStage() {
+  return knowledgeMapStage || normalizeLearningStage(learningProfile.stage) || 'all';
+}
+
+function knowledgeMapRangeLabel(stage = knowledgeMapActiveStage()) {
+  return stage === 'all'
+    ? t('ui.knowledge.scope_all', 'All stages')
+    : knowledgeStageLabel(stage);
+}
+
+function visibleKnowledgeNodes(nodes = [], stage = knowledgeMapActiveStage()) {
+  if (stage === 'all') return nodes;
+  return nodes.filter((node) => {
+    const nodeStage = stageValueFromNode(node);
+    return nodeStage === stage || !nodeStage;
+  });
+}
+
+function visibleKnowledgeEdges(edges = [], nodes = [], stage = knowledgeMapActiveStage()) {
+  if (stage === 'all') return edges;
+  const visibleIds = new Set(nodes.map((node) => String(node.id || '')));
+  return edges.filter((edge) => visibleIds.has(String(edge.from || '')) && visibleIds.has(String(edge.to || '')));
+}
+
+function renderKnowledgeStageSelector(nodes = []) {
+  const root = drawerElement('section', 'knowledge-stage-selector');
+  root.appendChild(drawerElement('span', '', t('ui.knowledge.scope_label', 'Graph range')));
+  const actions = drawerElement('div', 'knowledge-stage-selector__actions');
+  const stages = [...LEARNING_STAGE_OPTIONS.filter((stage) => stage !== 'custom'), 'all'];
+  const activeStage = knowledgeMapActiveStage();
+  const counts = new Map();
+  nodes.forEach((node) => {
+    const stage = stageValueFromNode(node) || '';
+    counts.set(stage, (counts.get(stage) || 0) + 1);
+  });
+  stages.forEach((stage) => {
+    const label = stage === 'all' ? t('ui.knowledge.scope_all', 'All stages') : learningStageLabel(stage);
+    const count = stage === 'all' ? nodes.length : (counts.get(stage) || 0);
+    const button = drawerElement('button', 'knowledge-stage-option', count ? `${label} ${count}` : label);
+    button.type = 'button';
+    button.dataset.stage = stage;
+    button.setAttribute('aria-pressed', stage === activeStage ? 'true' : 'false');
+    button.addEventListener('click', () => {
+      knowledgeMapStage = stage === normalizeLearningStage(learningProfile.stage) ? '' : stage;
+      if (surfaceDrawerBody) {
+        surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
+      }
+    });
+    actions.appendChild(button);
+  });
+  root.appendChild(actions);
+  return root;
+}
+
+function renderKnowledgeNodes(nodes = []) {
+  const root = drawerElement('div', 'knowledge-stage-groups');
+  const groups = new Map();
+  nodes.slice(0, 80).forEach((node) => {
+    const stage = stageValueFromNode(node);
+    groups.set(stage, [...(groups.get(stage) || []), node]);
+  });
+  const selectedStage = normalizeLearningStage(learningProfile.stage);
+  [...groups.entries()].sort(([stageA], [stageB]) => (
+    stageA === selectedStage ? -1 : stageB === selectedStage ? 1 : [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageA) - [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageB)
+  )).forEach(([stage, items]) => {
+    const section = drawerElement('section', 'knowledge-stage-group');
+    section.dataset.stage = stage || 'uncategorized';
+    if (stage === selectedStage) section.dataset.selected = 'true';
+    const list = drawerElement('div', 'study-panel__actions');
+    items.slice(0, 24).forEach((node) => {
+      const item = drawerElement('button', 'knowledge-node');
+      item.type = 'button';
+      item.dataset.mastery = masteryLevelForPanel(node);
+      const mastery = Number(node.mastery);
+      const masteryText = Number.isFinite(mastery) ? ` ${Math.round(mastery * 100)}%` : '';
+      const subject = node.subject ? ` · ${node.subject}` : '';
+      item.textContent = `${node.label || node.name || node.topic_name || node.topic_id || node.id || '-'}${subject}${masteryText}`;
+      list.appendChild(item);
+    });
+    if (items.length > 24) {
+      list.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: items.length - 24 })));
+    }
+    section.append(drawerElement('h3', '', `${knowledgeStageLabel(stage)} · ${items.length}`), list);
+    root.appendChild(section);
+  });
+  return root;
+}
+
+function knowledgeNodeLabel(node) {
+  return String(node?.label || node?.name || node?.topic_name || node?.topic_id || node?.id || '-');
+}
+
+function knowledgeRelationLabel(relation) {
+  const normalized = String(relation || 'related').trim().toLowerCase();
+  if (normalized === 'prerequisite') return t('ui.knowledge.edge_relation.prerequisite', 'Prerequisite');
+  if (normalized === 'related') return t('ui.knowledge.edge_relation.related', 'Related');
+  if (normalized === 'similar') return t('ui.knowledge.edge_relation.similar', 'Similar');
+  if (normalized === 'extends') return t('ui.knowledge.edge_relation.extends', 'Extends');
+  if (normalized === 'next') return t('ui.knowledge.edge_relation.next', 'Next');
+  if (normalized === 'nearby') return t('ui.knowledge.edge_relation.nearby', 'Nearby');
+  return normalized || t('ui.knowledge.edge_relation.related', 'Related');
+}
+
+function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount = 0) {
+  const labelById = new Map(nodes.map((node) => [String(node.id || ''), knowledgeNodeLabel(node)]));
+  const groups = new Map();
+  edges.slice(0, 80).forEach((edge) => {
+    const fromId = String(edge.from || '').trim();
+    const toId = String(edge.to || '').trim();
+    if (!fromId && !toId) return;
+    const groupKey = fromId || '-';
+    const group = groups.get(groupKey) || {
+      from: labelById.get(groupKey) || groupKey,
+      items: [],
+    };
+    group.items.push({
+      to: labelById.get(toId) || toId || '-',
+      relation: knowledgeRelationLabel(edge.relation),
+      rawRelation: String(edge.relation || 'related').trim().toLowerCase(),
+    });
+    groups.set(groupKey, group);
+  });
+
+  const root = drawerElement('div', 'knowledge-edge-list');
+  if (!groups.size) {
+    root.appendChild(drawerElement(
+      'pre',
+      '',
+      topicCount
+        ? tf('ui.settings.knowledge.loaded_summary', '{topics} topics and {edges} edges loaded.', { topics: topicCount, edges: edgeCount })
+        : t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.'),
+    ));
+    return root;
+  }
+
+  Array.from(groups.values()).slice(0, 12).forEach((group) => {
+    const card = drawerElement('article', 'knowledge-edge-card');
+    card.appendChild(drawerElement('h3', '', group.from));
+    const list = drawerElement('div', 'knowledge-edge-card__items');
+    group.items.slice(0, 6).forEach((item) => {
+      const row = drawerElement('div', 'knowledge-edge-row');
+      row.dataset.relation = item.rawRelation || 'related';
+      row.appendChild(drawerElement('span', 'knowledge-edge-row__relation', item.relation));
+      row.appendChild(drawerElement('span', 'knowledge-edge-row__target', item.to));
+      list.appendChild(row);
+    });
+    if (group.items.length > 6) {
+      list.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: group.items.length - 6 })));
+    }
+    card.appendChild(list);
+    root.appendChild(card);
+  });
+  if (edges.length > 80 || groups.size > 12) {
+    const hidden = Math.max(0, edgeCount - Math.min(edgeCount, 80));
+    root.appendChild(drawerElement('span', 'knowledge-edge-more', hidden
+      ? tf('ui.knowledge.edge_more', '+ {count} more', { count: hidden })
+      : t('ui.knowledge.edge_more_groups', 'More relationship groups are hidden.')));
+  }
+  return root;
+}
+
+function renderKnowledgePanel(payload = null) {
+  const data = payload && typeof payload === 'object' ? payload : (lastStatusPayload || {});
+  const summary = data.summary || data.knowledge_summary || {};
+  const nodes=Array.isArray(data.nodes) ? data.nodes : [];
+  const edges=Array.isArray(data.edges) ? data.edges : [];
+  const activeStage = knowledgeMapActiveStage();
+  const shownNodes = visibleKnowledgeNodes(nodes, activeStage);
+  const shownEdges = visibleKnowledgeEdges(edges, shownNodes, activeStage);
+  const topicCount = countFromSummary(summary, ['topic_count', 'topics', 'node_count', 'nodes']) || nodes.length;
+  const edgeCount = countFromSummary(summary, ['edge_count', 'edges']) || edges.length;
+  const weakTopics = shownNodes.filter((node) => masteryLevelForPanel(node) === 'weak').length;
+  const root = surfacePanel('knowledge-map', `${shownNodes.length}/${topicCount}`);
+  const state = drawerElement('section', 'study-panel__state');
+  appendPanelState(state, t('ui.profile.stage_label', 'Stage'), learningStageLabel());
+  appendPanelState(state, t('ui.knowledge.scope_label', 'Graph range'), knowledgeMapRangeLabel(activeStage));
+  appendPanelState(state, t('ui.label.topics', 'Topics'), `${shownNodes.length}/${topicCount}`);
+  appendPanelState(state, t('ui.label.edges', 'Edges'), `${shownEdges.length}/${edgeCount}`);
+  appendPanelState(state, t('ui.label.weak_topics', 'Weak Topics'), String(weakTopics));
+  root.appendChild(state);
+  root.appendChild(renderKnowledgeStageSelector(nodes));
+
+  if (shownNodes.length) {
+    root.appendChild(renderKnowledgeNodes(shownNodes));
+  } else {
+    root.appendChild(drawerElement('pre', '', t('ui.knowledge.scope_empty', 'No topics in this graph range yet. Switch to all stages or keep studying to build it.')));
+  }
+  root.appendChild(drawerElement('div', 'study-panel__reply-label', t('ui.knowledge.edge_section', 'Relationships')));
+  root.appendChild(renderKnowledgeEdges(shownNodes, shownEdges, shownEdges.length, shownNodes.length));
+  return root;
+}
+
+function renderGenericLocalPanel(surfaceId) {
+  const root = surfacePanel(surfaceId, hostedSurfaceLabel(surfaceId));
+  root.appendChild(drawerElement('pre', '', hostedSurfaceLabel(surfaceId)));
+  root.appendChild(renderDrawerActions([
+    { label: t('ui.button.refresh', 'Refresh'), primary: true, handler: async () => { await refreshStatus(); openSurfaceDrawer(surfaceId); } },
+  ]));
+  return root;
+}
+
+function renderSurfaceDrawerBody(surfaceId) {
+  const hostedPanel = window.StudyCompanionSurfacePanels?.render?.(surfaceId, {
+    t,
+    tf,
+    label: hostedSurfaceLabel,
+    callPlugin,
+  });
+  if (hostedPanel) return hostedPanel;
+  if (surfaceId === 'knowledge-map') return renderKnowledgePanel();
+  return renderGenericLocalPanel(surfaceId);
+}
+
+async function loadKnowledgeMapIntoDrawer(surfaceId, requestId) {
+  const payload = await callPlugin('study_knowledge_map', { limit: 200 });
+  if (requestId !== mapRequestId || surfaceDrawer.dataset.open !== 'true' || (surfaceDrawer.dataset.surfaceId || surfaceId) !== 'knowledge-map') {
+    return;
+  }
+  lastKnowledgeMapPayload = payload;
+  surfaceDrawerBody.replaceChildren(renderKnowledgePanel(payload));
+}
+
+function openSurfaceDrawer(surfaceId) {
+  if (!surfaceDrawer || !surfaceDrawerBody) {
+    return;
+  }
+  if (surfaceDrawerTitle) {
+    surfaceDrawerTitle.textContent = hostedSurfaceLabel(surfaceId);
+  }
+  surfaceDrawer.dataset.surfaceId = surfaceId;
+  surfaceDrawerBody.replaceChildren(renderSurfaceDrawerBody(surfaceId));
+  surfaceDrawer.dataset.open = 'true';
+  surfaceDrawer.setAttribute('aria-hidden', 'false');
+  if (surfaceId === 'knowledge-map') {
+    const requestId=mapRequestId += 1;
+    loadKnowledgeMapIntoDrawer(surfaceId, requestId);
+  }
+  surfaceDrawerCloseBtn?.focus?.();
+}
+
+function openHostedSurface(surfaceId, featureAction = '') {
   if (!surfaceId) {
     return;
   }
-  const managerUrl = `/ui/plugins/${encodeURIComponent(PLUGIN_ID)}?tab=guide&surface=${encodeURIComponent(surfaceId)}`;
-  if (window.parent === window) {
-    window.location.assign(managerUrl);
-    return;
+  setActiveFeature(featureAction);
+  openSurfaceDrawer(surfaceId);
+}
+
+function handleFeatureAction(action) {
+  closeSurfaceDrawer();
+  setActiveFeature(action);
+  if (action === 'practice') {
+    focusAfterScroll(document.getElementById('practicePanel'), generateQuestionBtn);
+  } else if (action === 'explain') {
+    focusAfterScroll(document.getElementById('explainPanel'), studyInput);
+  } else if (action === 'memory') {
+    const memoryPanel = document.getElementById('memoryPanel');
+    if (memoryPanel) {
+      memoryPanel.open = true;
+    }
+    focusAfterScroll(memoryPanel, memoryFrontInput);
   }
-  window.parent?.postMessage?.({
-    type: STUDY_SURFACE_MESSAGE_TYPES.openSurface,
-    payload: {
-      pluginId: PLUGIN_ID,
-      surfaceId,
-      kind: 'guide',
-    },
-  }, window.location.origin);
 }
 
 function trustedStudySurfaceOrigin(origin) {
@@ -922,6 +1581,7 @@ function applySettingsConfig(config) {
   if (settingsDefaultMode) {
     settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
   }
+  syncLearningProfileUi();
   if (settingsOcrEnabled) {
     settingsOcrEnabled.checked = ocr.enabled !== false;
   }
@@ -975,6 +1635,9 @@ async function saveSettingsConfig() {
     return;
   }
   const next = collectSettingsConfig();
+  if (settingsLearningStage) {
+    setLearningProfileStage(settingsLearningStage.value);
+  }
   if (settingsSaveBtn) settingsSaveBtn.disabled = true;
   setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...');
   try {
@@ -1067,6 +1730,29 @@ async function refreshStatus(_options = {}) {
   setStatusLine(data);
 }
 
+async function loadQuestionContext(options = {}) {
+  if (!options.silent) {
+    setStatus(t('ui.practice.context_loading', 'Analyzing study records...'));
+  }
+  try {
+    const data = await callPlugin('study_question_context');
+    setQuestionContext(data);
+    if (!options.silent) {
+      setStatus(t('ui.status.ready', 'Ready'));
+    }
+    return data;
+  } catch (error) {
+    currentSelectionContext = null;
+    if (selectionReason) {
+      selectionReason.textContent = formatPluginError(error);
+    }
+    if (!options.silent) {
+      setStatus(t('ui.status.error', 'Error'));
+    }
+    return null;
+  }
+}
+
 async function runOcr() {
   setStatus(t('ui.status.capturing_ocr', 'Capturing OCR...'));
   const data = await callPlugin('study_ocr_snapshot');
@@ -1101,30 +1787,25 @@ async function explainText() {
 }
 
 async function generateQuestion() {
-  const text = studyInput.value.trim();
-  if (!text && !studyInputImageValue) {
-    throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+  let context = currentSelectionContext;
+  if (!context || !context.selection_context_id) {
+    context = await loadQuestionContext({ silent: true });
+  }
+  if (!context || context.no_data || !context.selection_context_id) {
+    throw new Error(t('ui.error.no_targeted_question_data', 'Not enough study records to generate a practice question yet.'));
   }
   setStatus(t('ui.status.generating_question', 'Generating question...'));
-  const args = { text };
-  if (studyInputImageValue) {
-    args.vision_image_base64 = studyInputImageValue;
-  }
-  const data = await callPlugin('study_generate_question', args);
+  clearFeedback();
+  const data = await callPlugin('study_generate_targeted_question', {
+    selection_context_id: context.selection_context_id,
+  });
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
-  if (data.question) {
-    if (questionText) {
-      questionText.textContent = data.question;
-    }
-    if (questionStatus) {
-      questionStatus.textContent = data.question.length > 72 ? `${data.question.slice(0, 72)}...` : data.question;
-    }
-  }
-  if (data.answer && answerInput && !answerInput.value.trim()) {
-    answerInput.value = data.answer;
-  }
+  setGeneratedQuestion(data);
+  setQuestionContext({ ...context, ...data, no_data: false, selection_context_id: '' });
+  if (answerInput) answerInput.value = '';
+  setImagePreview('answer', '');
   setReply(data.hint || data.question || data.summary || data.reply || '');
   await refreshStatus({ updateReply: false });
 }
@@ -1134,13 +1815,15 @@ async function evaluateAnswer() {
   if (!answer && !answerInputImageValue) {
     throw new Error(t('ui.error.missing_answer', 'Please enter an answer first.'));
   }
-  const question = questionText && questionText.textContent.trim()
-    ? questionText.textContent.trim()
-    : (studyInput.value.trim() || '');
+  if (!currentQuestion?.question_id || !currentQuestion?.attempt_id) {
+    throw new Error(t('ui.error.question_missing', 'Please generate a practice question first.'));
+  }
   setStatus(t('ui.status.evaluating_answer', 'Evaluating answer...'));
   const args = {
     answer,
-    question,
+    question_id: currentQuestion.question_id,
+    attempt_id: currentQuestion.attempt_id,
+    selected_topic_id: currentQuestion.selected_topic_id || '',
   };
   if (answerInputImageValue) {
     args.vision_image_base64 = answerInputImageValue;
@@ -1149,9 +1832,7 @@ async function evaluateAnswer() {
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
-  if (evaluationStatus) {
-    evaluationStatus.textContent = data.verdict ? `${data.verdict}${Number.isFinite(Number(data.score)) ? ` / ${data.score}` : ''}` : '-';
-  }
+  renderFeedback(data);
   const replyLines = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
   setReply(replyLines.join('\n\n') || data.summary || '');
   await refreshStatus({ updateReply: false });
@@ -1289,12 +1970,22 @@ async function bootstrap() {
     window.I18n.scanDOM();
     document.title = t('ui.title', 'Study Companion');
   }
+  syncLearningProfileUi();
   bindButton(refreshBtn, refreshStatus);
   bindButton(ocrBtn, runOcr);
   bindButton(generateQuestionBtn, generateQuestion);
   bindButton(explainBtn, explainText);
   bindButton(evaluateAnswerBtn, evaluateAnswer);
   bindButton(summarizeBtn, summarizeSession);
+  if (hintToggleBtn) {
+    hintToggleBtn.addEventListener('click', () => {
+      const expanded = hintToggleBtn.getAttribute('aria-expanded') === 'true';
+      hintToggleBtn.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      if (hintText) {
+        hintText.hidden = expanded;
+      }
+    });
+  }
   bindButton(memoryRefreshBtn, refreshMemoryDeck);
   bindButton(memoryAddBtn, saveMemoryCard);
   if (studyInput) {
@@ -1336,6 +2027,7 @@ async function bootstrap() {
   if (firstRunSkipBtn) {
     firstRunSkipBtn.addEventListener('click', () => {
       firstRunDismissed = true;
+      setLearningProfileStage('', { skipped: true });
       if (firstRunGuide) {
         firstRunGuide.dataset.dismissed = 'true';
       }
@@ -1353,6 +2045,11 @@ async function bootstrap() {
       saveSettingsConfig();
     });
   }
+  if (settingsLearningStage) {
+    settingsLearningStage.addEventListener('change', () => {
+      setLearningProfileStage(settingsLearningStage.value);
+    });
+  }
   settingsTabs.forEach((tab) => {
     tab.addEventListener('click', () => {
       setSettingsTab(tab.getAttribute('data-settings-tab'));
@@ -1361,8 +2058,34 @@ async function bootstrap() {
   });
   surfaceOpenButtons.forEach((button) => {
     button.addEventListener('click', () => {
-      openHostedSurface(button.getAttribute('data-open-surface'));
+      openHostedSurface(
+        button.getAttribute('data-open-surface'),
+        button.getAttribute('data-feature-action') || '',
+      );
     });
+  });
+  featureActionButtons.forEach((button) => {
+    if (button.getAttribute('data-open-surface')) {
+      return;
+    }
+    button.addEventListener('click', () => {
+      handleFeatureAction(button.getAttribute('data-feature-action'));
+    });
+  });
+  if (surfaceDrawerCloseBtn) {
+    surfaceDrawerCloseBtn.addEventListener('click', closeSurfaceDrawer);
+  }
+  if (surfaceDrawer) {
+    surfaceDrawer.addEventListener('click', (event) => {
+      if (event.target === surfaceDrawer) {
+        closeSurfaceDrawer();
+      }
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && surfaceDrawer?.dataset.open === 'true') {
+      closeSurfaceDrawer();
+    }
   });
   setSettingsTab('study');
   window.addEventListener('message', handleStudySurfaceMessage);
@@ -1399,6 +2122,7 @@ async function bootstrap() {
     });
   });
   await refreshStatus();
+  await loadQuestionContext({ silent: true });
 }
 
 bootstrap().catch((error) => {

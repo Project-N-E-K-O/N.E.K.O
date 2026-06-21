@@ -38,6 +38,13 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
                         item.get("subject") or payload.get("subject") or "math"
                     ),
                     "chapter": str(item.get("chapter") or ""),
+                    "stage": str(
+                        item.get("stage")
+                        or item.get("grade_level")
+                        or item.get("education_level")
+                        or item.get("course_level")
+                        or ""
+                    ).strip(),
                     "depth": safe_int(item.get("depth"), 1),
                     "difficulty": safe_float(item.get("difficulty"), 0.5),
                     "prerequisites": item.get("prerequisites")
@@ -67,14 +74,15 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
         self._require_conn().execute(
             """
             INSERT INTO topics (
-                id, name, subject, chapter, depth, difficulty,
+                id, name, subject, chapter, stage, depth, difficulty,
                 prerequisites, related, typical_misconceptions, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
                 subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
                 chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
+                stage = CASE WHEN topics.source = 'seed' THEN topics.stage ELSE excluded.stage END,
                 depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
                 difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
                 prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
@@ -88,6 +96,13 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
                 name,
                 str(topic.get("subject") or "math"),
                 str(topic.get("chapter") or ""),
+                str(
+                    topic.get("stage")
+                    or topic.get("grade_level")
+                    or topic.get("education_level")
+                    or topic.get("course_level")
+                    or ""
+                ).strip(),
                 safe_int(topic.get("depth"), 1),
                 safe_float(topic.get("difficulty"), 0.5),
                 self._json_dumps(
@@ -129,6 +144,7 @@ def ensure_topic(
             "name": name or topic_id,
             "subject": subject or "math",
             "chapter": chapter or "runtime",
+            "stage": "",
             "depth": 2,
             "difficulty": difficulty,
             "prerequisites": [],
@@ -164,14 +180,33 @@ def find_topic_by_name(self, name: str) -> dict[str, Any] | None:
 
 
 def list_topics(
-    self, limit: int = 100, subject: str | None = None
+    self, limit: int = 100, subject: str | None = None, stage: str | None = None
 ) -> list[dict[str, Any]]:
-    if subject:
+    stage_key = str(stage or "").strip()
+    if subject and stage_key:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                "SELECT * FROM topics WHERE subject = ? AND stage = ? ORDER BY chapter, depth, id LIMIT ?",
+                (subject, stage_key, max(1, int(limit))),
+            )
+            .fetchall()
+        )
+    elif subject:
         rows = (
             self._require_read_conn()
             .execute(
                 "SELECT * FROM topics WHERE subject = ? ORDER BY chapter, depth, id LIMIT ?",
                 (subject, max(1, int(limit))),
+            )
+            .fetchall()
+        )
+    elif stage_key:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                "SELECT * FROM topics WHERE stage = ? ORDER BY subject, chapter, depth, id LIMIT ?",
+                (stage_key, max(1, int(limit))),
             )
             .fetchall()
         )

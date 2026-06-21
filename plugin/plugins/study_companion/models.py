@@ -22,6 +22,37 @@ STUDY_EXPORT_FORMATS = ("markdown", "pdf", "docx", "xmind")
 STUDY_EXPORT_STYLES = ("neko", "academic", "compact")
 _LOGGER = logging.getLogger(__name__)
 OCR_SNIPPET_MAX_CHARS = 200
+PRIVATE_CURRENT_QUESTION_FIELDS = frozenset(
+    {
+        "answer",
+        "reference_answer",
+        "accepted_answers",
+        "key_points",
+        "rubric",
+        "solution_steps",
+        "math_equivalence_engine",
+        "internal_private_payload",
+        "current_question_private",
+        "attempt_evaluated",
+    }
+)
+
+
+def public_current_question_payload(
+    value: dict[str, Any] | None,
+    *,
+    include_reference_answer: bool = False,
+) -> dict[str, Any]:
+    payload = json_copy(value or {})
+    if not isinstance(payload, dict):
+        return {}
+    private_fields = set(PRIVATE_CURRENT_QUESTION_FIELDS)
+    if include_reference_answer:
+        private_fields.discard("reference_answer")
+    for field_name in private_fields:
+        payload.pop(field_name, None)
+    payload.pop("answer_evaluation_cache", None)
+    return payload
 
 
 class ModeIntentPayload(TypedDict, total=False):

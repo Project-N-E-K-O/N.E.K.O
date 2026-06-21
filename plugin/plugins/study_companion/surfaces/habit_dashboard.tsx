@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, pomodoroStateLabel, text } from './study_surface_utils';
 
 export default function HabitDashboard(props: PluginSurfaceProps) {
   const [payload, setPayload] = useState<any>({});
@@ -59,7 +59,7 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.habit_dashboard', 'Habit Dashboard')}</h1>
-          <span>{payload.status?.state || 'idle'}</span>
+          <span>{pomodoroStateLabel(props, payload.status?.state)}</span>
         </div>
       </header>
       {error ? <pre>{error}</pre> : null}
