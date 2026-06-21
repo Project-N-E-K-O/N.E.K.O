@@ -138,8 +138,8 @@ def test_cache_hit_rate_scenarios():
 
 
 def test_provider_compatibility():
-    """测试提供商兼容性：enable_cache_control 只跟随 requires_body_flag，
-    与 requires_header 正交。header-only 的 qwen 现在应为 False。"""
+    """enable_cache_control tracks requires_body_flag only, orthogonal to
+    requires_header. Header-only providers (qwen) must now report False."""
     print("\n" + "="*70)
     print("测试: 提供商兼容性检查")
     print("="*70)
@@ -181,11 +181,12 @@ def test_min_cache_tokens_all_providers():
 
 
 def test_session_cache_header():
-    """测试 Session Cache Header (仅 qwen)。
+    """Session Cache Header (qwen only).
 
-    qwen 走 header 路：default_headers 注入 session-cache header，但
-    enable_cache_control 必须为 False —— 它不需要 body 级 cache_control 标记，
-    给 DashScope（OpenAI 兼容端点）打 Anthropic 风格 cache_control 是错的。
+    qwen takes the header path: default_headers carries the session-cache
+    header, but enable_cache_control must be False -- it needs no body-level
+    cache_control marker, and stamping an Anthropic-style cache_control onto
+    DashScope (an OpenAI-compatible endpoint) would be wrong.
     """
     print("\n" + "="*70)
     print("测试: Session Cache Header 配置")
@@ -209,8 +210,9 @@ def test_session_cache_header():
 
 
 def test_body_flag_drives_enable_cache_control():
-    """requires_body_flag=True 的 provider 才会拿到 enable_cache_control=True，
-    且与 requires_header 完全正交（可同时存在）。用临时合成 provider 验证装配。"""
+    """Only a provider with requires_body_flag=True gets enable_cache_control=True,
+    fully orthogonal to requires_header (both can coexist). Verified via a
+    temporary synthetic provider."""
     print("\n" + "="*70)
     print("测试: requires_body_flag 驱动 enable_cache_control")
     print("="*70)
@@ -240,7 +242,8 @@ def test_body_flag_drives_enable_cache_control():
 
 
 def test_inject_cache_control_helper():
-    """_inject_cache_control / _attach_cache_control：选断点、提升字符串、不改原对象。"""
+    """_inject_cache_control / _attach_cache_control: breakpoint selection,
+    string promotion, idempotency, and defensive no-mutation behavior."""
     print("\n" + "="*70)
     print("测试: body 级 cache_control 注入逻辑")
     print("="*70)
@@ -327,8 +330,9 @@ def test_inject_cache_control_helper():
 
 
 def test_params_consumes_enable_cache_control():
-    """端到端：ChatOpenAI._params 真正读取 self.enable_cache_control 并打标，
-    关掉时一字不改 —— 证明字段不再是死的。"""
+    """End-to-end: ChatOpenAI._params actually reads self.enable_cache_control
+    and stamps the marker, and changes nothing when off -- proving the field is
+    no longer dead."""
     print("\n" + "="*70)
     print("测试: _params 消费 enable_cache_control")
     print("="*70)
