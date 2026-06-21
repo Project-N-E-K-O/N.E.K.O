@@ -96,6 +96,7 @@ from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
     ANTI_REPEAT_INJECT_TOP_K,
     ANTI_REPEAT_REGEN_THRESHOLD,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
     MINI_GAME_INVITE_ENABLED,
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
@@ -6972,14 +6973,23 @@ async def proactive_chat(request: Request):
         # ``PROACTIVE_PHASE2_GENERATE_MAX_TOKENS`` / ``render_regen_avoid_instruction``）；
         # 这里 try 仅包 corpus 单例与评分本身——若把常量 import 也塞进 try，
         # except 后下面的 ``>= ANTI_REPEAT_DROP_THRESHOLD`` 会 NameError（codex P1）。
-        try:
-            from memory.anti_repeat import get_anti_repeat_corpus
-            _ar_corpus = get_anti_repeat_corpus()
-            _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
-        except Exception as _ar_exc:  # pragma: no cover - defensive
-            logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+        # 素材推送类 channel（推歌）的开场白天生模板化、台词长一个样而曲目不
+        # 同，用台词 BM25 判复读属于天生误杀（博士连点几首后 FG 窗被音乐 intro
+        # 占满，分数爆表，后续自发推歌全被 drop → "放音乐频率极低"）。这类
+        # channel 的复读按曲目去重而非台词，故整段评分 + regen/drop 直接跳过；
+        # 录入 corpus 时同样豁免（见 finish_proactive_delivery），免得污染 FG 窗。
+        if source_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
             _bm25_total, _bm25_terms = 0.0, {}
             _ar_corpus = None
+        else:
+            try:
+                from memory.anti_repeat import get_anti_repeat_corpus
+                _ar_corpus = get_anti_repeat_corpus()
+                _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
+            except Exception as _ar_exc:  # pragma: no cover - defensive
+                logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+                _bm25_total, _bm25_terms = 0.0, {}
+                _ar_corpus = None
 
         # ANTI_REPEAT_DROP_THRESHOLD 仅在 regen 之后才生效：初稿超 DROP 也得
         # 给 LLM 一次纠正机会，跑完再用同阈值二判。之前的版本初稿 ≥ DROP
@@ -7249,6 +7259,7 @@ async def proactive_chat(request: Request):
                 response_text,
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
+                source_tag=source_tag,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
