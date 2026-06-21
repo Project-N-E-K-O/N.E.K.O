@@ -3329,6 +3329,10 @@
         },
         "drag_hint": "Удерживайте и перетаскивайте для перемещения подсказки",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "Подготовка",
+                "homeProgress": "Гид по главной {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "Пока не хочу говорить",
                 "sayHello": "Привет"

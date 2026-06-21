@@ -3329,6 +3329,10 @@
         },
         "drag_hint": "Hold and drag to move the tooltip",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "Getting Started",
+                "homeProgress": "Home Guide {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "Not now",
                 "sayHello": "Hello"

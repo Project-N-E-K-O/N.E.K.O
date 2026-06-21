@@ -3329,6 +3329,10 @@
         },
         "drag_hint": "길게 눌러 도움말 상자를 이동하세요",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "준비 중",
+                "homeProgress": "홈 가이드 {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "지금은 대화 안 할래",
                 "sayHello": "안녕"

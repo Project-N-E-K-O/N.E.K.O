@@ -3169,7 +3169,7 @@
             }
 
             if (normalizedSceneId === 'intro_activation') {
-                return '准备开始';
+                return this.resolveGuideCopy('tutorial.yuiGuide.bubbleMeta.ready', '准备开始');
             }
 
             const order = this.getHomePresentationSceneOrder();
@@ -3178,7 +3178,26 @@
                 return '';
             }
 
-            return '主页引导 ' + (index + 1) + '/' + order.length;
+            const current = index + 1;
+            const total = order.length;
+            const progressFallback = '主页引导 ' + current + '/' + total;
+            if (typeof window.t === 'function') {
+                try {
+                    const translatedProgress = window.t('tutorial.yuiGuide.bubbleMeta.homeProgress', {
+                        current: current,
+                        total: total,
+                        defaultValue: progressFallback
+                    });
+                    if (
+                        typeof translatedProgress === 'string'
+                        && translatedProgress.trim()
+                        && translatedProgress !== 'tutorial.yuiGuide.bubbleMeta.homeProgress'
+                    ) {
+                        return translatedProgress;
+                    }
+                } catch (_) {}
+            }
+            return progressFallback;
         }
 
         showGuideBubble(text, options, sceneId) {
@@ -3457,7 +3476,7 @@
             if (scene && scene.id === 'day2_intro_context') {
                 return hasAvatarFloatingGuideUsage('voiceUsed')
                     ? this.resolveGuideCopy('tutorial.avatarFloating.day2.introVoiceUsed', scene.text || '')
-                    : '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。';
+                    : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day2.intro', scene.text || '');
             }
             return this.resolveGuideCopy(scene.textKey || '', scene.text || '');
         }

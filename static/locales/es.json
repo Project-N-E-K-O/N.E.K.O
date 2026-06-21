@@ -3329,6 +3329,10 @@
         },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "Preparando",
+                "homeProgress": "Guía de inicio {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"

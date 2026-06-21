@@ -3329,6 +3329,10 @@
         },
         "drag_hint": "按住拖动以移动提示框",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "准备开始",
+                "homeProgress": "主页引导 {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "暂时不聊天",
                 "sayHello": "你好"

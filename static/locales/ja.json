@@ -3329,6 +3329,10 @@
         },
         "drag_hint": "ドラッグしてツールチップを移動",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "準備中",
+                "homeProgress": "ホームガイド {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "今は話さない",
                 "sayHello": "こんにちは"
