@@ -640,11 +640,13 @@ IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
 
 # 跨模式重启时「等 in-flight 落定」的等待上限。必须明显短于前端超时：等完之后
-# 还要花几秒真正起目标模式会话，若把整个 15s 都耗在等待上，重启发出的
-# session_started 会晚于前端 deadline，前端照样超时、甚至 reset 后才收到 ack 起孤儿
-# 会话（Codex P2）。给重启留 ~1/3 余量，in-flight 没在这窗口内落定就放弃（回落
-# baseline：前端超时，无孤儿）。in-flight（text）正常 1~3s 落定，远在窗口内。
-CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS * 2 / 3
+# 还要花几秒真正起目标模式会话（含最坏 ~12s 的 TTS 就绪等待），若把大半个 15s 都
+# 耗在等待上，重启发出的 session_started 会晚于前端 deadline，前端照样超时、甚至
+# reset 后才收到 ack 起孤儿会话（Codex P2）。取前端超时的一半，给重启留 ~7.5s 余量；
+# in-flight 没在这窗口内落定就放弃（回落 baseline：前端超时、无孤儿）。in-flight
+# （text）正常 1~3s 落定，远在窗口内。注：TTS 冷启动叠加 in-flight 贴线落定的双重
+# 最坏情形仍可能溢出 15s，此时由 start_session 末尾的连接/放弃校验与重启侧守卫兜底。
+CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
 
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
@@ -5508,11 +5510,23 @@ class LLMSessionManager:
                     logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs，留余量给重启），放弃改起 %s", _waited, input_mode)
                 elif self._user_session_abandon_epoch != _abandon_epoch:
                     logger.warning("⚠️ 跨模式等待期间用户主动结束了启动（已放弃），不再改起 %s", input_mode)
+                elif not (self.websocket is websocket and self._has_connected_websocket()):
+                    # 等待期间浏览器刷新/断连：disconnect cleanup 走 cleanup→end_session
+                    # (by_server=True)，不会 bump abandon epoch，但此刻 self.websocket 已被
+                    # 换成新连接或清空。用这把 stale ws 递归起会话，其 session_started 无处
+                    # 可送 → 孤儿活动会话（Codex P2）。要求"当前 ws 仍是本请求那把且仍连接"
+                    # 才重启。
+                    logger.warning("⚠️ 跨模式等待期间 websocket 已失效/被替换，不再改起 %s", input_mode)
                 else:
-                    # in-flight 干净落定：递归重入起目标模式。重入禁用跨模式重启
-                    # （_allow_cross_mode_restart=False），把递归深度封到 1——若重入
-                    # 时又撞上新的并发启动，回落静默 return 而非无界递归（greptile P2）。
-                    # guard 检查（5431）前无 await，count==0 的判定到重入是原子的。
+                    # in-flight 干净落定且连接仍在：递归重入起目标模式。
+                    # 先清熔断：用户显式请求按 websocket_router 语义本应清，但当时
+                    # _starting_session_count>0 让它没清；若 in-flight 失败把熔断跳了闸，
+                    # 递归会在熔断检查（5427）处静默 return、不发 session_failed → 前端干等
+                    # 15s。这里替它清，让重启真正起来或走正常失败上报（Codex P2）。
+                    # 重入禁用跨模式重启（_allow_cross_mode_restart=False）把递归深度封到 1，
+                    # 二次并发撞车回落静默 return 而非无界递归（greptile P2）。guard 检查
+                    # （5431）前无 await，count==0 的判定到重入是原子的。
+                    self.reset_session_start_circuit()
                     await self.start_session(websocket, new, input_mode,
                                              user_initiated=True, _allow_cross_mode_restart=False)
             else:

@@ -89,6 +89,18 @@ async def test_inactive_end_session_does_not_clear_next_start_pending_input():
     assert mgr.pending_input_data == [{"input_type": "text", "data": "new"}]
 
 
+class _ConnectedState:
+    """Stand-in for starlette WebSocketState.CONNECTED that satisfies the
+    codebase pattern ``ws.client_state == ws.client_state.CONNECTED``."""
+    @property
+    def CONNECTED(self):
+        return self
+
+
+class _FakeConnectedWS:
+    client_state = _ConnectedState()
+
+
 def _make_starting_manager(*, starting_input_mode):
     """Manager pre-positioned at the start_session 'already starting' guard:
     an in-flight start of ``starting_input_mode`` is occupying the count.
@@ -106,6 +118,9 @@ def _make_starting_manager(*, starting_input_mode):
     mgr.is_active = True
     mgr._audio_stream_epoch = 0
     mgr._user_session_abandon_epoch = 0
+    # 跨模式重启前会校验"当前 ws 仍是本请求那把且仍连接"，并清熔断。
+    mgr.websocket = _FakeConnectedWS()
+    mgr.reset_session_start_circuit = lambda: None
     return mgr
 
 
@@ -123,7 +138,7 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    ws = object()
+    ws = mgr.websocket  # 重启前会校验 self.websocket is websocket 且连接
     start_task = asyncio.create_task(
         LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
     )
@@ -211,7 +226,7 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    ws = object()
+    ws = mgr.websocket
     start_task = asyncio.create_task(
         LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True)
     )
@@ -225,3 +240,29 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
     restart_mock.assert_awaited_once_with(
         ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cross_mode_start_skips_restart_when_websocket_replaced_during_wait():
+    """If the browser reloads/disconnects during the wait, the disconnect
+    cleanup runs by_server=True (no abandon-epoch bump), but self.websocket is
+    swapped/cleared. Restarting with the stale ws would create a session whose
+    session_started can't be delivered — so skip the restart when the current
+    ws is no longer the one this request came in on."""
+    mgr = _make_starting_manager(starting_input_mode="text")
+    restart_mock = AsyncMock()
+    mgr.start_session = restart_mock
+
+    stale_ws = _FakeConnectedWS()  # the request's original ws
+    # During the wait the connection is replaced (reload): self.websocket now
+    # points at a different live connection, not stale_ws.
+    start_task = asyncio.create_task(
+        LLMSessionManager.start_session(mgr, stale_ws, False, "audio", user_initiated=True)
+    )
+    await asyncio.sleep(0.1)
+    mgr.websocket = _FakeConnectedWS()  # new connection after reload
+    mgr._starting_session_count = 0
+    await start_task
+
+    restart_mock.assert_not_awaited()
