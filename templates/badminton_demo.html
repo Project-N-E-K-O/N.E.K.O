@@ -831,8 +831,8 @@
   var NET_BALL_FRICTION = 0.018;
   var NET_BALL_RADIUS = BALL_R + 6;
   var NET_CONTACT_RADIUS = 42;
-  var NET_CONTACT_IMPULSE = 240;
-  var NET_CONTACT_HOLD_MS = 180;
+  var NET_CONTACT_IMPULSE = 320;
+  var NET_CONTACT_HOLD_MS = 230;
   var PLAYER_MOVE_SPEED = 1040;
   var PLAYER_JUMP_SPEED = 430;
   var PLAYER_JUMP_GRAVITY = 1350;
@@ -863,6 +863,7 @@
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
   var debugMode = modeParams ? modeParams.get('debug') === '1' : false;
   var currentMode = 'duel';
+  var netContactEffects = [];
   var DUEL_DIFFICULTY = [
     { name: 'max', skillBase: 0.88, growth: 0.010, pressure: 0.07, angleVar: 0.6, powerVar: 1.2, windupMs: 200, reactionMs: 300 },
     { name: 'lv2', skillBase: 0.78, growth: 0.007, pressure: 0.05, angleVar: 1.5, powerVar: 2.5, windupMs: 450, reactionMs: 550 },
@@ -3429,8 +3430,9 @@
   }
   function canPlayerJump() {
     if (!game.playerJump) return false;
-    if (game.state !== 'ready' || game.pendingSwing || !isPlayerTurn()) return false;
-    if (isPositionTransitioning) return false;
+    if (isBadmintonLoadingActive()) return false;
+    if (game.pendingSwing && game.pendingSwing.shooter === 'player') return false;
+    if (!canPlayerMoveCourt()) return false;
     if (game.playerJump.active || getPlayerJumpOffset() > 0) return false;
     return performance.now() >= (game.playerJump.cooldownUntil || 0);
   }
@@ -4026,7 +4028,7 @@
     var incomingSpeed = typeof ball.speed === 'function'
       ? ball.speed()
       : Math.sqrt((ball.vx || 0) * (ball.vx || 0) + (ball.vy || 0) * (ball.vy || 0));
-    var impact = clamp(incomingSpeed / 360, 0.55, 1.35);
+    var impact = clamp(incomingSpeed / 330, 0.68, 1.55);
     var centerCol = Math.floor(NET_COLS / 2);
     for (var col = 0; col < NET_COLS; col++) {
       var colSpread = centerCol > 0 ? (col - centerCol) / centerCol : 0;
@@ -4041,14 +4043,39 @@
         if (falloff <= 0) continue;
         var rowT = getNetSpanT(row, NET_ROWS);
         var weight = falloff * columnFalloff * (0.72 + Math.sin(rowT * Math.PI) * 0.28);
-        var recoilX = (direction * 0.14 + colSpread * 0.035) * NET_CONTACT_IMPULSE * impact * weight;
-        var rippleY = (rowT - 0.5) * 0.12 * NET_CONTACT_IMPULSE * impact * weight;
+        var recoilX = (direction * 0.18 + colSpread * 0.045) * NET_CONTACT_IMPULSE * impact * weight;
+        var rippleY = (rowT - 0.5) * 0.16 * NET_CONTACT_IMPULSE * impact * weight;
         node.vx += recoilX;
         node.vy += rippleY;
-        node.x += (direction * 0.9 + colSpread * 0.35) * weight;
-        node.y += (rowT - 0.5) * 0.55 * weight;
+        node.x += (direction * 1.7 + colSpread * 0.52) * weight * impact;
+        node.y += (rowT - 0.5) * 0.9 * weight * impact;
       }
     }
+  }
+  function spawnNetContactEffect(ball, crossing) {
+    var contactX = crossing && Number.isFinite(crossing.screenX) ? crossing.screenX : (ball ? ball.x : BADMINTON.netX);
+    var contactY = crossing && Number.isFinite(crossing.screenY) ? crossing.screenY : (ball ? ball.y : BADMINTON.netTop);
+    var speed = ball && typeof ball.speed === 'function'
+      ? ball.speed()
+      : Math.sqrt(Math.pow(ball && ball.vx || 0, 2) + Math.pow(ball && ball.vy || 0, 2));
+    var strength = clamp(speed / 430, 0.56, 1.24);
+    var now = performance.now();
+    netContactEffects.push({
+      x: contactX,
+      y: contactY,
+      startAt: now,
+      duration: 560,
+      strength: strength,
+      direction: ball && ball.direction === -1 ? -1 : 1
+    });
+    if (netContactEffects.length > 5) netContactEffects = netContactEffects.slice(netContactEffects.length - 5);
+    window.__badmintonNetEffectDebug = {
+      count: netContactEffects.length,
+      x: contactX,
+      y: contactY,
+      strength: strength,
+      startedAt: now
+    };
   }
   function resetGame() {
     clearTimeout(resultTimer);
@@ -4469,8 +4496,9 @@
     ball.netContactAt = performance.now();
     ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;
     applyNetContactImpulse(ball, crossing);
-    ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.22, 32, 130);
-    ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.18 + 115, 115);
+    spawnNetContactEffect(ball, crossing);
+    ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.14, 24, 88);
+    ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + 132, 132);
     syncShuttleCourtCoordinates(ball);
   }
   function checkShuttleLanding(ball) {
@@ -4492,8 +4520,8 @@
       var targetRight = direction > 0 ? BADMINTON.courtRight : BADMINTON.netX - ballRadius * 0.5;
       var inTargetX = ball.x >= targetLeft && ball.x <= targetRight;
       var inTargetY = ball.y >= BADMINTON.targetTop && ball.y <= BADMINTON.courtBottom + ballRadius;
-      var scored = ball.crossedNet && inTargetX && inTargetY;
-      var shotType = ball.crossedNet ? 'out' : 'net';
+      var scored = !ball.hitNet && ball.crossedNet && inTargetX && inTargetY;
+      var shotType = ball.hitNet ? 'net' : (ball.crossedNet ? 'out' : 'net');
       if (scored) {
         var nearBaseline = direction > 0 ? ball.x > targetRight - 34 : ball.x < targetLeft + 34;
         var nearNet = direction > 0 ? ball.x < targetLeft + 34 : ball.x > targetRight - 34;
@@ -6015,6 +6043,58 @@
     ctx.lineTo(bottomRight.x, bottomRight.y);
     ctx.stroke();
     ctx.restore();
+    drawNetContactEffects();
+  }
+
+  function drawNetContactEffects() {
+    if (!netContactEffects.length) return;
+    var now = performance.now();
+    netContactEffects = netContactEffects.filter(function (effect) {
+      return now - effect.startAt < effect.duration;
+    });
+    if (!netContactEffects.length) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = 0; i < netContactEffects.length; i++) {
+      var effect = netContactEffects[i];
+      var age = clamp((now - effect.startAt) / effect.duration, 0, 1);
+      var alpha = (1 - age) * effect.strength;
+      var spread = 8 + age * 54 * effect.strength;
+      var lift = Math.sin(age * Math.PI) * 8 * effect.strength;
+      var x = clamp(effect.x, BADMINTON.netX - 34, BADMINTON.netX + 34);
+      var y = clamp(effect.y - lift, NET_TOP - 18, NET_BOTTOM + 24);
+
+      ctx.shadowColor = 'rgba(255,244,190,' + (0.26 * alpha).toFixed(3) + ')';
+      ctx.shadowBlur = 7 + 8 * alpha;
+      ctx.strokeStyle = 'rgba(255,245,204,' + (0.22 * alpha).toFixed(3) + ')';
+      ctx.lineWidth = 5.8 * alpha;
+      ctx.beginPath();
+      ctx.moveTo(x - 3, y - spread * 0.55);
+      ctx.quadraticCurveTo(x + effect.direction * (5 + spread * 0.08), y, x - 2, y + spread * 0.55);
+      ctx.stroke();
+
+      ctx.shadowBlur = 3 + 6 * alpha;
+      ctx.strokeStyle = 'rgba(236,255,248,' + (0.46 * alpha).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(0.65, 1.45 * alpha);
+      ctx.beginPath();
+      ctx.moveTo(x, y - spread);
+      ctx.quadraticCurveTo(x + effect.direction * (4 + spread * 0.10), y, x, y + spread);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(255,236,170,' + (0.42 * alpha).toFixed(3) + ')';
+      for (var spark = 0; spark < 4; spark++) {
+        var sparkPhase = spark * 1.7 + age * 2.6;
+        var sparkX = x + effect.direction * (6 + spark * 4 + age * 18) + Math.sin(sparkPhase) * 3;
+        var sparkY = y + (spark - 1.5) * 9 - age * (8 + spark * 2);
+        var sparkR = Math.max(0.7, (1.9 - spark * 0.2) * alpha);
+        ctx.beginPath();
+        ctx.arc(sparkX, sparkY, sparkR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   function drawNetCord() {
@@ -6681,6 +6761,89 @@
   }
   function drawAiming() {
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
+    drawPlayerReturnHitCue();
+  }
+  function drawPlayerReturnHitCue() {
+    if (!isPlayerReceivingReturn() || !canPlayerReturnIncomingShuttle()) return;
+    var ball = game.ball;
+    var contact = getRacketContactPoint('player');
+    var yui = getYuiShotOrigin();
+    if (!ball || !contact || !yui) return;
+    var dx = yui.x - contact.x;
+    var dy = yui.y - contact.y;
+    var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    var ux = dx / len;
+    var uy = dy / len;
+    var nx = -uy;
+    var ny = ux;
+    var now = performance.now();
+    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
+    var shimmer = 0.5 + 0.5 * Math.sin(now / 96);
+    var radius = ball.radius || BALL_R;
+    var startX = ball.x - ux * 32 + nx * 10;
+    var startY = ball.y - uy * 32 + ny * 10;
+    var controlX = ball.x + ux * 2 + nx * 24;
+    var controlY = ball.y + uy * 2 + ny * 24;
+    var endX = ball.x + ux * 38 + nx * 7;
+    var endY = ball.y + uy * 38 + ny * 7;
+
+    aimingCtx.save();
+    aimingCtx.globalCompositeOperation = 'lighter';
+    aimingCtx.shadowColor = 'rgba(255,221,122,.26)';
+    aimingCtx.shadowBlur = 5 + pulse * 3;
+    aimingCtx.strokeStyle = 'rgba(255,236,168,.075)';
+    aimingCtx.lineWidth = 7 + pulse * 1.5;
+    aimingCtx.lineCap = 'round';
+    aimingCtx.beginPath();
+    aimingCtx.moveTo(startX, startY);
+    aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
+    aimingCtx.stroke();
+
+    var cueGradient = aimingCtx.createLinearGradient(startX, startY, endX, endY);
+    cueGradient.addColorStop(0, 'rgba(255,255,255,0)');
+    cueGradient.addColorStop(0.42, 'rgba(255,246,190,.16)');
+    cueGradient.addColorStop(1, 'rgba(255,210,96,.30)');
+    aimingCtx.shadowBlur = 3 + pulse * 2;
+    aimingCtx.strokeStyle = cueGradient;
+    aimingCtx.lineWidth = 1.8 + pulse * 0.55;
+    aimingCtx.beginPath();
+    aimingCtx.moveTo(startX, startY);
+    aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
+    aimingCtx.stroke();
+
+    var tangentX = endX - controlX;
+    var tangentY = endY - controlY;
+    var tangentLen = Math.max(1, Math.sqrt(tangentX * tangentX + tangentY * tangentY));
+    tangentX /= tangentLen;
+    tangentY /= tangentLen;
+    var sideX = -tangentY;
+    var sideY = tangentX;
+    var head = 6 + shimmer * 1.5;
+    aimingCtx.fillStyle = 'rgba(255,218,102,.24)';
+    aimingCtx.shadowBlur = 3;
+    aimingCtx.beginPath();
+    aimingCtx.moveTo(endX + tangentX * 4, endY + tangentY * 4);
+    aimingCtx.lineTo(endX - tangentX * head + sideX * head * 0.32, endY - tangentY * head + sideY * head * 0.32);
+    aimingCtx.lineTo(endX - tangentX * head - sideX * head * 0.22, endY - tangentY * head - sideY * head * 0.22);
+    aimingCtx.closePath();
+    aimingCtx.fill();
+
+    var glowRadius = radius + 3 + pulse * 2;
+    var glow = aimingCtx.createRadialGradient(ball.x, ball.y, Math.max(2, radius * 0.4), ball.x, ball.y, glowRadius + 7);
+    glow.addColorStop(0, 'rgba(255,255,255,.055)');
+    glow.addColorStop(0.45, 'rgba(255,232,150,.085)');
+    glow.addColorStop(1, 'rgba(255,216,94,0)');
+    aimingCtx.fillStyle = glow;
+    aimingCtx.beginPath();
+    aimingCtx.arc(ball.x, ball.y, glowRadius + 7, 0, Math.PI * 2);
+    aimingCtx.fill();
+    aimingCtx.strokeStyle = 'rgba(255,242,183,.18)';
+    aimingCtx.lineWidth = 0.9;
+    aimingCtx.shadowBlur = 2;
+    aimingCtx.beginPath();
+    aimingCtx.arc(ball.x, ball.y, glowRadius, 0, Math.PI * 2);
+    aimingCtx.stroke();
+    aimingCtx.restore();
   }
   function drawBall() {
     if (!game.ball) return;
