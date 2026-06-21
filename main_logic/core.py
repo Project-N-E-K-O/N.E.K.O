@@ -5438,8 +5438,7 @@ class LLMSessionManager:
             # 仅对**同模式**的去重请求补发 ack：in-flight 启的是它自己的模式，
             # 跨模式（如 greeting 拉 text、另一路同刻请求 audio）若复用 in-flight 的
             # session_started(text)，前端会按 text 切 UI、收口 promise，而用户要的
-            # audio 会话根本没起（CodeRabbit）。跨模式时维持原静默 return（与改动前
-            # 完全一致，不更差）。
+            # audio 会话根本没起（CodeRabbit）。
             if (self._starting_input_mode or input_mode) == input_mode:
                 logger.warning("⚠️ Session正在启动中，等 in-flight 启动落定后给本请求补发 session_started")
                 # 等 in-flight 那次启动**自己落定**（_starting_session_count 归 0）。
@@ -5462,7 +5461,27 @@ class LLMSessionManager:
                 if self._starting_session_count == 0 and self.session and self.is_active:
                     await self.send_session_started(input_mode)
             else:
-                logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
+                # 跨模式撞车：典型是 proactive（主动搭话 / greeting）自起的 text 会话
+                # 还在飞，而用户此刻显式点了"开始语音对话"（audio）。早期实现静默
+                # return，但用户的 audio 请求是显式意图：静默丢弃会让前端干等 15s
+                # ack 超时，且超时时发的 end_session 还会把正在建立的 proactive text
+                # 会话一并撕掉（proactive 语音也播不出）。改为：等 in-flight 那次启动
+                # 落定（_starting_session_count 归 0）后，递归重入起一个本模式的新
+                # 会话——它会按上面 5588 行的旧 session 清理逻辑替换掉刚建好的旧模式
+                # 会话。不复用 in-flight 的 ack（跨模式复用会按错模式切 UI，见上）。
+                logger.warning("⚠️ Session正在启动中（跨模式），等 in-flight 落定后改起 %s 会话", input_mode)
+                _waited = 0.0
+                while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
+                    await asyncio.sleep(0.05)
+                    _waited += 0.05
+                if self._starting_session_count == 0:
+                    # in-flight 已落定，count 归 0：递归重入会穿过本 guard 走正常启动
+                    # 路径并自行发 session_started。guard 检查（5431）前无 await，重入
+                    # 是原子的；若期间又有别的启动抢入，递归调用会再次落到本等待分支，
+                    # 由 FRONTEND_START_SESSION_TIMEOUT_SECONDS 兜底防失控递归。
+                    await self.start_session(websocket, new, input_mode)
+                else:
+                    logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs），放弃改起 %s", _waited, input_mode)
             return
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）

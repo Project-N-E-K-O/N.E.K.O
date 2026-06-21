@@ -2018,6 +2018,7 @@
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
                     S.sessionStartedRejecter = reject;
+                    S._pendingSessionStartMode = 'audio';
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2380,6 +2381,7 @@
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
                     S.sessionStartedRejecter = reject;
+                    S._pendingSessionStartMode = 'text';
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2609,6 +2611,7 @@
                             var sessionStartPromise = new Promise(function (resolve, reject) {
                                 S.sessionStartedResolver = resolve;
                                 S.sessionStartedRejecter = reject;
+                                S._pendingSessionStartMode = 'text';
                                 mod._textSessionStartRejecter = reject;
 
                                 if (window.sessionTimeoutId) {

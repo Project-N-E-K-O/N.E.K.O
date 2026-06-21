@@ -2133,6 +2133,7 @@
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
                                         S.sessionStartedResolver = resolve;
                                         S.sessionStartedRejecter = reject;
+                                        S._pendingSessionStartMode = 'audio';
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
@@ -2696,6 +2697,24 @@
                         }
                         return;
                     }
+                    // 跨模式 ack 守卫：用户点的麦/文本启动正在 await session_started 时
+                    // （resolver 还在 + _pendingSessionStartMode 记着请求模式），若到达的
+                    // input_mode 与用户请求的不一致，这条 ack 属于并发的后台会话——典型是
+                    // proactive / greeting 自起的 text 会话（它也是一次正常 start_session，
+                    // 完成时会发 session_started(text)）。绝不能用它去 resolve 用户的 audio
+                    // 启动 promise 或翻转 voiceChatActive/isTextSessionActive，否则用户点了
+                    // 语音却被 text ack 收口 → 开麦但后端是 text 会话、UI 错配。直接忽略，
+                    // 用户那次启动的真正 ack（后端跨模式撞车会等 in-flight 落定后改起本模式
+                    // 会话再发，见 core.py start_session）随后到达时按下方正常流程收口。
+                    // 注意要求 resolver 仍在：无 pending 启动时（如 chat.html 子窗口纯靠
+                    // session_started 同步 hide 自己的输入框）不拦，维持多窗口原行为。
+                    if (S._pendingSessionStartMode
+                            && S.sessionStartedResolver
+                            && response.input_mode !== S._pendingSessionStartMode) {
+                        console.log('[App] ignore cross-mode session_started', response.input_mode,
+                            'while pending', S._pendingSessionStartMode);
+                        return;
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
@@ -2738,6 +2757,7 @@
                             S.sessionStartedResolver(response.input_mode);
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
+                            S._pendingSessionStartMode = null;
                         }
                     }, 500);
 
