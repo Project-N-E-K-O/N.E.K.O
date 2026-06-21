@@ -9,7 +9,7 @@
 - Module owner: `plugin.plugins.neko_roast.modules.live_events.LiveEventsModule`
 - Input contract: `LiveEvent.raw` must be a `LiveDanmaku`-compatible object with `uid`, `text`, `msg_type`, `room_id`, and `get_score()`.
 - Output contract: selected events call `ctx.handle_live_payload(payload)`.
-- Audit: selected events record `live_event_selected`; flush or pipeline failures record warning audit entries.
+- Audit: selected events record `live_event_selected` with the selected candidate and redacted dropped candidate summaries; flush or pipeline failures record warning audit entries.
 
 ## Data Flow
 
@@ -27,7 +27,7 @@ This module does not build prompts, write viewer profiles, or push messages to N
 
 - Entry events are out of scope for this module.
 - Gift, Super Chat, and guard events currently reuse the normal roast pipeline context; dedicated thanks/reading/welcome behavior belongs to later event handlers.
-- The window stores only the current best candidate and a count, not a full event history.
+- The window stores only the current best candidate plus privacy-safe candidate summaries for the current decision chain. It does not keep raw payload history or create an output queue.
 
 ## Testing
 

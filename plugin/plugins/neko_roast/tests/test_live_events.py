@@ -117,6 +117,24 @@ async def test_cooldown_window_picks_highest_score():
     )
 
 
+async def test_selection_audit_records_winner_and_dropped_candidates():
+    ctx = _FakeCtx(remaining=5.0)
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("1", text="plain"))
+    hub.submit(_danmaku("2", text="captain", guard=1))
+    hub.submit(_danmaku("3", text="short"))
+    await _drain(hub)
+
+    selected = next(r for r in ctx.audit.records if r["op"] == "live_event_selected")
+    assert selected["detail"]["selected"]["uid"] == "2"
+    assert selected["detail"]["selected"]["event_type"] == "danmaku"
+    dropped = selected["detail"]["dropped_candidates"]
+    assert [item["uid"] for item in dropped] == ["1", "3"]
+    assert {item["skip_reason"] for item in dropped} == {"selection.lower_score"}
+    assert all("text" not in item for item in dropped)
+
+
 async def test_cooldown_window_allows_high_value_gift_to_beat_danmaku():
     ctx = _FakeCtx(remaining=5.0)
     hub = await _make_hub(ctx)

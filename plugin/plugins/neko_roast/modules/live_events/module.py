@@ -55,7 +55,9 @@ class LiveEventsModule(BaseModule):
         super().__init__()
         self._best: Any = None
         self._best_score: float = 0.0
+        self._best_order: int = 0
         self._buffered_count: int = 0
+        self._candidate_summaries: list[dict[str, Any]] = []
         self._flush_task: "asyncio.Task[Any] | None" = None
         self._tasks: set[asyncio.Task[Any]] = set()
         # 中枢本地「刚投递」时间戳：同步更新，确保紧接着到的事件不会因 safety_guard 的
@@ -100,7 +102,9 @@ class LiveEventsModule(BaseModule):
         self._flush_task = None
         self._best = None
         self._best_score = 0.0
+        self._best_order = 0
         self._buffered_count = 0
+        self._candidate_summaries = []
 
     def _track_flush_task(self, task: "asyncio.Task[Any]") -> "asyncio.Task[Any]":
         self._flush_task = task
@@ -140,13 +144,17 @@ class LiveEventsModule(BaseModule):
         if remaining <= 0 and self._flush_task is None:
             # 空闲态：首条即时锐评，保留已验证 DoD。
             self._mark_dispatch()
-            self._spawn(self._roast(event, count=1))
+            score = self._safe_score(event)
+            self._spawn(self._roast(event, count=1, candidates=[self._candidate_summary(event, score, 1)], winner_order=1))
             return
         # 冷却期：缓冲择优，只保留当前分最高者（O(1) 内存，无需保留整批）。
         score = self._safe_score(event)
+        order = self._buffered_count + 1
+        self._candidate_summaries.append(self._candidate_summary(event, score, order))
         if self._best is None or score > self._best_score:
             self._best = event
             self._best_score = score
+            self._best_order = order
         self._buffered_count += 1
         if self._flush_task is None:
             self._track_flush_task(self._spawn(self._flush_after(remaining)))
@@ -175,6 +183,17 @@ class LiveEventsModule(BaseModule):
         except Exception:
             return 0.0
 
+    def _candidate_summary(self, event: Any, score: float, order: int) -> dict[str, Any]:
+        msg_type = getattr(event, "msg_type", None)
+        return {
+            "order": order,
+            "uid": str(getattr(event, "uid", "") or ""),
+            "event_type": _MESSAGE_TYPE_LABELS.get(msg_type, str(msg_type or "unknown")),
+            "score": round(score, 1),
+            "guard_level": getattr(event, "guard_level", 0),
+            "text_length": len(str(getattr(event, "text", "") or "")),
+        }
+
     def _spawn(self, coro: Any) -> "asyncio.Task[Any]":
         task = asyncio.create_task(coro)
         self._tasks.add(task)
@@ -187,11 +206,13 @@ class LiveEventsModule(BaseModule):
                 await self._sleep(delay)
             event = self._best
             count = self._buffered_count
+            candidates = list(self._candidate_summaries)
+            winner_order = self._best_order
             # 取出胜者并复位窗口；同步段无 await，不会与 submit 交错（asyncio 单线程）。
             self._clear_window()
             if event is not None and self.ctx is not None and self.enabled:
                 self._mark_dispatch()
-                await self._roast(event, count=count)
+                await self._roast(event, count=count, candidates=candidates, winner_order=winner_order)
         except asyncio.CancelledError:
             if self._flush_task is asyncio.current_task():
                 self._clear_window()
@@ -201,7 +222,7 @@ class LiveEventsModule(BaseModule):
             if self.ctx is not None:
                 self.ctx.audit.record("live_event_flush_failed", type(exc).__name__, level="warning")
 
-    async def _roast(self, event: Any, count: int) -> None:
+    async def _roast(self, event: Any, count: int, candidates: list[dict[str, Any]] | None = None, winner_order: int = 0) -> None:
         if self.ctx is None:
             return
         uid = str(getattr(event, "uid", "") or "")
@@ -217,6 +238,16 @@ class LiveEventsModule(BaseModule):
             "room_id": getattr(event, "room_id", 0),
             "event_type": event_type,
         }
+        selected = next((item for item in (candidates or []) if item.get("order") == winner_order), None)
+        if selected is None:
+            selected = self._candidate_summary(event, score, winner_order or 1)
+        dropped_candidates = []
+        for item in candidates or []:
+            if item.get("order") == selected.get("order"):
+                continue
+            dropped = dict(item)
+            dropped["skip_reason"] = "selection.lower_score"
+            dropped_candidates.append(dropped)
         self.ctx.audit.record(
             "live_event_selected",
             f"selected {event_type} from {count} candidate(s)",
@@ -226,6 +257,8 @@ class LiveEventsModule(BaseModule):
                 "candidates": count,
                 "score": round(score, 1),
                 "guard_level": getattr(event, "guard_level", 0),
+                "selected": selected,
+                "dropped_candidates": dropped_candidates,
             },
         )
         try:
