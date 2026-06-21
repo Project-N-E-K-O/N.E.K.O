@@ -2652,7 +2652,6 @@
                 ? window.TutorialInteractionTakeover.createController({
                     page: this.page,
                     overlay: this.overlay,
-                    allowWindowPassthrough: true,
                     isDestroyed: () => this.destroyed,
                     isResistancePaused: () => this.scenePausedForResistance === true,
                     externalizedChatDetector: () => this.isHomeChatExternalized(),

@@ -440,7 +440,6 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         assert expected in overlay_source
 
     for expected in (
-        "allowWindowPassthrough: true,",
         "this.overlay.setTutorialInputShieldActive(isActive);",
         "const shouldRestoreTutorialInputShield = !!(",
         "this.overlay.tutorialInputShieldActive === true",
@@ -450,6 +449,11 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         "this.overlay.setInteractionShieldSuppressed(false);",
     ):
         assert expected in director_source
+
+    interaction_takeover_source = Path("static/tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    assert "allowWindowPassthrough" not in director_source
+    assert "allowWindowPassthrough" not in interaction_takeover_source
+    assert "this.overlay.setInteractionShieldSuppressed(this.active" not in interaction_takeover_source
 
     for expected in (
         ".yui-guide-interaction-shield {",

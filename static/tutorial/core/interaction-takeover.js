@@ -20,7 +20,6 @@
             this.document = normalizedOptions.document || document;
             this.page = normalizedOptions.page || 'home';
             this.overlay = normalizedOptions.overlay || null;
-            this.allowWindowPassthrough = normalizedOptions.allowWindowPassthrough === true;
             this.isDestroyed = normalizedOptions.isDestroyed || null;
             this.isResistancePaused = normalizedOptions.isResistancePaused || null;
             this.externalChatChannelProvider = normalizedOptions.externalChatChannelProvider || null;
@@ -38,9 +37,6 @@
                 return;
             }
             this.active = nextActive;
-            if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
-                this.overlay.setInteractionShieldSuppressed(this.active && this.allowWindowPassthrough);
-            }
             if (this.overlay && typeof this.overlay.setTakingOver === 'function') {
                 this.overlay.setTakingOver(this.active);
             }
