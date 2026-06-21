@@ -1007,12 +1007,14 @@ def test_activity_guess_loop_skips_llm_when_narration_suppressed():
 
 
 def test_activity_guess_signature_excludes_idle_bucket():
-    """idle 秒数单调增长不应翻动 dedup 签名。
+    """idle seconds growing must not flip the dedup signature.
 
-    挂机时 system_idle_seconds 一直涨，旧实现把 idle//30 塞进 signature，
-    导致签名每 ~30s 翻一次、dedup 永久失效、纯闲置每 ~40s 空烧一次
-    emotion-tier LLM。signature 现在只按「在做什么」（state + 窗口 + 子类）
-    构成；idle→away 跃迁仍由 state 捕捉（away 本就 bail）。
+    While AFK, system_idle_seconds keeps climbing; the old code folded
+    idle//30 into the signature, flipping it every ~30s, defeating dedup
+    and burning one emotion-tier LLM call every ~40s during pure idle.
+    The signature now keys only on "what the user is doing" (state +
+    window + subcategory); the active->idle->away transition is still
+    caught by state (away bails anyway).
     """
     from main_logic.activity.tracker import UserActivityTracker
 
