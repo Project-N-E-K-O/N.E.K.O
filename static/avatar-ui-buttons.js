@@ -5927,6 +5927,19 @@ const AvatarButtonMixin = {
                 this._uiUpdateLoopId = null;
             }
 
+            // 摘除浮动按钮 / 锁图标 ticker —— 下方会删掉它们的 DOM，但 _removeFloatingButtonsElement
+            // 只调 el.remove() 不会摘 ticker；与 setupFloatingButtonsBase 同病：不在此处摘除，旧 ticker 会
+            // 变成孤儿继续每帧 mutate 已脱离文档的节点（CPU 泄漏）。换模型时本方法被用于清理“切出去”的旧
+            // manager（见 setupFloatingButtonsBase 的 otherPrefixes 分支、card_maker 等），正是该泄漏的真实触发点。
+            if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._lockIconTicker); } catch (_) {}
+                this._lockIconTicker = null;
+            }
+            if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._floatingButtonsTicker); } catch (_) {}
+                this._floatingButtonsTicker = null;
+            }
+
             // 移除 DOM 元素（先清理自己的入场动画状态）
             document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)
                 .forEach(el => _removeFloatingButtonsElement(el));
