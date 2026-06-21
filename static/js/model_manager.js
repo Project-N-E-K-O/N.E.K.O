@@ -10729,6 +10729,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // 监听页面卸载事件，确保返回时主界面可见
 window.addEventListener('beforeunload', (e) => {
+    notifyCardMakerFallbackOwnerClosing();
+
     if (isModelManagerSettingsWaiting()) {
         const message = getModelManagerSettingsWaitingMessage();
         setModelManagerStatusText(message);
@@ -10736,8 +10738,6 @@ window.addEventListener('beforeunload', (e) => {
         e.returnValue = message;
         return message;
     }
-
-    notifyCardMakerFallbackOwnerClosing();
 
     // 尝试退出全屏
     if (isFullscreen()) {
