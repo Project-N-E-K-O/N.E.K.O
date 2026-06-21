@@ -185,6 +185,12 @@ class CacheProviderConfig:
     # cache_control: {"type": "ephemeral"}）。与 requires_header 正交：
     # provider 可以两个都不要、只要其一、或两个都要。get_cache_kwargs 据此
     # 决定是否给 ChatOpenAI 传 enable_cache_control=True，由 _params() 消费。
+    #
+    # ⚠️ 切勿给 Anthropic 自家的 OpenAI 兼容端点（api.anthropic.com 走 OpenAI
+    # SDK，见 utils.llm_client.create_chat_llm 的 anthropic 分支）置 True：该兼容
+    # 层不支持 prompt caching，注入的 cache_control 会被静默忽略，结果是"报告开了
+    # 缓存却零命中"。需要 body 级缓存时，走原生 Messages API，或换一个明确支持该
+    # OpenAI-wire cache_control 形态的网关（Anthropic-compat / OpenRouter 等）再开。
     requires_body_flag: bool = False
     header_name: str | None = None
     header_value: str | None = None
