@@ -19,6 +19,7 @@ export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
 const COMPACT_EXPORT_BOTTOM_THRESHOLD = 30;
 const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
+export const COMPACT_HISTORY_ROUTED_WHEEL_EVENT = 'neko:compact-history-routed-wheel';
 export const COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS = 860;
 const COMPACT_HISTORY_SCROLLBAR_THUMB_MIN_HEIGHT = 24;
 export const COMPACT_HISTORY_ENTER_DELAY_STEP_MS = 42;
@@ -248,6 +249,7 @@ export default function CompactExportHistoryPanel({
   const previewObjectUrlRef = useRef<string | null>(null);
   const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
   const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
+  const routedWheelHandlerRef = useRef<() => void>(() => {});
   // 记录上一次几何刷新时的可视窗口高度，用于判断 resize 方向（缩小 vs 增高）。
   const lastGeometryClientHeightRef = useRef<number | null>(null);
   const [exportFormat, setExportFormat] = useState<CompactExportFormat>('image');
@@ -585,6 +587,22 @@ export default function CompactExportHistoryPanel({
     onAutoScrollToBottomChange(distanceToBottom <= COMPACT_EXPORT_BOTTOM_THRESHOLD);
     updateScrollbarThumbState();
   }
+
+  routedWheelHandlerRef.current = () => {
+    if (!historyInteractive) return;
+    handleScroll();
+    revealScrollbarForWheel();
+  };
+
+  useEffect(() => {
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) return undefined;
+    const handleRoutedWheel = () => routedWheelHandlerRef.current();
+    scrollNode.addEventListener(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, handleRoutedWheel);
+    return () => {
+      scrollNode.removeEventListener(COMPACT_HISTORY_ROUTED_WHEEL_EVENT, handleRoutedWheel);
+    };
+  }, [historyInteractive, previewOpen, visibilityState]);
 
   function handleClick(event: ReactMouseEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;

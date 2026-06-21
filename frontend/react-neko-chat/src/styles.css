@@ -388,6 +388,40 @@ svg {
   background: transparent;
 }
 
+/* Focus 凝神: 极隐"思考微光". A faint, slow-breathing inset glow on the chat
+   surface while the backend is in Focus (thinking-on). Deliberately subtle —
+   see docs/design/focus-truename-mode.md. Inset (not an outer box-shadow) so it
+   renders inside the surface in BOTH compact (overflow:visible) and full
+   (overflow:hidden) modes without being clipped. The .chat-window has no
+   box-shadow of its own in any mode, so nothing is stomped. Inert by default —
+   the backend only emits focus_state when FOCUS_MODE_ENABLED. */
+.app-shell[data-focus-active="true"] .chat-window {
+  animation: chat-surface-focus-breathe 4.2s ease-in-out infinite;
+}
+@keyframes chat-surface-focus-breathe {
+  0%, 100% { box-shadow: inset 0 0 0 0 rgba(150, 190, 255, 0); }
+  50% { box-shadow: inset 0 0 16px rgba(150, 190, 255, 0.28); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-focus-active="true"] .chat-window {
+    animation: none;
+    box-shadow: inset 0 0 12px rgba(150, 190, 255, 0.2);
+  }
+}
+/* SR-only — gives assistive tech the "in Focus" tell without any visual text
+   (the glow above is the visual cue). */
+.chat-surface-focus-indicator {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .window-topbar {
   display: flex;
   align-items: center;
@@ -1408,6 +1442,10 @@ svg {
 .composer-tool-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.compact-input-tool-fan .composer-tool-btn:disabled {
+  cursor: inherit;
 }
 
 .composer-tool-btn img {
@@ -3709,7 +3747,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-wheel-charge-first-angle: 0deg;
   --compact-tool-wheel-charge-second-angle: 0deg;
   --compact-tool-wheel-charge-third-angle: 0deg;
-  --compact-tool-wheel-selection-angle: 45deg;
+  --compact-tool-wheel-selection-angle: 29.59deg;
+  --compact-tool-wheel-selection-pointer-deflection-angle: 0deg;
+  --compact-tool-wheel-selection-pointer-deflection-shift: 0px;
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
@@ -3837,7 +3877,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   position: absolute;
   left: var(--compact-tool-wheel-center-x);
   top: var(--compact-tool-wheel-center-y);
-  width: 14px;
+  width: 18px;
   height: 12px;
   border-radius: 2px;
   background:
@@ -3852,9 +3892,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform:
     translate(-1px, -50%)
     rotate(var(--compact-tool-wheel-selection-angle))
-    translateX(48px);
+    translateX(43px)
+    translateY(var(--compact-tool-wheel-selection-pointer-deflection-shift))
+    rotate(var(--compact-tool-wheel-selection-pointer-deflection-angle));
   transform-origin: 1px 50%;
-  transition: opacity 0.16s ease;
+  transition:
+    opacity 0.16s ease,
+    transform 0.08s cubic-bezier(0.18, 0.86, 0.32, 1.24);
   z-index: 4;
 }
 
@@ -3899,42 +3943,51 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: background 0.15s ease, filter 0.15s ease;
 }
 
-.compact-input-tool-fan .compact-input-tool-item:hover::after {
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"]::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled))::after {
   background: var(--compact-tool-button-hover-fill);
 }
 
 .compact-input-tool-fan .compact-input-tool-tooltip {
   position: absolute;
-  left: 50%;
-  top: calc(100% + 7px);
+  left: calc(100% + 5px);
+  top: calc(100% - 6px);
   z-index: 4;
-  max-width: 96px;
-  padding: 3px 8px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
-  color: #243244;
-  font-size: 11px;
-  line-height: 1.25;
+  max-width: 104px;
+  padding: 2px 5px;
+  border: 1px solid #6b7280;
+  border-radius: 0;
+  background: #ffffff;
+  color: #111827;
+  font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, -2px) scale(0.96);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  box-shadow: 0 5px 14px rgba(20, 36, 64, 0.14);
+  user-select: none;
+  transform: translate(0, -1px);
+  transition: opacity 0.08s ease, transform 0.08s ease;
+  transform-origin: 0 0;
+  box-shadow: none;
 }
 
-.compact-input-tool-fan .compact-input-tool-item:hover,
-.compact-input-tool-fan .compact-input-tool-item:focus-within {
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,
+.compact-input-tool-fan button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"],
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)),
+.compact-input-tool-fan .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within {
   z-index: 12;
 }
 
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-within > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within > .compact-input-tool-tooltip {
   opacity: 1;
-  transform: translate(-50%, 0) scale(1);
+  transform: translate(0, 0);
 }
 
 .compact-input-tool-fan .compact-input-tool-item > img,
@@ -4035,6 +4088,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition:
     opacity 0.18s ease,
     background 0.15s ease;
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-drag-active="true"] .compact-input-tool-wheel-selection-pointer {
+  transition: opacity 0.16s ease;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]:active {
@@ -4929,7 +4986,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
   /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
-    --compact-tool-wheel-selection-angle: -140deg;
+    --compact-tool-wheel-selection-angle: -125deg;
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
@@ -5517,8 +5574,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
-[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:hover {
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-pointer-hovered="true"],
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:focus-within {
   background: transparent;
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {
+  border-color: #8b949e;
+  background: #202124;
+  color: #f3f4f6;
 }
 
 [data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {
@@ -5809,9 +5873,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     transition: none !important;
   }
 
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
-    transform: translate(-50%, 0) scale(1);
+    transform: translate(0, 0);
   }
 
   .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {

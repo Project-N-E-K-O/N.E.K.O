@@ -29,6 +29,7 @@
             this.allowTouchPassthrough = normalizedOptions.allowTouchPassthrough || null;
             this.allowWindowPassthrough = normalizedOptions.allowWindowPassthrough === true;
             this.isDestroyed = normalizedOptions.isDestroyed || null;
+            this.isResistancePaused = normalizedOptions.isResistancePaused || null;
             this.externalChatChannelProvider = normalizedOptions.externalChatChannelProvider || null;
             this.externalizedChatDetector = normalizedOptions.externalizedChatDetector || null;
             this.destroyed = false;
@@ -253,6 +254,7 @@
             if (broadcastChannel || nativeRelay) {
                 return {
                     postMessage(message) {
+                        let delivered = false;
                         const outgoingMessage = Object.assign({}, message || {});
                         const tutorialRunId = getTutorialRunId();
                         if (tutorialRunId && !outgoingMessage.tutorialRunId) {
@@ -261,13 +263,20 @@
                         if (broadcastChannel && typeof broadcastChannel.postMessage === 'function') {
                             try {
                                 broadcastChannel.postMessage(outgoingMessage);
-                            } catch (_) {}
+                                delivered = true;
+                            } catch (error) {
+                                console.warn('[TutorialInteractionTakeover] BroadcastChannel delivery failed:', error);
+                            }
                         }
                         if (nativeRelay) {
                             try {
                                 nativeRelay.relayToChat(outgoingMessage);
-                            } catch (_) {}
+                                delivered = true;
+                            } catch (error) {
+                                console.warn('[TutorialInteractionTakeover] native relay delivery failed:', error);
+                            }
                         }
+                        return delivered;
                     }
                 };
             }
@@ -276,6 +285,24 @@
                 return this.externalChatChannelProvider() || null;
             }
             return null;
+        }
+
+        resolveLanlanName() {
+            const appStateName = this.window && this.window.appState && this.window.appState.lanlan_name;
+            if (typeof appStateName === 'string' && appStateName) {
+                return appStateName;
+            }
+            const configName = this.window && this.window.lanlan_config && this.window.lanlan_config.lanlan_name;
+            return typeof configName === 'string' ? configName : '';
+        }
+
+        getExternalizedChatTutorialRunId() {
+            try {
+                const storage = this.window && this.window.localStorage;
+                return storage ? String(storage.getItem('yuiGuidePcOverlayRunId') || '') : '';
+            } catch (_) {
+                return '';
+            }
         }
 
         postExternalChatCommand(action, payload, options) {
@@ -295,6 +322,17 @@
             if (!Number.isFinite(message.timestamp)) {
                 message.timestamp = Date.now();
             }
+            if (!message.lanlan_name) {
+                const lanlanName = this.resolveLanlanName();
+                message.lanlan_name = lanlanName;
+            }
+            const tutorialRunId = this.getExternalizedChatTutorialRunId();
+            if (tutorialRunId && !message.tutorialRunId) {
+                message.tutorialRunId = tutorialRunId;
+            }
+            if (tutorialRunId && !message.pcOverlayRunId) {
+                message.pcOverlayRunId = tutorialRunId;
+            }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
                 return this.externalChatCommandBus.post(message, normalizedOptions);
@@ -306,8 +344,7 @@
             }
 
             try {
-                channel.postMessage(message);
-                return true;
+                return channel.postMessage(message) !== false;
             } catch (error) {
                 console.warn('[TutorialInteractionTakeover] 同步独立聊天窗命令失败:', normalizedAction, error);
                 return false;
@@ -328,9 +365,27 @@
         }
 
         setExternalizedChatSpotlight(kind) {
+            const previousKind = this.externalizedChatSpotlightKind;
             this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
-            this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+            const message = {
                 kind: this.externalizedChatSpotlightKind
+            };
+            if (
+                (this.externalizedChatSpotlightKind || previousKind)
+                && safeInvoke(this.isResistancePaused, [], false) === true
+            ) {
+                message.preserveDuringResistance = true;
+            }
+            this.postExternalChatCommand('yui_guide_set_chat_spotlight', message);
+        }
+
+        preserveExternalizedChatSpotlightDuringResistance() {
+            if (!this.externalizedChatSpotlightKind) {
+                return false;
+            }
+            return this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+                kind: this.externalizedChatSpotlightKind,
+                preserveDuringResistance: true
             });
         }
 
@@ -441,12 +496,12 @@
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
+            this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');
             this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatCompactHistoryOpen(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatCompactToolFanOpen(false, 'clear-externalized-chat-fx');
-            this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
         }
 
         onExternalChatReady() {
@@ -522,6 +577,9 @@
             this.setActive(false);
             this.clearExternalizedChatFx();
             this.setExternalizedChatButtonsDisabled(false);
+            if (this.externalChatCommandBus && typeof this.externalChatCommandBus.destroy === 'function') {
+                this.externalChatCommandBus.destroy();
+            }
             this.releaseFaceForwardLock();
             this.destroyed = true;
 

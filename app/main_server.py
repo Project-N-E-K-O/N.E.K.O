@@ -100,6 +100,7 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
+from utils.asyncio_executor import configure_default_executor # noqa: E402
 
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
@@ -1532,7 +1533,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/model_manager",
     "/live2d_parameter_editor",
     "/soccer_demo",
-    "/basketball_demo",
+    "/badminton_demo",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",
@@ -2312,6 +2313,7 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global _server_loop
         _server_loop = asyncio.get_running_loop()
+        configure_default_executor(_server_loop, logger=logger)
 
         init_shared_state(
             role_state=role_state,

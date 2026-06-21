@@ -1224,6 +1224,14 @@ flowchart LR
 
 记录每次计划调整 / 重大决策 / blocker 解决方案.
 
+- **2026-06-19** **上游同步 2026-06 · testbench 对齐主程序 `main` 至 7 月 + 记忆子系统语义合约覆盖 + 版本号 → v1.2.0**. testbench 上次更新停在 4 月底, 本轮直接 merge 上游 (零冲突) 对齐到 7 月, 吃下这中间主程序全部更新并补齐 testbench 覆盖. **永久变更说明文档 = [`UPSTREAM_SYNC_2026-06.md`](./UPSTREAM_SYNC_2026-06.md)** (背景 / 上游变更清单 / 设计层风险 D1-D8 / Phase 0-5 / Phase 3.0 设计关卡 / 验收, 全在那份)。本条只做索引。
+  - **Phase 0-2 (合并 + 修旧)**: 零冲突 merge; 跟随上游 `config.prompts.*` 迁移修引用; sandbox 补 patch `card_faces_dir`/`pngtuber_dir`/`anchor_root`; avatar_dedupe 常量被上游 alias 化 → drift smoke 改比对解析值; external_events 语言归一下沉到主程序 `_normalize_prompt_language` (原生 es/pt)。
+  - **Phase 3.0 设计关卡**: 用 `semantic-contract-vs-runtime-mechanism` 把新记忆子系统逐模块分类 — **纯函数 (语义合约) 才进 testbench, 运行时机制 (embedding/LLM/disk/lock/sqlite/aiohttp/TTS-WS) 一律 OOS**。纠正误解: `powerful_memory_enabled` 与 `hybrid_recall` 无关。
+  - **Phase 3 (M 主体 + O 机会项全交付)**: 新增 **5 个 adapter** (`pipeline/{evidence_sim,recall_fusion,refine_sim,anti_repeat_sim,topic_sim}.py`) + **5 份 smoke** (`p27`–`p31`, 共 **33 项合约断言**)。做法统一 = 薄 adapter 直接 import 上游纯函数 (反模式 C 想要的耦合, 上游改公式 smoke 应 break), 静态方法直取不构造抓单例的类。
+  - **Phase 4 (本条)**: bump `config.py::TESTBENCH_VERSION` **1.1.0 → 1.2.0** + `TESTBENCH_PHASE="上游同步 · 记忆子系统覆盖"` + `TESTBENCH_LAST_UPDATED="2026-06-19"`; `CHANGELOG.md` 加 `## v1.2.0`; 同步 PLAN / AGENT_NOTES / 本文件 / ARCHITECTURE_OVERVIEW。文档遵循 `docs-code-reality-grep-before-draft` (先 grep 实码: 版本 D10 不变式 / TESTBENCH_PHASE 现值 / 各 smoke 数, 再落笔)。
+  - **踩坑**: p30 anti_repeat C4 初版 `bg=fg` 测 TF 累积同时改了 BG 的 DF → rare 词高 IDF 反盖过 TF, 断言反向失败; 修法 = 固定 BG (锁 DF/IDF) 只变 FG (TF)。Lanlan 免费预设 (`www.lanlan.tech`/`lanlan.app`/`www.lanlan.app`) 实测全被服务端反滥用拦截, 仅主程序可用 → UI/注释/手册标注。
+  - **验收**: 全量 `_run_all.py` **24/24 绿** (套件 19→24); `p26_docs_endpoint_smoke` D1-D14 全绿 (版本↔CHANGELOG 对齐守住); ReadLints 6 新文件零错; 无需 API key。**下个接手点** = Phase 5 收尾 (启真服务 + 独立消费者按 USER_MANUAL 走查 + sign-off; 之后再决定是否 push, 默认不推)。
+
 - **2026-04-23** **P25 Day 2 polish r7 — wire 显示域语义分区 (Chat 对话独占 + Memory/Judge 独立 [预览 prompt] + SimUser NOSTAMP)**. 用户手测 Day 3 通过后反馈: "对话区 wire 应专注对话 AI / 评分、记忆总结 wire 应在各自页面按钮旁 / 假想用户不需要 wire". 根因 = Day 3 追求 "全面 stamp 覆盖" 让 Chat 页 Preview Panel 可能显示非对话 AI 的 wire (记忆 / 评分 / 假想用户), 语义漂移. **改法**: stamp 机制保留, 但**按域分区**. **修改文件 11 + 新建 2 + smoke 1**:
 
   **(1) Chat 页白名单过滤** — `static/ui/chat/preview_panel.js` 加 `CHAT_VISIBLE_SOURCES = {chat.send, auto_dialog_target, avatar_event, agent_callback, proactive_chat}`. 非白名单 source (如 `memory.llm` / `judge.llm`) 的 stamp 不渲染, `renderWireSection` 回退到预估 wire + 新增顶部 hint `🔎 最近一次 LLM 调用来自 [记忆总结 LLM] (非对话 AI). 此面板只显示对话 AI 收到的 prompt. 如需查看该域的 prompt, 请到相关页面 (记忆系统各子页 / 评分 Run 页) 使用 [预览 prompt] 按钮.`. `i18n.js::chat.preview.wire_section.non_chat_source_hint` 新增 (注意是 arrow function `(srcLabel) => \`...\``, 不是 `${0}` 字面量 — 项目 i18n 约定函数叶子).

@@ -24,23 +24,12 @@ import os
 import struct  # For packing audio data
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
-
-
-# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
-# "caller didn't pass it (use shared field as fallback)" from "caller
-# explicitly passed None to mean 'no request id'". A normal default of
-# None collapses both into the same code path and would let recovery /
-# proactive paths accidentally bind their messages to a newer request_id.
-_REQUEST_ID_UNSET: Any = object()
-_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
-_VOICE_PROACTIVE_ACK_GRACE_S = 0.05
-_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
-_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+from typing import Any, Awaitable, Callable, Mapping, Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -63,8 +52,8 @@ from main_logic.tool_calling import (
     ToolRegistry,
     ToolResult,
 )
-from utils.llm_client import AIMessage
-from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
+from utils.llm_client import AIMessage, HumanMessage
+from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase, CognitionMode, TurnOwner
 from main_logic.lifecycle_bus import LifecycleEventBus
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
@@ -86,6 +75,10 @@ from config import (
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
 )
+# FOCUS_MODE_ENABLED is read live with a function-local ``from config import
+# FOCUS_MODE_ENABLED`` at each gate (re-imported per call → picks up a runtime
+# toggle / test monkeypatch), consistent with how the SM/scorer read the other
+# knobs at call time. Single import style keeps the module clean.
 from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
@@ -112,6 +105,36 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_FILLER,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
+
+# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
+# "caller didn't pass it (use shared field as fallback)" from "caller
+# explicitly passed None to mean 'no request id'". A normal default of
+# None collapses both into the same code path and would let recovery /
+# proactive paths accidentally bind their messages to a newer request_id.
+_REQUEST_ID_UNSET: Any = object()
+_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
+_VOICE_PROACTIVE_ACK_GRACE_S = 0.05
+_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
+_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+_CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
+_CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
+_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
+_CONTEXT_APPEND_DEFAULT_MAX_TOKENS = 1000
+_CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
+    "game.icebreaker": 500,
+    "game.scripted": 1000,
+    "game.realtime_context": 1000,
+    "game.postgame": 1500,
+    "proactive.context": 1000,
+    "proactive.callback": 1000,
+    "topic.hook": 1000,
+    "topic.material": 1000,
+    "realtime.prime": 1000,
+}
+_CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
+    "game.realtime_context",
+    "game.postgame",
+})
 
 # recall 占位语音用的合成 worker-sid 后缀。仅用于在 TTS worker 层把 filler 切成
 # 一段独立 utterance（见 _emit_recall_filler_tts）；``send_speech`` 在发往前端前会
@@ -374,7 +397,11 @@ def _build_callback_instruction(
             # tells the AI that something happened. Strip trailing newline so
             # the joined output is clean.
             parts.append(header.rstrip())
-    return "\n\n".join(parts)
+    rendered = "\n\n".join(parts)
+    # Total input budget: many callbacks accumulating must not blow up the turn.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
 
 
 def _format_voice_swap_item(
@@ -513,7 +540,53 @@ def _render_pending_extra_replies_by_origin(
                 + "\n".join(items)
                 + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
             )
-    return "".join(blocks)
+    rendered = "".join(blocks)
+    # Total input budget for the voice hot-swap injection (mirror of the
+    # text-mode cap in _build_callback_instruction). Backstop only — callers
+    # should pre-select within budget via _select_callbacks_within_token_budget
+    # so whole callbacks are never silently dropped after a successful ack.
+    from utils.tokenize import truncate_to_tokens
+    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
+
+
+def _select_callbacks_within_token_budget(callbacks, total_budget):
+    """Greedily take the oldest prefix of ``callbacks`` whose cumulative
+    summary/detail token count stays within ``total_budget``.
+
+    Returns ``(selected, deferred)``. Always selects at least one item so the
+    queue makes forward progress (each item is already per-item capped at
+    enqueue). The point: a caller that acks + clears must ack/clear only the
+    *selected* items and re-queue ``deferred`` for the next turn — otherwise
+    callbacks beyond the cap would be acked as delivered but never reach the
+    model (see PR review)."""
+    from utils.tokenize import count_tokens
+    # Per-item overhead for the emoji/bullet, the per-group outer header, and the
+    # template wrapper that the renderer adds around the body. Over-counting is
+    # the SAFE direction: we select fewer, so the rendered instruction stays
+    # under budget and the builder's backstop truncation never cuts an already
+    # selected (and acked) callback.
+    _ITEM_OVERHEAD_TOKENS = 48
+    selected: list = []
+    used = 0
+    for i, cb in enumerate(callbacks):
+        if isinstance(cb, dict):
+            # Count every field the renderer may emit — body line (summary or
+            # detail) plus the error/source fallback line — not just summary.
+            t = (
+                count_tokens(cb.get("summary") or "")
+                + count_tokens(cb.get("detail") or "")
+                + count_tokens(cb.get("error_message") or "")
+                + count_tokens(cb.get("source_name") or "")
+                + _ITEM_OVERHEAD_TOKENS
+            )
+        else:
+            t = count_tokens(str(cb)) + _ITEM_OVERHEAD_TOKENS
+        if selected and used + t > total_budget:
+            return selected, list(callbacks[i:])
+        selected.append(cb)
+        used += t
+    return selected, []
 
 
 from config.prompts.prompts_avatar_interaction import (
@@ -711,6 +784,14 @@ def enqueue_voice_migration_notice(legacy_names: list) -> None:
 _START_LLM_CONCURRENT_ABORTED = object()
 
 
+@dataclass(frozen=True)
+class ContextAppendResult:
+    appended: bool
+    deduped: bool = False
+    targets: tuple[str, ...] = ()
+    reason: str | None = None
+
+
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
@@ -794,9 +875,11 @@ class LLMSessionManager:
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
         self.message_cache_for_new_session = []
+        self.next_session_context_messages: list[dict] = []
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self.initial_next_session_context_snapshot_len = 0
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
         self.session_start_time = None
@@ -927,6 +1010,11 @@ class LLMSessionManager:
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
+        self.pending_context_appends: list[dict] = []
+        self._context_append_sequence = 0
+        self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()
+        self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
+        self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -954,13 +1042,29 @@ class LLMSessionManager:
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
         # 详见 docs/design/user-activity-tracker.md。
-        from main_logic.activity import UserActivityTracker
+        from main_logic.activity import FocusScorer, MasterEmotionTracker, UserActivityTracker
         from main_logic.conversation_turns import create_default_turn_dispatcher
         self._activity_tracker = UserActivityTracker(lanlan_name)
         self._turn_dispatcher = create_default_turn_dispatcher(
             lanlan_name,
             self._activity_tracker,
         )
+
+        # Focus mode 凝神 scorer（docs/design/focus-truename-mode.md）：把
+        # ActivitySnapshot + 用户消息文本评成一个 [0,1] 分，喂给 self.state
+        # 的迟滞状态机决定这一轮是否「升档」开思考。per-session 实例，仅持有
+        # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
+        # proactive）共用同一个 scorer，保证行为不分裂。
+        self._focus_scorer = FocusScorer(lanlan_name)
+
+        # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
+        # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
+        # 的 emotion 信号读它的最近读数）。绝不复用 lanlan 头像 outward-emotion 管线。
+        # privacy-independent（输入是对话不是屏幕），不受隐私门控。
+        self._master_emotion = MasterEmotionTracker(lanlan_name)
+        # 凝神 inline 评分用的 emotion 读数快照：每个 user turn 在 _note_user_turn 里
+        # 于「本轮 analyze 启动前」刷新，保证 emotion 信号确定性滞后一拍。
+        self._focus_emotion_reading = None
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
         # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
@@ -1004,7 +1108,22 @@ class LLMSessionManager:
         # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
         # finish_proactive_delivery / system_router.proactive_chat 等处。
         self.state = SessionStateMachine(lanlan_name=lanlan_name)
-        
+        # Focus 凝神: mirror enter/exit to the frontend as a subtle cognition
+        # indicator (极隐微光 badge — see react-neko-chat). Inert by default: the
+        # SM only enters Focus when FOCUS_MODE_ENABLED. The badge needs only
+        # on/off; memory consumes FOCUS_EXIT's episode payload on a separate
+        # (not-yet-wired) path.
+        #   Two layers keep the badge honest: (1) FOCUS_ENTER/EXIT subscriptions
+        # give immediate updates on the normal hysteresis path; (2) a per-turn
+        # reconcile (_reconcile_focus_indicator) catches Focus states dropped
+        # WITHOUT an event — clear_focus (history wipe) and the master-switch /
+        # privacy self-clear in update_focus — so the badge can't get stuck on.
+        # _push_focus_indicator is idempotent on this cached state so the two
+        # layers never double-fire.
+        self._focus_indicator_active = False
+        self.state.subscribe(SessionEvent.FOCUS_ENTER, self._on_focus_transition)
+        self.state.subscribe(SessionEvent.FOCUS_EXIT, self._on_focus_transition)
+
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
         self._conversation_turn_language = None
@@ -1056,6 +1175,615 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def _context_append_request_key(self, payload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            return None
+        source = str(payload.get("source") or "").strip()
+        lifetime = str(payload.get("lifetime") or "current_session").strip().lower()
+        if lifetime == "current_session":
+            if payload.get("_dedup_pending_ready"):
+                return (source, request_id, lifetime, "pending_ready")
+            session_id = payload.get("_dedup_session_id")
+            if session_id is None:
+                session_id = id(getattr(self, "session", None))
+            return (source, request_id, lifetime, session_id)
+        return (source, request_id, lifetime)
+
+    def _context_append_durable_cache_key(self, payload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+        request_id = str(payload.get("request_id") or "").strip()
+        lifetime = str(payload.get("lifetime") or "").strip().lower()
+        if not request_id or lifetime not in {"next_session", "session_family"}:
+            return None
+        source = str(payload.get("source") or "").strip()
+        return (source, request_id, lifetime)
+
+    def _context_append_durable_cache_seen(self, payload: Mapping[str, Any]) -> bool:
+        key = self._context_append_durable_cache_key(payload)
+        if key is None:
+            return False
+        seen = getattr(self, "_context_append_durable_cache_keys", None)
+        if not isinstance(seen, OrderedDict):
+            return False
+        now = time.time()
+        cutoff = now - _CONTEXT_APPEND_DEDUP_TTL_SECONDS
+        while seen:
+            oldest_key = next(iter(seen))
+            if seen[oldest_key] >= cutoff:
+                break
+            seen.pop(oldest_key, None)
+            entries = getattr(self, "_context_append_durable_cache_entries", None)
+            if isinstance(entries, dict):
+                entries.pop(oldest_key, None)
+        return key in seen
+
+    def _context_append_durable_cache_contains(self, payload: Mapping[str, Any]) -> bool:
+        key = self._context_append_durable_cache_key(payload)
+        if key is None:
+            return False
+        entries = getattr(self, "_context_append_durable_cache_entries", None)
+        expected_entry = None
+        if isinstance(entries, dict):
+            expected_entry = entries.get(key)
+        if expected_entry is None:
+            expected_entry = self._context_payload_cache_key(payload)
+        cache = getattr(self, "next_session_context_messages", None)
+        if not isinstance(cache, list):
+            return False
+        return expected_entry in {
+            (str(entry.get("role") or ""), str(entry.get("text") or ""))
+            for entry in cache
+            if isinstance(entry, Mapping)
+        }
+
+    def _remember_context_append_durable_cache(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_durable_cache_key(payload)
+        if key is None:
+            return
+        seen = getattr(self, "_context_append_durable_cache_keys", None)
+        if not isinstance(seen, OrderedDict):
+            seen = OrderedDict()
+            self._context_append_durable_cache_keys = seen
+        entries = getattr(self, "_context_append_durable_cache_entries", None)
+        if not isinstance(entries, dict):
+            entries = {}
+            self._context_append_durable_cache_entries = entries
+        entries[key] = self._context_payload_cache_key(payload)
+        seen[key] = time.time()
+        seen.move_to_end(key)
+        while len(seen) > _CONTEXT_APPEND_DEDUP_MAX_ENTRIES:
+            stale_key, _ = seen.popitem(last=False)
+            entries.pop(stale_key, None)
+
+    def _forget_context_append_durable_cache(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_durable_cache_key(payload)
+        if key is None:
+            return
+        seen = getattr(self, "_context_append_durable_cache_keys", None)
+        if isinstance(seen, OrderedDict):
+            seen.pop(key, None)
+        entries = getattr(self, "_context_append_durable_cache_entries", None)
+        if isinstance(entries, dict):
+            entries.pop(key, None)
+
+    def _promote_context_append_request_id_to_current_session(self, payload: dict) -> None:
+        if (
+            str(payload.get("lifetime") or "").strip().lower() != "current_session"
+            or not payload.get("_dedup_pending_ready")
+            or not payload.get("request_id")
+        ):
+            return
+        seen = getattr(self, "_context_append_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            return
+        old_key = self._context_append_request_key(payload)
+        if old_key is None:
+            return
+        timestamp = seen.pop(old_key, None)
+        payload.pop("_dedup_pending_ready", None)
+        payload["_dedup_session_id"] = id(getattr(self, "session", None))
+        new_key = self._context_append_request_key(payload)
+        if timestamp is not None and new_key is not None:
+            seen[new_key] = timestamp
+            self._context_append_request_ids = OrderedDict(
+                sorted(seen.items(), key=lambda item: item[1])
+            )
+
+    def _remember_context_append_request_id(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_request_key(payload)
+        if key is None:
+            return
+        seen = getattr(self, "_context_append_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            seen = OrderedDict()
+            self._context_append_request_ids = seen
+        now = time.time()
+        cutoff = now - _CONTEXT_APPEND_DEDUP_TTL_SECONDS
+        while seen:
+            oldest_key = next(iter(seen))
+            if seen[oldest_key] >= cutoff:
+                break
+            seen.pop(oldest_key, None)
+        seen[key] = now
+        seen.move_to_end(key)
+        while len(seen) > _CONTEXT_APPEND_DEDUP_MAX_ENTRIES:
+            seen.popitem(last=False)
+
+    def _forget_context_append_request_id(self, payload: Mapping[str, Any]) -> None:
+        key = self._context_append_request_key(payload)
+        if key is None:
+            return
+        seen = getattr(self, "_context_append_request_ids", None)
+        if isinstance(seen, OrderedDict):
+            seen.pop(key, None)
+
+    def _context_append_request_seen(self, payload: Mapping[str, Any]) -> bool:
+        key = self._context_append_request_key(payload)
+        if key is None:
+            return False
+        seen = getattr(self, "_context_append_request_ids", None)
+        if not isinstance(seen, OrderedDict):
+            return False
+        now = time.time()
+        cutoff = now - _CONTEXT_APPEND_DEDUP_TTL_SECONDS
+        while seen:
+            oldest_key = next(iter(seen))
+            if seen[oldest_key] >= cutoff:
+                break
+            seen.pop(oldest_key, None)
+        return key in seen
+
+    def _normalize_context_append(
+        self,
+        *,
+        source: str,
+        role: str,
+        text: str,
+        audience: str,
+        timing: str,
+        lifetime: str,
+        request_id: str | None,
+        ordering_key: str | None,
+        metadata: Mapping[str, Any] | None,
+    ) -> dict | None:
+        normalized_source = str(source or "").strip()
+        normalized_role = str(role or "").strip().lower()
+        normalized_audience = str(audience or "").strip().lower()
+        normalized_timing = str(timing or "").strip().lower()
+        normalized_lifetime = str(lifetime or "").strip().lower()
+        if (
+            not normalized_source
+            or normalized_role not in {"assistant", "user", "system"}
+            or normalized_audience not in {"model", "user_and_model"}
+            or normalized_timing not in {"now", "when_ready"}
+            or normalized_lifetime not in {"current_session", "next_session", "session_family"}
+        ):
+            return None
+        content = self._normalize_context_text_for_source(normalized_source, text)
+        if not content:
+            return None
+        safe_metadata = dict(metadata or {}) if isinstance(metadata, Mapping) else {}
+        return {
+            "source": normalized_source,
+            "role": normalized_role,
+            "text": content,
+            "audience": normalized_audience,
+            "timing": normalized_timing,
+            "lifetime": normalized_lifetime,
+            "request_id": str(request_id or "").strip(),
+            "ordering_key": str(ordering_key or "").strip(),
+            "metadata": safe_metadata,
+        }
+
+    def _normalize_context_text_for_source(self, source: str, text: Any) -> str:
+        content = str(text or "").strip()
+        if not content:
+            return ""
+        max_tokens = _CONTEXT_APPEND_SOURCE_MAX_TOKENS.get(
+            str(source or "").strip(),
+            _CONTEXT_APPEND_DEFAULT_MAX_TOKENS,
+        )
+        try:
+            from utils.tokenize import truncate_to_tokens
+            return truncate_to_tokens(content[: max(max_tokens * 8, max_tokens)], max_tokens).strip()
+        except Exception:
+            return content[: max(max_tokens * 8, max_tokens)].strip()
+
+    def _append_context_to_new_session_cache(self, role: str, text: str) -> bool:
+        cache = getattr(self, "next_session_context_messages", None)
+        if not isinstance(cache, list):
+            cache = []
+            self.next_session_context_messages = cache
+        if role == "user":
+            speaker = getattr(self, "master_name", "user")
+        elif role == "assistant":
+            speaker = getattr(self, "lanlan_name", "assistant")
+        else:
+            speaker = "system"
+        cache.append({"role": speaker, "text": text})
+        return True
+
+    def _context_payload_cache_key(self, payload: Mapping[str, Any]) -> tuple[str, str]:
+        role = str(payload.get("role") or "").strip().lower()
+        if role == "user":
+            speaker = getattr(self, "master_name", "user")
+        elif role == "assistant":
+            speaker = getattr(self, "lanlan_name", "assistant")
+        else:
+            speaker = "system"
+        return (speaker, str(payload.get("text") or ""))
+
+    def _mark_pending_context_appends_delivered_in_start_prompt(
+        self,
+        snapshot: list[dict],
+        *,
+        owner: object | None = None,
+    ) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if not isinstance(pending, list) or not pending or not snapshot:
+            return
+        available: dict[tuple[str, str], int] = {}
+        for entry in snapshot:
+            if not isinstance(entry, Mapping):
+                continue
+            key = (str(entry.get("role") or ""), str(entry.get("text") or ""))
+            available[key] = available.get(key, 0) + 1
+        for payload in pending:
+            if (
+                not isinstance(payload, dict)
+                or not payload.get("_durable_cached")
+                or payload.get("_delivered_in_start_prompt")
+            ):
+                continue
+            key = self._context_payload_cache_key(payload)
+            count = available.get(key, 0)
+            if count <= 0:
+                continue
+            payload["_delivered_in_start_prompt"] = True
+            payload["_delivered_in_start_prompt_owner"] = owner
+            available[key] = count - 1
+
+    def _clear_pending_context_start_prompt_marks(self, *, owner: object | None = None) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if not isinstance(pending, list):
+            return
+        for payload in pending:
+            if isinstance(payload, dict):
+                if owner is not None and payload.get("_delivered_in_start_prompt_owner") is not owner:
+                    continue
+                payload.pop("_delivered_in_start_prompt", None)
+                payload.pop("_delivered_in_start_prompt_owner", None)
+
+    def _snapshot_next_session_context_messages(self) -> list[dict]:
+        cache = getattr(self, "next_session_context_messages", None)
+        if not isinstance(cache, list) or not cache:
+            return []
+        return list(cache)
+
+    def _consume_next_session_context_messages(self, count: int) -> None:
+        if count <= 0:
+            return
+        cache = getattr(self, "next_session_context_messages", None)
+        if isinstance(cache, list):
+            del cache[:count]
+
+    async def _prime_late_next_session_context_after_swap(
+        self,
+        start_index: int,
+        end_index: int | None = None,
+    ) -> int:
+        consumed_count = max(0, start_index)
+        session = getattr(self, "session", None)
+        prime_context = getattr(session, "prime_context", None)
+        if not callable(prime_context):
+            return consumed_count
+
+        snapshot = self._snapshot_next_session_context_messages()
+        stop_index = len(snapshot) if end_index is None else max(consumed_count, min(end_index, len(snapshot)))
+        late_context = snapshot[consumed_count:stop_index]
+        if not late_context:
+            return consumed_count
+        try:
+            await prime_context(self._convert_cache_to_str(late_context), skipped=True)
+        except Exception as exc:
+            logger.warning(
+                "[%s] final-swap late next-session context prime failed: %s",
+                self.lanlan_name,
+                exc,
+            )
+            return consumed_count
+        consumed_count += len(late_context)
+
+        return consumed_count
+
+    async def _append_context_to_targets(self, payload: dict) -> ContextAppendResult:
+        role = payload["role"]
+        content = payload["text"]
+        audience = payload["audience"]
+        lifetime = payload["lifetime"]
+        targets: list[str] = []
+        if payload.get("_delivered_in_start_prompt") and lifetime in {"next_session", "session_family"}:
+            return ContextAppendResult(appended=True, targets=("start_prompt",))
+        if lifetime in {"next_session", "session_family"}:
+            durable_cache_remembered = (
+                payload.get("_durable_cached")
+                or self._context_append_durable_cache_seen(payload)
+            )
+            # 去重记账本（_context_append_durable_cache_*）与真缓存
+            # （next_session_context_messages）是两套独立结构：前者记“这条已写过”，
+            # 后者存实际内容，而后者会被 session-swap 的 _consume_next_session_context_messages
+            # 异步消费/清空。下面用 remembered（记账本）与 present（真缓存）双重核对决定是否
+            # 重写，本身能兜住失步、不丢上下文；但两者一旦失步是静默的，故在此显式自检并告警，
+            # 把“隐蔽失步”变成日志里可观测的信号（见 _consume_next_session_context_messages
+            # 不同步清记账本的设计债）。
+            durable_cache_present = self._context_append_durable_cache_contains(payload)
+            if durable_cache_remembered and not durable_cache_present:
+                # 记账本说写过、内容却没了：通常是 swap 消费了缓存而记账本（TTL 内）未清。
+                # 当前靠下方 present 核对兜底重写、不会丢；但若后续有人移除该核对、只信记账本，
+                # 这条上下文就会被误判“已写过”而静默丢失。出现此日志即代表两者已失步。
+                logger.warning(
+                    "[%s] durable context cache desync: dedup record present but content "
+                    "missing from next-session cache; re-appending (source=%s request_id=%s)",
+                    self.lanlan_name,
+                    payload.get("source"),
+                    payload.get("request_id"),
+                )
+            elif durable_cache_present and not durable_cache_remembered:
+                # 内容在、记账本却没记：这条会被当作首次写而重复入库，下个 session 可能看到两遍。
+                logger.warning(
+                    "[%s] durable context cache desync: content present but dedup record "
+                    "missing; may duplicate in next session (source=%s request_id=%s)",
+                    self.lanlan_name,
+                    payload.get("source"),
+                    payload.get("request_id"),
+                )
+            if durable_cache_remembered and durable_cache_present:
+                targets.append("new_session_cache")
+            elif self._append_context_to_new_session_cache(role, content):
+                payload["_durable_cached"] = True
+                self._remember_context_append_durable_cache(payload)
+                targets.append("new_session_cache")
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        wrote_active_history = False
+        current_session_required = lifetime in {"current_session", "session_family"}
+        current_session_delivered = False
+        current_session_failed_reason: str | None = None
+        if lifetime in {"current_session", "session_family"} and isinstance(history, list):
+            if role == "assistant":
+                message = AIMessage(content=content)
+            elif role == "user":
+                message = HumanMessage(content=content)
+            else:
+                message = HumanMessage(content=f"system: {content}")
+            history.append(message)
+            targets.append("active_history")
+            wrote_active_history = True
+            current_session_delivered = True
+
+        if lifetime in {"current_session", "session_family"} and not wrote_active_history:
+            prime_context = getattr(session, "prime_context", None)
+            if callable(prime_context):
+                try:
+                    source = str(payload.get("source") or "")
+                    prime_text = content if source in _CONTEXT_APPEND_BARE_PRIME_SOURCES else f"{role}: {content}"
+                    await prime_context(prime_text, skipped=(audience == "model"))
+                    targets.append("realtime_prime")
+                    current_session_delivered = True
+                except Exception as exc:
+                    current_session_failed_reason = "realtime_prime_failed"
+                    logger.warning("[%s] context append realtime_prime failed: %s", self.lanlan_name, exc)
+            else:
+                current_session_failed_reason = "no_current_session_target"
+
+        current_session_delivery_required = (
+            current_session_required
+            and (
+                not bool(getattr(self, "is_preparing_new_session", False))
+                or bool(getattr(self, "_require_context_append_current_delivery", False))
+            )
+        )
+        if current_session_delivery_required and not current_session_delivered:
+            return ContextAppendResult(
+                appended=False,
+                targets=tuple(targets),
+                reason=current_session_failed_reason or "current_session_target_unavailable",
+            )
+
+        if not targets:
+            return ContextAppendResult(appended=False, reason="no_context_target")
+        return ContextAppendResult(appended=True, targets=tuple(targets))
+
+    async def append_context(
+        self,
+        *,
+        source: str,
+        role: str,
+        text: str,
+        audience: str = "model",
+        timing: str = "now",
+        lifetime: str = "current_session",
+        request_id: str | None = None,
+        ordering_key: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ContextAppendResult:
+        payload = self._normalize_context_append(
+            source=source,
+            role=role,
+            text=text,
+            audience=audience,
+            timing=timing,
+            lifetime=lifetime,
+            request_id=request_id,
+            ordering_key=ordering_key,
+            metadata=metadata,
+        )
+        if payload is None:
+            return ContextAppendResult(appended=False, reason="invalid_context")
+        pending_needed = (
+            payload["timing"] == "when_ready"
+            and (
+                not bool(getattr(self, "session_ready", False))
+                or getattr(self, "session", None) is None
+            )
+        )
+        if pending_needed and payload["lifetime"] == "current_session":
+            payload["_dedup_pending_ready"] = True
+        request_key = self._context_append_request_key(payload)
+        if self._context_append_request_seen(payload):
+            inflight = getattr(self, "_context_append_inflight_results", None)
+            if isinstance(inflight, dict) and request_key in inflight:
+                original_result = await asyncio.shield(inflight[request_key])
+                if original_result.appended:
+                    return ContextAppendResult(
+                        appended=False,
+                        deduped=True,
+                        targets=original_result.targets,
+                        reason="duplicate_request_id",
+                    )
+                return original_result
+            return ContextAppendResult(appended=False, deduped=True, reason="duplicate_request_id")
+        reserved_request_id = bool(payload["request_id"])
+        inflight_result: asyncio.Future[ContextAppendResult] | None = None
+        if reserved_request_id:
+            self._remember_context_append_request_id(payload)
+            if request_key is not None:
+                inflight = getattr(self, "_context_append_inflight_results", None)
+                if not isinstance(inflight, dict):
+                    inflight = {}
+                    self._context_append_inflight_results = inflight
+                inflight_result = asyncio.get_running_loop().create_future()
+                inflight[request_key] = inflight_result
+
+        if pending_needed:
+            if payload["lifetime"] in {"next_session", "session_family"}:
+                payload["_durable_cached"] = self._append_context_to_new_session_cache(
+                    payload["role"],
+                    payload["text"],
+                )
+                if payload["_durable_cached"]:
+                    self._remember_context_append_durable_cache(payload)
+            pending = getattr(self, "pending_context_appends", None)
+            if not isinstance(pending, list):
+                pending = []
+                self.pending_context_appends = pending
+            sequence = int(getattr(self, "_context_append_sequence", 0))
+            self._context_append_sequence = sequence + 1
+            payload["_sequence"] = sequence
+            payload["_pending_ready"] = True
+            pending.append(payload)
+            result = ContextAppendResult(appended=True, targets=("pending_ready",))
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(result)
+            if request_key is not None:
+                inflight = getattr(self, "_context_append_inflight_results", None)
+                if isinstance(inflight, dict):
+                    inflight.pop(request_key, None)
+            return result
+
+        try:
+            result = await self._append_context_to_targets(payload)
+        except asyncio.CancelledError:
+            if reserved_request_id:
+                self._forget_context_append_request_id(payload)
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(ContextAppendResult(
+                    appended=False,
+                    reason="context_inject_cancelled",
+                ))
+            raise
+        except Exception:
+            if reserved_request_id:
+                self._forget_context_append_request_id(payload)
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(ContextAppendResult(
+                    appended=False,
+                    reason="context_inject_failed",
+                ))
+            raise
+        else:
+            if not result.appended and reserved_request_id:
+                self._forget_context_append_request_id(payload)
+            if inflight_result is not None and not inflight_result.done():
+                inflight_result.set_result(result)
+        finally:
+            if request_key is not None:
+                inflight = getattr(self, "_context_append_inflight_results", None)
+                if isinstance(inflight, dict):
+                    inflight.pop(request_key, None)
+        return result
+
+    async def _flush_pending_context_appends(self) -> int:
+        pending = getattr(self, "pending_context_appends", None)
+        if not isinstance(pending, list) or not pending:
+            return 0
+        self.pending_context_appends = []
+        pending.sort(key=lambda payload: (
+            payload.get("ordering_key") or f"~{int(payload.get('_sequence', 0)):020d}",
+            int(payload.get("_sequence", 0)),
+        ))
+        retry: list[dict] = []
+        flushed = 0
+        for index, payload in enumerate(pending):
+            try:
+                result = await self._append_context_to_targets(payload)
+                if not result.appended:
+                    retry.append(payload)
+                else:
+                    self._promote_context_append_request_id_to_current_session(payload)
+                    flushed += 1
+            except asyncio.CancelledError:
+                retry.append(payload)
+                retry.extend(pending[index + 1:])
+                if retry:
+                    self.pending_context_appends = retry + self.pending_context_appends
+                raise
+            except Exception as exc:
+                retry.append(payload)
+                logger.warning("[%s] context append flush failed: %s", self.lanlan_name, exc)
+        if retry:
+            self.pending_context_appends = retry + self.pending_context_appends
+        return flushed
+
+    async def _drain_pending_context_appends_before_ready(self) -> None:
+        for _ in range(_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES):
+            pending = getattr(self, "pending_context_appends", None)
+            if not isinstance(pending, list) or not pending:
+                return
+            before_ids = {id(payload) for payload in pending}
+            flushed = await self._flush_pending_context_appends()
+            pending = getattr(self, "pending_context_appends", None)
+            if not isinstance(pending, list) or not pending:
+                return
+            after_ids = {id(payload) for payload in pending}
+            if flushed <= 0 and after_ids <= before_ids:
+                return
+        pending = getattr(self, "pending_context_appends", None)
+        if isinstance(pending, list) and pending:
+            logger.warning(
+                "[%s] context append ready drain left %d pending item(s)",
+                self.lanlan_name,
+                len(pending),
+            )
+
+    def _clear_pending_context_appends(self, *, release_durable_cached: bool = False) -> None:
+        pending = getattr(self, "pending_context_appends", None)
+        if isinstance(pending, list):
+            stale_payloads = list(pending)
+            pending.clear()
+        else:
+            stale_payloads = []
+            self.pending_context_appends = []
+        for payload in stale_payloads:
+            if (
+                isinstance(payload, dict)
+                and payload.get("request_id")
+                and (release_durable_cached or not payload.get("_durable_cached"))
+            ):
+                self._forget_context_append_request_id(payload)
+                if release_durable_cached:
+                    self._forget_context_append_durable_cache(payload)
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
@@ -1589,6 +2317,271 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
 
+    async def _focus_inline_decision(self, user_text: str) -> bool:
+        """Path A (inline) Focus gate: score the just-arrived user message and
+        return whether THIS reply should run thinking-on.
+
+        Scores via the shared ``FocusScorer`` (keyword + cadence + open-thread
+        signals), advances ``self.state``'s hysteresis (``update_focus``), and
+        returns ``mode is FOCUS``. An explicit topic switch forces an immediate
+        exit. Best-effort: any failure degrades to regular (thinking-off) and
+        never blocks the user reply. Returns False fast when the master switch
+        is off (skips the snapshot cost).
+        """
+        # Reconcile the badge first — catches a Focus state cleared since the
+        # last turn without a FOCUS_EXIT event (clear_focus / master-switch
+        # self-clear), even on the early-return path when the switch is now off.
+        await self._reconcile_focus_indicator()
+        from config import FOCUS_MODE_ENABLED  # live read (re-imported per call)
+        if not FOCUS_MODE_ENABLED:
+            # Flag flipped off → clear ALL focus residue unconditionally, not
+            # just when mode==FOCUS. The leaky accumulator can sit in REGULAR
+            # with charge just under the enter bar; if we only cleared on FOCUS,
+            # that frozen charge would survive the disabled window and let an
+            # unrelated mild cue enter on stale evidence once re-enabled.
+            # update_focus self-clears when the switch is off (idempotent).
+            await self.state.update_focus(0.0)
+            # Reconcile AGAIN after the self-clear: if the switch was flipped off
+            # mid-episode, the clear above is silent (no FOCUS_EXIT), so clear the
+            # badge this turn rather than waiting for the next one.
+            await self._reconcile_focus_indicator()
+            return False
+        if not (user_text and user_text.strip()):
+            return False
+        try:
+            from config.prompts.prompts_focus import detect_topic_switch
+            # Focus scores the user's MESSAGE, not the screen: the inline
+            # signals (vulnerability keywords + reply cadence) read user_text
+            # and the scorer's own cadence buffer — never the activity snapshot
+            # (silence / open_thread are idle-only). So Focus is
+            # privacy-independent BY CONSTRUCTION and must NOT be gated on
+            # privacy mode: understanding the user's emotional state from what
+            # they typed is core to an AI companion. Privacy mode governs only
+            # SCREEN / app-state visibility (see docs/contributing/
+            # developer-notes.md rule 6). Hence no snapshot fetch here.
+            # emotion 信号读 master 情绪画像的最近读数（异步算、滞后一拍，与
+            # cadence 用历史一脉相承）。画像关 / 还没算过时 latest 为 None，
+            # FocusScorer 让 emotion 信号自动退出加权、退回 keyword+cadence。
+            # 读 _note_user_turn 在「本轮 analyze 启动前」存的快照，保证 emotion
+            # 信号确定性地滞后一拍——当前 turn 不消费它自己即将算出的读数（否则快
+            # tier / 中途 await 让 fire-and-forget analyze 抢先更新 latest，同一条
+            # 消息会时而读旧读数时而读自己的，违反 scorer 的 lag-one-turn 契约）。
+            emotion_reading = getattr(self, '_focus_emotion_reading', None)
+            scored = self._focus_scorer.score(
+                user_text=user_text, emotion_reading=emotion_reading,
+            )
+            topic_changed = detect_topic_switch(user_text)
+            mode = await self.state.update_focus(
+                scored.score, topic_changed=topic_changed,
+            )
+            # Log every turn (incl. REGULAR) so tuning can watch the charge
+            # accumulate toward FOCUS_CHARGE_ENTER, not just the entry moment.
+            logger.info(
+                "[%s] 凝神 inline: score=%.2f charge=%s mode=%s signals=%s",
+                self.lanlan_name, scored.score,
+                self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
+            )
+            return mode is CognitionMode.FOCUS
+        except Exception as e:
+            logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
+                           self.lanlan_name, e)
+            # Don't leave a stale FOCUS episode if score / update_focus raised
+            # mid-episode — degrade cleanly to regular.
+            try:
+                if self.state.mode is CognitionMode.FOCUS:
+                    await self.state.update_focus(0.0, topic_changed=True)
+            except Exception as _exit_err:
+                logger.debug("[%s] focus inline fail-exit also failed: %s",
+                             self.lanlan_name, _exit_err)
+            return False
+
+    def _focus_idle_thinking(self) -> bool:
+        """Path B (idle) — does THIS proactive reply run thinking-on?
+
+        Read-only: returns whether the session is currently in Focus. A
+        proactive turn never raises the charge, so there is nothing to score
+        here. The charge decay happens AFTER the turn, in
+        ``_focus_idle_cooldown`` (it needs to know whether the turn actually
+        spoke). Returns False when the master switch is off. Privacy-independent
+        (no snapshot, no screen signals).
+        """
+        from config import FOCUS_MODE_ENABLED  # live read
+        if not FOCUS_MODE_ENABLED:
+            return False
+        return self.state.mode is CognitionMode.FOCUS
+
+    async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
+        """SM subscriber for FOCUS_ENTER / FOCUS_EXIT — immediate badge update on
+        the normal hysteresis path. Delegates to the idempotent push."""
+        await self._push_focus_indicator(event is SessionEvent.FOCUS_ENTER)
+
+    async def _reconcile_focus_indicator(self) -> None:
+        """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
+        history-wipe, master-switch / privacy self-clear in update_focus) so the
+        badge can't get stuck on. Called once per turn; idempotent."""
+        await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
+
+    async def _push_focus_indicator(self, active: bool) -> None:
+        """Mirror the cognition indicator (focus_state) to the frontend — a
+        subtle breathing glow (see react-neko-chat). Idempotent on the cached
+        state so the event path and the per-turn reconcile never double-fire.
+        Ephemeral UI state: pushed live over the websocket and mirrored to the
+        sync queue for cross-server, but never persisted to history (the badge
+        is not conversation; memory consumes FOCUS_EXIT's payload separately).
+        Best-effort: a ws failure must never disturb the caller."""
+        # getattr default guards bypass-__init__ constructions (bare test mgrs,
+        # cross-server / unpickled managers) — they simply have no badge to sync.
+        if active == getattr(self, "_focus_indicator_active", False):
+            return
+        self._focus_indicator_active = active
+        msg = {"type": "focus_state", "active": active}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_state sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_state ws push failed: %s", self.lanlan_name, e)
+
+    async def _focus_idle_cooldown(
+        self, *, replied: bool, episode_token, turn_token=None,
+    ) -> None:
+        """Path B (idle) Focus COOLDOWN: decay the charge once, after a Phase-2
+        proactive turn finishes. A proactive turn NEVER raises the charge —
+        entering and sustaining Focus is driven solely by the inline path (the
+        user's own messages). This only lets an active episode cool down.
+
+        Two-tier decay by whether the turn actually spoke:
+          * ``replied=True`` (a Phase-2 proactive reply was delivered) → faster
+            ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of the episode.
+          * ``replied=False`` (Phase-2 reached but produced no reply — empty /
+            aborted) → slower ``FOCUS_IDLE_SILENT_RETENTION``: barely spends it.
+        So Focus persistence is driven by how often she speaks, not raw time.
+
+        ``episode_token`` / ``turn_token`` pin the decay to the exact focus state
+        this proactive turn observed when it made its thinking decision — the
+        episode id and the turn count at Phase 2. The decay is SKIPPED unless the
+        SM is STILL in that same episode AND no inline turn has landed since:
+          * ``not replied`` AND the user already took over (``owner is USER``) →
+            the user spoke during an UNDELIVERED proactive turn and aborted it
+            before it said anything. The inline path marks USER_INPUT
+            (owner→USER) the moment they speak, but its focus update lands LATER
+            (after mini-game / agent-callback handling), so the episode + turn
+            token still match here. This aborted proactive tick must not decay
+            the charge before the user's own message is scored — that
+            (user-driven) episode is the inline path's to update. owner stays
+            USER through PROACTIVE_DONE (which only clears a PROACTIVE owner), so
+            it is still observable at this point. A turn that DID reply
+            (``replied=True``) genuinely spent the episode and still takes the
+            replied retention even if the user fired back fast enough to flip the
+            owner first; once the inline update actually lands the turn-token
+            guard below takes over.
+          * ``episode_token is None`` → the turn observed REGULAR (no active
+            episode). There is nothing to cool, and a proactive tick must not
+            erode the pre-entry accumulator the inline path is building toward
+            ENTER — entering Focus is the inline path's job alone.
+          * episode id changed → the inline path exited and/or entered a new
+            episode while this proactive request was finishing.
+          * turn count changed → the inline path recharged THIS same episode (a
+            user message landed mid-flight). A stale proactive tick must not
+            decay that fresh, user-driven charge.
+
+        Decays with ``count_turn=False`` so a proactive tick never consumes a
+        hard-cap turn slot (that bounds inline turns). Pure charge cooldown:
+        privacy-independent, no snapshot. Best-effort; never blocks the exit.
+        """
+        # Idle-path counterpart to the inline reconcile — keeps the badge honest
+        # on proactive-only stretches (idempotent).
+        await self._reconcile_focus_indicator()
+        from config import (  # live read
+            FOCUS_MODE_ENABLED,
+            FOCUS_IDLE_REPLIED_RETENTION,
+            FOCUS_IDLE_SILENT_RETENTION,
+        )
+        try:
+            if not FOCUS_MODE_ENABLED:
+                # Master switch off → update_focus self-clears any residue.
+                await self.state.update_focus(0.0)
+                # Same-turn badge clear on a mid-episode switch-off (symmetric
+                # with the inline path); the self-clear emits no FOCUS_EXIT.
+                await self._reconcile_focus_indicator()
+                return
+            # User took over an UNDELIVERED turn: the user spoke during the
+            # proactive request (USER_INPUT flipped owner→USER) and aborted it
+            # before it said anything, but their inline focus update has not
+            # landed yet, so the episode/turn token below would still match.
+            # Hand the charge to the imminent inline turn instead of decaying it
+            # with this aborted proactive tick.
+            #   Gated on ``not replied``: a turn that DID commit a reply
+            # (``replied=True``) genuinely spent the episode and must still take
+            # the replied retention even if the user fired back fast enough to
+            # flip the owner before this cooldown ran — owner==USER alone would
+            # wrongly let quick replies after a successful proactive chat skip
+            # their decay. (Once the inline focus update actually lands, the
+            # episode/turn-token guard below takes over.)
+            if not replied and self.state.owner is TurnOwner.USER:
+                logger.debug(
+                    "[%s] focus idle cooldown skipped: user took over an undelivered turn",
+                    self.lanlan_name,
+                )
+                return
+            # Only cool an episode this turn actually observed — never the
+            # REGULAR pre-entry accumulator (entering Focus is inline-only).
+            if episode_token is None:
+                logger.debug(
+                    "[%s] focus idle cooldown skipped: no active episode observed",
+                    self.lanlan_name,
+                )
+                return
+            # Race guard: skip if the focus state moved since this turn observed
+            # it — a different episode (inline exited / re-entered) or a fresh
+            # inline turn that recharged this same episode (turn count bumped).
+            snap = self.state.snapshot()
+            current_episode = snap.get("focus_episode_id")
+            current_turn = snap.get("focus_turn_count")
+            if current_episode != episode_token or (
+                turn_token is not None and current_turn != turn_token
+            ):
+                logger.debug(
+                    "[%s] focus idle cooldown skipped: focus state changed "
+                    "(episode %s→%s, turn %s→%s)",
+                    self.lanlan_name, episode_token, current_episode,
+                    turn_token, current_turn,
+                )
+                return
+            retention = (
+                FOCUS_IDLE_REPLIED_RETENTION if replied
+                else FOCUS_IDLE_SILENT_RETENTION
+            )
+            # score=0 + retention<1 ⇒ charge can only decay (never cross the
+            # enter bar from REGULAR), so this can't ENTER Focus — only cool an
+            # inline-driven episode toward the exit bar. count_turn=False keeps
+            # it off the hard-cap turn budget.
+            mode = await self.state.update_focus(
+                0.0, retention_override=retention, count_turn=False,
+            )
+            logger.info(
+                "[%s] 凝神 idle(cooldown replied=%s): charge=%s mode=%s",
+                self.lanlan_name, replied,
+                self.state.snapshot().get("focus_charge"), mode.value,
+            )
+        except Exception as e:
+            logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
+                           self.lanlan_name, e)
+            try:
+                if self.state.mode is CognitionMode.FOCUS:
+                    await self.state.update_focus(0.0, topic_changed=True)
+            except Exception as _exit_err:
+                logger.debug("[%s] focus idle fail-exit also failed: %s",
+                             self.lanlan_name, _exit_err)
+
     async def handle_text_data(
         self,
         text: str,
@@ -1682,6 +2675,21 @@ class LLMSessionManager:
             dispatcher.set_language(language)
 
     def _note_user_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+        # Master 情绪画像：异步分析用户这轮说的话（节流 + 开关都在 tracker 内部）。
+        # 语音转写 / 文本输入两条路径的对偶 chokepoint。fire-and-forget、best-effort，
+        # 绝不阻塞 turn 记录、不让分析异常冒泡。
+        _me = getattr(self, '_master_emotion', None)
+        if _me is not None:
+            # 先 snapshot「本轮 analyze 启动前」的读数，供 _focus_inline_decision 用，
+            # 保证 emotion 信号滞后一拍（当前 turn 不消费下面这次 analyze 的结果）。
+            # 读 .latest 已含 TTL / 开关 gate。
+            self._focus_emotion_reading = _me.latest
+        if text and text.strip() and _me is not None:
+            try:
+                self._fire_task(_me.analyze(text, now=now))
+            except Exception as _me_err:
+                logger.debug("[%s] master emotion fire failed: %s", self.lanlan_name, _me_err)
+
         dispatcher = getattr(self, '_turn_dispatcher', None)
         if dispatcher is not None:
             dispatcher.note_user_message(text=text, now=now)
@@ -1887,6 +2895,7 @@ class LLMSessionManager:
                         self.summary_triggered_time = datetime.now()
                         self.message_cache_for_new_session = []
                         self.initial_cache_snapshot_len = 0
+                        self.initial_next_session_context_snapshot_len = 0
                         self.sync_message_queue.put({'type': 'system', 'data': 'renew session'})
 
                 # 2. agent 任务结果即时触发（无需等待 40s）：有挂起的额外提示 → 立刻启动预热
@@ -3125,10 +4134,23 @@ class LLMSessionManager:
         await self.disconnected_by_server(expected_session=expected_session)
     
     async def handle_repetition_detected(self):
-        """Handle the repetition-detection callback: notify the frontend"""
+        """Handle the repetition-detection callback: reset Focus state, notify the frontend"""
         try:
             logger.warning(f"[{self.lanlan_name}] 检测到高重复度对话")
-            
+
+            # Repetition recovery wiped _conversation_history — the Focus
+            # accumulator charge / mode and the cadence baseline are evidence
+            # from the now-erased conversation, so clear them too (对偶
+            # _init_renew_status 的会话级清场). clear_focus emits no FOCUS_EXIT:
+            # a degenerate looping episode is not a coherent episode to
+            # synthesize. Best-effort — never block the frontend notice.
+            try:
+                await self.state.clear_focus()
+                self._focus_scorer.reset()
+                self._master_emotion.reset()
+            except Exception as _focus_err:
+                logger.debug(f"[{self.lanlan_name}] focus reset on repetition failed: {_focus_err}")
+
             # 向前端发送重复警告消息（使用 i18n key）
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({
@@ -3586,6 +4608,7 @@ class LLMSessionManager:
         before clearing references — prevents >2 concurrent OmniRealtimeClient.
         """
         self.is_preparing_new_session = False
+        self._require_context_append_current_delivery = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
         
@@ -3625,6 +4648,7 @@ class LLMSessionManager:
 
         if clear_main_cache:
             self.message_cache_for_new_session = []
+            self.initial_next_session_context_snapshot_len = 0
 
     async def _cleanup_pending_session_resources(self):
         """[Hot-swap related] Safely cleans up ONLY PENDING connector and session if they exist AND are not the current main session."""
@@ -3651,6 +4675,10 @@ class LLMSessionManager:
         # teardown 必须用 force=True：默认 reset() 会在活动 phase 上 no-op（保护
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
+        # 对偶 SM.reset 清 focus 态：scorer 的 cadence 基线也按会话隔离，新会话
+        # 不继承上一会话的消息长度基线。master 情绪画像同样按会话隔离。
+        self._focus_scorer.reset()
+        self._master_emotion.reset()
 
     def _realtime_base_url(self) -> str:
         """Read the realtime route's base_url, for the native voice routing host remap
@@ -4327,7 +5355,7 @@ class LLMSessionManager:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
     async def _maybe_kick_activity_loop_for_context_prompt(self) -> None:
-        """Start the activity tracker's background heartbeat so the context prompt can fire.
+        """Start the activity tracker's background heartbeat.
 
         Context-prompt detection (entering gaming/entertainment / entering focused
         work) hangs off the tracker's 20s heartbeat, and the heartbeat lazy-starts
@@ -4335,15 +5363,16 @@ class LLMSessionManager:
         paths where proactive chat is on. Proactive chat defaults to off at first
         start, so without an explicit kick a user who hasn't enabled proactive chat
         would never detect entering a game and the prompt would never show. Here we
-        kick once when the session comes up (get_snapshot is idempotent and won't
-        start the loop twice).
+        kick once when the session comes up.
 
         The context prompt used to be gated to the vision_chat_default_off A/B group;
-        it's now merged into main and open to everyone, so the kick is no longer
-        branch-gated. It is still gated on the user having *explicitly* allowed
-        autonomous vision (privacy mode off) — see the persisted-pref check below.
+        it's now merged into main and open to everyone. OS signal collection is still
+        gated on the user having *explicitly* allowed autonomous vision (privacy mode
+        off), but the topic candidate heartbeat is privacy-independent and should
+        run even when vision is disabled.
         """
         try:
+            self._activity_tracker.ensure_activity_guess_loop_started()
             # 只有当 proactiveVisionEnabled 已被显式落盘为 True 才 kick：get_snapshot 会起
             # SystemSignalCollector 采集窗口/进程信号，且绕过隐私模式（loop 只跳过 LLM、
             # collector 仍在采）。不能用 is_privacy_mode_active()——它在 proactiveVisionEnabled
@@ -4701,6 +5730,7 @@ class LLMSessionManager:
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             _mem_start = time.time()
             _new_dialog_task = asyncio.create_task(_fetch_new_dialog())
+            llm_next_context_count_to_consume_after_start = 0
 
             # 定义 LLM Session 启动协程
             async def start_llm_session():
@@ -4710,6 +5740,7 @@ class LLMSessionManager:
                 first.  Only after connect() succeeds is it promoted to self.session.
                 On failure the half-initialised session is closed and an exception raised.
                 """
+                nonlocal llm_next_context_count_to_consume_after_start
                 # 强 CAS 语义：只允许在 self.session 为 None（start_session 已清场）
                 # 或已经是自己的 new_session 时赋值。任何其他状态都视为并发落败，
                 # 必须关闭本次 new_session，避免覆盖赢家造成孤儿。
@@ -4720,11 +5751,21 @@ class LLMSessionManager:
                 guard_max_length = self._get_text_guard_max_length()
                 _lang = normalize_language_code(self.user_language, format='short')
                 initial_prompt = await self._build_initial_prompt()
+                next_session_context_messages = self._snapshot_next_session_context_messages()
+                start_prompt_context_owner = object()
+                self._mark_pending_context_appends_delivered_in_start_prompt(
+                    next_session_context_messages,
+                    owner=start_prompt_context_owner,
+                )
 
                 # 等待上面预先发出的 /new_dialog 完成
                 try:
                     _nd_text = await _new_dialog_task
-                    initial_prompt += _nd_text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    initial_prompt += (
+                        _nd_text
+                        + self._convert_cache_to_str(next_session_context_messages)
+                        + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                    )
                     logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
                 except ConnectionError:
                     raise
@@ -4834,10 +5875,12 @@ class LLMSessionManager:
                         self.session = new_session
                         if not self.current_speech_id:
                             self.current_speech_id = str(uuid4())
+                        llm_next_context_count_to_consume_after_start = len(next_session_context_messages)
                     else:
                         concurrent_winner = True
 
                 if concurrent_winner:
+                    self._clear_pending_context_start_prompt_marks(owner=start_prompt_context_owner)
                     logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
                     try:
                         await new_session.close()
@@ -4866,13 +5909,16 @@ class LLMSessionManager:
             # 重置状态
             if new:
                 self.message_cache_for_new_session = []
+                self.next_session_context_messages = []
                 self.last_time = None
                 self.is_preparing_new_session = False
                 self.summary_triggered_time = None
                 self.initial_cache_snapshot_len = 0
+                self.initial_next_session_context_snapshot_len = 0
                 # 清空输入缓存（新对话时不需要保留旧的输入）
                 async with self.input_cache_lock:
                     self.pending_input_data.clear()
+                    self._clear_pending_context_appends(release_durable_cached=True)
 
             # 并行启动 TTS 和 LLM Session
             logger.info("🚀 并行启动 TTS 和 LLM Session...")
@@ -4930,12 +5976,18 @@ class LLMSessionManager:
                 # 通知前端 session 已成功启动
                 await self.send_session_started(input_mode)
 
-                # 标记session为就绪状态并处理可能已缓存的输入数据
+                # 在 queued context 写入 session 前保持输入闸门关闭；否则第一条
+                # 缓存/并发用户输入可能抢在上下文前面进入模型。
                 async with self.input_cache_lock:
+                    await self._drain_pending_context_appends_before_ready()
                     self.session_ready = True
 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
+                self._consume_next_session_context_messages(
+                    llm_next_context_count_to_consume_after_start
+                )
+                llm_next_context_count_to_consume_after_start = 0
 
                 # WebSocket 重连后，投递因断线积压的 agent 任务回调
                 if self.pending_agent_callbacks:
@@ -5286,6 +6338,8 @@ class LLMSessionManager:
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()
+            next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
+            self.initial_next_session_context_snapshot_len = len(next_session_context_messages)
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             from utils.internal_http_client import get_internal_http_client
             _hs_client = get_internal_http_client()
@@ -5300,7 +6354,11 @@ class LLMSessionManager:
                 raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
             if not resp.is_success:
                 raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
-            initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
+            initial_prompt += (
+                resp.text
+                + self._convert_cache_to_str(next_session_context_messages)
+                + self._convert_cache_to_str(self.message_cache_for_new_session)
+            )
             print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
@@ -5343,6 +6401,7 @@ class LLMSessionManager:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
+                self.initial_next_session_context_snapshot_len = 0
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
                 if not self.background_preparation_task or self.background_preparation_task.done():
@@ -6312,20 +7371,20 @@ class LLMSessionManager:
         """
         async with self._proactive_write_lock:
             async with self.lock:
-                # Delivery-point voice re-gate (1/2 — cheap early-out before the
+                # Delivery-point topic re-gate (1/2 — cheap early-out before the
                 # sid claim). A topic hook can pass the release gate, get copied
                 # into callbacks_snapshot + removed from pending_agent_callbacks,
                 # then this trigger parks on try_start_proactive /
-                # _proactive_write_lock while the user starts an audio session.
-                # That in-flight snapshot is in neither queue, so the voice-start
-                # sweep can't reach it and the release gate's check has gone
-                # stale. Drop topic hooks if voice has since taken over (ack False
-                # so TopicHookPool retries on a text session); the retracted
-                # filter below removes them + their extras. A SECOND identical
-                # re-gate runs right before prompt_ephemeral to catch a takeover
-                # that lands during the CLAIM/PHASE2 awaits in between.
-                if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(callbacks_snapshot):
-                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — voice took over mid-delivery", self.lanlan_name)
+                # _proactive_write_lock while the user starts a new turn, opens a
+                # voice session, or otherwise closes the callback-specific gate.
+                # That in-flight snapshot is in neither queue, so queue sweeps
+                # cannot reach it and the release gate's check has gone stale.
+                # Drop topic hooks with ack False so TopicHookPool retries later;
+                # the retracted filter below removes them + their extras. A SECOND
+                # identical re-gate runs right before prompt_ephemeral to catch a
+                # gate closure that lands during the CLAIM/PHASE2 awaits in between.
+                if self._retract_unavailable_topic_hook_snapshots(callbacks_snapshot):
+                    logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — delivery gate closed mid-delivery", self.lanlan_name)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -6376,13 +7435,13 @@ class LLMSessionManager:
             # and re-passes it (preserve-until-success). NOTE: we do NOT call
             # _stream_cb_media for text mode (that's the voice path, which uses
             # the realtime session's persistent conversation.item).
-            # Delivery-point voice re-gate (2/2 — authoritative, immediately
+            # Delivery-point topic re-gate (2/2 — authoritative, immediately
             # before prompt_ephemeral). CLAIM/PHASE2 were just awaited above, so
-            # the user may have switched to audio since the pre-claim check;
-            # re-drop topic hooks here so a takeover during those awaits can't
+            # the user may have switched to audio or sent a fresh turn since the
+            # pre-claim check; re-drop topic hooks here so a stale hook cannot
             # still prompt the old text session.
-            if self._voice_delivery_blocked() and self._retract_topic_hook_snapshots(active_callbacks):
-                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — voice took over mid-delivery", self.lanlan_name)
+            if self._retract_unavailable_topic_hook_snapshots(active_callbacks):
+                logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — delivery gate closed mid-delivery", self.lanlan_name)
             self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
@@ -6392,6 +7451,17 @@ class LLMSessionManager:
             if not active_callbacks:
                 logger.info("[%s] trigger_agent_callbacks: text proactive callbacks retracted before prompt", self.lanlan_name)
                 # Free the inflight slot — text_start/text_end below won't run.
+                self.proactive_manager.release_inflight_noop()
+                return False
+            async with self.lock:
+                preempted_before_prompt = (
+                    self.state.is_proactive_preempted()
+                    or self.current_speech_id != proactive_sid
+                )
+            if preempted_before_prompt:
+                logger.info("[%s] trigger_agent_callbacks: preempted before prompt, re-queueing", self.lanlan_name)
+                self.pending_agent_callbacks.extend(active_callbacks)
+                callbacks_snapshot[:] = []
                 self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []
@@ -6891,15 +7961,13 @@ class LLMSessionManager:
         """Whether a background deep-topic hook may interrupt right now.
 
         Deep topic hooks are brand-new text openers — the most intrusive,
-        "better none than forced" kind of proactive content. They must honour the same
-        privacy accumulation gate and the same activity gate as
-        ``/api/proactive_chat``: privacy mode prevents accumulation upstream,
-        while delivery never surfaces when the user's propensity is ``closed``
-        (privacy blacklist) or ``restricted_screen_only`` (gaming /
-        focused_work). Unlike the proactive reminiscence path there is NO
-        open-thread exception — a fresh deep topic is not a follow-up to
-        something already on the table, so it shouldn't borrow that escape
-        hatch.
+        "better none than forced" kind of proactive content. They must honour
+        the same activity gate as ``/api/proactive_chat``: delivery never
+        surfaces when the user's propensity is ``closed`` or
+        ``restricted_screen_only`` (gaming / focused_work). Unlike the
+        proactive reminiscence path there is NO open-thread exception — a
+        fresh deep topic is not a follow-up to something already on the table,
+        so it shouldn't borrow that escape hatch.
 
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
@@ -6919,12 +7987,13 @@ class LLMSessionManager:
         already-pending / extras-only paths are closed separately in
         ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
 
-        Privacy mode is deliberately NOT re-checked here: it gates
-        *accumulation* (the pool is wiped the moment privacy turns on, see
-        enrich_topic_pool), not delivery of a hook that was already built from
-        a pre-privacy snapshot. Activity snapshot lookup remains fail-open when
-        no snapshot is available, mirroring the proactive path's "snapshot None
-        ⇒ open propensity" default.
+        Privacy mode is deliberately NOT checked here and no longer gates the
+        deep-topic chain upstream either. Store/candidate/prepare/delivery all
+        proceed independently from that toggle; this method only answers
+        whether a prepared hook may interrupt the current activity context.
+        Activity snapshot lookup remains fail-open when no snapshot is
+        available, mirroring the proactive path's "snapshot None ⇒ open
+        propensity" default.
         """
         if self._voice_delivery_blocked():
             return False
@@ -6936,17 +8005,25 @@ class LLMSessionManager:
         except Exception:
             return True
         propensity = getattr(snap, 'propensity', None)
-        return propensity not in ('closed', 'restricted_screen_only')
+        if propensity in ('closed', 'restricted_screen_only'):
+            return False
+        if getattr(snap, 'unfinished_thread', None) is not None:
+            logger.info(
+                "[%s] topic hook delivery skipped: unfinished thread is still open",
+                self.lanlan_name,
+            )
+            return False
+        return True
 
     def current_topic_language(self) -> Optional[str]:
         """Live full-locale topic language, for re-resolving at delivery time.
 
         A topic hook captures its language when it is scheduled; if the
-        session language changes during the quiet window (``set_user_language``
-        with no new chat turn to reschedule the trigger), that captured value
-        goes stale. Topic delivery re-resolves from here so the hook renders in
-        the current locale (preserving zh-TW etc.). Returns None when no
-        dispatcher is available so the caller keeps the captured language.
+        session language changes while the material is pending delivery, that
+        captured value goes stale. Topic delivery re-resolves from here so the
+        hook renders in the current locale (preserving zh-TW etc.). Returns
+        None when no dispatcher is available so the caller keeps the captured
+        language.
         """
         dispatcher = getattr(self, '_turn_dispatcher', None)
         getter = getattr(dispatcher, 'current_language', None)
@@ -6997,13 +8074,13 @@ class LLMSessionManager:
         # topic_hook_delivery_allowed), drop the topic hook (ack=False) so
         # TopicHookPool retries later instead of opening a fresh deep topic at
         # the wrong moment. Other channels are unaffected.
-        if callbacks and not self.topic_hook_delivery_allowed():
+        if callbacks:
             kept = []
             for cb in callbacks:
-                if cb.get("channel") == "topic_hook":
+                if cb.get("channel") == "topic_hook" and not self._topic_hook_release_allowed(cb):
                     resolve_callback_delivery_ack(cb, False)
                     logger.info(
-                        "[%s] topic hook held at release: activity propensity restricts interruption",
+                        "[%s] topic hook held at release: delivery gate restricts interruption",
                         self.lanlan_name,
                     )
                 else:
@@ -7312,12 +8389,46 @@ class LLMSessionManager:
                 self.lanlan_name, len(hooks), dropped_extras,
             )
 
+    def _topic_hook_release_allowed(self, callback: dict) -> bool:
+        if callback.get("channel") != "topic_hook":
+            return True
+        if not self.topic_hook_delivery_allowed():
+            return False
+        release_available = callback.get("_topic_release_available")
+        if not callable(release_available):
+            return True
+        try:
+            return bool(release_available())
+        except Exception as exc:
+            logger.warning(
+                "[%s] topic hook release predicate failed closed: %s",
+                self.lanlan_name,
+                exc,
+            )
+            return False
+
+    def _retract_unavailable_topic_hook_snapshots(self, callbacks: list) -> int:
+        """Retract in-flight topic hooks whose release-time gate closed."""
+        n = 0
+        for cb in callbacks:
+            if (
+                isinstance(cb, dict)
+                and cb.get("channel") == "topic_hook"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                and not self._topic_hook_release_allowed(cb)
+            ):
+                resolve_callback_delivery_ack(cb, False)
+                cb[DELIVERY_RETRACTED_KEY] = True
+                n += 1
+        return n
+
     def _retract_topic_hook_snapshots(self, callbacks: list) -> int:
         """Mark in-flight topic-hook snapshot entries retracted + ack False so the
         text delivery path drops them and ``TopicHookPool`` retries on a text
-        session. The delivery-point voice re-gate: a snapshot held by an
-        in-flight ``trigger_agent_callbacks`` is in neither pending queue, so the
-        voice-start sweep can't reach it. Returns the number retracted."""
+        session. This is the voice-specific subset of the broader topic release
+        gate: a snapshot held by an in-flight ``trigger_agent_callbacks`` is in
+        neither pending queue, so the voice-start sweep can't reach it. Returns
+        the number retracted."""
         n = 0
         for cb in callbacks:
             if (
@@ -7355,8 +8466,27 @@ class LLMSessionManager:
         hot-swap fire at different lifecycle points).
         """
         try:
-            summary = str(callback.get("summary") or "").strip()
-            detail = str(callback.get("detail") or "").strip()
+            from config import (
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS,
+            )
+            context_source = "topic.hook" if callback.get("channel") == "topic_hook" else "proactive.callback"
+            # Per-item input budget: summary/detail flow into the LLM verbatim.
+            # Reuse the same source-policy normalizer as append_context() so
+            # proactive/topic callbacks do not grow a parallel budget path.
+            summary_raw = str(callback.get("summary") or "").strip()
+            detail_raw = str(callback.get("detail") or "").strip()
+            summary = self._normalize_context_text_for_source(context_source, summary_raw)
+            # summary/detail frequently carry the SAME body (proactive_bridge
+            # sets both to the aggregated text) — reuse the encode, don't do it
+            # twice.
+            detail = summary if detail_raw == summary_raw else self._normalize_context_text_for_source(
+                context_source,
+                detail_raw,
+            )
+            # Write the capped text back so the text-mode drain (which reads the
+            # callback dict directly) injects the truncated body too.
+            callback["summary"] = summary
+            callback["detail"] = detail
             error_message = str(callback.get("error_message") or "").strip()
             source_name = str(callback.get("source_name") or "").strip()
             status = callback.get("status") or "completed"
@@ -7394,10 +8524,38 @@ class LLMSessionManager:
                 "summary": summary,
                 "detail": detail,
                 "status": status,
+                "context_source": context_source,
                 "source_kind": callback.get("source_kind") or "unknown",
                 "source_name": source_name,
                 "error_message": error_message,
             })
+            # Flood guard: a runaway plugin event stream must not grow either
+            # queue without bound. Keep the most recent N (newest = most
+            # relevant); drop-oldest.
+            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
+                dropped = self.pending_agent_callbacks[:overflow]
+                dropped_ids = {
+                    _cb.get("_callback_delivery_id")
+                    for _cb in dropped
+                    if isinstance(_cb, dict) and _cb.get("_callback_delivery_id")
+                }
+                self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
+                # Resolve any delivery-ack future on a dropped callback NOW, so a
+                # waiter (e.g. topic-hook delivery) unblocks immediately instead
+                # of stalling until its timeout.
+                for _cb in dropped:
+                    resolve_callback_delivery_ack(_cb, False)
+                # Drop the matching voice-queue mirrors by delivery_id (the two
+                # queues drift, so positional trimming is unreliable) — otherwise
+                # a callback acked False here could still be injected via hot-swap.
+                if dropped_ids:
+                    self.pending_extra_replies = [
+                        _extra for _extra in self.pending_extra_replies
+                        if _extra.get("_callback_delivery_id") not in dropped_ids
+                    ]
+            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
             pass
 
@@ -7418,7 +8576,27 @@ class LLMSessionManager:
         self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
             return ""
-        callbacks_snapshot = list(self.pending_agent_callbacks)
+        candidate_callbacks = list(self.pending_agent_callbacks)
+        if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):
+            logger.info(
+                "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",
+                self.lanlan_name,
+            )
+        self._purge_retracted_agent_callback_extras(candidate_callbacks)
+        self._purge_retracted_agent_callbacks()
+        active_callbacks = [
+            cb for cb in candidate_callbacks
+            if not cb.get(DELIVERY_RETRACTED_KEY)
+        ]
+        if not active_callbacks:
+            return ""
+        from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        # Budget-aware selection: render (and ack) only the callbacks that fit
+        # the total budget this turn; defer the rest to the next drain instead
+        # of acking them as delivered while their text falls off the cap.
+        callbacks_snapshot, deferred = _select_callbacks_within_token_budget(
+            active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        )
         delivered_to_prompt = False
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
@@ -7435,7 +8613,9 @@ class LLMSessionManager:
             if delivered_to_prompt:
                 for cb in callbacks_snapshot:
                     resolve_callback_delivery_ack(cb, True)
-            self.pending_agent_callbacks.clear()
+            # Keep deferred (over-budget) callbacks for the next turn; only the
+            # rendered+acked ones leave the queue.
+            self.pending_agent_callbacks = deferred
 
     async def _perform_final_swap_sequence(self):
         """[Hot-swap related] Perform the final swap sequence"""
@@ -7466,7 +8646,14 @@ class LLMSessionManager:
         try:
             new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
             old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
-            incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
+            next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
+            incremental_next_session_context = next_session_context_messages[
+                self.initial_next_session_context_snapshot_len:
+            ]
+            incremental_cache = (
+                list(incremental_next_session_context)
+                + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
+            )
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
                 final_prime_text = self._convert_cache_to_str(incremental_cache)
@@ -7477,14 +8664,19 @@ class LLMSessionManager:
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
                 _lang = normalize_language_code(self.user_language, format='short')
+                from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+                # Budget-aware selection (mirror of the text-mode drain): render
+                # only what fits, keep the rest for the next hot-swap rather than
+                # dropping it after clearing the queue.
+                _selected, _deferred = _select_callbacks_within_token_budget(
+                    list(self.pending_extra_replies), AGENT_CALLBACK_TOTAL_MAX_TOKENS
+                )
                 final_prime_text += _render_pending_extra_replies_by_origin(
-                    self.pending_extra_replies,
+                    _selected,
                     lang=_lang,
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                 )
-                # 清空队列，避免重复注入
-                self.pending_extra_replies.clear()
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
                 except (web_exceptions.ConnectionClosed, AttributeError) as e:
@@ -7494,6 +8686,9 @@ class LLMSessionManager:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
+                # 仅在成功注入后才移除已选条目；失败时保留整队列等下一轮 hot-swap
+                # （否则 _selected 既没进模型又丢了）。over-budget 的 _deferred 留到下一轮。
+                self.pending_extra_replies = _deferred
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
@@ -7560,6 +8755,8 @@ class LLMSessionManager:
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
             self.session = new_session
+            self._require_context_append_current_delivery = True
+            next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
@@ -7582,6 +8779,15 @@ class LLMSessionManager:
                 # 旧session已关闭无法回滚，抛出异常让 except 块走重建流程
                 raise RuntimeError("新session的WebSocket在swap后已失效，热切换失败")
 
+            transferred_next_context_count = (
+                self.initial_next_session_context_snapshot_len
+                + len(incremental_next_session_context)
+            )
+            consumed_next_context_count = await self._prime_late_next_session_context_after_swap(
+                transferred_next_context_count,
+                next_context_count_at_promote,
+            )
+
             # ── 步骤 4：启动新 listener ───────────────────────────────────────────
             if self.session and hasattr(self.session, 'handle_messages'):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
@@ -7590,8 +8796,8 @@ class LLMSessionManager:
             # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
             # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
             await self._flush_hot_swap_audio_cache()
+            self._consume_next_session_context_messages(consumed_next_context_count)
 
-        
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
             await self._reset_preparation_state(
@@ -7930,12 +9136,24 @@ class LLMSessionManager:
                             _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
+                    # Path A (inline) Focus 凝神：score this user message and, if
+                    # over the bar, run THIS reply thinking-on. Scored on
+                    # ``record_data`` (= memory_text or data) — the user-VISIBLE
+                    # text that also feeds the activity tracker / cadence baseline
+                    # and history replacement. Scoring raw ``data`` instead would
+                    # read a hidden scaffold prompt (e.g. avatar-drop file
+                    # contents) the user never typed, mismatching the cadence
+                    # signal and entering Focus on evidence the user didn't author.
+                    _focus_thinking = await self._focus_inline_decision(record_data)
                     input_transcript_callback = None
                     if memory_text:
                         async def input_transcript_callback(_transcript: str, *, _memory_text: str = memory_text) -> None:
                             await self.handle_input_transcript(_memory_text, is_voice_source=False)
 
-                    stream_text_kwargs = {"system_prefix": _agent_cb_ctx or None}
+                    stream_text_kwargs = {
+                        "system_prefix": _agent_cb_ctx or None,
+                        "thinking_on": _focus_thinking,
+                    }
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:
@@ -8203,6 +9421,7 @@ class LLMSessionManager:
                 async with self.input_cache_lock:
                     self.session_ready = False
                     self.pending_input_data.clear()
+                    self._clear_pending_context_appends()
                 async with self.lock:
                     if expected_session is None or expected_session is self.session:
                         self._starting_session_count = 0
@@ -8299,6 +9518,7 @@ class LLMSessionManager:
         async with self.input_cache_lock:
             self.session_ready = False
             self.pending_input_data.clear()
+            self._clear_pending_context_appends()
 
         self.last_time = None
         if not by_server:

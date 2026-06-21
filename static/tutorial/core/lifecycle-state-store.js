@@ -131,7 +131,7 @@
             this.state = stateRef;
             this.createHeartbeatToken = typeof heartbeatTokenFactory === 'function'
                 ? heartbeatTokenFactory
-                : () => null;
+                : function noopHeartbeatToken() { return ''; };
         }
 
         setPromptDrivenTutorialToken(token) {
@@ -191,7 +191,9 @@
             };
 
             if (this.hasReplaySensitiveHeartbeatMetrics(snapshot)) {
-                snapshot.heartbeatToken = this.createHeartbeatToken();
+                snapshot.heartbeatToken = typeof this.createHeartbeatToken === 'function'
+                    ? this.createHeartbeatToken()
+                    : '';
             }
 
             return snapshot;

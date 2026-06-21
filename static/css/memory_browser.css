@@ -407,8 +407,18 @@ body .container-header {
     gap: 10px;
 }
 
-/* 下拉框 - 胶囊形状，与猫娘按钮一致 */
-.tutorial-reset-wrapper select {
+.tutorial-reset-cascade {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.tutorial-cascader {
+    position: relative;
+    width: 100%;
+}
+
+.tutorial-cascader-trigger {
     width: 100%;
     padding: 10px 15px;
     background: #fff;
@@ -419,22 +429,93 @@ body .container-header {
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
-    text-align: center;
-    appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 15px center;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    text-align: left;
 }
 
-.tutorial-reset-wrapper select:hover {
+.tutorial-cascader-trigger:hover,
+.tutorial-cascader-trigger:focus-visible,
+.tutorial-cascader-trigger.is-open {
     border-color: #40C5F1;
     background-color: #f0f9ff;
-    transform: translateY(-1px);
+    outline: none;
 }
 
-.tutorial-reset-wrapper select:focus {
+.tutorial-reset-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tutorial-cascader-arrow {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #40C5F1;
+    flex: 0 0 auto;
+    transition: transform 0.16s ease;
+}
+
+.tutorial-cascader-trigger.is-open .tutorial-cascader-arrow {
+    transform: rotate(180deg);
+}
+
+.tutorial-cascader-popup {
+    position: absolute;
+    left: 0;
+    top: calc(100% + 8px);
+    z-index: 40;
+    min-width: 100%;
+    display: flex;
+    overflow: hidden;
+    border: 1px solid #cbeeff;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 28px rgba(64, 197, 241, 0.18);
+}
+
+.tutorial-cascader-popup[hidden] {
+    display: none;
+}
+
+.tutorial-cascader-column {
+    width: 180px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px;
+    border-right: 1px solid #e3f4ff;
+}
+
+.tutorial-cascader-column:last-child {
+    border-right: 0;
+}
+
+.tutorial-cascader-option {
+    width: 100%;
+    min-height: 32px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #268fb8;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.tutorial-cascader-option:hover,
+.tutorial-cascader-option:focus-visible,
+.tutorial-cascader-option.is-selected {
+    background: #f0f9ff;
+    color: #40C5F1;
     outline: none;
-    border-color: #40C5F1;
 }
 
 /* 重置按钮 - 胶囊形状，与猫娘按钮一致 */
@@ -481,6 +562,16 @@ body .container-header {
     border-color: #e0e0e0;
     transform: none;
     box-shadow: none;
+}
+
+@media (max-width: 760px) {
+    .tutorial-cascader-popup {
+        width: 100%;
+    }
+
+    .tutorial-cascader-column {
+        width: 50%;
+    }
 }
 
 /* 存储位置常驻入口 */

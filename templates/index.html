@@ -53,11 +53,7 @@
     <!-- 主题管理器（尽早加载以避免闪烁） -->
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 
-    <!-- Driver.js 新手引导库 (本地实现 - 无需 CDN) -->
-    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
     <!-- 教程样式定制 -->
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <!-- APlayer 库（本地） -->
     <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
@@ -149,9 +145,9 @@
         <!-- 字幕提示框现在通过JavaScript动态创建为系统消息，不再需要静态HTML -->
     </div>
     <!-- 字幕显示区域 -->
-    <div id="subtitle-display" class="hidden" data-subtitle-panel-state="clean">
+    <div id="subtitle-display" class="hidden">
         <div id="subtitle-scroll">
-            <span id="subtitle-text" data-subtitle-placeholder="暂无翻译内容"></span>
+            <span id="subtitle-text"></span>
         </div>
         <div id="subtitle-panel-controls" aria-hidden="true">
             <button type="button" id="subtitle-lock-btn" class="subtitle-panel-control-btn" title="锁定位置" aria-label="锁定位置" aria-pressed="false" data-i18n-title="subtitle.settings.lockPosition" data-i18n-aria="subtitle.settings.lockPosition">
@@ -172,8 +168,8 @@
         </div>
         <div id="subtitle-settings-panel" class="hidden">
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-i18n="subtitle.settings.targetLang" data-subtitle-label="targetLang">目标语言</span>
-                <select id="subtitle-lang-select" data-i18n-title="subtitle.settings.targetLang" title="目标语言">
+                <label class="subtitle-settings-label" data-subtitle-label="targetLang" for="subtitle-lang-select"><span class="subtitle-settings-label-text">语言</span></label>
+                <select id="subtitle-lang-select" data-i18n-title="subtitle.settings.targetLang" title="语言">
                     <option value="zh">中文</option>
                     <option value="en">English</option>
                     <option value="ja">日本語</option>
@@ -184,27 +180,40 @@
                 </select>
             </div>
             <div class="subtitle-settings-row">
-                <span class="subtitle-settings-label" data-i18n="subtitle.settings.opacity" data-subtitle-label="opacity">背景不透明度</span>
-                <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" data-i18n-title="subtitle.settings.opacity" title="背景不透明度">
+                <label class="subtitle-settings-label" data-subtitle-label="opacity" for="subtitle-opacity-slider"><span class="subtitle-settings-label-text">不透明度</span></label>
+                <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="95" data-i18n-title="subtitle.settings.opacity" title="不透明度">
                 <span id="subtitle-opacity-value">95%</span>
             </div>
-            <div class="subtitle-settings-row subtitle-passthrough-setting-row">
-                <span class="subtitle-settings-label" data-i18n="subtitle.settings.passthroughInteraction" data-subtitle-label="passthroughInteraction">透明区域穿透</span>
-                <label class="subtitle-settings-switch">
-                    <input type="checkbox" id="subtitle-passthrough-toggle" checked data-i18n-title="subtitle.settings.passthroughInteraction" title="透明区域穿透">
-                    <span class="subtitle-settings-track"></span>
+            <div class="subtitle-settings-row">
+                <label class="subtitle-settings-label" data-subtitle-label="fontSize" for="subtitle-font-size-select"><span class="subtitle-settings-label-text">字体</span></label>
+                <select id="subtitle-font-size-select" data-i18n-title="subtitle.settings.fontSize" title="字体">
+                    <option value="16" data-subtitle-font-size-label="fontSizeSmall">小号</option>
+                    <option value="21" data-subtitle-font-size-label="fontSizeSmaller">较小</option>
+                    <option value="26" data-subtitle-font-size-label="fontSizeDefault" selected>默认</option>
+                    <option value="34" data-subtitle-font-size-label="fontSizeLarger">较大</option>
+                    <option value="44" data-subtitle-font-size-label="fontSizeLarge">大号</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <label class="subtitle-settings-label" data-subtitle-label="colorScheme" for="subtitle-color-scheme-select"><span class="subtitle-settings-label-text">配色</span></label>
+                <select id="subtitle-color-scheme-select" data-i18n-title="subtitle.settings.colorScheme" title="配色">
+                    <option value="default" data-subtitle-color-scheme-label="colorSchemeDefault">默认</option>
+                    <option value="red" data-subtitle-color-scheme-label="colorSchemeRed">红</option>
+                    <option value="orange" data-subtitle-color-scheme-label="colorSchemeOrange">橙</option>
+                    <option value="yellow" data-subtitle-color-scheme-label="colorSchemeYellow">黄</option>
+                    <option value="green" data-subtitle-color-scheme-label="colorSchemeGreen">绿</option>
+                    <option value="blue" data-subtitle-color-scheme-label="colorSchemeBlue">蓝</option>
+                    <option value="indigo" data-subtitle-color-scheme-label="colorSchemeIndigo">靛</option>
+                    <option value="violet" data-subtitle-color-scheme-label="colorSchemeViolet">紫</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <label class="subtitle-settings-label" data-subtitle-label="danmakuMode" for="subtitle-danmaku-mode-btn"><span class="subtitle-settings-label-text">弹幕模式</span></label>
+                <label class="subtitle-settings-switch subtitle-danmaku-switch">
+                    <input type="checkbox" id="subtitle-danmaku-mode-btn" data-i18n-title="subtitle.settings.danmakuMode" data-i18n-aria="subtitle.settings.danmakuMode" title="弹幕模式" aria-label="弹幕模式">
+                    <span class="subtitle-settings-track" aria-hidden="true"></span>
                 </label>
             </div>
-        </div>
-        <div id="subtitle-resize-handles" aria-hidden="true">
-            <span class="subtitle-resize-edge subtitle-resize-n" data-resize-dir="n"></span>
-            <span class="subtitle-resize-edge subtitle-resize-e" data-resize-dir="e"></span>
-            <span class="subtitle-resize-edge subtitle-resize-s" data-resize-dir="s"></span>
-            <span class="subtitle-resize-edge subtitle-resize-w" data-resize-dir="w"></span>
-            <span class="subtitle-resize-edge subtitle-resize-ne" data-resize-dir="ne"></span>
-            <span class="subtitle-resize-edge subtitle-resize-se" data-resize-dir="se"></span>
-            <span class="subtitle-resize-edge subtitle-resize-sw" data-resize-dir="sw"></span>
-            <span class="subtitle-resize-edge subtitle-resize-nw" data-resize-dir="nw"></span>
         </div>
     </div>
     <div id="react-chat-window-overlay" hidden>
@@ -402,7 +411,6 @@
     <script src="/static/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
-    <script src="/static/icebreaker/new-user-icebreaker.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
     <script src="/static/card-drop.js?v={{ static_asset_version }}"></script>
     <script src="/static/social-embed.js?v={{ static_asset_version }}"></script>
@@ -429,7 +437,13 @@
     <script src="/static/touch-config.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/days/day1-home-guide.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/days/day2-screen-voice-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day3-interaction-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day4-companion-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day5-personalization-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day6-agent-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day7-graduation-guide.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/yui-standin.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
@@ -437,7 +451,6 @@
     <script src="/static/tutorial/avatar/yui-stage.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/wakeup.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial/yui-guide/avatar-standin.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/standin-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/spotlight-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/ghost-cursor-controller.js?v={{ static_asset_version }}"></script>
@@ -454,6 +467,8 @@
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器（支持所有页面） -->
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/icebreaker/new-user-icebreaker.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function () {

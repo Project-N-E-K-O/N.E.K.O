@@ -158,6 +158,9 @@ async def test_activity_buffer_is_active_states(monkeypatch: pytest.MonkeyPatch)
     await buffer.add(_snapshot(9, app_type="other", activity_type="idle"))
     assert await buffer.is_active() is False
 
+    await buffer.add(_snapshot(10, app_type="private", activity_type="private"))
+    assert await buffer.is_active() is False
+
     await buffer.add(_snapshot(10, app_type="code_editor", activity_type="question"))
     assert await buffer.is_active() is True
 

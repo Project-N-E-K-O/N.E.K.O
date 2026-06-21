@@ -10,7 +10,6 @@ from typing import Any, Protocol
 from .context_builder import _compact_lines_by_importance, _condense_dialogue_batch
 from .context_tokens import estimate_context_tokens
 
-_PROMPT_CONTEXT_MAX_CHARS = 12000
 _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS = 6000
 _PROMPT_COMPACTION_LEVELS = (
     # (list items kept, max string chars, max dict keys) for the legacy 3-level compactor.
@@ -165,9 +164,6 @@ def _strip_importance_metadata(value: Any) -> Any:
 
 
 def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
-    mode = str(getattr(config, "context_counting_mode", "char") or "char").strip().lower()
-    if mode != "token":
-        return "char", _PROMPT_CONTEXT_MAX_CHARS
     try:
         budget = int(getattr(config, "context_max_tokens", _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS))
     except (TypeError, ValueError):
@@ -360,12 +356,7 @@ def _context_json_result_for_prompt(
                     "compression_level": compression_level,
                 },
             )
-    if mode == "token":
-        fallback = _token_budgeted_fallback_context(raw, budget)
-    else:
-        excerpt_limit = max(0, _PROMPT_CONTEXT_MAX_CHARS - 200)
-        excerpt = raw[:excerpt_limit]
-        fallback = _fallback_context_from_excerpt(raw, excerpt)
+    fallback = _token_budgeted_fallback_context(raw, budget)
     rendered = _json_dump(fallback)
     return PromptContextResult(
         text=rendered,

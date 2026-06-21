@@ -1,6 +1,6 @@
 <div align="center">
 
-![Logo](assets/neko_logo.jpg)
+![Logo](assets/neko_logo_new.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
 # Project N.E.K.O. :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
@@ -22,8 +22,6 @@
 
 :newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎喜加一，顺手给个好评~**
 
-*Project N.E.K.O.，喵宇宙！*
-
 </div>
 
 ---
@@ -44,6 +42,15 @@
 <td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>
 </tr>
 </table>
+
+## 实机展示
+
+支持文本、语音、窥屏、鼠标点击、拖拽等一系列交互方式，既可以在闲暇的时候陪你聊天，也可以游戏娱乐时观战吐槽，还会叼着网络梗图来找你~~
+
+<img width="422.4" height="278.4" alt="Image" src="https://github.com/user-attachments/assets/71e9ed4c-f332-4db5-bc13-ca0d05049142" />
+<img width="363.6" height="278.4" alt="6 15-主动搭话" src="https://github.com/user-attachments/assets/50f61732-996b-41cb-9dba-d85f17734d8c" />
+
+当你需要学习工作等专注的空间时，她还会真的变成一只小猫咪安静地陪着你哦~ 就像这样→ <img width="115.5" height="86.1" alt="Image" src="https://github.com/user-attachments/assets/40379c53-398e-43ab-b027-70b31837f01d" />
 
 ---
 
@@ -72,9 +79,9 @@
 
 ## 快速开始
 
-### Windows / macOS 用户（一键包）
+### Windows / macOS / Linux用户（一键包）
 
-解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（macOS用户需要手动解除系统隔离）
+解压后，直接运行`N.E.K.O.exe`、`N.E.K.O.app`或`n.e.k.o`即可启动。（macOS用户需要手动解除系统隔离）
 
 ### Docker 部署 (Linux)
 

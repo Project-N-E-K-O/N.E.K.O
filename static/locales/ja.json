@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "チャットウィンドウのマウントに失敗しました",
         "reactWindowLoadFailed": "チャットウィンドウのリソース読み込みに失敗しました",
         "reactWindowAriaLabel": "Neko チャットウィンドウ",
+        "focusIndicator": "集中モード",
         "reactWindowInputHint": "Enter で送信、Shift + Enter で改行",
         "messageListAriaLabel": "チャットメッセージ一覧",
         "composerToolsAriaLabel": "入力ツールバー",
@@ -1049,7 +1050,10 @@
         "noOptionsAvailable": "利用可能な項目はありません",
         "customModelProviderFollowCore": "コアAPIに従う",
         "customModelProviderFollowAssist": "アシストAPIに従う",
-        "customModelProviderCustom": "カスタム",
+        "customModelProviderFollowConversation": "テキスト対話モデルに従う",
+        "customModelProviderFollowSummary": "要約モデルに従う",
+        "customModelProviderCustom": "カスタム API",
+        "keyAutoFilledFromModel": "Key は選択したモデル設定に従います",
         "keyBook": {
             "qwen": "Alibaba百炼（Qwen）",
             "qwen_intl": "Alibaba国際版（Qwen）",
@@ -1063,10 +1067,12 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "mimo": "MiMo（Xiaomi）",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
@@ -1121,6 +1127,9 @@
         },
         "conversationModelConfig": "テキスト対話モデル設定",
         "summaryModelConfig": "要約モデル設定",
+        "gameModelsConfig": "ミニゲームモデル設定",
+        "gameMainModelConfig": "ミニゲーム主モデル設定",
+        "gameSummaryModelConfig": "ミニゲーム要約モデル設定",
         "correctionModelConfig": "修正モデル設定",
         "emotionModelConfig": "感情モデル設定",
         "visionModelConfig": "視覚モデル設定",
@@ -1135,6 +1144,8 @@
         "modelIdPlaceholder": "例: gpt-5.1-chat-latest",
         "apiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "summaryModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
+        "gameMainModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
+        "gameSummaryModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "correctionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "emotionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "visionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
@@ -2612,9 +2623,24 @@
             "emptyHint": "翻訳はまだありません"
         },
         "settings": {
-            "targetLang": "翻訳先の言語",
-            "opacity": "背景の不透明度",
-            "passthroughInteraction": "透明領域をクリック透過",
+            "targetLang": "言語",
+            "opacity": "不透明度",
+            "fontSize": "文字",
+            "fontSizeSmall": "小さめ",
+            "fontSizeSmaller": "やや小さめ",
+            "fontSizeDefault": "標準",
+            "fontSizeLarger": "やや大きめ",
+            "fontSizeLarge": "大きめ",
+            "colorScheme": "配色",
+            "colorSchemeDefault": "標準",
+            "colorSchemeRed": "赤",
+            "colorSchemeOrange": "橙",
+            "colorSchemeYellow": "黄",
+            "colorSchemeGreen": "緑",
+            "colorSchemeBlue": "青",
+            "colorSchemeIndigo": "藍",
+            "colorSchemeViolet": "紫",
+            "danmakuMode": "弾幕モード",
             "settingsBtn": "字幕設定",
             "lockPosition": "位置をロック",
             "unlockPosition": "位置ロックを解除",
@@ -3301,6 +3327,10 @@
             "desc": "最高のチュートリアル体験のために、フルスクリーンモードに入ることをお勧めします。\nフルスクリーンモードでは、チュートリアルの内容がより見やすく、他の要素に遮られません。",
             "enterFullscreen": "フルスクリーンで開始"
         },
+        "reset": {
+            "daySuccess": "{{day}}日目の初心者チュートリアルをリセットしました。Nekoを更新してもう一度開始してください。",
+            "dayFailed": "初心者チュートリアルのリセットに失敗しました。しばらくしてからもう一度お試しください。"
+        },
         "drag_hint": "ドラッグしてツールチップを移動",
         "yuiGuide": {
             "buttons": {
@@ -3308,7 +3338,7 @@
                 "sayHello": "こんにちは"
             },
             "lines": {
-                "introBasic": "ここに不思議なボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできちゃうんだ。今日あった楽しいことを教えてくれる？それとも、ただ名前を呼んでくれるのかな？早く試してみて、もう君の声を聞くのが待ちきれないよ！",
+                "introBasic": "ここに不思議なボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできちゃうんだ。今日あった楽しいことを教えてくれる？それとも、ただ私の名前を呼んでくれるだけでもいいよ？早く試してみて、もう君の声を聞くのが待ちきれないよ！",
                 "takeoverCaptureCursor": "スーパー魔法スイッチが登場だよ！ここをポチッとするだけで、私の小さな肉球を君のキーボードとマウスに伸ばせちゃうんだ！タイピングをお手伝いしたり、ウェブサイトを開いたり……でもね、マウスカーソルがチョロチョロ動いたら、思わず飛びついて捕まえちゃうかも！私のいたずら……あ、じゃなくて、お手伝いを受け入れる準備はできたかな？にゃ〜ん！",
                 "takeoverPluginPreviewHome": "前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。",
                 "takeoverPluginPreviewDashboard": "これらがあれば、Bilibiliのコメントを読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
@@ -4216,397 +4246,396 @@
             "drawCalls": "Draw Calls"
         }
     },
-    "basketball": {
-        "title": "シュートチャレンジ - Basketball",
-        "modeSwitcher": "バスケットボールモード",
-        "mode": {
-            "spectator": "フリー練習",
-            "shooter": "シュートチャレンジ",
-            "duel": "Yui と対戦",
-            "timed": "タイムアタック",
-            "horse": "HORSE"
-        },
-        "hud": {
-            "score": "スコア {{score}}",
-            "streak": "連続成功 {{streak}}",
-            "record": "最長 {{distance}}",
-            "duelScore": "あなた {{player}} - {{neko}} Neko",
-            "duelMisses": "ミス あなた {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-            "round": "ラウンド {{round}}/{{max}}",
-            "timer": "{{seconds}} 秒",
-            "practice": "フリー練習",
-            "yourTurn": "あなたの番",
-            "nekoTurn": "Neko のシュート",
-            "horseLetters": "あなた {{player}} / Neko {{neko}}",
-            "horseChallenge": "再現 {{distance}} {{angle}}°",
-            "horseSet": "お題ターン",
-            "unlimitedAttempts": "無制限",
-            "chances": "残り {{count}}",
-            "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
-            "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
-            "duelTitle": "Neko 対戦：あなたと Neko が交互にシュートします",
-            "timedTitle": "タイムアタック：60 秒間は何度でも投げられます",
-            "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
-            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
-            "on": "オン",
-            "off": "オフ"
-        },
-        "result": {
-            "title": "ゲーム終了",
-            "leaderboard": "ランキングを見る",
-            "stats": "統計を見る",
-            "retry": "もう一度",
-            "rating": "操作評価：{{rating}}",
-            "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
-            "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
-            "horse": "HORSE結果：{{outcome}} | あなた {{player}} / Neko {{neko}} | 成功：{{made}} | 最高連続：{{best}}",
-            "timed": "タイムアタック：成功 {{made}} 本、最長連続 {{best}}、スコア {{score}}",
-            "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
-            "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
-            "attemptsSummary": "シュート概要：{{summary}}",
-            "personalBest": "自己ベスト：{{score}}点",
-            "globalRank": "世界順位：#{{rank}}{{total}}",
-            "outcome": {
-                "youWin": "あなたの勝ち",
-                "nekoWin": "Neko の勝ち",
-                "tie": "引き分け",
-                "undecided": "未決着"
-            }
-        },
-        "leaderboard": {
-            "title": "ランキング",
-            "global": "グローバル",
-            "local": "ローカル",
-            "shooter": "シュート",
-            "duel": "対戦",
-            "empty": "記録はまだありません",
-            "totalPlayers": "プレイヤー {{count}}",
-            "yourBest": "自己ベスト #{{rank}} / {{score}}点",
-            "recent": "最近 {{count}} 試合",
-            "loading": "読み込み中...",
-            "mode": {
-                "shooter": "シュート",
-                "duel": "対戦",
-                "timed": "タイム",
-                "horse": "HORSE",
-                "spectator": "観戦"
-            }
-        },
-        "debug": {
-            "title": "デバッグパネル",
-            "collapse": "折りたたむ",
-            "hide": "隠す",
-            "distance": "距離:",
-            "power": "パワー:",
-            "event": "イベント:",
-            "streak": "連続:",
-            "reset": "リセット",
-            "guide": "ガイド線",
-            "sweet": "スイートスポット",
-            "markers": "距離目盛り",
-            "readout": {
-                "modeState": "モード={{mode}}  状態={{state}}",
-                "distance": "距離={{px}}px ({{meters}})",
-                "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
-                "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
-                "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
-                "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}",
-                "horse": "HORSE: あなた {{player}} / Neko {{neko}} phase={{phase}}"
-            }
-        },
-        "stats": {
-            "title": "個人統計",
-            "close": "閉じる",
-            "totalShots": "シュート={{total}}  成功={{made}}",
-            "farRate": "300px+ 成功率={{rate}}",
-            "trend": "最近の傾向={{trend}}",
-            "none": "なし"
-        },
-        "theme": {
-            "next": "テーマ切替",
-            "current": "テーマ：{{theme}}",
-            "changed": "テーマ {{theme}}",
-            "labels": {
-                "default": "体育館",
-                "sunset": "夕暮れコート",
-                "night": "夜の照明"
-            }
-        },
-        "court": {
-            "restrictedArc": "制限区域",
-            "freeThrowLine": "フリースロー",
-            "threePointLine": "3Pライン",
-            "midCourtLine": "センターライン"
-        },
-        "close": "閉じる",
-        "audio": {
-            "controls": "ゲーム音声"
-        },
-        "memoryOption": {
-            "label": "この試合の会話を記憶に入れる（デフォルトはオフ）",
-            "hint": "オフの場合、プレイヤー入力、NEKOの返信、イベント返信、試合後の要約、続きの文脈は記憶に保存・参照されません。"
-        },
-        "table": {
-            "score": "スコア",
-            "bestStreak": "最高連続",
-            "farthest": "最長",
-            "mode": "モード",
-            "date": "日付"
-        },
-        "state": {
-            "ready": "準備",
-            "in_flight": "飛行中",
-            "game_over": "終了",
-            "neko_thinking": "Neko思考中"
-        },
-        "toast": {
-            "difficulty": "難度 {{difficulty}}",
-            "nekoShoot": "Neko のシュート",
-            "nekoThinking": "Neko が考え中",
-            "nekoTurn": "Neko の番",
-            "copyNeko": "Neko を再現",
-            "nekoFailed": "Neko のお題失敗",
-            "yourSet": "お題を出す番",
-            "yourTurn": "あなたの番",
-            "reset": "リセットしました",
-            "featureToggled": "{{feature}} {{state}}",
-            "feature": {
-                "guide": "ガイド線",
-                "sweet": "パワースイートスポット",
-                "bgm": "BGM",
-                "markers": "距離目盛り"
-            },
-            "state": {
-                "on": "オン",
-                "off": "オフ"
-            }
-        },
-        "tutorial": {
-            "aim": "マウスを上下に動かして角度を調整",
-            "charge": "左クリック長押しでチャージ",
-            "release": "離してシュート！"
-        },
-        "shot": {
-            "swish": "スウィッシュ",
-            "bank": "バンク",
-            "rim_in": "リングイン",
-            "rim_out": "リングアウト",
-            "air_ball": "エアボール",
-            "unknown": "不明",
-            "attempt": "#{{index}} {{distance}} {{type}}"
-        },
-        "lines": {
-            "default": {
-                "swish": [
-                    "きれいに決まった！",
-                    "きれいに決まった！"
-                ],
-                "bank": [
-                    "バンクショットも成功。",
-                    "バンクショットも成功。"
-                ],
-                "rim_in": [
-                    "跳ねて入った！",
-                    "跳ねて入った！"
-                ],
-                "rim_out": [
-                    "惜しい。",
-                    "惜しい。"
-                ],
-                "air_ball": [
-                    "リングはそっちじゃないよ。",
-                    "リングはそっちじゃないよ。"
-                ],
-                "shot_missed": [
-                    "まだチャンスはある。",
-                    "まだチャンスはある。"
-                ],
-                "game_over": [
-                    "もう一回やる？",
-                    "もう一回やる？"
-                ],
-                "long_aim": [
-                    "そろそろ投げよう。",
-                    "そろそろ投げよう。"
-                ],
-                "close_to_record": [
-                    "記録まであと少し。",
-                    "記録まであと少し。"
-                ],
-                "new_record": [
-                    "新記録！",
-                    "新記録！"
-                ],
-                "streak_5": [
-                    "5連続成功！",
-                    "5連続成功！"
-                ],
-                "streak_10": [
-                    "10連続？すごい。",
-                    "10連続？すごい。"
-                ],
-                "streak_15": [
-                    "15連続はすごすぎる。",
-                    "15連続はすごすぎる。"
-                ],
-                "streak_20": [
-                    "20連続？信じられない。",
-                    "20連続？信じられない。"
-                ]
-            },
-            "shooter": {
-                "swish": [
-                    "きれいに決まった！",
-                    "きれいに決まった！"
-                ],
-                "bank": [
-                    "バンクショットも成功。",
-                    "バンクショットも成功。"
-                ],
-                "rim_in": [
-                    "跳ねて入った！",
-                    "跳ねて入った！"
-                ],
-                "rim_out": [
-                    "惜しい。",
-                    "惜しい。"
-                ],
-                "air_ball": [
-                    "リングはそっちじゃないよ。",
-                    "リングはそっちじゃないよ。"
-                ],
-                "shot_missed": [
-                    "まだチャンスはある。",
-                    "まだチャンスはある。"
-                ],
-                "game_over": [
-                    "もう一回やる？",
-                    "もう一回やる？"
-                ],
-                "long_aim": [
-                    "そろそろ投げよう。",
-                    "そろそろ投げよう。"
-                ],
-                "close_to_record": [
-                    "記録まであと少し。",
-                    "記録まであと少し。"
-                ],
-                "new_record": [
-                    "新記録！",
-                    "新記録！"
-                ],
-                "streak_5": [
-                    "5連続成功！",
-                    "5連続成功！"
-                ],
-                "streak_10": [
-                    "10連続？すごい。",
-                    "10連続？すごい。"
-                ],
-                "streak_15": [
-                    "15連続はすごすぎる。",
-                    "15連続はすごすぎる。"
-                ],
-                "streak_20": [
-                    "20連続？信じられない。",
-                    "20連続？信じられない。"
-                ]
-            },
-            "duel": {
-                "swish": [
-                    "きれいに決まった！",
-                    "きれいに決まった！"
-                ],
-                "bank": [
-                    "バンクショットも成功。",
-                    "バンクショットも成功。"
-                ],
-                "rim_in": [
-                    "跳ねて入った！",
-                    "跳ねて入った！"
-                ],
-                "rim_out": [
-                    "惜しい。",
-                    "惜しい。"
-                ],
-                "air_ball": [
-                    "リングはそっちじゃないよ。",
-                    "リングはそっちじゃないよ。"
-                ],
-                "shot_missed": [
-                    "まだチャンスはある。",
-                    "まだチャンスはある。"
-                ],
-                "game_over": [
-                    "もう一回やる？",
-                    "もう一回やる？"
-                ],
-                "long_aim": [
-                    "そろそろ投げよう。",
-                    "そろそろ投げよう。"
-                ],
-                "close_to_record": [
-                    "記録まであと少し。",
-                    "記録まであと少し。"
-                ],
-                "new_record": [
-                    "新記録！",
-                    "新記録！"
-                ],
-                "streak_5": [
-                    "5連続成功！",
-                    "5連続成功！"
-                ],
-                "streak_10": [
-                    "10連続？すごい。",
-                    "10連続？すごい。"
-                ],
-                "streak_15": [
-                    "15連続はすごすぎる。",
-                    "15連続はすごすぎる。"
-                ],
-                "streak_20": [
-                    "20連続？信じられない。",
-                    "20連続？信じられない。"
-                ],
-                "clutch": "……これは決めなきゃ。",
-                "excuse": "ああ、少し腕が疲れた。"
-            },
-            "fallback": [
-                "もう一回やろう。"
-            ],
-            "pressure": {
-                "lastTied": "決勝の一投。まばたき禁止。",
-                "lastAhead": "ふん、まだ終わってない。",
-                "lastBehind": "これを決めれば勝ち。",
-                "playerAhead": "なかなかやるね...",
-                "playerBehind": "もっと押して。"
-            },
-            "horse": {
-                "nekoMiss": "再現できなかったね。{{letters}} を追加。",
-                "playerMiss": "あなたにも {{letters}} を追加。"
-            },
-            "mindGame": [
-                "手が震えてるよ。",
-                "落ち着いて狙って。",
-                "この距離は近くないよ。"
-            ],
-            "easterEgg": {
-                "lateNight": "こんな時間までシュート？",
-                "xmas": "ベルも飾ったのに、まだ投げる？",
-                "newYear": "あけましておめでとう！",
-                "swish3": "チートしてない？",
-                "swish5": "……リングを確認しないと。",
-                "airball3": "……少し休んだら？"
-            }
-        },
-        "mood": {
-            "happySuffix": " ♪",
-            "sadPrefix": "……",
-            "surprisedPrefix": "えっ？！"
-        }
+     "badminton": {
+         "title": "バドミントンチャレンジ - Badminton",
+         "modeSwitcher": "バドミントンモード",
+         "mode": {
+             "spectator": "フリー練習",
+             "shooter": "バドミントンチャレンジ",
+             "duel": "Yui と対戦",
+             "timed": "タイムアタック",
+             "horse": "HORSE"
+         },
+         "hud": {
+             "score": "スコア {{score}}",
+             "streak": "連続成功 {{streak}}",
+             "record": "最長 {{distance}}",
+             "duelScore": "あなた {{player}} - {{neko}} Neko",
+             "duelMisses": "ミス あなた {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+             "round": "ラウンド {{round}}/{{max}}",
+             "timer": "{{seconds}} 秒",
+             "practice": "フリー練習",
+             "yourTurn": "あなたの番",
+             "nekoTurn": "Neko のショット",
+             "horseLetters": "あなた {{player}} / Neko {{neko}}",
+             "horseChallenge": "再現 {{distance}} {{angle}}°",
+             "horseSet": "お題ターン",
+             "unlimitedAttempts": "無制限",
+             "chances": "残り {{count}}",
+             "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
+             "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
+             "duelTitle": "Neko 対戦：あなたと Neko が交互にショットします",
+             "timedTitle": "タイムアタック：60 秒間は何度でも打てます",
+             "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
+             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+             "on": "オン",
+             "off": "オフ"
+         },
+         "result": {
+             "title": "ゲーム終了",
+             "leaderboard": "ランキングを見る",
+             "stats": "統計を見る",
+             "retry": "もう一度",
+             "rating": "操作評価：{{rating}}",
+             "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+             "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+             "horse": "HORSE結果：{{outcome}} | あなた {{player}} / Neko {{neko}} | 成功：{{made}} | 最高連続：{{best}}",
+             "timed": "タイムアタック：成功 {{made}} 本、最長連続 {{best}}、スコア {{score}}",
+             "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
+             "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
+             "attemptsSummary": "ショット概要：{{summary}}",
+             "personalBest": "自己ベスト：{{score}}点",
+             "globalRank": "世界順位：#{{rank}} / {{total}}",
+             "outcome": {
+                 "youWin": "あなたの勝ち",
+                 "nekoWin": "Neko の勝ち",
+                 "tie": "引き分け",
+                 "undecided": "未決着"
+             }
+         },
+         "leaderboard": {
+             "title": "ランキング",
+             "global": "グローバル",
+             "local": "ローカル",
+             "shooter": "ショット",
+             "duel": "対戦",
+             "empty": "記録はまだありません",
+             "totalPlayers": "プレイヤー {{count}}",
+             "yourBest": "自己ベスト #{{rank}} / {{score}}点",
+             "recent": "最近 {{count}} 試合",
+             "loading": "読み込み中...",
+             "mode": {
+                 "shooter": "ショット",
+                 "duel": "対戦",
+                 "timed": "タイム",
+                 "horse": "HORSE",
+                 "spectator": "観戦"
+             }
+         },
+         "debug": {
+             "title": "デバッグパネル",
+             "collapse": "折りたたむ",
+             "hide": "隠す",
+             "distance": "距離:",
+             "power": "パワー:",
+             "event": "イベント:",
+             "streak": "連続:",
+             "reset": "リセット",
+             "guide": "ガイド線",
+             "sweet": "スイートスポット",
+             "markers": "距離目盛り",
+             "readout": {
+                 "modeState": "モード={{mode}}  状態={{state}}",
+                 "distance": "距離={{px}}px ({{meters}})",
+                 "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
+                 "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
+                 "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
+                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}",
+                 "horse": "HORSE: あなた {{player}} / Neko {{neko}} phase={{phase}}"
+             }
+         },
+         "stats": {
+             "title": "個人統計",
+             "close": "閉じる",
+             "totalShots": "ショット={{total}}  成功={{made}}",
+             "farRate": "300px+ 成功率={{rate}}",
+             "trend": "最近の傾向={{trend}}",
+             "none": "なし"
+         },
+         "theme": {
+             "next": "テーマ切替",
+             "current": "テーマ：{{theme}}",
+             "changed": "テーマ {{theme}}",
+             "labels": {
+                 "default": "バドミントンコート",
+                 "miami": "マイアミの夕暮れ"
+             }
+         },
+         "court": {
+             "netFront": "ネット前",
+             "serviceLine": "サービスライン",
+             "backCourt": "バックコート",
+             "baseline": "ベースライン"
+         },
+         "close": "閉じる",
+         "audio": {
+             "controls": "ゲーム音声"
+         },
+         "memoryOption": {
+             "label": "この試合の会話を記憶に入れる（デフォルトはオフ）",
+             "hint": "オフの場合、プレイヤー入力、NEKOの返信、イベント返信、試合後の要約、続きの文脈は記憶に保存・参照されません。"
+         },
+         "table": {
+             "score": "スコア",
+             "bestStreak": "最高連続",
+             "farthest": "最長",
+             "mode": "モード",
+             "date": "日付"
+         },
+         "state": {
+             "ready": "準備",
+             "in_flight": "飛行中",
+             "game_over": "終了",
+             "neko_thinking": "Neko思考中"
+         },
+         "toast": {
+             "difficulty": "難度 {{difficulty}}",
+             "nekoShoot": "Neko のショット",
+             "nekoThinking": "Neko が考え中",
+             "nekoTurn": "Neko の番",
+             "copyNeko": "Neko を再現",
+             "nekoFailed": "Neko のお題失敗",
+             "yourSet": "お題を出す番",
+             "yourTurn": "あなたの番",
+             "reset": "リセットしました",
+             "featureToggled": "{{feature}} {{state}}",
+             "feature": {
+                 "guide": "ガイド線",
+                 "sweet": "パワースイートスポット",
+                 "bgm": "BGM",
+                 "markers": "距離目盛り"
+             },
+             "state": {
+                 "on": "オン",
+                 "off": "オフ"
+             }
+         },
+         "tutorial": {
+             "aim": "マウスを上下に動かして角度を調整",
+             "charge": "左クリック長押しでチャージ",
+             "release": "離してスイング！"
+         },
+         "shot": {
+             "unknown": "不明",
+             "attempt": "#{{index}} {{distance}} {{type}}",
+             "line_in": "ライン上",
+             "net_touch": "ネットタッチ",
+             "zone_in": "ゾーン内",
+             "out": "アウト",
+             "net": "ネット"
+         },
+         "lines": {
+             "default": {
+                 "shot_missed": [
+                     "まだチャンスはある。",
+                     "まだチャンスはある。"
+                 ],
+                 "game_over": [
+                     "もう一回やる？",
+                     "もう一回やる？"
+                 ],
+                 "long_aim": [
+                     "そろそろ打とう。",
+                     "そろそろ打とう。"
+                 ],
+                 "close_to_record": [
+                     "記録まであと少し。",
+                     "記録まであと少し。"
+                 ],
+                 "new_record": [
+                     "新記録！",
+                     "新記録！"
+                 ],
+                 "streak_5": [
+                     "5連続成功！",
+                     "5連続成功！"
+                 ],
+                 "streak_10": [
+                     "10連続？すごい。",
+                     "10連続？すごい。"
+                 ],
+                 "streak_15": [
+                     "15連続はすごすぎる。",
+                     "15連続はすごすぎる。"
+                 ],
+                 "streak_20": [
+                     "20連続？信じられない。",
+                     "20連続？信じられない。"
+                 ],
+                 "line_in": [
+                     "きれいに決まった！",
+                     "きれいに決まった！"
+                 ],
+                 "net_touch": [
+                     "ネットに触れても成功。",
+                     "ネットに触れても成功。"
+                 ],
+                 "zone_in": [
+                     "跳ねて入った！",
+                     "跳ねて入った！"
+                 ],
+                 "out": [
+                     "惜しい。",
+                     "惜しい。"
+                 ],
+                 "net": [
+                     "ネットに引っかかった。",
+                     "ネットに引っかかった。"
+                 ]
+             },
+             "shooter": {
+                 "shot_missed": [
+                     "まだチャンスはある。",
+                     "まだチャンスはある。"
+                 ],
+                 "game_over": [
+                     "もう一回やる？",
+                     "もう一回やる？"
+                 ],
+                 "long_aim": [
+                     "そろそろ打とう。",
+                     "そろそろ打とう。"
+                 ],
+                 "close_to_record": [
+                     "記録まであと少し。",
+                     "記録まであと少し。"
+                 ],
+                 "new_record": [
+                     "新記録！",
+                     "新記録！"
+                 ],
+                 "streak_5": [
+                     "5連続成功！",
+                     "5連続成功！"
+                 ],
+                 "streak_10": [
+                     "10連続？すごい。",
+                     "10連続？すごい。"
+                 ],
+                 "streak_15": [
+                     "15連続はすごすぎる。",
+                     "15連続はすごすぎる。"
+                 ],
+                 "streak_20": [
+                     "20連続？信じられない。",
+                     "20連続？信じられない。"
+                 ],
+                 "line_in": [
+                     "きれいに決まった！",
+                     "きれいに決まった！"
+                 ],
+                 "net_touch": [
+                     "ネットに触れても成功。",
+                     "ネットに触れても成功。"
+                 ],
+                 "zone_in": [
+                     "跳ねて入った！",
+                     "跳ねて入った！"
+                 ],
+                 "out": [
+                     "惜しい。",
+                     "惜しい。"
+                 ],
+                 "net": [
+                     "ネットに引っかかった。",
+                     "ネットに引っかかった。"
+                 ]
+             },
+             "duel": {
+                 "shot_missed": [
+                     "まだチャンスはある。",
+                     "まだチャンスはある。"
+                 ],
+                 "game_over": [
+                     "もう一回やる？",
+                     "もう一回やる？"
+                 ],
+                 "long_aim": [
+                     "そろそろ打とう。",
+                     "そろそろ打とう。"
+                 ],
+                 "close_to_record": [
+                     "記録まであと少し。",
+                     "記録まであと少し。"
+                 ],
+                 "new_record": [
+                     "新記録！",
+                     "新記録！"
+                 ],
+                 "streak_5": [
+                     "5連続成功！",
+                     "5連続成功！"
+                 ],
+                 "streak_10": [
+                     "10連続？すごい。",
+                     "10連続？すごい。"
+                 ],
+                 "streak_15": [
+                     "15連続はすごすぎる。",
+                     "15連続はすごすぎる。"
+                 ],
+                 "streak_20": [
+                     "20連続？信じられない。",
+                     "20連続？信じられない。"
+                 ],
+                 "clutch": "……これは決めなきゃ。",
+                 "excuse": "ああ、少し腕が疲れた。",
+                 "line_in": [
+                     "きれいに決まった！",
+                     "きれいに決まった！"
+                 ],
+                 "net_touch": [
+                     "ネットに触れても成功。",
+                     "ネットに触れても成功。"
+                 ],
+                 "zone_in": [
+                     "跳ねて入った！",
+                     "跳ねて入った！"
+                 ],
+                 "out": [
+                     "惜しい。",
+                     "惜しい。"
+                 ],
+                 "net": [
+                     "ネットに引っかかった。",
+                     "ネットに引っかかった。"
+                 ]
+             },
+             "fallback": [
+                 "もう一回やろう。"
+             ],
+             "pressure": {
+                 "lastTied": "決勝の一投。まばたき禁止。",
+                 "lastAhead": "ふん、まだ終わってない。",
+                 "lastBehind": "これを決めれば勝ち。",
+                 "playerAhead": "なかなかやるね...",
+                 "playerBehind": "もっと押して。"
+             },
+             "horse": {
+                 "nekoMiss": "再現できなかったね。{{letters}} を追加。",
+                 "playerMiss": "あなたにも {{letters}} を追加。"
+             },
+             "mindGame": [
+                 "手が震えてるよ。",
+                 "落ち着いて狙って。",
+                 "この距離は近くないよ。"
+             ],
+             "easterEgg": {
+                 "lateNight": "こんな時間までショット？",
+                 "xmas": "ベルも飾ったのに、まだ打つ？",
+                 "newYear": "あけましておめでとう！",
+                 "lineIn3": "チートしてない？",
+                 "lineIn5": "……ラインを確認しないと。",
+                 "net3": "……少し休んだら？"
+             }
+         },
+         "mood": {
+             "happySuffix": " ♪",
+             "sadPrefix": "……",
+             "surprisedPrefix": "えっ？！"
+         }
     },
-    "soccer": {
+   "soccer": {
         "exitGame": {
             "button": "ゲームを終了",
             "ending": "ラウンドを終了中…",

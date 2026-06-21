@@ -221,6 +221,24 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
 #   的仍是用户/预设原始 URL, 避免视觉欺骗), 也不动 `config/api_providers
 #   .json` (那是主程序财产, 按规则不能动). 后续若 lanlan 服务端把老域名
 #   也关掉, 只需在这里更新 _FREE_API_FALLBACK 常量, 业务代码零感知.
+#
+# 2026-06-19 复检 (docs/UPSTREAM_SYNC_2026-06.md): 实测 `www.lanlan.tech`、旁路目标
+#   `lanlan.app` 以及相关人员建议的 `www.lanlan.app` **三个域名的 /text/v1/chat/
+#   completions 现在都返回 "STOP ABUSE THE API"** (curl 与 openai SDK 两种客户端结
+#   果一致) —— lanlan 服务端已把老域名口子关掉 (上面预警的情况已发生)。
+#   注意: 代码里 `www.lanlan.app` 实际是主程序**海外免费语音/TTS/realtime (Gemini
+#   代理) 端点** (见 main_logic/omni_realtime_client.py、tts_client/workers/step.py、
+#   wss://www.lanlan.app/tts), 并非文字补全服务; 免费文字端唯一配置是 config/
+#   api_providers.json 的 `https://www.lanlan.tech/text/v1`。换 `www.lanlan.app`
+#   救不了 testbench 的文字链路。
+#   testbench 用的是与主程序完全相同的 ChatOpenAI + SSL context + free-access key 仍
+#   被拦, 说明校验不依赖 TLS 指纹, 而依赖 testbench 无法复制的特征 (最可能是: 免费文
+#   字端要求先有活跃的 `wss://.../core` realtime 会话把客户端登记, 主程序总会先建该
+#   会话故放行, testbench 只发裸文字补全故被判 abuse)。**当前已无可用的免费域名**:
+#   该旁路暂时失效, 不再尝试逆向其防滥用机制。要在 testbench 跑真实 LLM 流程, 请在
+#   Settings → Models 给对应组 (chat/memory/judge/simuser) 配一个可用的付费 provider
+#   + API key; 免费 Lanlan 预设仅对 NEKO 主程序自身可用。
+#   (绝大多数 smoke 用 mock, 不受影响; 仅真实对话/记忆/评分的手测需要可用 key。)
 
 _LANLAN_FREE_BLOCKED_HOSTS: tuple[str, ...] = (
     "www.lanlan.tech",

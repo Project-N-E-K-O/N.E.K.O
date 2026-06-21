@@ -617,7 +617,7 @@ class ComputerUseAdapter:
                 self.last_error = "Agent model not configured"
                 return
 
-            self._llm_client = create_chat_llm(
+            self._llm_client = create_chat_llm(  # noqa: LLM_OUTPUT_BUDGET  # output budget set per-call via invoke_raw(max_completion_tokens=...) (ping vs main call differ); transport timeout set here.
                 model=model,
                 base_url=base_url,
                 api_key=api_key,
@@ -687,7 +687,7 @@ class ComputerUseAdapter:
                     # purely by the per-call ``timeout=timeout_s`` argument
                     # on the ping's ``invoke_raw`` below, which routes
                     # through ``_params()`` without mutating the instance.
-                    self._llm_client = create_chat_llm(
+                    self._llm_client = create_chat_llm(  # noqa: LLM_OUTPUT_BUDGET  # output budget set per-call via invoke_raw(max_completion_tokens=...) (ping vs main call differ); transport timeout set here.
                         model=model,
                         base_url=base_url,
                         api_key=api_key,
@@ -1183,7 +1183,7 @@ class ComputerUseAdapter:
                 # stays accessible. No instance state mutation, so a
                 # background ping running concurrently can't clip this
                 # request's budget.
-                resp = self._llm_client.invoke_raw(
+                resp = self._llm_client.invoke_raw(  # noqa: LLM_INPUT_BUDGET  # agent messages (screenshot + bounded history) capped upstream by the CUA history window; output budget set here per-call.
                     messages,
                     max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,

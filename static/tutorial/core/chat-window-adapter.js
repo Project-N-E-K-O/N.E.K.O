@@ -42,14 +42,24 @@
     function createReactChatTutorialHostAdapter(options) {
         const normalizedOptions = options || {};
         const win = normalizedOptions.window || root || {};
-        const host = normalizedOptions.host || win.reactChatWindowHost || null;
+        const explicitHost = normalizedOptions.host || null;
+
+        function resolveHost() {
+            return explicitHost || (win && win.reactChatWindowHost) || null;
+        }
 
         function callHost(methodName, args) {
+            const host = resolveHost();
             if (!host || typeof host[methodName] !== 'function') {
                 return false;
             }
-            host[methodName].apply(host, args || []);
-            return true;
+            try {
+                host[methodName].apply(host, args || []);
+                return true;
+            } catch (error) {
+                console.warn('[TutorialChatWindowAdapter] host call failed:', methodName, error);
+                return false;
+            }
         }
 
         return {
@@ -99,9 +109,39 @@
         const resolveLocalTarget = typeof normalizedOptions.resolveLocalTarget === 'function'
             ? normalizedOptions.resolveLocalTarget
             : () => null;
+        const beforeExternalizedSpotlight = typeof normalizedOptions.beforeExternalizedSpotlight === 'function'
+            ? normalizedOptions.beforeExternalizedSpotlight
+            : null;
 
         function getExternalKind(targetKey) {
             return registry.getExternalKind(targetKey) || targetKey || '';
+        }
+
+        function getExternalizedRunMeta() {
+            if (
+                interactionTakeover
+                && typeof interactionTakeover.getExternalizedChatTutorialRunId === 'function'
+            ) {
+                const tutorialRunId = interactionTakeover.getExternalizedChatTutorialRunId();
+                if (tutorialRunId) {
+                    return {
+                        tutorialRunId,
+                        pcOverlayRunId: tutorialRunId
+                    };
+                }
+            }
+            return {};
+        }
+
+        function notifyBeforeExternalizedSpotlight(kind) {
+            if (!beforeExternalizedSpotlight) {
+                return;
+            }
+            try {
+                beforeExternalizedSpotlight(kind, getExternalizedRunMeta());
+            } catch (error) {
+                console.warn('[YuiGuideChatWindowAdapter] beforeExternalizedSpotlight failed:', error);
+            }
         }
 
         return {
@@ -124,7 +164,9 @@
                     interactionTakeover
                     && typeof interactionTakeover.setExternalizedChatSpotlight === 'function'
                 ) {
-                    interactionTakeover.setExternalizedChatSpotlight(getExternalKind(targetKey));
+                    const externalKind = getExternalKind(targetKey);
+                    notifyBeforeExternalizedSpotlight(externalKind);
+                    interactionTakeover.setExternalizedChatSpotlight(externalKind);
                     return true;
                 }
                 return false;

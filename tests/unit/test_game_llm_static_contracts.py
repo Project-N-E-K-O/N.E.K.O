@@ -60,6 +60,29 @@ def test_soccer_quick_lines_and_pregame_prompts_are_localized():
 
 
 @pytest.mark.unit
+def test_soccer_realtime_context_posts_local_mutation_headers():
+    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    headers_block = html.split("function _getLocalMutationHeaders()", 1)[1].split(
+        "function _refreshLocalMutationHeaders()",
+        1,
+    )[0]
+    context_block = html.split("async function _sendRealtimeGameContext(source, items = [])", 1)[1].split(
+        "async function _mirrorGameAssistantText",
+        1,
+    )[0]
+
+    assert "window.nekoLocalMutationSecurity" in headers_block
+    assert "getMutationHeaders" in headers_block
+    assert "headers['X-CSRF-Token'] = config.autostart_csrf_token;" in headers_block
+    assert "cache: 'no-store'" in headers_block
+    assert "credentials: 'same-origin'" in context_block
+    assert "headers,\n        body: bodyJson" in context_block
+    assert "await postWithHeaders(await _getLocalMutationHeaders())" in context_block
+    assert "errorPayload.error_code === 'csrf_validation_failed'" in context_block
+    assert "await postWithHeaders(await _refreshLocalMutationHeaders())" in context_block
+
+
+@pytest.mark.unit
 def test_pregame_prompt_must_not_be_format_called():
     """Pregame schema uses literal {} for JSON output; callers must not .format() it.
     If a future change needs a {placeholder}, every JSON literal must be doubled first."""

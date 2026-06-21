@@ -26,6 +26,15 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     
     # Fill in a fake key
     test_key = "sk-test-1234567890"
+    mock_page.evaluate("""
+        () => {
+            const input = document.getElementById('apiKeyInput');
+            if (input) {
+                input.value = '';
+                input.removeAttribute('data-real-key');
+            }
+        }
+    """)
     mock_page.fill("#apiKeyInput", test_key)
     mock_page.evaluate("""
         () => {
@@ -413,6 +422,106 @@ def test_mimo_token_plan_toggle_wraps_below_assist_provider(mock_page: Page, run
     assert metrics["assist"]["width"] <= 600
     assert metrics["row"]["width"] <= metrics["core"]["width"] + 1
     assert metrics["toggle"]["top"] >= metrics["assist"]["bottom"] - 1
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_keeps_settings_scroll_container_stable(mock_page: Page, running_server: str):
+    """Expanding Token Plan at the bottom should not leave the page at the old scroll limit."""
+    mock_page.set_viewport_size({"width": 1816, "height": 1376})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    mock_page.select_option("#assistApiSelect", "mimo")
+    expect(mock_page.locator("#mimoTokenPlanToggleRow")).to_be_visible(timeout=5000)
+
+    metrics = mock_page.evaluate("""
+        async () => {
+            const content = document.querySelector('.container-content');
+            content.scrollTop = content.scrollHeight;
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            const toggle = document.getElementById('useMimoTokenPlan');
+            const beforeMaxScroll = content.scrollHeight - content.clientHeight;
+            const beforeScrollTop = content.scrollTop;
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            const rect = content.getBoundingClientRect();
+            const customRect = document.getElementById('custom-api-section').getBoundingClientRect();
+            const afterMaxScroll = content.scrollHeight - content.clientHeight;
+            return {
+                beforeMaxScroll,
+                beforeScrollTop,
+                afterMaxScroll,
+                afterScrollTop: content.scrollTop,
+                contentBottom: rect.bottom,
+                documentScrollHeight: document.documentElement.scrollHeight,
+                viewportHeight: window.innerHeight,
+                customTop: customRect.top,
+                customDisplay: getComputedStyle(document.getElementById('custom-api-section')).display,
+            };
+        }
+    """)
+
+    # 前提：该视口下内容本就需要滚动，否则 before/after 都为 0，断言失去意义。
+    assert metrics["beforeMaxScroll"] > 0
+    assert abs(metrics["beforeScrollTop"] - metrics["beforeMaxScroll"]) <= 2
+    assert metrics["afterMaxScroll"] > metrics["beforeMaxScroll"]
+    assert abs(metrics["afterScrollTop"] - metrics["afterMaxScroll"]) <= 2
+    assert abs(metrics["contentBottom"] - metrics["viewportHeight"]) <= 2
+    assert metrics["documentScrollHeight"] <= metrics["viewportHeight"] + 2
+    assert metrics["customDisplay"] != "none"
+    assert 0 <= metrics["customTop"] < metrics["viewportHeight"]
+
+
+@pytest.mark.frontend
+def test_mimo_token_plan_does_not_force_scroll_when_not_scrollable(mock_page: Page, running_server: str):
+    """When the settings fit without scrolling, enabling Token Plan must not yank the user to the bottom."""
+    mock_page.set_viewport_size({"width": 1816, "height": 1376})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached", timeout=10000)
+
+    mock_page.select_option("#assistApiSelect", "mimo")
+    expect(mock_page.locator("#mimoTokenPlanToggleRow")).to_be_visible(timeout=5000)
+
+    # Grow the viewport past the content height so the scroll container is no longer
+    # scrollable, exercising the "not scrollable before expansion" boundary.
+    content_height = mock_page.evaluate(
+        "() => document.querySelector('.container-content').scrollHeight"
+    )
+    mock_page.set_viewport_size({"width": 1816, "height": int(content_height) + 400})
+
+    metrics = mock_page.evaluate("""
+        async () => {
+            const content = document.querySelector('.container-content');
+            content.scrollTop = 0;
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            const toggle = document.getElementById('useMimoTokenPlan');
+            const beforeMaxScroll = content.scrollHeight - content.clientHeight;
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            return {
+                beforeMaxScroll,
+                afterMaxScroll: content.scrollHeight - content.clientHeight,
+                afterScrollTop: content.scrollTop,
+                customDisplay: getComputedStyle(document.getElementById('custom-api-section')).display,
+            };
+        }
+    """)
+
+    # 前提：展开前容器不可滚动（maxScroll≈0），覆盖 isApiSettingsScrolledToBottom 的吸底守卫。
+    assert metrics["beforeMaxScroll"] <= 4
+    # 修复点：用户原本在顶部且不可滚动，启用 Token Plan 后不得被强制吸到底部。
+    assert metrics["afterScrollTop"] <= 2
+    assert metrics["customDisplay"] != "none"
 
 
 @pytest.mark.frontend
@@ -851,6 +960,57 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
     """)
 
     assert value == {"url": "ws://localhost:8091/v1", "readonly": False}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("model_type", "follow_provider"),
+    [
+        ("gameMain", "follow_conversation"),
+        ("gameSummary", "follow_summary"),
+    ],
+)
+def test_switching_game_model_away_from_follow_clears_model_readonly(
+    mock_page: Page,
+    running_server: str,
+    model_type: str,
+    follow_provider: str,
+):
+    """Game model IDs must be editable again after leaving follow-conversation/summary modes."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='{follow_provider}']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='custom']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#{model_type}ModelProvider option[value='qwen']", state="attached", timeout=10000)
+
+    value = mock_page.evaluate("""
+        ({ modelType, followProvider }) => {
+            const provider = document.getElementById(`${modelType}ModelProvider`);
+            const model = document.getElementById(`${modelType}ModelId`);
+
+            provider.value = followProvider;
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const followReadonly = model.hasAttribute('readonly');
+
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const customReadonly = model.hasAttribute('readonly');
+
+            model.setAttribute('readonly', 'readonly');
+            provider.value = 'qwen';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            const namedReadonly = model.hasAttribute('readonly');
+
+            return { followReadonly, customReadonly, namedReadonly };
+        }
+    """, {"modelType": model_type, "followProvider": follow_provider})
+
+    assert value == {
+        "followReadonly": True,
+        "customReadonly": False,
+        "namedReadonly": False,
+    }
 
 
 @pytest.mark.frontend

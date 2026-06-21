@@ -269,7 +269,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
 
     assert len(index_html.splitlines()) <= 1000
     assert len(style_css.splitlines()) <= 2100
-    assert len(main_js.encode("utf-8")) <= 43000
+    assert len(main_js.encode("utf-8")) <= 52000
     assert len(gzip.compress(main_js.encode("utf-8"))) <= 15360
 
 

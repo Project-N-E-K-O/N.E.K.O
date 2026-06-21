@@ -35,15 +35,41 @@ class TaskDeduper:
     def __init__(self):
         config_manager = get_config_manager()
         api_config = config_manager.get_model_api_config('summary')
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         self.llm = create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'], temperature=0, max_retries=0,
+            timeout=30,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; tiny JSON normally, but a thinking model's reasoning is covered too
         )
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
-        lines = ["New task:", new_task.strip(), "\nExisting tasks:"]
-        for tid, desc in candidates:
-            lines.append(f"- id={tid}: {desc}")
+        # Input budget: cap each component so the dedup prompt can't blow up on a
+        # pathologically long task description. Use HEAD+TAIL truncation — users
+        # often put context first and the concrete ask last, so a head-only cut
+        # could drop the actual task and make a later identical request look
+        # non-duplicate. Total stays within the same TASK_* token budget.
+        from utils.tokenize import truncate_head_tail_tokens
+        from config import (
+            TASK_SUMMARY_MAX_TOKENS,
+            TASK_DETAIL_MAX_TOKENS,
+            AGENT_DEDUP_CANDIDATES_MAX,
+        )
+        _h_sum = TASK_SUMMARY_MAX_TOKENS // 2
+        _h_det = TASK_DETAIL_MAX_TOKENS // 2
+        lines = [
+            "New task:",
+            truncate_head_tail_tokens(new_task.strip(), _h_sum, _h_sum),
+            "\nExisting tasks:",
+        ]
+        # Cap candidate count so a backlog/flood can't grow the prompt without
+        # bound; with per-item head/tail truncation this gives a real total cap.
+        # Keep the NEWEST candidates (task_registry appends new tasks at the end,
+        # _collect_existing_task_descriptions preserves that order): a user
+        # repeating a recently-queued task must have it included, or the judge
+        # could return non-duplicate and schedule it twice.
+        for tid, desc in candidates[-AGENT_DEDUP_CANDIDATES_MAX:]:
+            lines.append(f"- id={tid}: {truncate_head_tail_tokens(desc, _h_det, _h_det)}")
         lines.append(
             "\nTask: Decide whether the NEW task duplicates ANY existing task (same goal or a strict subset). "
             "Ignore superficial wording differences. Scan the existing tasks; "
@@ -65,7 +91,7 @@ class TaskDeduper:
         for attempt in range(max_retries):
             try:
                 set_call_type("dedup")
-                resp = await self.llm.ainvoke([
+                resp = await self.llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},
                 ])

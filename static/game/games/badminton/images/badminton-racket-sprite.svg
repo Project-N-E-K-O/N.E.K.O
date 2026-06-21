@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="78" height="168" viewBox="0 0 78 168">
+  <defs>
+    <linearGradient id="frame" x1="18" y1="10" x2="64" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8fdff"/>
+      <stop offset="0.48" stop-color="#d9edf5"/>
+      <stop offset="1" stop-color="#7eaec2"/>
+    </linearGradient>
+    <linearGradient id="shaft" x1="36" y1="78" x2="42" y2="129" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dff5ff"/>
+      <stop offset="0.52" stop-color="#658797"/>
+      <stop offset="1" stop-color="#d8eff9"/>
+    </linearGradient>
+    <linearGradient id="grip" x1="32" y1="130" x2="47" y2="163" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3f525d"/>
+      <stop offset="0.55" stop-color="#8299a4"/>
+      <stop offset="1" stop-color="#27323a"/>
+    </linearGradient>
+    <clipPath id="headClip">
+      <path d="M39 8 C23 8 13 22 13 42 C13 65 24 78 39 78 C54 78 65 65 65 42 C65 22 55 8 39 8 Z"/>
+    </clipPath>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M39 78 L39 129" stroke="#071019" stroke-opacity=".16" stroke-width="4.2"/>
+    <path d="M34 161 L44 161 L43 129 L35 129 Z" fill="#071019" fill-opacity=".12"/>
+    <path d="M39 8 C23 8 13 22 13 42 C13 65 24 78 39 78 C54 78 65 65 65 42 C65 22 55 8 39 8 Z" stroke="#071019" stroke-opacity=".28" stroke-width="5"/>
+
+    <path d="M39 78 L39 129" stroke="url(#shaft)" stroke-width="2.4"/>
+    <path d="M35 129 L43 129 L45 161 L33 161 Z" fill="url(#grip)" stroke="#1d2931" stroke-opacity=".38" stroke-width="1"/>
+    <path d="M35 135 L44 133 M35 142 L44 140 M35 149 L44 147 M35 156 L44 154" stroke="#edf9ff" stroke-opacity=".36" stroke-width=".8"/>
+
+    <path d="M34 78 C35 82 43 82 44 78" stroke="#e8f9ff" stroke-opacity=".88" stroke-width="1.4"/>
+    <path d="M39 78 L34 83 M39 78 L44 83" stroke="#d6edf6" stroke-opacity=".75" stroke-width="1"/>
+
+    <path d="M39 8 C23 8 13 22 13 42 C13 65 24 78 39 78 C54 78 65 65 65 42 C65 22 55 8 39 8 Z" stroke="#244a5b" stroke-opacity=".82" stroke-width="3.6"/>
+    <path d="M39 8 C23 8 13 22 13 42 C13 65 24 78 39 78 C54 78 65 65 65 42 C65 22 55 8 39 8 Z" stroke="url(#frame)" stroke-width="1.8"/>
+
+    <g clip-path="url(#headClip)" stroke-width=".62">
+      <path d="M21 20 V70 M27 13 V75 M33 9 V78 M39 8 V79 M45 9 V78 M51 13 V75 M57 20 V70" stroke="#ffffff" stroke-opacity=".62"/>
+      <path d="M16 22 H62 M14 29 H64 M13 36 H65 M13 43 H65 M14 50 H64 M16 57 H62 M20 64 H58 M26 71 H52" stroke="#b8ddea" stroke-opacity=".48"/>
+      <path d="M19 62 L56 17 M18 52 L49 13 M22 70 L63 29 M59 62 L22 17 M60 52 L29 13 M56 70 L15 29" stroke="#ffffff" stroke-opacity=".20"/>
+    </g>
+
+    <path d="M19 18 C16 23 15 29 15 36" stroke="#ffffff" stroke-opacity=".76" stroke-width=".75"/>
+    <path d="M18 20 L15 21 M24 12 L22 10 M32 8 L31 5 M46 8 L47 5 M54 12 L56 10 M60 20 L63 19 M64 32 L67 32 M63 55 L66 56 M56 70 L58 73 M39 78 L39 82 M22 70 L20 73 M15 55 L12 56 M14 32 L11 32" stroke="#244a5b" stroke-opacity=".62" stroke-width=".9"/>
+  </g>
+</svg>

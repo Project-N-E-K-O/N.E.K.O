@@ -17,6 +17,62 @@
         memory_browser: [],
         plugin_dashboard: []
     });
+    const DEFAULT_RESISTANCE_STEP_PATCHES = Object.freeze({
+        interrupt_resist_light: Object.freeze({
+            page: 'home',
+            anchor: '#${p}-container',
+            tutorial: Object.freeze({
+                title: '轻微抵抗',
+                description: '用户轻微试探时的较劲反馈。'
+            }),
+            performance: Object.freeze({
+                bubbleText: '喂！不要拽我啦，现在还没轮到你的回合呢！',
+                bubbleTextKey: 'tutorial.yuiGuide.lines.interruptResistLight1',
+                voiceKey: 'interrupt_resist_light_1',
+                emotion: 'angry',
+                cursorAction: 'wobble',
+                cursorTarget: '#${p}-container',
+                interruptible: true,
+                resistanceVoices: Object.freeze([
+                    '喂！不要拽我啦，现在还没轮到你的回合呢！',
+                    '等一下啦！还没结束呢，不要这么随便打断我啦！'
+                ]),
+                resistanceVoiceKeys: Object.freeze([
+                    'tutorial.yuiGuide.lines.interruptResistLight1',
+                    'tutorial.yuiGuide.lines.interruptResistLight3'
+                ])
+            }),
+            interrupts: Object.freeze({
+                mode: 'theatrical_abort',
+                threshold: 3,
+                throttleMs: 500,
+                resetOnStepAdvance: false
+            })
+        }),
+        interrupt_angry_exit: Object.freeze({
+            page: 'home',
+            anchor: '#${p}-container',
+            tutorial: Object.freeze({
+                title: '生气退出',
+                description: '连续有效打断达到阈值后，进入带演出的 angry exit。'
+            }),
+            performance: Object.freeze({
+                bubbleText: '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
+                bubbleTextKey: 'tutorial.yuiGuide.lines.interruptAngryExit',
+                voiceKey: 'interrupt_angry_exit',
+                emotion: 'angry',
+                cursorAction: 'none',
+                cursorTarget: '#${p}-container',
+                interruptible: true
+            }),
+            interrupts: Object.freeze({
+                mode: 'theatrical_abort',
+                threshold: 3,
+                throttleMs: 500,
+                resetOnStepAdvance: false
+            })
+        })
+    });
 
     function deepFreeze(value) {
         if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
@@ -114,6 +170,11 @@
 
     Object.keys(day1Steps).forEach(function (id) {
         steps[id] = createStepFromPatch(id, day1Steps[id]);
+    });
+    Object.keys(DEFAULT_RESISTANCE_STEP_PATCHES).forEach(function (id) {
+        if (!steps[id]) {
+            steps[id] = createStepFromPatch(id, DEFAULT_RESISTANCE_STEP_PATCHES[id]);
+        }
     });
 
     const guideSceneOrder = day1Guide.sceneOrder && typeof day1Guide.sceneOrder === 'object'

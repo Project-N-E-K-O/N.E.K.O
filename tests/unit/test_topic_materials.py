@@ -7,17 +7,15 @@ from main_logic.topic.materials import (
 
 
 @pytest.mark.asyncio
-async def test_enrich_topic_materials_online_defaults_to_search_fetcher():
+async def test_enrich_topic_materials_online_uses_default_prepare_intents():
     calls = []
 
-    async def fake_news(keyword, limit):
-        calls.append(("news", keyword, limit))
+    async def fake_video(keyword, limit):
+        calls.append(("video", keyword, limit))
         return {
             "success": True,
             "search": {
-                "results": [
-                    {"title": "白车补漆避坑指南", "url": "https://example.test/news"}
-                ]
+                "results": [{"title": "白车补漆避坑指南", "url": "https://example.test/video"}]
             },
         }
 
@@ -34,22 +32,21 @@ async def test_enrich_topic_materials_online_defaults_to_search_fetcher():
     materials = [
         {
             "interest": "我的车是白色的，不会给我用差漆吧，有色差就不好看了",
-            "media_intent": ["news"],
             "keywords": ["补漆"],
         }
     ]
 
     enriched = await enrich_topic_materials_online(
         materials,
-        fetchers={"news": fake_news, "meme": fake_meme},
+        fetchers={"video": fake_video, "meme": fake_meme},
         max_materials=1,
     )
 
-    assert [call[0] for call in calls] == ["news"]
+    assert [call[0] for call in calls] == ["video", "meme"]
     hint = enriched[0]["material_hint"]
     assert "白车补漆避坑指南" in hint["summary"]
-    assert hint["links"][0]["type"] == "news"
-    assert not hint["meme_keyword"]
+    assert hint["links"][0]["type"] == "video"
+    assert hint["meme_keyword"] == "补漆"
 
 
 @pytest.mark.asyncio
@@ -72,7 +69,6 @@ async def test_enrich_prefers_deep_query_over_keywords():
             "interest": "x",
             "keywords": ["floor", "kw"],
             "deep_query": "deep derived query 关键",
-            "media_intent": ["news"],
         }
     ]
 
@@ -97,7 +93,6 @@ async def test_enrich_topic_materials_online_respects_explicit_empty_fetchers(mo
         {
             "interest": "留学",
             "hook": "接住用户对留学的犹豫",
-            "media_intent": ["news"],
         }
     ]
 
@@ -133,7 +128,6 @@ async def test_enrich_topic_materials_online_uses_keywords_as_query_and_marks_on
             "interest": "用户把买车和生活自由感联系在一起",
             "hook": "不要硬讲车，先接住不想被人生流程推着走",
             "keywords": ["年轻人", "买车", "通勤", "养车", "成本"],
-            "media_intent": ["news"],
         }
     ]
 
@@ -171,7 +165,6 @@ async def test_enrich_topic_materials_online_localizes_material_hint_summary():
                 "interest": "moving to a quiet city",
                 "hook": "start from wanting quieter daily life",
                 "keywords": ["quiet city", "moving checklist"],
-                "media_intent": ["news"],
             }
         ],
         fetchers={"news": fake_news},
@@ -201,7 +194,6 @@ async def test_enrich_topic_materials_online_drops_unrelated_online_titles():
     materials = [
         {
             "interest": "吉利银河混动和纯电选择纠结",
-            "media_intent": ["news"],
         }
     ]
 

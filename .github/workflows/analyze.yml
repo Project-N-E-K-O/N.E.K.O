@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru + no-tkinter + no-temperature + prompt-hygiene)
+    name: Python lint (ruff + async-blocking + no-loguru + no-tkinter + no-temperature + prompt-hygiene + llm-budget)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -99,6 +99,24 @@ jobs:
         # Per-line `# noqa: <CODE>` suppression supported. See PR #974 for
         # the reference incident that motivated this lint.
         run: python scripts/check_prompt_hygiene.py
+
+      - name: Enforce LLM budget/timeout discipline (output budget + timeout + input budget)
+        # Project policy: every LLM call must be bounded.
+        #   - LLM_OUTPUT_BUDGET: every create_chat_llm() / ChatOpenAI()
+        #     construction must set a token budget (max_completion_tokens= /
+        #     max_tokens=) AND a timeout=. Without a budget the reply can run
+        #     away (cost + latency + context blow-up); without a timeout a hung
+        #     upstream wedges the async pipeline — neither has a safe default in
+        #     utils/llm_client.py. Sites that set budget/timeout per-call (via
+        #     invoke/ainvoke/..(**overrides)) opt out with a justified
+        #     `# noqa: LLM_OUTPUT_BUDGET`.
+        #   - LLM_INPUT_BUDGET (heuristic): every dynamic LLM call must be
+        #     input-budget-aware (truncate_to_tokens / *_MAX_TOKENS in the
+        #     enclosing function). Intentionally-uncapped sites (user-config /
+        #     OS window title etc., cf. docs/design/llm-prompt-budget.md §6)
+        #     opt out with `# noqa: LLM_INPUT_BUDGET`.
+        # See docs/design/llm-prompt-budget.md for the full contract.
+        run: python scripts/check_llm_budget.py
 
   python-conventions:
     name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk)

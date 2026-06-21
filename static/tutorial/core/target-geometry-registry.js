@@ -84,6 +84,9 @@
             shape: 'rounded-rect',
             fallbackGroup: 'chat-tool-toggle',
             localSelectors: Object.freeze([
+                '#react-chat-window-root .compact-input-tool-item-galgame',
+                '#react-chat-window-root .composer-galgame-btn',
+                '#react-chat-window-root .composer-galgame-option',
                 '#react-chat-window-root [data-avatar-tool-id="galgame"]',
                 '#react-chat-window-root .composer-icon-button[data-avatar-tool-id="galgame"]'
             ])

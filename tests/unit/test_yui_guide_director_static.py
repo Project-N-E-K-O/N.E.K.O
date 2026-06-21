@@ -4,11 +4,14 @@ import re
 
 
 YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/director.js"
+YUI_GUIDE_OVERLAY_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/overlay.js"
+YUI_GUIDE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css/yui-guide.css"
 YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/steps.js"
 YUI_GUIDE_DAY1_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
 SCENE_ORCHESTRATOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/scene-orchestrator.js"
 NEW_USER_ICEBREAKER_PATH = Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+PLUGIN_YUI_GUIDE_RUNTIME_PATH = Path(__file__).resolve().parents[2] / "frontend" / "plugin-manager/src/yui-guide-runtime.ts"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
 
@@ -30,6 +33,36 @@ def _read_interpage() -> str:
 
 def _read_static_locale(locale_name: str) -> dict:
     return json.loads((STATIC_LOCALES_DIR / f"{locale_name}.json").read_text(encoding="utf-8"))
+
+
+def _extract_deep_freeze_registration_block(source: str) -> str:
+    marker = "registerGuide(deepFreeze("
+    start = source.index(marker) + len(marker)
+    assert source[start] == "{"
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError("registerGuide(deepFreeze(...)) block was not closed")
 
 
 def _function_block(source: str, name: str, next_name: str) -> str:
@@ -74,6 +107,69 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
 
     assert compact_capsule_selector in allowed_target_block
     assert compact_input_selector in allowed_target_block
+
+
+def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
+    source = _read_director()
+
+    assert "const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;" in source
+    assert "finishPluginDashboardHandoff(reason) {" in source
+
+    boundary_block = source.split(
+        "        async waitForPluginDashboardPerformanceUntilNarrationBoundary(windowRef, payload, options) {",
+        1,
+    )[1].split(
+        "        async waitForPluginDashboardPerformance(windowRef, payload) {",
+        1,
+    )[0]
+    dashboard_block = source.split(
+        "        async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {",
+        1,
+    )[1].split(
+        "        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {",
+        1,
+    )[0]
+    side_panel_block = source.split(
+        "        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {",
+        1,
+    )[1].split(
+        "        async runDay4AnimationDistanceShowcase(scene, narrationStartedAt) {",
+        1,
+    )[0]
+
+    assert "const performancePromise = this.waitForPluginDashboardPerformance(windowRef, payload).catch(() => false);" in boundary_block
+    assert "this.notifyPluginDashboardNarrationFinished();" in boundary_block
+    assert "this.finishPluginDashboardHandoff('plugin_dashboard_done_grace_timeout');" in boundary_block
+    assert "return await Promise.race([performancePromise, boundaryPromise]);" in boundary_block
+
+    assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in dashboard_block
+    assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in side_panel_block
+    assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in dashboard_block
+    assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in side_panel_block
+
+
+def test_avatar_floating_guides_keep_real_cursor_visible():
+    guide_css = YUI_GUIDE_CSS_PATH.read_text(encoding="utf-8")
+    overlay_source = YUI_GUIDE_OVERLAY_PATH.read_text(encoding="utf-8")
+    director_source = _read_director()
+    plugin_runtime_source = PLUGIN_YUI_GUIDE_RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert not re.search(r"cursor\s*:\s*none\b", guide_css)
+    assert not re.search(r"cursor\s*:\s*none\b", plugin_runtime_source)
+
+    taking_over_block = overlay_source.split("        setTakingOver(active) {", 1)[1].split(
+        "        setInteractionShieldSuppressed(active) {",
+        1,
+    )[0]
+    assert "active ? 'none'" not in taking_over_block
+    assert "style.cursor = '';" in taking_over_block
+
+    resistance_block = director_source.split("        prepareResistanceCursorReveal() {", 1)[1].split(
+        "        playLightResistance(x, y, options) {",
+        1,
+    )[0]
+    assert "style.cursor = 'none';" not in resistance_block
+    assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
 
 
 def test_steps_keep_default_non_home_page_registrations():
@@ -210,6 +306,69 @@ def test_tutorial_chat_streams_finalize_as_sent_on_termination():
     assert "this.finalizeActiveGuideChatMessages();" in destroy_block
 
 
+def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_close():
+    source = _read_director()
+
+    side_panel_block = source.split("        forceHideAvatarFloatingSidePanels() {", 1)[1].split(
+        "        forceHideAvatarFloatingGuideManagedSurfaces() {",
+        1,
+    )[0]
+    managed_surface_block = source.split(
+        "        forceHideAvatarFloatingGuideManagedSurfaces() {",
+        1,
+    )[1].split(
+        "        hideTemporaryAvatarFloatingGuideHud",
+        1,
+    )[0]
+    temporary_hud_block = source.split(
+        "        hideTemporaryAvatarFloatingGuideHud(reason) {",
+        1,
+    )[1].split(
+        "        async expandAvatarFloatingSidePanel",
+        1,
+    )[0]
+    close_panels_block = source.split("        async closeAvatarFloatingGuidePanels(options) {", 1)[1].split(
+        "        isDay1AvatarFloatingScene",
+        1,
+    )[0]
+    termination_block = source.split("        beginTerminationVisualCleanup() {", 1)[1].split(
+        "        async ensureChatVisible",
+        1,
+    )[0]
+    destroy_block = source.split("        destroy() {\n            if (this.destroyed) {", 1)[1].split(
+        "        onKeyDown",
+        1,
+    )[0]
+
+    assert "popupUi.collapseOtherSidePanels(null);" in side_panel_block
+    assert "document.querySelectorAll('[data-neko-sidepanel]')" in side_panel_block
+    assert "this.forceHideManagedPanel('settings');" in managed_surface_block
+    assert "this.forceHideManagedPanel('agent');" in managed_surface_block
+    assert "this.forceHideAvatarFloatingSidePanels();" in managed_surface_block
+    assert "this.avatarFloatingGuideTemporaryHudShown" in temporary_hud_block
+    assert "!this.avatarFloatingGuideTemporaryHudWasVisible" in temporary_hud_block
+    assert "window.AgentHUD.hideAgentTaskHUD();" in temporary_hud_block
+
+    assert close_panels_block.index("this.forceHideAvatarFloatingGuideManagedSurfaces();") < close_panels_block.index(
+        "await this.closeManagedPanels().catch"
+    )
+    assert close_panels_block.index("this.hideTemporaryAvatarFloatingGuideHud('close-panels');") < close_panels_block.index(
+        "await this.closeManagedPanels().catch"
+    )
+    assert termination_block.index("this.forceHideAvatarFloatingGuideManagedSurfaces();") < termination_block.index(
+        "this.closeManagedPanels().catch"
+    )
+    assert termination_block.index("this.hideTemporaryAvatarFloatingGuideHud('termination-cleanup');") < termination_block.index(
+        "this.closeManagedPanels().catch"
+    )
+    assert destroy_block.index("this.forceHideAvatarFloatingGuideManagedSurfaces();") < destroy_block.index(
+        "this.closeManagedPanels().catch"
+    )
+    assert destroy_block.index("this.hideTemporaryAvatarFloatingGuideHud('destroy');") < destroy_block.index(
+        "this.closeManagedPanels().catch"
+    )
+
+
 def test_new_tutorial_chat_line_finishes_previous_stream_before_append():
     source = _read_director()
 
@@ -294,3 +453,12 @@ def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
     assert static_intro == fallback_text
     assert not fallback_text.endswith("喵！")
     assert fallback_text.endswith("啦！")
+
+
+def test_day1_audio_files_by_key_preserves_locale_override_map():
+    day1_source = _read_day1_guide()
+    registration_block = _extract_deep_freeze_registration_block(day1_source)
+
+    assert "audioFilesByKey: audioFilesByKey" in registration_block
+    assert "audioFileOverridesByKey: audioFilesByKey" in registration_block
+    assert "intro_basic: audioFilesForAllLocales(audioFileNames.intro_basic)" not in registration_block

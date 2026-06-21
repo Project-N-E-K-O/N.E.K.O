@@ -354,45 +354,29 @@ def test_agent_router_has_internal_analyze_request_endpoint():
     assert "/internal/analyze_request" in paths
 
 
-def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
+def test_yui_guide_steps_registry_uses_day1_round_without_legacy_handoff_scenes():
     source = Path("static/tutorial/yui-guide/steps.js").read_text(encoding="utf-8")
+    day1_source = Path("static/tutorial/yui-guide/days/day1-home-guide.js").read_text(encoding="utf-8")
 
+    assert "const CONTRACT_VERSION = 2;" in source
+    assert "round: {" in day1_source
     for expected in (
-        "const CONTRACT_VERSION = 2;",
-        "'intro_basic'",
-        "'takeover_capture_cursor'",
-        "'takeover_plugin_preview'",
-        "'takeover_settings_peek'",
-        "'takeover_return_control'",
-        "'handoff_api_key'",
-        "'handoff_memory_browser'",
-        "'handoff_plugin_dashboard'",
-        "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
-        "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
-        "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
-        "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
-        "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
-        "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
-        "api_key: ['api_key_intro']",
-        "memory_browser: ['memory_browser_intro']",
-        "plugin_dashboard: ['plugin_dashboard_landing']",
+        "id: 'day1_intro_activation'",
+        "id: 'day1_intro_greeting'",
+        "id: 'day1_takeover_capture_cursor'",
+        "id: 'day1_takeover_return_control'",
     ):
-        assert expected in source
+        assert expected in day1_source
 
-    # Keep concatenated literals here so search/grep does not match this test file.
-    for removed in (
-        "'intro_" + "proactive'",
-        "'intro_" + "cat_paw'",
-        "steps.intro_" + "proactive",
-        "steps.intro_" + "cat_paw",
-        "'handoff_steam_workshop'",
-        "steps.handoff_steam_workshop",
-        "steps.steam_workshop_intro",
-        "steam_workshop: ['steam_workshop_intro']",
-        "/steam_workshop_manager",
+    for obsolete in (
+        "api_key_intro",
+        "memory_browser_intro",
+        "plugin_dashboard_landing",
+        "handoff_steam_workshop",
+        "steam_workshop_intro",
     ):
-        assert removed not in source
-
+        assert obsolete not in source
+        assert obsolete not in day1_source
 
 def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
@@ -623,6 +607,7 @@ _YUI_RUNTIME_SCRIPTS = (
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/steps.js",
+    "tutorial/avatar/yui-standin.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
     "avatar-performance-stage.js",
@@ -671,6 +656,7 @@ def test_home_template_loads_yui_wakeup_before_director():
     positions = [
         _script_tag_position(source, name)
         for name in (
+            "tutorial/avatar/yui-standin.js",
             "tutorial/yui-guide/overlay.js",
             "tutorial/yui-guide/page-handoff.js",
             "avatar-performance-stage.js",
@@ -1029,17 +1015,20 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
-def test_emotion_manager_templates_use_static_asset_version_for_tutorial_runtime():
+def test_legacy_tutorial_pages_do_not_load_universal_tutorial_runtime():
     for template_path in (
         "templates/live2d_emotion_manager.html",
         "templates/mmd_emotion_manager.html",
         "templates/vrm_emotion_manager.html",
+        "templates/model_manager.html",
+        "templates/live2d_parameter_editor.html",
+        "templates/character_card_manager.html",
+        "templates/voice_clone.html",
     ):
         source = Path(template_path).read_text(encoding="utf-8")
-        assert "tutorial/core/skip-controller.js?v={{ static_asset_version|default('0', true) }}" in source
-        assert "tutorial/avatar/reload-controller.js?v={{ static_asset_version|default('0', true) }}" in source
-        assert "tutorial/core/universal-manager.js?v={{ static_asset_version|default('0', true) }}" in source
-
+        assert "tutorial/core/universal-manager.js" not in source
+        assert "driver.min" not in source
+        assert "tutorial-styles.css" not in source
 
 def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
@@ -1047,8 +1036,6 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "_TUTORIAL_RUNTIME_ASSET_PATHS" in source
     assert '"**/*.js", "**/*.json"' in source
     assert "*_TUTORIAL_RUNTIME_ASSET_PATHS" in source
-    assert '_PROJECT_ROOT / "static/tutorial/core/skip-controller.js"' not in source
-    assert '_PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js"' not in source
 
     from main_routers import pages_router
 
@@ -1056,8 +1043,12 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
         path.relative_to(Path("main_routers/pages_router.py").resolve().parent.parent).as_posix()
         for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     }
-    assert "static/tutorial/core/skip-controller.js" in tracked_paths
-    assert "static/tutorial/avatar/reload-controller.js" in tracked_paths
+    assert "static/tutorial/yui-guide/days/day6-agent-guide.js" in tracked_paths
+    assert "static/tutorial/core/operation-registry.js" in tracked_paths
+    assert "static/tutorial/visual/resistance-controllers.js" in tracked_paths
+    assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
+    assert "static/tutorial/avatar/yui-standin.js" in tracked_paths
+    assert "static/app-interpage.js" in tracked_paths
 
 
 def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
@@ -1074,6 +1065,8 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     for template_path in ("templates/index.html", "templates/chat.html"):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
+        assert "/static/app-interpage.js?v={{ static_asset_version }}" in source
+        assert "/static/app-interpage.js?v={{ react_chat_asset_version }}" not in source
         for asset_path in react_assets:
             assert f"{asset_path}?v={react_version}" in source
             assert f"{asset_path}?v={static_version}" not in source
@@ -1119,133 +1112,105 @@ def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
     assert "neko:tutorial-skipped" in tutorial_source
 
 
-def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
+def test_universal_tutorial_manager_keeps_page_normalization_without_legacy_step_bridge():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     for expected in (
         "getYuiGuidePageKey(page = this.currentPage)",
         "return 'api_key';",
-        "getPendingYuiGuideResumeScene(page = this.currentPage)",
-        "applyYuiGuideResumeScene(validSteps)",
+        "return pageKey === 'home' && this.isAvatarFloatingGuideRoundRegistered(1);",
+    ):
+        assert expected in source
+
+    for obsolete in (
+        "getPendingYuiGuideResumeScene",
+        "getDirectYuiGuideSceneIdsForCurrentPage",
+        "startYuiGuideSceneSequence",
+        "callYuiGuideDirector",
+        "notifyYuiGuideStepEnter",
+        "notifyYuiGuideStepLeave",
+        "applyYuiGuideResumeScene",
+        "getYuiGuideMappedSceneIds",
         "yuiGuideSceneId: 'api_key_intro'",
         "yuiGuideSceneId: 'memory_browser_intro'",
     ):
-        assert expected in source
+        assert obsolete not in source
 
-
-def test_character_card_manager_tutorial_uses_current_page_and_targets():
+def test_legacy_character_card_manager_tutorial_steps_are_removed():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
-    steps_start = source.index("    getCharaManagerSteps() {")
-    steps_end = source.index("getSettingsSteps()", steps_start)
-    steps_source = source[steps_start:steps_end]
-    wait_start = source.index("waitForCatgirlCards(")
-    wait_end = source.index("getTargetCatgirlBlock()", wait_start)
-    wait_source = source[wait_start:wait_end]
-
-    for expected in (
-        "path.includes('character_card_manager') || path.includes('chara_manager')",
-    ):
-        assert expected in source
-
-    for expected in (
-        "element: '#master-profile-section'",
-        "element: '#character-cards-content'",
-        "element: '.chara-add-btn'",
-        "element: '.chara-card-item:first-child, .chara-list-item:first-child'",
-        "element: '.chara-card-item:first-child .card-action-btn.switch-btn, .chara-list-item:first-child .list-action-btn.switch-btn'",
-    ):
-        assert expected in steps_source
-
-    for expected in (
-        "document.getElementById('chara-cards-container')",
-        "document.querySelector('.chara-card-item, .chara-list-item')",
-    ):
-        assert expected in wait_source
+    template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
 
     for obsolete in (
-        "element: '#master-section'",
-        "element: '#catgirl-section'",
+        "getCharaManagerSteps",
+        "waitForCatgirlCards",
+        "prepareCharaManagerForTutorial",
+        "cleanupCharaManagerTutorialIds",
+        "path.includes('character_card_manager')",
+        "tutorial/core/universal-manager.js",
+        "driver.min",
+        "tutorial-styles.css",
     ):
-        assert obsolete not in steps_source
+        if obsolete.startswith("tutorial/") or obsolete == "driver.min" or obsolete == "tutorial-styles.css":
+            assert obsolete not in template_source
+        else:
+            assert obsolete not in source
+
+def test_legacy_character_card_manager_tutorial_prepare_helpers_are_removed():
+    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     for obsolete in (
-        "document.getElementById('catgirl-list')",
-        "document.querySelector('.catgirl-block:first-child')",
+        "async prepareCharaManagerForTutorial()",
+        "cleanupCharaManagerTutorialIds()",
+        "async _ensureCharaManagerExpanded()",
+        "async onStepChange()",
+        ".catgirl-block",
+        ".catgirl-details",
+        ".catgirl-expand",
     ):
-        assert obsolete not in wait_source
+        assert obsolete not in source
 
-
-def test_character_card_manager_tutorial_prepare_helpers_use_current_card_selectors():
-    source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
-    prepare_start = source.index("async prepareCharaManagerForTutorial()")
-    prepare_end = source.index("cleanupCharaManagerTutorialIds()", prepare_start)
-    prepare_source = source[prepare_start:prepare_end]
-    ensure_start = source.index("async _ensureCharaManagerExpanded()")
-    ensure_end = source.index("createHelpButton()", ensure_start)
-    ensure_source = source[ensure_start:ensure_end]
-    step_change_start = source.index("async onStepChange()")
-    step_change_end = source.index("onTutorialEnd()", step_change_start)
-    step_change_source = source[step_change_start:step_change_end]
-
-    for helper_source in (prepare_source, ensure_source):
-        assert ".chara-card-item" in helper_source
-        assert ".chara-list-item" in helper_source
-        assert ".catgirl-block" not in helper_source
-        assert ".catgirl-details" not in helper_source
-        assert ".catgirl-expand" not in helper_source
-
-    assert ".chara-card-item:first-child, .chara-list-item:first-child" in ensure_source
-    assert ".catgirl-block:first-child" not in step_change_source
-
-
-def test_universal_tutorial_manager_blocks_user_scroll_during_tutorial():
+def test_universal_tutorial_manager_uses_scoped_scroll_lock_only():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     for expected in (
         "_tutorialScrollBlockOptions = { capture: true, passive: false }",
         "blockTutorialScrollEvent(event)",
         "event.preventDefault();",
-        "window.addEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
-        "window.addEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
-        "window.removeEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
-        "window.removeEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "this._tutorialScrollBlockResources.addEventListener(window, 'wheel'",
+        "this._tutorialScrollBlockResources.addEventListener(window, 'touchmove'",
+        "this._tutorialScrollBlockResources.destroy();",
     ):
         assert expected in source
 
+    for obsolete in (
+        "blockTutorialPointerEvent",
+        "blockNekoTutorialClickEvent",
+        "isTutorialControlEventTarget",
+        "window.addEventListener('wheel'",
+        "window.removeEventListener('wheel'",
+    ):
+        assert obsolete not in source
 
-def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
+def test_universal_tutorial_manager_does_not_install_legacy_page_click_blockers():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
-    for expected in (
+    for obsolete in (
         "blockTutorialPointerEvent(event)",
+        "blockTutorialPointerEvents()",
+        "blockNekoTutorialClickEvent(event)",
         "isTutorialControlEventTarget(target)",
-        "if (this.currentPage !== 'chara_manager') return;",
-        "target.closest('.driver-popover, #neko-tutorial-skip-btn')",
-        "event.stopImmediatePropagation();",
-        "window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.addEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.addEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.addEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.removeEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.removeEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.removeEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
-        "window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "driver-popover",
+        "driver-overlay",
+        "_tutorialPointerBlockHandler",
+        "_nekoTutorialClickBlockHandler",
     ):
-        assert expected in source
+        assert obsolete not in source
 
-
-def test_universal_tutorial_manager_limits_input_blockers_to_chara_manager_page():
+def test_universal_tutorial_manager_no_longer_has_chara_manager_input_blocker_path():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
-    scroll_start = source.index("blockTutorialScrollEvent(event)")
-    scroll_end = source.index("blockTutorialScroll()", scroll_start)
-    scroll_source = source[scroll_start:scroll_end]
-    pointer_start = source.index("blockTutorialPointerEvent(event)")
-    pointer_end = source.index("blockTutorialPointerEvents()", pointer_start)
-    pointer_source = source[pointer_start:pointer_end]
 
-    assert "if (this.currentPage !== 'chara_manager') return;" in scroll_source
-    assert "if (this.currentPage !== 'chara_manager') return;" in pointer_source
-
+    assert "if (this.currentPage !== 'chara_manager') return;" not in source
+    assert "blockTutorialPointerEvent(event)" not in source
 
 def test_character_card_manager_master_profile_arrow_uses_bubble_style():
     template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
@@ -1282,6 +1247,13 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+    app_ui_source = Path("static/app-ui.js").read_text(encoding="utf-8")
+    live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
+    live2d_model_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
+    visual_runtime_source = Path("static/tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
+    resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
 
     begin_start = avatar_reload_source.index("beginOverride()")
     restore_start = avatar_reload_source.index("restoreOverride()")
@@ -1292,15 +1264,278 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block
     assert "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });" in begin_block
+    assert "this.setPreparing(true);" in begin_block
+    assert begin_block.count("this.setPreparing(true);") == 2
+    assert begin_block.index("this.setPreparing(true);") < begin_block.index(
+        "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });"
+    )
+    assert begin_block.rindex("this.setPreparing(true);") > begin_block.index(
+        "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });"
+    )
+    assert begin_block.rindex("this.setPreparing(true);") < begin_block.index(
+        "this.applyIdentityOverride({"
+    )
+    assert "fadeOutBeforeRestore" not in avatar_reload_source
+    assert "fadeOutTutorialLive2dBeforeRestore" not in tutorial_source
+    avatar_interaction_restore_block = tutorial_source.split(
+        "restoreAvatarFloatingModelInteractionState(reason = 'tutorial-ended') {",
+        1,
+    )[1].split("applyTutorialChatIdentityOverride", 1)[0]
+    assert "snapshotAvatarFloatingModelInteractionState(reason = 'tutorial-started')" in tutorial_source
+    assert "this.snapshotAvatarFloatingModelInteractionState('tutorial-start');" in tutorial_source
+    assert "this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');" in tutorial_source
+    assert "const snapshot = this._avatarFloatingModelLockSnapshot" in avatar_interaction_restore_block
+    assert "if (!snapshot) {" in avatar_interaction_restore_block
+    assert "return;" in avatar_interaction_restore_block
+    assert "window.live2dManager.setLocked(!!snapshot.live2d, { updateFloatingButtons: false });" in avatar_interaction_restore_block
+    assert "window.vrmManager.core.setLocked(!!snapshot.vrm);" in avatar_interaction_restore_block
+    assert "window.mmdManager.core.setLocked(!!snapshot.mmd);" in avatar_interaction_restore_block
+    assert "window.pngtuberManager.setLocked(!!snapshot.pngtuber, { updateFloatingButtons: false });" in avatar_interaction_restore_block
+    assert "modelType === 'live3d'" in tutorial_source
+    assert "live3d_sub_type" in tutorial_source
+    assert "pointerEvents: {" in tutorial_source
+    assert "vrmCanvas: readPointerEvents('vrm-canvas')" in tutorial_source
+    assert "mmdCanvas: readPointerEvents('mmd-canvas')" in tutorial_source
+    assert "const hasSnapshotPointerEvents = snapshot.pointerEvents" in avatar_interaction_restore_block
+    assert "element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';" in avatar_interaction_restore_block
+    assert "activePrefix === 'live2d' || activePrefix === 'pngtuber'" in avatar_interaction_restore_block
+    assert "element.style.removeProperty('pointer-events');" in avatar_interaction_restore_block
+    assert "element.style.pointerEvents = activeLocked ? 'none' : 'auto';" in avatar_interaction_restore_block
+    assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
+    assert ".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))" in tutorial_source
+    assert "clearTutorialLive2dPreparingStyles()" in tutorial_source
+    assert "element.style.removeProperty('opacity');" in tutorial_source
+    assert "element.style.removeProperty('visibility');" in tutorial_source
+    assert "element.style.removeProperty('pointer-events');" in tutorial_source
+    reload_tutorial_block = tutorial_source.split("async reloadTutorialModel(", 1)[1].split(
+        "setTutorialLive2dPreparing(",
+        1,
+    )[0]
+    assert "reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);" in reload_tutorial_block
+    assert "reloadOptions.skipIdleRestore = true;" in reload_tutorial_block
+    assert "reloadOptions.skipPersistentExpressions = true;" in reload_tutorial_block
+    assert "await window.handleModelReload(lanlanName, reloadOptions);" in reload_tutorial_block
+    assert "临时模型热切换失败，改用直接 Live2D 加载" in reload_tutorial_block
+    assert "if (!useTemporaryConfig)" in reload_tutorial_block
+    assert "throw error;" in reload_tutorial_block
+    assert "await this.loadTemporaryTutorialLive2dModel(payload);" in reload_tutorial_block
+    assert "waitForLive2dModelLoadIdle(maxWaitTime = 30000)" in tutorial_source
+    assert "waitForLive2dModelLoadIdleOrThrow(reason = '', maxWaitTime = 30000)" in tutorial_source
+    assert "manager._isLoadingModel === true" in tutorial_source
+    assert "['preparing', 'applying', 'settling'].includes" in tutorial_source
+    assert "await this.waitForLive2dModelLoadIdleOrThrow('before-handle-model-reload');" in reload_tutorial_block
+    assert "await this.waitForLive2dModelLoadIdleOrThrow('before-direct-tutorial-load');" in reload_tutorial_block
+    assert reload_tutorial_block.index(
+        "await this.waitForLive2dModelLoadIdleOrThrow('before-handle-model-reload');"
+    ) < reload_tutorial_block.index("await window.handleModelReload(lanlanName, reloadOptions);")
+    assert "const remainingMs = Math.max(0, maxWaitTime - (Date.now() - startedAt));" in tutorial_source
+    assert "const live2dIdle = await this.waitForLive2dModelLoadIdle(remainingMs);" in tutorial_source
+    assert "return true;" in tutorial_source
+    end_request_block = tutorial_source.split("requestTutorialEnd(reason = 'destroy') {", 1)[1].split(
+        "requestTutorialDestroy(reason = 'destroy') {",
+        1,
+    )[0]
+    assert "this.clearAllTutorialLifecycles(reason);" in end_request_block
+    assert "return this.onTutorialEnd();" in end_request_block
+    assert "this.driver" not in end_request_block
+    reset_block = tutorial_source.split("resetTutorialStartState() {", 1)[1].split(
+        "emitTutorialStarted(",
+        1,
+    )[0]
+    teardown_block = tutorial_source.split("_teardownTutorialUI() {", 1)[1].split(
+        "try {\n            this.hideSkipButton();",
+        1,
+    )[0]
+    assert "this.revealTutorialLive2dPrepared();" in reset_block
+    assert "this.revealTutorialLive2dPrepared();" in teardown_block
+    assert "this.revealPrepared();" in restore_block
     assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7" in tutorial_source
+    launch_block = tutorial_source.split("const launchTutorial = () => {", 1)[1].split(
+        "if (this.isI18nReady())",
+        1,
+    )[0]
+    assert "this.startTutorial();" in launch_block
+    assert "this.shouldStartHomeAvatarFloatingGuideRound()" in launch_block
+    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in launch_block
+    assert "this.startAvatarFloatingGuideRound(round, { source })" in launch_block
+    assert "shouldStartHomeAvatarFloatingGuideRound() {" in tutorial_source
+    assert "getHomeAvatarFloatingGuideStartRound(options = {})" in tutorial_source
+    assert "candidates.push(state.pendingRound, state.manualResetRound, 1);" in tutorial_source
+    start_tutorial_block = tutorial_source.split("startTutorial() {", 1)[1].split(
+        "resetTutorialStartState() {",
+        1,
+    )[0]
+    assert "this.currentPage === 'home'" in start_tutorial_block
+    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in start_tutorial_block
+    assert start_tutorial_block.index("const round = this.getHomeAvatarFloatingGuideStartRound();") < start_tutorial_block.index(
+        "if (!round) {"
+    )
+    assert start_tutorial_block.index("if (!round) {") < start_tutorial_block.index(
+        "this.snapshotAvatarFloatingModelInteractionState('tutorial-start');"
+    )
+    assert start_tutorial_block.index("this.snapshotAvatarFloatingModelInteractionState('tutorial-start');") < start_tutorial_block.index(
+        "this.startAvatarFloatingGuideRound(round, {"
+    )
+    assert "this.startAvatarFloatingGuideRound(round, {" in start_tutorial_block
+    restart_block = tutorial_source.split("async restartCurrentTutorial() {", 1)[1].split(
+        "}\n}\n\n// 创建全局实例",
+        1,
+    )[0]
+    assert "const restartRound = this.getHomeAvatarFloatingGuideStartRound({ includeActive: true });" in restart_block
+    assert "this.resetAvatarFloatingGuideRoundState(restartRound" in restart_block
+    assert "await this.startAvatarFloatingGuideRound(restartRound, { source: 'manual' });" in restart_block
+    assert "this.startYuiGuideSceneSequence(sceneIds" not in tutorial_source
+    assert "getDirectYuiGuideSceneIdsForCurrentPage" not in tutorial_source
+    assert "useYuiOnlyHomeFlow" not in tutorial_source
     assert "suppressInitialIdle: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
+    assert "var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;" in interpage_source
+    assert "suppressPersistentExpressions: skipPersistentExpressions" in interpage_source
+    assert "var frozenScreenPoint = freezePoint ? yuiGuideChatCursorFrozenScreenPoints[freezeKey] : null;" in interpage_source
+    assert "if (!targetPoint && !frozenScreenPoint) return false;" in interpage_source
+    assert "if (event.origin !== window.location.origin) return;" in interpage_source
+    assert "live2dContainer2.style.removeProperty('opacity');" in interpage_source
+    assert "live2dCanvas2.style.removeProperty('opacity');" in interpage_source
+    assert "typeof window.showLive2d === 'function'" in interpage_source
+    live2d_show_block = interpage_source.split("if (typeof window.showLive2d === 'function')", 1)[0].rsplit(
+        "await window.live2dManager.loadModel(newModelPath,",
+        1,
+    )[1]
+    assert "window.lanlan_config.model_type = newModelType;" in live2d_show_block
+    assert "window.lanlan_config.live3d_sub_type = live3dSubType;" in live2d_show_block
+    assert "window.live2dManager.resumeRendering();" in interpage_source
+    assert "function ensureLive2DRenderActive(reason)" in interpage_source
+    assert "ensureLive2DRenderActive('model-reload-live2d');" in interpage_source
+    assert "function scheduleLive2DRenderActivation(reason)" in interpage_source
+    assert "scheduleLive2DRenderActivation('model-reload-live2d');" in interpage_source
+    assert "[80, 300].forEach(function (delayMs)" in interpage_source
+    assert "currentModel.visible = true;" in interpage_source
+    assert "currentModel.alpha = 1;" in interpage_source
+    assert "ticker.start();" in interpage_source
+    assert "ticker.update();" in interpage_source
+    assert "function restoreLive2DDisplaySurface(reason)" in app_ui_source
+    assert "function activateLive2DRenderForDisplay(reason)" in app_ui_source
+    assert "function scheduleLive2DDisplayActivation(reason)" in app_ui_source
+    assert "restoreLive2DDisplaySurface('show-live2d-fast-path');" in app_ui_source
+    assert "scheduleLive2DDisplayActivation('show-live2d-fast-path');" in app_ui_source
+    assert "scheduleLive2DDisplayActivation('show-live2d');" in app_ui_source
+    restore_live2d_surface_block = app_ui_source.split("function restoreLive2DDisplaySurface(reason)", 1)[1].split(
+        "function activateLive2DRenderForDisplay(reason)",
+        1,
+    )[0]
+    assert "document.body.classList.remove('yui-guide-live2d-preparing');" in restore_live2d_surface_block
+    assert "document.body.classList.remove('yui-guide-return-petal-fade');" in restore_live2d_surface_block
+    assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in restore_live2d_surface_block
+    assert "live2dContainer.style.removeProperty('opacity');" in restore_live2d_surface_block
+    assert "live2dContainer.style.setProperty('opacity', '1', 'important');" not in restore_live2d_surface_block
+    assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in restore_live2d_surface_block
+    assert "live2dCanvas.style.setProperty('visibility', 'visible', 'important');" in restore_live2d_surface_block
+    assert "app.renderer.render(app.stage);" in app_ui_source
+    assert "function revealInitialLive2DModelWhenUiReady(reason)" in live2d_init_source
+    assert "window.showLive2d();" in live2d_init_source
+    assert "try {" in live2d_init_source
+    assert "return false;" in live2d_init_source.split("window.showLive2d();", 1)[1].split("revealed = true;", 1)[0]
+    assert "revealInitialLive2DModelWhenUiReady('initial-live2d-load');" in live2d_init_source
+    assert "[0, 50, 150, 300, 600, 1000].forEach((delayMs)" in live2d_init_source
+    assert "window.addEventListener('load', reveal, { once: true });" in live2d_init_source
+    assert "neko-live2d-model-ready" in live2d_model_source
+    assert "this._modelLoadState = 'ready';" in live2d_model_source
+    operation_run_block = visual_runtime_source.split("async handleOperationRun(event, context) {", 1)[1].split(
+        "async handleCompactToolWheelRotateGalgameIntoCenter",
+        1,
+    )[0]
+    assert "let primaryTarget = Object.prototype.hasOwnProperty.call(event, 'primaryTarget')" in operation_run_block
+    assert "if (!primaryTarget) {" in operation_run_block
+    assert "primaryTarget = await this.resolveTarget(event.target || legacyScene.target || '', context, 'primary');" in operation_run_block
+    plugin_skip_block = resistance_source.split("async handlePluginDashboardSkipRequest(data) {", 1)[1].split(
+        "return {",
+        1,
+    )[0]
+    assert "await director.skip('skip', 'skip');" in plugin_skip_block
+    assert "await director.requestTermination('skip', 'skip');" not in plugin_skip_block
+    assert "console.debug('[YuiGuide] interrupt_resist_light step config missing" in resistance_source
+    pagehide_block = director_source.split("onPageHide() {", 1)[1].split(
+        "get mobileTouchInteractionPassthrough()",
+        1,
+    )[0]
+    assert "try {" in pagehide_block
+    assert "Promise.resolve(this.tutorialManager.requestTutorialEnd('pagehide')).catch" in pagehide_block
+    assert "pagehide tutorial end threw" in pagehide_block
+    assert "this.destroy();" in pagehide_block
+    assert live2d_model_source.index("this._modelLoadState = 'ready';") < live2d_model_source.index(
+        "window.dispatchEvent(new CustomEvent('neko-live2d-model-ready'"
+    )
+    assert "临时切换 YUI 失败，中止教程" in round_prelude_source
+    assert "确认 YUI 模型失败，中止教程" in round_prelude_source
+    assert "继续教程" not in round_prelude_source
+    cooperative_end_block = tutorial_source.split(
+        "requestAvatarFloatingGuideCooperativeEnd(reason = 'skip') {",
+        1,
+    )[1].split("handleDesktopYuiGuideSkipRequest", 1)[0]
+    ensure_director_block = tutorial_source.split(
+        "ensureYuiGuideDirector() {",
+        1,
+    )[1].split("isYuiGuideEnabledForPage", 1)[0]
+    assert "this.yuiGuideDirector.destroyed || this.yuiGuideDirector.terminationRequested" in ensure_director_block
+    assert "this.yuiGuideDirector.destroy();" in ensure_director_block
+    assert "this.yuiGuideDirector = null;" in ensure_director_block
+    assert "this.setTutorialEndReason(reason);" not in cooperative_end_block
+    assert "this.clearPcTutorialGlobalOverlay(reason);" not in cooperative_end_block
+    assert "this.invalidateTutorialInteractionApply(reason);" not in cooperative_end_block
+    assert "return this.requestTutorialEnd(reason);" in cooperative_end_block
+    assert "return this.onTutorialEnd();" not in cooperative_end_block
+    clear_pc_overlay_block = tutorial_source.split(
+        "clearPcTutorialGlobalOverlay(reason = 'destroy') {",
+        1,
+    )[1].split("requestTutorialEnd", 1)[0]
+    assert clear_pc_overlay_block.index("const lifecycleEndedMessage = {") < clear_pc_overlay_block.index(
+        "window.nekoTutorialOverlay.clear({"
+    )
+    assert "tutorialRunId: tutorialRunId," in clear_pc_overlay_block
+    assert "Promise.resolve(clearResult).then" in clear_pc_overlay_block
+    assert "window.nekoTutorialOverlay.clear({ reason: rawReason });" in clear_pc_overlay_block
+    assert "window.nekoTutorialOverlay.relayToChat(lifecycleEndedMessage);" in clear_pc_overlay_block
+    assert "window.nekoTutorialOverlay.relayToPet(lifecycleEndedMessage);" in clear_pc_overlay_block
+    assert "window.appInterpage.nekoBroadcastChannel.postMessage(lifecycleEndedMessage);" in clear_pc_overlay_block
+    assert clear_pc_overlay_block.rindex("window.localStorage.removeItem('yuiGuidePcOverlayRunId');") > clear_pc_overlay_block.index(
+        "window.nekoTutorialOverlay.clear({"
+    )
+    assert "restorePreviousModelUiAfterFailedSwitch" not in interpage_source
+    assert "failed to restore previous model UI after switch failure" not in interpage_source
+    assert "ensureTutorialLive2dRenderActive(reason = '', options = {})" in tutorial_source
+    assert "restoreTutorialLive2dDisplayState(reason = '')" in tutorial_source
+    assert "this.restoreTutorialLive2dDisplayState(reason);" in tutorial_source
+    assert "document.body.classList.remove('yui-guide-return-petal-fade');" in tutorial_source
+    assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in tutorial_source
+    assert "_tutorialLive2dRenderActivationToken" in tutorial_source
+    assert "this.ensureTutorialLive2dRenderActive('load-temporary-tutorial-model');" in tutorial_source
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');" in tutorial_source
+    assert "this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load');" in tutorial_source
+    assert "options.scheduleDelayed !== false" in tutorial_source
+    assert "activationToken !== this._tutorialLive2dRenderActivationToken" in tutorial_source
+    assert "[80, 300].forEach((delayMs)" in tutorial_source
+    assert "model.visible = true;" in tutorial_source
+    assert "model.alpha = 1;" in tutorial_source
+    assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in tutorial_source
     assert "temporaryConfig" in interpage_source
     assert "skipIdleRestore" in interpage_source
     assert "suppressToast" in interpage_source
     assert "async function _waitForLive2DManagerIdle" in interpage_source
     assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_day1_round_activation_keeps_wakeup_after_step_registry_split():
+    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    activation_block = director_source.split("async playDay1IntroActivationRoundScene(sceneRunId)", 1)[1].split(
+        "async playDay1IntroGreetingRoundScene(sceneRunId)",
+        1,
+    )[0]
+
+    assert "await this.runWakeupPrelude();" in activation_block
+    assert "this.getStep('intro_basic')" not in activation_block
+    assert activation_block.index("await this.runWakeupPrelude();") < activation_block.index("this.introFlowStarted = true;")
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():
@@ -1325,10 +1560,21 @@ def test_tutorial_lifecycle_modules_export_reusable_controllers():
         "class TutorialSkipController",
         "window.TutorialSkipController = {",
         "show(options)",
+        "resetSkipHandled",
+        "button.removeAttribute('aria-disabled');",
         "hide()",
         "destroy()",
     ):
         assert expected in skip_source
+
+    ensure_styles_block = skip_source.split("ensureStyles() {", 1)[1].split(
+        "        show(options) {",
+        1,
+    )[0]
+    assert "CSS.escape(this.buttonId)" in ensure_styles_block
+    assert "${selector}:hover" in ensure_styles_block
+    assert "html[data-theme='dark'] ${selector}" in ensure_styles_block
+    assert "#neko-tutorial-skip-btn:hover" not in ensure_styles_block
 
     for expected in (
         "class TutorialAvatarReloadController",

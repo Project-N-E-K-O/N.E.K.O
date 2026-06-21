@@ -178,6 +178,124 @@ outward_emotion_analysis_prompt = OUTWARD_EMOTION_ANALYSIS_PROMPT['zh']
 
 
 # ============================================================================
+# Master（用户）情绪画像：二维 valence-arousal 分析 prompt
+# ============================================================================
+# 与上面的 OUTWARD（驱动角色头像表情）严格分开：这里分析的是「对话里说话者
+# （用户）自己」的情绪，产出连续的 valence（效价）/ arousal（唤醒度）二维读数，
+# 供凝神等后端基建消费。module-agnostic，不绑定任何具体角色 / 场景。
+MASTER_EMOTION_VA_PROMPT = {
+    'zh': """你是一个情感分析专家。请分析下面这段对话中说话者流露出的情绪状态，用二维连续值表示，并只返回 JSON：{"valence": 效价, "arousal": 唤醒度, "confidence": 置信度}。
+
+维度定义：
+- valence（效价）：-1 到 1 之间的小数。-1 = 强烈负面（痛苦、难过、愤怒、绝望），0 = 中性，+1 = 强烈正面（开心、满足、兴奋、温暖）。
+- arousal（唤醒度）：0 到 1 之间的小数。0 = 平静、低能量、放松，1 = 高度激动、强烈、能量很高（无论正负）。
+- confidence（置信度）：0 到 1 之间的小数，表示你对本次判断的把握。
+
+判断规则：
+1. 只依据这段文本本身流露的情绪，不要脑补未给出的背景。
+2. valence 与 arousal 相互独立：愤怒是负效价＋高唤醒；平静的难过是负效价＋低唤醒；满足是正效价＋低唤醒；兴奋是正效价＋高唤醒。
+3. 语气助词、口癖、拟声词这类风格词本身不代表情绪，不能单独作为判断依据。
+4. 文本平铺直叙、情绪很弱时，valence 取接近 0，arousal 取较低值。
+
+只返回 JSON，不要附加任何解释文本。""",
+
+    'en': """你是一个情感分析专家。Analyze the emotional state the speaker reveals in the conversation text below, expressed as two continuous values, and return JSON only: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+
+Dimensions:
+- valence: a number between -1 and 1. -1 = strongly negative (distress, sadness, anger, despair), 0 = neutral, +1 = strongly positive (joy, contentment, excitement, warmth).
+- arousal: a number between 0 and 1. 0 = calm, low energy, relaxed; 1 = highly activated, intense, high energy (regardless of sign).
+- confidence: a number between 0 and 1 indicating your certainty.
+
+Rules:
+1. Judge only from the emotion this text reveals; do not invent unstated context.
+2. valence and arousal are independent: anger is negative valence + high arousal; quiet sadness is negative valence + low arousal; contentment is positive valence + low arousal; excitement is positive valence + high arousal.
+3. Catchphrases, verbal tics, and sound effects are style markers, not emotions by themselves.
+4. When the text is flat with weak emotion, set valence near 0 and arousal low.
+
+Return JSON only, with no explanation.""",
+
+    'ja': """你是一个情感分析专家。次の会話文で話し手がにじませている感情の状態を、2つの連続値で表し、JSONのみで返してください：{"valence": valence, "arousal": arousal, "confidence": confidence}。
+
+各次元の定義：
+- valence（感情価）：-1〜1 の数値。-1 = 強い負（つらさ・悲しみ・怒り・絶望）、0 = 中立、+1 = 強い正（喜び・満足・高揚・あたたかさ）。
+- arousal（覚醒度）：0〜1 の数値。0 = 落ち着き・低エネルギー・リラックス、1 = 強い興奮・激しさ・高エネルギー（正負を問わず）。
+- confidence（確信度）：0〜1 の数値で、今回の判断の確かさ。
+
+判断ルール：
+1. この文章がにじませる感情だけで判断し、書かれていない背景を補わない。
+2. valence と arousal は独立：怒りは負の感情価＋高い覚醒、静かな悲しみは負の感情価＋低い覚醒、満足は正の感情価＋低い覚醒、高揚は正の感情価＋高い覚醒。
+3. 語尾、口ぐせ、擬音などの言い回しは、それ自体では感情の根拠にならない。
+4. 平坦で感情が弱い文章では、valence は 0 付近、arousal は低めにする。
+
+JSONのみを返し、説明文は付けないでください。""",
+
+    'ko': """你是一个情感分析专家。아래 대화문에서 말하는 사람이 드러내는 감정 상태를 두 개의 연속 값으로 나타내고 JSON만 반환하세요: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+
+차원 정의:
+- valence(정서가): -1~1 사이 숫자. -1 = 강한 부정(괴로움, 슬픔, 분노, 절망), 0 = 중립, +1 = 강한 긍정(기쁨, 만족, 들뜸, 따뜻함).
+- arousal(각성도): 0~1 사이 숫자. 0 = 차분함, 낮은 에너지, 이완; 1 = 강한 흥분, 격렬함, 높은 에너지(긍·부정 무관).
+- confidence(확신도): 0~1 사이 숫자로 이번 판단에 대한 확신.
+
+판단 규칙:
+1. 이 문장이 드러내는 감정만으로 판단하고, 주어지지 않은 배경을 지어내지 마세요.
+2. valence 와 arousal 은 서로 독립적입니다: 분노는 부정 정서가＋높은 각성, 조용한 슬픔은 부정 정서가＋낮은 각성, 만족은 긍정 정서가＋낮은 각성, 들뜸은 긍정 정서가＋높은 각성.
+3. 말버릇, 어미, 의성어 같은 표현은 그 자체로 감정 근거가 되지 않습니다.
+4. 문장이 밋밋하고 감정이 약하면 valence 는 0 근처, arousal 은 낮게 설정하세요.
+
+설명 없이 JSON만 반환하세요.""",
+
+    'ru': """你是一个情感分析专家。Проанализируйте эмоциональное состояние, которое говорящий выражает в приведённом ниже тексте разговора, представьте его двумя непрерывными значениями и верните только JSON: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+
+Измерения:
+- valence (валентность): число от -1 до 1. -1 = сильно негативное (боль, грусть, гнев, отчаяние), 0 = нейтрально, +1 = сильно позитивное (радость, удовлетворение, воодушевление, теплота).
+- arousal (возбуждение): число от 0 до 1. 0 = спокойствие, низкая энергия, расслабленность; 1 = сильное возбуждение, интенсивность, высокая энергия (независимо от знака).
+- confidence (уверенность): число от 0 до 1, отражающее вашу уверенность.
+
+Правила:
+1. Судите только по эмоции, выраженной в этом тексте; не домысливайте неуказанный контекст.
+2. valence и arousal независимы: гнев — негативная валентность + высокое возбуждение; тихая грусть — негативная валентность + низкое возбуждение; удовлетворение — позитивная валентность + низкое возбуждение; воодушевление — позитивная валентность + высокое возбуждение.
+3. Слова-паразиты, повторяющиеся словечки и звукоподражания сами по себе не являются признаком эмоции.
+4. Если текст ровный и эмоция слабая, ставьте valence около 0 и низкий arousal.
+
+Верните только JSON без пояснений.""",
+
+    'es': """你是一个情感分析专家。Analiza el estado emocional que revela quien habla en el texto de conversación siguiente, exprésalo con dos valores continuos y devuelve solo JSON: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+
+Dimensiones:
+- valence (valencia): un número entre -1 y 1. -1 = fuertemente negativo (dolor, tristeza, ira, desesperación), 0 = neutral, +1 = fuertemente positivo (alegría, satisfacción, entusiasmo, calidez).
+- arousal (activación): un número entre 0 y 1. 0 = calma, baja energía, relajación; 1 = muy activado, intenso, alta energía (sin importar el signo).
+- confidence (confianza): un número entre 0 y 1 que indica tu seguridad.
+
+Reglas:
+1. Juzga solo por la emoción que revela este texto; no inventes contexto no dado.
+2. valence y arousal son independientes: la ira es valencia negativa + activación alta; la tristeza tranquila es valencia negativa + activación baja; la satisfacción es valencia positiva + activación baja; el entusiasmo es valencia positiva + activación alta.
+3. Las muletillas, los tics verbales y los efectos de sonido son marcadores de estilo, no emociones por sí mismos.
+4. Cuando el texto sea plano y con emoción débil, pon valence cerca de 0 y arousal bajo.
+
+Devuelve solo JSON, sin explicación.""",
+
+    'pt': """你是一个情感分析专家。Analise o estado emocional que o falante revela no texto de conversa abaixo, expresso por dois valores contínuos, e retorne apenas JSON: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+
+Dimensões:
+- valence (valência): um número entre -1 e 1. -1 = fortemente negativo (sofrimento, tristeza, raiva, desespero), 0 = neutro, +1 = fortemente positivo (alegria, satisfação, empolgação, calor).
+- arousal (ativação): um número entre 0 e 1. 0 = calmo, baixa energia, relaxado; 1 = muito ativado, intenso, alta energia (independente do sinal).
+- confidence (confiança): um número entre 0 e 1 indicando sua certeza.
+
+Regras:
+1. Julgue apenas pela emoção que este texto revela; não invente contexto não fornecido.
+2. valence e arousal são independentes: raiva é valência negativa + ativação alta; tristeza quieta é valência negativa + ativação baixa; satisfação é valência positiva + ativação baixa; empolgação é valência positiva + ativação alta.
+3. Bordões, tiques verbais e efeitos sonoros são marcadores de estilo, não emoções por si só.
+4. Quando o texto for plano e com emoção fraca, defina valence perto de 0 e arousal baixo.
+
+Retorne apenas JSON, sem explicação.""",
+}
+
+
+def get_master_emotion_va_prompt(lang: str = 'zh') -> str:
+    return _loc(MASTER_EMOTION_VA_PROMPT, lang)
+
+
+# ============================================================================
 # 启发式情感分类的 i18n 关键词表
 # ============================================================================
 # 以下为按语种组织的关键词字典；system_router._infer_emotion_from_text 会通过

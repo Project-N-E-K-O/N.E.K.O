@@ -541,6 +541,10 @@ function sendMessageToMainPage(action, payload = {}) {
 
 
 
+function isModelManagerPopupWindow() {
+    return window.opener !== null;
+}
+
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
 window._modelManagerParameterEditedSinceSave = false;
@@ -2752,7 +2756,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             textSpan = document.getElementById('back-text');
         }
 
-        const isPopupWindow = window.opener !== null;
+        const isPopupWindow = isModelManagerPopupWindow();
         if (textSpan) {
             let text;
             if (isPopupWindow) {
@@ -2838,12 +2842,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             DropdownManager.updateAllButtonText();
             refreshLocalizedInteractiveTexts();
         });
-    }
-
-    // 页面加载时发送消息隐藏主界面（仅在弹出窗口模式下）
-    const isPopupWindow = window.opener !== null;
-    if (isPopupWindow) {
-        sendMessageToMainPage('hide_main_ui');
     }
 
     // 翻译辅助函数：简化翻译调用并处理错误
@@ -8745,6 +8743,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // 根据窗口类型执行不同的操作
+        const isPopupWindow = isModelManagerPopupWindow();
         if (isPopupWindow) {
             // 如果是弹出窗口：只有在本页确实保存过设置时才刷新主界面模型
             // 否则不触发重载，避免“退出即复位/回默认模型”
@@ -10567,12 +10566,6 @@ window.addEventListener('beforeunload', (e) => {
         if (window._modelManagerHasSaved && window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
             sendMessageToMainPage('reload_model', { lanlan_name: window._modelManagerLanlanName });
         }
-        sendMessageToMainPage('show_main_ui');
     }
 
-});
-
-// 确保在页面关闭时也恢复主界面
-window.addEventListener('unload', () => {
-    // 页面卸载时不需要再次发送消息
 });

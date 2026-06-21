@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from plugin.server.domain.errors import ServerDomainError
@@ -140,3 +142,52 @@ async def test_plugin_config_scope_and_payload_validation(monkeypatch: pytest.Mo
     )
     assert send.calls[-1][2] == {"config": {"k": 1}}
 
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_config_update_returns_memory_only_payload_before_persistence_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = _Recorder()
+    started = asyncio.Event()
+
+    async def _stuck_update(*, plugin_id: str, updates: object) -> dict[str, object]:
+        assert plugin_id == "p1"
+        assert updates == {"feature": {"enabled": True}}
+        started.set()
+        await asyncio.sleep(10)
+        return {"config": {"feature": {"enabled": True}}}
+
+    monkeypatch.setattr(
+        plugin_config_module.config_command_service,
+        "update_plugin_config",
+        _stuck_update,
+    )
+
+    await asyncio.wait_for(
+        plugin_config_module.handle_plugin_config_update(
+            {
+                "from_plugin": "p1",
+                "request_id": "r-timeout",
+                "updates": {"feature": {"enabled": True}},
+                "timeout": 0.05,
+            },
+            send,
+        ),
+        timeout=0.5,
+    )
+
+    assert started.is_set()
+    to_plugin, request_id, result, error, timeout = send.calls[-1]
+    assert to_plugin == "p1"
+    assert request_id == "r-timeout"
+    assert error is None
+    assert timeout == 0.05
+    assert result == {
+        "success": False,
+        "plugin_id": "p1",
+        "config": {"feature": {"enabled": True}},
+        "requires_reload": False,
+        "persisted": False,
+        "message": "Config persistence timed out; update is applied in plugin memory only",
+    }

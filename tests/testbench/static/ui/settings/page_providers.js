@@ -40,8 +40,9 @@ export async function renderProvidersPage(host) {
     tbody.append(el('tr', {},
       el('td', { className: 'tbl-key-field' }, p.key,
         p.is_free_version
-          ? el('span', { className: 'badge info', style: { marginLeft: '6px' } },
-              i18n('settings.providers.free_tag'))
+          ? el('span', { className: 'badge warn', style: { marginLeft: '6px' },
+                title: i18n('settings.providers.free_unusable_title') },
+              i18n('settings.providers.free_unusable_tag'))
           : null),
       el('td', {}, p.name),
       el('td', { className: 'mono', style: { fontSize: '12px' } }, p.base_url || '—'),
@@ -56,7 +57,10 @@ export async function renderProvidersPage(host) {
 }
 
 function renderKeyCell(p) {
-  if (p.is_free_version) return el('span', { className: 'badge info' }, 'free');
+  if (p.is_free_version) {
+    return el('span', { className: 'badge warn',
+      title: i18n('settings.providers.free_unusable_title') }, 'free');
+  }
   if (!p.api_key_field) return el('span', { className: 'muted' }, '—');
   if (p.api_key_configured) {
     return el('span', { className: 'badge ok', title: p.api_key_field },
