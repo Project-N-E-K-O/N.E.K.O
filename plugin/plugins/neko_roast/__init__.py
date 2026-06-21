@@ -31,7 +31,7 @@ class NekoRoastPlugin(NekoPluginBase):
             "developer_lookup_bili_user",
             self.developer_lookup_bili_user,
             name="查询 B站用户基础资料",
-            description="开发者模式开启时使用。当用户要求查询 B站 UID、B站空间链接或运行猫娘锐评内置测试案例时使用。内置测试案例传 target='__demo__'。只查询 UID、昵称和头像，不输出锐评。",
+            description="开发者模式开启时使用。当用户要求查询 B站 UID、B站空间链接或运行弹幕锐评内置测试案例时使用。内置测试案例传 target='__demo__'。只查询 UID、昵称和头像，不输出锐评。",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -46,8 +46,8 @@ class NekoRoastPlugin(NekoPluginBase):
         self.register_dynamic_entry(
             "developer_roast_by_bili_url",
             self.developer_roast_by_bili_url,
-            name="查询 B站用户并猫娘锐评",
-            description="开发者模式开启时使用。当用户要求查询并锐评 B站 UID、B站空间链接或运行猫娘锐评内置测试案例时使用。内置测试案例传 target='__demo__'。会查询 UID、昵称和头像，并让猫猫按当前人设输出锐评。",
+            name="查询 B站用户并弹幕锐评",
+            description="开发者模式开启时使用。当用户要求查询并锐评 B站 UID、B站空间链接或运行弹幕锐评内置测试案例时使用。内置测试案例传 target='__demo__'。会查询 UID、昵称和头像，并让猫猫按当前人设输出锐评。",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -97,15 +97,15 @@ class NekoRoastPlugin(NekoPluginBase):
                 self.disable_entry(entry_id)
 
 
-    @ui.context(id="dashboard", title=tr("panel.title", default="猫娘锐评"))
+    @ui.context(id="dashboard", title=tr("panel.title", default="NEKO Live"))
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         return await self._runtime().dashboard_state()
 
     @ui.action(id="update_config", label=tr("actions.update_config.label", default="保存设置"), group="control", order=10, refresh_context=True)
     @plugin_entry(
         id="update_config",
-        name=tr("entries.update_config.name", default="更新猫娘锐评设置"),
-        description=tr("entries.update_config.description", default="更新猫娘锐评的直播模式、开关和安全门设置。"),
+        name=tr("entries.update_config.name", default="更新 NEKO Live 设置"),
+        description=tr("entries.update_config.description", default="更新 NEKO Live 的直播模式、开关和安全门设置。"),
         input_schema={"type": "object", "properties": {}},
     )
     async def update_config_entry(self, **kwargs):
@@ -174,7 +174,7 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="set_live_room",
         name=tr("entries.set_live_room.name", default="设置直播间"),
-        description=tr("entries.set_live_room.description", default="设置猫娘锐评要监听的 B站直播间 ID。"),
+        description=tr("entries.set_live_room.description", default="设置 NEKO Live 要监听的 B站直播间 ID。"),
         input_schema={
             "type": "object",
             "properties": {"room_id": {"type": "string", "description": "房号或直播间链接"}},
@@ -210,7 +210,7 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="connect_live_room",
         name=tr("entries.connect_live_room.name", default="开始监听直播间"),
-        description=tr("entries.connect_live_room.description", default="开启猫娘锐评直播接收状态。v0.1 不复制旧弹幕插件的 WebSocket 实现。"),
+        description=tr("entries.connect_live_room.description", default="开启 NEKO Live 直播接收状态。v0.1 不复制旧弹幕插件的 WebSocket 实现。"),
         input_schema={"type": "object", "properties": {"room_id": {"type": "string", "description": "房号或直播间链接（留空用已配置房间）"}}},
     )
     async def connect_live_room(self, room_id="", **_):
@@ -224,7 +224,7 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="disconnect_live_room",
         name=tr("entries.disconnect_live_room.name", default="停止监听直播间"),
-        description=tr("entries.disconnect_live_room.description", default="停止猫娘锐评直播接收状态。"),
+        description=tr("entries.disconnect_live_room.description", default="停止 NEKO Live 直播接收状态。"),
     )
     async def disconnect_live_room(self, **_):
         connection = await self._runtime().disconnect_live_room()
@@ -263,7 +263,7 @@ class NekoRoastPlugin(NekoPluginBase):
             return Err(SdkError(str(exc)))
 
     @ui.action(id="pause_roast", label=tr("actions.pause.label", default="一键暂停"), group="safety", order=20, refresh_context=True)
-    @plugin_entry(id="pause_roast", name=tr("entries.pause_roast.name", default="暂停锐评"), description=tr("entries.pause_roast.description", default="立即暂停猫娘锐评输出。"))
+    @plugin_entry(id="pause_roast", name=tr("entries.pause_roast.name", default="暂停锐评"), description=tr("entries.pause_roast.description", default="立即暂停弹幕锐评输出。"))
     async def pause_roast(self, **_):
         self._runtime().pause()
         return Ok({"status": "paused"})

@@ -1,9 +1,9 @@
 [plugin]
 id = "neko_roast"
-name = "猫娘锐评"
-description = "直播时对新观众的 B站昵称和头像进行猫娘人设锐评。"
-short_description = "首次弹幕触发头像与昵称锐评。"
-keywords = ["bilibili", "danmaku", "avatar", "roast", "直播", "锐评", "头像", "观众"]
+name = "NEKO Live"
+description = "NEKO 的直播互动中心：连接 B站直播互动，承载弹幕、观众档案与锐评流程。"
+short_description = "NEKO 的直播互动中心。"
+keywords = ["bilibili", "danmaku", "avatar", "roast", "neko_live", "live_center", "直播互动", "弹幕锐评", "观众"]
 passive = true
 version = "0.1.0"
 entry = "plugin.plugins.neko_roast:NekoRoastPlugin"
@@ -24,7 +24,7 @@ enabled = true
 
 [[plugin.ui.panel]]
 id = "main"
-title = "猫娘锐评"
+title = "NEKO Live"
 entry = "ui/panel.tsx"
 context = "dashboard"
 permissions = ["state:read", "config:read", "action:call"]

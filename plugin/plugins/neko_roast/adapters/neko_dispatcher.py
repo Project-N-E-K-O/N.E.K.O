@@ -184,7 +184,7 @@ class NekoDispatcher:
         # 锐评指令由 avatar_roast.build_request 集中构造（自适应焦点 / META / 禁脑补）。
         text = request.prompt_text or ""
         if is_demo_event:
-            text = "（这是猫娘锐评插件的内置演示，也请像真实弹幕一样直接回应。）\n" + text
+            text = "（这是 NEKO Live 弹幕锐评的内置演示，也请像真实弹幕一样直接回应。）\n" + text
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
         if identity.avatar_bytes:
             avatar_bytes, avatar_mime = _normalize_avatar_for_neko_vision(

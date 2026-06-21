@@ -1,6 +1,6 @@
 # neko_roast 开发者指南（从这里开始）
 
-> 面向**接手 / 参与 `neko_roast`（直播中心）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
+> 面向**接手 / 参与 `neko_roast`（NEKO Live）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
@@ -10,7 +10,7 @@
 
 ## 1. 这是什么
 
-`neko_roast`（代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
+`neko_roast`（产品名 **NEKO Live**，历史代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
 全生命周期接进猫娘——开播 → 直播间互动（弹幕 / 进场 / 礼物 / SC / 舰长）→ 私信 → 主播侧自动化。
 
 「首评新观众锐评」（观众首条弹幕 → 猫按人设锐评其昵称 + 头像）只是**第一个落地的垂直切片**。
@@ -167,7 +167,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 第一周建议：
 
 1. 先读本文和 `docs/README.md`，确认文档职责和 Canonical Source。
-2. 再读 `development.md` 的「设计原则」「协作规范」「当前模块」「Pipeline」「直播事件中枢（EventBus）」。
+2. 再读 `development.md` 的「设计原则」「协作规范」「模块 Owner 与 Review Gate」「当前模块」「Pipeline」「直播事件中枢（EventBus）」。
 3. UI 或模块贡献相关任务再读 `ui-architecture.md`。
 4. 写代码前读 `AGENTS.md` 的硬规则和 Reviewer Checklist。
-5. 从文档治理、小型测试补齐、模块文档或窄 Slice 开始；不要第一周就碰 safety guard、dispatcher、credential、B 站协议层或 `panel.tsx` 大重构。
+5. 从文档治理、小型测试补齐、模块文档、fixture 或窄 Slice 开始；第一周不要直接修改 `development.md` 标记的 Protected Modules，例如 safety guard、dispatcher、credential、B 站协议层、Selection 策略、runtime action 或 `panel.tsx` 大重构。

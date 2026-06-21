@@ -61,6 +61,22 @@ If a feature has no matching documentation, treat the implementation as incomple
 - Each dependent PR must state its base PR, merge order, tests run, and rollback/degrade behavior.
 - Phase-specific governance: do not use documentation-governance PRs to implement runtime observability, Gift/SC/Guard behavior, `panel.tsx` refactors, or product changes.
 
+## Review Gate
+
+Protected Modules require core maintainer review. Use role-based ownership from `docs/development.md`「模块 Owner 与 Review Gate」; do not bind review requirements to a specific person.
+
+Protected Modules include:
+
+- Core architecture: `core/contracts.py`, `core/event_bus.py`, `core/module_registry.py`.
+- Event layer: `modules/bili_live_ingest/**`, live protocol parsing, LiveEvent schema, event normalization.
+- Selection: `modules/live_events/**`, score weights, cooldown window, event competition policy.
+- Pipeline / output: `core/pipeline.py`, `core/safety_guard.py`, `adapters/neko_dispatcher.py`.
+- Runtime: `core/runtime.py`, plugin actions, config persistence, hosted-ui context.
+- Stores / privacy: `stores/viewer_store.py`, `stores/audit_store.py`, `stores/credential_store.py`.
+- Dashboard shell: `ui/panel.tsx` navigation shell, module renderer, error boundary, cross-page state.
+
+Open contribution areas include docs, module docs, fixtures, tests, small read-only dashboard display changes, i18n sync, and non-core `config_schema()` changes. New contributors should start there unless a maintainer explicitly scopes a Protected Module change.
+
 ## Reviewer Checklist
 
 Reviewers should check at least:
