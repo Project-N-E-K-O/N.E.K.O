@@ -594,11 +594,17 @@ body.neko-game-active [id$="-lock-icon"] {
     transform-origin: center center;
 }
 
-.neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art {
+.neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art,
+.neko-idle-return-art[data-neko-cat1-play-finishing="true"] {
     width: 175% !important;
     min-width: 175%;
     max-width: none;
     height: 100% !important;
+}
+
+#react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"] {
+    visibility: hidden !important;
+    pointer-events: none !important;
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,
@@ -740,6 +746,7 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
     display: none;
 }

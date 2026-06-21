@@ -3105,6 +3105,12 @@
                         dispatchIdleCat1CompactMirrorState(event.data);
                         break;
                     }
+                    case 'idle_cat1_play_yarn_visibility': {
+                        var cat1PlayYarnCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1PlayYarnCurrentName || event.data.lanlan_name !== cat1PlayYarnCurrentName)) break;
+                        dispatchIdleCat1PlayYarnVisibility(event.data);
+                        break;
+                    }
                     case 'idle_chat_pair_move_bounds': {
                         var pairMoveChatCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
@@ -3553,6 +3559,20 @@
                 surfaceScreenRect: null,
                 anchorRatio: null,
                 catRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleCat1PlayYarnVisibility(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-play-yarn-visibility', {
+            detail: Object.assign({
+                action: 'idle_cat1_play_yarn_visibility',
+                source: '',
+                hidden: false,
                 timestamp: Date.now(),
                 via: 'broadcast-channel'
             }, detail || {}, {

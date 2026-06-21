@@ -984,6 +984,25 @@
         showIdleCat1CompactMirror(detail);
     }
 
+    function handleIdleCat1PlayYarnVisibility(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        var hidden = !!(detail && detail.hidden);
+        var shell = getShell();
+        if (shell && shell.classList) {
+            if (hidden && shell.classList.contains('is-minimized')) {
+                shell.setAttribute('data-neko-cat1-play-hidden', 'true');
+            } else if (!hidden) {
+                shell.removeAttribute('data-neko-cat1-play-hidden');
+            }
+        }
+        var bridge = window.nekoChatWindow;
+        if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
+            try {
+                bridge.setCompactChatBallTemporarilyHidden(hidden);
+            } catch (_) {}
+        }
+    }
+
     function dispatchCompactSurfaceLayoutChange(rect) {
         var detail = rect || null;
         if (detail && isElectronChatWindow()) {
@@ -6721,6 +6740,7 @@
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
+        window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);
         window.addEventListener('live2d-goodbye-click', function () {
             setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });

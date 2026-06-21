@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
@@ -42,6 +43,7 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
     css = INDEX_CSS_PATH.read_text(encoding="utf-8")
     chat_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
     assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source
@@ -59,8 +61,25 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "markAudioDone" not in play_block
     assert "if (!gifDone) return;" in play_block
     assert "_playNekoIdleSound(state, _NEKO_IDLE_CAT1_PLAY_SOUND_URL, _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME);" in play_block
-    assert "idle_cat1_play_yarn_visibility" not in source
-    assert "neko:idle-cat1-play-yarn-visibility" not in chat_source
+    finish_play_block = source.split("function _finishNekoIdleCat1PlayAction(button, token)", 1)[1].split(
+        "function _playNekoIdleCat1PlayAction(button)",
+        1,
+    )[0]
+    assert "animate: true" in finish_play_block
+    assert "animate: false" not in finish_play_block
+    assert "_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR" in finish_play_block
+    assert "art.setAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR, 'true');" in finish_play_block
+    assert "art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);" in source
+    assert "_setNekoIdleCat1PlayYarnHidden(state, true);" in play_block
+    assert "_setNekoIdleCat1PlayYarnHidden(state, false);" in source
+    assert "data-neko-cat1-play-hidden" in source
+    assert "idle_cat1_play_yarn_visibility" in source
+    assert "idle_cat1_play_yarn_visibility" in interpage_source
+    assert "dispatchIdleCat1PlayYarnVisibility(event.data)" in interpage_source
+    assert "neko:idle-cat1-play-yarn-visibility" in chat_source
+    assert "setCompactChatBallTemporarilyHidden(hidden)" in chat_source
+    assert "showCompactChatBall(" not in chat_source
+    assert "hideCompactChatBall(" not in chat_source
 
     assert ".neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art" in css
     cat1_play_style_block = css.split(
@@ -71,6 +90,20 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "min-width: 175%" in cat1_play_style_block
     assert "height: 100% !important" in cat1_play_style_block
     assert "max-width: none" in cat1_play_style_block
+    assert '.neko-idle-return-art[data-neko-cat1-play-finishing="true"]' in css
+    assert '#react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"]' in css
+    cat1_play_yarn_style_block = css.split(
+        '#react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"]',
+        1,
+    )[1].split("}", 1)[0]
+    assert "visibility: hidden !important" in cat1_play_yarn_style_block
+    assert "pointer-events: none !important" in cat1_play_yarn_style_block
+    thought_bubble_hidden_block = css.split(
+        '.neko-idle-return-btn[data-neko-idle-tier="none"] .neko-idle-thought-bubble',
+        1,
+    )[1].split("}", 1)[0]
+    assert ".neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble" in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
     assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
@@ -82,7 +115,10 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
 def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
-    assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.2" in source
+    assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25" in source
+    assert "_NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
+    assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",
         1,
@@ -95,6 +131,33 @@ def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
     assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
         "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate"
     )
+
+
+def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
+        "function _clearNekoIdleThoughtBubble",
+        1,
+    )[0]
+    assert "journey.substate === journey.profile.walkingSubstate" in play_block
+    assert "journey.substate === journey.profile.finishingSubstate" in play_block
+
+    pair_move_start_block = source.split("function _startNekoIdleCat1PairMove(button)", 1)[1].split(
+        "function _scheduleNekoIdleCat1PairMove",
+        1,
+    )[0]
+    assert "Math.random() < _NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY" in pair_move_start_block
+    assert "_playNekoIdleCat1PlayAction(button)" in pair_move_start_block
+    assert "return true;" in pair_move_start_block
+    assert pair_move_start_block.index("_playNekoIdleCat1PlayAction(button)") < pair_move_start_block.index(
+        "const plan = _getNekoIdleCat1PairMovePlan(button);"
+    )
+    finish_pair_move_block = source.split("function _finishNekoIdleCat1PairMove(button)", 1)[1].split(
+        "function _stepNekoIdleCat1PairMove",
+        1,
+    )[0]
+    assert "_playNekoIdleCat1PlayAction(button)" not in finish_pair_move_block
 
 
 def test_cat1_minimized_side_target_separates_look_and_move_direction():
