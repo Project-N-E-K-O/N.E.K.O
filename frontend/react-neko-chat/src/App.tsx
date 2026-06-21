@@ -110,6 +110,7 @@ const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
 const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
@@ -530,7 +531,16 @@ function readPersistedCompactExportHistoryOpen(): boolean {
   if (typeof window === 'undefined') return true;
   try {
     const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    return persisted === null ? true : persisted === 'true';
+    if (persisted !== null) return persisted === 'true';
+    // 无持久化偏好 → A/B 首启分组（一次性随机+持久化+telemetry 曝光上报）
+    let variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
+    if (variant !== 'open' && variant !== 'closed') {
+      variant = Math.random() < 0.5 ? 'open' : 'closed';
+      window.localStorage?.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, variant);
+      (window as unknown as { appTelemetry?: { event?: (n: string, f?: Record<string, unknown>) => void } })
+        .appTelemetry?.event?.('experiment_exposure', { experiment: 'compact_history_default', variant });
+    }
+    return variant === 'open';
   } catch {
     return true;
   }
