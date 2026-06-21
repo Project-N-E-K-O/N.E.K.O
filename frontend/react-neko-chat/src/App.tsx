@@ -6803,7 +6803,10 @@ function CompactChatApp({
       data-compact-geometry-item="meme"
       data-compact-geometry-hit-scope="children"
     >
-      <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="lazy" />
+      {/* 主动弹出的常显挂件必须立刻出图：lazy 在 Electron 透明/裁剪 compact 窗口里
+          可能被判定不在视口而永不触发加载，只剩空浮岛在桌面合成出陈帧色块（蓝框）。
+          故用 eager 立即加载（音乐封面走 APlayer 不受影响，所以此前只有 meme 翻车）。 */}
+      <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="eager" decoding="async" />
     </div>
   ) : null;
   const compactMusicPlayerMountNode = isCompactSurface ? (
