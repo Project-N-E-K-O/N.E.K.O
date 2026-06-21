@@ -5139,8 +5139,10 @@
         b.prevZ = getShuttleCourtZ(b, false);
         stepBallPhysics(b, subDt);
         checkShuttleLanding(b);
-        if (maybeYuiReturnIncomingShuttle(b)) break;
-        if (maybePlayerReceiveIncomingShuttle(b)) break;
+        if (!b.hitNet) {
+          if (maybeYuiReturnIncomingShuttle(b)) break;
+          if (maybePlayerReceiveIncomingShuttle(b)) break;
+        }
         updateNetPhysics(subDt);
         b.trail.push({ x: b.x, y: b.y });
         if (b.trail.length > 20) b.trail.shift();
