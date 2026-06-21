@@ -5271,6 +5271,17 @@ class LLMSessionManager:
         # 尚未完全收尾、但 count 已 0"的窗口，等待中的跨模式重启会据此重入，随后被
         # 失败任务残余的 cleanup（清 websocket）和 finally（减 guard）clobber（Codex P2）。
         await self.cleanup(reset_starting_count=False)
+        # 但 reset_starting_count=False 会让 end_session 的 inactive-early 路径跳过
+        # pending_input_data.clear()（那块与 guard 释放耦合），导致本次失败启动期间缓存的
+        # 输入残留、被下次成功启动的 _flush_pending_input_data() 误注入（Codex P2）。
+        # 这里显式补清本次失败 start 自己的输入：此刻 count 仍被本次 finally 持有(>0)，
+        # 没有并发 start 穿过、缓存里只可能是本次失败 start 的输入，清理安全。
+        # 不走 end_session 的 gating 改动，rebuild 路径(同样 reset_starting_count=False 但
+        # 需要保留输入回放)语义不受影响。
+        async with self.input_cache_lock:
+            self.session_ready = False
+            self.pending_input_data.clear()
+            self._clear_pending_context_appends()
 
     @property
     def is_starting(self) -> bool:
