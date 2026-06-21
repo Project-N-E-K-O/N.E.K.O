@@ -3981,10 +3981,42 @@
             }
 
             // 显示Live2D的返回按钮（仅在非VRM/非MMD/非PNGTuber模式时显示）
-            if (!useVrmReturn && !useMmdReturn && !usePngtuberReturn && live2dReturnButtonContainer) {
-                activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
+            const useLive2dReturn = !useVrmReturn && !useMmdReturn && !usePngtuberReturn;
+            let live2dReturnContainer = live2dReturnButtonContainer;
+            // 与 VRM/MMD/PNGTuber 分支对齐：返回球容器缺失时（模型切换 / 打开过模型管理 / 上一次告别拆除
+            // 了浮动按钮）用 setupFloatingButtons 重建，否则 Live2D 会"自动变猫后直接消失"——模型已最小化，
+            // 却没有任何可点的毛线球留下，且无法点回来。这是四种模型里唯一漏掉自愈重建的分支。
+            if (useLive2dReturn && !live2dReturnContainer && window.live2dManager
+                && typeof window.live2dManager.setupFloatingButtons === 'function') {
+                const live2dModelForReturn = typeof window.live2dManager.getCurrentModel === 'function'
+                    ? window.live2dManager.getCurrentModel()
+                    : window.live2dManager.currentModel;
+                if (live2dModelForReturn && !live2dModelForReturn.destroyed) {
+                    window.live2dManager.setupFloatingButtons(live2dModelForReturn);
+                    live2dReturnContainer = document.getElementById('live2d-return-button-container');
+                    // setupFloatingButtons 会重新显示主浮动按钮工具栏与锁图标；告别态需再次隐藏，
+                    // 并恢复上面 setLocked(true) 的锁定，保持与本 handler 既有隐藏逻辑一致。
+                    const rebuiltFloatingButtons = document.getElementById('live2d-floating-buttons');
+                    if (rebuiltFloatingButtons) {
+                        rebuiltFloatingButtons.style.setProperty('display', 'none', 'important');
+                        rebuiltFloatingButtons.style.setProperty('visibility', 'hidden', 'important');
+                        rebuiltFloatingButtons.style.setProperty('opacity', '0', 'important');
+                    }
+                    const rebuiltLockIcon = document.getElementById('live2d-lock-icon');
+                    if (rebuiltLockIcon) {
+                        rebuiltLockIcon.style.setProperty('display', 'none', 'important');
+                        rebuiltLockIcon.style.setProperty('visibility', 'hidden', 'important');
+                        rebuiltLockIcon.style.setProperty('opacity', '0', 'important');
+                    }
+                    if (typeof window.live2dManager.setLocked === 'function') {
+                        window.live2dManager.setLocked(true, { updateFloatingButtons: false });
+                    }
+                }
+            }
+            if (useLive2dReturn && live2dReturnContainer) {
+                activeReturnButtonContainer = showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
-                hideReturnBallContainer(live2dReturnButtonContainer);
+                hideReturnBallContainer(live2dReturnContainer);
             }
 
             if (usePngtuberReturn && !pngtuberReturnButtonContainer && window.pngtuberManager) {

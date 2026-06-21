@@ -24,6 +24,104 @@ window.live2dManager.onModelLoaded = (model) => {
 // 兼容性：保持原有的全局变量，但增加 VRM/Live2D 双模态调度逻辑
 window.LanLan1 = window.LanLan1 || {};
 
+// ── 自愈基建：解决"重新加载后模型加载不出来、只剩毛线球" ──
+// 根因：initLive2DModel 是一次性的——cubism4Model 为空（page_config 取失败 / 资产解析为空）
+// 时永久 early-return 不重试；且它 await 的 storageLocation 哨兵 / pageConfigReady 一旦卡死，
+// 初始化会永远挂起。下面提供：① 重入保护，② 模型路径缺失时有界重取配置并重试初始化，
+// ③ 加载完成后的可见性看门狗（模型已加载却被卡在 minimized/透明，或干脆没加载时兜底自愈）。
+let _nekoLive2DInitInFlight = false;
+let _nekoLive2DModelLoadedOnce = false;
+let _nekoLive2DConfigRetryCount = 0;
+const NEKO_LIVE2D_CONFIG_RETRY_MAX = 6;
+
+// 仅对"本应显示 Live2D"的会话自愈；pngtuber/vrm/mmd 的空 cubism4Model 是正常态。
+function _nekoShouldSelfHealLive2D() {
+    try {
+        if (window.location && String(window.location.pathname || '').includes('model_manager')) return false;
+        const mt = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+        const sub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+        if (mt === 'pngtuber' || mt === 'vrm') return false;
+        if (mt === 'live3d' && sub === 'mmd') return false;
+        if ((window.vrmManager && window.vrmManager.currentModel) || (window.mmdManager && window.mmdManager.currentModel)) return false;
+        return true;
+    } catch (_) {
+        return true;
+    }
+}
+
+// 模型路径缺失时：有界地重新拉取 page_config 并重试初始化（解决瞬时后端未就绪 / 配置迟到）。
+function scheduleLive2DConfigRetry(reason) {
+    if (_nekoLive2DModelLoadedOnce) return;
+    if (!_nekoShouldSelfHealLive2D()) return;
+    if (_nekoLive2DConfigRetryCount >= NEKO_LIVE2D_CONFIG_RETRY_MAX) {
+        console.warn('[Live2D Init] 模型路径重试已达上限，停止自愈:', reason);
+        return;
+    }
+    // 退避按"已消耗预算 + 1"估算；但预算只在真正执行重取时扣减（见下方 setTimeout 内），
+    // 避免首次正常慢加载期间被空转的看门狗轮次提前耗尽真正的重试次数。
+    const delayMs = Math.min(4000, 600 * (_nekoLive2DConfigRetryCount + 1));
+    console.log('[Live2D Init] 模型路径缺失，安排配置重取自愈，原因:', reason);
+    setTimeout(async () => {
+        if (_nekoLive2DModelLoadedOnce || !_nekoShouldSelfHealLive2D()) return;
+        // 正在初始化中（可能是首次正常慢加载）：本轮不消耗预算、不打扰；
+        // 若该次初始化最终因空路径失败，会从 early-return 分支再次安排重试。
+        if (_nekoLive2DInitInFlight) return;
+        if (_nekoLive2DConfigRetryCount >= NEKO_LIVE2D_CONFIG_RETRY_MAX) return;
+        _nekoLive2DConfigRetryCount += 1;
+        try {
+            if (typeof window.reloadPageConfig === 'function') {
+                await window.reloadPageConfig();
+            }
+        } catch (error) {
+            console.warn('[Live2D Init] 自愈重取配置失败:', error);
+        }
+        if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight) return;
+        initLive2DModel();
+    }, delayMs);
+}
+
+function _nekoIsLive2DContainerHidden() {
+    const container = document.getElementById('live2d-container');
+    const canvas = document.getElementById('live2d-canvas');
+    if (!container || !canvas) return false;
+    if (container.classList.contains('minimized') || container.classList.contains('hidden')) return true;
+    try {
+        const cs = window.getComputedStyle ? window.getComputedStyle(container) : null;
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) return true;
+        const canvasCs = window.getComputedStyle ? window.getComputedStyle(canvas) : null;
+        if (canvasCs && (canvasCs.visibility === 'hidden' || canvasCs.opacity === '0')) return true;
+    } catch (_) {}
+    return false;
+}
+
+// 可见性看门狗：加载完仍不可见（yui-guide 残留 / 卡在 minimized），或根本没加载出来 → 兜底自愈。
+function ensureLive2DVisibleOnce(reason) {
+    try {
+        if (!_nekoShouldSelfHealLive2D()) return;
+        // goodbye / 切换中属于合法隐藏，交给各自链路，不打扰。
+        if (window.live2dManager && window.live2dManager._goodbyeClicked) return;
+        if (window.appState && (window.appState.isSwitchingCatgirl || window.appState.isSwitchingMode)) return;
+
+        const model = window.live2dManager && (typeof window.live2dManager.getCurrentModel === 'function'
+            ? window.live2dManager.getCurrentModel()
+            : window.live2dManager.currentModel);
+        if (!model || model.destroyed) {
+            scheduleLive2DConfigRetry('watchdog-no-model:' + reason);
+            return;
+        }
+        if (_nekoIsLive2DContainerHidden() && typeof window.showLive2d === 'function') {
+            console.warn('[Live2D Init] 看门狗检测到模型已加载但不可见，自愈显示，原因:', reason);
+            try { window.showLive2d(); } catch (_) {}
+        }
+    } catch (_) {}
+}
+
+function ensureLive2DVisibleSoon(reason) {
+    [1500, 4000, 8000].forEach((delayMs) => {
+        setTimeout(() => ensureLive2DVisibleOnce(`${reason || 'startup'}:${delayMs}`), delayMs);
+    });
+}
+
 function revealInitialLive2DModelWhenUiReady(reason) {
     let revealed = false;
     const reveal = () => {
@@ -261,9 +359,25 @@ async function cleanupVRMResources() {
     }
 }
 
-// 自动初始化函数（延迟执行，等待 cubism4Model 设置）
+// 自动初始化函数（重入保护包装；真正逻辑在 _initLive2DModelInner）
 async function initLive2DModel() {
-    if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+    if (_nekoLive2DInitInFlight) {
+        console.log('[Live2D Init] 初始化进行中，跳过本次重入调用');
+        return;
+    }
+    _nekoLive2DInitInFlight = true;
+    try {
+        await _initLive2DModelInner();
+    } finally {
+        _nekoLive2DInitInFlight = false;
+    }
+}
+
+// 自动初始化函数（延迟执行，等待 cubism4Model 设置）
+async function _initLive2DModelInner() {
+    // 自愈重入时若已拿到模型路径，跳过 storageLocation 哨兵等待，规避哨兵卡死导致模型永远加载不出来。
+    const _preInitModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+    if (!_preInitModelPath && window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
         await window.__nekoStorageLocationStartupBarrier;
     }
 
@@ -296,8 +410,8 @@ async function initLive2DModel() {
         }
     }
 
-    // 等待配置加载完成（如果存在）
-    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+    // 等待配置加载完成（如果存在）；自愈重入若已拿到模型路径，则不再等待，规避 pageConfigReady 卡死。
+    if (!_preInitModelPath && window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
     }
 
@@ -316,6 +430,9 @@ async function initLive2DModel() {
 
     if (!targetModelPath && !isModelManagerPage) {
         console.log('未设置模型路径，且不在模型管理页面，跳过Live2D初始化');
+        // 一次性 early-return 会导致"重新加载后只剩毛线球、模型永不出现"。这里有界重取配置并重试，
+        // 让瞬时后端未就绪 / page_config 迟到 / 取空的情况能自愈。pngtuber/vrm/mmd 由 _nekoShouldSelfHealLive2D 排除。
+        scheduleLive2DConfigRetry('empty-model-path');
         return;
     }
 
@@ -562,6 +679,9 @@ async function initLive2DModel() {
                 }
             });
 
+        // 模型已成功加载：关闭路径缺失自愈，避免后续重试与正常态打架。
+        _nekoLive2DModelLoadedOnce = true;
+
         // 设置全局引用（兼容性）
         window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
         window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -570,6 +690,8 @@ async function initLive2DModel() {
         // 设置页面卸载时的自动清理（确保资源正确释放）
         revealInitialLive2DModelWhenUiReady('initial-live2d-load');
         window.live2dManager.setupUnloadCleanup();
+        // 加载成功后再用看门狗兜底"加载完仍不可见"（yui-guide 残留 / 卡在 minimized）。
+        ensureLive2DVisibleSoon('post-load');
 
             console.log('✓ Live2D 管理器自动初始化完成');
         } else if (isModelManagerPage) {
@@ -602,3 +724,7 @@ if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function')
         }, 1000);
     }
 }
+
+// 启动看门狗：独立于上面的 await 链路运行——即便 initLive2DModel 卡在哨兵 / pageConfigReady，
+// 也能在模型迟迟不出现时触发有界配置重取自愈，保证"重新加载后不会只剩毛线球"。
+ensureLive2DVisibleSoon('startup');
