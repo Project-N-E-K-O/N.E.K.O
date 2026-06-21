@@ -16,6 +16,7 @@ import html
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -177,31 +178,44 @@ def _steam_pending_path() -> Path | None:
     return (p.parent / _STEAM_PENDING_FILENAME) if p else None
 
 
-def _mark_steam_pending() -> None:
+def _mark_steam_pending() -> str:
+    """写一次性待回调标记，返回不可猜的 state（NEKO 自存自校，防 login-CSRF）。"""
+    state = secrets.token_urlsafe(24)
     p = _steam_pending_path()
     if not p:
-        return
+        return state
     try:
-        p.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
+        p.write_text(json.dumps({"ts": time.time(), "state": state}), encoding="utf-8")
     except OSError as exc:
         logger.debug("card_drop: mark steam pending failed: %s", exc)
+    return state
 
 
-def _consume_steam_pending() -> bool:
-    """Consume the one-time Steam pending marker if it exists and is fresh."""
+def _consume_steam_pending(state: str) -> bool:
+    """消费一次性标记：存在、未过期、且 state 与发起登录时一致才放行（防 login-CSRF + 重放）。"""
     p = _steam_pending_path()
     if not p or not p.exists():
         return False
-    ts = 0.0
+    data: object = {}
     try:
-        ts = float(json.loads(p.read_text(encoding="utf-8")).get("ts", 0))
+        data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        ts = 0.0
+        data = {}
     try:
         p.unlink()
     except OSError:
         pass
-    return bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC
+    if not isinstance(data, dict):
+        return False
+    try:
+        ts = float(data.get("ts", 0) or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    stored_state = data.get("state") or ""
+    if not stored_state or not isinstance(state, str) or not state:
+        return False
+    fresh = bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC
+    return fresh and secrets.compare_digest(str(stored_state), state)
 
 
 @router.get("/auth-status", summary="社区登录状态")
@@ -287,9 +301,10 @@ def _steam_callback_html(title: str, sub: str) -> HTMLResponse:
 async def steam_login_endpoint(request: Request):
     base = _social_base_url()
     callback = _neko_steam_callback_url(request)
-    _mark_steam_pending()
+    state = _mark_steam_pending()
     authorize_url = (
         f"{base}/api/auth/oauth/steam/authorize?redirect_to={quote(callback, safe='')}"
+        f"&state={quote(state, safe='')}"
     )
     return {"authorize_url": authorize_url, "callback": callback}
 
@@ -300,13 +315,31 @@ async def steam_login_endpoint(request: Request):
     response_class=HTMLResponse,
 )
 async def steam_callback_endpoint(
-    access_token: str = Query(..., min_length=1),
-    refresh_token: str | None = Query(None),
+    code: str = Query(..., min_length=1),
+    state: str = Query(..., min_length=1),
 ):
-    # 只接受「用户刚发起过 Steam 登录」窗口内的回调，挡掉无端/重放调用（会话固定防护）。
-    if not _consume_steam_pending():
+    # 校验 state（与发起登录时一致）+ 一次性窗口，挡 login-CSRF / 重放。
+    if not _consume_steam_pending(state):
         return _steam_callback_html("登录会话已失效", "请回到 NEKO 重新点一次「Steam 登录」。")
     base = _social_base_url()
+    # 用一次性 code 服务端换 token（token 不经浏览器 URL/历史/日志）。
+    access_token: str | None = None
+    refresh_token: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.post(
+                f"{base}/api/auth/oauth/native/exchange", json={"code": code}
+            )
+        if r.status_code == 200:
+            d = r.json() or {}
+            access_token = d.get("access_token")
+            refresh_token = d.get("refresh_token")
+        else:
+            logger.info("card_drop: steam-callback exchange returned %s", r.status_code)
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        logger.info("card_drop: steam-callback exchange failed: %s", exc)
+    if not access_token:
+        return _steam_callback_html("登录失败", "换取登录凭证失败，请回到 NEKO 重试。")
     user: dict = {}
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
