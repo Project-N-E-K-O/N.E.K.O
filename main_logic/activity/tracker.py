@@ -1167,17 +1167,23 @@ class UserActivityTracker:
                     continue
 
                 # State signature: which "kind of activity" the rule
-                # machine sees right now, plus whether the user has
-                # said something new. Quantize idle to coarse buckets
-                # so minor jitter doesn't trigger recompute.
-                idle_bucket = int((rule_snap.system_idle_seconds or 0) // 30)
+                # machine sees right now. Deliberately does NOT include the
+                # idle-seconds bucket: idle time grows monotonically while a
+                # user is AFK, so bucketing it (idle // 30) flips the signature
+                # every ~30s even when nothing about "what the user is doing"
+                # changed — defeating dedup and burning one emotion-tier call
+                # every ~40s during pure idle. The activity narration describes
+                # *what* the user is doing, and the only idle transitions worth
+                # re-narrating (active → idle → away) already show up in
+                # ``state`` (away itself bails above). Finer idle gradations add
+                # no narration value, so excluding the bucket lets a stable
+                # state + window + no-new-turn settle into a permanent skip.
                 sig = (
                     rule_snap.state,
                     (rule_snap.active_window.canonical
                         if rule_snap.active_window else None),
                     (rule_snap.active_window.subcategory
                         if rule_snap.active_window else None),
-                    idle_bucket,
                 )
                 if sig == self._activity_guess_state_sig and self._conv_seq == last_conv_seq:
                     continue

@@ -1006,6 +1006,24 @@ def test_activity_guess_loop_skips_llm_when_narration_suppressed():
     )
 
 
+def test_activity_guess_signature_excludes_idle_bucket():
+    """idle 秒数单调增长不应翻动 dedup 签名。
+
+    挂机时 system_idle_seconds 一直涨，旧实现把 idle//30 塞进 signature，
+    导致签名每 ~30s 翻一次、dedup 永久失效、纯闲置每 ~40s 空烧一次
+    emotion-tier LLM。signature 现在只按「在做什么」（state + 窗口 + 子类）
+    构成；idle→away 跃迁仍由 state 捕捉（away 本就 bail）。
+    """
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    assert "idle_bucket" not in source
+    # idle 秒数只应出现在喂 LLM 的 signals 里（_snapshot_signals_for_llm，
+    # 独立方法），不应再进入 _activity_guess_loop 的签名计算。
+    assert "system_idle_seconds" not in source
+    assert "sig = (" in source
+
+
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():
     from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
 
