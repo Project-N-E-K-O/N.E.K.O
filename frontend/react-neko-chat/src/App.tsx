@@ -111,6 +111,9 @@ const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
 const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
+// 同一 proactive turn 里音乐卡（music_ui executePlay 异步 append）会按 APlayer 加载时机晚于 meme 落地，
+// 但仍属同一轮——这个时间窗内的音乐卡豁免（不收起表情包）；超出则视为新一轮、照常收起。
+const COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS = 8000;
 const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
@@ -2386,20 +2389,27 @@ function CompactChatApp({
   // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到下一条新消息出现（最新消息不再是表情包）即收起。
   const compactMemeOverlay = useMemo<{ url: string; alt: string } | null>(() => {
     if (!isCompactSurface) return null;
-    // 从末尾扫：跳过同一 proactive turn 的音乐卡（id 'music-'，也是附件），找最近的表情包（id 'meme-'）；
-    // 遇到真正的新消息（普通对话轮）才收起。否则同 turn 的音乐卡会按 APlayer 异步加载时机把表情包闪掉
-    // （dispatchMusicPlay 早于 music_ui executePlay append 音乐卡返回，音乐卡会落在 meme 之后）。
+    let memeIdx = -1;
     for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (typeof messages[i]?.id === 'string' && messages[i].id.startsWith('meme-')) { memeIdx = i; break; }
+    }
+    if (memeIdx < 0) return null;
+    const meme = messages[memeIdx];
+    const memeAt = typeof meme.createdAt === 'number' ? meme.createdAt : null;
+    // meme 之后只要有「真正的新内容」就收起；唯一豁免：同一 proactive turn、紧随其后落地的音乐卡
+    // （dispatchMusicPlay 早于 music_ui executePlay append 返回，按 APlayer 加载时机晚到、createdAt 接近）。
+    // 「新一轮纯音乐 turn」的音乐卡 createdAt 明显更晚（超窗），不豁免、照常收起。
+    for (let i = memeIdx + 1; i < messages.length; i += 1) {
       const m = messages[i];
       const id = typeof m?.id === 'string' ? m.id : '';
-      if (id.startsWith('meme-')) {
-        for (const block of m.blocks ?? []) {
-          if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
-        }
-        return null;
-      }
-      if (id.startsWith('music-')) continue;
+      const at = typeof m?.createdAt === 'number' ? m.createdAt : null;
+      const sameTurnMusic = id.startsWith('music-') && memeAt !== null && at !== null
+        && at - memeAt <= COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS;
+      if (sameTurnMusic) continue;
       return null;
+    }
+    for (const block of meme.blocks ?? []) {
+      if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
     }
     return null;
   }, [messages, isCompactSurface]);
@@ -6733,7 +6743,9 @@ function CompactChatApp({
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
-      aria-hidden="true"
+      data-compact-geometry-owner="surface"
+      data-compact-geometry-item="meme"
+      data-compact-geometry-hit-scope="children"
     >
       <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="lazy" />
     </div>
