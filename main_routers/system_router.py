@@ -7324,7 +7324,22 @@ async def proactive_chat(request: Request):
             music_already_appended = any(link.get('source') == '音乐推荐' for link in source_links)
             if not music_already_appended:
                 _append_music_recommendations(source_links, music_content)
-        
+
+        # anti-repeat / 素材去重按"真实投递的 channel"归类，而非模型原始 source_tag：
+        # Phase 1 只有音乐时模型可能合法出 [CHAT]，随后 should_try_music_fallback 仍
+        # 追加曲目并置 is_music_used=True——此时实际投递的是音乐。若仍按 CHAT 记录，
+        # finish_proactive_delivery 会把模板化 intro 录进 BM25 corpus、且曲目 key 不
+        # 记，恰好重新引入本 PR 要消除的 fallback 推歌污染（Codex P2）。曲目优先取
+        # selected_music_link；regen 把 tag 降级 CHAT 时它已被清空，则从已追加的
+        # source_links（source=='音乐推荐'）里取首条。
+        _delivered_tag = 'MUSIC' if (is_music_used and source_tag != 'MUSIC') else source_tag
+        _delivered_music_link = selected_music_link
+        if _delivered_tag == 'MUSIC' and not _delivered_music_link:
+            _delivered_music_link = next(
+                (l for l in (source_links or []) if isinstance(l, dict) and l.get('source') == '音乐推荐'),
+                None,
+            )
+
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
         # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
@@ -7344,7 +7359,7 @@ async def proactive_chat(request: Request):
                 response_text,
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
-                source_tag=source_tag,
+                source_tag=_delivered_tag,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
@@ -7376,12 +7391,12 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
         # 记录本轮实际投递的"素材标识"（曲目 / 搜索关键词），供下次同 channel 的
-        # 素材级去重。按最终 source_tag/selected_music_link 重算——regen 可能已把
-        # MUSIC 降级成 CHAT 并清掉 selected_music_link，此时 key 为空不记录。
+        # 素材级去重。按"真实投递 channel"_delivered_tag/_delivered_music_link 归类
+        # （含模型出 CHAT 但 fallback 追加了曲目的情形），key 为空则不记录。
         _record_proactive_material(
             lanlan_name,
-            source_tag,
-            _proactive_material_key(source_tag, selected_music_link, meme_content),
+            _delivered_tag,
+            _proactive_material_key(_delivered_tag, _delivered_music_link, meme_content),
         )
         # Mini-game 邀请冷却 counter 推进：spec 是"被回应后再 10 次搭话才解禁"，
         # 任何 channel 的成功投递都算一次，pending 期间（responded_at=None）函数
