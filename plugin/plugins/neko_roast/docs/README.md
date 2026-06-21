@@ -10,6 +10,7 @@
 
 - [开发者指南（从这里开始）](developer-guide.md)：新开发者入口。负责心智模型、最短阅读路径、第一周建议和常见入口导航。
 - [开发文档](development.md)：长期开发规范和架构契约的权威来源。负责模块边界、pipeline、数据边界、测试门禁、协作规范和文档更新要求。
+- [Runtime Observability](runtime-observability.md)：运行态观测语言的权威来源。负责 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 和 Dashboard Visibility。
 - [开发总结与路线图](live-center-roadmap.md)：阶段目标、已完成进度和下一阶段路线。只记录“做到哪、接下来做什么”，不维护详细架构规范或运行 runbook。
 - [UI 与模块贡献架构基线](ui-architecture.md)：面板 UI、模块贡献模型、`config_schema`、Hosted UI 约束和渐进组件化规则。
 - [开发日志](devlog.md)：宿主 / SDK 侧历史问题、跨层事故、迁移原因和兼容取舍。
@@ -25,6 +26,7 @@
 | 用户/主播操作流程 | `quickstart.md` | 只给入口链接 |
 | 新开发者阅读路径 | `developer-guide.md` | 不在 roadmap 中重复 onboarding |
 | 架构边界、模块边界、数据边界 | `development.md` | roadmap / guide 只写摘要并链接 |
+| 运行态观测语言、Skip Reason、Monitor Signal | `runtime-observability.md` | development / AGENTS 只写入口和必查项 |
 | 协作规范、PR 规则、测试门禁、文档要求 | `development.md` | `AGENTS.md` 保留可执行硬规则摘要 |
 | Agent 硬规则和 Reviewer Checklist | `../AGENTS.md` | `development.md` 解释背景和理由 |
 | UI 架构、模块 UI 贡献、Hosted UI 限制 | `ui-architecture.md` | `development.md` 只链接 UI 细节 |
@@ -35,6 +37,7 @@
 
 - 改用户流程、按钮、操作顺序：更新 `quickstart.md`。
 - 改模块边界、pipeline、数据边界、协作规范、测试门禁：更新 `development.md`。
+- 改 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 或 Dashboard Visibility：更新 `runtime-observability.md`。
 - 改新开发者入口或第一周路径：更新 `developer-guide.md`。
 - 改阶段目标、完成状态、下一阶段顺序：更新 `live-center-roadmap.md`。
 - 改面板结构、模块 UI 贡献模型、Hosted UI 约束：更新 `ui-architecture.md`。

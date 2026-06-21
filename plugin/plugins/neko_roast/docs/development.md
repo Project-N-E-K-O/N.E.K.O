@@ -61,6 +61,16 @@
 - 隐私相关原始数据不要写入 logger；需要调试时写脱敏 audit，或按项目规范使用 `print`。
 - 登录凭据只走 `stores/credential_store.py` 加密落盘，**绝不**写 audit / log / config / UI（只回显 uid / 用户名 / 是否登录）。
 
+## Runtime Observability
+
+运行态观测语言的 Canonical Source 是 `runtime-observability.md`。本文只保留硬约束摘要：
+
+- 新事件路径必须能说明 Runtime Timeline 中的 stage、outcome 和 skip reason。
+- 预期拦截使用 `skipped`，异常使用 `failed`，降级继续运行使用 `degraded`。
+- Safety Guard 和 Dispatcher 必须是可见 lifecycle stage，不能被新模块绕过或隐藏。
+- Dashboard 未来必须能解释“事件到了哪、为什么没输出、Dispatcher 是否真实输出”，但具体 UI 布局不在本文规定。
+- 观测数据必须脱敏；不得暴露 raw payload、cookies、tokens、avatar bytes/base64 或未脱敏私密数据。
+
 ## 协作规范
 
 `neko_roast` 已进入多人协作阶段。后续改动必须先按 Feature → Slice → PR 拆分，保持每个 PR 可独立 review、测试和回滚。

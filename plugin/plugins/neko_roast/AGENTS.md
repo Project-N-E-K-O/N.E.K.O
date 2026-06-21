@@ -77,6 +77,16 @@ Protected Modules include:
 
 Open contribution areas include docs, module docs, fixtures, tests, small read-only dashboard display changes, i18n sync, and non-core `config_schema()` changes. New contributors should start there unless a maintainer explicitly scopes a Protected Module change.
 
+## Runtime Observability Checks
+
+Runtime observability terms are canonical in `docs/runtime-observability.md`. For any PR touching runtime behavior, event handling, output, monitor, or dashboard visibility, agents and reviewers must check:
+
+- New event paths explain their Runtime Timeline stage and Event Outcome.
+- Expected non-output paths use a stable Skip Reason from `docs/runtime-observability.md`, or add a minimal new reason there first.
+- Safety Guard and Dispatcher remain visible stages.
+- Dashboard state is derived from runtime/audit facts, not raw payloads.
+- No monitor, audit, or dashboard data exposes raw payloads, cookies, tokens, avatar bytes/base64, or unredacted private data.
+
 ## Reviewer Checklist
 
 Reviewers should check at least:
@@ -85,6 +95,7 @@ Reviewers should check at least:
 - Size: <=20 files, or a justified Draft / split plan.
 - Architecture: EventBus / pipeline / safety guard / dispatcher / store / audit boundaries are preserved.
 - Output: no module calls `plugin.push_message()` directly; NEKO output stays behind `adapters/neko_dispatcher.py`.
+- Observability: event paths have stage/outcome/skip-reason coverage per `docs/runtime-observability.md`.
 - Privacy: no raw private data, cookies, tokens, avatar bytes/base64, or raw payloads go to logger, audit, config, or UI.
 - Docs: documentation follows `docs/README.md` canonical source routing.
 - Tests: required commands are listed, or the PR explicitly states it is docs-only.
