@@ -2904,7 +2904,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   width: min(calc(var(--compact-meme-surface-width) - 16px), 240px, calc(100vw - 24px));
   transform: translateX(-50%);
   z-index: 8;
-  pointer-events: auto;
+  /* 被动展示，不接收指针事件——让点击穿透到桌面/下层，且不被 Electron pass-through 当可交互 island。 */
+  pointer-events: none;
   -webkit-app-region: no-drag;
 }
 

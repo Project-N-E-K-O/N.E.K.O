@@ -588,6 +588,21 @@ describe('App', () => {
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
   });
 
+  it('keeps the meme overlay when a same-turn music card lands after it', () => {
+    const meme = parseChatMessage({
+      id: 'meme-xyz', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=y', alt: 'lol' }], status: 'sent',
+    });
+    const musicCard = parseChatMessage({
+      id: 'music-abc', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2,
+      blocks: [{ type: 'link', url: 'https://example.com/song', title: 'Song' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, musicCard]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=y');
+  });
+
   it('defaults compact history open and preserves history controls through visibility toggles', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({

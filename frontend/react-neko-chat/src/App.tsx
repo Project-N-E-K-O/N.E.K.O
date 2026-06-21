@@ -2386,10 +2386,20 @@ function CompactChatApp({
   // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到下一条新消息出现（最新消息不再是表情包）即收起。
   const compactMemeOverlay = useMemo<{ url: string; alt: string } | null>(() => {
     if (!isCompactSurface) return null;
-    const last = messages[messages.length - 1];
-    if (!last || typeof last.id !== 'string' || !last.id.startsWith('meme-')) return null;
-    for (const block of last.blocks ?? []) {
-      if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
+    // 从末尾扫：跳过同一 proactive turn 的音乐卡（id 'music-'，也是附件），找最近的表情包（id 'meme-'）；
+    // 遇到真正的新消息（普通对话轮）才收起。否则同 turn 的音乐卡会按 APlayer 异步加载时机把表情包闪掉
+    // （dispatchMusicPlay 早于 music_ui executePlay append 音乐卡返回，音乐卡会落在 meme 之后）。
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      const id = typeof m?.id === 'string' ? m.id : '';
+      if (id.startsWith('meme-')) {
+        for (const block of m.blocks ?? []) {
+          if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
+        }
+        return null;
+      }
+      if (id.startsWith('music-')) continue;
+      return null;
     }
     return null;
   }, [messages, isCompactSurface]);
@@ -6723,8 +6733,7 @@ function CompactChatApp({
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
-      data-compact-geometry-owner="surface"
-      data-compact-no-drag="true"
+      aria-hidden="true"
     >
       <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="lazy" />
     </div>
