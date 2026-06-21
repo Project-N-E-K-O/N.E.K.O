@@ -65,6 +65,8 @@
 
 运行态观测语言的 Canonical Source 是 `runtime-observability.md`。本文只保留硬约束摘要：
 
+- Phase 2C 当前停靠点：Dispatcher Outcome、Selection Decision Chain 和 Runtime Health Rows 已落地；Runtime Timeline、事件级 `trace_id`、Dashboard 展示和 Monitor emission 尚未落地。
+- 若恢复 Runtime Timeline 方向，下一步必须先做 Event Trace ID Standardization；不要用 UID、event type 或时间邻近关系猜测同一条事件。
 - 新事件路径必须能说明 Runtime Timeline 中的 stage、outcome 和 skip reason。
 - 预期拦截使用 `skipped`，异常使用 `failed`，降级继续运行使用 `degraded`。
 - Safety Guard 和 Dispatcher 必须是可见 lifecycle stage，不能被新模块绕过或隐藏。

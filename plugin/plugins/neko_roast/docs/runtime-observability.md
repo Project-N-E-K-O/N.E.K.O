@@ -35,6 +35,22 @@ Phase 2B uses three reference principles:
 
 NEKO Live may also borrow the health rows observation model from the Warthunder reference project, but it must not copy Warthunder refresh groups such as `fast`, `map`, `events`, or `mapimg`. Health rows in NEKO Live must describe the NEKO Live main chain: Live Ingest -> EventBus -> Selection -> Pipeline -> Safety Guard -> Dispatcher -> Config Store.
 
+## Implementation Checkpoint
+
+Updated: 2026-06-21
+
+Phase 2C is intentionally paused at a stable backend-observability checkpoint:
+
+- Completed: Dispatcher Outcome standardization distinguishes `dispatcher.dry_run`, `dispatcher.pushed`, `dispatcher.failed`, and `dispatcher.skipped`.
+- Completed: Selection Decision Chain records the selected candidate and privacy-safe dropped candidates with skip reasons.
+- Completed: Runtime Health Rows are exposed from `runtime.dashboard_state()` as `health_rows`.
+- Not implemented: Runtime Timeline Projection is not exposed yet.
+- Not implemented: Event-level `trace_id` is not standardized yet.
+- Not implemented: Dashboard rendering for Runtime Health Rows or Runtime Timeline is not part of this checkpoint.
+- Not implemented: Monitor signal emission is not part of this checkpoint.
+
+If the original Runtime Observability direction resumes, the next required slice is Event Trace ID Standardization. Runtime Timeline Projection should not be implemented by guessing with UID, event type, or timestamp proximity.
+
 ## Canonical Concepts
 
 ### Runtime Timeline
@@ -44,6 +60,8 @@ Runtime Timeline is the ordered explanation of one event across the runtime. It 
 Timeline entries should use stable stage names, an outcome, an optional skip reason, and a short privacy-safe message.
 
 Runtime Timeline is a projection of runtime facts. It must not become a second source of truth or a separate event-routing system.
+
+Current implementation status: not implemented. A reliable projection requires a privacy-safe event correlation key that can flow through `LiveEvent`, Selection audit, `ViewerEvent`, and `InteractionResult`.
 
 ### Runtime Timeline Projection
 
@@ -202,6 +220,8 @@ Runtime Health Row is the compact status projection for one critical runtime bou
 
 Runtime Health Row is not a new execution model, queue, scheduler, or source of truth. It must be derived from existing runtime facts, audit records, interaction results, and future monitor signals.
 
+Current implementation status: backend projection implemented. `runtime.dashboard_state()` exposes the initial rows as `health_rows`; Dashboard rendering and Monitor emission remain future work.
+
 Initial health rows:
 
 - `live_ingest`: `last_event_age`
@@ -326,6 +346,7 @@ For any future PR touching runtime behavior, event handling, output, monitor, or
 - New event types may add skip reasons only when existing reasons are too vague.
 - New monitor signals should be stage-prefixed and privacy-safe.
 - Runtime Timeline should remain compact enough for a reviewer to inspect in one PR.
+- Runtime Timeline Projection must wait for Event Trace ID Standardization; do not infer event identity only from UID, event type, or timestamp proximity.
 - Runtime Health Rows should stay aligned with the NEKO Live main chain and must not copy Warthunder polling group names.
 - Dashboard may choose any layout, but it must answer the Dashboard Visibility questions above.
 - Future designs must not add FIFO output queues, Scenario state machines, Detector / Arbiter routing, critical hard preemption, or direct output paths that bypass the NEKO Live main chain without a separate architecture review.
