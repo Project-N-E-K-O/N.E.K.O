@@ -11,6 +11,7 @@ APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
+CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-eat.mp3"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -34,8 +35,10 @@ def test_cat1_return_button_assets_are_version_tracked():
     assert INDEX_CSS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_EAT_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH.is_file()
     assert CAT1_PLAY_ASSET_PATH.is_file()
+    assert CAT1_EAT_SOUND_PATH.is_file()
 
 
 def test_cat1_play_action_module_is_independent_from_eat_action():
@@ -104,6 +107,7 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     )[1].split("}", 1)[0]
     assert ".neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble" in thought_bubble_hidden_block
     assert ".neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
     assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
@@ -130,6 +134,9 @@ def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
     assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
     assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
         "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate"
+    )
+    assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
+        "_setNekoIdleCat1Classes(button, state);"
     )
 
 

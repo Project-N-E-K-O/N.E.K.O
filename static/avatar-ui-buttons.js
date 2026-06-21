@@ -1424,6 +1424,7 @@ function _playNekoIdleCat1AmbientSound(token) {
     _runAfterNekoIdleSoundStarted(_nekoIdleCat1AmbientSoundState, audio, () => {
         if (!_nekoIdleCat1AmbientSoundState.active ||
             token !== _nekoIdleCat1AmbientSoundState.token ||
+            _isAnyNekoIdleCat1IndependentActionActive() ||
             _isAnyNekoIdleReturnDragActionActive()) {
             return;
         }
@@ -4282,14 +4283,13 @@ function _finishNekoIdleCat1Walk(button) {
     _resetNekoIdleCat1WalkSpeed(state);
     if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE &&
         Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY) {
-        state.substate = state.profile.idleSubstate;
-        state.targetKind = targetKind;
-        state.actionSettled = true;
-        _setNekoIdleCat1Classes(button, state);
         if (_playNekoIdleCat1PlayAction(button)) {
+            state.substate = state.profile.idleSubstate;
+            state.targetKind = targetKind;
+            state.actionSettled = true;
+            _setNekoIdleCat1Classes(button, state);
             return;
         }
-        state.actionSettled = false;
     }
     _setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });
 }

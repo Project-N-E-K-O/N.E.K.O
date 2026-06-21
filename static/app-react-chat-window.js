@@ -991,8 +991,10 @@
         if (shell && shell.classList) {
             if (hidden && shell.classList.contains('is-minimized')) {
                 shell.setAttribute('data-neko-cat1-play-hidden', 'true');
+                syncCompactInteractionGeometry();
             } else if (!hidden) {
                 shell.removeAttribute('data-neko-cat1-play-hidden');
+                syncCompactInteractionGeometry();
             }
         }
         var bridge = window.nekoChatWindow;
