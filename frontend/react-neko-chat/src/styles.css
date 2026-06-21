@@ -2044,9 +2044,9 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
   background:
     linear-gradient(
       90deg,
-      rgba(206, 229, 252, 0.68) 0%,
-      rgba(232, 244, 255, 0.46) 52%,
-      rgba(247, 252, 255, 0.14) 82%,
+      rgba(206, 229, 252, 0.78) 0%,
+      rgba(232, 244, 255, 0.58) 52%,
+      rgba(247, 252, 255, 0.24) 82%,
       rgba(255, 255, 255, 0) 100%
     );
   box-shadow: none;
@@ -2056,9 +2056,9 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
   background:
     linear-gradient(
       90deg,
-      rgba(190, 220, 249, 0.76) 0%,
-      rgba(224, 240, 255, 0.54) 52%,
-      rgba(244, 250, 255, 0.18) 82%,
+      rgba(190, 220, 249, 0.86) 0%,
+      rgba(224, 240, 255, 0.66) 52%,
+      rgba(244, 250, 255, 0.28) 82%,
       rgba(255, 255, 255, 0) 100%
     );
   border-color: transparent;
@@ -5479,9 +5479,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     linear-gradient(
       90deg,
-      rgba(55, 113, 164, 0.58) 0%,
-      rgba(43, 83, 124, 0.38) 52%,
-      rgba(25, 54, 84, 0.14) 82%,
+      rgba(55, 113, 164, 0.70) 0%,
+      rgba(43, 83, 124, 0.50) 52%,
+      rgba(25, 54, 84, 0.24) 82%,
       rgba(8, 17, 30, 0) 100%
     );
   border-color: transparent;
@@ -5492,9 +5492,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     linear-gradient(
       90deg,
-      rgba(66, 132, 188, 0.66) 0%,
-      rgba(50, 98, 145, 0.46) 52%,
-      rgba(30, 65, 100, 0.18) 82%,
+      rgba(66, 132, 188, 0.78) 0%,
+      rgba(50, 98, 145, 0.58) 52%,
+      rgba(30, 65, 100, 0.28) 82%,
       rgba(8, 17, 30, 0) 100%
     );
   border-color: transparent;
