@@ -430,7 +430,8 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         "syncInteractionShield()",
         "setInteractionShieldEnabled(active)",
         "this.tutorialInputShieldActive",
-        "this.takingOverActive && !this.interactionShieldSuppressed",
+        "!this.interactionShieldSuppressed",
+        "(this.tutorialInputShieldActive || this.takingOverActive)",
         "isSkipControlEventTarget(target)",
         "isMovementTrackingEvent(event)",
         "event.type === 'mousemove'",
@@ -441,6 +442,10 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
     for expected in (
         "allowWindowPassthrough: true,",
         "this.overlay.setTutorialInputShieldActive(isActive);",
+        "const shouldRestoreTutorialInputShield = !!(",
+        "this.overlay.tutorialInputShieldActive === true",
+        "this.overlay.setTutorialInputShieldActive(false);",
+        "shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()",
         "this.overlay.setInteractionShieldSuppressed(true);",
         "this.overlay.setInteractionShieldSuppressed(false);",
     ):
@@ -1608,6 +1613,8 @@ def test_day1_round_activation_keeps_wakeup_after_step_registry_split():
     assert "await this.waitForIntroActivationTransition();" in activation_block
     assert "const INTRO_ACTIVATION_AUTO_ADVANCE_MS = 2600;" in director_source
     assert "const INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS = 720;" in director_source
+    assert "const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';" in director_source
+    assert "点一下这里，我就能开始说话啦～" not in director_source
 
     transition_block = director_source.split("waitForIntroActivationTransition() {", 1)[1].split(
         "\n        shouldReduceTutorialMotion() {",

@@ -1028,7 +1028,14 @@ test('standalone chat guide lock uses a transparent shield instead of per-input 
     assert.match(source, /shield\.id = 'yui-guide-standalone-interaction-shield';/);
     assert.match(source, /shield\.addEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
     assert.match(source, /window\.addEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /window\.removeEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /function isYuiGuideStandaloneMovementEvent\(event\) \{/);
+    assert.match(source, /event\.type === 'pointermove'/);
+    assert.match(source, /event\.type === 'mousemove'/);
+    assert.match(source, /event\.type === 'touchmove'/);
+    assert.match(source, /if \(isYuiGuideStandaloneMovementEvent\(event\)\) \{[\s\S]*?return;/);
     assert.match(source, /event\.isTrusted === false/);
+    assert.match(source, /document\.body\.classList\.add\('yui-guide-standalone-input-shield-active'\);/);
     assert.match(lockBlock, /setYuiGuideStandaloneInteractionShieldEnabled\(locked\);/);
     assert.match(lockBlock, /document\.body\.classList\.remove\('yui-guide-chat-buttons-disabled'\);/);
     assert.doesNotMatch(lockBlock, /readOnly\s*=/);

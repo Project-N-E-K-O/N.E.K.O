@@ -1227,8 +1227,8 @@
         }
 
         syncInteractionShield() {
-            const active = this.tutorialInputShieldActive
-                || (this.takingOverActive && !this.interactionShieldSuppressed);
+            const active = !this.interactionShieldSuppressed
+                && (this.tutorialInputShieldActive || this.takingOverActive);
             this.setInteractionShieldEnabled(active);
         }
 

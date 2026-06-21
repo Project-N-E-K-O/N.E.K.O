@@ -105,6 +105,8 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
     assert "isAllowedTutorialInteractionTarget" not in source
     assert "setTutorialInputShieldActive(active)" in overlay_source
     assert "this.overlay.setTutorialInputShieldActive(isActive);" in source
+    assert "!this.interactionShieldSuppressed" in overlay_source
+    assert "(this.tutorialInputShieldActive || this.takingOverActive)" in overlay_source
     assert "#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]" in overlay_source
     assert "event.stopImmediatePropagation();" in overlay_source
     assert "installGlobalInteractionShieldBlocker()" in overlay_source
@@ -172,6 +174,46 @@ def test_avatar_floating_guides_keep_real_cursor_visible():
     )[0]
     assert "style.cursor = 'none';" not in resistance_block
     assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
+
+
+def test_day1_intro_activation_copy_matches_auto_advance_behavior():
+    source = _read_director()
+    zh_cn = _read_static_locale("zh-CN")
+    en = _read_static_locale("en")
+
+    assert "const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';" in source
+    assert "点一下这里，我就能开始说话啦～" not in source
+    assert (
+        zh_cn["tutorial"]["yuiGuide"]["lines"]["introActivationHint"]
+        == "稍等一下，我马上开始说话啦～"
+    )
+    assert (
+        en["tutorial"]["yuiGuide"]["lines"]["introActivationHint"]
+        == "Hang on a moment, I'll start talking soon, nyan~!"
+    )
+
+
+def test_plugin_dashboard_manual_open_temporarily_pauses_input_shield():
+    source = _read_director()
+    manual_open_block = source.split(
+        "        async waitForManualPluginDashboardOpen(",
+        1,
+    )[1].split(
+        "        getPluginDashboardExpectedOrigin() {",
+        1,
+    )[0]
+
+    assert "const shouldRestoreTutorialInputShield = !!(" in manual_open_block
+    assert "this.overlay.tutorialInputShieldActive === true" in manual_open_block
+    assert "this.overlay.setInteractionShieldSuppressed(true);" in manual_open_block
+    assert "this.overlay.setTutorialInputShieldActive(false);" in manual_open_block
+    assert "shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()" in manual_open_block
+    assert manual_open_block.index("this.overlay.setTutorialInputShieldActive(false);") > manual_open_block.index(
+        "this.overlay.setInteractionShieldSuppressed(true);"
+    )
+    assert manual_open_block.index("this.overlay.setTutorialInputShieldActive(") < manual_open_block.rindex(
+        "this.overlay.setInteractionShieldSuppressed(false);"
+    )
 
 
 def test_steps_keep_default_non_home_page_registrations():

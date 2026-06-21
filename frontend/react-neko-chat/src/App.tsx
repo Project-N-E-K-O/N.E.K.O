@@ -101,7 +101,9 @@ function getEffectiveCompactChatState(
 }
 
 function isGuideChatButtonLockActive(): boolean {
-  return document.body?.classList.contains('yui-guide-chat-buttons-disabled') === true;
+  const body = document.body;
+  return body?.classList.contains('yui-guide-standalone-input-shield-active') === true
+    || body?.classList.contains('yui-guide-chat-buttons-disabled') === true;
 }
 
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;

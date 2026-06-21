@@ -487,7 +487,7 @@
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
-    const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
+    const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';
     const INTRO_ACTIVATION_AUTO_ADVANCE_MS = 2600;
     const INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS = 720;
     const DEFAULT_SPOTLIGHT_PADDING = 6;
@@ -8848,8 +8848,15 @@
             this.manualPluginDashboardOpenAllowed = true;
             this.manualPluginDashboardOpenTarget = managementButton;
             this.manualPluginDashboardOpenUserClicked = false;
+            const shouldRestoreTutorialInputShield = !!(
+                this.overlay
+                && this.overlay.tutorialInputShieldActive === true
+            );
             if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
                 this.overlay.setInteractionShieldSuppressed(true);
+            }
+            if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                this.overlay.setTutorialInputShieldActive(false);
             }
             this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
                 targetPage: 'plugin_dashboard'
@@ -8907,6 +8914,11 @@
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
                 this.manualPluginDashboardOpenUserClicked = false;
+                if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                    this.overlay.setTutorialInputShieldActive(
+                        shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()
+                    );
+                }
                 if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
                     this.overlay.setInteractionShieldSuppressed(false);
                 }

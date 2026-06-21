@@ -41,6 +41,7 @@ describe('App', () => {
     resetCompactToolWheelDetentAudioForTests();
     document.body.style.pointerEvents = '';
     document.body.classList.remove('yui-guide-chat-buttons-disabled');
+    document.body.classList.remove('yui-guide-standalone-input-shield-active');
   });
 
   const openCompactInputTools = async () => {
@@ -214,7 +215,7 @@ describe('App', () => {
   });
 
   it('keeps compact capsule clicks from entering input while the tutorial locks chat buttons', () => {
-    document.body.classList.add('yui-guide-chat-buttons-disabled');
+    document.body.classList.add('yui-guide-standalone-input-shield-active');
     const onCompactChatStateChange = vi.fn();
     const { container } = render(
       <App chatSurfaceMode="compact" onCompactChatStateChange={onCompactChatStateChange} />,
@@ -2498,7 +2499,7 @@ describe('App', () => {
     expect(preview).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
 
     act(() => {
-      document.body.classList.add('yui-guide-chat-buttons-disabled');
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
     });
 
     await waitFor(() => {

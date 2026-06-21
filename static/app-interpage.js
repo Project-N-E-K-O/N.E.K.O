@@ -3361,8 +3361,22 @@
         );
     }
 
+    function isYuiGuideStandaloneMovementEvent(event) {
+        return !!(
+            event
+            && (
+                event.type === 'pointermove'
+                || event.type === 'mousemove'
+                || event.type === 'touchmove'
+            )
+        );
+    }
+
     function blockYuiGuideStandaloneInteraction(event) {
         if (!event || isYuiGuideStandaloneSkipTarget(event.target || null)) {
+            return;
+        }
+        if (isYuiGuideStandaloneMovementEvent(event)) {
             return;
         }
         if (event.isTrusted === false) {
@@ -3397,7 +3411,7 @@
             if (shouldEnable) {
                 window.addEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
             } else {
-                window.removeEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, true);
+                window.removeEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
             }
         });
         yuiGuideStandaloneGlobalInteractionShieldInstalled = shouldEnable;

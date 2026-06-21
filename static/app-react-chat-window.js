@@ -2155,6 +2155,7 @@
         if (!body) return false;
         return body.classList.contains('yui-guide-home-ui-suppressed')
             || body.classList.contains('yui-taking-over')
+            || body.classList.contains('yui-guide-standalone-input-shield-active')
             || body.classList.contains('yui-guide-chat-buttons-disabled');
     }
 
