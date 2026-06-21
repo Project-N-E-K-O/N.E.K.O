@@ -1,14 +1,22 @@
 # NEKO Live 开发文档
 
-本文档面向后续参与 `neko_roast`（产品名 **NEKO Live**，历史代号「猫娘锐评」，架构定位是**直播中心 / Live Center**）的开发者，记录**已落地设计**。它是架构边界、模块边界、协作规范、测试门禁和文档要求的 Canonical Source。配套 `live-center-roadmap.md` 只记录阶段目标、完成状态和下一阶段顺序。
+本文档面向后续参与 `neko_roast` 的开发者，记录**已落地设计**。它是架构边界、模块边界、协作规范、测试门禁和文档要求的 Canonical Source。配套 `live-center-roadmap.md` 只记录阶段目标、完成状态和下一阶段顺序。
 
 对旧插件 `bilibili_danmaku` 采取**选择性复用**：取其**连接+解析层**（`danmaku_core` / `livedanmaku`）与**扫码登录**（`bili_auth_service`），**弃**其自带 LLM / orchestrator / memory（neko_roast 走 NEKO 统一 `dispatcher` → `main_server` 人设）。不直接复制大文件；迁移能力时拆成小模块并补测试证明边界仍成立。
 
+## 命名与范围
+
+当前产品名是 **NEKO Live**。`neko_roast` 是历史包名和内部代号，不作为用户可见产品名扩展。历史代号「猫娘锐评」只用于解释 v0.1 起点；新增文档、UI 文案、i18n 和 manifest 应使用 **NEKO Live**。
+
+“直播中心 / Live Center”是架构定位，表示把主播直播的生命周期接进 NEKO；“弹幕锐评”是当前已落地的 v0.1 功能模块。后续新增模块时不要把产品名、架构定位和单个功能模块混用。
+
 ## 当前实现快照
 
-更新日期：2026-06-18
+更新日期：2026-06-21
 
-核心闭环：**真实 B站直播间监听 → 事件中枢窗口择优 → 按当前人设对观众锐评（昵称+头像）→ 猫开口**。「首评新观众锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
+核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_roast` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
+
+协作基线：Phase 1 已落地 Canonical Source、PR 拆分规则和 Reviewer Checklist；Phase 2A 已落地模块 Owner Model 与 Protected Modules / Review Gate。Reviewer Checklist 的唯一 Canonical Source 是 `AGENTS.md`。
 
 已落地能力（详见对应章节）：
 

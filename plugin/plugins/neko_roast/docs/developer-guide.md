@@ -1,10 +1,10 @@
-# neko_roast 开发者指南（从这里开始）
+# NEKO Live 开发者指南（neko_roast）
 
 > 面向**接手 / 参与 `neko_roast`（NEKO Live）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-06-19 · 测试基线 58 passed / 0 error
+> 更新日期：2026-06-21 · 测试基线 69 passed / 0 error
 
 ---
 
@@ -16,7 +16,7 @@
 「首评新观众锐评」（观众首条弹幕 → 猫按人设锐评其昵称 + 头像）只是**第一个落地的垂直切片**。
 所有未来能力以 neko_roast 的**内部模块**形式集成，不做跨插件宿主。
 
-**当前状态**：核心闭环（真实直播监听 → 事件中枢择优 → 锐评 → 猫开口）已真机验证；P5 登录态已落地；
+**当前状态**：核心闭环（真实直播监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard）已真机验证并进入主线；P5 登录态、Phase 1 文档治理、Phase 2A Review Gate 已落地。
 
 ## 2. 五分钟心智模型
 
@@ -139,7 +139,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 - 不整体拷贝旧插件 `bilibili_danmaku` / `bilibili_dm` 大文件；复用只拆小模块 + 补测试。
 - **勿与 neko_roast 同直播间双连**旧插件。
 - `developer_tools_enabled` 是开发者模式唯一总控；权限以后端检查为准，不只靠前端禁用。
-- **没有对应文档的新功能视为未完成**（见 `development.md`「新功能文档要求」）。
+- **没有对应文档的新功能视为未完成**（见 `development.md`「文档更新要求」）。
 
 ## 12. 文档地图
 
