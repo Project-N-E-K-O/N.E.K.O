@@ -71,14 +71,11 @@ def _function_block(source: str, name: str, next_name: str) -> str:
 
 def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_window():
     source = _read_director()
+    overlay_source = YUI_GUIDE_OVERLAY_PATH.read_text(encoding="utf-8")
 
     input_block = _function_block(source, "getChatInputTarget", "getChatWindowTarget")
     window_block = _function_block(source, "getChatWindowTarget", "shouldNarrateInChat")
     activation_block = _function_block(source, "getChatIntroActivationTarget", "clearSceneTimers")
-    allowed_target_block = source.split("if (this.awaitingIntroActivation) {", 1)[1].split(
-        "if (this.manualPluginDashboardOpenAllowed",
-        1,
-    )[0]
 
     compact_input_selector = (
         '#react-chat-window-root [data-compact-geometry-owner="surface"]'
@@ -105,8 +102,13 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
     assert window_block.index(compact_capsule_selector) < window_block.index(legacy_shell_selector)
     assert window_block.index(compact_input_selector) < window_block.index(legacy_shell_selector)
 
-    assert compact_capsule_selector in allowed_target_block
-    assert compact_input_selector in allowed_target_block
+    assert "isAllowedTutorialInteractionTarget" not in source
+    assert "setTutorialInputShieldActive(active)" in overlay_source
+    assert "this.overlay.setTutorialInputShieldActive(isActive);" in source
+    assert "#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]" in overlay_source
+    assert "event.stopImmediatePropagation();" in overlay_source
+    assert "installGlobalInteractionShieldBlocker()" in overlay_source
+    assert "event.isTrusted === false" in overlay_source
 
 
 def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():

@@ -744,7 +744,7 @@ class UniversalTutorialManager {
             this._tutorialRoundPreludeController = new TutorialRoundPreludeController({
                 beginAvatarOverride: () => this.beginTutorialAvatarOverride(),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
-                ensureVisible: (sceneId) => this.ensureTutorialYuiLive2dVisible(sceneId),
+                ensureVisible: (sceneId, ensureOptions) => this.ensureTutorialYuiLive2dVisible(sceneId, ensureOptions),
                 sleep: (delayMs) => this.sleep(delayMs),
                 beginTakingOver: (detail) => {
                     const director = detail && detail.director;
@@ -1638,7 +1638,7 @@ class UniversalTutorialManager {
             suppressPersistentExpressions: true
         });
         const loadedModel = this.getTutorialLive2dCurrentModel(window.live2dManager);
-        if (!loadedModel) {
+        if (!loadedModel || !this.hasTutorialYuiLive2dRenderableModel(window.live2dManager)) {
             throw new Error('tutorial_yui_live2d_model_missing_after_load');
         }
         await this.applyTutorialLive2dViewportPlacement();
@@ -1678,17 +1678,64 @@ class UniversalTutorialManager {
         return manager.currentModel || null;
     }
 
-    hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null) {
-        const app = manager && manager.pixi_app;
-        const model = this.getTutorialLive2dCurrentModel(manager);
-        return !!(manager && model && app && app.stage && app.renderer);
+    isTutorialLive2dModelAttachedToStage(stage, model) {
+        if (!stage || !model) {
+            return false;
+        }
+        if (model.parent === stage) {
+            return true;
+        }
+        return Array.isArray(stage.children) && stage.children.indexOf(model) >= 0;
     }
 
-    async ensureTutorialYuiLive2dVisible(reason = '') {
-        this.revealTutorialLive2dPrepared();
+    isTutorialLive2dRendererViewReady(app, renderer) {
+        if (!app || !renderer) {
+            return false;
+        }
+        const rendererView = renderer.view || app.view || null;
+        if (!rendererView) {
+            return false;
+        }
+        if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
+            return true;
+        }
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        return !!(live2dCanvas && rendererView === live2dCanvas);
+    }
+
+    hasTutorialYuiLive2dRenderableModel(manager = window.live2dManager || null) {
+        const app = manager && manager.pixi_app;
+        const stage = app && app.stage;
+        const renderer = app && app.renderer;
+        const model = this.getTutorialLive2dCurrentModel(manager);
+        const internalModel = model && model.internalModel;
+        return !!(
+            manager
+            && model
+            && !model.destroyed
+            && internalModel
+            && internalModel.coreModel
+            && app
+            && !app.destroyed
+            && stage
+            && !stage.destroyed
+            && renderer
+            && !renderer.destroyed
+            && this.isTutorialLive2dModelAttachedToStage(stage, model)
+            && this.isTutorialLive2dRendererViewReady(app, renderer)
+        );
+    }
+
+    async ensureTutorialYuiLive2dVisible(reason = '', options = {}) {
+        const deferRevealPrepared = options && options.deferRevealPrepared === true;
+        if (!deferRevealPrepared) {
+            this.revealTutorialLive2dPrepared();
+        }
         const activeByPath = this.isTutorialYuiLive2dActive();
         if (activeByPath && this.hasTutorialYuiLive2dRenderableModel()) {
-            this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui');
+            this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui', {
+                deferRevealPrepared
+            });
             const placementReady = await this.applyTutorialLive2dViewportPlacement();
             if (placementReady) {
                 return true;
@@ -1707,8 +1754,12 @@ class UniversalTutorialManager {
         await this.loadTemporaryTutorialLive2dModel({
             live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME
         });
-        this.revealTutorialLive2dPrepared();
-        this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load');
+        if (!deferRevealPrepared) {
+            this.revealTutorialLive2dPrepared();
+        }
+        this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load', {
+            deferRevealPrepared
+        });
         const placementReady = await this.applyTutorialLive2dViewportPlacement();
         return this.isTutorialYuiLive2dActive()
             && this.hasTutorialYuiLive2dRenderableModel()
@@ -1839,12 +1890,15 @@ class UniversalTutorialManager {
         });
     }
 
-    restoreTutorialLive2dDisplayState(reason = '') {
+    restoreTutorialLive2dDisplayState(reason = '', options = {}) {
         if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
             return;
         }
+        const preservePreparingOpacity = options && options.preservePreparingOpacity === true;
         if (document.body && document.body.classList) {
-            document.body.classList.remove('yui-guide-live2d-preparing');
+            if (!preservePreparingOpacity) {
+                document.body.classList.remove('yui-guide-live2d-preparing');
+            }
             document.body.classList.remove('yui-guide-return-petal-fade');
         }
         if (document.body && document.body.style && typeof document.body.style.removeProperty === 'function') {
@@ -1859,7 +1913,11 @@ class UniversalTutorialManager {
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            live2dContainer.style.setProperty('opacity', '1', 'important');
+            if (preservePreparingOpacity) {
+                live2dContainer.style.removeProperty('opacity');
+            } else {
+                live2dContainer.style.setProperty('opacity', '1', 'important');
+            }
             live2dContainer.style.removeProperty('pointer-events');
         }
 
@@ -1869,8 +1927,13 @@ class UniversalTutorialManager {
             live2dCanvas.style.display = 'block';
             live2dCanvas.style.visibility = 'visible';
             live2dCanvas.style.removeProperty('transition');
-            live2dCanvas.style.setProperty('opacity', '1', 'important');
-            live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
+            if (preservePreparingOpacity) {
+                live2dCanvas.style.removeProperty('opacity');
+                live2dCanvas.style.removeProperty('pointer-events');
+            } else {
+                live2dCanvas.style.setProperty('opacity', '1', 'important');
+                live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
+            }
         }
     }
 
@@ -1882,6 +1945,7 @@ class UniversalTutorialManager {
 
     ensureTutorialLive2dRenderActive(reason = '', options = {}) {
         const scheduleDelayed = options.scheduleDelayed !== false;
+        const deferRevealPrepared = options.deferRevealPrepared === true;
         const activationToken = scheduleDelayed
             ? ++this._tutorialLive2dRenderActivationToken
             : this._tutorialLive2dRenderActivationToken;
@@ -1893,15 +1957,17 @@ class UniversalTutorialManager {
             : manager.currentModel);
 
         try {
-            this.restoreTutorialLive2dDisplayState(reason);
-            if (model) {
+            this.restoreTutorialLive2dDisplayState(reason, {
+                preservePreparingOpacity: deferRevealPrepared
+            });
+            if (model && !model.destroyed) {
                 model.visible = true;
                 model.alpha = 1;
                 if (model.renderable !== undefined) {
                     model.renderable = true;
                 }
             }
-            if (app && app.stage) {
+            if (app && app.stage && !app.stage.destroyed) {
                 app.stage.visible = true;
                 app.stage.alpha = 1;
                 if (app.stage.renderable !== undefined) {
@@ -1938,7 +2004,10 @@ class UniversalTutorialManager {
                 }
                 this.ensureTutorialLive2dRenderActive(
                     `${reason || 'tutorial-live2d'}:delay-${delayMs}`,
-                    { scheduleDelayed: false }
+                    {
+                        scheduleDelayed: false,
+                        deferRevealPrepared: deferRevealPrepared
+                    }
                 );
             }, delayMs);
         });
@@ -2006,6 +2075,9 @@ class UniversalTutorialManager {
 
     async applyTutorialLive2dViewportPlacement() {
         const manager = window.live2dManager || null;
+        if (!this.hasTutorialYuiLive2dRenderableModel(manager)) {
+            return false;
+        }
         const model = manager && (typeof manager.getCurrentModel === 'function'
             ? manager.getCurrentModel()
             : manager.currentModel);
@@ -2175,6 +2247,121 @@ class UniversalTutorialManager {
             return Promise.resolve();
         }
         return controller.restoreOverride();
+    }
+
+    isCurrentRuntimeModelLive2d() {
+        const modelType = String(
+            window.lanlan_config && window.lanlan_config.model_type
+                ? window.lanlan_config.model_type
+                : 'live2d'
+        ).toLowerCase();
+        return modelType === 'live2d';
+    }
+
+    clearTutorialLive2dManagerMetadata(manager, staleModel) {
+        if (!manager) {
+            return;
+        }
+        if (window.LanLan1) {
+            if (window.LanLan1.live2dModel === staleModel) {
+                window.LanLan1.live2dModel = null;
+            }
+            if (window.LanLan1.currentModel === staleModel) {
+                window.LanLan1.currentModel = null;
+            }
+        }
+        if (!manager.currentModel || manager.currentModel === staleModel) {
+            manager.currentModel = null;
+        }
+        manager._lastLoadedModelPath = null;
+        manager.modelRootPath = null;
+        manager.modelName = null;
+        manager._isModelReadyForInteraction = false;
+        if (!manager._isLoadingModel) {
+            manager._modelLoadState = 'idle';
+        }
+        if (typeof manager._resetDerivedModelMetadata === 'function') {
+            try {
+                manager._resetDerivedModelMetadata();
+            } catch (_) {}
+        }
+    }
+
+    hideTutorialLive2dRuntimeSurfaceAfterResidueClear() {
+        if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
+            return;
+        }
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            live2dContainer.style.display = 'none';
+            live2dContainer.classList.add('hidden');
+            live2dContainer.style.removeProperty('opacity');
+            live2dContainer.style.removeProperty('transition');
+            live2dContainer.style.pointerEvents = 'none';
+        }
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        if (live2dCanvas) {
+            live2dCanvas.style.visibility = 'hidden';
+            live2dCanvas.style.pointerEvents = 'none';
+            live2dCanvas.style.removeProperty('opacity');
+            live2dCanvas.style.removeProperty('transition');
+        }
+        document.querySelectorAll('#live2d-floating-buttons, #live2d-lock-icon, #live2d-return-button-container')
+            .forEach((element) => {
+                if (
+                    element
+                    && element.id === 'live2d-floating-buttons'
+                    && typeof window._removeNekoFloatingButtonsElement === 'function'
+                ) {
+                    window._removeNekoFloatingButtonsElement(element);
+                    return;
+                }
+                if (element && typeof element.remove === 'function') {
+                    element.remove();
+                }
+            });
+    }
+
+    async clearTutorialYuiLive2dRuntimeResidue(reason = '') {
+        const manager = window.live2dManager || null;
+        if (!manager || !this.isTutorialYuiLive2dActive() || this.isCurrentRuntimeModelLive2d()) {
+            return false;
+        }
+
+        const staleModel = this.getTutorialLive2dCurrentModel(manager);
+        try {
+            if (staleModel && typeof manager.removeModel === 'function') {
+                await manager.removeModel({ skipCloseWindows: true });
+            } else {
+                const stage = manager.pixi_app && manager.pixi_app.stage;
+                if (stage && staleModel && typeof stage.removeChild === 'function') {
+                    try {
+                        stage.removeChild(staleModel);
+                    } catch (_) {}
+                }
+                if (staleModel && typeof staleModel.destroy === 'function') {
+                    try {
+                        staleModel.destroy({ children: true });
+                    } catch (_) {}
+                }
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 清理教程 YUI Live2D 残留失败:', reason || 'unknown', error);
+        } finally {
+            this.clearTutorialLive2dManagerMetadata(manager, staleModel);
+            if (typeof manager.pauseRendering === 'function') {
+                try {
+                    manager.pauseRendering();
+                } catch (_) {}
+            }
+            if (manager.pixi_app && manager.pixi_app.renderer && typeof manager.pixi_app.renderer.clear === 'function') {
+                try {
+                    manager.pixi_app.renderer.clear();
+                } catch (_) {}
+            }
+            this.hideTutorialLive2dRuntimeSurfaceAfterResidueClear();
+        }
+        return true;
     }
 
     snapshotAvatarFloatingModelInteractionState(reason = 'tutorial-started') {
@@ -2513,6 +2700,9 @@ class UniversalTutorialManager {
     async startAvatarFloatingGuideRound(day, options = {}) {
         const round = normalizeAvatarFloatingGuideRound(day);
         const source = options.source || 'manual';
+        if (!this.isTutorialRunning && !window.isInTutorial && this._teardownPromise) {
+            await this.waitForTutorialTeardownSettled('avatar-floating-guide-start');
+        }
         if (this.isTutorialRunning || window.isInTutorial) {
             console.warn('[Tutorial] 引导已在运行中，跳过悬浮窗教程启动:', round);
             return false;
@@ -2580,6 +2770,20 @@ class UniversalTutorialManager {
         }
     }
 
+    async waitForTutorialTeardownSettled(reason = '') {
+        const teardownPromise = this._teardownPromise;
+        if (!teardownPromise) {
+            return true;
+        }
+        try {
+            await teardownPromise;
+            return true;
+        } catch (error) {
+            console.warn('[Tutorial] 等待旧引导拆除失败，继续启动:', reason || 'unknown', error);
+            return false;
+        }
+    }
+
     async playAvatarFloatingRoundPrelude(round, source, director) {
         const controller = this.ensureTutorialRoundPreludeController();
         if (!controller || typeof controller.play !== 'function') {
@@ -2587,7 +2791,8 @@ class UniversalTutorialManager {
         }
         return controller.play(round, {
             source: source,
-            director: director || null
+            director: director || null,
+            deferRevealPrepared: Number(round) === 1
         });
     }
 
@@ -3082,6 +3287,7 @@ class UniversalTutorialManager {
 
         const teardownPromise = Promise.resolve()
             .then(() => this.restoreTutorialAvatarOverride())
+            .then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))
             .then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))
             .catch(error => {
                 console.warn('[Tutorial] 拆除引导时恢复头像失败:', error);

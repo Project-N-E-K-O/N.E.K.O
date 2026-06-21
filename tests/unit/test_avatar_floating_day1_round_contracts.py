@@ -613,7 +613,8 @@ def test_avatar_floating_round_start_keeps_tutorial_model_reload_before_first_sc
     assert "this._tutorialModelPrefix = 'live2d';" in start_block
     assert "await this.playAvatarFloatingRoundPrelude(round, source, director);" in start_block
     assert "this.beginAvatarOverride()" in prelude_source
-    assert "this.ensureVisible(sceneId)" in prelude_source
+    assert "this.ensureVisible(sceneId, {" in prelude_source
+    assert "deferRevealPrepared" in prelude_source
     assert "director.playAvatarFloatingRound(round" in start_block
     assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director)") < start_block.index(
         "director.playAvatarFloatingRound(round"
@@ -631,9 +632,10 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
     assert "await toPromise(() => this.sleep(delayMs));" in prelude_source
     assert "this.defaultDelayMs" in prelude_source
     assert "1500" in prelude_source
-    assert prelude_source.index("this.ensureVisible(sceneId)") < prelude_source.index(
+    assert prelude_source.index("this.ensureVisible(sceneId, {") < prelude_source.index(
         "await toPromise(() => this.sleep(delayMs));"
     )
+    assert "deferRevealPrepared: Number(round) === 1" in source
     assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director)") < start_block.index(
         "director.playAvatarFloatingRound(round"
     )
@@ -739,6 +741,17 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "effect: 'wobble'" not in activation_block
     assert "setExternalizedChatCursor('');" not in activation_block
     assert "this.hideHomeCursorForExternalizedChat();" in activation_block
+    assert "await this.runWakeupPrelude();" in activation_block
+    assert "await this.waitForIntroActivationTransition();" in activation_block
+    assert "wait(360)" not in activation_block
+
+    transition_block = director.split("waitForIntroActivationTransition() {", 1)[1].split(
+        "\n        shouldReduceTutorialMotion() {",
+        1,
+    )[0]
+    assert "INTRO_ACTIVATION_AUTO_ADVANCE_MS" in transition_block
+    assert "INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS" in transition_block
+    assert "return wait(waitMs);" in transition_block
 
 
 def test_day1_capsule_drag_hint_copy_uses_single_click_language():

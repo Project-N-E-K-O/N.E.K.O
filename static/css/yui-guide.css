@@ -17,6 +17,11 @@
   --yui-guide-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.yui-guide-overlay.is-interaction-shield-enabled,
+.yui-guide-overlay.is-interaction-shield-enabled .yui-guide-stage {
+  pointer-events: auto;
+}
+
 html[data-theme='dark'] .yui-guide-overlay,
 html.dark .yui-guide-overlay {
   --yui-guide-surface: rgba(20, 27, 38, 0.94);
@@ -127,6 +132,7 @@ body.yui-guide-return-petal-fade #mmd-canvas {
 .yui-guide-interaction-shield {
   position: fixed;
   inset: 0;
+  z-index: 2147483001;
   pointer-events: auto;
   background: transparent;
   cursor: auto !important;
@@ -845,7 +851,6 @@ body.yui-taking-over #mmd-return-button-container {
   display: none !important;
   visibility: hidden !important;
   opacity: 0 !important;
-  pointer-events: none !important;
 }
 
 body.yui-guide-home-ui-suppressed #live2d-container,
@@ -860,13 +865,11 @@ body.yui-taking-over #vrm-container,
 body.yui-taking-over #vrm-canvas,
 body.yui-taking-over #mmd-container,
 body.yui-taking-over #mmd-canvas {
-  pointer-events: none !important;
   cursor: auto !important;
 }
 
 body.yui-guide-home-ui-suppressed #react-chat-window-drag-handle,
 body.yui-taking-over #react-chat-window-drag-handle {
-  pointer-events: none !important;
   cursor: auto !important;
 }
 
