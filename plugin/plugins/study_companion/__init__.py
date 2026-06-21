@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 import time
 from typing import Any
@@ -85,7 +86,7 @@ from .study_ocr_pipeline import StudyOcrPipeline
 from .supervision import SupervisionController
 from .tutor_llm_agent import TutorLLMAgent
 from .tutor_llm_agent import diagnostic_code_for_exception
-from .ui_api import build_open_ui_payload
+from .ui_api import STUDY_PANEL_SURFACE_ID, build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 from .voice_contracts import (
@@ -141,7 +142,6 @@ def _register_install_routes() -> None:
     )
 
 
-STUDY_PANEL_SURFACE_ID = "study-panel"
 _USER_PLUGIN_SERVER_DEFAULT_PORT = 48916
 _LOCALHOST = "127.0.0.1"
 
@@ -283,6 +283,7 @@ class StudyCompanionPlugin(
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = asyncio.Lock()
+        self._targeted_context_lock = threading.Lock()
         self._install_in_progress = False
         self._rapidocr_models_in_progress = False
         self._cfg = StudyConfig()

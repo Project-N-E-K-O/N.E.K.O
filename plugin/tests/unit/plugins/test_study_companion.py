@@ -4141,7 +4141,7 @@ async def test_targeted_question_context_generate_and_attempt_guard(
                     "solution_steps": ["Apply the power rule", "Reduce exponent"],
                     "hint": "Use the power rule.",
                     "difficulty": 2,
-                    "topic": "derivatives",
+                    "topic": "power rule",
                     "question_type": "math_exact",
                 },
                 created_at="2026-05-11T00:00:00Z",
@@ -4230,12 +4230,21 @@ async def test_targeted_question_context_generate_and_attempt_guard(
         assert generated.value["question_id"]
         assert generated.value["attempt_id"]
         assert generated.value["selected_topic_id"] == "derivatives"
+        assert generated.value["topic"] == "derivatives"
+
+        consumed_context = await plugin.study_generate_targeted_question(
+            selection_context_id=selection_context_id
+        )
+        assert isinstance(consumed_context, Err)
+        assert consumed_context.error.code == "SELECTION_CONTEXT_EXPIRED"
+        assert len(plugin._agent.inputs) == 1
 
         async with plugin._lock:
             current_question = dict(plugin._state.current_question)
             public_question = public_current_question_payload(current_question)
         assert current_question["answer"] == "2x"
         assert current_question["accepted_answers"] == ["2 x"]
+        assert current_question["topic"] == "derivatives"
         assert public_question["question"] == "What is the derivative of x^2?"
         assert "answer" not in public_question
         assert "accepted_answers" not in public_question

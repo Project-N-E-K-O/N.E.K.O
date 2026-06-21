@@ -158,19 +158,28 @@ class _TutorQuestionEntriesMixin:
         return stored
 
     def _load_targeted_context(self, selection_context_id: str) -> dict[str, Any]:
+        context_lock = getattr(self, "_targeted_context_lock", None)
+        if context_lock is None:
+            return self._load_targeted_context_locked(selection_context_id)
+        with context_lock:
+            return self._load_targeted_context_locked(selection_context_id)
+
+    def _load_targeted_context_locked(self, selection_context_id: str) -> dict[str, Any]:
         self._prune_targeted_context_cache()
         context_id = str(selection_context_id or "").strip()
-        cached = self._targeted_context_cache().get(context_id)
+        cache = self._targeted_context_cache()
+        cached = cache.get(context_id)
         if not cached or cached.get("consumed"):
             raise SdkError(
                 "selection context expired", code="SELECTION_CONTEXT_EXPIRED"
             )
         topic_id = str(cached.get("selected_topic_id") or "").strip()
         if topic_id and not self._knowledge_tracker.store.get_topic(topic_id):
-            self._targeted_context_cache().pop(context_id, None)
+            cache.pop(context_id, None)
             raise SdkError(
                 "selection context expired", code="SELECTION_CONTEXT_EXPIRED"
             )
+        cached["consumed"] = True
         return dict(cached)
 
     def _selection_from_question_params(
@@ -317,6 +326,7 @@ class _TutorQuestionEntriesMixin:
                     "source": "targeted_question",
                     "selected_topic_id": targeted_context.get("selected_topic_id")
                     or "",
+                    "topic": targeted_context.get("selected_topic_id") or "",
                     "selected_topic_name": targeted_context.get("selected_topic_name")
                     or "",
                     "selection_context_id": targeted_context.get(
@@ -471,11 +481,6 @@ class _TutorQuestionEntriesMixin:
                 source="targeted_question",
                 targeted_context=targeted_context,
             )
-            context_id = str(targeted_context.get("selection_context_id") or "")
-            if context_id:
-                cached = self._targeted_context_cache().get(context_id)
-                if cached is not None:
-                    cached["consumed"] = True
             return Ok(payload)
         except SdkError as exc:
             return Err(exc)

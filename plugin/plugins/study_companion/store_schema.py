@@ -326,6 +326,9 @@ def _init_db(self) -> None:
     conn.execute("UPDATE topics SET stage = '' WHERE stage IS NULL")
     self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage, subject, chapter, depth, id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mastery_topic_updated ON mastery_snapshots(topic_id, updated_at DESC, id DESC)"
     )
     conn.execute(

@@ -67,7 +67,7 @@ def build_knowledge_map_payload(
                 "subject": str(topic.get("subject") or ""),
                 "chapter": str(topic.get("chapter") or ""),
                 "stage": stage,
-                "grade_level": stage,
+                "grade_level": stage,  # backward-compat alias for older consumers
                 "mastery": float(mastery.get("mastery") or 0.0),
                 "level": str(mastery.get("level") or ""),
                 "weak": weak,
