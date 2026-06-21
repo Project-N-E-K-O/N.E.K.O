@@ -90,8 +90,17 @@
     // dispatchMusicPlay 在 source==='proactive' 时把远程视作"已占用"。 ---
     const MUSIC_COORD_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
     const REMOTE_MUSIC_TTL_MS = 30 * 1000; // 心跳超时
+    const REMOTE_MUSIC_PENDING_TTL_MS = 12 * 1000;
+    const MUSIC_PLAYER_BRIDGE_ENDPOINT = '/api/music/player/bridge';
+    const MUSIC_PLAYER_BRIDGE_POLL_MS = 900;
+    const MUSIC_PLAYER_BRIDGE_SURFACE_PULSE_MS = 2500;
     // sender_id -> expireAt
     const remoteMusicSenders = new Map();
+    let musicPlayerBridgeSeq = 0;
+    let musicPlayerBridgePollTimer = null;
+    let musicPlayerBridgeSurfacePulseTimer = null;
+    let musicPlayerBridgeRemoteActiveUntil = 0;
+    let musicPlayerBridgeActiveSurface = null;
     let musicCoordChannel = null;
     try {
         if (typeof BroadcastChannel !== 'undefined') {
@@ -103,6 +112,8 @@
                 if (!sid || sid === MUSIC_COORD_SENDER_ID) return;
                 if (data.type === 'music_started' || data.type === 'music_heartbeat') {
                     remoteMusicSenders.set(sid, Date.now() + REMOTE_MUSIC_TTL_MS);
+                } else if (data.type === 'music_pending') {
+                    remoteMusicSenders.set(sid, Date.now() + REMOTE_MUSIC_PENDING_TTL_MS);
                 } else if (data.type === 'music_ended') {
                     remoteMusicSenders.delete(sid);
                 }
@@ -127,10 +138,12 @@
     }
 
     const broadcastMusicCoord = (type) => {
-        if (!musicCoordChannel) return;
-        try {
-            musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, ts: Date.now() });
-        } catch (_) { /* ignore */ }
+        if (musicCoordChannel) {
+            try {
+                musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, ts: Date.now() });
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('coord', { coordType: type });
     };
 
     // 心跳：当本地正在播时定期广播，防止其他窗口误以为对方已退出
@@ -157,8 +170,9 @@
     };
 
     const isRemoteMusicActive = () => {
-        if (remoteMusicSenders.size === 0) return false;
         const now = Date.now();
+        if (musicPlayerBridgeRemoteActiveUntil > now) return true;
+        if (remoteMusicSenders.size === 0) return false;
         // 顺手清理已过期的 sender
         for (const [sid, exp] of remoteMusicSenders) {
             if (now > exp) remoteMusicSenders.delete(sid);
@@ -252,48 +266,77 @@
     // follower 记录当前镜像绑定的 leader sender id。所有 ctrl/destroyed 校验
     // 都要比对这个值，避免 leader 切换重叠时别的 owner 被误触发 pause/close。
     let mirrorBarLeaderSender = null;
+    const processedBarCtrlIds = new Set();
+    const processedBarCtrlOrder = [];
+
+    function shouldSkipProcessedBarCtrl(ctrlId) {
+        if (!ctrlId) return false;
+        if (processedBarCtrlIds.has(ctrlId)) return true;
+        processedBarCtrlIds.add(ctrlId);
+        processedBarCtrlOrder.push(ctrlId);
+        while (processedBarCtrlOrder.length > 120) {
+            processedBarCtrlIds.delete(processedBarCtrlOrder.shift());
+        }
+        return false;
+    }
 
     const isBarOwner = () => !!localPlayer;
 
     const broadcastBarState = (patch) => {
-        if (!musicBarChannel) return;
-        try {
-            musicBarChannel.postMessage(Object.assign({
-                type: 'state',
-                sender: MUSIC_COORD_SENDER_ID,
-                ts: Date.now()
-            }, patch));
-        } catch (_) { /* ignore */ }
+        const message = Object.assign({
+            type: 'state',
+            sender: MUSIC_COORD_SENDER_ID,
+            ts: Date.now()
+        }, patch);
+        if (musicBarChannel) {
+            try {
+                musicBarChannel.postMessage(message);
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('bar_state', patch || {});
     };
 
     const broadcastBarDestroyed = (fullTeardown) => {
-        if (!musicBarChannel) return;
-        try {
-            musicBarChannel.postMessage({
-                type: 'destroyed',
-                sender: MUSIC_COORD_SENDER_ID,
-                ts: Date.now(),
-                fullTeardown: !!fullTeardown
-            });
-        } catch (_) { /* ignore */ }
+        const message = {
+            type: 'destroyed',
+            sender: MUSIC_COORD_SENDER_ID,
+            ts: Date.now(),
+            fullTeardown: !!fullTeardown
+        };
+        if (musicBarChannel) {
+            try {
+                musicBarChannel.postMessage(message);
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: !!fullTeardown });
     };
 
     const broadcastBarCtrl = (action, value) => {
-        if (!musicBarChannel) return;
         // 没绑到 leader（镜像 bar 没建或已 teardown）就不发 ctrl
         if (!mirrorBarLeaderSender) return;
-        try {
-            musicBarChannel.postMessage({
-                type: 'ctrl',
-                sender: MUSIC_COORD_SENDER_ID,
-                // target 指明给哪个 leader——owner 侧校验 target 才执行，避免
-                // 非当前绑定的 leader 也一起 pause/seek/close
-                target: mirrorBarLeaderSender,
-                ts: Date.now(),
-                action: action,
-                value: value
-            });
-        } catch (_) { /* ignore */ }
+        const ctrlId = MUSIC_COORD_SENDER_ID + ':' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2, 8);
+        const message = {
+            type: 'ctrl',
+            sender: MUSIC_COORD_SENDER_ID,
+            // target 指明给哪个 leader——owner 侧校验 target 才执行，避免
+            // 非当前绑定的 leader 也一起 pause/seek/close
+            target: mirrorBarLeaderSender,
+            ts: Date.now(),
+            ctrlId: ctrlId,
+            action: action,
+            value: value
+        };
+        if (musicBarChannel) {
+            try {
+                musicBarChannel.postMessage(message);
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('bar_ctrl', {
+            target: mirrorBarLeaderSender,
+            ctrlId: ctrlId,
+            action: action,
+            value: value
+        });
     };
 
     const computeCurrentBarState = () => {
@@ -361,11 +404,142 @@
         return compactMount instanceof Element ? compactMount : null;
     }
 
-    function getPreferredMusicMountTarget() {
-        const compactMount = getCompactMusicMountTarget();
-        if (compactMount) return { mountTarget: compactMount, insertBeforeEl: null };
+    function getFullMusicMountTarget() {
+        const mounts = document.querySelectorAll('#music-player-mount');
+        for (const mount of mounts) {
+            if (mount instanceof Element && mount.getAttribute('data-music-player-mount') !== 'compact-surface') {
+                return mount;
+            }
+        }
+        return null;
+    }
 
-        const reactMount = document.getElementById('music-player-mount');
+    function getChatMusicSurfaceMode() {
+        try {
+            if (typeof window.getNekoChatMusicSurfaceState === 'function') {
+                const state = window.getNekoChatMusicSurfaceState();
+                if (state && state.mode) return String(state.mode);
+            }
+        } catch (_) { /* ignore */ }
+
+        try {
+            const host = window.reactChatWindowHost;
+            if (host && typeof host.getChatSurfaceMode === 'function') {
+                const mode = host.getChatSurfaceMode();
+                if (mode) return String(mode);
+            }
+        } catch (_) { /* ignore */ }
+
+        const shell = document.getElementById('react-chat-window-shell');
+        if (shell && shell.getAttribute) {
+            const mode = shell.getAttribute('data-chat-surface-mode');
+            if (mode) return mode;
+        }
+
+        const body = document.body;
+        if (body && body.getAttribute) {
+            const declaredMode = body.getAttribute('data-initial-chat-surface-mode');
+            if (declaredMode) return declaredMode;
+        }
+
+        try {
+            const path = (window.location && window.location.pathname) || '';
+            if (path === '/chat_full') return 'full';
+            if (path === '/chat') return 'compact';
+        } catch (_) { /* ignore */ }
+
+        if (getCompactMusicMountTarget()) return 'compact';
+        if (getFullMusicMountTarget()) return 'full';
+        return '';
+    }
+
+    function isElementInHiddenTree(element) {
+        let node = element;
+        while (node && node instanceof Element) {
+            if (node.hidden) return true;
+            node = node.parentElement;
+        }
+        return false;
+    }
+
+    function hasUsableLocalChatMusicSurface() {
+        const mode = getChatMusicSurfaceMode();
+        if (mode === 'minimized') return false;
+        const mount = mode === 'compact'
+            ? getCompactMusicMountTarget()
+            : (mode === 'full' ? getFullMusicMountTarget() : (getFullMusicMountTarget() || getCompactMusicMountTarget()));
+        if (!mount || isElementInHiddenTree(mount)) return false;
+
+        const overlay = document.getElementById('react-chat-window-overlay');
+        if (overlay && overlay.hidden) return false;
+        return true;
+    }
+
+    function isLocalChatMusicSurfaceFocused() {
+        if (!hasUsableLocalChatMusicSurface()) return false;
+        try {
+            if (document.visibilityState === 'hidden') return false;
+        } catch (_) { /* ignore */ }
+        try {
+            return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function isDedicatedChatMusicSurface() {
+        try {
+            const path = (window.location && window.location.pathname) || '';
+            if (path === '/chat' || path === '/chat_full') return true;
+        } catch (_) { /* ignore */ }
+        const body = document.body;
+        return !!(body && body.classList && body.classList.contains('electron-chat-window'));
+    }
+
+    function getMusicBridgeSurfaceState(reason) {
+        const active = isLocalChatMusicSurfaceFocused();
+        return {
+            mode: getChatMusicSurfaceMode() || 'unknown',
+            active: active,
+            focused: active,
+            visible: hasUsableLocalChatMusicSurface(),
+            reason: reason || ''
+        };
+    }
+
+    function hasBridgeActiveChatMusicSurface() {
+        if (!musicPlayerBridgeActiveSurface) return false;
+        if ((musicPlayerBridgeActiveSurface.expireAt || 0) <= Date.now()) {
+            musicPlayerBridgeActiveSurface = null;
+            return false;
+        }
+        if (musicPlayerBridgeActiveSurface.sender === MUSIC_COORD_SENDER_ID) return false;
+        return !!(
+            musicPlayerBridgeActiveSurface.active ||
+            musicPlayerBridgeActiveSurface.focused ||
+            musicPlayerBridgeActiveSurface.visible
+        );
+    }
+
+    function shouldRenderMusicBarInThisSurface() {
+        if (isLocalChatMusicSurfaceFocused()) return true;
+        if (hasBridgeActiveChatMusicSurface()) return false;
+        if (isDedicatedChatMusicSurface()) return false;
+        return hasUsableLocalChatMusicSurface();
+    }
+
+    function getPreferredMusicMountTarget(options = {}) {
+        const renderHere = shouldRenderMusicBarInThisSurface();
+        const allowInactiveOwner = !!options.allowInactiveOwner;
+        if (!renderHere && !allowInactiveOwner) return { mountTarget: null, insertBeforeEl: null };
+
+        const mode = getChatMusicSurfaceMode();
+        let reactMount = null;
+        if (mode === 'compact') reactMount = getCompactMusicMountTarget();
+        else if (mode === 'full') reactMount = getFullMusicMountTarget();
+
+        if (!reactMount && mode !== 'compact') reactMount = getFullMusicMountTarget();
+        if (!reactMount && mode !== 'full') reactMount = getCompactMusicMountTarget();
         if (reactMount) return { mountTarget: reactMount, insertBeforeEl: null };
 
         const legacyMount = document.getElementById(MUSIC_CONFIG.dom.containerId);
@@ -396,8 +570,15 @@
         ensureMusicMountObserver();
         if (musicBar.dataset) delete musicBar.dataset.skipMountRelocation;
         prepareMusicBarHitRegion(musicBar);
-        const target = getPreferredMusicMountTarget();
-        if (!target || !target.mountTarget) return false;
+        const isMirrorBar = !!(musicBar.dataset && musicBar.dataset.mirror === 'true');
+        const renderHere = shouldRenderMusicBarInThisSurface();
+        const target = getPreferredMusicMountTarget({ allowInactiveOwner: !isMirrorBar });
+        if (!target || !target.mountTarget) {
+            musicBar.hidden = true;
+            requestCompactMusicGeometrySync();
+            return false;
+        }
+        musicBar.hidden = !renderHere;
         if (musicBar.parentNode === target.mountTarget) {
             requestCompactMusicGeometrySync();
             return true;
@@ -500,6 +681,68 @@
                 'style'
             ]
         });
+    }
+
+    async function getMusicPlayerBridgeMutationHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        const sec = window.nekoLocalMutationSecurity;
+        if (!sec || typeof sec.getMutationHeaders !== 'function') {
+            return null;
+        }
+        try {
+            Object.assign(headers, await sec.getMutationHeaders());
+        } catch (_) {
+            return null;
+        }
+        return headers;
+    }
+
+    async function isMusicPlayerBridgeCsrfFailure(response) {
+        if (!response || response.status !== 403) return false;
+        try {
+            const cloned = typeof response.clone === 'function' ? response.clone() : response;
+            const data = await cloned.json();
+            return !!(data && data.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function postMusicPlayerBridgeEvent(type, payload, options = {}) {
+        const body = {
+            sender: MUSIC_COORD_SENDER_ID,
+            type: type,
+            payload: payload || {},
+            surface: options.surface || getMusicBridgeSurfaceState(type)
+        };
+        (async () => {
+            let headers = await getMusicPlayerBridgeMutationHeaders();
+            if (!headers) return;
+            let response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(body),
+                keepalive: true,
+                cache: 'no-store'
+            });
+            const sec = window.nekoLocalMutationSecurity;
+            if (await isMusicPlayerBridgeCsrfFailure(response)
+                && sec && typeof sec.refreshToken === 'function') {
+                try { await sec.refreshToken(); } catch (_) { /* ignore */ }
+                headers = await getMusicPlayerBridgeMutationHeaders();
+                if (!headers) return;
+                response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(body),
+                    keepalive: true,
+                    cache: 'no-store'
+                });
+            }
+            if (response && response.ok) {
+                try { await response.json(); } catch (_) { /* ignore */ }
+            }
+        })().catch(() => { /* bridge unavailable: BroadcastChannel/local owner still works */ });
     }
 
     const bindMirrorBarControls = (musicBar) => {
@@ -889,6 +1132,133 @@
         }
     };
 
+    function applyMusicPlayerBridgeCoord(sender, coordType) {
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
+        if (coordType === 'music_started' || coordType === 'music_heartbeat') {
+            remoteMusicSenders.set(sender, Date.now() + REMOTE_MUSIC_TTL_MS);
+        } else if (coordType === 'music_pending') {
+            remoteMusicSenders.set(sender, Date.now() + REMOTE_MUSIC_PENDING_TTL_MS);
+        } else if (coordType === 'music_ended') {
+            remoteMusicSenders.delete(sender);
+        }
+    }
+
+    function applyMusicPlayerBridgeEvent(event) {
+        if (!event || typeof event !== 'object') return;
+        const sender = event.sender;
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
+        const payload = event.payload || {};
+        try {
+            if (event.type === 'coord') {
+                applyMusicPlayerBridgeCoord(sender, payload.coordType);
+            } else if (event.type === 'bar_state') {
+                if (isBarOwner()) return;
+                mirrorBarLeaderSender = sender;
+                renderMirrorBar(payload);
+            } else if (event.type === 'bar_destroyed') {
+                if (isBarOwner()) return;
+                if (sender !== mirrorBarLeaderSender) return;
+                mirrorBarLeaderSender = null;
+                teardownMirrorBar(!!payload.fullTeardown);
+            } else if (event.type === 'bar_ctrl') {
+                if (!isBarOwner()) return;
+                if (payload.target && payload.target !== MUSIC_COORD_SENDER_ID) return;
+                if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return;
+                handleRemoteBarCtrl(payload.action, payload.value);
+            }
+        } catch (e) {
+            console.warn('[Music UI] music player bridge event failed:', e);
+        }
+    }
+
+    async function pollMusicPlayerBridge() {
+        try {
+            const surface = getMusicBridgeSurfaceState('poll');
+            const params = new URLSearchParams({
+                sender: MUSIC_COORD_SENDER_ID,
+                since: String(musicPlayerBridgeSeq || 0)
+            });
+            const response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT + '?' + params.toString(), {
+                method: 'GET',
+                cache: 'no-store'
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (!data || data.success === false) return;
+
+            if (typeof data.seq === 'number' && data.seq > musicPlayerBridgeSeq) {
+                musicPlayerBridgeSeq = data.seq;
+            }
+
+            if (data.active_surface && data.active_surface.sender) {
+                musicPlayerBridgeActiveSurface = Object.assign({}, data.active_surface, {
+                    expireAt: Date.now() + MUSIC_PLAYER_BRIDGE_SURFACE_PULSE_MS + 1200
+                });
+            } else {
+                musicPlayerBridgeActiveSurface = null;
+            }
+
+            musicPlayerBridgeRemoteActiveUntil = data.remote_music_active
+                ? Date.now() + MUSIC_PLAYER_BRIDGE_POLL_MS + 1400
+                : 0;
+
+            if (Array.isArray(data.events)) {
+                for (const event of data.events) applyMusicPlayerBridgeEvent(event);
+            }
+
+            if (data.owner && data.owner !== MUSIC_COORD_SENDER_ID && data.latest_state && !isBarOwner()) {
+                mirrorBarLeaderSender = data.owner;
+                renderMirrorBar(data.latest_state);
+            } else if (!data.owner && mirrorBarLeaderSender && !isBarOwner()) {
+                mirrorBarLeaderSender = null;
+                teardownMirrorBar(false);
+            }
+
+            if (surface.active || surface.visible) scheduleMusicBarRelocation();
+        } catch (_) {
+            // Bridge is best-effort; BroadcastChannel/local owner remain usable.
+        }
+    }
+
+    function initializeMusicPlayerBridge() {
+        if (musicPlayerBridgePollTimer) return;
+        pollMusicPlayerBridge();
+        musicPlayerBridgePollTimer = window.setInterval(pollMusicPlayerBridge, MUSIC_PLAYER_BRIDGE_POLL_MS);
+        musicPlayerBridgeSurfacePulseTimer = window.setInterval(() => {
+            postMusicPlayerBridgeEvent('surface_state', getMusicBridgeSurfaceState('bridge-pulse'));
+        }, MUSIC_PLAYER_BRIDGE_SURFACE_PULSE_MS);
+        const publishSurfaceState = (reason) => {
+            postMusicPlayerBridgeEvent('surface_state', getMusicBridgeSurfaceState(reason));
+            scheduleMusicBarRelocation();
+        };
+        window.addEventListener('focus', () => publishSurfaceState('focus'));
+        window.addEventListener('blur', () => publishSurfaceState('blur'));
+        window.addEventListener('react-chat-window:chat-surface-mode-change', () => publishSurfaceState('surface-mode'));
+        window.addEventListener('neko:chat-music-surface-change', () => publishSurfaceState('surface-state'));
+        document.addEventListener('visibilitychange', () => publishSurfaceState('visibility'));
+        window.setTimeout(() => publishSurfaceState('init'), 0);
+        window.addEventListener('beforeunload', () => {
+            postMusicPlayerBridgeEvent('surface_state', Object.assign(
+                getMusicBridgeSurfaceState('unload'),
+                { active: false, focused: false, visible: false, reason: 'unload' }
+            ));
+            if (isBarOwner()) {
+                postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: true });
+                postMusicPlayerBridgeEvent('coord', { coordType: 'music_ended' });
+            }
+            if (musicPlayerBridgePollTimer) {
+                window.clearInterval(musicPlayerBridgePollTimer);
+                musicPlayerBridgePollTimer = null;
+            }
+            if (musicPlayerBridgeSurfacePulseTimer) {
+                window.clearInterval(musicPlayerBridgeSurfacePulseTimer);
+                musicPlayerBridgeSurfacePulseTimer = null;
+            }
+        });
+    }
+
+    initializeMusicPlayerBridge();
+
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             musicBarChannel = new BroadcastChannel(MUSIC_BAR_CHANNEL_NAME);
@@ -918,6 +1288,7 @@
                         // 被 follower 的指令误触（leader 交接瞬间最容易发生）
                         if (!isBarOwner()) return;
                         if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+                        if (shouldSkipProcessedBarCtrl(data.ctrlId)) return;
                         handleRemoteBarCtrl(data.action, data.value);
                     }
                 } catch (e) {
@@ -1435,7 +1806,7 @@
         // --- 1. DOM 基础架构 ---
         if (isFirstRender) {
             // 优先使用紧凑历史目标，其次 React composer 挂载点，最后回退旧 chat-container。
-            const mountTarget = getPreferredMusicMountTarget().mountTarget;
+            const mountTarget = getPreferredMusicMountTarget({ allowInactiveOwner: true }).mountTarget;
             if (!mountTarget) return;
 
             musicBar = document.createElement('div');
@@ -2027,6 +2398,7 @@
             pendingReleased = true;
             musicDispatchPendingCount = Math.max(0, musicDispatchPendingCount - 1);
         };
+        broadcastMusicCoord('music_pending');
 
         // --- 核心修复：更鲁棒的 URL 预清理 ---
         if (trackInfo.url && typeof trackInfo.url === 'string') {
