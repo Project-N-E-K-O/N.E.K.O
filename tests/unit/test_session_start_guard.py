@@ -110,9 +110,11 @@ def _make_starting_manager(*, starting_input_mode):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
-    """用户点语音(audio)时撞上 proactive 自起的 text 会话(在飞)：旧实现静默
-    丢弃 audio 请求 → 前端干等超时。新实现应等 in-flight text 落定后递归
-    重入起一个 audio 会话（而非复用 text 的 ack）。"""
+    """User-initiated audio start colliding with an in-flight proactive text
+    session: the old code silently dropped the audio request (frontend hung
+    until timeout). The new code should wait for the in-flight text to settle,
+    then re-enter start_session in the requested (audio) mode rather than
+    reusing the text ack."""
     mgr = _make_starting_manager(starting_input_mode="text")
     # 递归重入会走 self.start_session(...)；用实例属性 mock 截住，断言它被
     # 以请求模式再调一次，而不真正跑完整启动路径。
@@ -138,8 +140,9 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_start_gives_up_when_inflight_never_settles(monkeypatch):
-    """in-flight 启动一直不落定（count 不归 0）时，跨模式分支等到上限后放弃，
-    不递归重入（避免在 in-flight 仍卡着时叠起第二个会话）。"""
+    """When the in-flight start never settles (count never drops to 0), the
+    cross-mode branch gives up at the timeout and does not re-enter (avoids
+    stacking a second session while the in-flight one is still stuck)."""
     monkeypatch.setattr("main_logic.core.FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.2)
     mgr = _make_starting_manager(starting_input_mode="text")
     restart_mock = AsyncMock()
@@ -154,9 +157,10 @@ async def test_cross_mode_start_gives_up_when_inflight_never_settles(monkeypatch
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_background_start_does_not_restart():
-    """后台 proactive/greeting 的跨模式 auto-start（user_initiated=False）撞车时
-    维持原静默 return，绝不等待+重启——否则后台 text 启动会反过来顶掉用户
-    正在飞的语音会话。"""
+    """A background proactive/greeting cross-mode auto-start
+    (user_initiated=False) keeps the original silent return and never
+    waits+restarts — otherwise a background text start would tear down the
+    user's in-flight voice session."""
     mgr = _make_starting_manager(starting_input_mode="audio")
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
@@ -171,9 +175,10 @@ async def test_cross_mode_background_start_does_not_restart():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():
-    """等待期间发生 end_session（前端 15s 超时会发，_audio_stream_epoch 递增、
-    且把 count 清 0）时，不重启——区分真落定与"用户已放弃 + 被清零"，避免起
-    一个 UI 已 reject 的孤儿会话。"""
+    """When an end_session happens during the wait (the frontend 15s timeout
+    sends one, which bumps _audio_stream_epoch and zeroes the count), do NOT
+    restart — this distinguishes a genuine settle from "user gave up + count
+    was zeroed", avoiding an orphan session whose UI was already rejected."""
     mgr = _make_starting_manager(starting_input_mode="text")
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
