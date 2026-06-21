@@ -55,6 +55,7 @@ _music_player_bridge_events: deque[dict[str, Any]] = deque(maxlen=_MUSIC_PLAYER_
 _music_player_surfaces: dict[str, dict[str, Any]] = {}
 _music_player_busy_until: dict[str, float] = {}
 _music_player_owner: str | None = None
+_music_player_playback_id: str | None = None
 _music_player_latest_state: dict[str, Any] | None = None
 _music_player_latest_state_expire_at = 0.0
 
@@ -87,7 +88,7 @@ def _sanitize_bridge_value(value: Any, *, depth: int = 0) -> Any:
 
 
 def _purge_music_player_bridge(now: float) -> None:
-    global _music_player_owner, _music_player_latest_state, _music_player_latest_state_expire_at
+    global _music_player_owner, _music_player_playback_id, _music_player_latest_state, _music_player_latest_state_expire_at
 
     for sender, surface in list(_music_player_surfaces.items()):
         if float(surface.get("expire_at") or 0) <= now:
@@ -101,6 +102,7 @@ def _purge_music_player_bridge(now: float) -> None:
         _music_player_latest_state = None
         _music_player_latest_state_expire_at = 0.0
         _music_player_owner = None
+        _music_player_playback_id = None
 
     while _music_player_bridge_events and float(_music_player_bridge_events[0].get("expire_at") or 0) <= now:
         _music_player_bridge_events.popleft()
@@ -181,6 +183,10 @@ def _public_music_player_bridge_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _music_player_playback_matches(playback_id: str) -> bool:
+    return not _music_player_playback_id or bool(playback_id and playback_id == _music_player_playback_id)
+
+
 @router.post("/api/music/player/bridge")
 async def post_music_player_bridge(request: Request):
     """
@@ -215,7 +221,7 @@ async def post_music_player_bridge(request: Request):
     payload = _sanitize_bridge_value(raw_body.get("payload") if isinstance(raw_body.get("payload"), dict) else {})
     surface_payload = raw_body.get("surface") if isinstance(raw_body.get("surface"), dict) else {}
 
-    global _music_player_owner, _music_player_latest_state, _music_player_latest_state_expire_at
+    global _music_player_owner, _music_player_playback_id, _music_player_latest_state, _music_player_latest_state_expire_at
     async with _music_player_bridge_lock:
         now = time.time()
         _purge_music_player_bridge(now)
@@ -226,27 +232,39 @@ async def post_music_player_bridge(request: Request):
 
         if event_type == "coord":
             coord_type = _bridge_string(payload.get("coordType"), max_len=32)
+            playback_id = _bridge_string(payload.get("playbackId"), max_len=512)
             if coord_type == "music_pending":
                 _music_player_busy_until[sender] = now + _MUSIC_PLAYER_PENDING_TTL_SECONDS
             elif coord_type in {"music_started", "music_heartbeat"}:
                 _music_player_busy_until[sender] = now + _MUSIC_PLAYER_ACTIVE_TTL_SECONDS
+                if coord_type == "music_started" and _music_player_owner == sender and playback_id:
+                    _music_player_playback_id = playback_id
             elif coord_type == "music_ended":
-                _music_player_busy_until.pop(sender, None)
-                if _music_player_owner == sender:
+                cleanup_matches = _music_player_owner != sender or _music_player_playback_matches(playback_id)
+                if cleanup_matches:
+                    _music_player_busy_until.pop(sender, None)
+                if _music_player_owner == sender and cleanup_matches:
                     _music_player_latest_state = None
                     _music_player_latest_state_expire_at = 0.0
                     _music_player_owner = None
+                    _music_player_playback_id = None
         elif event_type == "bar_state":
+            playback_id = _bridge_string(payload.get("playbackId"), max_len=512)
             _music_player_owner = sender
+            _music_player_playback_id = playback_id or None
             _music_player_latest_state = payload
             _music_player_latest_state_expire_at = now + _MUSIC_PLAYER_STATE_TTL_SECONDS
             _music_player_busy_until[sender] = now + _MUSIC_PLAYER_STATE_TTL_SECONDS
         elif event_type == "bar_destroyed":
-            _music_player_busy_until.pop(sender, None)
-            if _music_player_owner == sender:
+            playback_id = _bridge_string(payload.get("playbackId"), max_len=512)
+            cleanup_matches = _music_player_owner != sender or _music_player_playback_matches(playback_id)
+            if cleanup_matches:
+                _music_player_busy_until.pop(sender, None)
+            if _music_player_owner == sender and cleanup_matches:
                 _music_player_latest_state = None
                 _music_player_latest_state_expire_at = 0.0
                 _music_player_owner = None
+                _music_player_playback_id = None
 
         seq = _append_music_player_bridge_event(event_type, sender, payload, surface, now)
         return {"success": True, "seq": seq}
