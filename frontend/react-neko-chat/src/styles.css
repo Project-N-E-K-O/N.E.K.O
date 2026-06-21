@@ -2911,7 +2911,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 /* 同一轮既推表情包又放歌时，音乐条占据胶囊正上方那一档；表情包上移到音乐条上方让位，避免重叠。
-   只有这种共存场景才需要大 offset，单表情包仍贴近胶囊（上面的 28px）。 */
+   只有这种共存场景才需要大 offset，单表情包仍贴近胶囊（上面的 8px）。 */
 .app-shell:has(#music-player-mount.compact-music-player-mount:not(:empty)) .compact-meme-overlay {
   --compact-meme-overlay-offset-y: 96px;
 }
