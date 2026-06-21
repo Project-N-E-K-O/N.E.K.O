@@ -1,17 +1,11 @@
-"""Conversation card-drop thin-client routes for NEKO.
+"""Community-login + coupon (券) proxy routes for NEKO (``/api/card-drop`` prefix).
 
-Responsibility split:
-- NEKO handles local drop triggering, local memory candidate selection, and the
-  card reveal animation.
-- N.E.K.O.Servers generates and stores the final card from the selected memory
-  text, including rarity, number, story, and art.
-- Card collection browsing lives in the community web app, not in NEKO.
-
-Endpoints:
-- ``GET /api/card-drop/candidates`` reads local ``memory/<character>/facts.json``
-  and returns weighted candidates with presets as fallback.
-- ``POST /api/card-drop/draw`` proxies the selected source text to the cloud
-  ``/api/cards/draw`` endpoint with ``X-Client-Id``.
+The old conversation card-drop (local 5-pick overlay + ``/draw`` direct mint) has
+been retired: drop decisions and credit grants now live in the private NEKO-PC
+forge-dropper, and minting goes through the cloud forge-beta flow (the cloud
+``POST /api/cards/draw`` is offline). This router now only proxies the live coupon
+endpoints (``/credits``) and the community Steam login
+(``/steam-login`` / ``/steam-callback`` / ``/auth-status``).
 
 The cloud contract lives in N.E.K.O.Servers ``app/modules/cards/router.py``.
 """
@@ -22,7 +16,6 @@ import html
 import json
 import logging
 import os
-import random
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -37,19 +30,6 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "http://localhost:8080"
-
-# 真实记忆不足 size 时的预设补满文案（通用占位，与云端 memory_presets.yaml 同风格）。
-_PRESETS = [
-    "某个普通的傍晚，你们一起看着天色一点点暗下来，谁都没说话。",
-    "TA 悄悄记下了你随口提过的一个小小愿望。",
-    "下雨那天，你们躲在同一处屋檐下，听了很久的雨声。",
-    "你第一次轻轻喊出 TA 名字的那一刻。",
-    "深夜里一句没头没尾、却让人安心的晚安。",
-    "一起沉默着，却一点也不觉得尴尬的那段时光。",
-    "TA 学着你的口头禅，把你自己都逗笑了。",
-    "你说过的一个小秘密，TA 一直替你好好守着。",
-]
-
 
 def _social_base_url() -> str:
     """Return the cloud base URL, falling back to the local dev default."""
@@ -224,95 +204,6 @@ def _consume_steam_pending() -> bool:
     return bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC
 
 
-def _local_facts(lanlan_name: str) -> list[dict]:
-    """Read local facts for one character, filtering private or empty entries."""
-    try:
-        from utils.config_manager import get_config_manager
-        mem = Path(get_config_manager().memory_dir)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("card_drop: memory_dir read failed: %s", exc)
-        return []
-    fp = mem / lanlan_name / "facts.json"
-    # 路径穿越防护：解析后必须仍在 memory_dir 下
-    try:
-        if mem.resolve() not in fp.resolve().parents:
-            return []
-    except OSError:
-        return []
-    if not fp.exists():
-        return []
-    try:
-        data = json.loads(fp.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.debug("card_drop: facts.json read failed: %s", exc)
-        return []
-    out: list[dict] = []
-    for f in (data if isinstance(data, list) else []):
-        if not isinstance(f, dict):
-            continue
-        if f.get("private") is True or f.get("redacted") is True:
-            continue
-        text = f.get("text")
-        if not isinstance(text, str) or not text.strip():
-            continue
-        try:
-            imp = float(f.get("importance") or 0.0)
-        except (TypeError, ValueError):
-            imp = 0.0
-        out.append({"text": text.strip(), "importance": imp})
-    return out
-
-
-def _weighted_sample(items: list[dict], k: int) -> list[dict]:
-    """Sample up to ``k`` items without replacement, weighted by importance."""
-    if k <= 0 or not items:
-        return []
-    if len(items) <= k:
-        out = list(items)
-        random.shuffle(out)
-        return out
-    scored: list[tuple[float, dict]] = []
-    for it in items:
-        w = max(float(it.get("importance") or 0.0) + 0.1, 1e-4)
-        scored.append((random.random() ** (1.0 / w), it))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [it for _, it in scored[:k]]
-
-
-@router.get("/candidates", summary="本地记忆 5选1 候选（不足用预设补满，不走云端）")
-async def candidates_endpoint(
-    lanlan_name: str = Query(..., min_length=1, max_length=64),
-    size: int = Query(5, ge=1, le=10),
-):
-    facts = _local_facts(lanlan_name)
-    chosen = _weighted_sample(facts, size)
-    candidates = [
-        {"kind": "fact", "text": f["text"], "importance": f["importance"], "is_preset": False}
-        for f in chosen
-    ]
-    if len(candidates) < size:
-        need = size - len(candidates)
-        for text in random.sample(_PRESETS, min(need, len(_PRESETS))):
-            candidates.append({"kind": "preset", "text": text, "is_preset": True})
-    return {"lanlan_name": lanlan_name, "size": len(candidates), "candidates": candidates}
-
-
-@router.post("/test-trigger", summary="（调试）手动广播一次 card_drop_available，触发前端开卡演出")
-async def test_trigger_endpoint(
-    lanlan_name: str = Query("test", min_length=1, max_length=64),
-):
-    try:
-        from main_logic.agent_event_bus import broadcast_ws_event
-        n = await broadcast_ws_event({
-            "type": "card_drop_available",
-            "lanlan_name": lanlan_name,
-            "trigger_type": "manual_test",
-        })
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"broadcast_failed: {exc}") from exc
-    return {"broadcast_to": n, "lanlan_name": lanlan_name}
-
-
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint():
     a = _load_auth()
@@ -438,24 +329,6 @@ async def steam_callback_endpoint(
     else:
         sub = "已登录，但游客卡迁移没完成（稍后可重试）。可关掉本页回到 NEKO。"
     return _steam_callback_html(f"已登录，欢迎 {name}", sub)
-
-
-@router.post("/draw", summary="代理云端用券铸造：消耗 payload.credit_id 那张券 → 用券稀有度建卡")
-async def draw_endpoint(payload: dict = Body(...)):
-    # 统一券经济：payload 须带 credit_id（云端 DrawRequest 必填）。本端点纯透传 json=payload，
-    # 由铸造 UI 把选中候选的 source_text + credit_id 一并塞进来；稀有度继承券、不再 roll。
-    base, cid = _require_ctx()
-    headers = {"X-Client-Id": cid, "Content-Type": "application/json"}
-    token = _access_token()  # 登录了就带 JWT → 云端把卡归到 user 账号
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"{base}/api/cards/draw"
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.post(url, headers=headers, json=payload)
-    except (httpx.HTTPError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    return _relay(r)
 
 
 @router.get("/credits", summary="代理云端：列当前有效铸造券（供铸造 UI 显示数量/稀有度/到期）")

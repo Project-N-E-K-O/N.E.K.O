@@ -4,7 +4,7 @@
 //
 // ⚠️ NEKO 桌宠给 html/body 设 pointer-events:none 做桌面点击穿透；任何挂 body 下的 overlay
 //    会继承到 → 鼠标点不动。故 backdrop / 窗 / iframe / 关闭按钮全部显式 pointer-events:auto
-//    + 高 z-index（2000000），镜像 static/card-drop.js 的做法。
+//    + 高 z-index（2000000）兜底。
 (function () {
   'use strict';
 

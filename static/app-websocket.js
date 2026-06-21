@@ -1949,12 +1949,6 @@
                         window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
                     }
 
-                // -------- card_drop_available --------
-                } else if (response.type === 'card_drop_available') {
-                    if (typeof window.handleCardDropAvailable === 'function') {
-                        window.handleCardDropAvailable(response);
-                    }
-
                 // -------- focus_state (凝神 indicator) --------
                 // Backend mirrors Focus enter/exit (LLMSessionManager
                 // ._on_focus_transition). Re-dispatch as a CustomEvent the React

@@ -12,7 +12,6 @@ Hooks:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from functools import lru_cache
@@ -21,7 +20,6 @@ from typing import Any
 
 import yaml
 
-from main_logic.quota import cloud_sync, ux_state
 
 logger = logging.getLogger("neko.quota.dropper")
 
@@ -47,46 +45,6 @@ def _load_rules() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("dropper: failed to load %s: %s", _RULES_PATH, exc)
         return {}
-
-
-def _emit_card_drop_event(lanlan_name: str | None, trigger_type: str) -> None:
-    """Broadcast a card-drop event to frontend clients when a drop fires.
-
-    The event uses the websocket broadcaster registered in
-    ``main_logic.agent_event_bus`` and is scheduled fire-and-forget on the
-    current loop, keeping this lower-level module independent from ``app``.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-
-    async def _do() -> None:
-        try:
-            from main_logic.agent_event_bus import broadcast_ws_event
-            await broadcast_ws_event({
-                "type": "card_drop_available",
-                "lanlan_name": lanlan_name,
-                "trigger_type": trigger_type,
-            })
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("dropper: card_drop emit failed: %s", exc)
-
-    loop.create_task(_do())
-
-
-def _maybe_drop(lanlan_name: str | None, trigger_type: str, cooldown_sec: int, *, reset_word: bool = False) -> bool:
-    """Run the shared drop path: cooldown, state update, cloud hint, and event."""
-    if not ux_state.can_trigger(trigger_type, cooldown_sec):
-        return False
-    snapshot = ux_state.record_drop(trigger_type, reset_word_count=reset_word)
-    logger.info(
-        "quota: drop fired trigger=%s lanlan=%s dropped_today=%d",
-        trigger_type, lanlan_name, snapshot.get("dropped_count", -1),
-    )
-    cloud_sync.send_drop_hint(lanlan_name, trigger_type)
-    _emit_card_drop_event(lanlan_name, trigger_type)
-    return True
 
 
 def on_text_message(lanlan_name: str, text: str) -> None:
