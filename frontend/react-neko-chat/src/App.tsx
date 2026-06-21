@@ -6822,9 +6822,10 @@ function CompactChatApp({
       data-compact-geometry-item="meme"
       data-compact-geometry-hit-scope="children"
     >
-      {/* 主动弹出的常显挂件必须立刻出图：lazy 在 Electron 透明/裁剪 compact 窗口里
-          可能被判定不在视口而永不触发加载，只剩空浮岛在桌面合成出陈帧色块（蓝框）。
-          故用 eager 立即加载（音乐封面走 APlayer 不受影响，所以此前只有 meme 翻车）。 */}
+      {/* 被动弹出的单图挂件，一渲染就 fixed 钉在视口内，没有「视口外延迟加载」的场景——lazy 对它零
+          收益（实测 lazy/eager 行为一致，图都会立刻加载），eager 语义更直接、也省掉一层
+          IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
+          的 role 收起逻辑，不是这个属性。 */}
       <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="eager" decoding="async" />
     </div>
   ) : null;
