@@ -79,9 +79,9 @@
 
 ## 快速开始
 
-### Windows / macOS 用户（一键包）
+### Windows / macOS / Linux用户（一键包）
 
-解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（macOS用户需要手动解除系统隔离）
+解压后，直接运行`N.E.K.O.exe`、`N.E.K.O.app`或`n.e.k.o`即可启动。（macOS用户需要手动解除系统隔离）
 
 ### Docker 部署 (Linux)
 

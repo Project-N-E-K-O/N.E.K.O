@@ -36,6 +36,47 @@
     display: block; position: fixed; inset: 0; z-index: 15;
     pointer-events: none;
   }
+  #badminton-loading {
+    position: fixed; inset: 0; z-index: 70;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 9, 14, 0.88);
+    color: #f7fbff; pointer-events: auto; cursor: wait;
+    opacity: 1; transition: opacity .28s ease;
+  }
+  #badminton-loading.hide { opacity: 0; }
+  #badminton-loading[hidden] { display: none !important; }
+  .badminton-loading-panel {
+    width: min(340px, calc(100vw - 48px));
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px; padding: 22px 24px;
+    background: rgba(9,16,24,0.76);
+    box-shadow: 0 18px 46px rgba(0,0,0,0.34);
+    text-align: center;
+  }
+  .badminton-loading-progress {
+    position: relative; width: 172px; height: 4px; margin: 0 auto 16px;
+    overflow: hidden; border-radius: 999px;
+    background: rgba(255,255,255,0.16);
+  }
+  #badminton-loading-bar {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 8%;
+    background: #ffca3a;
+    border-radius: inherit;
+    transition: width .22s ease;
+  }
+  .badminton-loading-title {
+    font: 600 17px/1.35 "PingFang SC", "Segoe UI", sans-serif;
+    margin-bottom: 6px;
+  }
+  .badminton-loading-subtitle {
+    font: 13px/1.45 "PingFang SC", "Segoe UI", sans-serif;
+    color: rgba(247,251,255,0.72);
+  }
+  #badminton-loading-percent {
+    margin-top: 9px;
+    font: 12px/1 "Segoe UI", Arial, sans-serif;
+    color: rgba(247,251,255,0.62);
+  }
   #hud {
     position: fixed; left: 16px; top: 14px; z-index: 20;
     display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
@@ -373,6 +414,14 @@
 </style>
 </head>
 <body>
+<div id="badminton-loading" role="status" aria-live="polite" aria-atomic="true">
+  <div class="badminton-loading-panel">
+    <div class="badminton-loading-progress" aria-hidden="true"><div id="badminton-loading-bar"></div></div>
+    <div class="badminton-loading-title" data-i18n="badminton.loading.title" data-i18n-fallback="正在进入羽毛球场">正在进入羽毛球场</div>
+    <div class="badminton-loading-subtitle" data-i18n="badminton.loading.subtitle" data-i18n-fallback="加载场地、角色和音效...">加载场地、角色和音效...</div>
+    <div id="badminton-loading-percent" aria-hidden="true">8%</div>
+  </div>
+</div>
 <canvas id="game" width="900" height="500"></canvas>
 <canvas id="aiming-canvas" width="900" height="500"></canvas>
 <div id="hud" aria-live="polite">
@@ -609,6 +658,13 @@
   var ctx = canvas.getContext('2d');
   var aimingCanvas = document.getElementById('aiming-canvas');
   var aimingCtx = aimingCanvas.getContext('2d');
+  var badmintonLoading = document.getElementById('badminton-loading');
+  var badmintonLoadingBar = document.getElementById('badminton-loading-bar');
+  var badmintonLoadingPercent = document.getElementById('badminton-loading-percent');
+  var firstFrameRendered = false;
+  var firstFrameCallbacks = [];
+  var badmintonLoadingProgress = 8;
+  var badmintonLoadingTimer = 0;
   var YUI_SHOOTER_W = 244;
   var YUI_SHOOTER_H = 366;
   var YUI_SHOOTER_SCALE = 0.86;
@@ -3257,7 +3313,7 @@
       nekoScore: 0,
       playerMisses: 0,
       nekoMisses: 0,
-      maxMisses: 3,
+      maxMisses: 11,
       round: 1,
       rallyHits: 0,
       activeShooter: 'player',
@@ -3271,6 +3327,7 @@
     },
     tutorialStep: localStorage.getItem('bd_tutorial_done') === '1' ? 3 : 0
   };
+  var lastPlayerPointer = null;
 
   function resize() {
     var dpr = window.devicePixelRatio || 1;
@@ -3310,6 +3367,14 @@
     game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);
     game.playerCourt.targetY = PLAYER_START_Y;
   }
+  function rememberPlayerPointer(ev) {
+    if (!ev || !Number.isFinite(ev.clientX) || !Number.isFinite(ev.clientY)) return;
+    lastPlayerPointer = { clientX: ev.clientX, clientY: ev.clientY };
+  }
+  function syncPlayerCourtTargetFromPointer() {
+    if (!lastPlayerPointer || !canPlayerMoveCourt()) return;
+    updatePlayerCourtTarget(lastPlayerPointer.clientX, lastPlayerPointer.clientY);
+  }
   function updateYuiCourtTarget() {
     var targetX = YUI_START_X;
     var targetY = YUI_START_Y;
@@ -3326,6 +3391,7 @@
   }
   function updateCourtMovement(dt) {
     updateYuiCourtTarget();
+    syncPlayerCourtTargetFromPointer();
     game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);
     game.playerCourt.targetY = PLAYER_START_Y;
     game.playerCourt.y = PLAYER_START_Y;
@@ -3761,15 +3827,22 @@
     if (isDuelMode()) return game.duel.activeShooter === 'player';
     return true;
   }
+  function isBadmintonLoadingActive() {
+    return !!(badmintonLoading && !badmintonLoading.hidden);
+  }
   function canPlayerControlShot() {
+    if (isBadmintonLoadingActive()) return false;
     if (game.state !== 'ready' || game.pendingSwing || !isPlayerTurn()) return false;
     if (isPlayerReceivingReturn()) return canPlayerReturnIncomingShuttle();
     return !isPositionTransitioning;
   }
   function canPlayerMoveCourt() {
+    if (isBadmintonLoadingActive()) return false;
     var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;
+    var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;
+    var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';
     var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';
-    return isDuelMode() && (canPlayerControlShot() || incomingYuiBall || yuiSwinging);
+    return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
   }
   function isPlayerReceivingReturn() {
     return !!(game.ball && game.ball.awaitingReturnBy === 'player');
@@ -4271,6 +4344,7 @@
     return true;
   }
   function shoot() {
+    if (isBadmintonLoadingActive()) return;
     if (returnIncomingPlayerShuttle()) return;
     if (!canPlayerControlShot()) return;
     resumeAudio();
@@ -6625,6 +6699,88 @@
     drawNetCord();
     drawStreakEffect();
   }
+  function markFirstFrameRendered() {
+    if (firstFrameRendered) return;
+    firstFrameRendered = true;
+    var callbacks = firstFrameCallbacks.splice(0);
+    callbacks.forEach(function (resolve) { resolve(); });
+  }
+  function waitForFirstFrame() {
+    if (firstFrameRendered) return Promise.resolve();
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      firstFrameCallbacks.push(finish);
+      setTimeout(finish, 5000);
+    });
+  }
+  function hideBadmintonLoading() {
+    if (!badmintonLoading || badmintonLoading.hidden) return;
+    badmintonLoading.classList.add('hide');
+    setTimeout(function () {
+      if (!badmintonLoading) return;
+      badmintonLoading.hidden = true;
+      window.__badmintonInitialLoadingHidden = true;
+    }, 320);
+  }
+  function setBadmintonLoadingProgress(value) {
+    badmintonLoadingProgress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+    if (badmintonLoadingBar) badmintonLoadingBar.style.width = badmintonLoadingProgress + '%';
+    if (badmintonLoadingPercent) badmintonLoadingPercent.textContent = badmintonLoadingProgress + '%';
+  }
+  function startBadmintonFakeProgress() {
+    clearInterval(badmintonLoadingTimer);
+    setBadmintonLoadingProgress(8);
+    badmintonLoadingTimer = setInterval(function () {
+      if (badmintonLoadingProgress >= 92) {
+        clearInterval(badmintonLoadingTimer);
+        badmintonLoadingTimer = 0;
+        return;
+      }
+      var remaining = 92 - badmintonLoadingProgress;
+      var step = remaining > 35 ? 6 : (remaining > 14 ? 3 : 1);
+      setBadmintonLoadingProgress(Math.min(92, badmintonLoadingProgress + step));
+    }, 180);
+  }
+  function completeBadmintonLoading() {
+    clearInterval(badmintonLoadingTimer);
+    badmintonLoadingTimer = 0;
+    setBadmintonLoadingProgress(100);
+    setTimeout(hideBadmintonLoading, 220);
+  }
+  function settleBadmintonLoadingPromise(promise, timeoutMs) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      setTimeout(finish, timeoutMs || 5000);
+      Promise.resolve(promise).then(finish).catch(finish);
+    });
+  }
+  function scheduleBadmintonLoadingDismiss(loadPromises) {
+    if (!badmintonLoading) return;
+    window.__badmintonInitialLoadingHidden = false;
+    startBadmintonFakeProgress();
+    var minimumVisible = new Promise(function (resolve) { setTimeout(resolve, 350); });
+    var loadReady = Promise.all((loadPromises || []).map(function (promise) {
+      return settleBadmintonLoadingPromise(promise, 5000);
+    }));
+    Promise.all([minimumVisible, waitForFirstFrame(), loadReady]).then(completeBadmintonLoading).catch(completeBadmintonLoading);
+  }
+  function afterInitialPaint(callback) {
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        setTimeout(callback, 0);
+      });
+    });
+  }
   function loop(ts) {
     var dt = game.lastTs ? Math.min(0.033, (ts - game.lastTs) / 1000) : 0.016;
     game.lastTs = ts;
@@ -6632,6 +6788,7 @@
     render();
     drawAiming();
     renderYuiLive2dRacket();
+    markFirstFrameRendered();
     requestAnimationFrame(loop);
   }
 
@@ -6717,7 +6874,7 @@
     return routeStartPromise;
   }
   function startRouteAfterCharacterReady() {
-    loadBadmintonCharacter().finally(function () { startRoute(); });
+    return loadBadmintonCharacter().finally(function () { return startRoute(); });
   }
   function endRoute(useBeacon) {
     if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
@@ -7085,7 +7242,7 @@
   function shouldIgnoreBadmintonPointerEvent(ev) {
     var target = ev && ev.target;
     if (!target || typeof target.closest !== 'function') return false;
-    return !!target.closest('#utility-controls, #result-panel, #leaderboard-panel, #stats-panel, #game-audio-controls, #bd-debug-panel, button, input, select, textarea, a, label');
+    return !!target.closest('#badminton-loading, #utility-controls, #result-panel, #leaderboard-panel, #stats-panel, #game-audio-controls, #bd-debug-panel, button, input, select, textarea, a, label');
   }
   function shouldIgnoreBadmintonKeyboardEvent(ev) {
     var target = ev && ev.target;
@@ -7093,7 +7250,9 @@
     return !!target.closest('button, input, select, textarea, a, [contenteditable="true"]');
   }
   function handleBadmintonPointerMove(ev) {
+    if (isBadmintonLoadingActive()) return;
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
+    rememberPlayerPointer(ev);
     if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);
     if (!canPlayerControlShot()) return;
     var y = ev.clientY / Math.max(1, window.innerHeight);
@@ -7104,6 +7263,7 @@
     }
   }
   function handleBadmintonPointerDown(ev) {
+    if (isBadmintonLoadingActive()) return;
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
     if (ev && ev.__badmintonPointerDownHandled) return;
     if (ev) ev.__badmintonPointerDownHandled = true;
@@ -7137,6 +7297,7 @@
     returnIncomingPlayerShuttle();
   }, true);
   window.addEventListener('mouseup', function () {
+    if (isBadmintonLoadingActive()) return;
     if (game.charging && canPlayerControlShot()) shoot();
     else {
       game.charging = false;
@@ -7146,6 +7307,10 @@
     }
   });
   window.addEventListener('keydown', function (ev) {
+    if (isBadmintonLoadingActive()) {
+      if (ev.key === ' ' || ev.code === 'Space') ev.preventDefault();
+      return;
+    }
     var key = ev.key.toLowerCase();
     if ((key === ' ' || ev.code === 'Space') && !shouldIgnoreBadmintonKeyboardEvent(ev)) {
       ev.preventDefault();
@@ -7254,10 +7419,13 @@
   if (lastFinalStreak >= 15) applyNekoControl({ expression: 'anticipate', intensity: 'medium' }, {});
   updateTutorial(_i18n('tutorial.aim', '上下移动鼠标调整挥拍角度'));
   checkSeasonalEasterEggs();
-  startRouteAfterCharacterReady();
-  initPlayerAvatar();
-  initNekoAvatar();
   requestAnimationFrame(loop);
+  afterInitialPaint(function () {
+    var routeReady = startRouteAfterCharacterReady();
+    var playerAvatarReady = initPlayerAvatar();
+    var nekoAvatarReady = initNekoAvatar();
+    scheduleBadmintonLoadingDismiss([routeReady, playerAvatarReady, nekoAvatarReady]);
+  });
 })();
 {% endraw %}
 </script>

@@ -4244,6 +4244,10 @@
     },
      "badminton": {
          "title": "Badminton Challenge",
+         "loading": {
+             "title": "Entering the badminton court",
+             "subtitle": "Loading the court, characters, and audio..."
+         },
          "modeSwitcher": "Badminton mode",
          "mode": {
              "spectator": "Free Practice",

@@ -27,12 +27,32 @@ type StudyStatus = {
 
 type StudyMode = 'companion' | 'interactive' | 'teaching';
 
+type QuestionContext = {
+  selection_context_id?: string;
+  selected_topic_id?: string;
+  selected_topic_name?: string;
+  selection_reason?: string;
+  no_data?: boolean;
+};
+
+type GeneratedQuestion = {
+  question?: string;
+  hint?: string;
+  difficulty?: number;
+  question_id?: string;
+  attempt_id?: string;
+  selected_topic_id?: string;
+  selected_topic_name?: string;
+};
+
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 310000,
   study_generate_question: 310000,
+  study_question_context: 30000,
+  study_generate_targeted_question: 310000,
   study_evaluate_answer: 310000,
   study_summarize_session: 90000,
 };
@@ -593,6 +613,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [status, setStatus] = useState<StudyStatus>({});
   const [text, setText] = useState('');
   const [question, setQuestion] = useState('');
+  const [questionContext, setQuestionContext] = useState<QuestionContext | null>(null);
+  const [currentQuestion, setCurrentQuestion] = useState<GeneratedQuestion | null>(null);
   const [answer, setAnswer] = useState('');
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
@@ -743,6 +765,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setStatusLine(data);
   }
 
+  async function loadQuestionContext(signal?: AbortSignal) {
+    const data = await callStudyPlugin<QuestionContext>(props.api, 'study_question_context', {}, signal);
+    if (!signal?.aborted) {
+      setQuestionContext(data);
+    }
+    return data;
+  }
+
   async function setMode(mode: StudyMode) {
     if (isInteractionBusy() || mode === currentMode) {
       return;
@@ -841,41 +871,41 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
-    const sourceText = text.trim();
-    if (!sourceText && !textImage) {
-      setReply(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
-      return;
-    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const genArgs: Record<string, unknown> = { text: sourceText };
-    if (textImage) genArgs.vision_image_base64 = textImage;
-    let shouldClearTextImage = false;
     try {
-      const data = await callStudyPlugin(props.api, 'study_generate_question', genArgs, controller.signal) as {
-        question?: string;
-        hint?: string;
-        summary?: string;
-        reply?: string;
-      };
+      const context = questionContext?.selection_context_id
+        ? questionContext
+        : await loadQuestionContext(controller.signal);
       if (controller.signal.aborted) {
         return;
       }
-      shouldClearTextImage = true;
+      if (!context?.selection_context_id || context.no_data) {
+        setReply(t('ui.error.no_targeted_question_data', 'Not enough study records to generate a practice question yet.'));
+        return;
+      }
+      const data = await callStudyPlugin<GeneratedQuestion & { summary?: string; reply?: string }>(
+        props.api,
+        'study_generate_targeted_question',
+        { selection_context_id: context.selection_context_id },
+        controller.signal,
+      );
+      if (controller.signal.aborted) {
+        return;
+      }
       setQuestion(data.question || '');
+      setCurrentQuestion(data);
+      setQuestionContext({ ...context, ...data, no_data: false, selection_context_id: '' });
+      setAnswer('');
+      setAnswerImage('');
       setReply(data.hint || data.question || data.summary || data.reply || '');
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (!controller.signal.aborted) {
-        shouldClearTextImage = true;
         setReply(formatPluginError(error));
       }
     } finally {
       if (!controller.signal.aborted) {
-        if (shouldClearTextImage) {
-          setTextImageValue('');
-          setTextPasteError('');
-        }
         setBusy(false);
       }
       endStudyRequest(controller);
@@ -890,9 +920,18 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setReply(t('ui.error.missing_answer', 'Please enter an answer first.'));
       return;
     }
+    if (!currentQuestion?.question_id || !currentQuestion?.attempt_id) {
+      setReply(t('ui.error.question_missing', 'Please generate a practice question first.'));
+      return;
+    }
     const controller = beginStudyRequest();
     setBusy(true);
-    const evalArgs: Record<string, unknown> = { answer, question };
+    const evalArgs: Record<string, unknown> = {
+      answer,
+      question_id: currentQuestion.question_id,
+      attempt_id: currentQuestion.attempt_id,
+      selected_topic_id: currentQuestion.selected_topic_id || '',
+    };
     if (answerImage) evalArgs.vision_image_base64 = answerImage;
     let shouldClearAnswerImage = false;
     try {
@@ -958,12 +997,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   useEffect(() => {
     mountedRef.current = true;
     const controller = beginStudyRequest();
-    refresh(controller.signal).catch((error) => {
-      if (controller.signal.aborted) {
-        return;
-      }
-      setReply(formatPluginError(error));
-    });
+    refresh(controller.signal)
+      .then(() => loadQuestionContext(controller.signal))
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setReply(formatPluginError(error));
+      });
     return () => {
       mountedRef.current = false;
       controller.abort();
@@ -1084,6 +1125,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         <div>
           <span>{t('ui.label.answer', 'Answer')}</span>
           <strong>{evaluation?.verdict ? `${evaluation.verdict}${evaluation.score !== undefined ? ` / ${evaluation.score}` : ''}` : '-'}</strong>
+        </div>
+      </section>
+      <section className="study-panel__state">
+        <div>
+          <span>{t('ui.practice.context_label', 'Selection')}</span>
+          <strong>{questionContext?.selected_topic_name || questionContext?.selected_topic_id || t('ui.practice.no_data_title', 'Not enough data')}</strong>
+        </div>
+        <div>
+          <span>{t('ui.practice.reason_label', 'Reason')}</span>
+          <strong>{questionContext?.selection_reason || '-'}</strong>
         </div>
       </section>
       <textarea
