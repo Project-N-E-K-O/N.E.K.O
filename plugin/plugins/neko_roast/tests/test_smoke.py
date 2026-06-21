@@ -22,6 +22,10 @@ def test_panel_renders_live_status_summary():
     assert "live_status" in source
     assert "panel.liveStatusSummary." in source
     assert "panel.liveStatusReason." in source
+    assert "live_state" in source
+    assert "panel.liveModeRole." in source
+    assert "panel.liveState." in source
+    assert "panel.idleHostingCandidate." in source
 
 
 def test_all_locales_define_live_status_summary_labels():
@@ -41,6 +45,23 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusReason.cooldown",
         "panel.liveStatusReason.safety_tripped",
         "panel.liveStatusReason.safety_degraded",
+        "panel.liveModeRole.co_stream",
+        "panel.liveModeRole.solo_stream",
+        "panel.liveModeRoleHint.companion",
+        "panel.liveModeRoleHint.solo_host",
+        "panel.liveState.title",
+        "panel.liveState.engaged",
+        "panel.liveState.quiet",
+        "panel.liveState.idle",
+        "panel.liveState.paused",
+        "panel.liveState.blocked",
+        "panel.liveStateReason.recent_activity",
+        "panel.liveStateReason.quiet_activity_gap",
+        "panel.liveStateReason.no_recent_activity",
+        "panel.liveStateReason.manual_paused",
+        "panel.liveStateReason.blocked_by_live_status",
+        "panel.idleHostingCandidate.true",
+        "panel.idleHostingCandidate.false",
     }
 
     for locale_path in sorted((root / "i18n").glob("*.json")):

@@ -43,6 +43,7 @@ type DashboardState = {
   viewer_store?: Record<string, any>
   safety?: Record<string, any>
   live_status?: Record<string, any>
+  live_state?: Record<string, any>
   modules?: Array<Record<string, any>>
   recent_profiles?: Array<Record<string, any>>
   recent_results?: Array<Record<string, any>>
@@ -89,6 +90,13 @@ function liveStatusTone(summary: string): "success" | "warning" | "danger" | "de
   if (summary === "ready_to_stream") return "success"
   if (summary === "test_only" || summary === "temporarily_not_speaking") return "warning"
   if (summary === "cannot_stream") return "danger"
+  return "default"
+}
+
+function liveStateTone(state: string): "success" | "warning" | "danger" | "default" {
+  if (state === "engaged") return "success"
+  if (state === "quiet" || state === "idle" || state === "paused") return "warning"
+  if (state === "blocked") return "danger"
   return "default"
 }
 
@@ -204,6 +212,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const connection = safeState.live_connection || {}
   const safety = safeState.safety || {}
   const liveStatus = safeState.live_status || {}
+  const liveState = safeState.live_state || {}
   const profiles = Array.isArray(safeState.recent_profiles) ? safeState.recent_profiles : []
   const results = Array.isArray(safeState.recent_results) ? safeState.recent_results : []
   const sandboxResults = Array.isArray(safeState.recent_sandbox_results) ? safeState.recent_sandbox_results : []
@@ -481,6 +490,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveStatusSummary = String(liveStatus.summary || "cannot_stream")
   const liveStatusReason = String(liveStatus.reason || "room_not_configured")
   const liveStatusCooldown = Number(liveStatus.cooldown_remaining || 0)
+  const liveMode = String(liveState.mode || config.live_mode || "co_stream")
+  const liveModeRole = String(liveState.mode_role || (liveMode === "solo_stream" ? "solo_host" : "companion"))
+  const liveStateName = String(liveState.state || "blocked")
+  const liveStateReason = String(liveState.reason || "blocked_by_live_status")
+  const idleHostingCandidate = !!liveState.idle_hosting_candidate
   const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
@@ -555,8 +569,17 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <StatCard label={t("panel.columns.reason")} value={t(`panel.liveStatusReason.${liveStatusReason}`)} />
             <StatCard label={t("panel.liveStatusSummary.cooldown")} value={`${liveStatusCooldown.toFixed(1)}s`} />
           </Grid>
+          <Grid cols={3}>
+            <StatCard label={t("panel.fields.mode")} value={t(`panel.liveModeRole.${liveMode}`)} />
+            <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
+            <StatCard label={t("panel.columns.reason")} value={t(`panel.liveStateReason.${liveStateReason}`)} />
+          </Grid>
+          <Text>{t(`panel.liveModeRoleHint.${liveModeRole}`)}</Text>
           <Alert tone={liveStatusTone(liveStatusSummary)}>
             {t(`panel.liveStatusSummary.${liveStatusSummary}`)} · {t(`panel.liveStatusReason.${liveStatusReason}`)}
+          </Alert>
+          <Alert tone={idleHostingCandidate ? "success" : "info"}>
+            {t(`panel.idleHostingCandidate.${idleHostingCandidate ? "true" : "false"}`)}
           </Alert>
         </Stack>
       </Card>

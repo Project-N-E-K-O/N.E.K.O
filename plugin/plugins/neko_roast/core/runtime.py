@@ -41,6 +41,8 @@ class RoastRuntime:
     # host 配置持久化预算（秒）：超过即放弃等待（配置已内存生效），避免被 host 的写竞争
     # （update_own_config 偶发卡满 10s）拖垮 update_config / connect 等 action。
     _CONFIG_PERSIST_BUDGET_SECONDS = 4.0
+    _LIVE_STATE_ENGAGED_SECONDS = 60.0
+    _LIVE_STATE_IDLE_SECONDS = 180.0
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -438,10 +440,13 @@ class RoastRuntime:
         profiles = await self.viewer_store.recent_profiles(self.config.recent_limit)
         storage = self.viewer_store.storage_status()
         live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
         return {
             "config": self.config.to_dict(),
             "live_connection": live_connection,
-            "live_status": self.live_status_summary(live_connection),
+            "live_status": live_status,
+            "live_state": self.live_state_summary(live_status, health_rows),
             # 观众档案改走本地 JSON（不依赖宿主 PluginStore，见 docs/devlog.md）。
             # store_enabled 保留旧字段名兼容面板，现指"档案目录是否可写=能否持久化"。
             "store_enabled": bool(storage.get("writable")),
@@ -453,7 +458,7 @@ class RoastRuntime:
             "recent_sandbox_results": list(reversed(self.recent_sandbox_results)),
             "recent_audit": self.audit.recent(self.config.recent_limit),
             "avatar_cache": self.avatar_cache.status(),
-            "health_rows": self.runtime_health_rows(),
+            "health_rows": health_rows,
             "actions": self.dashboard_actions(),
         }
 
@@ -507,6 +512,67 @@ class RoastRuntime:
             "safety_status": safety_status,
             "cooldown_remaining": cooldown_remaining,
         }
+
+    def live_state_summary(
+        self,
+        live_status: dict[str, Any] | None = None,
+        health_rows: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        status = live_status or self.live_status_summary()
+        rows = health_rows if health_rows is not None else self.runtime_health_rows()
+        safety_status = str(status.get("safety_status") or self.safety_guard.status())
+        mode_role = "solo_host" if self.config.live_mode == "solo_stream" else "companion"
+
+        state = "engaged"
+        reason = "recent_activity"
+        last_activity_age_sec = self._last_live_activity_age_sec(rows)
+
+        if status.get("summary") == "cannot_stream" or safety_status in {"tripped", "degraded", "disconnected"}:
+            state = "blocked"
+            reason = "blocked_by_live_status"
+        elif safety_status == "paused":
+            state = "paused"
+            reason = "manual_paused"
+        elif last_activity_age_sec is None or last_activity_age_sec > self._LIVE_STATE_IDLE_SECONDS:
+            state = "idle"
+            reason = "no_recent_activity"
+        elif last_activity_age_sec > self._LIVE_STATE_ENGAGED_SECONDS:
+            state = "quiet"
+            reason = "quiet_activity_gap"
+
+        idle_hosting_candidate = (
+            self.config.live_mode == "solo_stream"
+            and state == "idle"
+            and status.get("summary") == "ready_to_stream"
+            and bool(status.get("can_output"))
+            and float(status.get("cooldown_remaining") or 0.0) <= 0.0
+        )
+
+        return {
+            "state": state,
+            "reason": reason,
+            "mode": self.config.live_mode,
+            "mode_role": mode_role,
+            "idle_hosting_candidate": idle_hosting_candidate,
+            "last_activity_age_sec": last_activity_age_sec,
+        }
+
+    @staticmethod
+    def _last_live_activity_age_sec(rows: list[dict[str, Any]]) -> float | None:
+        ages: list[float] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if row.get("id") not in {"live_ingest", "event_bus", "selection", "pipeline", "dispatcher"}:
+                continue
+            age = row.get("age_sec")
+            if age is None:
+                continue
+            try:
+                ages.append(float(age))
+            except (TypeError, ValueError):
+                continue
+        return min(ages) if ages else None
 
     @staticmethod
     def _age_sec(timestamp: Any) -> float | None:

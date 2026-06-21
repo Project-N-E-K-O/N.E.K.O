@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -255,6 +256,112 @@ async def test_dashboard_state_says_cannot_stream_without_room(runtime: RoastRun
     assert state["live_status"]["summary"] == "cannot_stream"
     assert state["live_status"]["reason"] == "room_not_configured"
     assert state["live_status"]["can_output"] is False
+
+
+def _created_at_age(seconds: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def _record_result_at(runtime: RoastRuntime, *, age_seconds: int, status: str = "pushed") -> None:
+    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi", source="live_danmaku")
+    runtime.record_result(
+        InteractionResult(
+            accepted=status == "pushed",
+            status=status,
+            event=event,
+            created_at=_created_at_age(age_seconds),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_state_marks_recent_activity_as_engaged(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=30)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "engaged"
+    assert state["live_state"]["reason"] == "recent_activity"
+    assert state["live_state"]["idle_hosting_candidate"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_state_marks_activity_gap_as_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=90)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "quiet"
+    assert state["live_state"]["reason"] == "quiet_activity_gap"
+    assert state["live_state"]["idle_hosting_candidate"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_state"]["reason"] == "no_recent_activity"
+    assert state["live_state"]["mode_role"] == "solo_host"
+    assert state["live_state"]["idle_hosting_candidate"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_state_keeps_co_stream_idle_from_becoming_candidate(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "co_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_state"]["mode_role"] == "companion"
+    assert state["live_state"]["idle_hosting_candidate"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_state_paused_and_blocked_take_priority(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+    runtime.pause()
+
+    paused_state = await runtime.dashboard_state()
+    assert paused_state["live_state"]["state"] == "paused"
+    assert paused_state["live_state"]["idle_hosting_candidate"] is False
+
+    await runtime.disconnect_live_room()
+    blocked_state = await runtime.dashboard_state()
+    assert blocked_state["live_state"]["state"] == "blocked"
+    assert blocked_state["live_state"]["idle_hosting_candidate"] is False
 
 
 @pytest.mark.asyncio
