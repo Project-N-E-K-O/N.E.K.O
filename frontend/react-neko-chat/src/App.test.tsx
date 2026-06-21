@@ -38,8 +38,9 @@ describe('App', () => {
     LOCAL_STORAGE_KEYS_TO_RESET.forEach(key => {
       window.localStorage.removeItem(key);
     });
-    // A/B 实验默认分支固定为 open，保持历史用例"无持久化即展开"语义稳定（避免 Math.random flaky）
-    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'open');
+    // 历史 UI 用例需要历史区默认展开：A/B 变体默认值现改为「教程完全结束后」才异步套用，测试里直接给一个
+    // 显式持久化「开」偏好，让历史区同步展开、与实验门控解耦（实验/门控行为另有专门用例覆盖）。
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
     delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
     delete (window as Window & { NekoGameSystem?: unknown }).NekoGameSystem;
     resetCompactToolWheelDetentAudioForTests();
@@ -558,6 +559,25 @@ describe('App', () => {
     }
   });
 
+  it('keeps compact history collapsed by default and only applies the open variant after the tutorial ends', () => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.setItem('neko.experiment.compactHistoryDefault', 'open');
+    const message = parseChatMessage({
+      id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    // 无显式偏好 → 初始折叠（即便 variant=open，也要等教程结束才展开）
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    // 教程完成 → 套用 open 变体 → 展开
+    act(() => {
+      window.dispatchEvent(new Event('neko:tutorial-completed'));
+    });
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+  });
+
   it('shows the proactive meme overlay until a newer message arrives', () => {
     const meme = parseChatMessage({
       id: 'meme-abc123',
@@ -668,7 +688,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
     const exportButton = await clickCompactExportTool();
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
@@ -1683,7 +1703,7 @@ describe('App', () => {
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
     expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
     expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
 

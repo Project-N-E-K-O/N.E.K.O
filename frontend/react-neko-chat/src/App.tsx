@@ -111,6 +111,8 @@ const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
 const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
+// A/B 变体「套用」的兜底延迟：本次不跑教程的老用户在此延迟后若仍非教程态，就直接套用变体默认值。
+const COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS = 3000;
 // 同一 proactive turn 里音乐卡（music_ui executePlay 异步 append）会按 APlayer 加载时机晚于 meme 落地，
 // 但仍属同一轮——这个时间窗内的音乐卡豁免（不收起表情包）；超出则视为新一轮、照常收起。
 const COMPACT_MEME_SAME_TURN_MUSIC_WINDOW_MS = 8000;
@@ -531,21 +533,33 @@ function isDesktopCompactSurfaceLayoutActive(): boolean {
 }
 
 function readPersistedCompactExportHistoryOpen(): boolean {
-  if (typeof window === 'undefined') return true;
+  if (typeof window === 'undefined') return false;
   try {
     const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     if (persisted !== null) return persisted === 'true';
-    // 无持久化偏好 → A/B 首启分组：这里只做「分配 variant + 持久化」这一纯粹的初始值决策。
-    // 曝光(experiment_exposure)上报带副作用、且走 WS（挂载前 socket 多半未 OPEN，过早上报会被
-    // 静默丢弃），移到组件挂载后的 useEffect，见 reportCompactHistoryExperimentExposure。
+    // 无显式偏好：初始一律折叠。A/B 变体默认值（含 open 展开）改由「教程完全结束后 / 本次不跑教程的老
+    // 用户」的 effect 套用（见 applyCompactHistoryExperimentDefault）——避免教程进行中、或教程演示历史区
+    // 之前就先展开，与教学冲突。
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// 读取（必要时分配）A/B「历史首启默认」变体：用户已有显式开/合偏好 → null（不在实验内）；否则读已分配
+// variant，没有则随机分配并持久化（稳定 cohort），返回 'open'|'closed'。
+function readCompactHistoryExperimentVariant(): 'open' | 'closed' | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    if (window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY) !== null) return null;
     let variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
     if (variant !== 'open' && variant !== 'closed') {
       variant = Math.random() < 0.5 ? 'open' : 'closed';
       window.localStorage?.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, variant);
     }
-    return variant === 'open';
+    return variant === 'open' ? 'open' : 'closed';
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -1714,22 +1728,47 @@ function CompactChatApp({
   const [initialCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(initialCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(initialCompactExportHistoryOpen);
-  // A/B 曝光上报：进入可见紧凑界面后触发（minimized 时用户还没看到历史默认态，先不计曝光，避免污染数据）。
-  // 去重在 reportCompactHistoryExperimentExposure 内用 sessionStorage 做（跨真实重挂载 / StrictMode 双
-  // effect 都只报一次），telemetry 副作用移出 render 阶段。首次若因 WS 未 OPEN 没投出，用有界轮询重试。
+  // A/B「历史首启默认」套用（含 open 展开 + 曝光上报）：初始一律折叠（见 readPersistedCompactExportHistoryOpen），
+  // 变体只在「教程完全结束（neko:tutorial-completed / -ended-without-completion）」或「本次不跑教程的老用户」
+  // 时套用——避免教程进行中 / 演示历史区前就展开，与教学冲突。minimized 时用户没看到紧凑界面，先不套用/不计
+  // 曝光。ref 保证整会话只套一次；曝光走 sessionStorage 去重 + WS 未就绪有界轮询重试。
+  const compactHistoryExperimentAppliedRef = useRef(false);
   useEffect(() => {
     if (chatSurfaceMode === 'minimized') return undefined;
-    if (reportCompactHistoryExperimentExposure()) return undefined;
-    // WS 未就绪：用有界轮询重试，比监听某个 socket 实例的 'open' 更稳——覆盖 socket 此刻还没创建
-    // （startup 慢路径，appState.socket 为 undefined）、「report 失败到注册监听之间 socket 已 OPEN」
-    // 的竞态、以及断线重连换 socket 实例等情况。成功（或本会话已报过）即停，最多重试约 20s。
-    let tries = 0;
-    const timer = window.setInterval(() => {
-      if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) {
-        window.clearInterval(timer);
+    const win = window as unknown as { isInTutorial?: boolean };
+    let exposureTimer = 0;
+    let fallbackTimer = 0;
+    const applyExperimentDefault = () => {
+      if (compactHistoryExperimentAppliedRef.current) return;
+      const variant = readCompactHistoryExperimentVariant();
+      compactHistoryExperimentAppliedRef.current = true;
+      if (variant === null) return; // 用户已有显式偏好 / 不在实验
+      if (variant === 'open') {
+        setCompactExportHistoryMounted(true);
+        setCompactExportHistoryOpen(true);
       }
-    }, 1000);
-    return () => window.clearInterval(timer);
+      if (reportCompactHistoryExperimentExposure()) return;
+      let tries = 0;
+      exposureTimer = window.setInterval(() => {
+        if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) window.clearInterval(exposureTimer);
+      }, 1000);
+    };
+    const onTutorialEnd = () => applyExperimentDefault();
+    window.addEventListener('neko:tutorial-completed', onTutorialEnd);
+    window.addEventListener('neko:tutorial-ended-without-completion', onTutorialEnd);
+    // 本次不跑教程的老用户：教程启动会置 window.isInTutorial=true / body 加 guide-active 类。给它一点时间，
+    // 到时仍非教程态就直接套用；教程态则等上面的结束事件。
+    if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) {
+      fallbackTimer = window.setTimeout(() => {
+        if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) applyExperimentDefault();
+      }, COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS);
+    }
+    return () => {
+      window.removeEventListener('neko:tutorial-completed', onTutorialEnd);
+      window.removeEventListener('neko:tutorial-ended-without-completion', onTutorialEnd);
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
+      if (exposureTimer) window.clearInterval(exposureTimer);
+    };
   }, [chatSurfaceMode]);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
@@ -2106,12 +2145,12 @@ function CompactChatApp({
     window.clearTimeout(compactExportHistoryUnmountTimerRef.current);
     compactExportHistoryUnmountTimerRef.current = null;
   }, []);
-  const openCompactExportHistory = useCallback(() => {
+  const openCompactExportHistory = useCallback((opts?: { persist?: boolean }) => {
     clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryClosingMessages(null);
     setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
-    persistCompactExportHistoryOpen(true);
+    if (opts?.persist !== false) persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
   }, [clearCompactExportHistoryUnmountTimer]);
   // persist=false：只播收回动画、不把「历史区关闭」写进持久化偏好。折叠（minimize）时用，
@@ -2136,7 +2175,8 @@ function CompactChatApp({
     if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
     lastCompactHistoryOpenRequestIdRef.current = request.id;
     if (request.open) {
-      openCompactExportHistory();
+      // 教程演示历史区只临时展开，不写用户偏好（与 close 对称）——否则会覆盖 A/B 变体默认值。
+      openCompactExportHistory({ persist: false });
       return;
     }
     closeCompactExportHistory({ persist: false });
