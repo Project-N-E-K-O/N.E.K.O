@@ -74,6 +74,7 @@ from config import (
     SESSION_TURN_THRESHOLD,
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
 )
 # FOCUS_MODE_ENABLED is read live with a function-local ``from config import
 # FOCUS_MODE_ENABLED`` at each gate (re-imported per call → picks up a runtime
@@ -6629,6 +6630,7 @@ class LLMSessionManager:
         full_text: str,
         expected_speech_id: str | None = None,
         action_note: str | None = None,
+        source_tag: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -6692,14 +6694,18 @@ class LLMSessionManager:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
                 # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
-                # LLM 给自己的元数据备忘，不算复读对象。
-                try:
-                    from memory.anti_repeat import get_anti_repeat_corpus
-                    get_anti_repeat_corpus().record_output(
-                        self.lanlan_name, full_text, is_proactive=True,
-                    )
-                except Exception as _exc:  # pragma: no cover
-                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
+                # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+                # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+                # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+                # BM25 评分豁免对偶）。
+                if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                    try:
+                        from memory.anti_repeat import get_anti_repeat_corpus
+                        get_anti_repeat_corpus().record_output(
+                            self.lanlan_name, full_text, is_proactive=True,
+                        )
+                    except Exception as _exc:  # pragma: no cover
+                        logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:

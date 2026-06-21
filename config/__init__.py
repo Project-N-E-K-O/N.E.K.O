@@ -1720,6 +1720,21 @@ ANTI_REPEAT_MIN_DRAFT_TOKENS = 12
 - 用途：避免"嗯。"、"好"这种短回复被错杀。
 - 设计依据：~12 个 ngram token 才能形成稳定的 BM25 信号。"""
 
+ANTI_REPEAT_EXEMPT_SOURCE_TAGS = frozenset({"MUSIC", "MEME"})
+"""主动搭话里"复读判定从台词切到素材维度"的来源标签。
+- 动机：BM25 防的是"话题/措辞复读"，但素材推送类 channel 的开场白天生模板
+  化（推歌"换首歌 / 这旋律 / 听听看"、表情包"看这个 / 笑死"），台词长一个
+  样、而推送的素材（曲目 / 表情包搜索关键词）却不同；用台词 BM25 判它属于
+  天生误杀——博士连点几首后 FG 窗被音乐 intro 占满，分数爆表，后续自发推
+  歌全被 drop，表现为"放音乐频率极低"。
+- 语义：这类 channel 的复读按"素材本身"去重——MUSIC 看曲目、MEME 看搜索
+  关键词（不是图片）。本轮素材与近期不雷同时，豁免台词级硬拦截（字面相似
+  度 + BM25 regen/drop）直接放行；素材雷同（反复推同一曲目 / 同一关键词）
+  才回落到正常台词判定，台词没雷同则依然能发。
+- 另：这类 channel 的台词不录进 anti-repeat corpus（见 finish_proactive_
+  delivery），免得模板化 intro 污染 FG 窗、漂移其它 channel 的复读基线；
+  素材标识的近期去重走 system_router 的 _proactive_material_history。"""
+
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。
 - 用途：去重已处理的 avatar 交互 ID。
@@ -2379,6 +2394,7 @@ __all__ = [
     'ANTI_REPEAT_BM25_K1',
     'ANTI_REPEAT_BM25_B',
     'ANTI_REPEAT_MIN_DRAFT_TOKENS',
+    'ANTI_REPEAT_EXEMPT_SOURCE_TAGS',
     'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
     'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
     'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',
