@@ -559,17 +559,30 @@ function persistCompactExportHistoryOpen(open: boolean) {
 // 初始化器/render 阶段）里抽出，挪到组件挂载后的 useEffect 调用：(1) telemetry 是带副作用的
 // fire-and-forget，不该在 render 阶段触发；(2) 上报走 appTelemetry→WS，挂载前 socket 多半未
 // OPEN，过早上报会被静默丢弃。仅在「用户无显式开/合偏好 + 已分配实验 variant」时上报。
-function reportCompactHistoryExperimentExposure() {
-  if (typeof window === 'undefined') return;
+const COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY = 'neko.experiment.compactHistoryDefault.exposureReported';
+// 返回 true = 「已处理完、无需重试」（成功上报 / 本会话已报过 / 不适用）；返回 false 仅当「该报但
+// appTelemetry 没投出去」(WS 未 OPEN)，调用方据此挂 socket open 重试。去重用 sessionStorage 而非
+// useRef（useRef 仅同实例有效，挡不住真实重挂载如 surface 切换）、也非 localStorage（那会「一生一次」
+// 丢后续会话曝光）；按会话粒度，跨真实重挂载 + StrictMode 双 effect 都只报一次。只有真正投出去才置
+// flag，避免「标记了却没报」永久丢曝光。
+function reportCompactHistoryExperimentExposure(): boolean {
+  if (typeof window === 'undefined') return true;
   try {
     const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    if (persisted !== null) return;
+    if (persisted !== null) return true;
     const variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
-    if (variant !== 'open' && variant !== 'closed') return;
-    (window as unknown as { appTelemetry?: { event?: (n: string, f?: Record<string, unknown>) => void } })
+    if (variant !== 'open' && variant !== 'closed') return true;
+    if (window.sessionStorage?.getItem(COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY) === 'true') return true;
+    const sent = (window as unknown as { appTelemetry?: { event?: (n: string, f?: Record<string, unknown>) => boolean } })
       .appTelemetry?.event?.('experiment_exposure', { experiment: 'compact_history_default', variant });
+    if (sent) {
+      window.sessionStorage?.setItem(COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY, 'true');
+      return true;
+    }
+    return false;
   } catch {
     // telemetry 不阻塞业务，吞掉异常
+    return true;
   }
 }
 
@@ -1695,12 +1708,16 @@ function CompactChatApp({
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
-  // A/B 曝光上报：挂载后跑一次（ref 去重，含 StrictMode 双挂载），把 telemetry 副作用移出 render。
-  const compactHistoryExposureReportedRef = useRef(false);
+  // A/B 曝光上报：挂载后触发（去重在 reportCompactHistoryExperimentExposure 内用 sessionStorage 做，
+  // 跨真实重挂载 / StrictMode 双 effect 都只报一次），把 telemetry 副作用移出 render 阶段。首次若因
+  // WS 未 OPEN 没投出去，挂一次 socket 'open' 重试——否则首启 socket 还在连接时曝光会丢。
   useEffect(() => {
-    if (compactHistoryExposureReportedRef.current) return;
-    compactHistoryExposureReportedRef.current = true;
-    reportCompactHistoryExperimentExposure();
+    if (reportCompactHistoryExperimentExposure()) return;
+    const socket = (window as unknown as { appState?: { socket?: WebSocket } }).appState?.socket;
+    if (!socket) return;
+    const onOpen = () => { reportCompactHistoryExperimentExposure(); };
+    socket.addEventListener('open', onOpen);
+    return () => socket.removeEventListener('open', onOpen);
   }, []);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
@@ -6679,9 +6696,9 @@ function CompactChatApp({
       <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
     </button>
   ) : null;
-  const compactMusicPlayerVisibility = compactExportHistoryOpen
-    ? 'open'
-    : (compactExportHistoryMounted ? 'closing' : 'closed');
+  // 音乐条可见性与「聊天历史折叠」解耦：只要有音乐内容就常显（空态由 CSS `:empty { display:none }`
+  // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
+  const compactMusicPlayerVisibility = 'open' as const;
   const compactMusicPlayerMountNode = isCompactSurface ? (
     <div
       id="music-player-mount"
