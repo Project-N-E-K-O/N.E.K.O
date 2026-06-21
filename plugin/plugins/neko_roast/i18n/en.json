@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "Clear the queue and reset safety state.",
   "entries.clear_queue.name": "Clear queue",
   "entries.clear_queue.description": "Clear the current roast queue.",
+  "entries.trigger_idle_hosting.name": "Trigger idle hosting",
+  "entries.trigger_idle_hosting.description": "Manually trigger one idle-hosting pass when NEKO is solo streaming and idle.",
   "entries.set_live_room.name": "Set live room",
   "entries.set_live_room.description": "Set the Bilibili live room ID NEKO Live should listen to.",
   "entries.connect_live_room.name": "Start live room listening",

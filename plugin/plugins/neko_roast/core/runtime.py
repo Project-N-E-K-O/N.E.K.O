@@ -22,7 +22,7 @@ from ..stores.audit_store import AuditStore
 from ..stores.avatar_cache import AvatarCache
 from ..stores.credential_store import CredentialStore
 from ..stores.viewer_store import ViewerStore
-from .contracts import InteractionResult, RoastConfig, ViewerEvent, ViewerProfile, parse_room_id
+from .contracts import InteractionResult, PipelineStep, RoastConfig, ViewerEvent, ViewerProfile, parse_room_id
 from .event_bus import EventBus
 from .instructions import (
     NEKO_ROAST_CONTEXT_INSTRUCTIONS,
@@ -436,6 +436,51 @@ class RoastRuntime:
         )
         return await self.pipeline.handle_event(event)
 
+    async def trigger_idle_hosting(self) -> InteractionResult:
+        live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
+        event = self._idle_hosting_event(live_state)
+
+        if self.config.live_mode != "solo_stream":
+            return self._record_idle_hosting_skip(event, "idle_hosting.not_solo_stream")
+        state = str(live_state.get("state") or "")
+        if state == "paused":
+            return self._record_idle_hosting_skip(event, "idle_hosting.paused")
+        if state == "blocked":
+            return self._record_idle_hosting_skip(event, "idle_hosting.blocked")
+        if state != "idle":
+            return self._record_idle_hosting_skip(event, "idle_hosting.not_idle")
+        if not bool(live_state.get("idle_hosting_candidate")):
+            return self._record_idle_hosting_skip(event, "idle_hosting.not_candidate")
+        return await self.pipeline.handle_event(event)
+
+    def _idle_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:
+        return ViewerEvent(
+            uid="__neko_idle__",
+            nickname="NEKO",
+            danmaku_text="",
+            source="idle_hosting",
+            live_mode=self.config.live_mode,
+            raw={
+                "trigger": "manual_idle_hosting",
+                "live_state": dict(live_state),
+            },
+        )
+
+    def _record_idle_hosting_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
+        result = InteractionResult(
+            accepted=False,
+            status="skipped",
+            event=event,
+            reason=reason,
+            steps=[PipelineStep("idle_hosting_gate", "skipped", reason)],
+        )
+        self.audit.record("idle_hosting_skipped", reason, level="info", detail={"mode": self.config.live_mode})
+        self.record_result(result)
+        return result
+
     async def dashboard_state(self) -> dict[str, Any]:
         profiles = await self.viewer_store.recent_profiles(self.config.recent_limit)
         storage = self.viewer_store.storage_status()
@@ -543,8 +588,7 @@ class RoastRuntime:
         idle_hosting_candidate = (
             self.config.live_mode == "solo_stream"
             and state == "idle"
-            and status.get("summary") == "ready_to_stream"
-            and bool(status.get("can_output"))
+            and status.get("summary") in {"ready_to_stream", "test_only"}
             and float(status.get("cooldown_remaining") or 0.0) <= 0.0
         )
 
@@ -702,6 +746,7 @@ class RoastRuntime:
             "pause_roast",
             "resume_roast",
             "clear_queue",
+            "trigger_idle_hosting",
             "submit_viewer_event",
             "clear_sandbox_data",
             "bili_login",

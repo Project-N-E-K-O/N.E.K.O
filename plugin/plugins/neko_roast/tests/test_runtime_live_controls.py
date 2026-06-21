@@ -38,9 +38,14 @@ class Plugin:
         self.ctx = None
         self.logger = None
         self._data_path = tmp_path
+        self.pushed_messages: list[dict] = []
 
     def data_path(self) -> Path:
         return self._data_path
+
+    def push_message(self, **kwargs):
+        self.pushed_messages.append(kwargs)
+        return None
 
 
 class FakeIngest:
@@ -77,6 +82,8 @@ class FakeIngest:
 def runtime(tmp_path: Path) -> RoastRuntime:
     rt = RoastRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
+    rt.avatar_roast.ctx = rt
+    rt.bili_identity.ctx = rt
     return rt
 
 
@@ -327,6 +334,23 @@ async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(run
 
 
 @pytest.mark.asyncio
+async def test_live_state_allows_idle_hosting_candidate_in_dry_run(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_status"]["summary"] == "test_only"
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_state"]["idle_hosting_candidate"] is True
+
+
+@pytest.mark.asyncio
 async def test_live_state_keeps_co_stream_idle_from_becoming_candidate(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -362,6 +386,61 @@ async def test_live_state_paused_and_blocked_take_priority(runtime: RoastRuntime
     blocked_state = await runtime.dashboard_state()
     assert blocked_state["live_state"]["state"] == "blocked"
     assert blocked_state["live_state"]["idle_hosting_candidate"] is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    result = await runtime.trigger_idle_hosting()
+
+    assert result.status == "dry_run"
+    assert result.reason == "dispatcher.dry_run"
+    assert result.event.source == "idle_hosting"
+    assert result.event.live_mode == "solo_stream"
+    assert result.request is not None
+    assert "solo idle hosting" in result.request.prompt_text
+    assert runtime.recent_results[-1]["status"] == "dry_run"
+    assert runtime.recent_results[-1]["event"]["source"] == "idle_hosting"
+    assert runtime.plugin.pushed_messages == []
+
+
+@pytest.mark.asyncio
+async def test_trigger_idle_hosting_skips_co_stream(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    result = await runtime.trigger_idle_hosting()
+
+    assert result.status == "skipped"
+    assert result.reason == "idle_hosting.not_solo_stream"
+    assert runtime.recent_results[-1]["reason"] == "idle_hosting.not_solo_stream"
+
+
+@pytest.mark.asyncio
+async def test_trigger_idle_hosting_skips_when_live_state_is_not_idle(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=30)
+
+    result = await runtime.trigger_idle_hosting()
+
+    assert result.status == "skipped"
+    assert result.reason == "idle_hosting.not_idle"
+    assert runtime.recent_results[-1]["reason"] == "idle_hosting.not_idle"
 
 
 @pytest.mark.asyncio

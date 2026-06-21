@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "清空隊列並重置安全門。",
   "entries.clear_queue.name": "清空隊列",
   "entries.clear_queue.description": "清空目前銳評隊列。",
+  "entries.trigger_idle_hosting.name": "觸發冷場陪播",
+  "entries.trigger_idle_hosting.description": "在貓貓獨播且直播狀態為空閒時，手動觸發一次冷場陪播鏈路。",
   "entries.set_live_room.name": "設定直播間",
   "entries.set_live_room.description": "設定 NEKO Live 要監聽的 B站直播間 ID。",
   "entries.connect_live_room.name": "開始監聽直播間",

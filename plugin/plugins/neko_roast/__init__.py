@@ -280,6 +280,15 @@ class NekoRoastPlugin(NekoPluginBase):
         self._runtime().clear_queue()
         return Ok({"status": "cleared"})
 
+    @plugin_entry(
+        id="trigger_idle_hosting",
+        name=tr("entries.trigger_idle_hosting.name", default="Trigger idle hosting"),
+        description=tr("entries.trigger_idle_hosting.description", default="Manually trigger one idle-hosting pass when NEKO is solo streaming and idle."),
+    )
+    async def trigger_idle_hosting(self, **_):
+        result = await self._runtime().trigger_idle_hosting()
+        return Ok(result.to_public_dict())
+
     @ui.action(id="submit_viewer_event", label=tr("panel.actions.submitSandbox", default="发射模拟弹幕"), group="developer", order=20, refresh_context=True)
     @plugin_entry(
         id="submit_viewer_event",

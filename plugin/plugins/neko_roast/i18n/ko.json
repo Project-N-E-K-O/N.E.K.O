@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "대기열을 비우고 안전 상태를 초기화합니다.",
   "entries.clear_queue.name": "대기열 비우기",
   "entries.clear_queue.description": "현재 로스트 대기열을 비웁니다.",
+  "entries.trigger_idle_hosting.name": "아이들 호스팅 실행",
+  "entries.trigger_idle_hosting.description": "NEKO가 단독 방송 중이고 아이들 상태일 때 아이들 호스팅을 한 번 수동 실행합니다.",
   "entries.set_live_room.name": "라이브 방 설정",
   "entries.set_live_room.description": "NEKO Live가 수신할 Bilibili 라이브 방 ID를 설정합니다.",
   "entries.connect_live_room.name": "라이브 방 수신 시작",

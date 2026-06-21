@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 LiveMode = Literal["co_stream", "solo_stream"]
 RoastStrength = Literal["gentle", "normal", "sharp"]
-TriggerSource = Literal["live_danmaku", "developer_sandbox", "manual_live_simulation"]
+TriggerSource = Literal["live_danmaku", "developer_sandbox", "manual_live_simulation", "idle_hosting"]
 SafetyStatus = Literal["running", "paused", "degraded", "tripped", "disconnected"]
 
 

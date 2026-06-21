@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "キューをクリアし安全状態をリセットします。",
   "entries.clear_queue.name": "キューをクリア",
   "entries.clear_queue.description": "現在のローストキューをクリアします。",
+  "entries.trigger_idle_hosting.name": "アイドル進行をトリガー",
+  "entries.trigger_idle_hosting.description": "NEKO がソロ配信中でアイドル状態のとき、アイドル進行を 1 回だけ手動でトリガーします。",
   "entries.set_live_room.name": "配信ルームを設定",
   "entries.set_live_room.description": "NEKO Live が監視する Bilibili 配信ルーム ID を設定します。",
   "entries.connect_live_room.name": "配信ルーム監視を開始",

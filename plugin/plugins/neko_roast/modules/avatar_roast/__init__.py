@@ -45,14 +45,44 @@ class AvatarRoastModule(BaseModule):
         profile: ViewerProfile,
     ) -> InteractionRequest:
         strength = self.ctx.config.roast_strength if self.ctx else "normal"
+        prompt_text = (
+            self._build_idle_hosting_prompt(event, strength)
+            if event.source == "idle_hosting"
+            else self._build_prompt(event, identity, strength)
+        )
         return InteractionRequest(
             event=event,
             identity=identity,
             profile=profile,
-            prompt_text=self._build_prompt(event, identity, strength),
+            prompt_text=prompt_text,
             live_mode=event.live_mode,
             strength=strength,
             dry_run=bool(self.ctx.config.dry_run) if self.ctx else False,
+        )
+
+    def _build_idle_hosting_prompt(self, event: ViewerEvent, strength: str) -> str:
+        raw = event.raw if isinstance(event.raw, dict) else {}
+        state = raw.get("live_state") if isinstance(raw.get("live_state"), dict) else {}
+        last_activity_age = state.get("last_activity_age_sec") if isinstance(state, dict) else None
+        strength_zh = {"gentle": "soft", "sharp": "a little sharp", "normal": "balanced"}.get(strength, "balanced")
+        facts = [
+            "mode: solo_stream",
+            "task: solo idle hosting",
+            f"last_activity_age_sec: {last_activity_age if last_activity_age is not None else 'unknown'}",
+            f"tone_strength: {strength_zh}",
+        ]
+        rules = [
+            "Say exactly one short line as NEKO, the solo host of this live room.",
+            "Do not pretend a viewer sent a message.",
+            "Do not say nobody is here, do not beg for comments, and do not explain system state.",
+            "Make it easy for a quiet viewer to answer, but keep it natural and low-pressure.",
+            "Output only the line NEKO should say.",
+        ]
+        return (
+            "[NEKO Live solo idle hosting]\n"
+            + "\n".join(facts)
+            + "\n\nRules:\n"
+            + "\n".join(f"- {rule}" for rule in rules)
         )
 
     def _build_prompt(self, event: ViewerEvent, identity: ViewerIdentity, strength: str) -> str:

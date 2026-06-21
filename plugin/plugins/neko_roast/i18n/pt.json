@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "Limpa a fila e redefine a segurança.",
   "entries.clear_queue.name": "Limpar fila",
   "entries.clear_queue.description": "Limpa a fila atual de roasts.",
+  "entries.trigger_idle_hosting.name": "Acionar presença em pausa",
+  "entries.trigger_idle_hosting.description": "Aciona manualmente uma passagem de presença em pausa quando a NEKO está em transmissão solo e ociosa.",
   "entries.set_live_room.name": "Definir sala",
   "entries.set_live_room.description": "Define o ID da sala Bilibili que o NEKO Live deve escutar.",
   "entries.connect_live_room.name": "Iniciar escuta da sala",

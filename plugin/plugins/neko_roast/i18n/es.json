@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "Vacía la cola y reinicia la seguridad.",
   "entries.clear_queue.name": "Vaciar cola",
   "entries.clear_queue.description": "Vacía la cola actual de roasts.",
+  "entries.trigger_idle_hosting.name": "Activar pausa animada",
+  "entries.trigger_idle_hosting.description": "Activa manualmente una pasada de pausa animada cuando NEKO transmite en solitario y está inactiva.",
   "entries.set_live_room.name": "Configurar sala",
   "entries.set_live_room.description": "Configura el ID de sala de Bilibili que NEKO Live debe escuchar.",
   "entries.connect_live_room.name": "Iniciar escucha de sala",

@@ -41,16 +41,16 @@ class RoastPipeline:
             identity = await self.ctx.bili_identity.resolve(event)
             steps.append(PipelineStep("bili_identity", "ok" if not identity.error else "failed", identity.error))
 
-            is_sandbox_event = event.source == "developer_sandbox"
-            if is_sandbox_event:
+            is_transient_event = event.source in {"developer_sandbox", "idle_hosting"}
+            if is_transient_event:
                 profile = ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
-                steps.append(PipelineStep("viewer_profile", "skipped", "developer sandbox uses transient profile"))
+                steps.append(PipelineStep("viewer_profile", "skipped", f"{event.source} uses transient profile"))
             else:
                 profile = await self.ctx.viewer_profile.upsert(identity)
                 steps.append(PipelineStep("viewer_profile", "ok"))
 
             uid_lock: asyncio.Lock | None = None
-            if self.ctx.config.roast_once_per_uid and not is_sandbox_event:
+            if self.ctx.config.roast_once_per_uid and not is_transient_event:
                 uid_lock = self._uid_locks.setdefault(identity.uid, asyncio.Lock())
                 await uid_lock.acquire()
             try:
@@ -120,7 +120,7 @@ class RoastPipeline:
                     return result
 
                 steps.append(PipelineStep("neko_dispatcher", "ok", output))
-                if not is_sandbox_event:
+                if not is_transient_event:
                     try:
                         await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
                         steps.append(PipelineStep("viewer_profile.mark_roasted", "ok"))

@@ -143,6 +143,8 @@
   "entries.resume_roast.description": "Очистить очередь и сбросить состояние безопасности.",
   "entries.clear_queue.name": "Очистить очередь",
   "entries.clear_queue.description": "Очистить текущую очередь оценок.",
+  "entries.trigger_idle_hosting.name": "Запустить idle hosting",
+  "entries.trigger_idle_hosting.description": "Вручную запустить один проход idle hosting, когда NEKO ведет соло-стрим и находится в простое.",
   "entries.set_live_room.name": "Задать комнату",
   "entries.set_live_room.description": "Задает ID комнаты Bilibili, которую слушает NEKO Live.",
   "entries.connect_live_room.name": "Начать слушать комнату",
