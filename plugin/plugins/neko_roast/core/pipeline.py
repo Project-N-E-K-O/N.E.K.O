@@ -84,7 +84,42 @@ class RoastPipeline:
                     self.ctx.record_result(result)
                     return result
 
-                steps.append(PipelineStep("neko_dispatcher", "ok"))
+                if request.dry_run:
+                    steps.append(PipelineStep("neko_dispatcher", "dry_run", output))
+                    result = InteractionResult(
+                        False,
+                        "dry_run",
+                        event,
+                        identity=identity,
+                        profile=profile,
+                        request=request,
+                        output=output,
+                        reason="dispatcher.dry_run",
+                        steps=steps,
+                    )
+                    self.ctx.audit.record("dispatcher_dry_run", "roast request completed as dry_run", detail={"uid": identity.uid, "source": event.source})
+                    self.ctx.record_result(result)
+                    return result
+
+                if not request.should_push or str(output).startswith("skipped_to_neko"):
+                    reason = request.reason or "dispatcher.skipped"
+                    steps.append(PipelineStep("neko_dispatcher", "skipped", output or reason))
+                    result = InteractionResult(
+                        False,
+                        "skipped",
+                        event,
+                        identity=identity,
+                        profile=profile,
+                        request=request,
+                        output=output,
+                        reason=reason,
+                        steps=steps,
+                    )
+                    self.ctx.audit.record("dispatcher_skipped", reason, level="info", detail={"uid": identity.uid, "source": event.source})
+                    self.ctx.record_result(result)
+                    return result
+
+                steps.append(PipelineStep("neko_dispatcher", "ok", output))
                 if not is_sandbox_event:
                     try:
                         await self.ctx.viewer_profile.mark_roasted(identity.uid, output)

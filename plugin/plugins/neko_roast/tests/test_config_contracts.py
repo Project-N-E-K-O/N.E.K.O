@@ -197,6 +197,144 @@ async def test_bili_login_check_clears_session_when_credential_save_fails():
 
 
 @pytest.mark.asyncio
+async def test_pipeline_records_dry_run_as_dispatcher_outcome_not_pushed():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            return None
+
+    class Dispatcher:
+        async def push_roast(self, _request):
+            return "dry_run(target=none, ai_behavior=respond)"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="test",
+                live_mode=event.live_mode,
+                strength="normal",
+                dry_run=True,
+            )
+
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=ViewerProfileModule(),
+        avatar_roast=AvatarRoast(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+
+    result = await RoastPipeline(ctx).handle_event(
+        ViewerEvent(uid="42", nickname="dry", danmaku_text="hi", source="live_danmaku")
+    )
+
+    assert result.status == "dry_run"
+    assert result.accepted is False
+    assert ctx.results[0].status == "dry_run"
+    assert not any(step.id == "viewer_profile.mark_roasted" for step in result.steps)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_records_dispatcher_skip_as_skipped_not_pushed():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            return None
+
+    class Dispatcher:
+        async def push_roast(self, _request):
+            return "skipped_to_neko(reason=non-deliverable)"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="test",
+                live_mode=event.live_mode,
+                strength="normal",
+                should_push=False,
+                reason="non-deliverable",
+            )
+
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=False),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=ViewerProfileModule(),
+        avatar_roast=AvatarRoast(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+
+    result = await RoastPipeline(ctx).handle_event(
+        ViewerEvent(uid="42", nickname="skip", danmaku_text="hi", source="live_danmaku")
+    )
+
+    assert result.status == "skipped"
+    assert result.accepted is False
+    assert result.reason == "non-deliverable"
+    assert ctx.results[0].status == "skipped"
+    assert not any(step.id == "viewer_profile.mark_roasted" for step in result.steps)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
     class Audit:
         def __init__(self):

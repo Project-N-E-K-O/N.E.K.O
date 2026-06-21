@@ -247,7 +247,7 @@ class InteractionRequest:
 @dataclass
 class PipelineStep:
     id: str
-    status: Literal["ok", "skipped", "failed"]
+    status: Literal["ok", "dry_run", "skipped", "failed"]
     message: str = ""
 
     def to_dict(self) -> dict[str, str]:
@@ -257,7 +257,7 @@ class PipelineStep:
 @dataclass
 class InteractionResult:
     accepted: bool
-    status: Literal["queued", "pushed", "skipped", "failed"]
+    status: Literal["queued", "dry_run", "pushed", "skipped", "failed"]
     event: ViewerEvent
     identity: ViewerIdentity | None = None
     profile: ViewerProfile | None = None
