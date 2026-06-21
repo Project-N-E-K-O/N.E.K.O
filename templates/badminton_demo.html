@@ -3862,7 +3862,7 @@
     return normalized <= 1;
   }
   function canPlayerReturnIncomingShuttle() {
-    return isPlayerReceivingReturn() && !game.ball.resolved && isIncomingPlayerShuttleInReach(game.ball);
+    return isPlayerReceivingReturn() && !game.ball.resolved && !game.ball.hitNet && isIncomingPlayerShuttleInReach(game.ball);
   }
   function shouldDrawHeldShuttle() {
     return game.heldShuttleVisible && !game.ball && !game.pendingSwing && game.state === 'ready' && isPlayerTurn();
@@ -4069,17 +4069,26 @@
       direction: ball && ball.direction === -1 ? -1 : 1
     });
     if (netContactEffects.length > 5) netContactEffects = netContactEffects.slice(netContactEffects.length - 5);
-    window.__badmintonNetEffectDebug = {
-      count: netContactEffects.length,
-      x: contactX,
-      y: contactY,
-      strength: strength,
-      startedAt: now
-    };
+    if (debugMode) {
+      window.__badmintonNetEffectDebug = {
+        count: netContactEffects.length,
+        x: contactX,
+        y: contactY,
+        strength: strength,
+        startedAt: now
+      };
+    }
   }
   function resetGame() {
     clearTimeout(resultTimer);
     resultTimer = 0;
+    netContactEffects = [];
+    if (debugMode && window.__badmintonNetEffectDebug) {
+      window.__badmintonNetEffectDebug = {
+        count: 0,
+        clearedAt: performance.now()
+      };
+    }
     var shouldRestartRoute = endedRoute || routeActive || heartbeatTimer || drainTimer;
     if (shouldRestartRoute) {
       if (!endedRoute) endRoute(false);
@@ -4573,6 +4582,7 @@
   }
   function maybePlayerReceiveIncomingShuttle(ball) {
     if (!isDuelMode() || !ball || ball.resolved || game.pendingSwing) return false;
+    if (ball.hitNet) return false;
     if (ball.shooter !== 'neko' || ball.direction !== -1 || ball.awaitingReturnBy) return false;
     var shuttleCourtY = getShuttleCourtY(ball, false);
     var shuttleZ = getShuttleCourtZ(ball, false);

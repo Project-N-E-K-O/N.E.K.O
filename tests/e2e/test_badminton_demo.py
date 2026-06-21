@@ -31,7 +31,13 @@ def _install_badminton_test_hooks(page: Page) -> None:
     )
 
 
-def _goto_badminton(page: Page, running_server: str, mode: str) -> None:
+def _goto_badminton(
+    page: Page,
+    running_server: str,
+    mode: str,
+    debug: bool = True,
+    wait_loading: bool = True,
+) -> None:
     _install_badminton_test_hooks(page)
     lanlan_name = "e2e-yui"
     session_id = f"e2e-badminton-{mode}"
@@ -40,12 +46,15 @@ def _goto_badminton(page: Page, running_server: str, mode: str) -> None:
     state["responded_at"] = time.time()
     state["pending_session_id"] = session_id
     state["last_game_type"] = "badminton"
+    debug_query = "&debug=1" if debug else ""
     page.goto(
         f"{running_server}/badminton_demo"
-        f"?mode={mode}&lanlan_name={lanlan_name}&session_id={session_id}&debug=1"
+        f"?mode={mode}&lanlan_name={lanlan_name}&session_id={session_id}{debug_query}"
     )
     expect(page.locator("#game")).to_be_attached(timeout=15000)
     page.wait_for_function("window.BadmintonDemo && window.BadmintonDemo.getState")
+    if not wait_loading:
+        return
     page.wait_for_function(
         """() => {
           const loading = document.getElementById('badminton-loading');
@@ -572,7 +581,9 @@ def test_badminton_yui_awaiting_return_still_hits_midcourt_net(mock_page: Page, 
           window.__bdYuiAwaitingNetSample = {
             hitNet: state.currentShuttle.hitNet,
             crossedNet: state.currentShuttle.crossedNet,
+            receivingReturn: state.receivingReturn,
             incomingReturnInReach: state.incomingReturnInReach,
+            canControlShot: state.canControlShot,
             attemptsResultsLength: state.attemptsResults.length,
             netEffect: window.__badmintonNetEffectDebug || null,
             vx: state.currentShuttle.vx,
@@ -585,7 +596,9 @@ def test_badminton_yui_awaiting_return_still_hits_midcourt_net(mock_page: Page, 
     netted = page.evaluate("window.__bdYuiAwaitingNetSample")
     assert netted["hitNet"] is True
     assert netted["crossedNet"] is True
+    assert netted["receivingReturn"] is True
     assert netted["incomingReturnInReach"] is False
+    assert netted["canControlShot"] is False
     assert netted["attemptsResultsLength"] == 0
     assert netted["netEffect"] is not None
     assert netted["netEffect"]["count"] >= 1
@@ -614,6 +627,61 @@ def test_badminton_yui_awaiting_return_still_hits_midcourt_net(mock_page: Page, 
     assert resolved["duel"]["neko_score"] == 0
     assert resolved["duel"]["neko_misses"] == 1
     assert resolved["duel"]["player_misses"] == 0
+
+    page.evaluate("window.BadmintonDemo.resetGame()")
+    page.wait_for_function(
+        """() => {
+          return window.__badmintonNetEffectDebug
+            && window.__badmintonNetEffectDebug.count === 0;
+        }"""
+    )
+
+
+@pytest.mark.e2e
+def test_badminton_net_effect_debug_global_stays_debug_only(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel", debug=False, wait_loading=False)
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          window.BadmintonDemo._debugSetAwaitingPlayerReturnBall({
+            id: 904,
+            x: 466,
+            y: 330,
+            prevX: 470,
+            prevY: 330,
+            courtY: 466,
+            prevCourtY: 470,
+            z: 120,
+            prevZ: 120,
+            vx: -360,
+            vy: 0,
+            vCourtY: -360,
+            vz: 0,
+            radius: 18,
+            shooter: 'neko',
+            direction: -1,
+            crossedNet: false,
+            resolved: false,
+            awaitingReturnBy: 'player',
+            returnDeadlineAt: performance.now() + 2400,
+            groundedReturnAt: 0,
+            angle: 43,
+            power: 52,
+            trail: []
+          });
+        }"""
+    )
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.currentShuttle && state.currentShuttle.hitNet;
+        }""",
+        timeout=2000,
+    )
+    assert page.evaluate("typeof window.__badmintonNetEffectDebug") == "undefined"
 
 
 @pytest.mark.e2e
