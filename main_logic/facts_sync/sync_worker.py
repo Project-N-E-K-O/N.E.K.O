@@ -189,7 +189,7 @@ async def _post_facts_batch(
     except (httpx.HTTPError, OSError) as exc:
         logger.warning("facts_sync: HTTP failed: %s", exc)
         return False, None
-    if r.status_code != 200:
+    if r.status_code >= 300:
         logger.warning("facts_sync: %s returned %s: %s", url, r.status_code, r.text[:200])
         return False, None
     try:

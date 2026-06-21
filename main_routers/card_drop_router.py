@@ -178,21 +178,30 @@ def _steam_pending_path() -> Path | None:
     return (p.parent / _STEAM_PENDING_FILENAME) if p else None
 
 
-def _mark_steam_pending() -> str:
-    """写一次性待回调标记，返回不可猜的 state（NEKO 自存自校，防 login-CSRF）。"""
+def _mark_steam_pending() -> str | None:
+    """写一次性待回调标记，返回不可猜的 state（NEKO 自存自校，防 login-CSRF）。
+
+    无法持久化（无路径 / 写失败）时返回 None —— state 没落盘就发不出可被本地校验的回调，
+    调用方应直接中止登录入口，别把用户带进必失败的 Steam 授权流程。
+    """
     state = secrets.token_urlsafe(24)
     p = _steam_pending_path()
     if not p:
-        return state
+        return None
     try:
         p.write_text(json.dumps({"ts": time.time(), "state": state}), encoding="utf-8")
     except OSError as exc:
         logger.debug("card_drop: mark steam pending failed: %s", exc)
+        return None
     return state
 
 
 def _consume_steam_pending(state: str) -> bool:
-    """消费一次性标记：存在、未过期、且 state 与发起登录时一致才放行（防 login-CSRF + 重放）。"""
+    """消费一次性标记：存在、未过期、且 state 与发起登录时一致才放行（防 login-CSRF + 重放）。
+
+    只在「标记损坏 / 过期 / state 匹配成功」时删标记；state 不匹配时**保留**到 TTL，避免攻击者
+    用错误 state 的回调把合法登录标记删掉（DoS）。匹配成功但删除失败 → 返回 False 保「一次性」。
+    """
     p = _steam_pending_path()
     if not p or not p.exists():
         return False
@@ -201,11 +210,15 @@ def _consume_steam_pending(state: str) -> bool:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         data = {}
-    try:
-        p.unlink()
-    except OSError:
-        pass
+
+    def _drop() -> None:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
     if not isinstance(data, dict):
+        _drop()
         return False
     try:
         ts = float(data.get("ts", 0) or 0)
@@ -213,9 +226,19 @@ def _consume_steam_pending(state: str) -> bool:
         ts = 0.0
     stored_state = data.get("state") or ""
     if not stored_state or not isinstance(state, str) or not state:
+        _drop()
         return False
-    fresh = bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC
-    return fresh and secrets.compare_digest(str(stored_state), state)
+    if not (bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC):
+        _drop()  # 过期：清掉
+        return False
+    if not secrets.compare_digest(str(stored_state), state):
+        return False  # state 不匹配：保留标记，合法回调仍可在 TTL 内成功
+    try:
+        p.unlink()
+    except OSError as exc:
+        logger.debug("card_drop: consume steam pending failed: %s", exc)
+        return False
+    return True
 
 
 @router.get("/auth-status", summary="社区登录状态")
@@ -302,6 +325,9 @@ async def steam_login_endpoint(request: Request):
     base = _social_base_url()
     callback = _neko_steam_callback_url(request)
     state = _mark_steam_pending()
+    if not state:
+        # state 没落盘 → 回调无法本地校验，必失败；不如在入口直接报错，别让用户白跑一趟 Steam。
+        raise HTTPException(status_code=503, detail="steam_login_state_unavailable")
     authorize_url = (
         f"{base}/api/auth/oauth/steam/authorize?redirect_to={quote(callback, safe='')}"
         f"&state={quote(state, safe='')}"
