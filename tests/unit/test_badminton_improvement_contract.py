@@ -47,6 +47,20 @@ def test_badminton_improvement_static_contract():
         "/static/game/system/game-audio-system.js",
         "/static/game/games/badminton/badminton-audio-config.js",
         'id="game-audio-controls"',
+        'id="badminton-loading"',
+        'data-i18n="badminton.loading.title"',
+        'data-i18n="badminton.loading.subtitle"',
+        "function scheduleBadmintonLoadingDismiss(",
+        "function hideBadmintonLoading()",
+        "function setBadmintonLoadingProgress(",
+        "function startBadmintonFakeProgress(",
+        "function completeBadmintonLoading()",
+        "function afterInitialPaint(",
+        "function isBadmintonLoadingActive()",
+        'id="badminton-loading-bar"',
+        'id="badminton-loading-percent"',
+        "badminton-loading-progress",
+        "markFirstFrameRendered();",
         'id="game-bgm-volume"',
         'id="game-sfx-volume"',
         'function _i18n(',
@@ -289,6 +303,8 @@ def test_badminton_audio_config_contract():
 def test_badminton_i18n_keys_are_registered_in_main_locales():
     required_keys = {
         "badminton.title",
+        "badminton.loading.title",
+        "badminton.loading.subtitle",
         "badminton.modeSwitcher",
         "badminton.audio.controls",
         "badminton.memoryOption.label",
@@ -1051,13 +1067,13 @@ def test_badminton_duel_player_shots_update_recorded_stats():
 
 
 @pytest.mark.unit
-def test_badminton_duel_uses_three_miss_elimination_instead_of_five_round_cap():
+def test_badminton_duel_uses_eleven_miss_elimination_instead_of_five_round_cap():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
     finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]
 
     assert "playerMisses: 0," in html
     assert "nekoMisses: 0," in html
-    assert "maxMisses: 3," in html
+    assert "maxMisses: 11," in html
     assert "game.duel.playerMisses = 0;" in html
     assert "game.duel.nekoMisses = 0;" in html
     assert "point = 1;" in finish_duel
@@ -1166,14 +1182,15 @@ def test_badminton_starts_route_after_character_resolution_before_avatar_loading
     assert "var badmintonCharacterPromise = null;" in html
     assert "return badmintonCharacterPromise;" in html
     assert "function startRouteAfterCharacterReady() {" in html
-    assert "loadBadmintonCharacter().finally(function () { startRoute(); });" in html
+    assert "return loadBadmintonCharacter().finally(function () { return startRoute(); });" in html
     assert "var routeLanlanName = getRouteLanlanName();" in html
     assert "var routeSessionId = sessionId;" in html
     assert "lanlan_name: routeLanlanName" in html
     assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return res;" in html
     assert "applyRouteIdentity(res.state);" in html
-    startup = html[html.rindex("startRouteAfterCharacterReady();"):]
-    assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
+    startup = html[html.rindex("afterInitialPaint(function () {"):]
+    assert startup.index("var routeReady = startRouteAfterCharacterReady();") < startup.index("var nekoAvatarReady = initNekoAvatar();")
+    assert "scheduleBadmintonLoadingDismiss([routeReady, playerAvatarReady, nekoAvatarReady]);" in startup
 
 
 @pytest.mark.unit
@@ -1682,21 +1699,26 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
     assert "function canPlayerControlShot() {" in html
+    assert "if (isBadmintonLoadingActive()) return false;" in html
     assert "if (game.state !== 'ready' || game.pendingSwing || !isPlayerTurn()) return false;" in html
     assert "if (isPlayerReceivingReturn()) return canPlayerReturnIncomingShuttle();" in html
     assert "return !isPositionTransitioning;" in html
+    assert "var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;" in html
+    assert "var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';" in html
     assert "var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';" in html
-    assert "return isDuelMode() && (canPlayerControlShot() || incomingYuiBall || yuiSwinging);" in html
+    assert "return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);" in html
     assert "function isIncomingPlayerShuttleInReach(ball) {" in html
     assert "function canPlayerReturnIncomingShuttle() {" in html
 
     assert "function shouldIgnoreBadmintonPointerEvent(ev) {" in html
-    assert "#utility-controls, #result-panel, #leaderboard-panel, #stats-panel, #game-audio-controls, #bd-debug-panel" in html
+    assert "#badminton-loading, #utility-controls, #result-panel, #leaderboard-panel, #stats-panel, #game-audio-controls, #bd-debug-panel" in html
     mousemove = html[
         html.index("function handleBadmintonPointerMove(ev) {"):
         html.index("function handleBadmintonPointerDown(ev) {")
     ]
+    assert "if (isBadmintonLoadingActive()) return;" in mousemove
     assert "if (shouldIgnoreBadmintonPointerEvent(ev)) return;" in mousemove
+    assert "rememberPlayerPointer(ev);" in mousemove
     assert "if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in mousemove
     assert "if (!canPlayerControlShot()) return;" in mousemove
     assert mousemove.index("if (!canPlayerControlShot()) return;") < mousemove.index("game.aimAngle =")
@@ -1705,6 +1727,7 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
         html.index("function handleBadmintonPointerDown(ev) {"):
         html.index("window.addEventListener('mouseup'")
     ]
+    assert "if (isBadmintonLoadingActive()) return;" in mousedown
     assert "canvas.addEventListener('mousemove', handleBadmintonPointerMove);" in mousedown
     assert "canvas.addEventListener('mousedown', handleBadmintonPointerDown);" in mousedown
     assert "window.addEventListener('mousemove', function (ev) {" in mousedown
@@ -1718,6 +1741,7 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
         html.index("window.addEventListener('mouseup'"):
         html.index("window.addEventListener('keydown'")
     ]
+    assert "if (isBadmintonLoadingActive()) return;" in mouseup
     assert "if (game.charging && canPlayerControlShot()) shoot();" in mouseup
     assert "game.charging = false;" in mouseup
 
@@ -1957,6 +1981,9 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
     assert "function updatePlayerCourtTarget(clientX, clientY) {" in html
     assert "var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);" in html
     assert "game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);" in html
+    assert "var lastPlayerPointer = null;" in html
+    assert "function rememberPlayerPointer(ev) {" in html
+    assert "function syncPlayerCourtTargetFromPointer() {" in html
     assert "game.playerCourt.x = game.playerCourt.targetX;" not in html
     assert "var playerMoveRange = PLAYER_COURT_X_MAX - PLAYER_COURT_X_MIN;" not in html
     assert "game.playerCourt.targetY = PLAYER_START_Y;" in html
@@ -1966,12 +1993,14 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
     assert "targetX = clamp(ball.x + 42, YUI_COURT_X_MIN, YUI_COURT_X_MAX);" in html
     assert "targetY = clamp(ball.y + 76, YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);" in html
     assert "function updateCourtMovement(dt) {" in html
+    assert "syncPlayerCourtTargetFromPointer();" in html
     assert "game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);" in html
     assert "game.playerCourt.targetY = PLAYER_START_Y;" in html
     assert "game.playerCourt.y = PLAYER_START_Y;" in html
     assert "game.playerCourt.y = moveToward(game.playerCourt.y, game.playerCourt.targetY, PLAYER_MOVE_SPEED * 0.55, dt);" not in html
     assert "game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, YUI_MOVE_SPEED, dt);" in html
     assert "function canPlayerMoveCourt() {" in html
+    assert "if (isBadmintonLoadingActive()) return false;" in html
     assert "var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;" in html
     assert "if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in html
     assert "if (isDuelMode()) updateCourtMovement(dt);" in html

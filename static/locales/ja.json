@@ -4244,6 +4244,10 @@
     },
      "badminton": {
          "title": "バドミントンチャレンジ - Badminton",
+         "loading": {
+             "title": "バドミントンコートに入場中",
+             "subtitle": "コート、キャラクター、音声を読み込み中..."
+         },
          "modeSwitcher": "バドミントンモード",
          "mode": {
              "spectator": "フリー練習",
