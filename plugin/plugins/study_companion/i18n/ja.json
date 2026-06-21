@@ -68,7 +68,7 @@
     "ui.label.answer":  "答え",
     "ui.label.classification":  "分類",
     "ui.label.history":  "履歴",
-    "ui.button.generate_question":  "Generate Practice",
+    "ui.button.generate_question":  "練習問題を生成",
     "ui.button.evaluate_answer":  "解答を評価",
     "ui.button.summarize_session":  "セッションを要約",
     "ui.status.generating_question":  "問題を生成中...",

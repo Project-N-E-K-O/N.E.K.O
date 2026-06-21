@@ -44,7 +44,7 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
                         or item.get("education_level")
                         or item.get("course_level")
                         or ""
-                    ),
+                    ).strip(),
                     "depth": safe_int(item.get("depth"), 1),
                     "difficulty": safe_float(item.get("difficulty"), 0.5),
                     "prerequisites": item.get("prerequisites")
@@ -102,7 +102,7 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
                     or topic.get("education_level")
                     or topic.get("course_level")
                     or ""
-                ),
+                ).strip(),
                 safe_int(topic.get("depth"), 1),
                 safe_float(topic.get("difficulty"), 0.5),
                 self._json_dumps(

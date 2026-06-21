@@ -68,7 +68,7 @@
     "ui.label.answer":  "Respuesta",
     "ui.label.classification":  "Clasificación",
     "ui.label.history":  "Historial",
-    "ui.button.generate_question":  "Generate Practice",
+    "ui.button.generate_question":  "Generar practica",
     "ui.button.evaluate_answer":  "Evaluar respuesta",
     "ui.button.summarize_session":  "Resumir sesión",
     "ui.status.generating_question":  "Generando pregunta...",

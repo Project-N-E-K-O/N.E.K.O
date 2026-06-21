@@ -577,12 +577,14 @@ button.loading {
     linear-gradient(90deg, rgba(14, 24, 19, 0.04), rgba(14, 24, 19, 0.24));
   pointer-events: none;
   opacity: 0;
+  visibility: hidden;
   transition: opacity var(--transition-fast);
 }
 
 .surface-drawer[data-open="true"] {
   pointer-events: auto;
   opacity: 1;
+  visibility: visible;
 }
 
 .surface-drawer__panel {

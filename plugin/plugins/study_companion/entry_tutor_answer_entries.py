@@ -63,7 +63,10 @@ class _TutorAnswerEntriesMixin:
         state_question_id = str(current_question.get("question_id") or "").strip()
         state_attempt_id = str(current_question.get("attempt_id") or "").strip()
         current_question_requires_identity = bool(state_question_id or state_attempt_id)
-        if current_question_requires_identity and not supplied_question:
+        using_current_question = (
+            not supplied_question or supplied_question == state_question
+        )
+        if current_question_requires_identity and using_current_question:
             if (
                 not supplied_question_id
                 or not supplied_attempt_id
@@ -99,9 +102,6 @@ class _TutorAnswerEntriesMixin:
         ):
             resolved_expected = state_expected
         answer_text = str(answer or "").strip()
-        using_current_question = (
-            not supplied_question or supplied_question == state_question
-        )
         question_payload = dict(current_question) if using_current_question else {}
         question_payload.update(
             {
@@ -117,6 +117,28 @@ class _TutorAnswerEntriesMixin:
         ).strip()
         if selected_topic_id:
             question_payload["selected_topic_id"] = selected_topic_id
+        reserved_attempt = False
+        if using_current_question and state_attempt_id:
+            async with self._lock:
+                live_question = self._state.current_question
+                if str(live_question.get("attempt_id") or "") != state_attempt_id:
+                    return Err(
+                        SdkError(
+                            "current question identity does not match",
+                            code="QUESTION_MISMATCH",
+                        )
+                    )
+                if live_question.get("attempt_evaluated") or live_question.get(
+                    "attempt_evaluation_pending"
+                ):
+                    return Err(
+                        SdkError(
+                            "attempt has already been evaluated",
+                            code="ATTEMPT_ALREADY_EVALUATED",
+                        )
+                    )
+                live_question["attempt_evaluation_pending"] = True
+                reserved_attempt = True
         run_id = self._resolve_current_run_id(kwargs)
         session_id = str(kwargs.get("session_id") or "").strip()
         try:
@@ -241,6 +263,9 @@ class _TutorAnswerEntriesMixin:
                         str(self._state.current_question.get("attempt_id") or "")
                         == state_attempt_id
                     ):
+                        self._state.current_question.pop(
+                            "attempt_evaluation_pending", None
+                        )
                         self._state.current_question["attempt_evaluated"] = True
                         self._state.current_question["answer_evaluation_cache"] = (
                             public_eval_cache
@@ -248,6 +273,15 @@ class _TutorAnswerEntriesMixin:
                 await self._persist_state()
             return Ok(payload)
         except Exception as exc:
+            if reserved_attempt:
+                async with self._lock:
+                    if (
+                        str(self._state.current_question.get("attempt_id") or "")
+                        == state_attempt_id
+                    ):
+                        self._state.current_question.pop(
+                            "attempt_evaluation_pending", None
+                        )
             return _entry_exception_error(
                 self, exc, operation="study_evaluate_answer"
             )

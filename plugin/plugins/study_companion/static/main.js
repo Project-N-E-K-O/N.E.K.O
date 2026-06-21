@@ -1803,7 +1803,7 @@ async function generateQuestion() {
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
   setGeneratedQuestion(data);
-  setQuestionContext({ ...context, ...data, no_data: false });
+  setQuestionContext({ ...context, ...data, no_data: false, selection_context_id: '' });
   if (answerInput) answerInput.value = '';
   setImagePreview('answer', '');
   setReply(data.hint || data.question || data.summary || data.reply || '');

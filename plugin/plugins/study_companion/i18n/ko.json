@@ -68,7 +68,7 @@
     "ui.label.answer":  "답안",
     "ui.label.classification":  "분류",
     "ui.label.history":  "기록",
-    "ui.button.generate_question":  "Generate Practice",
+    "ui.button.generate_question":  "연습 문제 생성",
     "ui.button.evaluate_answer":  "답안 평가",
     "ui.button.summarize_session":  "세션 요약",
     "ui.status.generating_question":  "문제 생성 중...",

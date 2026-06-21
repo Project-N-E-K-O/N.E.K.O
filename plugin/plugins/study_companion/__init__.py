@@ -439,6 +439,8 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _auto_open_ui_if_enabled(self) -> None:
+        if not bool(self._cfg.auto_open_ui):
+            return
         if _auto_open_ui_disabled_by_env():
             return
         url = _plugin_manager_study_panel_url(plugin_id=self.plugin_id)

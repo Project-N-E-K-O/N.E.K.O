@@ -109,6 +109,15 @@ def _question_private_payload(
     return private_payload
 
 
+def _safe_wrong_question_summary(value: dict[str, Any]) -> dict[str, Any]:
+    source = dict(value or {})
+    return {
+        key: source.get(key)
+        for key in ("id", "topic_id", "error_type", "verdict")
+        if source.get(key) not in (None, "")
+    }
+
+
 class _TutorQuestionEntriesMixin:
     def _targeted_context_cache(self) -> dict[str, dict[str, Any]]:
         cache = getattr(self, "_targeted_question_contexts", None)
@@ -182,7 +191,7 @@ class _TutorQuestionEntriesMixin:
 
         if retry:
             reason = "retry"
-            reason_payload = {"wrong_question": retry}
+            reason_payload = {"wrong_question": _safe_wrong_question_summary(retry)}
         elif due_reviews:
             first_due = dict(due_reviews[0] or {})
             due_topic = dict(first_due.get("topic") or {})

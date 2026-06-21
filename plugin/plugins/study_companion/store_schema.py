@@ -11,7 +11,7 @@ from .store_common import (
 )
 
 _SQL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_COLUMN_DEFINITION_ALLOWLIST = {"TEXT"}
+_COLUMN_DEFINITION_ALLOWLIST = {"TEXT", "TEXT NOT NULL DEFAULT ''"}
 
 
 def _validate_sql_identifier(value: str, field: str) -> str:
@@ -322,7 +322,8 @@ def _init_db(self) -> None:
         """
     )
     ensure_memory_schema(conn)
-    self._ensure_column(conn, "topics", "stage", "TEXT")
+    self._ensure_column(conn, "topics", "stage", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("UPDATE topics SET stage = '' WHERE stage IS NULL")
     self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mastery_topic_updated ON mastery_snapshots(topic_id, updated_at DESC, id DESC)"

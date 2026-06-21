@@ -309,7 +309,7 @@ async def test_study_plugin_startup_auto_opens_panel_page(
     ctx = _Ctx(
         tmp_path,
         {
-            "study": {"language": "en", "auto_open_ui": False},
+            "study": {"language": "en", "auto_open_ui": True},
             "study_companion": {"communication": {"enabled": False}},
         },
     )
@@ -325,6 +325,33 @@ async def test_study_plugin_startup_auto_opens_panel_page(
         assert plugin.get_list_actions()[0]["target"] == (
             "/plugin/study_companion/ui/"
         )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_auto_open_can_be_disabled_by_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
+    monkeypatch.delenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", raising=False)
+    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert opened == []
     finally:
         await plugin.shutdown()
 
@@ -2681,6 +2708,9 @@ function assertSurfaceDrawer(surfaceId) {
   if (drawer.dataset.open !== 'true') {
     throw new Error(`surface drawer did not open for ${surfaceId}`);
   }
+  if (drawer.dataset.surfaceId !== surfaceId) {
+    throw new Error(`surface drawer opened ${drawer.dataset.surfaceId} instead of ${surfaceId}`);
+  }
   if (document.getElementById('surfaceDrawerFrame')) {
     throw new Error('surface drawer should not render an iframe');
   }
@@ -4138,6 +4168,30 @@ async def test_targeted_question_context_generate_and_attempt_guard(
         assert empty_context.value["selection_reason"] == "no_data"
         assert not empty_context.value["selection_context_id"]
 
+        retry_selection = plugin._selection_from_question_params(
+            {
+                "retry_wrong_question": {
+                    "id": 7,
+                    "topic_id": "derivatives",
+                    "error_type": "missing_power_rule",
+                    "verdict": "partial",
+                    "user_answer": "x",
+                    "expected_answer": "2x",
+                }
+            }
+        )
+        wrong_question_summary = retry_selection["selection_reason_payload"][
+            "wrong_question"
+        ]
+        assert wrong_question_summary == {
+            "id": 7,
+            "topic_id": "derivatives",
+            "error_type": "missing_power_rule",
+            "verdict": "partial",
+        }
+        assert "user_answer" not in wrong_question_summary
+        assert "expected_answer" not in wrong_question_summary
+
         plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
         plugin._store.append_mastery_snapshot(
             {
@@ -4194,6 +4248,26 @@ async def test_targeted_question_context_generate_and_attempt_guard(
         missing_identity = await plugin.study_evaluate_answer(answer="2x")
         assert isinstance(missing_identity, Err)
         assert missing_identity.error.code == "QUESTION_MISMATCH"
+
+        supplied_same_question_without_identity = await plugin.study_evaluate_answer(
+            answer="2x",
+            question=generated.value["question"],
+        )
+        assert isinstance(supplied_same_question_without_identity, Err)
+        assert supplied_same_question_without_identity.error.code == "QUESTION_MISMATCH"
+
+        async with plugin._lock:
+            plugin._state.current_question["attempt_evaluation_pending"] = True
+        pending = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id=generated.value["question_id"],
+            attempt_id=generated.value["attempt_id"],
+            selected_topic_id=generated.value["selected_topic_id"],
+        )
+        assert isinstance(pending, Err)
+        assert pending.error.code == "ATTEMPT_ALREADY_EVALUATED"
+        async with plugin._lock:
+            plugin._state.current_question.pop("attempt_evaluation_pending", None)
 
         evaluated = await plugin.study_evaluate_answer(
             answer="2x",

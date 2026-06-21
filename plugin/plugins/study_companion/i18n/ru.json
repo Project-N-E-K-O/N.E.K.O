@@ -68,7 +68,7 @@
     "ui.label.answer":  "Ответ",
     "ui.label.classification":  "Классификация",
     "ui.label.history":  "История",
-    "ui.button.generate_question":  "Generate Practice",
+    "ui.button.generate_question":  "Создать упражнение",
     "ui.button.evaluate_answer":  "Оценить ответ",
     "ui.button.summarize_session":  "Суммировать сессию",
     "ui.status.generating_question":  "Генерация вопроса...",

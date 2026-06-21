@@ -61,13 +61,13 @@ function relationLabel(props: PluginSurfaceProps, relation?: string) {
 
 function edgeGroups(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
   const labels = new Map(nodes.map((node) => [String(node.id || ''), nodeLabel(node)]));
-  const groups = new Map<string, { from: string; items: Array<{ relation: string; rawRelation: string; to: string }> }>();
+  const groups = new Map<string, { from: string; fromId: string; items: Array<{ relation: string; rawRelation: string; to: string }> }>();
   edges.slice(0, 80).forEach((edge) => {
     const fromId = String(edge.from || '').trim();
     const toId = String(edge.to || '').trim();
     if (!fromId && !toId) return;
     const key = fromId || '-';
-    const group = groups.get(key) || { from: labels.get(key) || key, items: [] };
+    const group = groups.get(key) || { from: labels.get(key) || key, fromId: key, items: [] };
     const rawRelation = String(edge.relation || 'related').trim().toLowerCase();
     group.items.push({
       relation: relationLabel(props, edge.relation),
@@ -141,7 +141,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
       <div className="study-panel__reply-label">{text(props, 'ui.knowledge.edge_section', 'Relationships')}</div>
       <div className="knowledge-edge-list">
         {edgeGroups(props, nodes, edges).slice(0, 12).map((group) => (
-          <article key={group.from} className="knowledge-edge-card">
+          <article key={group.fromId} className="knowledge-edge-card">
             <h3>{group.from}</h3>
             <div className="knowledge-edge-card__items">
               {group.items.slice(0, 6).map((item, index) => (

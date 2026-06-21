@@ -895,7 +895,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       }
       setQuestion(data.question || '');
       setCurrentQuestion(data);
-      setQuestionContext({ ...context, ...data, no_data: false });
+      setQuestionContext({ ...context, ...data, no_data: false, selection_context_id: '' });
       setAnswer('');
       setAnswerImage('');
       setReply(data.hint || data.question || data.summary || data.reply || '');
