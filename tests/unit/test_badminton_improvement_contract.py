@@ -48,6 +48,7 @@ def test_badminton_improvement_static_contract():
         "/static/game/games/badminton/badminton-audio-config.js",
         'id="game-audio-controls"',
         'id="badminton-loading"',
+        'role="status" aria-live="polite" aria-atomic="true"',
         'data-i18n="badminton.loading.title"',
         'data-i18n="badminton.loading.subtitle"',
         "function scheduleBadmintonLoadingDismiss(",
@@ -58,7 +59,7 @@ def test_badminton_improvement_static_contract():
         "function afterInitialPaint(",
         "function isBadmintonLoadingActive()",
         'id="badminton-loading-bar"',
-        'id="badminton-loading-percent"',
+        'id="badminton-loading-percent" aria-hidden="true"',
         "badminton-loading-progress",
         "markFirstFrameRendered();",
         'id="game-bgm-volume"',
@@ -123,6 +124,9 @@ def test_badminton_improvement_static_contract():
     assert "updateModeSwitcher" not in html
     assert "YUI_PASSIVE_LINES_SHOOTER" not in html
     assert "function shouldCallLLMShooter(" not in html
+    assert "return !!(badmintonLoading && !badmintonLoading.hidden);" in html
+    assert "badmintonLoading.classList.contains('hide')" not in html
+    assert "badmintonLoading.hidden = true;\n      window.__badmintonInitialLoadingHidden = true;" in html
     assert "自由练习" not in html
     assert "挥拍挑战" not in html
     assert 'viewBox="0 0 78 168"' in racket_sprite

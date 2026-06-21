@@ -414,12 +414,12 @@
 </style>
 </head>
 <body>
-<div id="badminton-loading" role="status" aria-live="polite">
+<div id="badminton-loading" role="status" aria-live="polite" aria-atomic="true">
   <div class="badminton-loading-panel">
     <div class="badminton-loading-progress" aria-hidden="true"><div id="badminton-loading-bar"></div></div>
     <div class="badminton-loading-title" data-i18n="badminton.loading.title" data-i18n-fallback="正在进入羽毛球场">正在进入羽毛球场</div>
     <div class="badminton-loading-subtitle" data-i18n="badminton.loading.subtitle" data-i18n-fallback="加载场地、角色和音效...">加载场地、角色和音效...</div>
-    <div id="badminton-loading-percent">8%</div>
+    <div id="badminton-loading-percent" aria-hidden="true">8%</div>
   </div>
 </div>
 <canvas id="game" width="900" height="500"></canvas>
@@ -3828,7 +3828,7 @@
     return true;
   }
   function isBadmintonLoadingActive() {
-    return !!(badmintonLoading && !badmintonLoading.hidden && !badmintonLoading.classList.contains('hide'));
+    return !!(badmintonLoading && !badmintonLoading.hidden);
   }
   function canPlayerControlShot() {
     if (isBadmintonLoadingActive()) return false;
@@ -6712,9 +6712,10 @@
   function hideBadmintonLoading() {
     if (!badmintonLoading || badmintonLoading.hidden) return;
     badmintonLoading.classList.add('hide');
-    window.__badmintonInitialLoadingHidden = true;
     setTimeout(function () {
-      if (badmintonLoading) badmintonLoading.hidden = true;
+      if (!badmintonLoading) return;
+      badmintonLoading.hidden = true;
+      window.__badmintonInitialLoadingHidden = true;
     }, 320);
   }
   function setBadmintonLoadingProgress(value) {
