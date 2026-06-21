@@ -254,13 +254,16 @@ async def test_cross_mode_start_skips_restart_when_websocket_replaced_during_wai
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    stale_ws = _FakeConnectedWS()  # the request's original ws
-    # During the wait the connection is replaced (reload): self.websocket now
-    # points at a different live connection, not stale_ws.
+    # The request comes in on the CURRENT ws (must match initially, else the
+    # test would pass trivially without exercising the replacement path).
+    stale_ws = mgr.websocket
     start_task = asyncio.create_task(
         LLMSessionManager.start_session(mgr, stale_ws, False, "audio", user_initiated=True)
     )
     await asyncio.sleep(0.1)
+    # During the wait the connection is replaced (reload): self.websocket now
+    # points at a different live connection, so `self.websocket is websocket`
+    # (the original stale_ws) is False → restart must be skipped.
     mgr.websocket = _FakeConnectedWS()  # new connection after reload
     mgr._starting_session_count = 0
     await start_task
