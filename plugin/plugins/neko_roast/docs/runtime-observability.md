@@ -19,6 +19,21 @@ Runtime observability must answer five questions:
 - Do not replace `stores/audit_store.py` or existing `PipelineStep` / `InteractionResult` fields in this phase.
 - Do not implement Monitor in this document.
 - Do not add Gift / SC / Guard product behavior.
+- Do not introduce a Scenario state machine, Detector / Arbiter architecture, critical hard preemption, FIFO output queue, or output path that bypasses the NEKO Live main chain.
+
+## Reference Principles
+
+NEKO Live may borrow decision-chain principles from the Warthunder reference project, but it must not copy the battle logic or adopt its runtime architecture.
+
+Core rule: 每次猫猫只该说一句；这句话为什么是它，系统必须解释得清楚。
+
+Phase 2B uses three reference principles:
+
+- No FIFO queue: live events are strong real-time input. NEKO Live should not make the cat repeat stale messages from an output queue. Within a selection window, the runtime should keep or select the single event most worth speaking about.
+- High-value events may rank higher: future SC, Guard, and important gift events may receive higher selection priority than ordinary danmaku. High priority must not bypass Safety Guard, directly call Dispatcher, skip cooldown policy, or ignore `dry_run`.
+- `dry_run` must explain the complete chain: even without real output, runtime observability must record whether the event was received, entered Selection, who won, who lost, why candidates lost, whether Pipeline started, whether Safety Guard passed, and whether Dispatcher ended as `dry_run`, `pushed`, or `failed`.
+
+NEKO Live may also borrow the health rows observation model from the Warthunder reference project, but it must not copy Warthunder refresh groups such as `fast`, `map`, `events`, or `mapimg`. Health rows in NEKO Live must describe the NEKO Live main chain: Live Ingest -> EventBus -> Selection -> Pipeline -> Safety Guard -> Dispatcher -> Config Store.
 
 ## Canonical Concepts
 
@@ -27,6 +42,20 @@ Runtime observability must answer five questions:
 Runtime Timeline is the ordered explanation of one event across the runtime. It should be derivable from existing facts such as `LiveEvent`, audit records, `PipelineStep`, `InteractionResult`, and future monitor signals.
 
 Timeline entries should use stable stage names, an outcome, an optional skip reason, and a short privacy-safe message.
+
+Runtime Timeline is a projection of runtime facts. It must not become a second source of truth or a separate event-routing system.
+
+### Runtime Timeline Projection
+
+Runtime Timeline Projection is the privacy-safe view assembled from existing runtime facts for reviewers, monitor views, and Dashboard surfaces.
+
+Projection rules:
+
+- Project from the NEKO Live main chain: EventBus -> Selection -> Pipeline -> Runtime -> Dashboard.
+- Include enough information to explain why exactly one event became the spoken candidate.
+- Include losing candidates only as redacted candidate metadata, outcome, and skip reason.
+- Preserve `dry_run` as a full lifecycle explanation, not as a shortcut around the chain.
+- Do not project raw payloads, cookies, tokens, avatar bytes, or private chat content.
 
 ### Stage
 
@@ -40,6 +69,7 @@ Initial stage names:
 - `pipeline`
 - `safety_guard`
 - `dispatcher`
+- `config_store`
 - `runtime`
 - `dashboard`
 
@@ -60,6 +90,18 @@ Initial outcomes:
 - `dry_run`: dispatcher intentionally did not produce real output.
 
 Use `skipped` for expected policy decisions and `failed` for exceptional behavior.
+
+### Selection Decision Chain
+
+Selection Decision Chain is the ordered explanation of how one candidate wins a selection window and why the other candidates lose.
+
+Rules:
+
+- Selection must choose at most one winner per window for the roast pipeline.
+- Selection must not behave like a FIFO queue of stale live events.
+- Losing candidates should receive a stable skip reason.
+- Priority may influence ranking, but it must remain inside the normal Selection -> Pipeline -> Safety Guard -> Dispatcher path.
+- The chain should be compact enough for Dashboard and reviewers to answer: who won, who lost, and why.
 
 ### Skip Reason
 
@@ -84,6 +126,7 @@ Initial skip reasons:
 - `safety.rate_limited`
 - `viewer.already_roasted`
 - `selection.lower_score`
+- `selection.lower_priority`
 - `selection.window_reset`
 - `selection.flush_failed`
 - `pipeline.identity_failed`
@@ -94,6 +137,31 @@ Initial skip reasons:
 - `profile.mark_roasted_failed`
 - `config.persist_timeout`
 - `config.persist_failed`
+
+### Dispatcher Outcome
+
+Dispatcher Outcome is the final output-boundary result for an event that reaches Dispatcher.
+
+Initial dispatcher outcomes:
+
+- `dry_run`: Dispatcher was reached, but real output was intentionally disabled.
+- `pushed`: Dispatcher produced real output through the approved output boundary.
+- `skipped`: Dispatcher intentionally produced no output for a known policy reason.
+- `failed`: Dispatcher attempted the output boundary and hit an unexpected error.
+
+High-value events must still end in one of these outcomes. They must not directly produce output outside Dispatcher.
+
+### High-value Event Priority Contract
+
+High-value Event Priority Contract defines how future SC, Guard, and important gift events may influence Selection without bypassing NEKO Live guardrails.
+
+Contract:
+
+- High-value events may receive higher ranking weight than ordinary danmaku.
+- Higher priority only affects Selection ranking unless a future design explicitly updates this document.
+- Higher priority does not bypass Safety Guard, cooldown policy, `dry_run`, Dispatcher, or privacy rules.
+- Higher priority does not create critical hard preemption.
+- Higher priority must still produce explainable winner and loser records through the Selection Decision Chain.
 
 ### Monitor Signal
 
@@ -109,6 +177,7 @@ Initial monitor signals:
 - `event.no_subscriber`
 - `event.handler_failed`
 - `selection.candidate_buffered`
+- `selection.decision_recorded`
 - `selection.selected`
 - `selection.dropped`
 - `selection.flush_failed`
@@ -127,6 +196,36 @@ Initial monitor signals:
 - `runtime.config_persist_timeout`
 - `runtime.config_persist_failed`
 
+### Runtime Health Row
+
+Runtime Health Row is the compact status projection for one critical runtime boundary. It answers whether that boundary is still refreshing and where the chain appears to be stuck. It is inspired by Warthunder-style health rows, but NEKO Live defines rows around its own main chain rather than Warthunder polling groups.
+
+Runtime Health Row is not a new execution model, queue, scheduler, or source of truth. It must be derived from existing runtime facts, audit records, interaction results, and future monitor signals.
+
+Initial health rows:
+
+- `live_ingest`: `last_event_age`
+- `event_bus`: `last_publish_age`
+- `selection`: `last_decision_age`
+- `pipeline`: `last_run_age`
+- `safety_guard`: `current_state`, `cooldown_remaining`
+- `dispatcher`: `last_outcome_age`
+- `config_store`: `last_persist_age`, `last_error`
+
+Initial row fields:
+
+- `id`: stable row id.
+- `stage`: matching lifecycle stage when applicable.
+- `status`: compact state such as `healthy`, `idle`, `degraded`, `blocked`, or `failed`.
+- `count`: optional monotonic count for successful refreshes or observations.
+- `age_sec`: optional age since the last successful refresh or relevant observation.
+- `last_outcome`: optional latest outcome key.
+- `last_skip_reason`: optional latest skip reason key.
+- `last_error`: optional redacted error category or reason key.
+- `privacy_safe_summary`: optional short redacted summary.
+
+Dashboard and Monitor surfaces may render these rows in any layout, but they must preserve the meaning: each row explains whether one critical NEKO Live boundary is refreshing, stale, blocked, degraded, or failed.
+
 ### Dashboard Visibility
 
 Dashboard Visibility defines what the Dashboard must eventually be able to explain, not how it must look.
@@ -140,6 +239,7 @@ Dashboard should be able to answer:
 - Which event won Selection, and why were other candidates dropped?
 - Did Pipeline reach Safety Guard and Dispatcher?
 - Did Dispatcher push, dry-run, skip, or fail?
+- Is each critical health row refreshing, and which row appears stuck?
 
 Dashboard must not show raw payloads, cookies, tokens, avatar bytes, base64 images, or unredacted private data.
 
@@ -161,6 +261,8 @@ Expected outcomes: `published`, `failed`, `dropped`.
 
 `modules/live_events` buffers candidates during the cooldown window and selects one event for the roast pipeline. This stage should explain selected candidates, dropped candidates, scoring failures, reset windows, and flush failures.
 
+Selection is not a FIFO queue. It should explain the Selection Decision Chain for the window: the winning candidate, losing candidates, priority or score differences, and stable skip reasons.
+
 Expected outcomes: `selected`, `dropped`, `failed`.
 
 ### Pipeline
@@ -179,6 +281,8 @@ Expected outcomes: `skipped`, `degraded`, `failed`.
 
 `adapters/neko_dispatcher.py` is the only output boundary. It must explain whether output was pushed, dry-run, skipped as non-deliverable, degraded to text-only, or failed.
 
+`dry_run` is a Dispatcher Outcome, not an early exit. A `dry_run` event should still explain the earlier lifecycle stages that led to Dispatcher.
+
 Expected outcomes: `pushed`, `dry_run`, `skipped`, `failed`, `degraded`.
 
 ### Runtime
@@ -190,6 +294,8 @@ Expected outcomes: `received`, `skipped`, `failed`, `degraded`.
 ### Dashboard
 
 Dashboard consumes runtime state. It should explain the current state and latest event path without becoming the source of truth.
+
+Dashboard should eventually be able to show Runtime Health Rows so operators can distinguish "current config is set" from "each critical boundary is still refreshing".
 
 Expected outcomes: read-only visibility only.
 
@@ -216,7 +322,10 @@ For any future PR touching runtime behavior, event handling, output, monitor, or
 ## Future Extension Rules
 
 - Gift / SC / Guard handlers should reuse the same stage, outcome, skip reason, and monitor signal language.
+- Gift / SC / Guard priority must follow the High-value Event Priority Contract.
 - New event types may add skip reasons only when existing reasons are too vague.
 - New monitor signals should be stage-prefixed and privacy-safe.
 - Runtime Timeline should remain compact enough for a reviewer to inspect in one PR.
+- Runtime Health Rows should stay aligned with the NEKO Live main chain and must not copy Warthunder polling group names.
 - Dashboard may choose any layout, but it must answer the Dashboard Visibility questions above.
+- Future designs must not add FIFO output queues, Scenario state machines, Detector / Arbiter routing, critical hard preemption, or direct output paths that bypass the NEKO Live main chain without a separate architecture review.
