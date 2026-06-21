@@ -3007,23 +3007,92 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
+    const showSettingsWaitingNotice = () => {
+        const message = getModelManagerSettingsWaitingMessage();
+        showStatus(message, 0);
+        showModelManagerToast(message, 0, 'loading');
+    };
+
+    const restoreStatusAfterSettingsWaiting = () => {
+        if (currentModelInfo && currentModelInfo.name) {
+            showStatus(
+                t('live2d.currentModel', `当前模型: ${currentModelInfo.name}`, { model: currentModelInfo.name }),
+                0
+            );
+        }
+    };
+
+    const blockSettingsWaitingSidebarInteraction = (event) => {
+        if (!isModelManagerSettingsWaiting()) return;
+        const target = event.target;
+        if (!(target instanceof Element) || !target.closest('#sidebar')) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+        showSettingsWaitingNotice();
+    };
+
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) {
+        ['click', 'pointerdown', 'mousedown', 'keydown', 'input', 'change'].forEach(eventName => {
+            sidebar.addEventListener(eventName, blockSettingsWaitingSidebarInteraction, true);
+        });
+    }
+
     const setModelManagerSettingsWaitingControls = (waiting, message) => {
         const waitingMessage = message || getModelManagerSettingsWaitingMessage();
         document.body?.classList.toggle('model-manager-settings-waiting', waiting);
 
-        document.querySelectorAll('#sidebar button, #sidebar select').forEach(control => {
-            if (!(control instanceof HTMLButtonElement || control instanceof HTMLSelectElement)) return;
+        document.querySelectorAll(
+            '#sidebar button, #sidebar select, #sidebar input, #sidebar textarea, #sidebar a[href], #sidebar [role="button"]'
+        ).forEach(control => {
+            if (!(control instanceof HTMLElement)) return;
+            const supportsDisabled = control instanceof HTMLButtonElement
+                || control instanceof HTMLSelectElement
+                || control instanceof HTMLInputElement
+                || control instanceof HTMLTextAreaElement;
             if (waiting) {
-                if (!control.disabled) {
+                if (supportsDisabled && !control.disabled) {
                     control.dataset.modelManagerSettingsWaitingDisabled = '1';
                     control.disabled = true;
                 }
+                if (control.dataset.modelManagerSettingsWaitingTabindex === undefined) {
+                    control.dataset.modelManagerSettingsWaitingTabindex = control.hasAttribute('tabindex')
+                        ? control.getAttribute('tabindex')
+                        : '';
+                }
+                if (control.dataset.modelManagerSettingsWaitingAriaDisabled === undefined) {
+                    control.dataset.modelManagerSettingsWaitingAriaDisabled = control.getAttribute('aria-disabled') || '';
+                }
+                control.setAttribute('tabindex', '-1');
+                control.setAttribute('aria-disabled', 'true');
                 control.setAttribute('aria-busy', 'true');
             } else {
                 control.removeAttribute('aria-busy');
                 if (control.dataset.modelManagerSettingsWaitingDisabled === '1') {
                     control.disabled = false;
                     delete control.dataset.modelManagerSettingsWaitingDisabled;
+                }
+                if (control.dataset.modelManagerSettingsWaitingTabindex !== undefined) {
+                    const previousTabIndex = control.dataset.modelManagerSettingsWaitingTabindex;
+                    if (previousTabIndex === '') {
+                        control.removeAttribute('tabindex');
+                    } else {
+                        control.setAttribute('tabindex', previousTabIndex);
+                    }
+                    delete control.dataset.modelManagerSettingsWaitingTabindex;
+                }
+                if (control.dataset.modelManagerSettingsWaitingAriaDisabled !== undefined) {
+                    const previousAriaDisabled = control.dataset.modelManagerSettingsWaitingAriaDisabled;
+                    if (previousAriaDisabled === '') {
+                        control.removeAttribute('aria-disabled');
+                    } else {
+                        control.setAttribute('aria-disabled', previousAriaDisabled);
+                    }
+                    delete control.dataset.modelManagerSettingsWaitingAriaDisabled;
                 }
             }
         });
@@ -3037,6 +3106,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             showStatus(waitingMessage, 0);
             showModelManagerToast(waitingMessage, 0, 'loading');
         } else {
+            restoreStatusAfterSettingsWaiting();
             showModelManagerToast('', 0);
         }
     };
