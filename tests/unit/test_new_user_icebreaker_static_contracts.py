@@ -421,7 +421,8 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         1,
     )[0]
     assert "window.subtitleBridge" in open_block
-    assert "bridge.setSubtitleEnabled(true)" in open_block
+    assert "bridge.setSubtitleEnabled(true, {" in open_block
+    assert "persist: false" in open_block
     assert "window.reactChatWindowHost" in open_block
     assert "host.setTranslateEnabled(true" in open_block
     assert "console.warn('[NewUserIcebreaker] subtitle bridge open failed:'" in open_block
@@ -466,7 +467,12 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         "function handleTranslateToggle()",
         1,
     )[0]
+    assert "var shouldPersist = requestOptions.persist !== false;" in set_translate_block
+    assert "bridge.setSubtitleEnabled(next, {" in set_translate_block
+    assert "persist: shouldPersist" in set_translate_block
+    assert "source: syncSource" in set_translate_block
     assert "var synced = false;" in set_translate_block
+    assert "if (!synced && shouldPersist) {" in set_translate_block
     assert "console.warn('[ReactChatWindow] subtitle shared update failed:'" in set_translate_block
     assert "console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:'" in set_translate_block
     assert "console.warn('[ReactChatWindow] appSettings.saveSettings failed:'" in set_translate_block

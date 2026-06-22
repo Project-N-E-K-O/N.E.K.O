@@ -152,7 +152,10 @@
         try {
             var bridge = window.subtitleBridge;
             if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
-                bridge.setSubtitleEnabled(true);
+                bridge.setSubtitleEnabled(true, {
+                    persist: false,
+                    source: 'new-user-icebreaker-auto-open'
+                });
             }
         } catch (error) {
             console.warn('[NewUserIcebreaker] subtitle bridge open failed:', error);
@@ -162,7 +165,8 @@
             if (host && typeof host.setTranslateEnabled === 'function') {
                 host.setTranslateEnabled(true, {
                     syncBridge: false,
-                    suppressHostEvent: true
+                    suppressHostEvent: true,
+                    persist: false
                 });
             }
         } catch (error) {
