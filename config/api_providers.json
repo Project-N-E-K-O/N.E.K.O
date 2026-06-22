@@ -180,6 +180,7 @@
       "description": "Kimi Code 编程助手 API，使用 Anthropic Messages 兼容格式，不支持自定义语音",
       "openrouter_url": "https://api.kimi.com/coding",
       "provider_type": "anthropic",
+      "fixed_model": true,
       "conversation_model": "kimi-for-coding",
       "summary_model": "kimi-for-coding",
       "correction_model": "kimi-for-coding",

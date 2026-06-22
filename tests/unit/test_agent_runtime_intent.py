@@ -275,6 +275,50 @@ def test_scaled_pyautogui_clamps_model_coordinates_away_from_failsafe_corner():
     assert backend.calls[3] == ("click", (1915, 1075), {})
 
 
+def test_scaled_pyautogui_does_not_treat_mixed_int_float_as_unit_coordinates():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(1, 0.5)
+
+    assert backend.calls[1] == ("click", (4, 4), {})
+
+
+def test_scaled_pyautogui_preserves_absolute_edge_pixels():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(1919, 1079)
+
+    assert backend.calls[0][0] == "moveTo"
+    assert backend.calls[0][1][:2] == (1919, 1079)
+    assert backend.calls[1] == ("click", (1919, 1079), {})
+
+
 def test_check_connectivity_returns_tuple_on_missing_config(monkeypatch: pytest.MonkeyPatch):
     """If base_url/model not configured, must return ``(False, 'AGENT_ENDPOINT_NOT_CONFIGURED')``
     immediately without trying to construct an LLM client."""
@@ -359,6 +403,25 @@ def test_check_connectivity_accepts_anthropic_raw_message(monkeypatch: pytest.Mo
     assert ok is True
     assert reason == ""
     assert adapter.init_ok is True
+
+
+def test_extract_raw_llm_text_reads_anthropic_thinking_blocks():
+    from brain.computer_use import _extract_raw_llm_text
+
+    class ThinkingBlock:
+        type = "thinking"
+        thinking = "inspect the screen"
+
+    class TextBlock:
+        type = "text"
+        text = "done"
+
+    class AnthropicMessage:
+        content = [ThinkingBlock(), TextBlock()]
+
+    text, reasoning = _extract_raw_llm_text(AnthropicMessage())
+    assert text == "done"
+    assert reasoning == "inspect the screen"
 
 
 def test_call_llm_parses_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):

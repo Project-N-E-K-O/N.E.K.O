@@ -1494,19 +1494,25 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
     return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
-async def _test_anthropic(url: str, api_key: str, model: str = "kimi-for-coding", is_free: bool = False) -> dict:
+async def _test_anthropic(url: str, api_key: str, model: str = "", is_free: bool = False) -> dict:
     """Test an Anthropic Messages API endpoint (Kimi Code / Anthropic)."""
     from utils.llm_client import ChatAnthropic as _ChatAnthropic, _is_kimi_code_anthropic_base_url
     from config import CONNECTIVITY_TEST_MAX_TOKENS
 
     try:
+        test_model = str(model or "").strip()
+        if not test_model:
+            if _is_kimi_code_anthropic_base_url(url):
+                test_model = "kimi-for-coding"
+            else:
+                return {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
         default_headers = (
             {"User-Agent": "claude-code/0.1.0"}
             if _is_kimi_code_anthropic_base_url(url)
             else None
         )
         client = _ChatAnthropic(
-            model=model or "kimi-for-coding",
+            model=test_model,
             base_url=url,
             api_key=api_key or "sk-placeholder",
             max_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
@@ -1740,6 +1746,13 @@ def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: s
     return result
 
 
+def _normalize_provider_type(profile: dict[str, Any] | None) -> str:
+    provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
+    if provider_type not in ("openai_compatible", "anthropic", "websocket"):
+        return "openai_compatible"
+    return provider_type
+
+
 async def _test_connectivity_candidates(
     urls: list[str],
     api_key: str,
@@ -1857,9 +1870,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 return
             urls = _normalize_provider_url_candidates(profile, "openrouter_url")
             model = profile.get("conversation_model", "")
-            provider_type = str(profile.get("provider_type") or "openai_compatible").strip().lower()
-            if provider_type not in ("openai_compatible", "anthropic", "websocket"):
-                provider_type = "openai_compatible"
+            provider_type = _normalize_provider_type(profile)
 
         # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
         if len(urls) < 2:
@@ -2068,9 +2079,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
-            provider_type = str(profile.get("provider_type") or "openai_compatible").strip().lower()
-            if provider_type not in ("openai_compatible", "anthropic", "websocket"):
-                provider_type = "openai_compatible"
+            provider_type = _normalize_provider_type(profile)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
         else:
@@ -2087,9 +2096,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 url_stripped = fallback_url
                 url_candidates = _normalize_provider_url_candidates(assist_profile, "openrouter_url")
                 model = fallback_model
-                provider_type = str(assist_profile.get("provider_type") or "openai_compatible").strip().lower()
-                if provider_type not in ("openai_compatible", "anthropic", "websocket"):
-                    provider_type = "openai_compatible"
+                provider_type = _normalize_provider_type(assist_profile)
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
@@ -2109,7 +2116,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         url_stripped = req.url.strip()
         url_candidates = [url_stripped]
         model = (req.model or "gpt-3.5-turbo").strip()
-        provider_type = (req.provider_type or "openai_compatible").strip().lower()
+        provider_type = _normalize_provider_type({"provider_type": req.provider_type})
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 

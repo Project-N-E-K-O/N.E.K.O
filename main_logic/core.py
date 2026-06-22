@@ -5971,6 +5971,8 @@ class LLMSessionManager:
                         vision_model=vision_config['model'],
                         vision_base_url=vision_config['base_url'],
                         vision_api_key=vision_config['api_key'],
+                        provider_type=conversation_config.get('provider_type'),
+                        vision_provider_type=vision_config.get('provider_type'),
                         on_text_delta=self.handle_text_data,
                         on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,

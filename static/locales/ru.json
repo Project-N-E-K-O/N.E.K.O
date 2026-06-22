@@ -978,7 +978,7 @@
         "openaiAssist": "OpenAI: Мощное управление памятью",
         "geminiAssist": "Gemini: Отличный интеллект и соотношение цена/качество",
         "kimiAssist": "Kimi: Поддерживает длинный контекст и визуализацию",
-        "kimiCodeAssist": "Kimi Code: Anthropic Messages compatible, good for coding and long text tasks",
+        "kimiCodeAssist": "Kimi Code: совместим с Anthropic Messages, подходит для кода и длинных текстов",
         "assistApiNote": "Примечание: Только Alibaba поддерживает пользовательский голос. GLM и StepFun не рекомендуются.",
         "assistApiKeyQwen": "Вспомогательный API Key — Alibaba",
         "assistApiKeyOpenai": "Вспомогательный API Key — OpenAI",
@@ -987,7 +987,7 @@
         "assistApiKeySilicon": "Вспомогательный API Key — SiliconFlow",
         "assistApiKeyGemini": "Вспомогательный API Key — Gemini",
         "assistApiKeyKimi": "Вспомогательный API Key — Kimi",
-        "assistApiKeyKimiCode": "Assist API Key - Kimi Code",
+        "assistApiKeyKimiCode": "Ключ вспомогательного API — Kimi Code",
         "assistApiKeyHint": "(Требуется только когда вспомогательный API — {{provider}})",
         "assistApiKeyPlaceholder": "Автоматически заполняется из справочника",
         "providerNames": {

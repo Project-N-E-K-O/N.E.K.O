@@ -926,9 +926,46 @@ def _detect_image_media_type(image_bytes: bytes) -> str:
     return "image/jpeg"
 
 
+def _coerce_anthropic_max_tokens(value: Any, *, default: int = 2048) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)
+
+
+def _anthropic_usage_to_dict(usage: Any) -> dict[str, Any]:
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        data = dict(usage)
+    elif hasattr(usage, "model_dump"):
+        data = usage.model_dump()
+    else:
+        data = {
+            key: getattr(usage, key)
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+            if hasattr(usage, key)
+        }
+    return {str(k): v for k, v in data.items() if v is not None}
+
+
+def _merge_anthropic_usage(target: dict[str, Any], usage: Any) -> None:
+    target.update(_anthropic_usage_to_dict(usage))
+
+
 def _convert_openai_content_to_anthropic(content: Any) -> list[dict]:
     """Convert an OpenAI message content value to Anthropic content blocks."""
     blocks: list[dict] = []
+    if content is None:
+        return blocks
     if isinstance(content, str):
         if content:
             blocks.append({"type": "text", "text": content})
@@ -938,6 +975,8 @@ def _convert_openai_content_to_anthropic(content: Any) -> list[dict]:
         return blocks
 
     for part in content:
+        if part is None:
+            continue
         if not isinstance(part, dict):
             blocks.append({"type": "text", "text": str(part)})
             continue
@@ -970,6 +1009,66 @@ def _convert_openai_content_to_anthropic(content: Any) -> list[dict]:
     return blocks
 
 
+def _anthropic_text_from_blocks(blocks: list[dict]) -> str:
+    text_parts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            text = str(block.get("text") or "")
+            if text:
+                text_parts.append(text)
+        elif block:
+            text_parts.append(_json.dumps(block, ensure_ascii=False))
+    return "\n".join(text_parts)
+
+
+def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | None:
+    if not isinstance(tool_call, dict):
+        tool_call = {
+            "id": getattr(tool_call, "id", ""),
+            "type": getattr(tool_call, "type", ""),
+            "function": getattr(tool_call, "function", None),
+        }
+    fn = tool_call.get("function")
+    if fn is not None and not isinstance(fn, dict):
+        fn = {
+            "name": getattr(fn, "name", ""),
+            "arguments": getattr(fn, "arguments", ""),
+        }
+    fn = fn if isinstance(fn, dict) else {}
+    name = str(fn.get("name") or tool_call.get("name") or "").strip()
+    if not name:
+        return None
+    raw_args = fn.get("arguments", {})
+    if isinstance(raw_args, str):
+        try:
+            parsed_args = _json.loads(raw_args) if raw_args.strip() else {}
+        except Exception:
+            parsed_args = {"arguments": raw_args}
+    elif isinstance(raw_args, dict):
+        parsed_args = raw_args
+    else:
+        parsed_args = {}
+    tool_use_id = str(tool_call.get("id") or name)
+    return {
+        "type": "tool_use",
+        "id": tool_use_id,
+        "name": name,
+        "input": parsed_args,
+    }
+
+
+def _convert_openai_tool_result_to_anthropic(msg: dict) -> dict[str, Any]:
+    blocks = _convert_openai_content_to_anthropic(msg.get("content"))
+    tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or msg.get("name") or "tool_result")
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": _anthropic_text_from_blocks(blocks),
+    }
+
+
 def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
     """Convert OpenAI-format messages to Anthropic (system, messages).
 
@@ -983,16 +1082,33 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
 
     for msg in normalized:
         role = msg.get("role", "")
-        content = msg.get("content", "")
+        content = msg.get("content", None)
         if role == "system":
+            if content is None:
+                continue
             if isinstance(content, str):
                 system_parts.append(content)
             else:
-                system_parts.append(str(content))
+                system_text = _anthropic_text_from_blocks(
+                    _convert_openai_content_to_anthropic(content)
+                )
+                if system_text:
+                    system_parts.append(system_text)
+            continue
+        if role == "tool":
+            anthropic_messages.append({
+                "role": "user",
+                "content": [_convert_openai_tool_result_to_anthropic(msg)],
+            })
             continue
         if role not in ("user", "assistant"):
             role = "user"
         blocks = _convert_openai_content_to_anthropic(content)
+        if role == "assistant":
+            for tool_call in msg.get("tool_calls") or []:
+                converted = _convert_openai_tool_call_to_anthropic(tool_call)
+                if converted:
+                    blocks.append(converted)
         anthropic_messages.append({"role": role, "content": blocks or [{"type": "text", "text": "..."}]})
 
     # Enforce strict user/assistant alternation.
@@ -1009,8 +1125,55 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
         else:
             fixed.append(msg)
 
+    if not fixed:
+        fixed.append({"role": "user", "content": [{"type": "text", "text": "..."}]})
+
     system = "\n".join(system_parts).strip()
     return system, fixed
+
+
+_ANTHROPIC_BODY_OVERRIDE_KEYS = {
+    "metadata",
+    "stop_sequences",
+    "system",
+    "temperature",
+    "thinking",
+    "top_k",
+    "top_p",
+    "service_tier",
+}
+_ANTHROPIC_REQUEST_OPTION_KEYS = {"timeout", "extra_headers", "extra_query"}
+
+
+def _sanitize_anthropic_metadata(metadata: Any) -> dict[str, str] | None:
+    if not isinstance(metadata, dict):
+        return None
+    user_id = metadata.get("user_id")
+    if user_id is None or user_id == "":
+        return None
+    return {"user_id": str(user_id)}
+
+
+def _apply_anthropic_body_fields(payload: dict[str, Any], fields: Any) -> None:
+    if not isinstance(fields, dict):
+        return
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if key == "max_tokens":
+            payload["max_tokens"] = _coerce_anthropic_max_tokens(
+                value, default=int(payload.get("max_tokens") or 2048)
+            )
+        elif key == "max_completion_tokens":
+            payload["max_tokens"] = _coerce_anthropic_max_tokens(
+                value, default=int(payload.get("max_tokens") or 2048)
+            )
+        elif key == "metadata":
+            metadata = _sanitize_anthropic_metadata(value)
+            if metadata:
+                payload["metadata"] = metadata
+        elif key in _ANTHROPIC_BODY_OVERRIDE_KEYS:
+            payload[key] = value
 
 
 class ChatAnthropic:
@@ -1046,7 +1209,9 @@ class ChatAnthropic:
         self.base_url = _normalize_anthropic_sdk_base_url(base_url)
         self.temperature = temperature
         self.extra_body = dict(extra_body) if extra_body else {}
-        self.max_tokens = max_tokens or max_completion_tokens or 2048
+        self._max_tokens = _coerce_anthropic_max_tokens(
+            max_tokens if max_tokens is not None else max_completion_tokens
+        )
         self.enable_cache_control = enable_cache_control
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
@@ -1076,6 +1241,22 @@ class ChatAnthropic:
             self._aclient,
         )
 
+    @property
+    def max_tokens(self) -> int:
+        return self._max_tokens
+
+    @max_tokens.setter
+    def max_tokens(self, value: Any) -> None:
+        self._max_tokens = _coerce_anthropic_max_tokens(value)
+
+    @property
+    def max_completion_tokens(self) -> int:
+        return self._max_tokens
+
+    @max_completion_tokens.setter
+    def max_completion_tokens(self, value: Any) -> None:
+        self._max_tokens = _coerce_anthropic_max_tokens(value)
+
     def _build_payload(self, messages: Any) -> dict:
         system, anthropic_messages = _normalize_messages_to_anthropic(messages)
         payload: dict[str, Any] = {
@@ -1084,12 +1265,11 @@ class ChatAnthropic:
         }
         if system:
             payload["system"] = system
-        if self.max_tokens:
-            payload["max_tokens"] = int(self.max_tokens)
+        payload["max_tokens"] = int(self.max_tokens)
         if self.temperature is not None:
             payload["temperature"] = self.temperature
         if self.extra_body:
-            payload.update(self.extra_body)
+            _apply_anthropic_body_fields(payload, self.extra_body)
         # Substitute character placeholders the same way ChatOpenAI does.
         active = _active_character.get()
         if active is not None and (active[0] or active[1]):
@@ -1103,15 +1283,32 @@ class ChatAnthropic:
         return payload
 
     def _apply_overrides(self, payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+        overrides = dict(overrides)
         max_tokens = overrides.pop("max_tokens", None)
         if max_tokens is None:
             max_tokens = overrides.pop("max_completion_tokens", None)
         else:
             overrides.pop("max_completion_tokens", None)
         if max_tokens is not None:
-            payload["max_tokens"] = int(max_tokens)
+            payload["max_tokens"] = _coerce_anthropic_max_tokens(
+                max_tokens, default=int(payload.get("max_tokens") or self.max_tokens)
+            )
         overrides.pop("stream", None)
-        payload.update(overrides)
+        extra_body = overrides.pop("extra_body", None)
+        if extra_body:
+            _apply_anthropic_body_fields(payload, extra_body)
+        # Per-call OpenAI tool payloads use a different schema and this wrapper
+        # does not yet parse Anthropic tool_use deltas, so dropping them is safer
+        # than forwarding malformed data that causes a provider-side 400.
+        overrides.pop("tools", None)
+        overrides.pop("tool_choice", None)
+        for key, value in overrides.items():
+            if value is None:
+                continue
+            if key in _ANTHROPIC_REQUEST_OPTION_KEYS:
+                payload[key] = value
+            elif key in _ANTHROPIC_BODY_OVERRIDE_KEYS:
+                _apply_anthropic_body_fields(payload, {key: value})
         return payload
 
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
@@ -1144,10 +1341,14 @@ class ChatAnthropic:
         payload = self._build_payload(messages)
         payload = self._apply_overrides(payload, overrides)
         stream = self._aclient.messages.stream(**payload)
+        usage_dict: dict[str, Any] = {}
         async with stream as response_stream:
             async for event in response_stream:
                 event_type = getattr(event, "type", "")
-                if event_type == "content_block_delta":
+                if event_type == "message_start":
+                    message = getattr(event, "message", None)
+                    _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     if delta and getattr(delta, "type", "") == "text_delta":
                         text = getattr(delta, "text", "") or ""
@@ -1158,10 +1359,19 @@ class ChatAnthropic:
                     delta = getattr(event, "delta", None)
                     if delta:
                         finish_reason = getattr(delta, "stop_reason", None)
+                        _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
+                    _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
                     if finish_reason:
                         yield LLMStreamChunk(content="", finish_reason=str(finish_reason))
-        # Anthropic streaming does not currently expose usage in the stream helper
-        # in the same shape as OpenAI; omit the terminal usage chunk.
+                elif event_type == "message_stop":
+                    message = getattr(event, "message", None)
+                    _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+        if usage_dict:
+            yield LLMStreamChunk(
+                content="",
+                usage_metadata=usage_dict,
+                response_metadata={"token_usage": usage_dict},
+            )
 
     async def ainvoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object."""

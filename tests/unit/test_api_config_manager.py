@@ -1743,6 +1743,23 @@ class TestGptsovitsEnabledSaveMigration:
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
 
+    @pytest.mark.unit
+    def test_get_model_api_config_returns_kimi_code_provider_type(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+        })
+
+        config_manager._core_config_cache = None
+        api_config = config_manager.get_model_api_config('conversation')
+
+        assert api_config['model'] == 'kimi-for-coding'
+        assert api_config['base_url'] == 'https://api.kimi.com/coding'
+        assert api_config['api_key'] == 'sk-kimi-code-test'
+        assert api_config['provider_type'] == 'anthropic'
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

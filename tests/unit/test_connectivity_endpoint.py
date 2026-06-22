@@ -186,6 +186,19 @@ class TestSchemaValidation:
         assert captured["default_headers"]["User-Agent"] == "claude-code/0.1.0"
         assert captured["closed"] is True
 
+    async def test_anthropic_connectivity_requires_model_for_non_kimi_endpoint(self, monkeypatch):
+        constructor = MagicMock()
+        monkeypatch.setattr("utils.llm_client.ChatAnthropic", constructor)
+
+        result = await _test_anthropic(
+            "https://api.anthropic.com",
+            "sk-test",
+            model="",
+        )
+
+        assert result == {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
+        constructor.assert_not_called()
+
     async def test_builtin_assist_accepts_any_successful_candidate_url(self):
         """内置辅助 provider 有多个候选 URL 时，任一通过即返回可用 URL。"""
         calls = []

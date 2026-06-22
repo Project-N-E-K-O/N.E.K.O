@@ -363,14 +363,27 @@ def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
         return content, None
     if isinstance(content, list):
         text_parts: List[str] = []
+        reasoning_parts: List[str] = []
         for block in content:
             if isinstance(block, dict):
                 if block.get("type") == "text":
                     text_parts.append(str(block.get("text") or ""))
+                elif block.get("type") in ("thinking", "reasoning"):
+                    reasoning = block.get("thinking") or block.get("text") or block.get("reasoning")
+                    if reasoning:
+                        reasoning_parts.append(str(reasoning))
                 continue
             if getattr(block, "type", None) == "text":
                 text_parts.append(str(getattr(block, "text", "") or ""))
-        return "".join(text_parts), None
+            elif getattr(block, "type", None) in ("thinking", "reasoning"):
+                reasoning = (
+                    getattr(block, "thinking", None)
+                    or getattr(block, "text", None)
+                    or getattr(block, "reasoning", None)
+                )
+                if reasoning:
+                    reasoning_parts.append(str(reasoning))
+        return "".join(text_parts), "\n".join(reasoning_parts) or None
 
     return str(resp or ""), None
 
@@ -427,23 +440,22 @@ class _ScaledPyAutoGUI:
 
     def _in_unit_range(self, x, y) -> bool:
         return (
-            (isinstance(x, float) or isinstance(y, float))
-            and isinstance(x, (int, float))
-            and isinstance(y, (int, float))
+            isinstance(x, float)
+            and isinstance(y, float)
             and 0 <= x <= 1
             and 0 <= y <= 1
         )
 
-    def _safe_screen_point(self, x: float, y: float) -> Tuple[int, int]:
+    def _safe_screen_point(self, x: float, y: float, *, inset: bool = False) -> Tuple[int, int]:
         max_x = max(0, self._w - 1)
         max_y = max(0, self._h - 1)
         px = int(round(x))
         py = int(round(y))
         px = max(0, min(px, max_x))
         py = max(0, min(py, max_y))
-        if self._w > self._FAILSAFE_EDGE_PX * 2:
+        if inset and self._w > self._FAILSAFE_EDGE_PX * 2:
             px = max(self._FAILSAFE_EDGE_PX, min(px, max_x - self._FAILSAFE_EDGE_PX))
-        if self._h > self._FAILSAFE_EDGE_PX * 2:
+        if inset and self._h > self._FAILSAFE_EDGE_PX * 2:
             py = max(self._FAILSAFE_EDGE_PX, min(py, max_y - self._FAILSAFE_EDGE_PX))
         return px, py
 
@@ -452,11 +464,13 @@ class _ScaledPyAutoGUI:
             return self._safe_screen_point(
                 float(x) * max(0, self._w - 1),
                 float(y) * max(0, self._h - 1),
+                inset=True,
             )
         if self._in_range(x, y):
             return self._safe_screen_point(
                 float(x) * max(0, self._w - 1) / self._COORD_MAX,
                 float(y) * max(0, self._h - 1) / self._COORD_MAX,
+                inset=True,
             )
         return self._safe_screen_point(float(x), float(y))
 
@@ -689,6 +703,7 @@ class ComputerUseAdapter:
             api_key = self._agent_model_cfg.get("api_key") or "EMPTY"
             base_url = self._agent_model_cfg.get("base_url", "")
             model = self._agent_model_cfg.get("model", "")
+            provider_type = self._agent_model_cfg.get("provider_type")
             if not base_url or not model:
                 self.last_error = "Agent model not configured"
                 return
@@ -700,6 +715,7 @@ class ComputerUseAdapter:
                 timeout=65.0,
                 max_retries=0,
                 temperature=0,
+                provider_type=provider_type,
             )
         except Exception as e:
             self.last_error = str(e)
@@ -742,6 +758,7 @@ class ComputerUseAdapter:
         api_key = cfg.get("api_key") or "EMPTY"
         base_url = cfg.get("base_url", "")
         model = cfg.get("model", "")
+        provider_type = cfg.get("provider_type")
         if not base_url or not model:
             self.init_ok = False
             self.last_error = "Agent model not configured"
@@ -750,7 +767,7 @@ class ComputerUseAdapter:
         last_exc: Exception | None = None
         for attempt in range(_retries + 1):
             try:
-                current_sig = (base_url.rstrip("/"), api_key, model)
+                current_sig = (base_url.rstrip("/"), api_key, model, provider_type)
                 if self._llm_client is None or self._llm_client_sig != current_sig:
                     # CRITICAL: keep the client instance's default timeout at
                     # 65.0s, NOT ``timeout_s``. ``self._llm_client`` is reused
@@ -770,6 +787,7 @@ class ComputerUseAdapter:
                         timeout=65.0,
                         max_retries=0,
                         temperature=0,
+                        provider_type=provider_type,
                     )
                     self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}

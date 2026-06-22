@@ -45,7 +45,6 @@ const MODEL_DEFAULT_PROVIDER = {
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
 };
-const FIXED_MODEL_PROVIDER_KEYS = new Set(['kimi_code']);
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
     summary: 'summary_model',
@@ -1048,8 +1047,23 @@ function getProviderInfo(providerKey) {
     return _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
 }
 
+function isProviderFlagEnabled(value) {
+    return value === true || value === 1 || value === 'true' || value === '1';
+}
+
 function isFixedModelProvider(providerKey) {
-    return FIXED_MODEL_PROVIDER_KEYS.has(providerKey);
+    const profile = getProviderInfo(providerKey);
+    return isProviderFlagEnabled(profile.fixed_model) || isProviderFlagEnabled(profile.fixedModel);
+}
+
+function getProviderType(providerKey, fallback = 'openai_compatible') {
+    const profile = getProviderInfo(providerKey);
+    const providerType = String(profile.provider_type || profile.providerType || fallback || 'openai_compatible')
+        .trim()
+        .toLowerCase();
+    return ['openai_compatible', 'anthropic', 'websocket'].includes(providerType)
+        ? providerType
+        : 'openai_compatible';
 }
 
 function getProviderDefaultModelId(providerKey, modelType) {
@@ -2626,21 +2640,37 @@ async function runConnectivityCheckBeforeSave(params) {
 function refreshAutoResolvedModelUrlsForSave(params) {
     if (!params || typeof params !== 'object') return;
 
-    const resolveUrl = (modelType, providerMode) => {
+    const modelIdSnapshot = {};
+    MODEL_TYPES.forEach(modelType => {
+        const modelField = `${modelType}ModelId`;
+        modelIdSnapshot[modelField] = params[modelField];
+    });
+
+    const snapshotModelId = modelType => {
+        const modelField = `${modelType}ModelId`;
+        return Object.prototype.hasOwnProperty.call(modelIdSnapshot, modelField)
+            ? modelIdSnapshot[modelField]
+            : undefined;
+    };
+
+    const resolveUrl = (modelType, providerMode, visited = new Set()) => {
         // editable_endpoint 的注册表 TTS provider（vLLM-Omni 等）端点完全由用户填写，
         // 不能被 provider profile 的 URL 覆盖；按注册表元数据豁免（缺失时结构信号兜底），
         // 不再单独硬编码 vllm_omni。
         if (!providerMode || providerMode === 'custom') return '';
+        const visitKey = `${modelType}:${providerMode}`;
+        if (visited.has(visitKey)) return '';
+        visited.add(visitKey);
         if (modelType === 'tts') {
             const ttsMeta = getTtsProviderMeta(providerMode);
             if (ttsMeta && ttsMeta.editable_endpoint) return '';
         }
 
         if (providerMode === 'follow_conversation') {
-            return params.conversationModelUrl || resolveUrl('conversation', params.conversationModelProvider);
+            return params.conversationModelUrl || resolveUrl('conversation', params.conversationModelProvider, visited);
         }
         if (providerMode === 'follow_summary') {
-            return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider);
+            return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider, visited);
         }
 
         let providerKey = providerMode;
@@ -2666,15 +2696,21 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     };
 
     const resolveModel = (modelType, providerMode, visited = new Set()) => {
-        if (!providerMode || providerMode === 'custom') return '';
+        if (!providerMode || providerMode === 'custom') return null;
         const visitKey = `${modelType}:${providerMode}`;
-        if (visited.has(visitKey)) return '';
+        if (visited.has(visitKey)) return null;
         visited.add(visitKey);
         if (providerMode === 'follow_conversation') {
-            return params.conversationModelId || resolveModel('conversation', params.conversationModelProvider, visited);
+            const inherited = snapshotModelId('conversation');
+            return inherited !== undefined && inherited !== null
+                ? inherited
+                : resolveModel('conversation', params.conversationModelProvider, visited);
         }
         if (providerMode === 'follow_summary') {
-            return params.summaryModelId || resolveModel('summary', params.summaryModelProvider, visited);
+            const inherited = snapshotModelId('summary');
+            return inherited !== undefined && inherited !== null
+                ? inherited
+                : resolveModel('summary', params.summaryModelProvider, visited);
         }
 
         let providerKey = providerMode;
@@ -2683,8 +2719,8 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         } else if (providerMode === 'follow_assist') {
             providerKey = params.assistApi || '';
         }
-        if (!providerKey || !isFixedModelProvider(providerKey)) return '';
-        return getProviderDefaultModelId(providerKey, modelType);
+        if (!providerKey || !isFixedModelProvider(providerKey)) return null;
+        return getProviderDefaultModelId(providerKey, modelType) || '';
     };
 
     MODEL_TYPES.forEach(modelType => {
@@ -2705,7 +2741,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
 
         const modelField = `${modelType}ModelId`;
         const resolvedModel = resolveModel(modelType, params[providerField]);
-        if (resolvedModel) {
+        if (resolvedModel !== null && resolvedModel !== undefined) {
             params[modelField] = resolvedModel;
             const modelInput = document.getElementById(modelField);
             if (modelInput && modelInput.dataset.fixedModelHidden === 'true') {
@@ -3420,7 +3456,7 @@ const ConnectivityManager = {
                 const assistProfile = _assistApiProviders['free'] || {};
                 result.url = getProviderOpenrouterUrl('free', assistProfile);
                 result.key = 'free-access';
-                result.providerType = 'openai_compatible';
+                result.providerType = getProviderType(assistProvider);
             } else {
                 const assistProfile = _assistApiProviders[assistProvider] || {};
                 result.url = getEffectiveAssistUrl(assistProvider, assistProfile);
@@ -3434,7 +3470,7 @@ const ConnectivityManager = {
                     const bookKey = syncKeyFromBook(assistProvider);
                     result.key = (bookKey !== null) ? bookKey : '';
                 }
-                result.providerType = 'openai_compatible';
+                result.providerType = getProviderType(assistProvider);
             }
             const cacheProviderKey = getEffectiveAssistProviderKey(result.providerKey);
             result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url);
@@ -3477,7 +3513,7 @@ const ConnectivityManager = {
                     const pInfo = _assistApiProviders[coreProvider] || _coreApiProviders[coreProvider] || {};
                     result.url = getProviderOpenrouterUrl(coreProvider, pInfo) || getProviderCoreUrl(coreProvider, pInfo);
                     result.key = coreResult.key;
-                    result.providerType = 'openai_compatible';
+                    result.providerType = getProviderType(coreProvider);
                     result.providerKey = coreProvider;
                     result.providerScope = 'assist';
                 }
@@ -3552,7 +3588,7 @@ const ConnectivityManager = {
                     // 非 ws 的可编辑端点（结构兜底 / 未来 http 探测的 provider）：当 custom
                     // 处理——用户填的 URL/Key/Model，不绑定内置 provider profile。
                     result.url = urlInput ? urlInput.value.trim() : '';
-                    result.providerType = 'openai_compatible';
+                    result.providerType = getProviderType(provider);
                     result.key = keyInput ? getRealKey(keyInput) : '';
                     result.model = getResolvedCustomModelId(mt, provider);
                 }

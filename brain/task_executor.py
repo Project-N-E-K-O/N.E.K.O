@@ -403,14 +403,19 @@ class DirectTaskExecutor:
         # for the summary tier and the others share the same upstream; keying
         # off summary keeps the original semantics.
         watch_config = self._config_manager.get_model_api_config("summary")
-        watch_key = (watch_config['api_key'], watch_config['base_url'], watch_config['model'])
+        watch_key = (
+            watch_config['api_key'],
+            watch_config['base_url'],
+            watch_config['model'],
+            watch_config.get('provider_type'),
+        )
         if self._cached_llm_config_key != watch_key:
             self._close_all_llms()
             self._cached_llm_config_key = watch_key
 
         instance_key = (
             tier, api_config['api_key'], api_config['base_url'], api_config['model'],
-            temperature, max_completion_tokens,
+            api_config.get('provider_type'), temperature, max_completion_tokens,
         )
         if instance_key not in self._cached_llms:
             llm = create_chat_llm(
@@ -421,6 +426,7 @@ class DirectTaskExecutor:
                 max_completion_tokens=max_completion_tokens,
                 max_retries=0,
                 timeout=120.0,  # hang-guard for agent task LLM calls (large context + tool loops)
+                provider_type=api_config.get('provider_type'),
             )
             self._cached_llms[instance_key] = llm
             logger.debug(

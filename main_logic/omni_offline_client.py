@@ -551,6 +551,8 @@ class OmniOfflineClient:
         vision_model: str = "",
         vision_base_url: str = "",  # 独立的视觉模型 API URL
         vision_api_key: str = "",   # 独立的视觉模型 API Key
+        provider_type: str | None = None,
+        vision_provider_type: str | None = None,
         voice: str = "",  # Unused for text mode but kept for compatibility
         turn_detection_mode = None,  # Unused for text mode
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
@@ -580,6 +582,8 @@ class OmniOfflineClient:
         # 视觉模型独立配置（如果未指定则回退到主配置）
         self.vision_base_url = vision_base_url if vision_base_url else base_url
         self.vision_api_key = vision_api_key if vision_api_key else api_key
+        self.provider_type = provider_type
+        self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
         self.on_input_transcript = on_input_transcript
@@ -630,6 +634,7 @@ class OmniOfflineClient:
             streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+            provider_type=self.provider_type,
         )
 
         # ── Tool calling state ────────────────────────────────────────
@@ -1512,9 +1517,11 @@ class OmniOfflineClient:
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
+                provider_type = self.vision_provider_type
             else:
                 base_url = self.base_url
                 api_key = self.api_key
+                provider_type = self.provider_type
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -1525,6 +1532,7 @@ class OmniOfflineClient:
                 # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+                provider_type=provider_type,
             )
             old_llm = self.llm
             self.llm = new_llm

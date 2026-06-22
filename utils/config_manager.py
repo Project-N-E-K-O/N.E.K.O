@@ -4090,12 +4090,16 @@ class ConfigManager:
         # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
         # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
         # 配置读取，避免扩大通用配置快照中的敏感字段范围。
-        config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
+        for _model_provider_prefix in (
+            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
+            'emotion', 'vision', 'agent', 'omni', 'tts',
+        ):
+            config[f'{_model_provider_prefix}ModelProvider'] = str(
+                core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
+            )
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
-        config['gameMainModelProvider'] = str(core_cfg.get('gameMainModelProvider', '') or '')
-        config['gameSummaryModelProvider'] = str(core_cfg.get('gameSummaryModelProvider', '') or '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
@@ -4419,6 +4423,46 @@ class ConfigManager:
         
         mapping = model_type_mapping[model_type]
 
+        def _normalize_provider_type_value(value: object) -> str:
+            provider_type = str(value or 'openai_compatible').strip().lower()
+            if provider_type not in ('openai_compatible', 'anthropic', 'websocket'):
+                return 'openai_compatible'
+            return provider_type
+
+        def _provider_type_from_assist_key(provider_key: str) -> str:
+            profile = get_assist_api_profiles().get(str(provider_key or '').strip(), {})
+            if isinstance(profile, dict):
+                return _normalize_provider_type_value(profile.get('PROVIDER_TYPE'))
+            return 'openai_compatible'
+
+        def _resolved_provider_type_for_model(target_model_type: str) -> str:
+            prefix_by_type = {
+                'conversation': 'conversation',
+                'summary': 'summary',
+                'game_main': 'gameMain',
+                'game_summary': 'gameSummary',
+                'correction': 'correction',
+                'emotion': 'emotion',
+                'vision': 'vision',
+                'agent': 'agent',
+                'realtime': 'omni',
+                'tts_default': 'tts',
+                'tts_custom': 'tts',
+            }
+            prefix = prefix_by_type.get(target_model_type, target_model_type)
+            provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
+            if provider == 'custom':
+                return 'openai_compatible'
+            if provider == 'follow_conversation' and target_model_type != 'conversation':
+                return self.get_model_api_config('conversation').get('provider_type', 'openai_compatible')
+            if provider == 'follow_summary' and target_model_type != 'summary':
+                return self.get_model_api_config('summary').get('provider_type', 'openai_compatible')
+            if provider == 'follow_core':
+                return _provider_type_from_assist_key(core_config.get('CORE_API_TYPE', ''))
+            if provider == 'follow_assist' or not provider:
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            return _provider_type_from_assist_key(provider)
+
         if model_type == 'game_main':
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
             if not treat_as_custom or provider == 'follow_conversation':
@@ -4457,6 +4501,7 @@ class ConfigManager:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
+                    'provider_type': _resolved_provider_type_for_model(model_type),
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,
@@ -4504,6 +4549,7 @@ class ConfigManager:
                     'api_key': qwen_api_key,
                     'base_url': base_url,
                     'is_custom': False,
+                    'provider_type': _provider_type_from_assist_key(qwen_provider),
                 }
 
         # 根据 fallback_type 回退到不同的 API
@@ -4514,6 +4560,7 @@ class ConfigManager:
                 'api_key': core_config.get('CORE_API_KEY', ''),
                 'base_url': core_config.get('CORE_URL', ''),
                 'is_custom': False,
+                'provider_type': _resolved_provider_type_for_model(model_type),
                 # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
@@ -4528,6 +4575,7 @@ class ConfigManager:
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
                 'is_custom': False,
+                'provider_type': _resolved_provider_type_for_model(model_type),
             }
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:

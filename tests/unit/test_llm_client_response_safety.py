@@ -268,22 +268,119 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
 
         response = client.invoke(
             [{"role": "user", "content": "hi"}],
-            max_completion_tokens=123,
-            metadata={"source": "unit"},
+            max_completion_tokens=0,
+            metadata={"source": "unit", "user_id": "user-1"},
+            extra_body={"thinking": {"type": "disabled"}, "metadata": {"user_id": "body-user"}},
+            tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+            tool_choice="auto",
             stream=True,
         )
 
         assert response.content == "ok"
-        assert captured["max_tokens"] == 123
-        assert captured["metadata"] == {"source": "unit"}
+        assert captured["max_tokens"] == 1
+        assert captured["metadata"] == {"user_id": "user-1"}
+        assert captured["thinking"] == {"type": "disabled"}
         assert "stream" not in captured
+        assert "tools" not in captured
+        assert "tool_choice" not in captured
+        assert "extra_body" not in captured
     finally:
         client.close()
+
+
+def test_chat_anthropic_max_completion_tokens_property_sync(monkeypatch):
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+
+    client = llm_client_module.ChatAnthropic(
+        model="claude-test",
+        base_url="https://api.anthropic.com",
+        api_key="sk-test",
+        max_completion_tokens=123,
+    )
+    try:
+        assert client.max_tokens == 123
+        assert client.max_completion_tokens == 123
+
+        client.max_completion_tokens = 3000
+        assert client.max_tokens == 3000
+        assert client._build_payload([{"role": "user", "content": "hi"}])["max_tokens"] == 3000
+
+        client.max_tokens = None
+        assert client.max_completion_tokens == 2048
+
+        client.max_completion_tokens = 0
+        assert client.max_tokens == 1
+    finally:
+        client.close()
+
+
+def test_anthropic_message_normalization_handles_system_only_and_empty():
+    system, messages = llm_client_module._normalize_messages_to_anthropic(
+        [{"role": "system", "content": "system prompt"}]
+    )
+    assert system == "system prompt"
+    assert messages == [{"role": "user", "content": [{"type": "text", "text": "..."}]}]
+
+    empty_system, empty_messages = llm_client_module._normalize_messages_to_anthropic([])
+    assert empty_system == ""
+    assert empty_messages == [{"role": "user", "content": [{"type": "text", "text": "..."}]}]
+
+
+def test_anthropic_message_normalization_preserves_tool_turns_without_none_text():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{\"q\":\"neko\"}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+    ])
+
+    assert messages[0]["role"] == "user"
+    assert messages[1]["content"] == [
+        {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "neko"}}
+    ]
+    assert messages[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "result"}
+    ]
+    assert "None" not in repr(messages)
 
 
 @pytest.mark.asyncio
 async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkeypatch):
     captured = {}
+
+    class _Usage:
+        def __init__(self, **data):
+            self._data = data
+
+        def model_dump(self):
+            return dict(self._data)
+
+    class _Message:
+        usage = _Usage(input_tokens=2)
+
+    class _MessageStart:
+        type = "message_start"
+        message = _Message()
 
     class _TextDelta:
         type = "text_delta"
@@ -293,9 +390,17 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
         type = "content_block_delta"
         delta = _TextDelta()
 
+    class _StopDelta:
+        stop_reason = "end_turn"
+
+    class _MessageDelta:
+        type = "message_delta"
+        delta = _StopDelta()
+        usage = _Usage(output_tokens=3)
+
     class _StreamContext:
         def __init__(self):
-            self._events = [_Event()]
+            self._events = [_MessageStart(), _Event(), _MessageDelta()]
 
         async def __aenter__(self):
             return self
@@ -339,7 +444,9 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
     )
     try:
         chunks = [chunk async for chunk in client.astream([{"role": "user", "content": "hi"}])]
-        assert [chunk.content for chunk in chunks] == ["ok"]
+        assert [chunk.content for chunk in chunks] == ["ok", "", ""]
+        assert chunks[1].finish_reason == "end_turn"
+        assert chunks[2].usage_metadata == {"input_tokens": 2, "output_tokens": 3}
         assert "stream" not in captured
         assert captured["model"] == "kimi-for-coding"
     finally:
