@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import { useFocusGlow } from './useFocusGlow';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -2791,6 +2792,9 @@ function CompactChatApp({
       window.removeEventListener('neko-focus-state', handleFocusState);
     };
   }, []);
+
+  // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
+  useFocusGlow(appShellRef);
 
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
@@ -6871,6 +6875,7 @@ function CompactChatApp({
           </span>
         </div>
       ) : null}
+      <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}

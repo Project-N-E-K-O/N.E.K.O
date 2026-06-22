@@ -2403,6 +2403,8 @@ class LLMSessionManager:
                 self.lanlan_name, scored.score,
                 self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
             )
+            # Stream the post-turn charge for the frontend edge glow.
+            await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
@@ -2440,20 +2442,31 @@ class LLMSessionManager:
     async def _reconcile_focus_indicator(self) -> None:
         """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
         history-wipe, master-switch / privacy self-clear in update_focus) so the
-        badge can't get stuck on. Called once per turn; idempotent."""
+        badge AND the charge glow can't get stuck on. Called once per turn. The
+        charge push reads the (now-cleared → 0) snapshot, so a silent exit that
+        only reconciles the binary state still tells the glow to fade out."""
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
+        await self._push_focus_charge()
 
-    async def _push_focus_indicator(self, active: bool) -> None:
-        """Mirror the cognition indicator (focus_state) to the frontend — a
-        subtle breathing glow (see react-neko-chat). Idempotent on the cached
-        state so the event path and the per-turn reconcile never double-fire.
-        Ephemeral UI state: pushed live over the websocket and mirrored to the
-        sync queue for cross-server, but never persisted to history (the badge
-        is not conversation; memory consumes FOCUS_EXIT's payload separately).
+    async def resync_focus_for_new_window(self) -> None:
+        """Re-emit BOTH focus signals to a freshly-connected window (greeting_check):
+        the charge glow AND the binary focus_state. ``force=True`` bypasses the
+        idempotent cache so a window opened mid-FOCUS gets the current indicator
+        even though no enter/exit transition fires for it."""
+        await self._push_focus_charge()
+        await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS, force=True)
+
+    async def _push_focus_indicator(self, active: bool, *, force: bool = False) -> None:
+        """Mirror the cognition indicator (focus_state) to the frontend (drives
+        the screen-reader status node; the visible glow is charge-driven). Idempotent
+        on the cached state so the event path and the per-turn reconcile never
+        double-fire — except ``force=True`` (a new window re-sync) re-pushes even
+        when unchanged. Ephemeral UI state: pushed live over the websocket and
+        mirrored to the sync queue for cross-server, but never persisted to history.
         Best-effort: a ws failure must never disturb the caller."""
         # getattr default guards bypass-__init__ constructions (bare test mgrs,
         # cross-server / unpickled managers) — they simply have no badge to sync.
-        if active == getattr(self, "_focus_indicator_active", False):
+        if not force and active == getattr(self, "_focus_indicator_active", False):
             return
         self._focus_indicator_active = active
         msg = {"type": "focus_state", "active": active}
@@ -2472,6 +2485,52 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] focus_state ws push failed: %s", self.lanlan_name, e)
 
+    async def _push_focus_charge(self, charge: Optional[float] = None) -> None:
+        """Stream the live Focus charge (0..1) to the frontend so the edge glow
+        can scale continuously: onset at FOCUS_CHARGE_EXIT, the non-linear jump +
+        breathing at FOCUS_CHARGE_ENTER, peak toward FOCUS_CHARGE_CAP. Carries the
+        wall-clock stamp so the frontend extrapolates the same time decay between
+        pushes for a smooth fade (no per-second server spam). Pushed on every
+        charge change AND on (re)connect so a freshly-opened window (e.g. the
+        separate /chat_full window) lands on the correct brightness immediately.
+        Ephemeral, ws + sync-queue only, never persisted. Best-effort.
+
+        ``at_ms`` is the charge's LAST-CHANGE wall-clock (not "now"), so the
+        frontend extrapolates the time decay from the right moment — a reconnect
+        after a long gap must not replay a stale un-decayed charge as if current.
+        When Focus is disabled we push 0 (not skip) so a lit glow can't linger."""
+        from config import FOCUS_MODE_ENABLED  # live read
+        try:
+            snap = self.state.snapshot()
+        except Exception:
+            snap = {}
+        if not FOCUS_MODE_ENABLED:
+            charge, at = 0.0, 0.0
+        else:
+            if charge is None:
+                try:
+                    charge = float(snap.get("focus_charge") or 0.0)
+                except Exception:
+                    charge = 0.0
+            at = snap.get("focus_charge_at") or 0.0
+        at_ms = int(at * 1000) if at and at > 0 else int(time.time() * 1000)
+        msg = {"type": "focus_charge", "charge": round(max(0.0, float(charge)), 4),
+               "at_ms": at_ms}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_charge sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_charge ws push failed: %s", self.lanlan_name, e)
+
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
     ) -> None:
@@ -2480,12 +2539,15 @@ class LLMSessionManager:
         entering and sustaining Focus is driven solely by the inline path (the
         user's own messages). This only lets an active episode cool down.
 
-        Two-tier decay by whether the turn actually spoke:
-          * ``replied=True`` (a Phase-2 proactive reply was delivered) → faster
-            ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of the episode.
+        Decay rate by whether the turn actually spoke, via two config knobs:
+          * ``replied=True`` (a Phase-2 proactive reply was delivered) →
+            ``FOCUS_IDLE_REPLIED_RETENTION``.
           * ``replied=False`` (Phase-2 reached but produced no reply — empty /
-            aborted) → slower ``FOCUS_IDLE_SILENT_RETENTION``: barely spends it.
-        So Focus persistence is driven by how often she speaks, not raw time.
+            aborted) → ``FOCUS_IDLE_SILENT_RETENTION``.
+        Currently both are tuned to the same value (0.8), so speaking and silence
+        cool the episode at one gentle rate; the split is kept for future
+        re-tuning (invariant: replied <= silent). Focus persistence is driven by
+        how often a proactive turn fires, not raw time.
 
         ``episode_token`` / ``turn_token`` pin the decay to the exact focus state
         this proactive turn observed when it made its thinking decision — the
@@ -2594,6 +2656,7 @@ class LLMSessionManager:
                 self.lanlan_name, replied,
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
+            await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
         except Exception as e:
             logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
                            self.lanlan_name, e)

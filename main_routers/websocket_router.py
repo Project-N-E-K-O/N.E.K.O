@@ -421,6 +421,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # greeting_check 被 home tutorial guard 阻塞，agent intent 也应该
                 # 趁机会恢复（无害：用户在新手引导期一般也没旧 intent 要恢复）。
                 _fire_task(_publish_agent_intent_restore_signal(lanlan_name))
+                # A freshly-connected window (notably the separate /chat_full
+                # window, which has its own ws and misses any earlier Focus
+                # enter) must land on the current edge-glow brightness — push the
+                # live charge now. Best-effort; harmless when charge is 0.
+                try:
+                    _fire_task(session_manager[lanlan_name].resync_focus_for_new_window())
+                except Exception:
+                    # Best-effort cosmetic re-sync (missing manager / not-yet-ready
+                    # session): the focus glow/indicator is non-essential and must
+                    # never block or break greeting_check, so swallow and move on.
+                    pass
                 if _is_home_tutorial_blocking_greeting(lanlan_name):
                     logger.info(f"[{lanlan_name}] greeting_check: skipped by home tutorial guard")
                     continue
