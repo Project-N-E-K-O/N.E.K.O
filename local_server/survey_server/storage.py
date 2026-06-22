@@ -36,13 +36,14 @@ from pathlib import Path
 
 
 def _csv_safe(value) -> str:
-    """Neutralize CSV formula injection: prefix a cell that starts with = + - @ (or a
-    leading control char) with a single quote, so spreadsheet apps treat forged
-    metadata (e.g. a signed-but-malicious device_id like ``=cmd|...``) as text rather
-    than a formula when an admin opens the export.
+    """Neutralize CSV formula injection: prefix a cell that starts with a formula char
+    (= + - @) or any leading control char (< 0x20, covers TAB / CR / LF) with a single
+    quote, so spreadsheet apps treat forged metadata (e.g. a signed-but-malicious
+    device_id like ``=cmd|...`` or ``\\n=cmd``) as text rather than a formula when an
+    admin opens the export.
     """
     s = "" if value is None else str(value)
-    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+    if s and (s[0] in ("=", "+", "-", "@") or ord(s[0]) < 0x20):
         return "'" + s
     return s
 

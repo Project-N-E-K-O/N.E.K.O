@@ -235,7 +235,7 @@ async def submit_survey(request: Request):
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
     logger.info(
-        f"OK device={device_id[:8]}... survey={submission.payload.survey_version} action={action}"
+        f"OK device={device_id[:8]}... survey={survey_version} action={action}"
     )
     return SubmitResponse()
 

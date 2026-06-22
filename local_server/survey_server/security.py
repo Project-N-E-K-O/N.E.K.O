@@ -56,6 +56,11 @@ def verify_signature(
     secret: str = DEFAULT_HMAC_SECRET,
 ) -> bool:
     """Verify the signature (constant-time comparison, guards against timing attacks)."""
+    # hmac.compare_digest 对含非 ASCII 的 str 直接抛 TypeError；伪造请求塞个非 ASCII
+    # signature 就会把 verify 崩成 500 而非干净 403。签名恒为十六进制摘要（纯 ASCII），
+    # 非 ASCII 必然非法，先挡掉。
+    if not isinstance(signature, str) or not signature.isascii():
+        return False
     expected = compute_signature(payload_json, timestamp, secret)
     return hmac.compare_digest(expected, signature)
 

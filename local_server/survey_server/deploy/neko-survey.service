@@ -21,8 +21,9 @@ After=network.target
 
 [Service]
 Type=simple
+# 不写 Group=：让 systemd 用 nobody 的默认主组。Debian 是 nogroup、RHEL/CentOS
+# 是 nobody——硬写 nogroup 会在 RHEL 上让 systemd 直接拒绝本 unit。
 User=nobody
-Group=nogroup
 
 # ★ 修改为实际路径
 WorkingDirectory=/opt/neko-survey
@@ -31,7 +32,7 @@ WorkingDirectory=/opt/neko-survey
 # 或仍属 root，而服务以 nobody 运行写不进 SQLite（ReadWritePaths 只放开 systemd
 # 的只读挂载，不改 Unix 属主）。+ 前缀让这两步以 root 执行，绕过 User=nobody。
 ExecStartPre=+/bin/mkdir -p /opt/neko-survey/data
-ExecStartPre=+/bin/chown nobody:nogroup /opt/neko-survey/data
+ExecStartPre=+/bin/chown nobody /opt/neko-survey/data
 
 ExecStart=/usr/bin/python3 server.py --port 8100
 
