@@ -2205,16 +2205,21 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "function updateAssistChargeMeter() {" not in html
     assert "function isIncomingPlayerReturnCandidate() {" in html
     assert "function canPrechargePlayerReturn() {" not in html
-    assert "game.state === 'in_flight' && !game.pendingSwing && isIncomingPlayerReturnCandidate()" not in html
+    assert "function canPlayerPrepareIncomingReturn() {" in html
+    assert "if (isPlayerReceivingReturn()) return game.state === 'ready' && isIncomingPlayerReturnCandidate();" in html
+    assert "return game.state === 'in_flight' && isIncomingPlayerReturnCandidate();" in html
     assert "function canPlayerChargeShot() {" in html
-    assert "return canPlayerControlShot();" in html
+    assert "return canPlayerControlShot() || canPlayerPrepareIncomingReturn();" in html
     assert "var PLAYER_CHARGE_SPEED = 145;" in html
     assert "function stepPlayerCharge(dt) {" in html
     assert "game.power += game.chargeDir * dt * PLAYER_CHARGE_SPEED;" in html
     assert "if (game.charging && canPrechargePlayerReturn()) stepPlayerCharge(dt);" not in html
-    assert "if (game.charging && canPlayerChargeShot()) {" in html
-    assert "stepPlayerCharge(dt);" in html
+    assert "var isChargingPlayerShot = game.charging && canPlayerChargeShot();" in html
+    assert "if (isChargingPlayerShot) stepPlayerCharge(dt);" in html
     assert "if (game.ball && game.ball.shooter !== shotShooter && !incomingBall) game.ball = null;" in html
+    assert "var preserveIncomingCharge = game.charging && canPlayerPrepareIncomingReturn();" in html
+    assert "game.charging = preserveIncomingCharge;" in html
+    assert "if (!preserveIncomingCharge) {" in html
     assert "var receivingReturn = isPlayerReceivingReturn();" in html
     assert "var shotPower = receivingReturn ? clamp(game.power || 56, 24, 100) : game.power;" in html
     assert "var returnPower = clamp(game.power || 56, 24, 100);" in html

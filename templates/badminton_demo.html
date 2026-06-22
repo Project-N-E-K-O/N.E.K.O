@@ -4139,8 +4139,13 @@
   function isIncomingPlayerReturnCandidate() {
     return !!(game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved && !game.ball.hitNet);
   }
+  function canPlayerPrepareIncomingReturn() {
+    if (!isDuelMode() || isBadmintonLoadingActive() || game.pendingSwing) return false;
+    if (isPlayerReceivingReturn()) return game.state === 'ready' && isIncomingPlayerReturnCandidate();
+    return game.state === 'in_flight' && isIncomingPlayerReturnCandidate();
+  }
   function canPlayerChargeShot() {
-    return canPlayerControlShot();
+    return canPlayerControlShot() || canPlayerPrepareIncomingReturn();
   }
   function stepPlayerCharge(dt) {
     game.power += game.chargeDir * dt * PLAYER_CHARGE_SPEED;
@@ -4904,12 +4909,15 @@
       && shuttleZ <= screenYToCourtZ(-520)
       && shuttleZ >= screenYToCourtZ(FLOOR_Y - 8);
     if (!inPlayerReach) return false;
+    var preserveIncomingCharge = game.charging && canPlayerPrepareIncomingReturn();
     game.duel.activeShooter = 'player';
     game.state = 'ready';
     game.heldShuttleVisible = false;
-    game.charging = false;
-    game.power = 0;
-    game.chargeDir = 1;
+    game.charging = preserveIncomingCharge;
+    if (!preserveIncomingCharge) {
+      game.power = 0;
+      game.chargeDir = 1;
+    }
     ball.awaitingReturnBy = 'player';
     ball.returnDeadlineAt = performance.now() + 2400;
     showAssistHint(_i18n('toast.playerReturn', '接住 Yui 的回球'));
@@ -5435,13 +5443,14 @@
   }
   function update(dt) {
     if (isDuelMode()) updateCourtMovement(dt);
+    var isChargingPlayerShot = game.charging && canPlayerChargeShot();
+    if (isChargingPlayerShot) stepPlayerCharge(dt);
     if (game.state === 'ready') {
       var awaitingPlayerReturn = game.ball && game.ball.awaitingReturnBy === 'player';
       if (isPositionTransitioning && !awaitingPlayerReturn) return;
       if (awaitingPlayerReturn && stepAwaitingPlayerReturn(dt)) return;
       if (!game.aimStartAt) game.aimStartAt = performance.now();
-      if (game.charging && canPlayerChargeShot()) {
-        stepPlayerCharge(dt);
+      if (isChargingPlayerShot) {
         var elapsed = (performance.now() - game.aimStartAt) / 1000;
         if (isDuelMode() && elapsed > 4 && performance.now() > psychologicalTalkAt) {
           psychologicalTalkAt = performance.now() + 4200;
