@@ -501,10 +501,11 @@
         if (mount.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
         try {
             const style = window.getComputedStyle ? window.getComputedStyle(mount) : null;
-            const emptyCompactMount = mount.getAttribute('data-music-player-mount') === 'compact-surface'
+            // React hides empty full/compact mounts with :empty; they are still valid targets.
+            const emptyChatMusicMount = mount.id === 'music-player-mount'
                 && !mount.firstElementChild;
             return !!(style && (
-                (style.display === 'none' && !emptyCompactMount)
+                (style.display === 'none' && !emptyChatMusicMount)
                 || style.visibility === 'hidden'
                 || style.visibility === 'collapse'
             ));
@@ -1006,7 +1007,8 @@
     }
 
     const renderMirrorBar = (state) => {
-        if (!state) return;
+        if (!state) return false;
+        ensureMusicMountObserver();
         if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
         mirrorBarLastState = state;
 
@@ -1017,18 +1019,18 @@
         const firstRender = !musicBar;
 
         // 已存在但属于本窗口的 owner bar（非 mirror）：说明 leader 是自己，不应覆盖
-        if (musicBar && musicBar.dataset.mirror !== 'true') return;
+        if (musicBar && musicBar.dataset.mirror !== 'true') return false;
 
         if (firstRender) {
             ensureMusicUiCSS();
             const mountTarget = getPreferredMusicMountTarget().mountTarget;
-            if (!mountTarget) return;
+            if (!mountTarget) return false;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
             musicBar.dataset.mirror = 'true';
-            mountMusicBar(musicBar);
+            if (!mountMusicBar(musicBar) || musicBar.hidden) return false;
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -1071,7 +1073,7 @@
             bindMirrorBarControls(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
-            mountMusicBar(musicBar);
+            if (!mountMusicBar(musicBar) || musicBar.hidden) return false;
         }
 
         // 切歌 / 首次：刷新标题 + 歌手 + 封面
@@ -1140,6 +1142,7 @@
                 else volumeBtn.textContent = '🔊';
             }
         }
+        return true;
     };
 
     const teardownMirrorBar = (fullTeardown) => {
@@ -1247,32 +1250,33 @@
     }
 
     function applyMusicPlayerBridgeEvent(event) {
-        if (!event || typeof event !== 'object') return;
+        if (!event || typeof event !== 'object') return false;
         const sender = event.sender;
-        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return false;
         const payload = event.payload || {};
         try {
             if (event.type === 'coord') {
                 applyMusicPlayerBridgeCoord(sender, payload.coordType, payload);
             } else if (event.type === 'bar_state') {
-                if (isBarOwner()) return;
+                if (isBarOwner()) return false;
                 setMirrorBarLeader(sender, 'bridge');
-                renderMirrorBar(payload);
+                return renderMirrorBar(payload);
             } else if (event.type === 'bar_destroyed') {
-                if (isBarOwner()) return;
-                if (sender !== mirrorBarLeaderSender) return;
-                if (!isCurrentMirrorPlayback(payload)) return;
+                if (isBarOwner()) return false;
+                if (sender !== mirrorBarLeaderSender) return false;
+                if (!isCurrentMirrorPlayback(payload)) return false;
                 setMirrorBarLeader(null);
                 teardownMirrorBar(!!payload.fullTeardown);
             } else if (event.type === 'bar_ctrl') {
-                if (!isBarOwner()) return;
-                if (payload.target !== MUSIC_COORD_SENDER_ID) return;
-                if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return;
+                if (!isBarOwner()) return false;
+                if (payload.target !== MUSIC_COORD_SENDER_ID) return false;
+                if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return false;
                 handleRemoteBarCtrl(payload.action, payload.value);
             }
         } catch (e) {
             console.warn('[Music UI] music player bridge event failed:', e);
         }
+        return false;
     }
 
     async function pollMusicPlayerBridge() {
@@ -1316,8 +1320,8 @@
             const latestPlaybackId = data.latest_state && data.latest_state.playbackId;
             if (Array.isArray(data.events)) {
                 for (const event of data.events) {
-                    applyMusicPlayerBridgeEvent(event);
-                    if (event && event.type === 'bar_state' && event.sender === data.owner
+                    const renderedEvent = applyMusicPlayerBridgeEvent(event);
+                    if (renderedEvent && event && event.type === 'bar_state' && event.sender === data.owner
                         && (!latestPlaybackId || (event.payload && event.payload.playbackId === latestPlaybackId))) {
                         sawOwnerBarStateEvent = true;
                     }
