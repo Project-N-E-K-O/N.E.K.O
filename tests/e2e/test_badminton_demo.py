@@ -404,34 +404,46 @@ def test_badminton_player_serve_hint_draws_or_attaches_shuttle_above_player(mock
 
 
 @pytest.mark.e2e
-def test_badminton_player_court_position_follows_mouse_x_axis_only(mock_page: Page, running_server: str):
+def test_badminton_player_serve_setup_stays_between_service_lines(mock_page: Page, running_server: str):
     page = mock_page
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready' && window.BadmintonDemo.getState().canControlShot")
+    initial = page.evaluate("window.BadmintonDemo.getState()")
+    lines = initial["courtServiceLines"]
+    expected_serve_x = (lines["leftDoublesLongServiceX"] + lines["leftShortServiceX"]) / 2
+    assert abs(initial["playerServeX"] - expected_serve_x) < 0.001
+    assert abs(initial["playerCourt"]["x"] - expected_serve_x) < 1.5
+    assert abs(initial["playerCourt"]["targetX"] - expected_serve_x) < 1.5
+
     box = page.locator("#game").bounding_box()
     assert box is not None
-    page.mouse.move(box["x"] + box["width"] * 0.12, box["y"] + box["height"] * 0.42)
-    page.wait_for_timeout(350)
-    left_state = page.evaluate("window.BadmintonDemo.getState()")
-    page.mouse.move(box["x"] + box["width"] * 0.55, box["y"] + box["height"] * 0.42)
+    page.mouse.move(box["x"] + box["width"] * 0.88, box["y"] + box["height"] * 0.52)
+    page.evaluate(
+        """() => {
+          const x = window.innerWidth * 0.88;
+          const y = window.innerHeight * 0.52;
+          window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true }));
+          window.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+        }"""
+    )
     page.wait_for_function(
-        """(leftCourt) => {
+        """(initialX) => {
           const state = window.BadmintonDemo && window.BadmintonDemo.getState();
-          return state && state.playerCourt &&
-            state.playerCourt.targetX > leftCourt.targetX + 16 &&
-            state.playerCourt.x > leftCourt.x + 16 &&
-            Math.abs(state.playerCourt.targetY - leftCourt.targetY) < 0.001 &&
-            Math.abs(state.playerCourt.y - leftCourt.y) < 0.001;
+          return state && state.canMoveCourt && state.playerServeSetup && state.playerCourt &&
+            state.playerCourt.targetX > initialX + 20 &&
+            state.playerCourt.x > initialX + 20;
         }""",
-        arg=left_state["playerCourt"],
+        arg=initial["playerCourt"]["x"],
         timeout=3000,
     )
-    moved = page.evaluate("window.BadmintonDemo.getState()")
-    assert moved["playerCourt"]["targetX"] > left_state["playerCourt"]["targetX"]
-    assert moved["playerCourt"]["x"] > left_state["playerCourt"]["x"]
-    assert abs(moved["playerCourt"]["targetY"] - left_state["playerCourt"]["targetY"]) < 0.001
-    assert abs(moved["playerCourt"]["y"] - left_state["playerCourt"]["y"]) < 0.001
+    after_move = page.evaluate("window.BadmintonDemo.getState()")
+    assert after_move["playerCourt"]["targetX"] > expected_serve_x + 20
+    assert after_move["playerCourt"]["x"] > expected_serve_x + 20
+    assert lines["leftDoublesLongServiceX"] < after_move["playerCourt"]["targetX"] < lines["leftShortServiceX"]
+    assert lines["leftDoublesLongServiceX"] < after_move["playerCourt"]["x"] < lines["leftShortServiceX"]
+    assert abs(after_move["playerCourt"]["targetY"] - initial["playerCourt"]["targetY"]) < 0.001
+    assert abs(after_move["playerCourt"]["y"] - initial["playerCourt"]["y"]) < 0.001
 
 
 @pytest.mark.e2e
@@ -440,12 +452,7 @@ def test_badminton_yui_swings_back_when_player_shuttle_reaches_her_side(mock_pag
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
-    box = page.locator("#game").bounding_box()
-    assert box is not None
-    page.mouse.move(box["x"] + box["width"] * 0.45, box["y"] + box["height"] * 0.44)
-    page.mouse.down()
-    page.wait_for_timeout(980)
-    page.mouse.up()
+    page.evaluate("window.BadmintonDemo._debugSetPlayerShuttleForYuiReturnBall()")
 
     page.wait_for_function(
         """() => {
@@ -504,6 +511,47 @@ def test_badminton_yui_swings_back_when_player_shuttle_reaches_her_side(mock_pag
     assert spinning["id"] == returned["id"]
     if not spinning["hitNet"]:
         assert spinning["angleDelta"] >= 0.5
+
+
+@pytest.mark.e2e
+def test_badminton_yui_returns_frontcourt_shuttle_between_net_and_service_line(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    setup = page.evaluate(
+        """() => {
+          const state = window.BadmintonDemo.getState();
+          const id = window.BadmintonDemo._debugSetPlayerShuttleForYuiReturnBall();
+          const next = window.BadmintonDemo.getState();
+          return {
+            id,
+            ball: next.currentShuttle,
+            netX: 460,
+            rightShortServiceX: state.courtServiceLines.rightShortServiceX
+          };
+        }"""
+    )
+    assert setup["ball"]["shooter"] == "player"
+    assert setup["ball"]["crossedNet"] is True
+    assert setup["netX"] < setup["ball"]["y"] < setup["rightShortServiceX"]
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && (
+            (state.pendingSwing && state.pendingSwing.shooter === 'neko') ||
+            (state.currentShuttle && state.currentShuttle.shooter === 'neko')
+          );
+        }""",
+        timeout=3000,
+    )
+    returned = page.evaluate("window.BadmintonDemo.getState()")
+    assert (
+        returned["pendingSwing"] and returned["pendingSwing"]["shooter"] == "neko"
+    ) or (
+        returned["currentShuttle"] and returned["currentShuttle"]["shooter"] == "neko"
+    )
 
 
 @pytest.mark.e2e
@@ -1019,19 +1067,30 @@ def test_badminton_yui_cheats_with_item_when_duel_score_is_close(mock_page: Page
     assert state["duel"]["neko_score"] == 9
     assert state["yuiCheat"]["last_used_kind"] == "banana"
     assert state["yuiCheat"]["items"][0]["kind"] == "banana"
+    assert state["yuiCheat"]["items"][0]["radius"] == 22
 
 
 @pytest.mark.e2e
-def test_badminton_banana_peel_spins_and_slows_grounded_player(mock_page: Page, running_server: str):
+def test_badminton_banana_peel_flips_and_slows_grounded_player(mock_page: Page, running_server: str):
     page = mock_page
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => window.BadmintonDemo._debugSetAwaitingPlayerReturnBall({
+          x: 220,
+          prevX: 236,
+          y: 300,
+          prevY: 300,
+          vx: -12,
+          vCourtY: -12
+        })"""
+    )
     before = page.evaluate("window.BadmintonDemo.getState().playerCourt")
     page.evaluate(
         """() => {
           const state = window.BadmintonDemo.getState();
-          window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x, y: state.playerCourt.y });
+          window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x, y: state.playerFootY });
         }"""
     )
     page.wait_for_function(
@@ -1042,22 +1101,79 @@ def test_badminton_banana_peel_spins_and_slows_grounded_player(mock_page: Page, 
         }""",
         timeout=2000,
     )
-    viewport = page.viewport_size or {"width": 1280, "height": 720}
-    page.mouse.move(viewport["width"] - 8, 20)
+    movement = page.evaluate(
+        """() => new Promise((resolve) => {
+          window.dispatchEvent(new MouseEvent('mousemove', {
+            clientX: window.innerWidth - 8,
+            clientY: window.innerHeight * 0.5,
+            bubbles: true
+          }));
+          const afterInput = window.BadmintonDemo.getState();
+          const samples = [];
+          const startedAt = performance.now();
+          function sample() {
+            const state = window.BadmintonDemo.getState();
+            samples.push(state.yuiCheat.player_effect.spin_angle);
+            if (performance.now() - startedAt >= 560) {
+              resolve({
+                afterInput,
+                spinSamples: samples,
+                finalState: window.BadmintonDemo.getState()
+              });
+              return;
+            }
+            setTimeout(sample, 40);
+          }
+          sample();
+        })"""
+    )
+
+    state = movement["finalState"]
+    assert state["yuiCheat"]["items"] == []
+    assert movement["afterInput"]["playerCourt"]["targetX"] > before["targetX"] + 16
+    assert movement["afterInput"]["yuiCheat"]["player_effect"]["slipping"] is True
+    assert movement["afterInput"]["yuiCheat"]["player_effect"]["speed_multiplier"] == pytest.approx(0.22)
+    assert max(movement["spinSamples"]) > 5.2
+    assert state["playerCourt"]["x"] - before["x"] < 75
+
+
+@pytest.mark.e2e
+def test_badminton_default_banana_y_still_slips_when_x_aligned(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    spawned = page.evaluate(
+        """() => {
+          const originalRandom = Math.random;
+          Math.random = () => 0.999;
+          try {
+            const state = window.BadmintonDemo.getState();
+            const item = window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x });
+            return {
+              itemY: item.y,
+              playerCourtY: state.playerCourt.y,
+              playerFootY: state.playerFootY
+            };
+          } finally {
+            Math.random = originalRandom;
+          }
+        }"""
+    )
     page.wait_for_function(
-        """(beforeX) => {
+        """() => {
           const state = window.BadmintonDemo && window.BadmintonDemo.getState();
-          return state && state.playerCourt.targetX > beforeX + 16;
+          return state && state.yuiCheat && state.yuiCheat.player_effect &&
+            state.yuiCheat.player_effect.slipping === true;
         }""",
-        arg=before["targetX"],
         timeout=2000,
     )
 
     state = page.evaluate("window.BadmintonDemo.getState()")
+    assert abs(spawned["itemY"] - spawned["playerFootY"]) <= 5
+    assert spawned["itemY"] > spawned["playerCourtY"] + 40
     assert state["yuiCheat"]["items"] == []
     assert state["yuiCheat"]["player_effect"]["slipping"] is True
-    assert abs(state["yuiCheat"]["player_effect"]["spin_angle"]) > 0
-    assert state["playerCourt"]["x"] - before["x"] < 60
 
 
 @pytest.mark.e2e
@@ -1068,8 +1184,9 @@ def test_badminton_player_can_jump_over_banana_peel(mock_page: Page, running_ser
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
     page.evaluate(
         """() => {
+          window.BadmintonDemo._debugSetAwaitingPlayerReturnBall();
           const state = window.BadmintonDemo.getState();
-          window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x, y: state.playerCourt.y });
+          window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x, y: state.playerFootY });
           window.BadmintonDemo.jump();
         }"""
     )
@@ -1106,7 +1223,7 @@ def test_badminton_octopus_ink_covers_player_screen(mock_page: Page, running_ser
     state = page.evaluate("window.BadmintonDemo.getState()")
     assert state["yuiCheat"]["last_used_kind"] == "octopus"
     assert state["yuiCheat"]["ink"]["active"] is True
-    assert state["yuiCheat"]["ink"]["alpha"] > 0
+    assert state["yuiCheat"]["ink"]["alpha"] >= 0.75
 
 
 @pytest.mark.e2e

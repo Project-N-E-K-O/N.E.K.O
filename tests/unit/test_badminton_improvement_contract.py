@@ -399,7 +399,17 @@ def test_badminton_yui_smash_result_uses_contextual_emotes():
 @pytest.mark.unit
 def test_badminton_audio_config_contract():
     source = (ROOT / "static" / "game" / "games" / "badminton" / "badminton-audio-config.js")
+    result_short = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-result-win-short.mp3"
+    banana_slip_goofy = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-banana-slip-goofy.mp3"
+    octopus_ink_poof = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-octopus-ink-poof.mp3"
+    original_result = ROOT / "static" / "game" / "games" / "soccer" / "audio" / "Battle_1_E.mp3"
     assert source.exists()
+    assert result_short.exists()
+    assert banana_slip_goofy.exists()
+    assert octopus_ink_poof.exists()
+    assert 1000 < banana_slip_goofy.stat().st_size < 16000
+    assert 1000 < octopus_ink_poof.stat().st_size < 12000
+    assert result_short.stat().st_size < original_result.stat().st_size // 10
     text = source.read_text(encoding="utf-8")
     assert "gameSystem.badminton.audioConfig" in text
     assert "audioMix" in text
@@ -414,6 +424,13 @@ def test_badminton_audio_config_contract():
     assert "whoosh: [{ src: racketSwing" in text
     assert "var racketShuttleHits = [" in text
     assert "var racketShuttleSingle =" in text
+    assert "var resultWinShort =" in text
+    assert "var bananaSlipGoofy =" in text
+    assert "var octopusInkPoof =" in text
+    assert "bananaSlip: [{ src: bananaSlipGoofy" in text
+    assert "octopusInk: [{ src: octopusInkPoof" in text
+    assert "result: { gameOver: [{ src: resultWinShort" in text
+    assert "result: { gameOver: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3'" not in text
     assert "shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map" in text
 
 
@@ -613,9 +630,12 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         ), (
             f"{locale_path.name} badminton.hud.duelTitle should mention the 11-point win rule"
         )
-        assert len(_get_nested(payload, "badminton.lines.duel.excuse")) == 2
-        assert len(_get_nested(payload, "badminton.lines.duel.difficultyLv2")) == 2
-        assert len(_get_nested(payload, "badminton.lines.duel.difficultyMax")) == 4
+        for line_key in line_keys:
+            assert len(_get_nested(payload, f"badminton.lines.duel.{line_key}")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.duel.excuse")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.duel.difficultyLv2")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.duel.difficultyMax")) >= 6
+        assert len(_get_nested(payload, "badminton.lines.mindGame")) >= 6
 
 
 @pytest.mark.unit
@@ -2086,6 +2106,41 @@ def test_badminton_duel_scores_on_valid_landings_inside_lines():
 
 
 @pytest.mark.unit
+def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0," in html
+    assert "aimingCtx.fillRect(0, 0, BASE_W, BASE_H);" in html
+    assert "var centralInk = aimingCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48" in html
+    assert "centralInk.addColorStop(0, 'rgba(0,0,0,.96)');" in html
+    assert "function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {" in html
+    assert "var centerSplashes = [" in html
+    assert "for (var drip = 0; drip < 8; drip++) {" in html
+    assert "for (var speck = 0; speck < 22; speck++) {" in html
+    assert "aimingCtx.bezierCurveTo(" in html
+    assert "function drawInkBlob(" not in html
+    assert "var edgeVeil =" not in html
+    assert "badmintonGameAudio.playSfx('yuiCheat.octopusInk', { volumeMultiplier: 0.92 });" in html
+
+
+@pytest.mark.unit
+def test_badminton_banana_slip_flips_player_avatar_360_degrees():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var YUI_CHEAT_BANANA_SLIP_ROTATION_RAD = Math.PI * 2;" in html
+    assert "var YUI_CHEAT_BANANA_SPEED_MULTIPLIER = 0.22;" in html
+    assert "var YUI_CHEAT_BANANA_SLOW_MS = 1800;" in html
+    assert "var easedProgress = 1 - Math.pow(1 - progress, 3);" in html
+    assert "effect.spinAngle = YUI_CHEAT_BANANA_SLIP_ROTATION_RAD * easedProgress;" in html
+    assert "speed_multiplier: getPlayerMovementSpeedMultiplier(now)," in html
+    assert "return t < (effect.slowUntil || 0) ? YUI_CHEAT_BANANA_SPEED_MULTIPLIER : 1;" in html
+    assert "badmintonGameAudio.playSfx('yuiCheat.bananaSlip', { volumeMultiplier: 0.9 });" in html
+    assert "rotateY(var(--sensei-slip-rotation)) rotate(-3deg) scale(.97)" in html
+    assert "ctx.scale(Math.cos(slipRotation), 1);" in html
+    assert "Math.sin(progress * Math.PI * 5)" not in html
+
+
+@pytest.mark.unit
 def test_badminton_yui_returns_incoming_shuttle_before_landing():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
@@ -2151,7 +2206,11 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
     assert "yuiCourt: { x: YUI_START_X, y: YUI_START_Y, targetX: YUI_START_X, targetY: YUI_START_Y }," in html
     assert "function updatePlayerCourtTarget(clientX, clientY) {" in html
     assert "var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);" in html
-    assert "game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);" in html
+    assert "function getPlayerCourtMoveBounds() {" in html
+    assert "minX: serviceLines.leftDoublesLongServiceX + 14," in html
+    assert "maxX: serviceLines.leftShortServiceX - 14" in html
+    assert "var moveBounds = getPlayerCourtMoveBounds();" in html
+    assert "game.playerCourt.targetX = clamp(normX * BASE_W, moveBounds.minX, moveBounds.maxX);" in html
     assert "var lastPlayerPointer = null;" in html
     assert "function rememberPlayerPointer(ev) {" in html
     assert "function syncPlayerCourtTargetFromPointer() {" in html
@@ -2165,13 +2224,15 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
     assert "targetY = clamp(ball.y + 76, YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);" in html
     assert "function updateCourtMovement(dt) {" in html
     assert "syncPlayerCourtTargetFromPointer();" in html
-    assert "game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);" in html
+    assert "var playerMoveSpeed = PLAYER_MOVE_SPEED * getPlayerMovementSpeedMultiplier();" in html
+    assert "game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, playerMoveSpeed, dt);" in html
     assert "game.playerCourt.targetY = PLAYER_START_Y;" in html
     assert "game.playerCourt.y = PLAYER_START_Y;" in html
     assert "game.playerCourt.y = moveToward(game.playerCourt.y, game.playerCourt.targetY, PLAYER_MOVE_SPEED * 0.55, dt);" not in html
     assert "game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, YUI_MOVE_SPEED, dt);" in html
     assert "function canPlayerMoveCourt() {" in html
     assert "if (isBadmintonLoadingActive()) return false;" in html
+    assert "return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot()" in html
     assert "var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;" in html
     assert "if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in html
     assert "if (isDuelMode()) updateCourtMovement(dt);" in html

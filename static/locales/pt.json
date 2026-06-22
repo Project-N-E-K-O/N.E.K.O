@@ -4569,74 +4569,108 @@
              "duel": {
                  "shot_missed": [
                      "Ainda há chance.",
-                     "Ainda há chance."
+                     "Ainda há chance.",
+                     "Você atrasou meio tempo.",
+                     "Não se apavore. Ainda estou esperando a próxima."
                  ],
                  "game_over": [
                      "Mais uma?",
-                     "Mais uma?"
+                     "Mais uma?",
+                     "Vou guardar esta partida.",
+                     "O placar ficou escrito. Sem voltar atrás."
                  ],
                  "long_aim": [
                      "Rebata logo.",
-                     "Rebata logo."
+                     "Rebata logo.",
+                     "Está esperando o vento?",
+                     "Bate logo ou eu vou beber água."
                  ],
                  "close_to_record": [
                      "Quase no recorde.",
-                     "Quase no recorde."
+                     "Quase no recorde.",
+                     "O recorde está na ponta da raquete.",
+                     "Mais uma firme e ele muda."
                  ],
                  "new_record": [
                      "Novo recorde!",
-                     "Novo recorde!"
+                     "Novo recorde!",
+                     "Tá bom, essa foi bonita.",
+                     "O recorde é seu. O próximo ponto é meu."
                  ],
                  "streak_5": [
                      "Cinco seguidas!",
-                     "Cinco seguidas!"
+                     "Cinco seguidas!",
+                     "Cinco seguidas. Nada mal.",
+                     "Finalmente entrou no ritmo."
                  ],
                  "streak_10": [
                      "Dez seguidas?",
-                     "Dez seguidas?"
+                     "Dez seguidas?",
+                     "Dez seguidas? Agora vou observar de verdade.",
+                     "Este rali ficou interessante."
                  ],
                  "streak_15": [
                      "Quinze seguidas é demais.",
-                     "Quinze seguidas é demais."
+                     "Quinze seguidas é demais.",
+                     "Quinze e ainda vivo. Que teimosia.",
+                     "Você não vai ficar tão estável para sempre."
                  ],
                  "streak_20": [
                      "Vinte seguidas? Incrível.",
-                     "Vinte seguidas? Incrível."
+                     "Vinte seguidas? Incrível.",
+                     "Vinte seguidas. A quadra vai lembrar.",
+                     "Este rali já ficou absurdo."
                  ],
                  "clutch": "...Este precisa entrar.",
                  "excuse": [
                      "Ai, meu braço está cansado.",
-                     "Hoje meu toque não está bom. Na próxima eu jogo sério."
+                     "Hoje meu toque não está bom. Na próxima eu jogo sério.",
+                     "Essa não conta. Eu estava vendo o vento.",
+                     "As cordas estão frouxas. Não foi culpa minha."
                  ],
                  "difficultyLv2": [
                      "O aquecimento acabou. Vou acelerar.",
-                     "A brincadeira acabou."
+                     "A brincadeira acabou.",
+                     "Agora vou receber de verdade. Não pisque.",
+                     "A próxima vem mais rápida. Aguenta firme."
                  ],
                  "difficultyMax": [
                      "Agora vou jogar sério.",
                      "A partir de agora, céu e terra são meus.",
                      "Agora você é quem desafia.",
-                     "Se o futuro é seu, prove."
+                     "Se o futuro é seu, prove.",
+                     "A partir desta, não vou aliviar.",
+                     "A quadra é minha. O placar segue a habilidade."
                  ],
                  "line_in": [
                     "Na linha!",
-                    "Na linha!"
+                    "Na linha!",
+                    "Até a linha está do seu lado.",
+                    "Essa pegou a linha certinho."
                  ],
                  "net_touch": [
                     "Tocou na rede e vale.",
-                    "Tocou na rede e vale."
+                    "Tocou na rede e vale.",
+                    "Bateu na rede e passou. Espertinho.",
+                    "Passou perto demais."
                  ],
                  "zone_in": [
                     "Caiu na zona.",
-                    "Caiu na zona."
+                    "Caiu na zona.",
+                    "Esse ponto de queda foi irritantemente preciso.",
+                    "Faltou um passo para eu chegar."
                  ],
                  "out": [
                      "Quase.",
-                     "Quase."
+                     "Quase.",
+                     "Isso voou mais longe que minha paciência.",
+                     "Fora. Não finja que não viu."
                  ],
                  "net": [
                      "Ficou na rede.",
-                     "Ficou na rede."
+                     "Ficou na rede.",
+                     "A rede bloqueou por mim.",
+                     "Esse golpe saiu apressado demais."
                  ]
              },
              "fallback": [
@@ -4656,7 +4690,10 @@
              "mindGame": [
                  "Sua mão está tremendo.",
                  "Pense bem, sem pressa.",
-                 "Esta distância não é curta."
+                 "Esta distância não é curta.",
+                 "Você parece querer a lateral.",
+                 "Já li a face da sua raquete.",
+                 "Olhar demais deixa a mão travada."
              ],
              "easterEgg": {
                 "lateNight": "Rebatendo até esta hora?",

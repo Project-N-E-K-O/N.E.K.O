@@ -276,8 +276,9 @@
     --sensei-x: -9999px;
     --sensei-y: -9999px;
     --sensei-slip-rotation: 0deg;
-    transform: translate3d(var(--sensei-x), var(--sensei-y), 0) rotate(var(--sensei-slip-rotation));
+    transform: translate3d(var(--sensei-x), var(--sensei-y), 0) perspective(760px) rotateY(var(--sensei-slip-rotation));
     transform-origin: 50% 100%;
+    transform-style: preserve-3d;
     transition: opacity .24s ease;
   }
   #player-sensei-vrm-container[hidden] { display: none !important; }
@@ -397,8 +398,8 @@
     38% { transform: translate3d(var(--sensei-x), calc(var(--sensei-y) - 18px), 0) scale(1.04); }
   }
   @keyframes sensei-disappointed {
-    0%, 100% { transform: translate3d(var(--sensei-x), var(--sensei-y), 0) scale(1); }
-    38% { transform: translate3d(var(--sensei-x), calc(var(--sensei-y) + 10px), 0) rotate(-3deg) scale(.97); filter: saturate(.76); }
+    0%, 100% { transform: translate3d(var(--sensei-x), var(--sensei-y), 0) perspective(760px) rotateY(var(--sensei-slip-rotation)) scale(1); }
+    38% { transform: translate3d(var(--sensei-x), calc(var(--sensei-y) + 10px), 0) perspective(760px) rotateY(var(--sensei-slip-rotation)) rotate(-3deg) scale(.97); filter: saturate(.76); }
   }
   #result-panel {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(0.92);
@@ -834,6 +835,7 @@
   var FLOOR_Y = 450;
   var BALL_R = 18;
   var SHUTTLE_VISUAL_R = 12;
+  var SHUTTLE_FLIGHT_VISUAL_R = 9;
   var SWING_IMPACT_DELAY_MS = 120;
   var SHUTTLE_MASS_KG = 0.005;
   var SHUTTLE_DRAG_PER_SECOND = 0.42;
@@ -933,6 +935,31 @@
     targetTop: 338,
     targetBottom: 452
   };
+  function getCourtServiceLinePositions(court) {
+    var halfCourtLength = (court.courtRight - court.courtLeft) / 2;
+    var shortServiceOffset = halfCourtLength * (1.98 / 6.70);
+    var doublesLongServiceInset = halfCourtLength * (0.76 / 6.70);
+    return {
+      leftShortServiceX: court.netX - shortServiceOffset,
+      rightShortServiceX: court.netX + shortServiceOffset,
+      leftDoublesLongServiceX: court.courtLeft + doublesLongServiceInset,
+      rightDoublesLongServiceX: court.courtRight - doublesLongServiceInset
+    };
+  }
+  function getPlayerServeLaneCenterX() {
+    var lines = getCourtServiceLinePositions(BADMINTON);
+    return (lines.leftDoublesLongServiceX + lines.leftShortServiceX) / 2;
+  }
+  function getPlayerCourtMoveBounds() {
+    if (typeof game !== 'undefined' && isPlayerServeSetup()) {
+      var serviceLines = getCourtServiceLinePositions(BADMINTON);
+      return {
+        minX: serviceLines.leftDoublesLongServiceX + 14,
+        maxX: serviceLines.leftShortServiceX - 14
+      };
+    }
+    return { minX: PLAYER_COURT_X_MIN, maxX: PLAYER_COURT_X_MAX };
+  }
   var NET_TOP = BADMINTON.netTop;
   var NET_BOTTOM = BADMINTON.netBottom;
   var NET_VISUAL_LINE_WIDTH = 4;
@@ -968,18 +995,22 @@
   var YUI_COURT_X_MAX = BADMINTON.courtRight - 80;
   var YUI_COURT_Y_MIN = 380;
   var YUI_COURT_Y_MAX = 425;
+  var PLAYER_FOOT_CONTACT_OFFSET_Y = 63;
   var PLAYER_RETURN_REACH_X = 84;
   var PLAYER_RETURN_REACH_Y = 108;
-  var PLAYER_START_X = 150;
+  var PLAYER_START_X = getPlayerServeLaneCenterX();
   var PLAYER_START_Y = 405;
   var YUI_START_X = BADMINTON.netX + (BADMINTON.courtRight - BADMINTON.netX) * 0.58;
   var YUI_START_Y = 405;
-  var YUI_CHEAT_RANDOM_CHANCE = 0.12;
-  var YUI_CHEAT_CLOSE_SCORE_CHANCE = 0.52;
+  var YUI_CHEAT_RANDOM_CHANCE = 1;
+  var YUI_CHEAT_CLOSE_SCORE_CHANCE = 1;
   var YUI_CHEAT_COOLDOWN_MS = 5200;
-  var YUI_CHEAT_BANANA_RADIUS = 30;
+  var YUI_CHEAT_BANANA_RADIUS = 22;
+  var YUI_CHEAT_BANANA_DRAW_SIZE = 20;
+  var YUI_CHEAT_BANANA_SLIP_ROTATION_RAD = Math.PI * 2;
   var YUI_CHEAT_BANANA_EXPIRE_MS = 7000;
-  var YUI_CHEAT_BANANA_SLOW_MS = 1350;
+  var YUI_CHEAT_BANANA_SPEED_MULTIPLIER = 0.22;
+  var YUI_CHEAT_BANANA_SLOW_MS = 1800;
   var YUI_CHEAT_BANANA_SPIN_MS = 900;
   var YUI_CHEAT_BANANA_JUMP_CLEARANCE = 6;
   var YUI_CHEAT_INK_DURATION_MS = 3600;
@@ -3696,12 +3727,12 @@
     var opts = options || {};
     var defaultOffset = game.playerCourt.targetX < (PLAYER_COURT_X_MIN + PLAYER_COURT_X_MAX) / 2 ? 104 : -104;
     var x = Number.isFinite(opts.x) ? opts.x : clamp(game.playerCourt.targetX + defaultOffset + (Math.random() - 0.5) * 42, PLAYER_COURT_X_MIN + 16, PLAYER_COURT_X_MAX - 16);
-    var y = Number.isFinite(opts.y) ? opts.y : PLAYER_START_Y + 18 + (Math.random() - 0.5) * 16;
+    var y = Number.isFinite(opts.y) ? opts.y : getPlayerFootY() + (Math.random() - 0.5) * 8;
     return {
       id: ++game.yuiCheat.seq,
       kind: 'banana',
       x: clamp(x, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX),
-      y: clamp(y, PLAYER_COURT_Y_MIN - 10, PLAYER_COURT_Y_MAX + 34),
+      y: clamp(y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8),
       radius: YUI_CHEAT_BANANA_RADIUS,
       createdAt: now,
       expiresAt: now + YUI_CHEAT_BANANA_EXPIRE_MS
@@ -3714,6 +3745,7 @@
     game.yuiCheat.inkUntil = now + YUI_CHEAT_INK_DURATION_MS;
     game.yuiCheat.lastUsedKind = 'octopus';
     game.yuiCheat.cooldownUntil = now + YUI_CHEAT_COOLDOWN_MS;
+    badmintonGameAudio.playSfx('yuiCheat.octopusInk', { volumeMultiplier: 0.92 });
     showAssistHint(_i18n('toast.yuiCheatInk', 'Yui 扔了墨汁'));
     applyNekoControl({ expression: 'tease', intensity: 'medium' }, { transient: true });
     setYuiAction('shooting', 420);
@@ -3762,7 +3794,7 @@
     var fade = active ? clamp(remaining / Math.max(1, duration), 0, 1) : 0;
     return {
       active: active,
-      alpha: active ? clamp(0.28 + fade * 0.42, 0, 0.72) : 0,
+      alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0,
       remaining_ms: Math.round(remaining)
     };
   }
@@ -3771,20 +3803,23 @@
     return {
       slipping: now < (effect.slowUntil || 0),
       spin_angle: effect.spinAngle || 0,
+      speed_multiplier: getPlayerMovementSpeedMultiplier(now),
       slow_remaining_ms: Math.max(0, Math.round((effect.slowUntil || 0) - now)),
       spin_remaining_ms: Math.max(0, Math.round((effect.spinUntil || 0) - now))
     };
   }
-  function getPlayerMovementSpeedMultiplier() {
+  function getPlayerMovementSpeedMultiplier(now) {
     var effect = game.playerCheatEffect || {};
-    return performance.now() < (effect.slowUntil || 0) ? 0.32 : 1;
+    var t = Number.isFinite(now) ? now : performance.now();
+    return t < (effect.slowUntil || 0) ? YUI_CHEAT_BANANA_SPEED_MULTIPLIER : 1;
   }
   function updatePlayerCheatEffect(now) {
     var effect = game.playerCheatEffect;
     if (!effect) return;
     if (now < (effect.spinUntil || 0)) {
       var progress = clamp((now - (effect.spinStartedAt || now)) / Math.max(1, YUI_CHEAT_BANANA_SPIN_MS), 0, 1);
-      effect.spinAngle = Math.PI * 2 * (1 - Math.pow(1 - progress, 2));
+      var easedProgress = 1 - Math.pow(1 - progress, 3);
+      effect.spinAngle = YUI_CHEAT_BANANA_SLIP_ROTATION_RAD * easedProgress;
     } else {
       effect.spinAngle = 0;
     }
@@ -3795,6 +3830,7 @@
     game.playerCheatEffect.spinStartedAt = now;
     game.playerCheatEffect.spinUntil = now + YUI_CHEAT_BANANA_SPIN_MS;
     game.playerCheatEffect.spinAngle = 0.01;
+    badmintonGameAudio.playSfx('yuiCheat.bananaSlip', { volumeMultiplier: 0.9 });
     showAssistHint(_i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了'));
     setPlayerAction('react-disappointed', 560);
     sendGameEvent({
@@ -3818,7 +3854,7 @@
       if (!item || now >= item.expiresAt) continue;
       if (item.kind === 'banana') {
         var dx = getPlayerX() - item.x;
-        var dy = getPlayerY() - item.y;
+        var dy = getPlayerFootY() - item.y;
         var dist = Math.sqrt(dx * dx + dy * dy);
         var isJumpingOver = !!(game.playerJump && game.playerJump.active) || getPlayerJumpOffset() > YUI_CHEAT_BANANA_JUMP_CLEARANCE;
         if (!isJumpingOver && dist <= (item.radius || YUI_CHEAT_BANANA_RADIUS)) {
@@ -3832,7 +3868,8 @@
   }
   function updatePlayerCourtTarget(clientX, clientY) {
     var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);
-    game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);
+    var moveBounds = getPlayerCourtMoveBounds();
+    game.playerCourt.targetX = clamp(normX * BASE_W, moveBounds.minX, moveBounds.maxX);
     game.playerCourt.targetY = PLAYER_START_Y;
   }
   function rememberPlayerPointer(ev) {
@@ -3879,6 +3916,9 @@
   }
   function getPlayerY() {
     return clamp(game.playerCourt.y - getPlayerJumpOffset(), PLAYER_COURT_Y_MIN - PLAYER_JUMP_MAX_OFFSET, PLAYER_COURT_Y_MAX);
+  }
+  function getPlayerFootY() {
+    return clamp(getPlayerY() + PLAYER_FOOT_CONTACT_OFFSET_Y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8);
   }
   function getPlayerEyeY() {
     return getPlayerY() - 66;
@@ -4339,7 +4379,10 @@
     var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;
     var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';
     var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';
-    return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
+    return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
+  }
+  function isPlayerServeSetup() {
+    return isDuelMode() && game.state === 'ready' && isPlayerTurn() && game.heldShuttleVisible && !game.ball && !game.pendingSwing;
   }
   function isPlayerReceivingReturn() {
     return !!(game.ball && game.ball.awaitingReturnBy === 'player');
@@ -5074,8 +5117,10 @@
     var shuttleZ = getShuttleCourtZ(ball, false);
     var yuiContactTopZ = screenYToCourtZ(contact.y - 26);
     var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);
-    var yuiReachLeft = contact.x;
-    var yuiReachRight = contact.x + 23;
+    var serviceLines = getCourtServiceLinePositions(BADMINTON);
+    var shuttleRadius = ball.radius || BALL_R;
+    var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;
+    var yuiReachRight = Math.max(contact.x + 23, serviceLines.rightShortServiceX + shuttleRadius * 0.5);
     var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft
       && Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;
     var inYuiReach = crossesYuiReach
@@ -6417,13 +6462,7 @@
       ctx.fillStyle = farCourtMist;
       ctx.fillRect(court.courtLeft, groundTop - 18, court.courtRight - court.courtLeft, 60);
     }
-    var halfCourtLength = (court.courtRight - court.courtLeft) / 2;
-    var shortServiceOffset = halfCourtLength * (1.98 / 6.70);
-    var doublesLongServiceInset = halfCourtLength * (0.76 / 6.70);
-    var leftShortServiceX = court.netX - shortServiceOffset;
-    var rightShortServiceX = court.netX + shortServiceOffset;
-    var leftDoublesLongServiceX = court.courtLeft + doublesLongServiceInset;
-    var rightDoublesLongServiceX = court.courtRight - doublesLongServiceInset;
+    var serviceLines = getCourtServiceLinePositions(court);
     var courtLineShadow = theme.scenic === 'miami' ? 'rgba(114,76,36,.24)' : 'rgba(6,58,51,.22)';
     ctx.strokeStyle = courtLineShadow;
     ctx.lineWidth = 7;
@@ -6449,14 +6488,14 @@
     ctx.beginPath();
     ctx.moveTo(court.netX, groundTop - 4);
     ctx.lineTo(court.netX, groundBottom + 4);
-    ctx.moveTo(leftShortServiceX, groundTop + 6);
-    ctx.lineTo(leftShortServiceX, groundBottom - 6);
-    ctx.moveTo(rightShortServiceX, groundTop + 6);
-    ctx.lineTo(rightShortServiceX, groundBottom - 6);
-    ctx.moveTo(leftDoublesLongServiceX, groundTop + 6);
-    ctx.lineTo(leftDoublesLongServiceX, groundBottom - 6);
-    ctx.moveTo(rightDoublesLongServiceX, groundTop + 6);
-    ctx.lineTo(rightDoublesLongServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.leftShortServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.leftShortServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.rightShortServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.rightShortServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.leftDoublesLongServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.leftDoublesLongServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.rightDoublesLongServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.rightDoublesLongServiceX, groundBottom - 6);
     ctx.stroke();
     ctx.strokeStyle = 'rgba(255,255,255,.32)';
     ctx.lineWidth = 0.9;
@@ -7007,7 +7046,7 @@
       ctx.stroke();
       ctx.restore();
     }
-    if (ball.y < -SHUTTLE_VISUAL_R * 2) {
+    if (ball.y < -SHUTTLE_FLIGHT_VISUAL_R * 2) {
       var markerX = clamp(ball.x, BADMINTON.courtLeft + 12, BADMINTON.courtRight - 12);
       ctx.save();
       ctx.globalAlpha = 0.88;
@@ -7031,10 +7070,10 @@
     ctx.globalAlpha = shadowAlpha;
     ctx.fillStyle = 'rgba(4,20,24,.55)';
     ctx.beginPath();
-    ctx.ellipse(ball.x, FLOOR_Y + 3, SHUTTLE_VISUAL_R * 1.35 * shadowScale, SHUTTLE_VISUAL_R * 0.36 * shadowScale, 0, 0, Math.PI * 2);
+    ctx.ellipse(ball.x, FLOOR_Y + 3, SHUTTLE_FLIGHT_VISUAL_R * 1.35 * shadowScale, SHUTTLE_FLIGHT_VISUAL_R * 0.36 * shadowScale, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
-    drawShuttlecock(ball.x, ball.y, SHUTTLE_VISUAL_R, ball.spinAngle || 0);
+    drawShuttlecock(ball.x, ball.y, SHUTTLE_FLIGHT_VISUAL_R, ball.spinAngle || 0);
   }
 
   function drawNet() {
@@ -7434,7 +7473,7 @@
     if (slipRotation) {
       ctx.save();
       ctx.translate(px, py);
-      ctx.rotate(slipRotation);
+      ctx.scale(Math.cos(slipRotation), 1);
       ctx.translate(-px, -py);
     }
     ctx.fillStyle = '#f6c177';
@@ -7481,15 +7520,15 @@
       var drawH = drawW * naturalH / naturalW;
       ctx.fillStyle = 'rgba(24,18,10,.10)';
       ctx.beginPath();
-      ctx.ellipse(0, drawH * 0.30, drawW * 0.42, drawH * 0.18, -0.08, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, drawW * 0.42, drawH * 0.18, -0.08, 0, Math.PI * 2);
       ctx.fill();
-      ctx.drawImage(yuiBananaPeelSpriteImage, -drawW / 2, -drawH * 0.62, drawW, drawH);
+      ctx.drawImage(yuiBananaPeelSpriteImage, -drawW / 2, -drawH * 0.88, drawW, drawH);
     } else {
       ctx.fillStyle = '#f2c33f';
       ctx.strokeStyle = 'rgba(104,64,13,.42)';
       ctx.lineWidth = 1.3;
       ctx.beginPath();
-      ctx.ellipse(0, 0, size * 0.92, size * 0.36, -0.18, 0, Math.PI * 2);
+      ctx.ellipse(0, -size * 0.28, size * 0.92, size * 0.36, -0.18, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
@@ -7507,7 +7546,7 @@
       var rotation = -0.20 + Math.sin(now / 260 + item.id) * 0.035;
       ctx.save();
       ctx.globalAlpha = 0.76 + age * 0.22;
-      drawYuiBananaPeelSprite(item.x, item.y + bob, 28, rotation);
+      drawYuiBananaPeelSprite(item.x, item.y + bob, YUI_CHEAT_BANANA_DRAW_SIZE, rotation);
       ctx.restore();
     }
   }
@@ -7632,23 +7671,88 @@
     if (!ink.active || ink.alpha <= 0) return;
     var pulse = 0.5 + Math.sin(now / 180) * 0.5;
     aimingCtx.save();
-    aimingCtx.globalAlpha = ink.alpha;
-    aimingCtx.fillStyle = 'rgba(6,8,14,.82)';
-    aimingCtx.beginPath();
-    aimingCtx.ellipse(BASE_W * 0.36, BASE_H * 0.42, 190 + pulse * 18, 138 + pulse * 10, -0.18, 0, Math.PI * 2);
-    aimingCtx.ellipse(BASE_W * 0.63, BASE_H * 0.36, 158 + pulse * 12, 122 + pulse * 14, 0.24, 0, Math.PI * 2);
-    aimingCtx.ellipse(BASE_W * 0.55, BASE_H * 0.62, 218 + pulse * 10, 116 + pulse * 12, 0.06, 0, Math.PI * 2);
-    aimingCtx.fill();
-    aimingCtx.globalAlpha = Math.min(1, ink.alpha + 0.12);
-    aimingCtx.fillStyle = 'rgba(0,0,0,.72)';
-    for (var i = 0; i < 14; i++) {
-      var angle = i * 1.74 + now / 650;
-      var x = BASE_W * (0.24 + ((i * 37) % 52) / 100) + Math.cos(angle) * (18 + (i % 4) * 8);
-      var y = BASE_H * (0.22 + ((i * 29) % 54) / 100) + Math.sin(angle) * (12 + (i % 5) * 6);
+    aimingCtx.globalAlpha = Math.min(0.34, ink.alpha * 0.38);
+    aimingCtx.fillStyle = 'rgba(1,5,10,.46)';
+    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+
+    var centralInk = aimingCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48, 24, BASE_W * 0.50, BASE_H * 0.48, BASE_W * 0.34);
+    centralInk.addColorStop(0, 'rgba(0,0,0,.96)');
+    centralInk.addColorStop(0.44, 'rgba(1,4,9,.92)');
+    centralInk.addColorStop(0.72, 'rgba(4,12,19,.62)');
+    centralInk.addColorStop(1, 'rgba(0,0,0,0)');
+    aimingCtx.globalAlpha = Math.min(0.96, ink.alpha * 1.04);
+    aimingCtx.fillStyle = centralInk;
+    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+
+    function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {
+      aimingCtx.save();
+      aimingCtx.translate(cx, cy);
+      aimingCtx.rotate(rot);
+      aimingCtx.globalAlpha = Math.min(0.94, ink.alpha * alpha);
+      aimingCtx.fillStyle = 'rgba(0,2,6,.9)';
+      aimingCtx.shadowColor = 'rgba(0,0,0,.42)';
+      aimingCtx.shadowBlur = 22;
       aimingCtx.beginPath();
-      aimingCtx.ellipse(x, y, 18 + (i % 5) * 5, 10 + (i % 4) * 3, angle * 0.2, 0, Math.PI * 2);
+      aimingCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      aimingCtx.fill();
+      aimingCtx.restore();
+    }
+
+    var centerSplashes = [
+      [BASE_W * 0.50, BASE_H * 0.47, 154, 116, -0.06, 0.98],
+      [BASE_W * 0.40, BASE_H * 0.42, 112, 74, 0.18, 0.74],
+      [BASE_W * 0.61, BASE_H * 0.43, 118, 82, -0.20, 0.78],
+      [BASE_W * 0.47, BASE_H * 0.58, 132, 72, 0.10, 0.7],
+      [BASE_W * 0.57, BASE_H * 0.57, 96, 62, 0.28, 0.62]
+    ];
+    for (var s = 0; s < centerSplashes.length; s++) {
+      var splash = centerSplashes[s];
+      drawCenterInkBlob(splash[0], splash[1], splash[2] + pulse * 8, splash[3] + pulse * 6, splash[4], splash[5]);
+    }
+
+    aimingCtx.shadowBlur = 0;
+    aimingCtx.lineCap = 'round';
+    for (var drip = 0; drip < 8; drip++) {
+      var centerDripX = BASE_W * (0.36 + ((drip * 17) % 28) / 100);
+      var centerDripTop = BASE_H * (0.38 + (drip % 3) * 0.05);
+      var centerDripLen = 40 + (drip % 5) * 16 + pulse * 8;
+      aimingCtx.globalAlpha = Math.min(0.76, ink.alpha * (0.58 + (drip % 3) * 0.06));
+      aimingCtx.strokeStyle = 'rgba(0,2,5,.86)';
+      aimingCtx.lineWidth = 5 + (drip % 3) * 3;
+      aimingCtx.beginPath();
+      aimingCtx.moveTo(centerDripX, centerDripTop);
+      aimingCtx.bezierCurveTo(centerDripX - 8, centerDripTop + centerDripLen * 0.34, centerDripX + 10, centerDripTop + centerDripLen * 0.68, centerDripX + Math.sin(now / 360 + drip) * 4, centerDripTop + centerDripLen);
+      aimingCtx.stroke();
+      aimingCtx.fillStyle = 'rgba(0,2,5,.82)';
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(centerDripX, centerDripTop + centerDripLen + 4, aimingCtx.lineWidth * 0.72, aimingCtx.lineWidth * 1.05, 0, 0, Math.PI * 2);
       aimingCtx.fill();
     }
+    for (var speck = 0; speck < 22; speck++) {
+      var spread = 0.16 + (speck % 5) * 0.025;
+      var orbitAngle = speck * 2.28 + now / 900;
+      var speckX = BASE_W * 0.5 + Math.cos(orbitAngle) * BASE_W * spread;
+      var speckY = BASE_H * 0.48 + Math.sin(orbitAngle * 0.9) * BASE_H * (spread * 0.72);
+      var speckAngle = speck * 1.17 + now / 900;
+      aimingCtx.globalAlpha = Math.min(0.56, ink.alpha * 0.54);
+      aimingCtx.fillStyle = 'rgba(0,3,8,.72)';
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(speckX, speckY, 8 + (speck % 4) * 4, 5 + (speck % 3) * 3, speckAngle * 0.18, 0, Math.PI * 2);
+      aimingCtx.fill();
+    }
+
+    if (ink.alpha > 0.58) {
+      aimingCtx.globalAlpha = Math.min(0.16, ink.alpha * 0.18);
+      aimingCtx.strokeStyle = 'rgba(114,216,226,.42)';
+      aimingCtx.lineWidth = 1.2;
+      for (var arc = 0; arc < 2; arc++) {
+        var arcY = BASE_H * (0.42 + arc * 0.12) + Math.sin(now / 460 + arc) * 4;
+        aimingCtx.beginPath();
+        aimingCtx.ellipse(BASE_W * 0.5, arcY, BASE_W * (0.22 + arc * 0.04), BASE_H * 0.10, -0.08 + arc * 0.16, 0, Math.PI * 2);
+        aimingCtx.stroke();
+      }
+    }
+
     aimingCtx.restore();
   }
   function drawPlayerReturnHitCue() {
@@ -8161,6 +8265,52 @@
     updateDebugReadout();
     return ball.id;
   }
+  function debugSetPlayerShuttleForYuiReturnBall(extra) {
+    var opts = extra || {};
+    var x = Number.isFinite(opts.x) ? opts.x : BADMINTON.netX + 80;
+    var prevX = Number.isFinite(opts.prevX) ? opts.prevX : x - 18;
+    var y = Number.isFinite(opts.y) ? opts.y : FLOOR_Y - 128;
+    var prevY = Number.isFinite(opts.prevY) ? opts.prevY : y;
+    var courtY = Number.isFinite(opts.courtY) ? opts.courtY : x;
+    var prevCourtY = Number.isFinite(opts.prevCourtY) ? opts.prevCourtY : prevX;
+    var z = Number.isFinite(opts.z) ? opts.z : screenYToCourtZ(y);
+    var prevZ = Number.isFinite(opts.prevZ) ? opts.prevZ : screenYToCourtZ(prevY);
+    var ball = Object.assign({
+      id: ++game.shuttleSeq,
+      x: x,
+      y: y,
+      prevX: prevX,
+      prevY: prevY,
+      courtY: courtY,
+      prevCourtY: prevCourtY,
+      z: z,
+      prevZ: prevZ,
+      vx: 34,
+      vy: 0,
+      vCourtY: 34,
+      vz: 0,
+      radius: BALL_R,
+      shooter: 'player',
+      direction: 1,
+      crossedNet: true,
+      resolved: false,
+      awaitingReturnBy: '',
+      hitNet: false,
+      groundedReturnAt: 0,
+      startDistance: game.distance,
+      angle: 52,
+      power: 56,
+      trail: []
+    }, opts);
+    game.ball = ball;
+    game.state = 'in_flight';
+    game.duel.activeShooter = 'player';
+    game.heldShuttleVisible = false;
+    game.charging = false;
+    updateHud();
+    updateDebugReadout();
+    return ball.id;
+  }
   function debugSetDuelScore(extra) {
     var data = extra || {};
     if (Number.isFinite(data.playerScore)) game.duel.playerScore = Math.max(0, Math.round(data.playerScore));
@@ -8208,10 +8358,16 @@
           power: game.power,
           charging: game.charging,
           canControlShot: canPlayerControlShot(),
+          canMoveCourt: canPlayerMoveCourt(),
+          playerServeSetup: isPlayerServeSetup(),
           receivingReturn: isPlayerReceivingReturn(),
           incomingReturnInReach: canPlayerReturnIncomingShuttle(),
           positionTransitioning: isPositionTransitioning,
           playerCourt: Object.assign({}, game.playerCourt),
+          courtServiceLines: getCourtServiceLinePositions(BADMINTON),
+          playerServeX: PLAYER_START_X,
+          playerFootY: getPlayerFootY(),
+          lastPlayerPointer: lastPlayerPointer ? Object.assign({}, lastPlayerPointer) : null,
           playerJump: {
             offset: getPlayerJumpOffset(),
             velocity: game.playerJump ? game.playerJump.velocity : 0,
@@ -8332,6 +8488,7 @@
       _snapshot: function () { return apiObject.getState(); },
       _debugFinishShot: debugFinishShot,
       _debugSetAwaitingPlayerReturnBall: debugSetAwaitingPlayerReturnBall,
+      _debugSetPlayerShuttleForYuiReturnBall: debugSetPlayerShuttleForYuiReturnBall,
       _debugSetDuelScore: debugSetDuelScore,
       _debugForceNextYuiCheat: debugForceNextYuiCheat,
       _debugSpawnYuiCheat: debugSpawnYuiCheat
@@ -8381,8 +8538,12 @@
     setPlayerAction('charging', 0);
   }
   canvas.addEventListener('mousemove', handleBadmintonPointerMove);
+  canvas.addEventListener('pointermove', handleBadmintonPointerMove);
   canvas.addEventListener('mousedown', handleBadmintonPointerDown);
   window.addEventListener('mousemove', function (ev) {
+    handleBadmintonPointerMove(ev);
+  }, true);
+  window.addEventListener('pointermove', function (ev) {
     handleBadmintonPointerMove(ev);
   }, true);
   window.addEventListener('mousedown', function (ev) {
