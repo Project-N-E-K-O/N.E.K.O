@@ -397,7 +397,7 @@ def test_drawing_guess_demo_static_route_contract():
 def test_drawing_guess_locale_cache_version_bumped_for_color_panel():
     script = _i18n_script()
 
-    assert "2026-06-21-drawing-guess-model-loading-preview" in script
+    assert "2026-06-22-drawing-guess-tutorial-i18n" in script
 
 
 @pytest.mark.unit

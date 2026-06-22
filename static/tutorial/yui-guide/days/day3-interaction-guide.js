@@ -35,7 +35,7 @@
                     voiceKey: 'avatar_floating_day3_intro',
                     text: '嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    target: 'chat-capsule-input',
                     cursorAction: 'move'
                 },
                 {

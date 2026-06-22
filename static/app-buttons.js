@@ -2018,6 +2018,7 @@
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
                     S.sessionStartedRejecter = reject;
+                    S._pendingSessionStartMode = 'audio';
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2039,6 +2040,7 @@
                         var rejecter = S.sessionStartedRejecter;
                         S.sessionStartedResolver = null;
                         S.sessionStartedRejecter = null;
+                        S._pendingSessionStartMode = null;
                         window.sessionTimeoutId = null;
 
                         if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2127,6 +2129,7 @@
                 rejectPendingTextSessionStart(error);
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
+                S._pendingSessionStartMode = null;
 
                 if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -2380,6 +2383,7 @@
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
                     S.sessionStartedRejecter = reject;
+                    S._pendingSessionStartMode = 'text';
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2391,6 +2395,7 @@
                             var rejecter = S.sessionStartedRejecter;
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
+                            S._pendingSessionStartMode = null;
                             window.sessionTimeoutId = null;
 
                             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2609,6 +2614,7 @@
                             var sessionStartPromise = new Promise(function (resolve, reject) {
                                 S.sessionStartedResolver = resolve;
                                 S.sessionStartedRejecter = reject;
+                                S._pendingSessionStartMode = 'text';
                                 mod._textSessionStartRejecter = reject;
 
                                 if (window.sessionTimeoutId) {
@@ -2630,6 +2636,7 @@
                                     var rejecter = S.sessionStartedRejecter;
                                     S.sessionStartedResolver = null;
                                     S.sessionStartedRejecter = null;
+                                    S._pendingSessionStartMode = null;
                                     mod._textSessionStartRejecter = null;
                                     window.sessionTimeoutId = null;
 

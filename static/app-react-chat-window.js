@@ -867,6 +867,7 @@
         if (element) {
             element.hidden = true;
             element.removeAttribute('data-active');
+            element.removeAttribute('data-neko-cat1-wide-art');
             element.style.removeProperty('left');
             element.style.removeProperty('top');
             element.style.removeProperty('width');
@@ -931,6 +932,11 @@
         if (image) {
             var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            if (src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif') !== -1) {
+                element.setAttribute('data-neko-cat1-wide-art', 'true');
+            } else {
+                element.removeAttribute('data-neko-cat1-wide-art');
+            }
             image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
         }
         element.style.left = rect.left + 'px';
@@ -976,6 +982,27 @@
             return;
         }
         showIdleCat1CompactMirror(detail);
+    }
+
+    function handleIdleCat1PlayYarnVisibility(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        var hidden = !!(detail && detail.hidden);
+        var shell = getShell();
+        if (shell && shell.classList) {
+            if (hidden && shell.classList.contains('is-minimized')) {
+                shell.setAttribute('data-neko-cat1-play-hidden', 'true');
+                syncCompactInteractionGeometry();
+            } else if (!hidden) {
+                shell.removeAttribute('data-neko-cat1-play-hidden');
+                syncCompactInteractionGeometry();
+            }
+        }
+        var bridge = window.nekoChatWindow;
+        if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
+            try {
+                bridge.setCompactChatBallTemporarilyHidden(hidden);
+            } catch (_) {}
+        }
     }
 
     function dispatchCompactSurfaceLayoutChange(rect) {
@@ -2153,8 +2180,9 @@
     function isYuiGuideDragLocked() {
         var body = document.body;
         if (!body) return false;
-        return body.classList.contains('yui-guide-home-driver-hidden')
+        return body.classList.contains('yui-guide-home-ui-suppressed')
             || body.classList.contains('yui-taking-over')
+            || body.classList.contains('yui-guide-standalone-input-shield-active')
             || body.classList.contains('yui-guide-chat-buttons-disabled');
     }
 
@@ -6715,6 +6743,7 @@
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
+        window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);
         window.addEventListener('live2d-goodbye-click', function () {
             setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });

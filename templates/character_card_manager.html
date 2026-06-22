@@ -11,7 +11,6 @@
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/character_card_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
     <style>
         /* 标题栏按钮容器 */
@@ -902,15 +901,11 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
 
-    <!-- Driver.js 库 -->
-    <script src="/static/libs/driver.min.js"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
     <script src="/static/tutorial/core/skip-controller.js"></script>
     <script src="/static/tutorial/avatar/reload-controller.js"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
-    <script src="/static/tutorial/core/universal-manager.js"></script>
 
     <!-- 初始化 -->
     <script>

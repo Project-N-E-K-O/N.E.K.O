@@ -106,12 +106,28 @@
         handleChatMessage(event, context) {
             const director = getDirector(context) || this.director;
             const legacyScene = getLegacyScene(context);
-            const text = event.text || safeCall(director, 'resolveAvatarFloatingSceneText', '', legacyScene);
+            const sceneTextKey = (legacyScene && legacyScene.textKey) || '';
+            const eventTextKey = event.textKey || '';
+            // The displayed bubble text must be localized. The normalized timeline
+            // command carries the raw `scene.text` (zh fallback) + its textKey, so we
+            // resolve through the director (which translates via i18n and applies
+            // per-scene special cases) instead of rendering `event.text` directly.
+            let text;
+            if (
+                eventTextKey
+                && eventTextKey !== sceneTextKey
+                && director
+                && typeof director.resolveGuideCopy === 'function'
+            ) {
+                text = director.resolveGuideCopy(eventTextKey, event.text || '');
+            } else {
+                text = safeCall(director, 'resolveAvatarFloatingSceneText', '', legacyScene) || event.text || '';
+            }
             if (!text || !director || typeof director.appendGuideChatMessage !== 'function') {
                 return false;
             }
             director.appendGuideChatMessage(text, {
-                textKey: event.textKey || legacyScene.textKey || '',
+                textKey: eventTextKey || sceneTextKey,
                 voiceKey: event.voiceKey || (getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''),
                 buttons: Array.isArray(event.buttons) ? event.buttons : []
             });
@@ -152,6 +168,9 @@
                     ? director.getAvatarFloatingIntroExternalizedSpotlightKind(legacyScene)
                     : 'capsule-input';
                 const normalizedIntroKind = introKind || 'capsule-input';
+                if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                    director.clearHomeSpotlightsForExternalizedChat();
+                }
                 director.interactionTakeover.setExternalizedChatSpotlight(normalizedIntroKind);
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     const cursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
@@ -187,6 +206,9 @@
                     ? (primaryKind || persistentKind)
                     : (persistentKind || primaryKind);
                 if (externalizedSpotlightKind) {
+                    if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                        director.clearHomeSpotlightsForExternalizedChat();
+                    }
                     director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
                     return true;
                 }

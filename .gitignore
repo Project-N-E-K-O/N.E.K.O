@@ -175,6 +175,9 @@ plugin/.neko-package-profiles/
 # 插件备忘提醒运行时数据库
 plugin/plugins/memo_reminder/store.db
 
+# Claude Companion 插件运行时收件箱
+plugin/plugins/claude_companion/inbox.json
+
 # Local nested plugin repos (keep them out of the parent repo index)
 plugin/neko-plugin-docs/
 plugin/rust/

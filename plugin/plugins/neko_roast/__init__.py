@@ -1,0 +1,365 @@
+"""Neko Roast plugin entry."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
+
+
+@neko_plugin
+class NekoRoastPlugin(NekoPluginBase):
+    name = "neko_roast"
+    passive = True
+
+    def __init__(self, ctx: Any):
+        super().__init__(ctx)
+        self.logger = getattr(ctx, "logger", None)
+        self.runtime: Any | None = None
+
+    @lifecycle(id="startup")
+    async def startup(self, **_):
+        try:
+            from .core.runtime import RoastRuntime
+        except ModuleNotFoundError as exc:
+            if exc.name != "plugin.plugins.neko_roast.core.runtime":
+                raise
+            return Ok({"status": "ready", "runtime": "pending"})
+        self.runtime = RoastRuntime(self)
+        await self.runtime.start()
+        self.register_dynamic_entry(
+            "developer_lookup_bili_user",
+            self.developer_lookup_bili_user,
+            name="查询 B站用户基础资料",
+            description="开发者模式开启时使用。当用户要求查询 B站 UID、B站空间链接或运行猫娘锐评内置测试案例时使用。内置测试案例传 target='__demo__'。只查询 UID、昵称和头像，不输出锐评。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "uid": {"type": "string"},
+                    "nickname": {"type": "string"},
+                    "avatar_url": {"type": "string"},
+                },
+            },
+            timeout=20.0,
+        )
+        self.register_dynamic_entry(
+            "developer_roast_by_bili_url",
+            self.developer_roast_by_bili_url,
+            name="查询 B站用户并猫娘锐评",
+            description="开发者模式开启时使用。当用户要求查询并锐评 B站 UID、B站空间链接或运行猫娘锐评内置测试案例时使用。内置测试案例传 target='__demo__'。会查询 UID、昵称和头像，并让猫猫按当前人设输出锐评。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "uid": {"type": "string"},
+                    "nickname": {"type": "string"},
+                    "avatar_url": {"type": "string"},
+                    "danmaku_text": {"type": "string"},
+                },
+            },
+            timeout=30.0,
+        )
+        self._sync_developer_entries()
+        await self.runtime.inject_instructions()
+        await self.runtime.sync_developer_mode(announce=False)
+        return Ok({"status": "ready"})
+
+    @lifecycle(id="shutdown")
+    async def shutdown(self, **_):
+        if self.runtime:
+            await self.runtime.stop()
+        return Ok({"status": "stopped"})
+
+    @lifecycle(id="config_change")
+    async def on_config_change(self, **_):
+        if self.runtime is None:
+            return Ok({"status": "ready", "runtime": "pending"})
+        runtime = self.runtime
+        await runtime.reload_config()
+        self._sync_developer_entries()
+        await runtime.inject_instructions(force=True)
+        await runtime.sync_developer_mode(announce=False)
+        return Ok({"status": "reloaded"})
+
+    def _runtime(self) -> RoastRuntime:
+        if self.runtime is None:
+            raise RuntimeError("NekoRoast runtime is not started")
+        return self.runtime
+
+    def _sync_developer_entries(self) -> None:
+        runtime = self._runtime()
+        entry_ids = ("developer_lookup_bili_user", "developer_roast_by_bili_url")
+        for entry_id in entry_ids:
+            if runtime.config.developer_tools_enabled:
+                self.enable_entry(entry_id)
+            else:
+                self.disable_entry(entry_id)
+
+
+    @ui.context(id="dashboard", title=tr("panel.title", default="猫娘锐评"))
+    async def get_dashboard_ui_context(self) -> dict[str, Any]:
+        return await self._runtime().dashboard_state()
+
+    @ui.action(id="update_config", label=tr("actions.update_config.label", default="保存设置"), group="control", order=10, refresh_context=True)
+    @plugin_entry(
+        id="update_config",
+        name=tr("entries.update_config.name", default="更新猫娘锐评设置"),
+        description=tr("entries.update_config.description", default="更新猫娘锐评的直播模式、开关和安全门设置。"),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def update_config_entry(self, **kwargs):
+        runtime = self._runtime()
+        previous_developer_mode = runtime.config.developer_tools_enabled
+        config = await runtime.update_config(kwargs)
+        self._sync_developer_entries()
+        if "developer_tools_enabled" in kwargs:
+            await runtime.sync_developer_mode(
+                announce=bool(config.developer_tools_enabled and not previous_developer_mode)
+            )
+        return Ok({"config": config.to_dict()})
+
+    @ui.action(id="pick_folder", label=tr("actions.pick_folder.label", default="选择文件夹"), group="control", order=15)
+    @plugin_entry(
+        id="pick_folder",
+        name=tr("entries.pick_folder.name", default="选择文件夹"),
+        description=tr("entries.pick_folder.description", default="弹出本机原生「选择文件夹」对话框，返回所选目录路径（面板用）。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "initial": {"type": "string", "description": "初始目录"},
+                "title": {"type": "string", "description": "对话框标题"},
+            },
+        },
+    )
+    async def pick_folder(self, **kwargs):
+        """本机弹原生「选择文件夹」对话框（装机软件那种），返回所选目录。
+
+        面板（hosted-ui 沙箱）拿不到 Electron dialog，故由插件后端（本机进程）用 tkinter 选目录框；
+        放进 worker 线程跑（一次性、各自独立 Tk root），避开 async 事件循环与 Tk 主线程冲突，
+        且不依赖 sys.executable（打包后仍可用）。-topmost 尽力压过常驻置顶窗口。
+        """
+        import asyncio as _asyncio
+
+        initial = str(kwargs.get("initial") or "")
+        title = str(kwargs.get("title") or "Select folder")
+
+        def _ask() -> str:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            try:
+                root.withdraw()
+                try:
+                    root.attributes("-topmost", True)
+                    root.update()
+                except Exception:  # noqa: BLE001 — 置顶失败不影响弹框
+                    pass
+                chosen = filedialog.askdirectory(initialdir=(initial or None), title=title)
+                return chosen or ""
+            finally:
+                try:
+                    root.destroy()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        try:
+            path = await _asyncio.to_thread(_ask)
+            return Ok({"path": path})
+        except Exception as exc:  # noqa: BLE001
+            return Err(SdkError(f"pick_folder failed: {type(exc).__name__}: {exc}"))
+
+    @ui.action(id="set_live_room", label=tr("actions.set_live_room.label", default="切换房间"), group="room", order=10, refresh_context=True)
+    @plugin_entry(
+        id="set_live_room",
+        name=tr("entries.set_live_room.name", default="设置直播间"),
+        description=tr("entries.set_live_room.description", default="设置猫娘锐评要监听的 B站直播间 ID。"),
+        input_schema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string", "description": "房号或直播间链接"}},
+            "required": ["room_id"],
+        },
+    )
+    async def set_live_room(self, room_id="", **_):
+        try:
+            config = await self._runtime().set_live_room(room_id)
+            return Ok({"room_id": config.live_room_id, "connection": self._runtime().live_connection_snapshot()})
+        except (TypeError, ValueError) as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="lookup_live_room", label=tr("actions.lookup_live_room.label", default="查询直播间"), group="room", order=15, refresh_context=True)
+    @plugin_entry(
+        id="lookup_live_room",
+        name=tr("entries.lookup_live_room.name", default="查询直播间状态"),
+        description=tr("entries.lookup_live_room.description", default="按 B站直播间 ID 查询标题、主播和开播状态。"),
+        input_schema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string", "description": "房号或直播间链接"}},
+            "required": ["room_id"],
+        },
+    )
+    async def lookup_live_room(self, room_id="", **_):
+        try:
+            payload = await self._runtime().lookup_live_room(room_id)
+            return Ok(payload)
+        except (TypeError, ValueError) as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="connect_live_room", label=tr("actions.connect_live_room.label", default="开始监听"), group="room", order=20, refresh_context=True)
+    @plugin_entry(
+        id="connect_live_room",
+        name=tr("entries.connect_live_room.name", default="开始监听直播间"),
+        description=tr("entries.connect_live_room.description", default="开启猫娘锐评直播接收状态。v0.1 不复制旧弹幕插件的 WebSocket 实现。"),
+        input_schema={"type": "object", "properties": {"room_id": {"type": "string", "description": "房号或直播间链接（留空用已配置房间）"}}},
+    )
+    async def connect_live_room(self, room_id="", **_):
+        try:
+            connection = await self._runtime().connect_live_room(room_id)
+            return Ok({"connection": connection})
+        except (TypeError, ValueError) as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="disconnect_live_room", label=tr("actions.disconnect_live_room.label", default="停止监听"), group="room", order=30, refresh_context=True)
+    @plugin_entry(
+        id="disconnect_live_room",
+        name=tr("entries.disconnect_live_room.name", default="停止监听直播间"),
+        description=tr("entries.disconnect_live_room.description", default="停止猫娘锐评直播接收状态。"),
+    )
+    async def disconnect_live_room(self, **_):
+        connection = await self._runtime().disconnect_live_room()
+        return Ok({"connection": connection})
+
+    @ui.action(id="bili_login", label=tr("actions.bili_login.label", default="扫码登录"), group="auth", order=10, refresh_context=True)
+    @plugin_entry(id="bili_login", name=tr("entries.bili_login.name", default="B站扫码登录"), description=tr("entries.bili_login.description", default="生成B站扫码登录二维码（已登录则直接回报）。登录态用于绕过 -352 风控、抓取头像与连接弹幕。"))
+    async def bili_login(self, **_):
+        try:
+            return Ok(await self._runtime().bili_login())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="bili_login_check", label=tr("actions.bili_login_check.label", default="检查登录"), group="auth", order=20, refresh_context=True)
+    @plugin_entry(id="bili_login_check", name=tr("entries.bili_login_check.name", default="检查扫码登录状态"), description=tr("entries.bili_login_check.description", default="轮询扫码状态；用户在手机确认后加密保存凭据。"))
+    async def bili_login_check(self, **_):
+        try:
+            return Ok(await self._runtime().bili_login_check())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="bili_login_status", label=tr("actions.bili_login_status.label", default="登录状态"), group="auth", order=30, refresh_context=True)
+    @plugin_entry(id="bili_login_status", name=tr("entries.bili_login_status.name", default="查询B站登录状态"), description=tr("entries.bili_login_status.description", default="查询当前是否已登录B站及用户名。"))
+    async def bili_login_status(self, **_):
+        try:
+            return Ok(await self._runtime().bili_login_status())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="bili_logout", label=tr("actions.bili_logout.label", default="退出登录"), group="auth", order=40, refresh_context=True)
+    @plugin_entry(id="bili_logout", name=tr("entries.bili_logout.name", default="退出B站登录"), description=tr("entries.bili_logout.description", default="本地注销：删除本机加密保存的B站凭据与密钥（不吊销服务端 token）。"))
+    async def bili_logout(self, **_):
+        try:
+            return Ok(await self._runtime().bili_logout())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="pause_roast", label=tr("actions.pause.label", default="一键暂停"), group="safety", order=20, refresh_context=True)
+    @plugin_entry(id="pause_roast", name=tr("entries.pause_roast.name", default="暂停锐评"), description=tr("entries.pause_roast.description", default="立即暂停猫娘锐评输出。"))
+    async def pause_roast(self, **_):
+        self._runtime().pause()
+        return Ok({"status": "paused"})
+
+    @ui.action(id="resume_roast", label=tr("actions.resume.label", default="恢复运行"), group="safety", order=30, refresh_context=True)
+    @plugin_entry(id="resume_roast", name=tr("entries.resume_roast.name", default="恢复锐评"), description=tr("entries.resume_roast.description", default="清空队列并重置安全门。"))
+    async def resume_roast(self, **_):
+        self._runtime().resume()
+        return Ok({"status": "running"})
+
+    @ui.action(id="clear_queue", label=tr("actions.clear_queue.label", default="清空队列"), group="safety", order=40, refresh_context=True)
+    @plugin_entry(id="clear_queue", name=tr("entries.clear_queue.name", default="清空队列"), description=tr("entries.clear_queue.description", default="清空当前锐评队列。"))
+    async def clear_queue(self, **_):
+        self._runtime().clear_queue()
+        return Ok({"status": "cleared"})
+
+    @ui.action(id="submit_viewer_event", label=tr("panel.actions.submitSandbox", default="发射模拟弹幕"), group="developer", order=20, refresh_context=True)
+    @plugin_entry(
+        id="submit_viewer_event",
+        name=tr("entries.submit_viewer_event.name", default="提交观众事件"),
+        description=tr("entries.submit_viewer_event.description", default="从开发者沙盒提交 UID/URL 测试事件。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "uid": {"type": "string"},
+                "nickname": {"type": "string"},
+                "avatar_url": {"type": "string"},
+                "danmaku_text": {"type": "string"},
+                "lookup_only": {"type": "boolean"},
+            },
+        },
+    )
+    async def submit_viewer_event(self, **kwargs):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        lookup_only = bool(kwargs.pop("lookup_only", False))
+        if lookup_only:
+            try:
+                payload = await runtime.lookup_bili_user(**kwargs)
+            except (TypeError, ValueError, PermissionError) as exc:
+                return Err(SdkError(str(exc)))
+            return Ok(payload)
+        try:
+            result = await runtime.handle_sandbox_target(**kwargs)
+        except PermissionError as exc:
+            return Err(SdkError(str(exc)))
+        return Ok(result.to_sandbox_dict())
+
+    @plugin_entry(
+        id="submit_live_event",
+        name=tr("entries.submit_live_event.name", default="提交直播事件"),
+        description=tr("entries.submit_live_event.description", default="提交归一化后的直播弹幕事件。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "uid": {"type": "string"},
+                "nickname": {"type": "string"},
+                "avatar_url": {"type": "string"},
+                "danmaku_text": {"type": "string"},
+            },
+            "required": ["uid"],
+        },
+    )
+    async def submit_live_event(self, **kwargs):
+        result = await self._runtime().handle_live_payload(kwargs)
+        return Ok(result.to_public_dict())
+
+    @ui.action(id="clear_sandbox_data", label=tr("actions.clear_sandbox_data.label", default="清空沙盒记录"), group="developer", order=30, refresh_context=True)
+    @plugin_entry(id="clear_sandbox_data", name=tr("entries.clear_sandbox_data.name", default="清空沙盒记录"), description=tr("entries.clear_sandbox_data.description", default="清空开发者沙盒的临时记录和头像预览缓存，不影响观众档案。"))
+    async def clear_sandbox_data(self, **_):
+        return Ok({"cleared": self._runtime().clear_sandbox_data()})
+
+    async def developer_lookup_bili_user(self, **kwargs):
+        return await self._developer_lookup_bili_user_impl(**kwargs)
+
+    async def _developer_lookup_bili_user_impl(self, **kwargs):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        try:
+            payload = await runtime.lookup_bili_user(**kwargs)
+        except (TypeError, ValueError, PermissionError) as exc:
+            return Err(SdkError(str(exc)))
+        return Ok(payload)
+
+    async def developer_roast_by_bili_url(self, **kwargs):
+        return await self._developer_roast_by_bili_url_impl(**kwargs)
+
+    async def _developer_roast_by_bili_url_impl(self, **kwargs):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        try:
+            result = await runtime.handle_sandbox_target(**kwargs)
+        except PermissionError as exc:
+            return Err(SdkError(str(exc)))
+        return Ok(result.to_sandbox_dict())

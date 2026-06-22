@@ -74,6 +74,7 @@ from config import (
     SESSION_TURN_THRESHOLD,
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
 )
 # FOCUS_MODE_ENABLED is read live with a function-local ``from config import
 # FOCUS_MODE_ENABLED`` at each gate (re-imported per call → picks up a runtime
@@ -638,6 +639,15 @@ IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 # 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
 FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
 
+# 跨模式重启时「等 in-flight 落定」的等待上限。必须明显短于前端超时：等完之后
+# 还要花几秒真正起目标模式会话（含最坏 ~12s 的 TTS 就绪等待），若把大半个 15s 都
+# 耗在等待上，重启发出的 session_started 会晚于前端 deadline，前端照样超时、甚至
+# reset 后才收到 ack 起孤儿会话（Codex P2）。取前端超时的一半，给重启留 ~7.5s 余量；
+# in-flight 没在这窗口内落定就放弃（回落 baseline：前端超时、无孤儿）。in-flight
+# （text）正常 1~3s 落定，远在窗口内。注：TTS 冷启动叠加 in-flight 贴线落定的双重
+# 最坏情形仍可能溢出 15s，此时由 start_session 末尾的连接/放弃校验与重启侧守卫兜底。
+CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
+
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
 # 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
@@ -838,6 +848,12 @@ class LLMSessionManager:
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
         self._audio_stream_epoch = 0
+        # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
+        # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
+        # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——
+        # 它在所有 end_session cleanup（含 by_server=True 的 in-flight 失败收口）
+        # 里都会涨，会把用户仍在等待的 audio 请求误判为已放弃（CodeRabbit）。
+        self._user_session_abandon_epoch = 0
         self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -1042,7 +1058,7 @@ class LLMSessionManager:
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
         # 详见 docs/design/user-activity-tracker.md。
-        from main_logic.activity import FocusScorer, UserActivityTracker
+        from main_logic.activity import FocusScorer, MasterEmotionTracker, UserActivityTracker
         from main_logic.conversation_turns import create_default_turn_dispatcher
         self._activity_tracker = UserActivityTracker(lanlan_name)
         self._turn_dispatcher = create_default_turn_dispatcher(
@@ -1056,6 +1072,15 @@ class LLMSessionManager:
         # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
         # proactive）共用同一个 scorer，保证行为不分裂。
         self._focus_scorer = FocusScorer(lanlan_name)
+
+        # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
+        # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
+        # 的 emotion 信号读它的最近读数）。绝不复用 lanlan 头像 outward-emotion 管线。
+        # privacy-independent（输入是对话不是屏幕），不受隐私门控。
+        self._master_emotion = MasterEmotionTracker(lanlan_name)
+        # 凝神 inline 评分用的 emotion 读数快照：每个 user turn 在 _note_user_turn 里
+        # 于「本轮 analyze 启动前」刷新，保证 emotion 信号确定性滞后一拍。
+        self._focus_emotion_reading = None
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（每会话每类
         # 一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。后端只检测「进入」那一刻
@@ -1082,6 +1107,12 @@ class LLMSessionManager:
                     self.lanlan_name, e,
                 )
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
+
+        # activity_guess narration 的「下游消费方」门控：会话 goodbye_silent（猫娘挂机
+        # 静默）时，proactive Phase 2 一进门就 bail，narration 没人读。把 is_goodbye_silent
+        # 注入 tracker，让 20s 心跳在静默期跳过昂贵的 emotion-tier LLM 外呼（规则心跳照跑）。
+        # tracker 跨 session 长存、心跳不随 End Session 取消，否则挂机后会一直空烧 LLM。
+        self._activity_tracker.set_narration_suppressed_check(self.is_goodbye_silent)
 
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
@@ -2350,7 +2381,17 @@ class LLMSessionManager:
             # they typed is core to an AI companion. Privacy mode governs only
             # SCREEN / app-state visibility (see docs/contributing/
             # developer-notes.md rule 6). Hence no snapshot fetch here.
-            scored = self._focus_scorer.score(user_text=user_text)
+            # emotion 信号读 master 情绪画像的最近读数（异步算、滞后一拍，与
+            # cadence 用历史一脉相承）。画像关 / 还没算过时 latest 为 None，
+            # FocusScorer 让 emotion 信号自动退出加权、退回 keyword+cadence。
+            # 读 _note_user_turn 在「本轮 analyze 启动前」存的快照，保证 emotion
+            # 信号确定性地滞后一拍——当前 turn 不消费它自己即将算出的读数（否则快
+            # tier / 中途 await 让 fire-and-forget analyze 抢先更新 latest，同一条
+            # 消息会时而读旧读数时而读自己的，违反 scorer 的 lag-one-turn 契约）。
+            emotion_reading = getattr(self, '_focus_emotion_reading', None)
+            scored = self._focus_scorer.score(
+                user_text=user_text, emotion_reading=emotion_reading,
+            )
             topic_changed = detect_topic_switch(user_text)
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
@@ -2656,6 +2697,21 @@ class LLMSessionManager:
             dispatcher.set_language(language)
 
     def _note_user_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+        # Master 情绪画像：异步分析用户这轮说的话（节流 + 开关都在 tracker 内部）。
+        # 语音转写 / 文本输入两条路径的对偶 chokepoint。fire-and-forget、best-effort，
+        # 绝不阻塞 turn 记录、不让分析异常冒泡。
+        _me = getattr(self, '_master_emotion', None)
+        if _me is not None:
+            # 先 snapshot「本轮 analyze 启动前」的读数，供 _focus_inline_decision 用，
+            # 保证 emotion 信号滞后一拍（当前 turn 不消费下面这次 analyze 的结果）。
+            # 读 .latest 已含 TTL / 开关 gate。
+            self._focus_emotion_reading = _me.latest
+        if text and text.strip() and _me is not None:
+            try:
+                self._fire_task(_me.analyze(text, now=now))
+            except Exception as _me_err:
+                logger.debug("[%s] master emotion fire failed: %s", self.lanlan_name, _me_err)
+
         dispatcher = getattr(self, '_turn_dispatcher', None)
         if dispatcher is not None:
             dispatcher.note_user_message(text=text, now=now)
@@ -4113,6 +4169,7 @@ class LLMSessionManager:
             try:
                 await self.state.clear_focus()
                 self._focus_scorer.reset()
+                self._master_emotion.reset()
             except Exception as _focus_err:
                 logger.debug(f"[{self.lanlan_name}] focus reset on repetition failed: {_focus_err}")
 
@@ -4641,8 +4698,9 @@ class LLMSessionManager:
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
         # 对偶 SM.reset 清 focus 态：scorer 的 cadence 基线也按会话隔离，新会话
-        # 不继承上一会话的消息长度基线。
+        # 不继承上一会话的消息长度基线。master 情绪画像同样按会话隔离。
         self._focus_scorer.reset()
+        self._master_emotion.reset()
 
     def _realtime_base_url(self) -> str:
         """Read the realtime route's base_url, for the native voice routing host remap
@@ -5207,7 +5265,23 @@ class LLMSessionManager:
 
         # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
         await self.send_session_failed(input_mode)
-        await self.cleanup()
+        # reset_starting_count=False：本函数从失败的 start_session 的 except 里调用，
+        # 那次 start_session 的 finally 才是 _starting_session_count guard 的唯一所有者
+        # 并会在最后递减它。若让这里的 cleanup 提前把 count 清 0，会开出一个"失败任务
+        # 尚未完全收尾、但 count 已 0"的窗口，等待中的跨模式重启会据此重入，随后被
+        # 失败任务残余的 cleanup（清 websocket）和 finally（减 guard）clobber（Codex P2）。
+        await self.cleanup(reset_starting_count=False)
+        # 但 reset_starting_count=False 会让 end_session 的 inactive-early 路径跳过
+        # pending_input_data.clear()（那块与 guard 释放耦合），导致本次失败启动期间缓存的
+        # 输入残留、被下次成功启动的 _flush_pending_input_data() 误注入（Codex P2）。
+        # 这里显式补清本次失败 start 自己的输入：此刻 count 仍被本次 finally 持有(>0)，
+        # 没有并发 start 穿过、缓存里只可能是本次失败 start 的输入，清理安全。
+        # 不走 end_session 的 gating 改动，rebuild 路径(同样 reset_starting_count=False 但
+        # 需要保留输入回放)语义不受影响。
+        async with self.input_cache_lock:
+            self.session_ready = False
+            self.pending_input_data.clear()
+            self._clear_pending_context_appends()
 
     @property
     def is_starting(self) -> bool:
@@ -5356,7 +5430,14 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
-    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
+    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio',
+                            *, user_initiated=False, _allow_cross_mode_restart=True):
+        # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
+        # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
+        # 落定后改起目标模式；后台 proactive / greeting 的 auto-start 跨模式撞车
+        # 仍走静默 return（保持原行为，避免后台 text 启动反过来顶掉用户的语音会话）。
+        # _allow_cross_mode_restart：跨模式重启重入时置 False，把递归深度封到 1，
+        # 二次并发撞车回落静默 return 而非无界递归。
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
         # 前端 i18n 真值（例如 Steam=zh / 系统=en 时正确的 'zh-CN'）一律打回错的
@@ -5395,8 +5476,7 @@ class LLMSessionManager:
             # 仅对**同模式**的去重请求补发 ack：in-flight 启的是它自己的模式，
             # 跨模式（如 greeting 拉 text、另一路同刻请求 audio）若复用 in-flight 的
             # session_started(text)，前端会按 text 切 UI、收口 promise，而用户要的
-            # audio 会话根本没起（CodeRabbit）。跨模式时维持原静默 return（与改动前
-            # 完全一致，不更差）。
+            # audio 会话根本没起（CodeRabbit）。
             if (self._starting_input_mode or input_mode) == input_mode:
                 logger.warning("⚠️ Session正在启动中，等 in-flight 启动落定后给本请求补发 session_started")
                 # 等 in-flight 那次启动**自己落定**（_starting_session_count 归 0）。
@@ -5418,6 +5498,65 @@ class LLMSessionManager:
                 # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
                 if self._starting_session_count == 0 and self.session and self.is_active:
                     await self.send_session_started(input_mode)
+            elif user_initiated and _allow_cross_mode_restart:
+                # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
+                # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
+                # （audio）。早期实现静默 return，但用户的 audio 请求是显式意图：
+                # 静默丢弃会让前端干等 15s ack 超时，且超时时发的 end_session 还会把
+                # 正在建立的 proactive text 会话一并撕掉（proactive 语音也播不出）。
+                # 改为：等 in-flight 那次启动落定（_starting_session_count 归 0）后，
+                # 递归重入起一个本模式的新会话——它会按 5588 行的旧 session 清理逻辑
+                # 替换掉刚建好的旧模式会话。不复用 in-flight 的 ack（跨模式复用会按
+                # 错模式切 UI，见上）。
+                logger.warning("⚠️ Session正在启动中（跨模式），等 in-flight 落定后改起 %s 会话", input_mode)
+                # 快照"用户放弃"计数：仅在前端/用户主动 end_session 时递增（见
+                # end_session 顶部）。in-flight 真正落定时 count 由其自身 finally 归 0、
+                # abandon epoch 不变；而前端 15s 超时发的 end_session 会把 count 清 0
+                # 且 abandon epoch +1。只在「count 归 0 且 abandon epoch 未变」时重启——
+                # 区分"真落定"与"用户已放弃 + 被 end_session 清零"，避免在 UI 已 reject
+                # 后凭空起孤儿会话（Codex P2）。关键：不能用 _audio_stream_epoch——它在
+                # in-flight 启动失败的 by_server cleanup 里也会涨，会把用户仍在等待的
+                # audio 误判成放弃、回到 15s 干等（CodeRabbit）。
+                _abandon_epoch = self._user_session_abandon_epoch
+                _waited = 0.0
+                while self._starting_session_count > 0 and _waited < CROSS_MODE_RESTART_WAIT_SECONDS:
+                    await asyncio.sleep(0.05)
+                    _waited += 0.05
+                # 重启前的连接校验，两个条件都要满足：
+                #   1) 本请求那把 ws（param）仍连接。in-flight 失败时
+                #      _handle_session_start_exception→cleanup() 会把 self.websocket 清成
+                #      None，但浏览器连接其实还开着——这种必须能重启，否则用户 audio 干等
+                #      15s（Codex P2）。判据用 param ws 的连接态，不看 self.websocket：浏览器
+                #      真刷新/断连时这把 param ws 会变 DISCONNECTED。
+                #   2) self.websocket 仍是这把或已被清空（None）。若已被换成另一条新连接，
+                #      说明发生了重连，别用旧 ws 重启去和新连接打架（Codex P2 stale ws）。
+                try:
+                    _param_ws_connected = (
+                        websocket is not None
+                        and hasattr(websocket, 'client_state')
+                        and websocket.client_state == websocket.client_state.CONNECTED
+                    )
+                except Exception:  # noqa: BLE001
+                    _param_ws_connected = False
+                _self_ws_ok = self.websocket is websocket or self.websocket is None
+                if self._starting_session_count != 0:
+                    logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs，留余量给重启），放弃改起 %s", _waited, input_mode)
+                elif self._user_session_abandon_epoch != _abandon_epoch:
+                    logger.warning("⚠️ 跨模式等待期间用户主动结束了启动（已放弃），不再改起 %s", input_mode)
+                elif not (_param_ws_connected and _self_ws_ok):
+                    logger.warning("⚠️ 跨模式等待期间 websocket 已断连/被新连接替换，不再改起 %s", input_mode)
+                else:
+                    # in-flight 干净落定且连接仍在：递归重入起目标模式。
+                    # 先清熔断：用户显式请求按 websocket_router 语义本应清，但当时
+                    # _starting_session_count>0 让它没清；若 in-flight 失败把熔断跳了闸，
+                    # 递归会在熔断检查（5427）处静默 return、不发 session_failed → 前端干等
+                    # 15s。这里替它清，让重启真正起来或走正常失败上报（Codex P2）。
+                    # 重入禁用跨模式重启（_allow_cross_mode_restart=False）把递归深度封到 1，
+                    # 二次并发撞车回落静默 return 而非无界递归（greptile P2）。guard 检查
+                    # （5431）前无 await，count==0 的判定到重入是原子的。
+                    self.reset_session_start_circuit()
+                    await self.start_session(websocket, new, input_mode,
+                                             user_initiated=True, _allow_cross_mode_restart=False)
             else:
                 logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
             return
@@ -6593,6 +6732,7 @@ class LLMSessionManager:
         full_text: str,
         expected_speech_id: str | None = None,
         action_note: str | None = None,
+        source_tag: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -6656,14 +6796,18 @@ class LLMSessionManager:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
                 # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
-                # LLM 给自己的元数据备忘，不算复读对象。
-                try:
-                    from memory.anti_repeat import get_anti_repeat_corpus
-                    get_anti_repeat_corpus().record_output(
-                        self.lanlan_name, full_text, is_proactive=True,
-                    )
-                except Exception as _exc:  # pragma: no cover
-                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
+                # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+                # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+                # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+                # BM25 评分豁免对偶）。
+                if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                    try:
+                        from memory.anti_repeat import get_anti_repeat_corpus
+                        get_anti_repeat_corpus().record_output(
+                            self.lanlan_name, full_text, is_proactive=True,
+                        )
+                    except Exception as _exc:  # pragma: no cover
+                        logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
@@ -9339,6 +9483,14 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
+        # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
+        # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
+        # 内部 recovery（reset_starting_count=False）与各类 by_server=True cleanup
+        # 不算，避免把 in-flight 启动失败误判成"用户放弃"而误杀跨模式重启
+        # （见 start_session 跨模式分支的 _user_session_abandon_epoch 守卫）。放在所有
+        # 早退之前，确保 in-flight（尚未 active）期间前端 end_session 也能计上。
+        if not by_server and reset_starting_count:
+            self._user_session_abandon_epoch += 1
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -9489,23 +9641,34 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
             logger.info("End Session: Resources cleaned up.")
 
-    async def cleanup(self, expected_websocket=None, *, expected_session=None):
+    async def cleanup(self, expected_websocket=None, *, expected_session=None, reset_starting_count=True):
         """
         Clean up session resources.
-        
+
         Args:
             expected_websocket: optional, the expected websocket instance.
                                If provided and it doesn't match the current websocket, skip cleanup.
                                Prevents an old connection from wrongly cleaning up a new connection's resources (race protection).
             expected_session: optional, the expected session instance.
                              Session-level guard from lifecycle callbacks, passed through to end_session.
+            reset_starting_count: forwarded to end_session. Pass False when the
+                             caller is itself a start_session that owns the
+                             _starting_session_count guard and will decrement it
+                             in its own finally — letting cleanup reset it to 0
+                             early opens a premature-0 window where a concurrent
+                             start (e.g. the cross-mode restart wait) sees the
+                             guard freed before the failing start has fully
+                             unwound, then gets its websocket/guard clobbered by
+                             the still-running teardown (Codex P2). Same rationale
+                             as the in-start old-session cleanup at line ~5610.
         """
         if expected_websocket is not None and self.websocket is not None:
             if self.websocket != expected_websocket:
                 logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
                 return
-        
-        await self.end_session(by_server=True, expected_session=expected_session)
+
+        await self.end_session(by_server=True, expected_session=expected_session,
+                               reset_starting_count=reset_starting_count)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
         if self.websocket_lock:

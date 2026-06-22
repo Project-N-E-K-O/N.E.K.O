@@ -63,6 +63,7 @@ def file_lock(file_obj: LockableFile):
         try:
             yield
         finally:
+            file_obj.seek(0, os.SEEK_SET)
             _msvcrt.locking(file_obj.fileno(), _msvcrt.LK_UNLCK, lock_size)
         return
 

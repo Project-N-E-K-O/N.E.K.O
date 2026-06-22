@@ -563,6 +563,13 @@ body.neko-game-active [id$="-lock-icon"] {
     object-position: center;
 }
 
+.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art {
+    width: 175%;
+    min-width: 175%;
+    max-width: none;
+    height: 100%;
+}
+
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
     position: relative;
@@ -585,6 +592,19 @@ body.neko-game-active [id$="-lock-icon"] {
     will-change: opacity, transform, filter;
     transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);
     transform-origin: center center;
+}
+
+.neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art,
+.neko-idle-return-art[data-neko-cat1-play-finishing="true"] {
+    width: 175% !important;
+    min-width: 175%;
+    max-width: none;
+    height: 100% !important;
+}
+
+#react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"] {
+    visibility: hidden !important;
+    pointer-events: none !important;
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,
@@ -726,6 +746,8 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
     display: none;
 }
@@ -1563,6 +1585,14 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll-content,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-message {
+    pointer-events: none;
+}
+
+/* 主动分享表情包 overlay 是纯被动展示挂件，必须全程点击穿透。它注册了 data-compact-geometry-owner="surface"，
+   会被上面那条把 surface 子树重新开成 auto 的通用规则命中；这里用同优先级、靠后定义的规则把它压回 none
+   （否则表情包显示期间会吞掉它矩形区域的点击）。React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay * {
     pointer-events: none;
 }
 

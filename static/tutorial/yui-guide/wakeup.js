@@ -54,7 +54,7 @@
         const ownerDocument = doc || document;
         try {
             ownerDocument.querySelectorAll(
-                '#yui-guide-overlay, .yui-guide-wakeup-stage, .yui-guide-wakeup-backdrop, .yui-guide-wakeup-particles'
+                '.yui-guide-wakeup-stage, .yui-guide-wakeup-backdrop, .yui-guide-wakeup-particles'
             ).forEach((element) => {
                 if (element && element.parentNode) {
                     element.parentNode.removeChild(element);
@@ -63,7 +63,6 @@
         } catch (_) {}
 
         try {
-            ownerDocument.body.classList.remove('yui-taking-over');
             ownerDocument.body.classList.remove('yui-guide-ghost-cursor-active');
             ownerDocument.documentElement.style.cursor = '';
             ownerDocument.body.style.cursor = '';

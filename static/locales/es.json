@@ -768,6 +768,7 @@
         "reactWindowMountFailed": "No se pudo montar la ventana de chat",
         "reactWindowLoadFailed": "No se pudieron cargar recursos de la ventana de chat",
         "reactWindowAriaLabel": "Ventana de chat de Neko",
+        "focusIndicator": "Concentrada",
         "reactWindowInputHint": "Presione Enter para enviar, Shift + Enter para una nueva línea",
         "messageListAriaLabel": "mensajes de chat",
         "composerToolsAriaLabel": "Herramientas del compositor",
@@ -2618,9 +2619,24 @@
             "emptyHint": "Sin traducción todavía"
         },
         "settings": {
-            "targetLang": "Lengua de llegada",
-            "opacity": "Opacidad del fondo",
-            "passthroughInteraction": "Clics en el área transparente",
+            "targetLang": "Idioma",
+            "opacity": "Opacidad",
+            "fontSize": "Fuente",
+            "fontSizeSmall": "Pequeño",
+            "fontSizeSmaller": "Más pequeño",
+            "fontSizeDefault": "Predeterminado",
+            "fontSizeLarger": "Más grande",
+            "fontSizeLarge": "Grande",
+            "colorScheme": "Color",
+            "colorSchemeDefault": "Predeterminado",
+            "colorSchemeRed": "Rojo",
+            "colorSchemeOrange": "Naranja",
+            "colorSchemeYellow": "Amarillo",
+            "colorSchemeGreen": "Verde",
+            "colorSchemeBlue": "Azul",
+            "colorSchemeIndigo": "Índigo",
+            "colorSchemeViolet": "Violeta",
+            "danmakuMode": "Modo Danmaku",
             "settingsBtn": "Configuración de subtítulos",
             "lockPosition": "Bloquear posición",
             "unlockPosition": "Desbloquear posición",
@@ -3313,6 +3329,10 @@
         },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "Preparando",
+                "homeProgress": "Guía de inicio {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"
@@ -3333,7 +3353,7 @@
                 "interruptAngryExit": "Humano! Eres superdescortes, miau! Ya que tanto quieres controlarlo todo tu solo, ve a jugar por tu cuenta con esa pantalla fria y sin vida! Hmph!",
                 "introGreetingReply": "Una brisa suave, sol calido y tu, apareciendo justo en el momento perfecto. Encantada de conocerte! Soy Lin Youyi, por favor cuida bien de mi de ahora en adelante, miau~. He anotado todo sobre este lugar en esta guia para principiantes. Piensa en ella como nuestro primer regalito de encuentro y aceptala, por favor.",
                 "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
-                "introActivationHint": "¡Haz clic aquí para que pueda empezar a hablar, nyan~!"
+                "introActivationHint": "Espera un momento, enseguida empezaré a hablar, nyan~!"
             }
         },
         "avatarFloating": {
@@ -4226,6 +4246,526 @@
             "drawCalls": "Draw calls"
         }
     },
+    "badminton": {
+        "title": "Desafío de bádminton",
+        "loading": {
+            "title": "Entrando a la cancha de bádminton",
+            "subtitle": "Cargando la cancha, los personajes y el audio..."
+        },
+        "startScreen": {
+            "readyToStart": "Listo: haz clic para empezar",
+            "startButton": "Empezar",
+            "never": "No volver a mostrar"
+        },
+        "startTutorial": {
+            "title": "Cómo jugar",
+            "aim": "Mueve el mouse arriba y abajo para apuntar.",
+            "charge": "Mantén clic izquierdo para cargar y suelta para golpear.",
+            "release": "Las líneas, el punto dulce y la distancia afectan la puntuación.",
+            "jump": "Pulsa Espacio para hacer un remate en salto.",
+            "duel": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
+            "duel11": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos."
+        },
+        "modeSwitcher": "Modo de bádminton",
+        "mode": {
+            "spectator": "Práctica libre",
+            "shooter": "Desafío de golpe",
+            "duel": "Duelo con Yui",
+            "timed": "Contrarreloj",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Puntos {{score}}",
+            "streak": "Racha {{streak}}",
+            "record": "Máximo {{distance}}",
+            "duelScore": "Tú {{player}} - {{neko}} Neko",
+            "duelMisses": "Fallos Tú {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Ronda {{round}}/{{max}}",
+            "timer": "{{seconds}} s",
+            "practice": "Práctica libre",
+            "yourTurn": "Tu turno",
+            "nekoTurn": "Golpe de Neko",
+            "horseLetters": "Tú {{player}} / Neko {{neko}}",
+            "horseChallenge": "Replica {{distance}} {{angle}}°",
+            "horseSet": "Propón un golpe",
+            "unlimitedAttempts": "Ilimitado",
+            "chances": "Oportunidades {{count}}",
+            "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
+            "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
+            "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
+            "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
+            "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "act.",
+            "off": "desact."
+        },
+        "result": {
+            "title": "Fin de partida",
+            "leaderboard": "Clasificación",
+            "stats": "Estadísticas",
+            "retry": "Jugar de nuevo",
+            "rating": "Valoración de control: {{rating}}",
+            "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
+            "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
+            "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
+            "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
+            "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
+            "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
+            "attemptsSummary": "Resumen de golpes: {{summary}}",
+            "personalBest": "Mejor personal: {{score}} pts",
+            "globalRank": "Puesto global: #{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "Ganaste",
+                "nekoWin": "Gana Neko",
+                "tie": "Empate",
+                "undecided": "Sin decidir"
+            }
+        },
+        "leaderboard": {
+            "title": "Clasificación",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Golpe",
+            "duel": "Duelo",
+            "empty": "Aún no hay registros",
+            "totalPlayers": "Jugadores {{count}}",
+            "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
+            "recent": "Últimas {{count}} partidas",
+            "loading": "Cargando...",
+            "mode": {
+                "timed": "Tiempo",
+                "horse": "HORSE",
+                "spectator": "Espectador",
+                "shooter": "Golpe",
+                "duel": "Duelo"
+            }
+        },
+        "debug": {
+            "title": "Panel de depuración",
+            "collapse": "Contraer",
+            "hide": "Ocultar",
+            "distance": "Distancia:",
+            "power": "Potencia:",
+            "event": "Evento:",
+            "streak": "Racha:",
+            "reset": "Restablecer",
+            "guide": "Línea guía",
+            "sweet": "Zona dulce",
+            "markers": "Marcas de distancia",
+            "readout": {
+                "modeState": "Modo={{mode}}  Estado={{state}}",
+                "distance": "Distancia={{px}}px ({{meters}})",
+                "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
+                "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
+                "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
+                "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Estadísticas personales",
+            "close": "Cerrar",
+            "totalShots": "Golpes={{total}}  Aciertos={{made}}",
+            "farRate": "Acierto 300px+={{rate}}",
+            "trend": "Tendencia reciente={{trend}}",
+            "none": "Ninguno"
+        },
+        "theme": {
+            "next": "Cambiar tema",
+            "current": "Tema: {{theme}}",
+            "changed": "Tema {{theme}}",
+            "labels": {
+                "default": "Cancha de bádminton",
+                "miami": "Atardecer en Miami"
+            }
+        },
+        "court": {
+            "netFront": "Frente de red",
+            "serviceLine": "Línea de saque",
+            "backCourt": "Fondo de cancha",
+            "baseline": "Línea de fondo"
+        },
+        "close": "Cerrar",
+        "audio": {
+            "controls": "Audio del juego"
+        },
+        "memoryOption": {
+            "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
+            "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
+        },
+        "table": {
+            "score": "Puntos",
+            "bestStreak": "Mejor racha",
+            "farthest": "Máximo",
+            "mode": "Modo",
+            "date": "Fecha"
+        },
+        "state": {
+            "ready": "Listo",
+            "in_flight": "En vuelo",
+            "game_over": "Fin",
+            "neko_thinking": "Neko piensa"
+        },
+        "toast": {
+            "difficulty": "Dificultad {{difficulty}}",
+            "nekoShoot": "Golpe de Neko",
+            "nekoSmash": "¡Remate de Yui!",
+            "nekoThinking": "Neko está pensando",
+            "nekoTurn": "Turno de Neko",
+            "copyNeko": "Replica a Neko",
+            "nekoFailed": "Neko falló el golpe inicial",
+            "yourSet": "Propón tu golpe",
+            "yourTurn": "Tu turno",
+            "reset": "Restablecido",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Línea guía",
+                "sweet": "Zona dulce de potencia",
+                "bgm": "BGM",
+                "markers": "Marcas de distancia"
+            },
+            "state": {
+                "on": "activado",
+                "off": "desactivado"
+            }
+        },
+        "tutorial": {
+            "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
+            "charge": "Mantén clic izquierdo para cargar",
+            "release": "¡Suelta para golpear!"
+        },
+        "shot": {
+            "unknown": "Desconocido",
+            "attempt": "#{{index}} {{distance}} {{type}}",
+            "line_in": "En la línea",
+            "net_touch": "Toque de red",
+            "zone_in": "Entró en la zona",
+            "out": "Fuera",
+            "net": "A la red"
+        },
+        "lines": {
+            "default": {
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad."
+                ],
+                "game_over": [
+                    "¿Otra partida?",
+                    "¿Otra partida?"
+                ],
+                "long_aim": [
+                    "Golpea ya.",
+                    "Golpea ya."
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!"
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?"
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble."
+                ],
+                "line_in": [
+                    "¡En la línea!",
+                    "¡En la línea!"
+                ],
+                "net_touch": [
+                    "Tocó la red y cuenta.",
+                    "Tocó la red y cuenta."
+                ],
+                "zone_in": [
+                    "Cayó dentro.",
+                    "Cayó dentro."
+                ],
+                "out": [
+                    "Por poco.",
+                    "Por poco."
+                ],
+                "net": [
+                    "Se quedó en la red.",
+                    "Se quedó en la red."
+                ]
+            },
+            "shooter": {
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad."
+                ],
+                "game_over": [
+                    "¿Otra partida?",
+                    "¿Otra partida?"
+                ],
+                "long_aim": [
+                    "Golpea ya.",
+                    "Golpea ya."
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!"
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?"
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble."
+                ],
+                "line_in": [
+                    "¡En la línea!",
+                    "¡En la línea!"
+                ],
+                "net_touch": [
+                    "Tocó la red y cuenta.",
+                    "Tocó la red y cuenta."
+                ],
+                "zone_in": [
+                    "Cayó dentro.",
+                    "Cayó dentro."
+                ],
+                "out": [
+                    "Por poco.",
+                    "Por poco."
+                ],
+                "net": [
+                    "Se quedó en la red.",
+                    "Se quedó en la red."
+                ]
+            },
+            "duel": {
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad."
+                ],
+                "game_over": [
+                    "¿Otra partida?",
+                    "¿Otra partida?"
+                ],
+                "long_aim": [
+                    "Golpea ya.",
+                    "Golpea ya."
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!"
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?"
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble."
+                ],
+                "clutch": "...Este tiene que entrar.",
+                "excuse": [
+                    "Ay, el brazo está algo cansado.",
+                    "Hoy no tengo buen toque. En la próxima voy en serio."
+                ],
+                "difficultyLv2": [
+                    "Se acabó el calentamiento. Voy a acelerar.",
+                    "Se acabó jugar a las casitas."
+                ],
+                "difficultyMax": [
+                    "Ahora me pongo seria.",
+                    "Desde ahora, mando en cielo y tierra.",
+                    "Ahora tú eres quien desafía.",
+                    "Si el futuro es tuyo, demuéstralo."
+                ],
+                "line_in": [
+                    "¡En la línea!",
+                    "¡En la línea!"
+                ],
+                "net_touch": [
+                    "Tocó la red y cuenta.",
+                    "Tocó la red y cuenta."
+                ],
+                "zone_in": [
+                    "Cayó dentro.",
+                    "Cayó dentro."
+                ],
+                "out": [
+                    "Por poco.",
+                    "Por poco."
+                ],
+                "net": [
+                    "Se quedó en la red.",
+                    "Se quedó en la red."
+                ]
+            },
+            "fallback": [
+                "Otra vez."
+            ],
+            "pressure": {
+                "lastTied": "Golpe decisivo. No parpadees.",
+                "lastAhead": "Bah, esto no terminó.",
+                "lastBehind": "Anota este y ganas.",
+                "playerAhead": "No lo haces mal...",
+                "playerBehind": "Aprieta un poco más."
+            },
+            "horse": {
+                "nekoMiss": "No lo replicó. Suma {{letters}}.",
+                "playerMiss": "Tú también sumas {{letters}}."
+            },
+            "mindGame": [
+                "Te tiembla la mano.",
+                "Piénsalo, sin prisa.",
+                "Esta distancia no es corta."
+            ],
+            "easterEgg": {
+                "lateNight": "¿Sigues golpeando tan tarde?",
+                "xmas": "Ya están las campanas, ¿y aún quieres golpear?",
+                "newYear": "¡Feliz Año Nuevo!",
+                "lineIn3": "¿Estás usando trucos?",
+                "lineIn5": "...Tengo que revisar la línea.",
+                "net3": "...Quizá toma un descanso."
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "¿Eh?! "
+        }
+    },
+    "soccer": {
+        "exitGame": {
+            "button": "Salir del juego",
+            "ending": "Finalizando la ronda…",
+            "ended": "Juego terminado, volviendo…",
+            "endingDefault": "Terminando este partido…",
+            "endedDefault": "Partido terminado. Cierra esta página. Para volver a jugar, ábrela de nuevo."
+        },
+        "startScreen": {
+            "readyToStart": "Listo — haz clic para empezar",
+            "ready": "Listo",
+            "startButton": "Iniciar"
+        },
+        "startTutorial": {
+            "title": "Cómo jugar",
+            "move": "Mueve el ratón para guiar al jugador.",
+            "charge": "Cerca del balón, mantén clic izquierdo para cargar y suelta para disparar.",
+            "range": "El disparo solo se activa a {{distance}} o menos del balón.",
+            "reset": "Pulsa R para reiniciar el balón y las posiciones.",
+            "ai": "El ánimo y la dificultad de NEKO cambian según el partido."
+        },
+        "hint": {
+            "controls": "Ratón = guiar al jugador · Mantén clic izquierdo = cargar, suelta = disparo (se activa a ≤{{distance}} del balón) · R = reset",
+            "aiMood": "El ánimo y la dificultad de NEKO cambian según el partido"
+        },
+        "debugControls": {
+            "bounds": "Activar límites (regla de fuera)",
+            "voiceOutput": "Reproducir líneas LLM (voz del proyecto)",
+            "voiceButton": "Voz de depuración",
+            "voicePlaceholder": "Depuración: escribe la transcripción final y pulsa Enter",
+            "send": "Enviar",
+            "voiceStatusHidden": "STT de depuración: oculto"
+        },
+        "debug": {
+            "mouse": "ratón: {{x}}, {{y}}",
+            "playerCenter": "centro jugador: {{x}}, {{y}}",
+            "aiCenter": "centro IA: {{x}}, {{y}}  modo: {{mode}}",
+            "state": "ronda: {{round}}  dificultad: {{difficulty}}  ánimo: {{mood}}  carga: {{charge}}%",
+            "ball": "balón: ({{x}}, {{y}})  velocidad={{speed}}",
+            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Ronda {{round}}"
+        },
+        "moods": {
+            "calm": "tranquila",
+            "happy": "feliz",
+            "angry": "enfadada",
+            "relaxed": "relajada",
+            "sad": "triste",
+            "surprised": "sorprendida"
+        },
+        "difficulties": {
+            "max": "máxima",
+            "lv2": "nivel 2",
+            "lv3": "nivel 3",
+            "lv4": "nivel 4"
+        },
+        "aiModes": {
+            "attack": "ataque",
+            "defend": "defensa",
+            "clear": "despeje"
+        },
+        "debugEvents": {
+            "player-kick": "disparo del jugador",
+            "ai-kick": "disparo de la IA",
+            "unstick": "balón liberado"
+        },
+        "loading": {
+            "beginStartDefault": "Analizando contexto de inicio…",
+            "initializingMiniGame": "Inicializando minijuego de fútbol…",
+            "assetsDone": "Modelo cargado",
+            "assetsFailed": "Error al inicializar el modelo, continuando",
+            "routeDone": "Contexto de inicio listo",
+            "routeFallback": "Contexto de inicio usando valores predeterminados locales",
+            "routeFailed": "Falló la solicitud del contexto de inicio, continuando"
+        },
+        "voiceStatus": {
+            "routeEnded": "Ruta del juego finalizada — recarga la página para volver a conectar",
+            "unsupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto del chat principal por ahora.",
+            "listening": "STT del juego: escuchando al jugador",
+            "error": "STT del juego: {{code}}",
+            "startFailed": "STT del juego: error al iniciar. Usa la entrada de texto del chat principal por ahora.",
+            "handoverInProgress": "STT del juego: la entrada de voz principal está tomando el control",
+            "waitingForHandover": "STT del juego: esperando que la entrada de voz principal tome el control",
+            "received": "Voz del jugador recibida: {{text}}",
+            "debugSubmitted": "STT de depuración enviado: {{text}}",
+            "debugListening": "STT de depuración: escuchando al jugador…",
+            "debugIdle": "STT de depuración: en espera",
+            "debugUnsupported": "Este navegador no admite el STT de depuración. Usa el cuadro de texto de depuración.",
+            "recognitionError": "Error de reconocimiento de voz: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Suelta para enviar",
+            "idle": "Voz de depuración"
+        },
+        "memoryOption": {
+            "label": "Guardar este partido en la memoria (desactivado por defecto)",
+            "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
+        }
+    },
     "drawingGuess": {
         "title": "Dibuja y adivina",
         "eyebrow": "Actividad de compañía",
@@ -4766,494 +5306,6 @@
             "happySuffix": " ♪",
             "sadPrefix": "...",
             "surprisedPrefix": "¿Eh?! "
-        }
-    },
-    "badminton": {
-        "title": "Desafío de bádminton",
-        "modeSwitcher": "Modo de bádminton",
-        "mode": {
-            "spectator": "Práctica libre",
-            "shooter": "Desafío de golpe",
-            "duel": "Duelo con Yui",
-            "timed": "Contrarreloj",
-            "horse": "HORSE"
-        },
-        "hud": {
-            "score": "Puntos {{score}}",
-            "streak": "Racha {{streak}}",
-            "record": "Máximo {{distance}}",
-            "duelScore": "Tú {{player}} - {{neko}} Neko",
-            "duelMisses": "Fallos Tú {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-            "round": "Ronda {{round}}/{{max}}",
-            "timer": "{{seconds}} s",
-            "practice": "Práctica libre",
-            "yourTurn": "Tu turno",
-            "nekoTurn": "Golpe de Neko",
-            "horseLetters": "Tú {{player}} / Neko {{neko}}",
-            "horseChallenge": "Replica {{distance}} {{angle}}°",
-            "horseSet": "Propón un golpe",
-            "unlimitedAttempts": "Ilimitado",
-            "chances": "Oportunidades {{count}}",
-            "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
-            "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
-            "duelTitle": "Duelo Neko: tú y Neko golpean por turnos",
-            "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
-            "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
-            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
-            "on": "act.",
-            "off": "desact."
-        },
-        "result": {
-            "title": "Fin de partida",
-            "leaderboard": "Clasificación",
-            "stats": "Estadísticas",
-            "retry": "Jugar de nuevo",
-            "rating": "Valoración de control: {{rating}}",
-            "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
-            "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
-            "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
-            "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
-            "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
-            "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
-            "attemptsSummary": "Resumen de golpes: {{summary}}",
-            "personalBest": "Mejor personal: {{score}} pts",
-            "globalRank": "Puesto global: #{{rank}} / {{total}}",
-            "outcome": {
-                "youWin": "Ganaste",
-                "nekoWin": "Gana Neko",
-                "tie": "Empate",
-                "undecided": "Sin decidir"
-            }
-        },
-        "leaderboard": {
-            "title": "Clasificación",
-            "global": "Global",
-            "local": "Local",
-            "shooter": "Golpe",
-            "duel": "Duelo",
-            "empty": "Aún no hay registros",
-            "totalPlayers": "Jugadores {{count}}",
-            "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
-            "recent": "Últimas {{count}} partidas",
-            "loading": "Cargando...",
-            "mode": {
-                "timed": "Tiempo",
-                "horse": "HORSE",
-                "spectator": "Espectador",
-                "shooter": "Golpe",
-                "duel": "Duelo"
-            }
-        },
-        "debug": {
-            "title": "Panel de depuración",
-            "collapse": "Contraer",
-            "hide": "Ocultar",
-            "distance": "Distancia:",
-            "power": "Potencia:",
-            "event": "Evento:",
-            "streak": "Racha:",
-            "reset": "Restablecer",
-            "guide": "Línea guía",
-            "sweet": "Zona dulce",
-            "markers": "Marcas de distancia",
-            "readout": {
-                "modeState": "Modo={{mode}}  Estado={{state}}",
-                "distance": "Distancia={{px}}px ({{meters}})",
-                "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
-                "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
-                "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
-                "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
-            }
-        },
-        "stats": {
-            "title": "Estadísticas personales",
-            "close": "Cerrar",
-            "totalShots": "Golpes={{total}}  Aciertos={{made}}",
-            "farRate": "Acierto 300px+={{rate}}",
-            "trend": "Tendencia reciente={{trend}}",
-            "none": "Ninguno"
-        },
-        "theme": {
-            "next": "Cambiar tema",
-            "current": "Tema: {{theme}}",
-            "changed": "Tema {{theme}}",
-            "labels": {
-                "default": "Cancha de bádminton",
-                "miami": "Atardecer en Miami"
-            }
-        },
-        "court": {
-            "netFront": "Frente de red",
-            "serviceLine": "Línea de saque",
-            "backCourt": "Fondo de cancha",
-            "baseline": "Línea de fondo"
-        },
-        "close": "Cerrar",
-        "audio": {
-            "controls": "Audio del juego"
-        },
-        "memoryOption": {
-            "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
-            "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
-        },
-        "table": {
-            "score": "Puntos",
-            "bestStreak": "Mejor racha",
-            "farthest": "Máximo",
-            "mode": "Modo",
-            "date": "Fecha"
-        },
-        "state": {
-            "ready": "Listo",
-            "in_flight": "En vuelo",
-            "game_over": "Fin",
-            "neko_thinking": "Neko piensa"
-        },
-        "toast": {
-            "difficulty": "Dificultad {{difficulty}}",
-            "nekoShoot": "Golpe de Neko",
-            "nekoThinking": "Neko está pensando",
-            "nekoTurn": "Turno de Neko",
-            "copyNeko": "Replica a Neko",
-            "nekoFailed": "Neko falló el golpe inicial",
-            "yourSet": "Propón tu golpe",
-            "yourTurn": "Tu turno",
-            "reset": "Restablecido",
-            "featureToggled": "{{feature}} {{state}}",
-            "feature": {
-                "guide": "Línea guía",
-                "sweet": "Zona dulce de potencia",
-                "bgm": "BGM",
-                "markers": "Marcas de distancia"
-            },
-            "state": {
-                "on": "activado",
-                "off": "desactivado"
-            }
-        },
-        "tutorial": {
-            "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
-            "charge": "Mantén clic izquierdo para cargar",
-            "release": "¡Suelta para golpear!"
-        },
-        "shot": {
-            "unknown": "Desconocido",
-            "attempt": "#{{index}} {{distance}} {{type}}",
-            "line_in": "En la línea",
-            "net_touch": "Toque de red",
-            "zone_in": "Entró en la zona",
-            "out": "Fuera",
-            "net": "A la red"
-        },
-        "lines": {
-            "default": {
-                "shot_missed": [
-                    "Todavía hay oportunidad.",
-                    "Todavía hay oportunidad."
-                ],
-                "game_over": [
-                    "¿Otra partida?",
-                    "¿Otra partida?"
-                ],
-                "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
-                ],
-                "close_to_record": [
-                    "Casi récord.",
-                    "Casi récord."
-                ],
-                "new_record": [
-                    "¡Nuevo récord!",
-                    "¡Nuevo récord!"
-                ],
-                "streak_5": [
-                    "¡Cinco seguidas!",
-                    "¡Cinco seguidas!"
-                ],
-                "streak_10": [
-                    "¿Diez seguidas?",
-                    "¿Diez seguidas?"
-                ],
-                "streak_15": [
-                    "Quince seguidas es demasiado.",
-                    "Quince seguidas es demasiado."
-                ],
-                "streak_20": [
-                    "¿Veinte seguidas? Increíble.",
-                    "¿Veinte seguidas? Increíble."
-                ],
-                "line_in": [
-                    "¡En la línea!",
-                    "¡En la línea!"
-                ],
-                "net_touch": [
-                    "Tocó la red y cuenta.",
-                    "Tocó la red y cuenta."
-                ],
-                "zone_in": [
-                    "Cayó dentro.",
-                    "Cayó dentro."
-                ],
-                "out": [
-                    "Por poco.",
-                    "Por poco."
-                ],
-                "net": [
-                    "Se quedó en la red.",
-                    "Se quedó en la red."
-                ]
-            },
-            "shooter": {
-                "shot_missed": [
-                    "Todavía hay oportunidad.",
-                    "Todavía hay oportunidad."
-                ],
-                "game_over": [
-                    "¿Otra partida?",
-                    "¿Otra partida?"
-                ],
-                "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
-                ],
-                "close_to_record": [
-                    "Casi récord.",
-                    "Casi récord."
-                ],
-                "new_record": [
-                    "¡Nuevo récord!",
-                    "¡Nuevo récord!"
-                ],
-                "streak_5": [
-                    "¡Cinco seguidas!",
-                    "¡Cinco seguidas!"
-                ],
-                "streak_10": [
-                    "¿Diez seguidas?",
-                    "¿Diez seguidas?"
-                ],
-                "streak_15": [
-                    "Quince seguidas es demasiado.",
-                    "Quince seguidas es demasiado."
-                ],
-                "streak_20": [
-                    "¿Veinte seguidas? Increíble.",
-                    "¿Veinte seguidas? Increíble."
-                ],
-                "line_in": [
-                    "¡En la línea!",
-                    "¡En la línea!"
-                ],
-                "net_touch": [
-                    "Tocó la red y cuenta.",
-                    "Tocó la red y cuenta."
-                ],
-                "zone_in": [
-                    "Cayó dentro.",
-                    "Cayó dentro."
-                ],
-                "out": [
-                    "Por poco.",
-                    "Por poco."
-                ],
-                "net": [
-                    "Se quedó en la red.",
-                    "Se quedó en la red."
-                ]
-            },
-            "duel": {
-                "shot_missed": [
-                    "Todavía hay oportunidad.",
-                    "Todavía hay oportunidad."
-                ],
-                "game_over": [
-                    "¿Otra partida?",
-                    "¿Otra partida?"
-                ],
-                "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
-                ],
-                "close_to_record": [
-                    "Casi récord.",
-                    "Casi récord."
-                ],
-                "new_record": [
-                    "¡Nuevo récord!",
-                    "¡Nuevo récord!"
-                ],
-                "streak_5": [
-                    "¡Cinco seguidas!",
-                    "¡Cinco seguidas!"
-                ],
-                "streak_10": [
-                    "¿Diez seguidas?",
-                    "¿Diez seguidas?"
-                ],
-                "streak_15": [
-                    "Quince seguidas es demasiado.",
-                    "Quince seguidas es demasiado."
-                ],
-                "streak_20": [
-                    "¿Veinte seguidas? Increíble.",
-                    "¿Veinte seguidas? Increíble."
-                ],
-                "clutch": "...Este tiene que entrar.",
-                "excuse": "Ay, el brazo está algo cansado.",
-                "line_in": [
-                    "¡En la línea!",
-                    "¡En la línea!"
-                ],
-                "net_touch": [
-                    "Tocó la red y cuenta.",
-                    "Tocó la red y cuenta."
-                ],
-                "zone_in": [
-                    "Cayó dentro.",
-                    "Cayó dentro."
-                ],
-                "out": [
-                    "Por poco.",
-                    "Por poco."
-                ],
-                "net": [
-                    "Se quedó en la red.",
-                    "Se quedó en la red."
-                ]
-            },
-            "fallback": [
-                "Otra vez."
-            ],
-            "pressure": {
-                "lastTied": "Golpe decisivo. No parpadees.",
-                "lastAhead": "Bah, esto no terminó.",
-                "lastBehind": "Anota este y ganas.",
-                "playerAhead": "No lo haces mal...",
-                "playerBehind": "Aprieta un poco más."
-            },
-            "horse": {
-                "nekoMiss": "No lo replicó. Suma {{letters}}.",
-                "playerMiss": "Tú también sumas {{letters}}."
-            },
-            "mindGame": [
-                "Te tiembla la mano.",
-                "Piénsalo, sin prisa.",
-                "Esta distancia no es corta."
-            ],
-            "easterEgg": {
-                "lateNight": "¿Sigues golpeando tan tarde?",
-                "xmas": "Ya están las campanas, ¿y aún quieres golpear?",
-                "newYear": "¡Feliz Año Nuevo!",
-                "lineIn3": "¿Estás usando trucos?",
-                "lineIn5": "...Tengo que revisar la línea.",
-                "net3": "...Quizá toma un descanso."
-            }
-        },
-        "mood": {
-            "happySuffix": " ♪",
-            "sadPrefix": "...",
-            "surprisedPrefix": "¿Eh?! "
-        }
-    },
-    "soccer": {
-        "exitGame": {
-            "button": "Salir del juego",
-            "ending": "Finalizando la ronda…",
-            "ended": "Juego terminado, volviendo…",
-            "endingDefault": "Terminando este partido…",
-            "endedDefault": "Partido terminado. Cierra esta página. Para volver a jugar, ábrela de nuevo."
-        },
-        "startScreen": {
-            "readyToStart": "Listo — haz clic para empezar",
-            "ready": "Listo",
-            "startButton": "Iniciar"
-        },
-        "startTutorial": {
-            "title": "Cómo jugar",
-            "move": "Mueve el ratón para guiar al jugador.",
-            "charge": "Cerca del balón, mantén clic izquierdo para cargar y suelta para disparar.",
-            "range": "El disparo solo se activa a {{distance}} o menos del balón.",
-            "reset": "Pulsa R para reiniciar el balón y las posiciones.",
-            "ai": "El ánimo y la dificultad de NEKO cambian según el partido."
-        },
-        "hint": {
-            "controls": "Ratón = guiar al jugador · Mantén clic izquierdo = cargar, suelta = disparo (se activa a ≤{{distance}} del balón) · R = reset",
-            "aiMood": "El ánimo y la dificultad de NEKO cambian según el partido"
-        },
-        "debugControls": {
-            "bounds": "Activar límites (regla de fuera)",
-            "voiceOutput": "Reproducir líneas LLM (voz del proyecto)",
-            "voiceButton": "Voz de depuración",
-            "voicePlaceholder": "Depuración: escribe la transcripción final y pulsa Enter",
-            "send": "Enviar",
-            "voiceStatusHidden": "STT de depuración: oculto"
-        },
-        "debug": {
-            "mouse": "ratón: {{x}}, {{y}}",
-            "playerCenter": "centro jugador: {{x}}, {{y}}",
-            "aiCenter": "centro IA: {{x}}, {{y}}  modo: {{mode}}",
-            "state": "ronda: {{round}}  dificultad: {{difficulty}}  ánimo: {{mood}}  carga: {{charge}}%",
-            "ball": "balón: ({{x}}, {{y}})  velocidad={{speed}}",
-            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
-            "roundCenter": "Ronda {{round}}"
-        },
-        "moods": {
-            "calm": "tranquila",
-            "happy": "feliz",
-            "angry": "enfadada",
-            "relaxed": "relajada",
-            "sad": "triste",
-            "surprised": "sorprendida"
-        },
-        "difficulties": {
-            "max": "máxima",
-            "lv2": "nivel 2",
-            "lv3": "nivel 3",
-            "lv4": "nivel 4"
-        },
-        "aiModes": {
-            "attack": "ataque",
-            "defend": "defensa",
-            "clear": "despeje"
-        },
-        "debugEvents": {
-            "player-kick": "disparo del jugador",
-            "ai-kick": "disparo de la IA",
-            "unstick": "balón liberado"
-        },
-        "loading": {
-            "beginStartDefault": "Analizando contexto de inicio…",
-            "initializingMiniGame": "Inicializando minijuego de fútbol…",
-            "assetsDone": "Modelo cargado",
-            "assetsFailed": "Error al inicializar el modelo, continuando",
-            "routeDone": "Contexto de inicio listo",
-            "routeFallback": "Contexto de inicio usando valores predeterminados locales",
-            "routeFailed": "Falló la solicitud del contexto de inicio, continuando"
-        },
-        "voiceStatus": {
-            "routeEnded": "Ruta del juego finalizada — recarga la página para volver a conectar",
-            "unsupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto del chat principal por ahora.",
-            "listening": "STT del juego: escuchando al jugador",
-            "error": "STT del juego: {{code}}",
-            "startFailed": "STT del juego: error al iniciar. Usa la entrada de texto del chat principal por ahora.",
-            "handoverInProgress": "STT del juego: la entrada de voz principal está tomando el control",
-            "waitingForHandover": "STT del juego: esperando que la entrada de voz principal tome el control",
-            "received": "Voz del jugador recibida: {{text}}",
-            "debugSubmitted": "STT de depuración enviado: {{text}}",
-            "debugListening": "STT de depuración: escuchando al jugador…",
-            "debugIdle": "STT de depuración: en espera",
-            "debugUnsupported": "Este navegador no admite el STT de depuración. Usa el cuadro de texto de depuración.",
-            "recognitionError": "Error de reconocimiento de voz: {{code}}"
-        },
-        "debugButton": {
-            "holdToSubmit": "Suelta para enviar",
-            "idle": "Voz de depuración"
-        },
-        "memoryOption": {
-            "label": "Guardar este partido en la memoria (desactivado por defecto)",
-            "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
     }
 }

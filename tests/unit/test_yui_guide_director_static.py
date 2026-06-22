@@ -4,11 +4,14 @@ import re
 
 
 YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/director.js"
+YUI_GUIDE_OVERLAY_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/overlay.js"
+YUI_GUIDE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css/yui-guide.css"
 YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/steps.js"
 YUI_GUIDE_DAY1_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
 SCENE_ORCHESTRATOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/scene-orchestrator.js"
 NEW_USER_ICEBREAKER_PATH = Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+PLUGIN_YUI_GUIDE_RUNTIME_PATH = Path(__file__).resolve().parents[2] / "frontend" / "plugin-manager/src/yui-guide-runtime.ts"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
 
@@ -68,14 +71,11 @@ def _function_block(source: str, name: str, next_name: str) -> str:
 
 def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_window():
     source = _read_director()
+    overlay_source = YUI_GUIDE_OVERLAY_PATH.read_text(encoding="utf-8")
 
     input_block = _function_block(source, "getChatInputTarget", "getChatWindowTarget")
     window_block = _function_block(source, "getChatWindowTarget", "shouldNarrateInChat")
     activation_block = _function_block(source, "getChatIntroActivationTarget", "clearSceneTimers")
-    allowed_target_block = source.split("if (this.awaitingIntroActivation) {", 1)[1].split(
-        "if (this.manualPluginDashboardOpenAllowed",
-        1,
-    )[0]
 
     compact_input_selector = (
         '#react-chat-window-root [data-compact-geometry-owner="surface"]'
@@ -102,8 +102,125 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
     assert window_block.index(compact_capsule_selector) < window_block.index(legacy_shell_selector)
     assert window_block.index(compact_input_selector) < window_block.index(legacy_shell_selector)
 
-    assert compact_capsule_selector in allowed_target_block
-    assert compact_input_selector in allowed_target_block
+    assert "isAllowedTutorialInteractionTarget" not in source
+    assert "setTutorialInputShieldActive(active)" in overlay_source
+    assert "this.overlay.setTutorialInputShieldActive(isActive);" in source
+    assert "!this.interactionShieldSuppressed" in overlay_source
+    assert "(this.tutorialInputShieldActive || this.takingOverActive)" in overlay_source
+    assert "#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]" in overlay_source
+    assert "isSystemDialogEventTarget(target)" in overlay_source
+    assert "hasOpenSystemDialog()" in overlay_source
+    assert "this.isSystemDialogEventTarget(target)" in overlay_source
+    assert "#storage-location-overlay:not([hidden])" in overlay_source
+    assert "#prominent-notice-overlay" in overlay_source
+    assert ".modal-overlay" in overlay_source
+    assert "is-interaction-shield-system-dialog-suspended" in overlay_source
+    assert "event.stopImmediatePropagation();" in overlay_source
+    assert "installGlobalInteractionShieldBlocker()" in overlay_source
+    assert "event.isTrusted === false" in overlay_source
+
+
+def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
+    source = _read_director()
+
+    assert "const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;" in source
+    assert "finishPluginDashboardHandoff(reason) {" in source
+
+    boundary_block = source.split(
+        "        async waitForPluginDashboardPerformanceUntilNarrationBoundary(windowRef, payload, options) {",
+        1,
+    )[1].split(
+        "        async waitForPluginDashboardPerformance(windowRef, payload) {",
+        1,
+    )[0]
+    dashboard_block = source.split(
+        "        async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {",
+        1,
+    )[1].split(
+        "        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {",
+        1,
+    )[0]
+    side_panel_block = source.split(
+        "        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {",
+        1,
+    )[1].split(
+        "        async runDay4AnimationDistanceShowcase(scene, narrationStartedAt) {",
+        1,
+    )[0]
+
+    assert "const performancePromise = this.waitForPluginDashboardPerformance(windowRef, payload).catch(() => false);" in boundary_block
+    assert "this.notifyPluginDashboardNarrationFinished();" in boundary_block
+    assert "this.finishPluginDashboardHandoff('plugin_dashboard_done_grace_timeout');" in boundary_block
+    assert "return await Promise.race([performancePromise, boundaryPromise]);" in boundary_block
+
+    assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in dashboard_block
+    assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in side_panel_block
+    assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in dashboard_block
+    assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in side_panel_block
+
+
+def test_avatar_floating_guides_keep_real_cursor_visible():
+    guide_css = YUI_GUIDE_CSS_PATH.read_text(encoding="utf-8")
+    overlay_source = YUI_GUIDE_OVERLAY_PATH.read_text(encoding="utf-8")
+    director_source = _read_director()
+    plugin_runtime_source = PLUGIN_YUI_GUIDE_RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert not re.search(r"cursor\s*:\s*none\b", guide_css)
+    assert not re.search(r"cursor\s*:\s*none\b", plugin_runtime_source)
+
+    taking_over_block = overlay_source.split("        setTakingOver(active) {", 1)[1].split(
+        "        setInteractionShieldSuppressed(active) {",
+        1,
+    )[0]
+    assert "active ? 'none'" not in taking_over_block
+    assert "style.cursor = '';" in taking_over_block
+
+    resistance_block = director_source.split("        prepareResistanceCursorReveal() {", 1)[1].split(
+        "        playLightResistance(x, y, options) {",
+        1,
+    )[0]
+    assert "style.cursor = 'none';" not in resistance_block
+    assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
+
+
+def test_day1_intro_activation_copy_matches_auto_advance_behavior():
+    source = _read_director()
+    zh_cn = _read_static_locale("zh-CN")
+    en = _read_static_locale("en")
+
+    assert "const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';" in source
+    assert "点一下这里，我就能开始说话啦～" not in source
+    assert (
+        zh_cn["tutorial"]["yuiGuide"]["lines"]["introActivationHint"]
+        == "稍等一下，我马上开始说话啦～"
+    )
+    assert (
+        en["tutorial"]["yuiGuide"]["lines"]["introActivationHint"]
+        == "Hang on a moment, I'll start talking soon, nyan~!"
+    )
+
+
+def test_plugin_dashboard_manual_open_temporarily_pauses_input_shield():
+    source = _read_director()
+    manual_open_block = source.split(
+        "        async waitForManualPluginDashboardOpen(",
+        1,
+    )[1].split(
+        "        getPluginDashboardExpectedOrigin() {",
+        1,
+    )[0]
+
+    assert "const shouldRestoreTutorialInputShield = !!(" in manual_open_block
+    assert "this.overlay.tutorialInputShieldActive === true" in manual_open_block
+    assert "this.overlay.setInteractionShieldSuppressed(true);" in manual_open_block
+    assert "this.overlay.setTutorialInputShieldActive(false);" in manual_open_block
+    assert "shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()" in manual_open_block
+    assert manual_open_block.index("this.overlay.setTutorialInputShieldActive(false);") > manual_open_block.index(
+        "this.overlay.setInteractionShieldSuppressed(true);"
+    )
+    assert manual_open_block.index("this.overlay.setTutorialInputShieldActive(") < manual_open_block.rindex(
+        "this.overlay.setInteractionShieldSuppressed(false);"
+    )
 
 
 def test_steps_keep_default_non_home_page_registrations():
@@ -238,6 +355,69 @@ def test_tutorial_chat_streams_finalize_as_sent_on_termination():
     )[0]
     assert "this.finalizeActiveGuideChatMessages();" in termination_block
     assert "this.finalizeActiveGuideChatMessages();" in destroy_block
+
+
+def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_close():
+    source = _read_director()
+
+    side_panel_block = source.split("        forceHideAvatarFloatingSidePanels() {", 1)[1].split(
+        "        forceHideAvatarFloatingGuideManagedSurfaces() {",
+        1,
+    )[0]
+    managed_surface_block = source.split(
+        "        forceHideAvatarFloatingGuideManagedSurfaces() {",
+        1,
+    )[1].split(
+        "        hideTemporaryAvatarFloatingGuideHud",
+        1,
+    )[0]
+    temporary_hud_block = source.split(
+        "        hideTemporaryAvatarFloatingGuideHud(reason) {",
+        1,
+    )[1].split(
+        "        async expandAvatarFloatingSidePanel",
+        1,
+    )[0]
+    close_panels_block = source.split("        async closeAvatarFloatingGuidePanels(options) {", 1)[1].split(
+        "        isDay1AvatarFloatingScene",
+        1,
+    )[0]
+    termination_block = source.split("        beginTerminationVisualCleanup() {", 1)[1].split(
+        "        async ensureChatVisible",
+        1,
+    )[0]
+    destroy_block = source.split("        destroy() {\n            if (this.destroyed) {", 1)[1].split(
+        "        onKeyDown",
+        1,
+    )[0]
+
+    assert "popupUi.collapseOtherSidePanels(null);" in side_panel_block
+    assert "document.querySelectorAll('[data-neko-sidepanel]')" in side_panel_block
+    assert "this.forceHideManagedPanel('settings');" in managed_surface_block
+    assert "this.forceHideManagedPanel('agent');" in managed_surface_block
+    assert "this.forceHideAvatarFloatingSidePanels();" in managed_surface_block
+    assert "this.avatarFloatingGuideTemporaryHudShown" in temporary_hud_block
+    assert "!this.avatarFloatingGuideTemporaryHudWasVisible" in temporary_hud_block
+    assert "window.AgentHUD.hideAgentTaskHUD();" in temporary_hud_block
+
+    assert close_panels_block.index("this.forceHideAvatarFloatingGuideManagedSurfaces();") < close_panels_block.index(
+        "await this.closeManagedPanels().catch"
+    )
+    assert close_panels_block.index("this.hideTemporaryAvatarFloatingGuideHud('close-panels');") < close_panels_block.index(
+        "await this.closeManagedPanels().catch"
+    )
+    assert termination_block.index("this.forceHideAvatarFloatingGuideManagedSurfaces();") < termination_block.index(
+        "this.closeManagedPanels().catch"
+    )
+    assert termination_block.index("this.hideTemporaryAvatarFloatingGuideHud('termination-cleanup');") < termination_block.index(
+        "this.closeManagedPanels().catch"
+    )
+    assert destroy_block.index("this.forceHideAvatarFloatingGuideManagedSurfaces();") < destroy_block.index(
+        "this.closeManagedPanels().catch"
+    )
+    assert destroy_block.index("this.hideTemporaryAvatarFloatingGuideHud('destroy');") < destroy_block.index(
+        "this.closeManagedPanels().catch"
+    )
 
 
 def test_new_tutorial_chat_line_finishes_previous_stream_before_append():

@@ -103,10 +103,6 @@ def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
     return bool(blocking)
 
 
-def _is_tutorial_release_greeting_reason(reason: str) -> bool:
-    return str(reason or "").strip().lower() in {"tutorial-completed", "tutorial-skipped"}
-
-
 # ---- Telemetry helpers ----
 
 # Dim 字段安全限制 —— 前端是 untrusted 输入，必须挡掉：
@@ -325,7 +321,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
-                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio"))
+                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio", user_initiated=True))
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
@@ -338,7 +334,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # _starting_session_count > 0 的早退拦掉。
                     if session_manager[lanlan_name]._starting_session_count == 0:
                         session_manager[lanlan_name].reset_session_start_circuit()
-                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
+                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode, user_initiated=True))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
@@ -430,12 +426,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     continue
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
-                if _is_tutorial_release_greeting_reason(greeting_reason):
-                    logger.info(
-                        f"[{lanlan_name}] greeting_check: skipped after tutorial release "
-                        f"(reason={greeting_reason}); new-user icebreaker owns this slot"
-                    )
-                    continue
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
                 since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
                 if is_switch or since_disconnect > 15:

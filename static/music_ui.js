@@ -20,7 +20,9 @@
         themeColors: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'],
         primaryColor: '#667eea',
         secondaryColor: '#764ba2',
-        defaultVolume: 0.5,
+        // 主动分享音乐的兜底默认音量：刻意放得很低，避免突然冒出来的歌吓到人。
+        // 用户手动调过的音量由 APlayer 自己持久化（aplayer-setting），会覆盖这个默认值。
+        defaultVolume: 0.2,
         volumeStep: 0.05,
         // 自动销毁时长配置 (ms)
         timeouts: {

@@ -1,10 +1,6 @@
 (function () {
     'use strict';
 
-    let lastTouchTime = 0;
-
-    function noop() {}
-
     function safeInvoke(callback, args, fallbackValue) {
         if (typeof callback !== 'function') {
             return fallbackValue;
@@ -24,10 +20,6 @@
             this.document = normalizedOptions.document || document;
             this.page = normalizedOptions.page || 'home';
             this.overlay = normalizedOptions.overlay || null;
-            this.allowTarget = normalizedOptions.allowTarget || null;
-            this.isSystemDialogTarget = normalizedOptions.isSystemDialogTarget || null;
-            this.allowTouchPassthrough = normalizedOptions.allowTouchPassthrough || null;
-            this.allowWindowPassthrough = normalizedOptions.allowWindowPassthrough === true;
             this.isDestroyed = normalizedOptions.isDestroyed || null;
             this.isResistancePaused = normalizedOptions.isResistancePaused || null;
             this.externalChatChannelProvider = normalizedOptions.externalChatChannelProvider || null;
@@ -37,18 +29,6 @@
             this.externalizedChatSpotlightKind = '';
             this.tutorialFaceForwardLockSnapshot = null;
             this.externalChatCommandBus = this.createExternalChatCommandBus();
-
-            this.interactionGuardHandler = this.onInteractionGuard.bind(this);
-
-            this.document.addEventListener('pointerdown', this.interactionGuardHandler, true);
-            this.document.addEventListener('pointerup', this.interactionGuardHandler, true);
-            this.document.addEventListener('mousedown', this.interactionGuardHandler, true);
-            this.document.addEventListener('mouseup', this.interactionGuardHandler, true);
-            this.document.addEventListener('touchstart', this.interactionGuardHandler, true);
-            this.document.addEventListener('touchend', this.interactionGuardHandler, true);
-            this.document.addEventListener('click', this.interactionGuardHandler, true);
-            this.document.addEventListener('dblclick', this.interactionGuardHandler, true);
-            this.document.addEventListener('contextmenu', this.interactionGuardHandler, true);
         }
 
         setActive(active) {
@@ -57,9 +37,6 @@
                 return;
             }
             this.active = nextActive;
-            if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
-                this.overlay.setInteractionShieldSuppressed(this.active && this.allowWindowPassthrough);
-            }
             if (this.overlay && typeof this.overlay.setTakingOver === 'function') {
                 this.overlay.setTakingOver(this.active);
             }
@@ -296,6 +273,15 @@
             return typeof configName === 'string' ? configName : '';
         }
 
+        getExternalizedChatTutorialRunId() {
+            try {
+                const storage = this.window && this.window.localStorage;
+                return storage ? String(storage.getItem('yuiGuidePcOverlayRunId') || '') : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         postExternalChatCommand(action, payload, options) {
             if (!this.isHomeChatExternalized()) {
                 return false;
@@ -316,6 +302,13 @@
             if (!message.lanlan_name) {
                 const lanlanName = this.resolveLanlanName();
                 message.lanlan_name = lanlanName;
+            }
+            const tutorialRunId = this.getExternalizedChatTutorialRunId();
+            if (tutorialRunId && !message.tutorialRunId) {
+                message.tutorialRunId = tutorialRunId;
+            }
+            if (tutorialRunId && !message.pcOverlayRunId) {
+                message.pcOverlayRunId = tutorialRunId;
             }
 
             if (this.externalChatCommandBus && typeof this.externalChatCommandBus.post === 'function') {
@@ -349,17 +342,28 @@
         }
 
         setExternalizedChatSpotlight(kind) {
+            const previousKind = this.externalizedChatSpotlightKind;
             this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
             const message = {
                 kind: this.externalizedChatSpotlightKind
             };
             if (
-                this.externalizedChatSpotlightKind
+                (this.externalizedChatSpotlightKind || previousKind)
                 && safeInvoke(this.isResistancePaused, [], false) === true
             ) {
                 message.preserveDuringResistance = true;
             }
             this.postExternalChatCommand('yui_guide_set_chat_spotlight', message);
+        }
+
+        preserveExternalizedChatSpotlightDuringResistance() {
+            if (!this.externalizedChatSpotlightKind) {
+                return false;
+            }
+            return this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
+                kind: this.externalizedChatSpotlightKind,
+                preserveDuringResistance: true
+            });
         }
 
         setExternalizedChatCursor(kind, options) {
@@ -488,60 +492,6 @@
             }
         }
 
-        isTouchInteractionEvent(event) {
-            if (!event || typeof event.type !== 'string') {
-                return false;
-            }
-
-            if (event.type.indexOf('touch') === 0) {
-                lastTouchTime = Date.now();
-                return true;
-            }
-
-            if (event.pointerType === 'touch') {
-                lastTouchTime = Date.now();
-                return true;
-            }
-
-            if (/^(click|mousedown|mouseup)$/.test(event.type) && Date.now() - lastTouchTime < 500) {
-                return true;
-            }
-
-            return false;
-        }
-
-        onInteractionGuard(event) {
-            if (this.destroyed || !this.active || this.page !== 'home' || !event || event.isTrusted === false) {
-                return;
-            }
-            if (safeInvoke(this.isDestroyed, [], false) === true) {
-                return;
-            }
-
-            const target = event.target || null;
-            const isAllowedTarget = safeInvoke(this.allowTarget, [target, event, this], false) === true;
-            if (isAllowedTarget || safeInvoke(this.isSystemDialogTarget, [target, event, this], false) === true) {
-                return;
-            }
-
-            if (
-                this.isTouchInteractionEvent(event)
-                && safeInvoke(this.allowTouchPassthrough, [event, this], false) === true
-            ) {
-                return;
-            }
-
-            if (typeof event.preventDefault === 'function') {
-                event.preventDefault();
-            }
-            if (typeof event.stopImmediatePropagation === 'function') {
-                event.stopImmediatePropagation();
-            }
-            if (typeof event.stopPropagation === 'function') {
-                event.stopPropagation();
-            }
-        }
-
         destroy() {
             if (this.destroyed) {
                 return;
@@ -555,16 +505,6 @@
             }
             this.releaseFaceForwardLock();
             this.destroyed = true;
-
-            this.document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
-            this.document.removeEventListener('pointerup', this.interactionGuardHandler, true);
-            this.document.removeEventListener('mousedown', this.interactionGuardHandler, true);
-            this.document.removeEventListener('mouseup', this.interactionGuardHandler, true);
-            this.document.removeEventListener('touchstart', this.interactionGuardHandler, true);
-            this.document.removeEventListener('touchend', this.interactionGuardHandler, true);
-            this.document.removeEventListener('click', this.interactionGuardHandler, true);
-            this.document.removeEventListener('dblclick', this.interactionGuardHandler, true);
-            this.document.removeEventListener('contextmenu', this.interactionGuardHandler, true);
         }
     }
 

@@ -817,7 +817,7 @@ function injectStyle() {
     body.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
     html.yui-taking-over [data-yui-cursor-hidden="true"],
     body.yui-taking-over [data-yui-cursor-hidden="true"] {
-      cursor: none !important;
+      cursor: auto !important;
     }
 
     html.yui-taking-over.yui-resistance-cursor-reveal,
@@ -901,7 +901,7 @@ function injectStyle() {
       inset: 0;
       pointer-events: auto;
       background: transparent;
-      cursor: none !important;
+      cursor: auto !important;
       touch-action: none;
       user-select: none;
       -webkit-user-select: none;
@@ -1459,7 +1459,7 @@ class PluginDashboardGuideRuntime {
       ko: '건너뛰기',
       ru: 'Пропустить',
     }
-    const label = labelByLocale[locale] || labelByLocale.en
+    const label = labelByLocale[locale] || 'Skip'
     button.textContent = label
     button.setAttribute('aria-label', label)
     button.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
