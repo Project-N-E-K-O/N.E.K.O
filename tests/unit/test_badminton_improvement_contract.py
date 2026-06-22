@@ -2204,14 +2204,14 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "function getAssistChargeMeterState() {" not in html
     assert "function updateAssistChargeMeter() {" not in html
     assert "function isIncomingPlayerReturnCandidate() {" in html
-    assert "function canPrechargePlayerReturn() {" in html
-    assert "game.state === 'in_flight' && !game.pendingSwing && isIncomingPlayerReturnCandidate()" in html
+    assert "function canPrechargePlayerReturn() {" not in html
+    assert "game.state === 'in_flight' && !game.pendingSwing && isIncomingPlayerReturnCandidate()" not in html
     assert "function canPlayerChargeShot() {" in html
-    assert "return canPlayerControlShot() || isPlayerReceivingReturn() || canPrechargePlayerReturn();" in html
+    assert "return canPlayerControlShot();" in html
     assert "var PLAYER_CHARGE_SPEED = 145;" in html
     assert "function stepPlayerCharge(dt) {" in html
     assert "game.power += game.chargeDir * dt * PLAYER_CHARGE_SPEED;" in html
-    assert "if (game.charging && canPrechargePlayerReturn()) stepPlayerCharge(dt);" in html
+    assert "if (game.charging && canPrechargePlayerReturn()) stepPlayerCharge(dt);" not in html
     assert "if (game.charging && canPlayerChargeShot()) {" in html
     assert "stepPlayerCharge(dt);" in html
     assert "if (game.ball && game.ball.shooter !== shotShooter && !incomingBall) game.ball = null;" in html
@@ -2241,15 +2241,15 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     draw_start = html.index("function drawAiming() {")
     draw_section = html[draw_start:html.index("function drawBall()", draw_start)]
     assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
-    assert "function drawReturnChargeTrace(" in draw_section
-    assert "function drawPlayerChargeMeter(" in draw_section
-    assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100), 'charge');" in draw_section
+    assert "function drawReturnChargeTrace(" not in draw_section
+    assert "function drawPlayerChargeMeter(" not in draw_section
+    assert "drawPlayerChargeMeter" not in draw_section
     assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
     assert "if (!canReturnNow) return;" in draw_section
-    assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" in draw_section
-    assert "if (!game.charging) drawReturnChargeTrace(startX, startY, controlX, controlY, endX, endY, returnPercent, 'return', pulse);" in draw_section
-    assert "var meterX = getPlayerX() - meterW / 2;" in draw_section
-    assert "var meterY = getPlayerY() - 146;" in draw_section
+    assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
+    assert "drawReturnChargeTrace" not in draw_section
+    assert "var meterX = getPlayerX() - meterW / 2;" not in draw_section
+    assert "var meterY = getPlayerY() - 146;" not in draw_section
     assert "aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);" in draw_section
     assert "var chargePercent = game.charging ? clamp(game.power, 0, 100) : clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
 
@@ -2259,7 +2259,7 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     ]
     assert "game.power = 56;" not in mousedown
     assert "if (!canPlayerChargeShot()) return;" in mousedown
-    assert "if (canPrechargePlayerReturn()) showAssistHint(_i18n('toast.playerReturn', '接住 Yui 的回球'));" in mousedown
+    assert "canPrechargePlayerReturn" not in mousedown
     assert mousedown.index("if (!canPlayerChargeShot()) return;") < mousedown.index("game.charging = true;")
     mouseup = html[html.index("window.addEventListener('mouseup'"):html.index("window.addEventListener('keydown'")]
     assert "if (game.charging && returnIncomingPlayerShuttle()) return;" in mouseup

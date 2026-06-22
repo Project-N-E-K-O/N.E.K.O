@@ -4139,11 +4139,8 @@
   function isIncomingPlayerReturnCandidate() {
     return !!(game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved && !game.ball.hitNet);
   }
-  function canPrechargePlayerReturn() {
-    return isDuelMode() && !isBadmintonLoadingActive() && game.state === 'in_flight' && !game.pendingSwing && isIncomingPlayerReturnCandidate();
-  }
   function canPlayerChargeShot() {
-    return canPlayerControlShot() || isPlayerReceivingReturn() || canPrechargePlayerReturn();
+    return canPlayerControlShot();
   }
   function stepPlayerCharge(dt) {
     game.power += game.chargeDir * dt * PLAYER_CHARGE_SPEED;
@@ -5438,7 +5435,6 @@
   }
   function update(dt) {
     if (isDuelMode()) updateCourtMovement(dt);
-    if (game.charging && canPrechargePlayerReturn()) stepPlayerCharge(dt);
     if (game.state === 'ready') {
       var awaitingPlayerReturn = game.ball && game.ball.awaitingReturnBy === 'player';
       if (isPositionTransitioning && !awaitingPlayerReturn) return;
@@ -7124,78 +7120,6 @@
   function drawAiming() {
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
     drawPlayerReturnHitCue();
-    if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100), 'charge');
-  }
-  function drawPlayerChargeMeter(percent, kind) {
-    var chargePercent = clamp(percent, 0, 100);
-    if (chargePercent <= 0) return;
-    var now = performance.now();
-    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
-    var meterW = 74;
-    var meterH = 8;
-    var meterX = getPlayerX() - meterW / 2;
-    var meterY = getPlayerY() - 146;
-    var fillW = meterW * chargePercent / 100;
-    var chargeMode = kind === 'return' ? 'return' : 'charge';
-    var fillColor = chargeMode === 'return' ? 'rgba(255,139,89,.88)' : 'rgba(255,202,58,.92)';
-    var glowColor = chargeMode === 'return' ? 'rgba(255,139,89,.40)' : 'rgba(114,216,255,.42)';
-    aimingCtx.save();
-    aimingCtx.globalCompositeOperation = 'lighter';
-    aimingCtx.shadowColor = glowColor;
-    aimingCtx.shadowBlur = 8 + pulse * 4;
-    aimingCtx.fillStyle = 'rgba(5,13,19,.52)';
-    aimingCtx.strokeStyle = 'rgba(255,255,255,.32)';
-    aimingCtx.lineWidth = 1;
-    aimingCtx.beginPath();
-    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX, meterY, meterW, meterH, 4);
-    else aimingCtx.rect(meterX, meterY, meterW, meterH);
-    aimingCtx.fill();
-    aimingCtx.stroke();
-    aimingCtx.fillStyle = fillColor;
-    aimingCtx.beginPath();
-    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3, 3);
-    else aimingCtx.rect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3);
-    aimingCtx.fill();
-    aimingCtx.restore();
-  }
-  function drawReturnChargeTrace(startX, startY, controlX, controlY, endX, endY, percent, kind, pulse) {
-    var chargePercent = clamp(percent, 0, 100);
-    if (chargePercent <= 0) return;
-    var chargeSteps = 28;
-    var visibleSteps = Math.max(1, Math.round(chargeSteps * chargePercent / 100));
-    var glowColor = kind === 'charge' ? 'rgba(114,216,255,.72)' : 'rgba(255,202,58,.62)';
-    var coreColor = kind === 'charge' ? 'rgba(255,246,184,.92)' : 'rgba(255,139,89,.78)';
-    aimingCtx.save();
-    aimingCtx.globalCompositeOperation = 'lighter';
-    aimingCtx.lineCap = 'round';
-    aimingCtx.lineJoin = 'round';
-    aimingCtx.shadowColor = glowColor;
-    aimingCtx.shadowBlur = 8 + pulse * 6;
-    aimingCtx.strokeStyle = glowColor;
-    aimingCtx.lineWidth = 6;
-    aimingCtx.beginPath();
-    for (var step = 0; step <= visibleSteps; step++) {
-      var t = step / chargeSteps;
-      var inv = 1 - t;
-      var x = inv * inv * startX + 2 * inv * t * controlX + t * t * endX;
-      var y = inv * inv * startY + 2 * inv * t * controlY + t * t * endY;
-      if (step === 0) aimingCtx.moveTo(x, y);
-      else aimingCtx.lineTo(x, y);
-    }
-    aimingCtx.stroke();
-    aimingCtx.strokeStyle = coreColor;
-    aimingCtx.lineWidth = 2.2 + pulse * 0.5;
-    aimingCtx.stroke();
-
-    var markerT = visibleSteps / chargeSteps;
-    var markerInv = 1 - markerT;
-    var markerX = markerInv * markerInv * startX + 2 * markerInv * markerT * controlX + markerT * markerT * endX;
-    var markerY = markerInv * markerInv * startY + 2 * markerInv * markerT * controlY + markerT * markerT * endY;
-    aimingCtx.fillStyle = coreColor;
-    aimingCtx.beginPath();
-    aimingCtx.arc(markerX, markerY, 3.5 + pulse * 1.4, 0, Math.PI * 2);
-    aimingCtx.fill();
-    aimingCtx.restore();
   }
   function drawPlayerReturnHitCue() {
     if (!isIncomingPlayerReturnCandidate()) return;
@@ -7222,10 +7146,6 @@
     var endY = ball.y + uy * 38 + ny * 7;
     var canReturnNow = canPlayerReturnIncomingShuttle();
     if (!canReturnNow) return;
-    var returnDeadlineMs = (isPlayerReceivingReturn() && game.ball.returnDeadlineAt)
-      ? Math.max(0, game.ball.returnDeadlineAt - now)
-      : 2400;
-    var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);
     var cueAlpha = canReturnNow ? 1 : 0.46;
 
     aimingCtx.save();
@@ -7253,7 +7173,6 @@
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
     aimingCtx.stroke();
     aimingCtx.globalAlpha = 1;
-    if (!game.charging) drawReturnChargeTrace(startX, startY, controlX, controlY, endX, endY, returnPercent, 'return', pulse);
 
     var tangentX = endX - controlX;
     var tangentY = endY - controlY;
@@ -7882,7 +7801,6 @@
       game.tutorialStep = 2;
       updateTutorial(_i18n('tutorial.release', '松手挥拍！'));
     }
-    if (canPrechargePlayerReturn()) showAssistHint(_i18n('toast.playerReturn', '接住 Yui 的回球'));
     game.charging = true;
     game.chargeDir = 1;
     game.power = 0;
