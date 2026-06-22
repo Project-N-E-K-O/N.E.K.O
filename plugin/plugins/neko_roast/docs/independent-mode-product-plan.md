@@ -1,6 +1,6 @@
 # NEKO Live Independent Mode Product Plan
 
-> Updated: 2026-06-21
+> Updated: 2026-06-23
 >
 > This document is the canonical product plan for Independent Mode. It describes product priorities, MVP scope, validation sequence, and non-goals. It does not define internal architecture, runtime observability, or implementation details.
 
@@ -30,6 +30,18 @@ The next phase should validate two promises first:
 
 1. The streamer can safely hand the room to NEKO.
 2. NEKO does not let a low-danmaku room fall into dead air.
+
+## Current Implementation Status
+
+Independent Mode is now past the first infrastructure check and should move into live-effect validation.
+
+- Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
+- Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
+- The current validation target is not another event type. It is a 30-minute low-danmaku solo-stream simulation.
+- The next product decision should be based on that simulation:
+  - if NEKO is too quiet or too noisy, do Pacing Control next;
+  - if NEKO sounds generic or awkward, tune Idle Hosting wording first;
+  - if the streamer cannot tell why NEKO is silent, refine Live Status before adding more behavior.
 
 ## Current Development Split
 
@@ -118,6 +130,16 @@ Idle Hosting should avoid:
 - forcing viewers to interact;
 - breaking NEKO's fixed persona.
 
+Idle Hosting wording principles:
+
+- say one short line, not a paragraph;
+- throw a light topic, do not beg for comments;
+- do not explain internal system state;
+- do not pretend a viewer said something;
+- do not say "why is nobody talking";
+- keep the line in NEKO's main persona;
+- leave room for viewers to answer.
+
 ### Slice 4: Pacing Control
 
 Goal: prevent Idle Hosting from becoming spam or awkward chatter.
@@ -193,6 +215,19 @@ Passing standard:
 - no long dead silence;
 - no obvious spam;
 - idle lines do not become painfully repetitive.
+
+Suggested observation sheet:
+
+| Time | Room state | What NEKO did | Too quiet? | Too noisy? | Host-like? | Generic / awkward? | Viewer reply point |
+|---|---|---|---|---|---|---|---|
+| 00:00-05:00 | warm start |  |  |  |  |  |  |
+| 05:00-10:00 | low danmaku |  |  |  |  |  |  |
+| 10:00-15:00 | no danmaku |  |  |  |  |  |  |
+| 15:00-20:00 | occasional danmaku |  |  |  |  |  |  |
+| 20:00-25:00 | low danmaku |  |  |  |  |  |  |
+| 25:00-30:00 | no danmaku |  |  |  |  |  |  |
+
+Record only what affects the live feel. Do not turn this into an engineering trace; the question is whether the stream feels alive.
 
 ### 2. One Friendly Streamer Shadow Test
 
