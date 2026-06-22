@@ -249,6 +249,60 @@
         throw new Error('TutorialVisualRuntime is required before tutorial/yui-guide/common.js');
     }
 
+    function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options) {
+        const normalizedOptions = options || {};
+        const host = normalizedOptions.window || root || {};
+        const logger = normalizedOptions.console || host.console || (root && root.console);
+        const warnRelayFailure = (target, error) => {
+            try {
+                if (logger && typeof logger.warn === 'function') {
+                    logger.warn('[YuiGuide] 同步 PC 系统鼠标状态失败:', target, error);
+                }
+            } catch (_) {}
+        };
+        let tutorialRunId = '';
+        try {
+            const storage = normalizedOptions.localStorage || host.localStorage;
+            tutorialRunId = storage
+                ? (storage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+        const message = {
+            action: 'yui_guide_system_cursor_visibility',
+            hidden: hidden === true,
+            tutorialRunId: tutorialRunId,
+            reason: reason,
+            timestamp: Date.now()
+        };
+        const overlay = normalizedOptions.nekoTutorialOverlay || host.nekoTutorialOverlay;
+        try {
+            if (overlay && typeof overlay.relayToChat === 'function') {
+                overlay.relayToChat(message);
+            }
+        } catch (error) {
+            warnRelayFailure('relayToChat', error);
+        }
+        try {
+            if (overlay && typeof overlay.relayToPet === 'function') {
+                overlay.relayToPet(message);
+            }
+        } catch (error) {
+            warnRelayFailure('relayToPet', error);
+        }
+        try {
+            const channel = normalizedOptions.channel
+                || (
+                    host.appInterpage
+                    && host.appInterpage.nekoBroadcastChannel
+                );
+            if (channel && typeof channel.postMessage === 'function') {
+                channel.postMessage(message);
+            }
+        } catch (error) {
+            warnRelayFailure('nekoBroadcastChannel', error);
+        }
+    }
+
     return {
         deepFreeze,
         registerGuide,
@@ -261,6 +315,7 @@
         createTutorialCommandRegistry,
         normalizeTutorialScene,
         createTutorialTimelineEngine,
-        createTutorialVisualRuntime
+        createTutorialVisualRuntime,
+        syncPcSystemCursorHidden
     };
 });
