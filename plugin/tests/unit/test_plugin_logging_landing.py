@@ -38,6 +38,7 @@ def isolated_log_dir(tmp_path, monkeypatch):
     """
     documents = tmp_path / "Documents"
     documents.mkdir()
+    monkeypatch.delenv("NEKO_STORAGE_SELECTED_ROOT", raising=False)
 
     # Each test gets a fresh import of plugin.logging_config so module-level
     # singletons (the brace-compat patch, _root_initialised) don't leak.

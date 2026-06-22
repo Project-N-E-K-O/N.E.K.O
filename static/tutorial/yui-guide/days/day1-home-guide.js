@@ -16,8 +16,8 @@
     const audioFileNames = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
-        takeover_capture_cursor: '超级魔法按钮出现！只.mp3',
-        interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+        takeover_capture_cursor: '超级魔法开关出现！只.mp3',
+        interrupt_resist_light_1: '喂！不要拽我啦，现在.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
         takeover_return_control: '好啦好啦，不霸占你的.mp3',
@@ -79,17 +79,15 @@
                 },
                 {
                     id: 'day1_intro_greeting',
-                    timelinePlayback: true,
-                    timelineAudio: false,
-                    timeline: [
-                        { at: 0, command: 'operation.run', operation: 'day1-intro-greeting-flow', blocking: true }
-                    ],
                     afterSceneDelayMs: 0,
                     textKey: 'tutorial.yuiGuide.lines.introGreetingReply',
                     voiceKey: 'intro_greeting_reply',
                     emotion: 'happy',
-                    target: '#react-chat-window-root .composer-input-shell',
-                    operation: 'day1-intro-greeting-flow'
+                    target: 'chat-input',
+                    cursorTarget: 'chat-capsule-input',
+                    cursorAction: 'move',
+                    operation: 'day1-intro-greeting-performance',
+                    spotlightVariant: 'plain-capsule'
                 },
                 {
                     id: 'day1_capsule_drag_hint',

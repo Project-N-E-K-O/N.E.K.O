@@ -132,14 +132,18 @@ Day 2-4 的台词目前集中在 `static/tutorial/yui-guide/director.js` 的 `AV
 
 ## 第 1 天复用现有教程
 
-第 1 天即现有首页 Yui 新手教程，现有主线来自 `HOME_SCENE_ORDER`：
+第 1 天即现有首页 Yui 新手教程，现有主线来自 `static/tutorial/yui-guide/days/day1-home-guide.js` 的 round scenes：
 
 ```text
-intro_basic
-takeover_capture_cursor
-takeover_plugin_preview
-takeover_settings_peek
-takeover_return_control
+day1_intro_activation
+day1_intro_greeting
+day1_capsule_drag_hint
+day1_history_handle
+day1_intro_basic_voice
+day1_screen_entry
+day1_screen_entry_invite
+day1_takeover_capture_cursor
+day1_takeover_return_control
 ```
 
 Day 1 的流程、文本、高亮、ghost cursor 和真实 UI 点击以 `home-yui-guide-text-highlight-cursor-flow.md` 为准。Day 2-4 的新增教程必须沿用 Day 1 的这些约定：

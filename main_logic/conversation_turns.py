@@ -36,9 +36,11 @@ class ConversationTurnEvent:
     lanlan_name: str
     actor: TurnActor
     text: str | None
+    raw_text: str | None
     lang: str
     timestamp: float
     text_allowed: bool
+    had_text: bool = False
 
 
 class ConversationTurnSink(Protocol):
@@ -50,8 +52,9 @@ class ConversationTurnDispatcher:
     """Small synchronous fanout for per-turn side consumers.
 
     The chat path owns turn timing; individual consumers own their storage,
-    scheduling, and async work. Privacy redaction happens before fanout so raw
-    text does not reach topic/memory-like consumers when privacy mode is on.
+    scheduling, and async work. Privacy redaction still applies to the
+    redacted ``text`` field; sinks that are explicitly allowed to ignore that
+    gate can consume ``raw_text``.
     """
 
     def __init__(
@@ -98,9 +101,11 @@ class ConversationTurnDispatcher:
             lanlan_name=self.lanlan_name,
             actor=actor,
             text=text if text_allowed else None,
+            raw_text=text,
             lang=self._language,
             timestamp=ts,
             text_allowed=text_allowed,
+            had_text=bool(text),
         )
         for sink in list(self._sinks):
             try:
@@ -126,7 +131,16 @@ class ActivityTrackerTurnSink:
 
 
 class TopicHookTurnSink:
-    def __init__(self, pool_factory: Callable[[], object] | None = None) -> None:
+    def __init__(
+        self,
+        pool_factory: Callable[[], object] | None = None,
+        *,
+        activity_private_check: Callable[[], bool] | None = None,
+    ) -> None:
+        # Compatibility only: older callers passed the activity privacy checker
+        # here. Deep-topic evidence now consumes raw conversation turns and does
+        # not consult activity/private state.
+        del activity_private_check
         self._pool_factory = pool_factory
 
     def _pool(self):
@@ -136,13 +150,14 @@ class TopicHookTurnSink:
         return get_topic_hook_pool()
 
     def note_turn(self, event: ConversationTurnEvent) -> None:
-        if not event.text_allowed or not event.text:
-            return
         pool = self._pool()
+        text = event.raw_text
+        if not text:
+            return
         if event.actor == "user":
-            pool.note_user_message(event.lanlan_name, event.text, lang=event.lang)
+            pool.note_user_message(event.lanlan_name, text, lang=event.lang)
         else:
-            pool.note_ai_message(event.lanlan_name, event.text, lang=event.lang)
+            pool.note_ai_message(event.lanlan_name, text, lang=event.lang)
 
 
 def create_default_turn_dispatcher(
@@ -153,5 +168,13 @@ def create_default_turn_dispatcher(
 ) -> ConversationTurnDispatcher:
     dispatcher = ConversationTurnDispatcher(lanlan_name, language=language)
     dispatcher.add_sink(ActivityTrackerTurnSink(activity_tracker))
-    dispatcher.add_sink(TopicHookTurnSink())
+    dispatcher.add_sink(
+        TopicHookTurnSink(
+            activity_private_check=getattr(
+                activity_tracker,
+                "is_private_activity_active",
+                None,
+            )
+        )
+    )
     return dispatcher

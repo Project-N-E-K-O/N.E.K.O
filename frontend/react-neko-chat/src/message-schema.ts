@@ -66,6 +66,7 @@ const galgameOptionSchema = z.object({
 //   - 'galgame'           ：旧路径（galgameOptions / onGalgameOptionSelect 依然
 //                           保留 BC，本框架不替换它，作为渐进迁移目标）
 //   - 'mini_game_invite'  ：mini-game 邀请三选项（accept / decline / later）
+//   - 'new_user_icebreaker'：七日教程结束后的预置破冰二选项
 //
 // 未来扩展：
 //   - 'tutorial_step' / 'plugin_action' / ...
@@ -79,11 +80,48 @@ const choiceOptionSchema = z.object({
   label: z.string().min(1),   // 显示文本
 });
 
+const choicePromptSourceSchema = z.enum(['galgame', 'mini_game_invite', 'new_user_icebreaker']);
+
 const choicePromptSchema = z.object({
-  source: z.enum(['galgame', 'mini_game_invite']),
+  source: choicePromptSourceSchema,
   options: z.array(choiceOptionSchema).min(1),
   sessionId: z.string().optional(),
   gameType: z.string().optional(),
+}).nullable();
+
+const avatarToolMenuOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+const compactToolFanOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+const compactHistoryOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+export const COMPACT_TOOL_WHEEL_POSITIONS = 7;
+
+const compactToolWheelRotateRequestSchema = z.object({
+  id: z.string().min(1),
+  // 1 rotates clockwise, -1 rotates counter-clockwise.
+  direction: z.union([z.literal(1), z.literal(-1)]),
+  stepCount: z.number().int().positive().max(COMPACT_TOOL_WHEEL_POSITIONS),
+  reason: z.string().optional(),
+  forceFast: z.boolean().optional(),
+}).nullable();
+
+const compactToolWheelIndexRequestSchema = z.object({
+  id: z.string().min(1),
+  index: z.number().int().min(0).max(COMPACT_TOOL_WHEEL_POSITIONS - 1),
+  reason: z.string().optional(),
 }).nullable();
 
 const avatarInteractionPayloadBaseSchema = z.object({
@@ -189,18 +227,6 @@ export const composerSubmitSchema = z.object({
   requestId: z.string().optional(),
 });
 
-const compactToolFanOpenRequestSchema = z.object({
-  id: z.string().min(1),
-  open: z.boolean(),
-  reason: z.string().optional(),
-}).nullable();
-
-const compactHistoryOpenRequestSchema = z.object({
-  id: z.string().min(1),
-  open: z.boolean(),
-  reason: z.string().optional(),
-}).nullable();
-
 export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
@@ -231,6 +257,7 @@ export const chatWindowPropsSchema = z.object({
   exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
+  compactInputLocked: z.boolean().optional(),
   chatSurfaceMode: chatSurfaceModeSchema.optional(),
   // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
   // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。
@@ -238,8 +265,6 @@ export const chatWindowPropsSchema = z.object({
   // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
   compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
-  compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
-  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   onCompactChatStateChange: z.function()
     .args(compactChatStateSchema)
     .returns(z.void())
@@ -257,6 +282,11 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonLabel: z.string().optional(),
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
+  avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
+  compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
+  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
+  compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
+  compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -314,7 +344,7 @@ export const chatWindowPropsSchema = z.object({
   onChoiceSelect: z.function()
     // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
     // 任意 z.string() 会让 zod 验证变松。
-    .args(choiceOptionSchema, z.enum(['galgame', 'mini_game_invite']))
+    .args(choiceOptionSchema, choicePromptSourceSchema)
     .returns(z.void())
     .optional(),
 });

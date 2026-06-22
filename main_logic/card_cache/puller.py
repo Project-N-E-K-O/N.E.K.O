@@ -109,9 +109,21 @@ async def _pull_once() -> int:
         lanlan_name = card.get("lanlan_name")
         if not isinstance(card_id, str) or not isinstance(lanlan_name, str):
             continue
-        # 简单 sanitize 防路径穿越
-        safe_lanlan = lanlan_name.replace("/", "_").replace("\\", "_").replace("..", "_")[:64]
-        path = memory_dir / safe_lanlan / "cards" / f"{card_id}.json"
+        # 简单 sanitize 防路径穿越：去掉分隔符 / .. / Windows 盘符冒号（C:foo 这类盘限定段）
+        safe_lanlan = (
+            lanlan_name.replace("/", "_").replace("\\", "_").replace(":", "_").replace("..", "_")[:64]
+        )
+        # card_id 来自云端：Path(...).name 去掉任意目录分隔符与 ..，杜绝写到 cards/ 目录外。
+        safe_card_id = Path(card_id).name
+        if not safe_card_id or safe_card_id.startswith("."):
+            continue
+        path = memory_dir / safe_lanlan / "cards" / f"{safe_card_id}.json"
+        # 兜底：解析后必须仍在 memory_dir 之下（防任何残留穿越）
+        try:
+            if memory_dir.resolve() not in path.resolve().parents:
+                continue
+        except OSError:
+            continue
         if path.exists():
             continue  # M5：已存在不覆写；M6 加 updated_at 比对再覆写
         try:

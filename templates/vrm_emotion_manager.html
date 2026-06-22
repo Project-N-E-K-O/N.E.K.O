@@ -10,8 +10,6 @@
 
     <!-- 样式文件 -->
     <link rel="stylesheet" href="/static/css/vrm_emotion_manager.css">
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
@@ -161,11 +159,9 @@
 
     <!-- 脚本文件 -->
     <script src="/static/js/vrm_emotion_manager.js"></script>
-    <script src="/static/libs/driver.min.js"></script>
     <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version|default('0', true) }}"></script>
-    <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             if (typeof initUniversalTutorialManager === 'function') {

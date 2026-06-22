@@ -295,25 +295,19 @@ def _resolve_language(session: Session) -> tuple[str, str]:
     """Return ``(full_language, short_language)`` for prompt dispatch.
 
     ``full`` is the raw ``session.persona.language`` (default ``zh-CN``).
-    ``short`` is the same value normalised to a 2-char base used by the
-    proactive dispatch table (``zh/en/ja/ko/ru``), mirroring the
-    ``_normalize_prompt_language`` rule in ``config.prompts.prompts_proactive``.
+    ``short`` is normalised by the main program's
+    :func:`config.prompts.prompts_proactive._normalize_prompt_language` — the
+    single source of truth — so the testbench dispatches the exact same
+    per-language templates as production. As of the 2026-06 upstream sync this
+    set is ``zh/en/ja/ko/ru/es/pt``; es/pt became native (they previously fell
+    back to English). Delegating keeps the testbench aligned automatically when
+    upstream adds further languages, rather than hard-coding a divergent list.
     """
+    from config.prompts.prompts_proactive import _normalize_prompt_language
+
     persona = session.persona or {}
     full = str(persona.get("language") or "zh-CN").strip()
-    lower = full.lower()
-    if lower.startswith("zh"):
-        return full, "zh"
-    if lower.startswith("en"):
-        return full, "en"
-    if lower.startswith("ja"):
-        return full, "ja"
-    if lower.startswith("ko"):
-        return full, "ko"
-    if lower.startswith("ru"):
-        return full, "ru"
-    # es / pt / anything else — proactive falls back to en per main program.
-    return full, "en"
+    return full, _normalize_prompt_language(full)
 
 
 def _resolve_names(session: Session) -> tuple[str, str]:
@@ -1369,9 +1363,12 @@ def _build_proactive_instruction_bundle(
 
     normalized_lang = _normalize_prompt_language(full_lang)
     req_lower = full_lang.lower() if full_lang else ""
-    _PROACTIVE_NATIVE_PREFIXES = ("zh", "en", "ja", "ko", "ru")
-    is_native_prefix = any(req_lower.startswith(p) for p in _PROACTIVE_NATIVE_PREFIXES)
-    if req_lower and not is_native_prefix and normalized_lang == "en":
+    # A language only "coerces" when the main program's normalizer falls it
+    # back to English and the request wasn't English to begin with. Native
+    # languages (zh/ja/ko/ru/es/pt + en) normalize to themselves, so deferring
+    # to _normalize_prompt_language tracks the upstream supported-language set
+    # automatically (es/pt became native in the 2026-06 sync — no longer coerced).
+    if req_lower and normalized_lang == "en" and not req_lower.startswith("en"):
         coerce_info.append(CoerceInfo(
             field="language",
             requested=full_lang,

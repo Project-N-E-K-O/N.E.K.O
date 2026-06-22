@@ -3,13 +3,17 @@ const RUNS_URL = '/runs';
 const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
 const RUN_EXPORT_RETRY_DELAY_MS = 400;
+const LOAD_IMAGE_TIMEOUT_MS = 30000;
+const TARGET_DATA_URL_LENGTH = 1000000;
+const DEFAULT_VISION_MAX_IMAGE_PX = 768;
+const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 60000,
-  study_generate_question: 75000,
-  study_evaluate_answer: 75000,
+  study_explain_text: 310000,
+  study_generate_question: 310000,
+  study_evaluate_answer: 310000,
   study_summarize_session: 90000,
   study_memory_card_upsert: 30000,
   study_memory_deck: 30000,
@@ -39,6 +43,14 @@ const explainBtn = document.getElementById('explainBtn');
 const evaluateAnswerBtn = document.getElementById('evaluateAnswerBtn');
 const summarizeBtn = document.getElementById('summarizeBtn');
 const answerInput = document.getElementById('answerInput');
+const studyInputImagePreview = document.getElementById('studyInputImagePreview');
+const studyInputImage = document.getElementById('studyInputImage');
+const studyInputImageRemove = document.getElementById('studyInputImageRemove');
+const studyInputPasteError = document.getElementById('studyInputPasteError');
+const answerInputImagePreview = document.getElementById('answerInputImagePreview');
+const answerInputImage = document.getElementById('answerInputImage');
+const answerInputImageRemove = document.getElementById('answerInputImageRemove');
+const answerInputPasteError = document.getElementById('answerInputPasteError');
 const questionText = document.getElementById('questionText');
 const screenType = document.getElementById('screenType');
 const questionStatus = document.getElementById('questionStatus');
@@ -75,6 +87,7 @@ const settingsDefaultMode = document.getElementById('settingsDefaultMode');
 const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
 const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
 const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
+const settingsLlmVisionEnabled = document.getElementById('settingsLlmVisionEnabled');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
 const MODE_SHORTCUTS = Object.freeze({
@@ -90,6 +103,11 @@ let advancedSettingsOpen = false;
 let modeChangeInFlight = false;
 let refreshPending = false;
 let lastReplyValue = '';
+let studyInputImageValue = '';
+let answerInputImageValue = '';
+let pastePendingCount = 0;
+let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
+const pasteControllers = { study: null, answer: null };
 
 function t(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -135,6 +153,14 @@ function setReply(text) {
   }
 }
 
+function scrollReplyIntoView() {
+  const replyPanel = replyText?.closest('.reply-panel');
+  if (!replyPanel || typeof replyPanel.scrollIntoView !== 'function') {
+    return;
+  }
+  replyPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
 function modeLabel(mode) {
   const known = ['companion', 'interactive', 'teaching'].includes(mode);
   return known ? t(`status.mode.${mode}`, mode) : mode;
@@ -157,6 +183,214 @@ function formatPluginError(error) {
     return t('ui.error.plugin_call_failed', 'Plugin call failed');
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+function setPanelBusy(busy) {
+  const mainView = document.getElementById('mainView');
+  if (mainView) {
+    mainView.dataset.busy = busy ? 'true' : 'false';
+  }
+}
+
+function setPastePending(pending) {
+  pastePendingCount = Math.max(0, pastePendingCount + (pending ? 1 : -1));
+  setPanelBusy(pastePendingCount > 0);
+}
+
+function setPasteError(target, message) {
+  if (!target) {
+    return;
+  }
+  target.textContent = message || '';
+  target.hidden = !message;
+}
+
+function setImagePreview(kind, dataUrl) {
+  const isAnswer = kind === 'answer';
+  const preview = isAnswer ? answerInputImagePreview : studyInputImagePreview;
+  const image = isAnswer ? answerInputImage : studyInputImage;
+  if (isAnswer) {
+    answerInputImageValue = dataUrl || '';
+  } else {
+    studyInputImageValue = dataUrl || '';
+  }
+  if (image) {
+    if (dataUrl) {
+      image.src = dataUrl;
+    } else {
+      image.removeAttribute('src');
+    }
+  }
+  if (preview) {
+    preview.hidden = !dataUrl;
+  }
+}
+
+function normalizeVisionMaxImagePx(value) {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_VISION_MAX_IMAGE_PX;
+  }
+  return Math.max(64, Math.min(4096, parsed));
+}
+
+function applyVisionMaxImagePx(value) {
+  llmVisionMaxImagePx = normalizeVisionMaxImagePx(value);
+}
+
+function applyRuntimeConfig(data) {
+  const config = data && typeof data.config === 'object' ? data.config : null;
+  if (config && Object.prototype.hasOwnProperty.call(config, 'llm_vision_max_image_px')) {
+    applyVisionMaxImagePx(config.llm_vision_max_image_px);
+  }
+}
+
+function loadImageFromBlob(blob, signal) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    let settled = false;
+    const cleanup = () => {
+      settled = true;
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      image.onload = null;
+      image.onerror = null;
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      cleanup();
+      reject(new Error('Image load timeout'));
+    }, LOAD_IMAGE_TIMEOUT_MS);
+    const abort = () => {
+      if (settled) return;
+      cleanup();
+      resolve(null);
+    };
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener?.('abort', abort, { once: true });
+    image.onload = () => {
+      if (settled) return;
+      cleanup();
+      resolve(image);
+    };
+    image.onerror = () => {
+      if (settled) return;
+      cleanup();
+      reject(new Error('Image load failed'));
+    };
+    image.src = url;
+  });
+}
+
+async function compressImageForStudy(blob, signal) {
+  try {
+    const image = await loadImageFromBlob(blob, signal);
+    if (!image || signal?.aborted) {
+      return null;
+    }
+    const sourceWidth = image.naturalWidth || image.width || 0;
+    const sourceHeight = image.naturalHeight || image.height || 0;
+    if (!sourceWidth || !sourceHeight) {
+      return null;
+    }
+    const scale = Math.min(1, llmVisionMaxImagePx / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas 2D context is unavailable');
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+    let url = canvas.toDataURL('image/jpeg', 0.82);
+    if (url.length > TARGET_DATA_URL_LENGTH) {
+      url = canvas.toDataURL('image/jpeg', 0.56);
+    }
+    if (url.length > TARGET_DATA_URL_LENGTH) {
+      url = canvas.toDataURL('image/jpeg', 0.3);
+    }
+    return url.length > TARGET_DATA_URL_LENGTH ? null : url;
+  } catch (error) {
+    console.warn('study static image paste failed', error);
+    return null;
+  }
+}
+
+function insertPastedText(textarea, text) {
+  if (!textarea || !text) {
+    return;
+  }
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? start;
+  textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+  requestAnimationFrame(() => {
+    textarea.focus();
+    textarea.setSelectionRange(start + text.length, start + text.length);
+  });
+}
+
+function createImagePasteHandler(options) {
+  const { textarea, kind, errorTarget } = options;
+  return async function handleImagePaste(event) {
+    const items = event.clipboardData?.items;
+    if (!items) {
+      return;
+    }
+    const itemList = Array.from(items);
+    if (!itemList.some((item) => item.type.startsWith('image/'))) {
+      return;
+    }
+    event.preventDefault();
+    pasteControllers[kind]?.abort();
+    const controller = new AbortController();
+    pasteControllers[kind] = controller;
+    setPasteError(errorTarget, '');
+    setPastePending(true);
+    try {
+      for (const item of itemList) {
+        if (item.type.startsWith('image/')) {
+          if (!SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)) {
+            setPasteError(errorTarget, t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'));
+            continue;
+          }
+          const blob = item.getAsFile();
+          if (!blob) {
+            setPasteError(errorTarget, t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'));
+            continue;
+          }
+          const image = await compressImageForStudy(blob, controller.signal);
+          if (controller.signal.aborted) {
+            return;
+          }
+          if (!image) {
+            setPasteError(errorTarget, t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'));
+            continue;
+          }
+          setImagePreview(kind, image);
+          setPasteError(errorTarget, '');
+        } else if (item.type === 'text/plain') {
+          item.getAsString((pastedText) => {
+            if (!controller.signal.aborted) {
+              insertPastedText(textarea, pastedText);
+            }
+          });
+        }
+      }
+    } finally {
+      if (pasteControllers[kind] === controller) {
+        pasteControllers[kind] = null;
+      }
+      setPastePending(false);
+    }
+  };
 }
 
 function compactText(value, fallback = '-') {
@@ -697,6 +931,12 @@ function applySettingsConfig(config) {
   if (settingsLlmTimeout) {
     settingsLlmTimeout.value = String(Number.isFinite(Number(llm.llm_call_timeout_seconds)) ? Number(llm.llm_call_timeout_seconds) : 30);
   }
+  if (settingsLlmVisionEnabled) {
+    settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
+  }
+  if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) {
+    applyVisionMaxImagePx(llm.llm_vision_max_image_px);
+  }
 }
 
 async function loadSettingsConfig(options = {}) {
@@ -723,6 +963,8 @@ function collectSettingsConfig() {
   ocr.enabled = settingsOcrEnabled ? settingsOcrEnabled.checked : true;
   ocr.languages = settingsOcrLanguages ? settingsOcrLanguages.value.trim() || 'chi_sim+jpn+eng' : 'chi_sim+jpn+eng';
   llm.llm_call_timeout_seconds = Math.max(1, Math.min(3600, Math.round(Number(settingsLlmTimeout?.value) || 30)));
+  llm.llm_vision_enabled = settingsLlmVisionEnabled ? settingsLlmVisionEnabled.checked : false;
+  llm.llm_vision_max_image_px = normalizeVisionMaxImagePx(llm.llm_vision_max_image_px);
   return next;
 }
 
@@ -821,6 +1063,7 @@ async function callPlugin(entryId, args = {}) {
 async function refreshStatus(_options = {}) {
   setStatus(t('ui.status.refreshing', 'Refreshing...'));
   const data = await callPlugin('study_status');
+  applyRuntimeConfig(data);
   setStatusLine(data);
 }
 
@@ -837,8 +1080,19 @@ async function runOcr() {
 
 async function explainText() {
   const text = studyInput.value.trim();
-  setStatus(t('ui.status.explaining', 'Explaining...'));
-  const data = await callPlugin('study_explain_text', { text });
+  if (!text && !studyInputImageValue) {
+    throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+  }
+  setStatus(studyInputImageValue
+    ? t('ui.status.solving_problem', 'Solving problem...')
+    : t('ui.status.explaining', 'Explaining...'));
+  setReply(studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));
+  scrollReplyIntoView();
+  const args = { text };
+  if (studyInputImageValue) {
+    args.vision_image_base64 = studyInputImageValue;
+  }
+  const data = await callPlugin('study_explain_text', args);
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
@@ -848,8 +1102,15 @@ async function explainText() {
 
 async function generateQuestion() {
   const text = studyInput.value.trim();
+  if (!text && !studyInputImageValue) {
+    throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
+  }
   setStatus(t('ui.status.generating_question', 'Generating question...'));
-  const data = await callPlugin('study_generate_question', { text });
+  const args = { text };
+  if (studyInputImageValue) {
+    args.vision_image_base64 = studyInputImageValue;
+  }
+  const data = await callPlugin('study_generate_question', args);
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
@@ -870,17 +1131,21 @@ async function generateQuestion() {
 
 async function evaluateAnswer() {
   const answer = answerInput ? answerInput.value.trim() : '';
-  if (!answer) {
+  if (!answer && !answerInputImageValue) {
     throw new Error(t('ui.error.missing_answer', 'Please enter an answer first.'));
   }
   const question = questionText && questionText.textContent.trim()
     ? questionText.textContent.trim()
     : (studyInput.value.trim() || '');
   setStatus(t('ui.status.evaluating_answer', 'Evaluating answer...'));
-  const data = await callPlugin('study_evaluate_answer', {
+  const args = {
     answer,
     question,
-  });
+  };
+  if (answerInputImageValue) {
+    args.vision_image_base64 = answerInputImageValue;
+  }
+  const data = await callPlugin('study_evaluate_answer', args);
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
@@ -1032,6 +1297,32 @@ async function bootstrap() {
   bindButton(summarizeBtn, summarizeSession);
   bindButton(memoryRefreshBtn, refreshMemoryDeck);
   bindButton(memoryAddBtn, saveMemoryCard);
+  if (studyInput) {
+    studyInput.addEventListener('paste', createImagePasteHandler({
+      textarea: studyInput,
+      kind: 'study',
+      errorTarget: studyInputPasteError,
+    }));
+  }
+  if (answerInput) {
+    answerInput.addEventListener('paste', createImagePasteHandler({
+      textarea: answerInput,
+      kind: 'answer',
+      errorTarget: answerInputPasteError,
+    }));
+  }
+  if (studyInputImageRemove) {
+    studyInputImageRemove.addEventListener('click', () => {
+      setImagePreview('study', '');
+      setPasteError(studyInputPasteError, '');
+    });
+  }
+  if (answerInputImageRemove) {
+    answerInputImageRemove.addEventListener('click', () => {
+      setImagePreview('answer', '');
+      setPasteError(answerInputPasteError, '');
+    });
+  }
   setModeButtons(currentMode, false);
   document.addEventListener('keydown', handleModeShortcut);
   if (modeSelect) {

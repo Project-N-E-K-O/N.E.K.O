@@ -122,7 +122,8 @@ from plugin.plugins.study_companion.ui_api import (
     build_open_ui_payload,
 )
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
-from plugin.sdk.plugin import Err, Ok
+from plugin.sdk.plugin import Err, Ok, OsActivitySnapshot
+from plugin.sdk.shared.constants import EVENT_META_ATTR
 
 
 class _Logger:
@@ -440,6 +441,7 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
             enabled=True,
             snapshot_interval_seconds=60,
             push_to_llm_mode="read",
+            os_signals_enabled=False,
         )
     )
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
@@ -486,13 +488,191 @@ async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -
             return _NoActivitySnapshot()
 
     plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}}))
-    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            push_to_llm_mode="blind",
+            os_signals_enabled=False,
+        )
+    )
     plugin._buffer = ActivityBuffer()
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
 
     await plugin.awareness_tick()
 
     assert plugin._awareness_idle_ticks == 1
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_private_activity_tracker_skips_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CaptureShouldNotRun:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def capture_lightweight(self):
+            self.calls += 1
+            raise AssertionError("private activity must not capture the screen")
+
+    async def _activity_snapshot(source: str, *, now: float | None = None):
+        assert source == "study_companion"
+        assert now is not None
+        return OsActivitySnapshot(
+            os_signals_available=True,
+            foreground_category=None,
+            system_idle_seconds=12.0,
+            privacy_state="private",
+        )
+
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    pipeline = _CaptureShouldNotRun()
+    plugin._ocr_pipeline = pipeline
+    monkeypatch.setattr(
+        study_companion_module,
+        "get_os_activity_snapshot",
+        _activity_snapshot,
+    )
+
+    await plugin.awareness_tick()
+
+    assert pipeline.calls == 0
+    assert plugin._awareness_idle_ticks == 1
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "private"
+    assert summary["current_activity"] == "private"
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_uses_activity_tracker_foreground_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+                has_content_change=True,
+                thumbnail_phash="1" * 16,
+            )
+
+    async def _activity_snapshot(source: str, *, now: float | None = None):
+        assert source == "study_companion"
+        assert now is not None
+        return OsActivitySnapshot(
+            os_signals_available=True,
+            foreground_category="gaming",
+            system_idle_seconds=42.0,
+            privacy_state="visible",
+        )
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {}
+
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    monkeypatch.setattr(
+        study_companion_module,
+        "get_os_activity_snapshot",
+        _activity_snapshot,
+    )
+    supervision = _Supervision()
+    plugin._supervision = supervision
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "game"
+    assert supervision.calls == [
+        {
+            "ocr_text": "Question: Why?",
+            "sensor_available": True,
+            "idle_seconds": 42.0,
+            "foreground_category": "gaming",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_ignores_unavailable_os_signals_for_supervision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+                has_content_change=True,
+                thumbnail_phash="2" * 16,
+            )
+
+    async def _activity_snapshot(source: str, *, now: float | None = None):
+        assert source == "study_companion"
+        assert now is not None
+        return OsActivitySnapshot(
+            os_signals_available=False,
+            foreground_category=None,
+            system_idle_seconds=None,
+            privacy_state="unavailable",
+        )
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {}
+
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    monkeypatch.setattr(
+        study_companion_module,
+        "get_os_activity_snapshot",
+        _activity_snapshot,
+    )
+    supervision = _Supervision()
+    plugin._supervision = supervision
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "web_page"
+    assert supervision.calls == [
+        {
+            "ocr_text": "Question: Why?",
+            "sensor_available": True,
+            "idle_seconds": None,
+            "foreground_category": None,
+        }
+    ]
 
 
 class _FakeOcrBackend:
@@ -703,7 +883,7 @@ async def test_study_settings_entry_persists_and_updates_runtime(
         {
             "study": {"language": "en", "default_mode": MODE_COMPANION, "auto_open_ui": False},
             "ocr_reader": {"enabled": True, "languages": "eng"},
-            "llm": {"llm_call_timeout_seconds": 45},
+            "llm": {"llm_call_timeout_seconds": 45, "llm_vision_enabled": False},
             "study_companion": {"communication": {"enabled": False}},
         },
     )
@@ -717,7 +897,11 @@ async def test_study_settings_entry_persists_and_updates_runtime(
             config={
                 "study": {"default_mode": MODE_TEACHING, "auto_open_ui": True},
                 "ocr_reader": {"enabled": "false", "languages": "chi_sim+eng"},
-                "llm": {"llm_call_timeout_seconds": 90},
+                "llm": {
+                    "llm_call_timeout_seconds": 90,
+                    "llm_vision_enabled": True,
+                    "llm_vision_max_image_px": "128",
+                },
             }
         )
 
@@ -727,17 +911,23 @@ async def test_study_settings_entry_persists_and_updates_runtime(
         assert result.value["config"]["ocr_reader"]["enabled"] is False
         assert result.value["config"]["ocr_reader"]["languages"] == "chi_sim+eng"
         assert result.value["config"]["llm"]["llm_call_timeout_seconds"] == 90.0
+        assert result.value["config"]["llm"]["llm_vision_enabled"] is True
+        assert result.value["config"]["llm"]["llm_vision_max_image_px"] == 128
         assert plugin._cfg.default_mode == MODE_TEACHING
         assert plugin._cfg.auto_open_ui is True
         assert plugin._cfg.ocr_enabled is False
         assert plugin._cfg.ocr_languages == "chi_sim+eng"
         assert plugin._cfg.llm_call_timeout_seconds == 90.0
+        assert plugin._cfg.llm_vision_enabled is True
+        assert plugin._cfg.llm_vision_max_image_px == 128
         persisted = plugin._store.load_config(StudyConfig())
         assert persisted.default_mode == MODE_TEACHING
         assert persisted.auto_open_ui is True
         assert persisted.ocr_enabled is False
         assert persisted.ocr_languages == "chi_sim+eng"
         assert persisted.llm_call_timeout_seconds == 90.0
+        assert persisted.llm_vision_enabled is True
+        assert persisted.llm_vision_max_image_px == 128
         assert plugin._agent._config is plugin._cfg
         assert plugin._ocr_pipeline is not None
         assert plugin._ocr_pipeline._config is plugin._cfg
@@ -2208,13 +2398,14 @@ let configPayload = {
     plugin: { id: 'study_companion', entry: 'plugin.plugins.study_companion:StudyCompanionPlugin' },
     study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
     ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
-    llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false },
+    llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false, llm_vision_max_image_px: 1024 },
   },
 };
 let statusPayload = {
   status: 'ready',
   active_mode: 'companion',
   is_first_run: true,
+  last_ocr_text: 'old OCR text',
   dependencies: {
     rapidocr: { available: true },
     tesseract: { available: true },
@@ -2282,6 +2473,18 @@ async function waitFor(predicate, label) {
 await waitFor(() => document.getElementById('firstRunGuide') && !document.getElementById('firstRunGuide').hidden, 'first run guide');
 
 const guide = document.getElementById('firstRunGuide');
+if (document.getElementById('studyInput').value !== '') {
+  throw new Error(`study input should not auto-load stale OCR text: ${document.getElementById('studyInput').value}`);
+}
+const explainRunCountBeforeEmptyInput = runEntries.filter((entry) => entry.entry_id === 'study_explain_text').length;
+document.getElementById('explainBtn').click();
+await waitFor(
+  () => document.getElementById('replyText').textContent.includes('Please enter text or paste an image first.'),
+  'empty study input validation',
+);
+if (runEntries.filter((entry) => entry.entry_id === 'study_explain_text').length !== explainRunCountBeforeEmptyInput) {
+  throw new Error(`empty input should not create explain run: ${JSON.stringify(runEntries)}`);
+}
 if (guide.querySelectorAll('[data-first-run-step]').length !== 3) {
   throw new Error(`expected 3 onboarding steps: ${guide.outerHTML}`);
 }
@@ -2341,10 +2544,14 @@ if (document.getElementById('settingsOcrLanguages').value !== 'eng') {
 if (document.getElementById('settingsLlmTimeout').value !== '45') {
   throw new Error(`LLM timeout did not load from config: ${document.getElementById('settingsLlmTimeout').value}`);
 }
+if (document.getElementById('settingsLlmVisionEnabled').checked !== false) {
+  throw new Error('LLM vision checkbox did not load from config');
+}
 document.getElementById('settingsDefaultMode').value = 'teaching';
 document.getElementById('settingsOcrEnabled').checked = true;
 document.getElementById('settingsOcrLanguages').value = 'chi_sim+eng';
 document.getElementById('settingsLlmTimeout').value = '90';
+document.getElementById('settingsLlmVisionEnabled').checked = true;
 document.getElementById('settingsSaveBtn').click();
 await waitFor(
   () => runEntries.some((entry) => entry.entry_id === 'study_update_settings_config'),
@@ -2357,6 +2564,8 @@ if (
   || savedConfig.ocr_reader.enabled !== true
   || savedConfig.ocr_reader.languages !== 'chi_sim+eng'
   || savedConfig.llm.llm_call_timeout_seconds !== 90
+  || savedConfig.llm.llm_vision_enabled !== true
+  || savedConfig.llm.llm_vision_max_image_px !== 1024
   || savedConfig.plugin.id !== 'study_companion'
 ) {
   throw new Error(`settings save payload mismatch: ${JSON.stringify(savedConfig)}`);
@@ -2448,7 +2657,9 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
 
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
-    assert "study_explain_text: 60000" in source
+    assert "study_explain_text: 310000" in source
+    assert "study_generate_question: 310000" in source
+    assert "study_evaluate_answer: 310000" in source
     assert "callPlugin as callHostedPlugin" in source
     assert (
         "return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });"
@@ -2469,6 +2680,15 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "study-panel__modes" in source
     assert "study_set_mode" in source
     assert "status.mode.companion" in source
+    assert "status: textImage ? 'solving_problem' : 'explaining'" in source
+    assert (
+        "setReply(textImage ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));"
+        in source
+    )
+    assert "const replySectionRef = useRef<HTMLDivElement | null>(null);" in source
+    assert "function scrollReplyIntoView()" in source
+    assert "replySectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });" in source
+    assert "scrollReplyIntoView();" in source
 
 
 def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
@@ -2511,7 +2731,20 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
     css_source = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
 
-    assert "async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null>" in source
+    assert "DEFAULT_VISION_MAX_IMAGE_PX = 768" in source
+    assert "function normalizeVisionMaxImagePx(value: unknown)" in source
+    assert "maxImagePx = DEFAULT_VISION_MAX_IMAGE_PX" in source
+    assert "getMaxImagePx?: () => number;" in source
+    assert "getMaxImagePx: getVisionMaxImagePx," in source
+    assert (
+        "visionMaxImagePxRef.current = normalizeVisionMaxImagePx(\n"
+        "      data.config?.llm_vision_max_image_px,\n"
+        "    );"
+        in source
+    )
+    assert "if (data.config?.llm_vision_max_image_px !== undefined)" not in source
+    assert "MAX_PASTE_IMAGE_LONG_SIDE" not in source
+    assert "async function compressImageForStudy(" in source
     assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
     assert "const TARGET_DATA_URL_LENGTH = 1_000_000;" in source
     assert "Promise.race" in source
@@ -2541,7 +2774,9 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "return busy || pastePendingRef.current;" in source
     assert "readOnly={interactionBusy}" in source
     assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
+    assert "status: textImage ? 'solving_problem' : 'explaining'" in source
     assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
+    assert "ui.error.missing_study_input" in source
     assert "if (!answer.trim() && !answerImage)" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
     assert "const textImageRef = useRef('');" in source
@@ -2563,6 +2798,103 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "warnInDev" in source
     assert '.study-panel[data-busy="true"] .study-panel__image-remove' in css_source
     assert ".study-panel__paste-error" in css_source
+
+
+def test_study_companion_static_ui_supports_image_paste_contract() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    html_source = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
+    source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    css_source = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="studyInputImagePreview"' in html_source
+    assert 'id="answerInputImagePreview"' in html_source
+    assert 'data-i18n-aria-label="ui.label.remove_pasted_image"' in html_source
+    assert 'data-i18n-aria-label="ui.label.remove_pasted_answer_image"' in html_source
+    assert 'aria-label="Remove pasted image"' not in html_source
+    assert 'aria-label="Remove pasted answer image"' not in html_source
+    assert 'id="studyInputPasteError"' in html_source
+    assert 'id="answerInputPasteError"' in html_source
+    assert "img-src 'self' data: blob:" in html_source
+    assert "const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);" in source
+    assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
+    assert "const TARGET_DATA_URL_LENGTH = 1000000;" in source
+    assert "const DEFAULT_VISION_MAX_IMAGE_PX = 768;" in source
+    assert "let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;" in source
+    assert "function normalizeVisionMaxImagePx(value)" in source
+    assert "function applyRuntimeConfig(data)" in source
+    assert "applyVisionMaxImagePx(llm.llm_vision_max_image_px);" in source
+    assert "llmVisionMaxImagePx / Math.max(sourceWidth, sourceHeight)" in source
+    assert "768 / Math.max(sourceWidth, sourceHeight)" not in source
+    assert "return url.length > TARGET_DATA_URL_LENGTH ? null : url;" in source
+    assert "const pasteControllers = { study: null, answer: null };" in source
+    assert "async function compressImageForStudy(blob, signal)" in source
+    assert "function createImagePasteHandler(options)" in source
+    assert "pasteControllers[kind]?.abort();" in source
+    assert "pasteControllers[kind] = controller;" in source
+    assert "if (controller.signal.aborted)" in source
+    assert "if (pasteControllers[kind] === controller)" in source
+    assert "event.clipboardData?.items" in source
+    assert "item.type.startsWith('image/')" in source
+    assert "SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)" in source
+    assert "item.type === 'text/plain'" in source
+    assert "setImagePreview(kind, image);" in source
+    assert "studyInput.addEventListener('paste', createImagePasteHandler({" in source
+    assert "answerInput.addEventListener('paste', createImagePasteHandler({" in source
+    assert "args.vision_image_base64 = studyInputImageValue;" in source
+    assert "t('ui.status.solving_problem'" in source
+    assert (
+        "setReply(studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));"
+        in source
+    )
+    assert "function scrollReplyIntoView()" in source
+    assert "replyPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });" in source
+    assert "scrollReplyIntoView();" in source
+    assert "args.vision_image_base64 = answerInputImageValue;" in source
+    assert "if (!answer && !answerInputImageValue)" in source
+    assert ".main-view[data-busy=\"true\"] .study-panel__image-remove" in css_source
+    assert "studyInput.value = data.last_ocr_text;" not in source
+    assert "data.current_question" not in source
+    assert "questionText.textContent = currentQuestion.question || '';" not in source
+    assert "ui.error.missing_study_input" in source
+
+
+def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    explain_source = (plugin_dir / "entry_tutor_explain_entries.py").read_text(encoding="utf-8")
+    question_source = (plugin_dir / "entry_tutor_question_entries.py").read_text(encoding="utf-8")
+    answer_source = (plugin_dir / "entry_tutor_answer_entries.py").read_text(encoding="utf-8")
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+    submit_meta = getattr(StudyCompanionPlugin.study_submit_image, EVENT_META_ATTR)
+    meta = getattr(StudyCompanionPlugin.study_explain_text, EVENT_META_ATTR)
+    question_meta = getattr(StudyCompanionPlugin.study_generate_question, EVENT_META_ATTR)
+    answer_meta = getattr(StudyCompanionPlugin.study_evaluate_answer, EVENT_META_ATTR)
+    with (plugin_dir / "plugin.toml").open("rb") as handle:
+        plugin_config = tomllib.load(handle)
+    llm_timeout = float(plugin_config["llm"]["llm_call_timeout_seconds"])
+
+    assert "study_explain_text: 310000" in static_source
+    assert "study_generate_question: 310000" in static_source
+    assert "study_evaluate_answer: 310000" in static_source
+    assert "study_explain_text: 310000" in hosted_source
+    assert "study_generate_question: 310000" in hosted_source
+    assert "study_evaluate_answer: 310000" in hosted_source
+    assert "timeout=310.0" in explain_source
+    assert "timeout=310.0" in question_source
+    assert "timeout=310.0" in answer_source
+    assert submit_meta.timeout == 310.0
+    assert meta.timeout == 310.0
+    assert question_meta.timeout == 310.0
+    assert answer_meta.timeout == 310.0
+    assert "llm_call_timeout_seconds = 300" in plugin_toml
+    for entry_timeout in (
+        submit_meta.timeout,
+        meta.timeout,
+        question_meta.timeout,
+        answer_meta.timeout,
+    ):
+        assert entry_timeout > llm_timeout + 0.5
 
 
 def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:

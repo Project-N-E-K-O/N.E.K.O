@@ -6,9 +6,11 @@ const test = require('node:test');
 const repoRoot = path.resolve(__dirname, '..');
 const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
 const day1Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'), 'utf8');
+const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
 const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
 const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
 const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
+const targetGeometryRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/target-geometry-registry.js'), 'utf8');
 
 function getSceneBlock(source, sceneId) {
   const idPattern = "id: '" + sceneId + "'";
@@ -21,7 +23,7 @@ function getSceneBlock(source, sceneId) {
   return source.slice(start, end + '\n                }'.length);
 }
 
-test('Day1 intro-only scene flows are delegated from timeline operations', () => {
+test('Day1 activation stays timeline-owned while greeting uses the generic scene path', () => {
   const operationRegistryBlock = operationRegistrySource.match(/registerBuiltInOperations\(\)\s*\{([\s\S]*?)\n\s*\}\n\s*\n\s*resolveTargetEntry/);
   assert.ok(operationRegistryBlock, 'expected to find built-in operation registrations');
   const activationSceneBlock = getSceneBlock(day1Source, 'day1_intro_activation');
@@ -30,13 +32,17 @@ test('Day1 intro-only scene flows are delegated from timeline operations', () =>
   assert.match(activationSceneBlock, /timelinePlayback:\s*true/);
   assert.match(activationSceneBlock, /timelineAudio:\s*false/);
   assert.match(activationSceneBlock, /operation:\s*'day1-intro-activation-flow'/);
-  assert.match(greetingSceneBlock, /timelinePlayback:\s*true/);
-  assert.match(greetingSceneBlock, /timelineAudio:\s*false/);
-  assert.match(greetingSceneBlock, /operation:\s*'day1-intro-greeting-flow'/);
+  assert.doesNotMatch(greetingSceneBlock, /timelinePlayback:\s*true/);
+  assert.doesNotMatch(greetingSceneBlock, /timelineAudio:\s*false/);
+  assert.doesNotMatch(greetingSceneBlock, /operation:\s*'day1-intro-greeting-flow'/);
+  assert.match(greetingSceneBlock, /target:\s*'chat-input'/);
+  assert.match(greetingSceneBlock, /cursorTarget:\s*'chat-capsule-input'/);
+  assert.match(greetingSceneBlock, /cursorAction:\s*'move'/);
+  assert.match(greetingSceneBlock, /operation:\s*'day1-intro-greeting-performance'/);
   assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-activation-flow'/);
   assert.match(operationRegistryBlock[1], /runDay1IntroActivationFlow/);
-  assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-greeting-flow'/);
-  assert.match(operationRegistryBlock[1], /runDay1IntroGreetingFlow/);
+  assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-greeting-performance'/);
+  assert.match(operationRegistryBlock[1], /runDay1IntroGreetingPerformance/);
   assert.doesNotMatch(sceneOrchestratorSource, /registerSceneFlow\('day1-intro-activation'/);
   assert.doesNotMatch(sceneOrchestratorSource, /registerSceneFlow\('day1-intro-greeting'/);
   assert.doesNotMatch(sceneOrchestratorSource, /playRegisteredSceneFlow/);
@@ -163,6 +169,37 @@ test('Day1 return control highlights the capsule input and keeps the petal cue',
   assert.match(day1SceneBlock, /petalTransition:\s*true/);
 });
 
+test('avatar floating reset script no longer ships the deprecated reset player', () => {
+  assert.doesNotMatch(resetSource, /const DAY_TUTORIALS\s*=/);
+  assert.doesNotMatch(resetSource, /function createRoundPlayer/);
+  assert.doesNotMatch(resetSource, /resetHomeTutorialFallback/);
+  assert.doesNotMatch(resetSource, /home-avatar-floating-guide-player/);
+});
+
+test('memory reset only prepares the formal avatar floating round for the next Neko refresh', () => {
+  const resetHomeBlock = resetSource.split('async function resetHomeTutorialDay(day, options = {}) {')[1].split(
+    '\n    async function startAvatarFloatingGuideDay',
+    1
+  )[0];
+  const startDayBlock = resetSource.split('async function startAvatarFloatingGuideDay(day, options = {}) {')[1].split(
+    '\n    function showResetToast',
+    1
+  )[0];
+
+  assert.match(resetHomeBlock, /clearHomeTutorialPromptResetState\(round\);/);
+  assert.doesNotMatch(resetHomeBlock, /startFormalAvatarFloatingGuideRound/);
+  assert.doesNotMatch(resetHomeBlock, /createRoundPlayer/);
+  assert.match(startDayBlock, /return startFormalAvatarFloatingGuideRound\(day,\s*\{\s*source:\s*options\.source \|\| 'home_reset_button'/);
+  assert.doesNotMatch(startDayBlock, /createRoundPlayer/);
+});
+
+test('avatar floating reset toasts resolve through i18n keys', () => {
+  assert.match(resetSource, /function translateResetMessage\(key,\s*fallback,\s*options = \{\}\)/);
+  assert.match(resetSource, /window\.t\(key,\s*options\)/);
+  assert.match(resetSource, /'tutorial\.reset\.daySuccess'/);
+  assert.match(resetSource, /'tutorial\.reset\.dayFailed'/);
+});
+
 test('Day1 return control cursor moves to the capsule primary target before the operation runs', () => {
   assert.match(sceneOrchestratorSource, /await director\.moveAvatarFloatingCursor\(scene,\s*cursorTarget \|\| primaryTarget,\s*secondaryTarget,\s*previousSceneId/);
   assert.match(sceneOrchestratorSource, /externalizedSceneTargetKind && scene\.cursorAction === 'move'[\s\S]*await director\.waitForExternalizedChatCursorMove/);
@@ -170,16 +207,13 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /if \(selector === 'chat-capsule-input'\) \{\s*return this\.getChatCapsuleInputTarget\(\);/);
   assert.match(directorSource, /const registeredKind = this\.cursor\.getExternalKind\(this\.getAvatarFloatingCursorTargetKey\(scene\)\);[\s\S]*if \(registeredKind\) \{[\s\S]*return registeredKind;/);
   assert.match(directorSource, /'chat-capsule-input': 'capsule-input'/);
-  assert.match(appInterpageSource, /function getYuiGuideChatSpotlightElement\(createIfMissing\)/);
-  assert.match(appInterpageSource, /spotlight = document\.createElement\('div'\);[\s\S]*spotlight\.id = 'yui-guide-chat-spotlight';/);
-  assert.match(appInterpageSource, /var spotlight = getYuiGuideChatSpotlightElement\(true\);/);
-  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*var target = getYuiGuideChatSpotlightTarget\(kind\);[\s\S]*spotlight\.style\.borderRadius = radius \+ 'px';/);
-  assert.match(appInterpageSource, /if \(!rect \|\| rect\.width <= 0 \|\| rect\.height <= 0\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: \[\] \}\);/);
-  assert.match(appInterpageSource, /yuiGuideChatSpotlightTimer = window\.setInterval\(function \(\) \{[\s\S]*updateYuiGuideChatSpotlight\(yuiGuideChatSpotlightKind\);/);
+  assert.match(targetGeometryRegistrySource, /'chat-capsule-input': Object\.freeze\(\{[\s\S]*externalKind: 'capsule-input'[\s\S]*data-compact-geometry-part="capsuleBody"/);
+  assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)[\s\S]*entry\.localSelectors\.some/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);
   assert.match(directorSource, /setExternalizedChatCursorEffect\(kind,\s*effect,\s*options\)[\s\S]*this\.rememberExternalizedChatCursorHandoffPoint\(normalizedKind,\s*cursorOptions\.effect\);[\s\S]*this\.interactionTakeover\.setExternalizedChatCursor\(normalizedKind,\s*cursorOptions\);/);
-  assert.doesNotMatch(appInterpageSource, /payload\.cursor\s*=\s*yuiGuidePcOverlayCursor/);
   const moveIndex = sceneOrchestratorSource.indexOf('await director.moveAvatarFloatingCursor(scene, cursorTarget || primaryTarget');
   const operationIndex = sceneOrchestratorSource.indexOf('await startSceneOperation();', moveIndex);
   assert.notStrictEqual(moveIndex, -1, 'expected generic avatar floating cursor move');

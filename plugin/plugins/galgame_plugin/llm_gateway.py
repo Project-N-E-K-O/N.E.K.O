@@ -311,19 +311,9 @@ class LLMGateway:
             return degraded("cancelled: llm request was cancelled")
 
     def _cache_config_fingerprint(self) -> str:
-        mode = str(
-            getattr(self._config, "context_counting_mode", "char") or "char"
-        ).strip().lower()
         semantic_compression = bool(
             getattr(self._config, "context_semantic_compression", False)
         )
-        if mode != "token":
-            return _stable_json_fingerprint(
-                {
-                    "context_counting_mode": "char",
-                    "context_semantic_compression": semantic_compression,
-                }
-            )
         try:
             budget = int(getattr(self._config, "context_max_tokens", 6000))
         except (TypeError, ValueError):

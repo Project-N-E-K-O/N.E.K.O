@@ -214,7 +214,14 @@ function applyPreset(groupKey, draft, providerKey, providers, inputs) {
   // 免费预设自带 api_key → 提示用户不用再填.
   // 这里不把明文塞进前端 input (后端 resolve 会自己兜底, 保持明文"只在服务端"
   // 的安全约定). applyPreset 只是告诉用户这一步已经搞定了.
-  if (p.is_free_version || p.preset_api_key_bundled) {
+  //
+  // 但 is_free_version (Lanlan 免费预设) 在 testbench 里已不可用: 服务端反滥用
+  // 拦截外部客户端 ("STOP ABUSE THE API"), 仅主程序可用 → 用 warn toast 醒目提示.
+  // (详见 docs/UPSTREAM_SYNC_2026-06.md 2026-06-19 排查结论.) preset_api_key_bundled
+  // 的非免费预设仍可正常使用, 维持原 ok toast.
+  if (p.is_free_version) {
+    toast.warn(i18n('settings.models.toast.applied_free_unusable', p.name));
+  } else if (p.preset_api_key_bundled) {
     toast.ok(i18n('settings.models.toast.applied_free', p.name));
   } else {
     toast.ok(i18n('settings.models.toast.applied', p.name));
@@ -238,7 +245,12 @@ function describeApiKeyState(draft, providers, keysStatus) {
   const preset = draft.provider
     ? providers.find((p) => p.key === draft.provider)
     : null;
-  if (preset?.is_free_version || preset?.preset_api_key_bundled) {
+  // 免费 Lanlan 预设: api_key 虽自带, 但 testbench 直连会被服务端反滥用拦截,
+  // 这里改成不可用警告而非"无需填写", 避免误导用户以为留空即可测试.
+  if (preset?.is_free_version) {
+    return i18n('settings.models.api_key_status.free_preset_unusable');
+  }
+  if (preset?.preset_api_key_bundled) {
     return i18n('settings.models.api_key_status.bundled_by_preset');
   }
   if (draft.provider && keysStatus) {

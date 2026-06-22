@@ -282,13 +282,56 @@ def test_get_voices_merges_mimo_bucket(monkeypatch):
     monkeypatch.setattr(cm, "get_core_config", lambda: {})
     monkeypatch.setattr(cm, "_is_local_tts_storage_active", lambda *a, **k: False)
     monkeypatch.setattr(cm, "is_free_voice", lambda: False)
-    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
     monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
 
     voices = cm.get_voices_for_current_api()
     assert "mimo-clone-x" in voices
     assert voices["mimo-clone-x"]["provider"] == "mimo"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key_field, api_key, bucket, expected_provider", [
+    ("ASSIST_API_KEY_QWEN", "domestic-key-12345678", "domestic-key-12345678", "cosyvoice"),
+    ("ASSIST_API_KEY_QWEN_INTL", "intl-key-12345678", "__COSYVOICE_INTL__12345678", "cosyvoice_intl"),
+])
+@pytest.mark.parametrize("tts_config, core_api_type", [
+    ({}, "free"),
+    ({"is_custom": True, "base_url": "ws://127.0.0.1:9880", "api_key": ""}, "openai"),
+])
+def test_get_voices_merges_cosyvoice_provider_bucket_for_listing_when_main_cloud_hidden(
+    monkeypatch,
+    key_field,
+    api_key,
+    bucket,
+    expected_provider,
+    tts_config,
+    core_api_type,
+):
+    cm = get_config_manager()
+    voice_id = f"{expected_provider}-clone-x"
+    main_voice_id = "domestic-main-voice"
+    core_config = {
+        "CORE_API_TYPE": core_api_type,
+        "AUDIO_API_KEY": "domestic-main-key",
+        key_field: api_key,
+    }
+    monkeypatch.setattr(cm, "get_model_api_config", lambda t: dict(tts_config))
+    monkeypatch.setattr(cm, "get_core_config", lambda: dict(core_config))
+    monkeypatch.setattr(cm, "load_voice_storage", lambda: {
+        "domestic-main-key": {main_voice_id: {"source": "main"}},
+        bucket: {voice_id: {"source": "clone"}},  # provider stamped by merge
+    })
+    monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_mimo_storage_keys", lambda: [])
+
+    voices = cm.get_voices_for_current_api(for_listing=True)
+
+    assert voice_id in voices
+    assert voices[voice_id]["provider"] == expected_provider
+    assert main_voice_id not in voices
 
 
 @pytest.mark.unit
@@ -377,7 +420,7 @@ def test_get_voices_strips_sample_b64_for_listing(monkeypatch):
     monkeypatch.setattr(cm, "get_core_config", lambda: {})
     monkeypatch.setattr(cm, "_is_local_tts_storage_active", lambda *a, **k: False)
     monkeypatch.setattr(cm, "is_free_voice", lambda: False)
-    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda: [])
+    monkeypatch.setattr(cm, "_get_cosyvoice_storage_keys", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cm, "_get_minimax_storage_keys", lambda: [])
     monkeypatch.setattr(cm, "_get_elevenlabs_storage_keys", lambda: [])
 

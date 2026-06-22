@@ -526,9 +526,9 @@ def _coerce_reader_mode(value: object, default: str = READER_MODE_AUTO) -> str:
     return default
 
 
-def _coerce_context_counting_mode(value: object, default: str = "char") -> str:
+def _coerce_context_counting_mode(value: object, default: str = "token") -> str:
     normalized = str(value or default).strip().lower()
-    if normalized in {"char", "token"}:
+    if normalized == "token":
         return normalized
     return default
 

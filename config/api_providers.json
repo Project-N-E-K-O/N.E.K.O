@@ -167,10 +167,10 @@
       "name": "Kimi（月之暗面）",
       "description": "国内可用，支持长上下文和视觉，不支持自定义语音",
       "openrouter_url": "https://api.moonshot.cn/v1",
-      "conversation_model": "kimi-k2-0905-preview",
-      "summary_model": "kimi-k2-0905-preview",
-      "correction_model": "kimi-k2-0905-preview",
-      "emotion_model": "kimi-k2-0905-preview",
+      "conversation_model": "kimi-k2.5",
+      "summary_model": "kimi-k2.5",
+      "correction_model": "kimi-k2.5",
+      "emotion_model": "kimi-k2.5",
       "vision_model": "kimi-k2.5",
       "agent_model": "kimi-k2.5"
     },
@@ -405,6 +405,12 @@
     "enabled": false,
     "server_prefix": "",
     "voice_id": ""
+  },
+  "_comment_meme_moderation_config": "Meme image moderation local/private API key.",
+  "meme_moderation_config": {
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model": "omni-moderation-latest"
   },
   "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {

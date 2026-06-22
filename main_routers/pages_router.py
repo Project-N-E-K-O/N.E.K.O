@@ -46,14 +46,29 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/index.css",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day4-companion-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day5-personalization-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day6-agent-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/days/day7-graduation-guide.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/steps.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
+    _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",
+    _PROJECT_ROOT / "static/tutorial/avatar/yui-standin.js",
+    _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
+    _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
+    _PROJECT_ROOT / "static/tutorial/core/round-prelude-controller.js",
+    _PROJECT_ROOT / "static/tutorial/core/universal-manager.js",
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
-    _PROJECT_ROOT / "static/app-ui.js",
     _PROJECT_ROOT / "static/app-interpage.js",
+    _PROJECT_ROOT / "static/app-ui.js",
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
-    _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-export.js",
     _PROJECT_ROOT / "static/avatar-ui-buttons.js",
@@ -225,11 +240,11 @@ async def soccer_demo(request: Request):
     })
 
 
-@router.get("/basketball_demo", response_class=HTMLResponse)
-async def basketball_demo(request: Request):
-    """Basketball shooting challenge mini-game."""
+@router.get("/badminton_demo", response_class=HTMLResponse)
+async def badminton_demo(request: Request):
+    """Badminton challenge mini-game."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/basketball_demo.html", {
+    return templates.TemplateResponse("templates/badminton_demo.html", {
         "request": request,
         **_static_assets_ctx(),
     })

@@ -205,6 +205,7 @@ class SupervisionConfig:
     enabled: bool = True
     remind_interval_minutes: int = 10
     inactivity_timeout_minutes: int = 5
+    idle_away_seconds: int = 900
     allow_disable_by_chat: bool = True
 
     def __post_init__(self) -> None:
@@ -214,6 +215,9 @@ class SupervisionConfig:
         )
         self.inactivity_timeout_minutes = _range_or_default(
             self.inactivity_timeout_minutes, 1, 30, 5
+        )
+        self.idle_away_seconds = _range_or_default(
+            self.idle_away_seconds, 60, 3600, 900
         )
         self.allow_disable_by_chat = bool(self.allow_disable_by_chat)
 
@@ -253,9 +257,11 @@ class AwarenessConfig:
     snapshot_interval_seconds: int = 5
     context_window_minutes: int = 5
     classify_mode: str = "title_first"
-    image_max_bytes: int = 204800
-    push_to_llm_interval_seconds: int = 30
+    image_max_bytes: int = 65_536
+    push_to_llm_interval_seconds: int = 300
     push_to_llm_mode: str = "read"
+    os_signals_enabled: bool = True
+    distraction_detection: bool = True
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
@@ -274,10 +280,10 @@ class AwarenessConfig:
             classify_mode = "title_first"
         self.classify_mode = classify_mode
         self.image_max_bytes = _clamp_int_or_default(
-            self.image_max_bytes, 10240, 1_048_576, 204800
+            self.image_max_bytes, 10240, 512_000, 65_536
         )
         self.push_to_llm_interval_seconds = _clamp_int_or_default(
-            self.push_to_llm_interval_seconds, 5, 300, 30
+            self.push_to_llm_interval_seconds, 30, 300, 300
         )
         push_mode = str(self.push_to_llm_mode or "read").strip()
         if push_mode not in {"read", "blind", "respond"}:
@@ -287,6 +293,8 @@ class AwarenessConfig:
             )
             push_mode = "read"
         self.push_to_llm_mode = push_mode
+        self.os_signals_enabled = bool(self.os_signals_enabled)
+        self.distraction_detection = bool(self.distraction_detection)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -773,6 +781,12 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 5,
                 "supervision_inactivity_timeout_minutes",
             ),
+            idle_away_seconds=_int(
+                supervision,
+                "idle_away_seconds",
+                900,
+                "supervision_idle_away_seconds",
+            ),
             allow_disable_by_chat=_bool(
                 supervision,
                 "allow_disable_by_chat",
@@ -825,13 +839,13 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             image_max_bytes=_int(
                 awareness,
                 "image_max_bytes",
-                204800,
+                65_536,
                 "awareness_image_max_bytes",
             ),
             push_to_llm_interval_seconds=_int(
                 awareness,
                 "push_to_llm_interval_seconds",
-                30,
+                300,
                 "awareness_push_to_llm_interval_seconds",
             ),
             push_to_llm_mode=_str(
@@ -839,6 +853,18 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "push_to_llm_mode",
                 "read",
                 "awareness_push_to_llm_mode",
+            ),
+            os_signals_enabled=_bool(
+                awareness,
+                "os_signals_enabled",
+                True,
+                "awareness_os_signals_enabled",
+            ),
+            distraction_detection=_bool(
+                awareness,
+                "distraction_detection",
+                True,
+                "awareness_distraction_detection",
             ),
         ),
     )

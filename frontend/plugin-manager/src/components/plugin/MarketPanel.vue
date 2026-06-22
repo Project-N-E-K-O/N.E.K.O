@@ -258,6 +258,7 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
 import { useUserPreferenceStore } from '@/stores/userPreference'
+import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 
 interface Props {
@@ -727,7 +728,8 @@ async function yankSweep() {
     // Query the channel the plugin was actually installed from; otherwise a
     // user who installed a stable version and later switched the global
     // preference to beta would lose the yanked flag on the stable install.
-    const entryChannel = entry.channel || userPref.channel
+    const narrowedEntryChannel = narrowMarketChannel(entry.channel)
+    const entryChannel = narrowedEntryChannel === 'unknown' ? userPref.channel : narrowedEntryChannel
     const cacheKey = `${entry.market_id || entry.plugin_id}::${entryChannel}`
     const cached = yankCache.get(cacheKey)
     let yankedVersions: Set<string>

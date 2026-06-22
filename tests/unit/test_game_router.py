@@ -1,9 +1,11 @@
 import asyncio
 import json
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
@@ -11,12 +13,24 @@ from .game_route_test_helpers import (
     reset_game_route_state,
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
-from main_routers import game_router
+from main_routers import game_router, system_router
+from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from main_logic.core import LLMSessionManager
+from utils.llm_client import AIMessage, HumanMessage
 
 
 class _FakeRequest:
-    def __init__(self, payload):
+    def __init__(self, payload, *, mutation_headers=True, path="/api/game/new_user_icebreaker/context"):
         self._payload = payload
+        self.base_url = "http://127.0.0.1:8000/"
+        self.url = SimpleNamespace(path=path)
+        self.method = "POST"
+        self.headers = {}
+        if mutation_headers:
+            self.headers = {
+                "origin": "http://127.0.0.1:8000",
+                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+            }
 
     async def json(self):
         return self._payload
@@ -36,52 +50,81 @@ def _put_game_session(lanlan_name, game_type, session_id, session):
     return key
 
 
-def _allow_basketball_score_session(lanlan_name, session_id, mode="shooter"):
+def _allow_badminton_score_session(lanlan_name, session_id, mode="shooter"):
     state = {
-        "game_type": "basketball",
+        "game_type": "badminton",
         "session_id": session_id,
         "lanlan_name": lanlan_name,
         "game_route_active": False,
         "mode": mode,
     }
     _mark_game_started(state)
-    game_router._game_route_states[game_router._route_state_key(lanlan_name, "basketball")] = state
-    game_router._remember_basketball_score_session(lanlan_name, session_id, mode)
+    game_router._game_route_states[game_router._route_state_key(lanlan_name, "badminton")] = state
+    game_router._remember_badminton_score_session(lanlan_name, session_id, mode)
     return state
 
 
+def _allow_icebreaker_route(lanlan_name="Lan", session_id="icebreaker-day1-test"):
+    state = {
+        "game_type": "new_user_icebreaker",
+        "session_id": session_id,
+        "lanlan_name": lanlan_name,
+        "game_route_active": True,
+    }
+    _mark_game_started(state)
+    game_router._game_route_states[game_router._route_state_key(lanlan_name, "new_user_icebreaker")] = state
+    return state
+
+
+def _allow_local_mutation(request, payload=None, **kwargs):
+    return None
+
+
+class _FakeAppendContextManager:
+    def __init__(self, result=None, error=None):
+        self.calls = []
+        self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
+        self.error = error
+
+    async def append_context(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
 @pytest.mark.unit
-def test_basketball_removed_modes_are_not_public_or_scored():
-    assert game_router._normalize_basketball_mode("horse") == "spectator"
-    assert game_router._normalize_basketball_mode("HORSE") == "spectator"
-    assert game_router._is_basketball_scoring_mode("horse") is False
-    assert game_router._normalize_basketball_mode("timed") == "spectator"
-    assert game_router._normalize_basketball_mode("TIMED") == "spectator"
-    assert game_router._is_basketball_scoring_mode("timed") is False
+def test_badminton_removed_modes_are_not_public_or_scored():
+    assert game_router._normalize_badminton_mode("horse") == "spectator"
+    assert game_router._normalize_badminton_mode("HORSE") == "spectator"
+    assert game_router._is_badminton_scoring_mode("horse") is False
+    assert game_router._normalize_badminton_mode("timed") == "spectator"
+    assert game_router._normalize_badminton_mode("TIMED") == "spectator"
+    assert game_router._is_badminton_scoring_mode("timed") is False
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_route_start_accepts_direct_debug_session(monkeypatch):
+async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["neko_initiated"] is False
-        return game_router._default_basketball_pregame_context(mode="shooter"), "lightweight", ""
+        return game_router._default_badminton_pregame_context(mode="shooter"), "lightweight", ""
 
-    monkeypatch.setattr(game_router, "_build_basketball_pregame_context", fake_pregame_context)
+    monkeypatch.setattr(game_router, "_build_badminton_pregame_context", fake_pregame_context)
 
     with reset_game_route_state():
         result = await game_router.game_route_start(
-            "basketball",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-basketball", "mode": "shooter"}),
+            "badminton",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "shooter"}),
         )
 
         assert result["ok"] is True
-        assert result["state"]["game_type"] == "basketball"
-        assert result["state"]["session_id"] == "debug-basketball"
+        assert result["state"]["game_type"] == "badminton"
+        assert result["state"]["session_id"] == "debug-badminton"
         assert result["state"]["mode"] == "shooter"
-        assert game_router._route_state_key("Lan", "basketball") in game_router._game_route_states
+        assert game_router._route_state_key("Lan", "badminton") in game_router._game_route_states
 
 
 @pytest.mark.unit
@@ -94,6 +137,473 @@ def test_parse_control_instructions_extracts_json_line():
         "line": "这球我拿下了喵",
         "control": {"mood": "happy", "difficulty": "lv2"},
     }
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_appends_session_history(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "教程看完啦？",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["method"] == "project_session_history"
+        assert mgr.calls == [{
+            "source": "game.icebreaker",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "audience": "model",
+            "timing": "when_ready",
+            "lifetime": "session_family",
+            "request_id": None,
+            "ordering_key": "icebreaker-day1-test",
+            "metadata": {
+                "game_type": "new_user_icebreaker",
+                "session_id": "icebreaker-day1-test",
+            },
+        }]
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_awaits_async_append(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "icebreaker choice",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["method"] == "project_session_history"
+        assert mgr.calls[0]["role"] == "user"
+        assert mgr.calls[0]["text"] == "icebreaker choice"
+        assert mgr.calls[0]["source"] == "game.icebreaker"
+        assert mgr.calls[0]["lifetime"] == "session_family"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_oversized_text(monkeypatch):
+    mgr = _FakeAppendContextManager(error=AssertionError("oversized icebreaker context must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "x" * (game_router.MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH + 1),
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result == {"ok": False, "reason": "invalid_text_length"}
+    assert mgr.calls == []
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_rejects_stale_session(monkeypatch):
+    mgr = _FakeAppendContextManager(error=AssertionError("stale icebreaker context must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    _allow_icebreaker_route()
+
+    with reset_game_route_state():
+        _allow_icebreaker_route(session_id="active-session")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "late line",
+                "session_id": "old-session",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["method"] == "project_session_history"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_rejects_inactive_route(monkeypatch):
+    mgr = _FakeAppendContextManager(error=AssertionError("inactive icebreaker route must not append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "late line",
+                "session_id": "inactive-session",
+            }),
+        )
+
+    assert result == {
+        "ok": False,
+        "reason": "route_not_active",
+        "lanlan_name": "Lan",
+        "game_type": "new_user_icebreaker",
+        "method": "project_session_history",
+    }
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_delegates_request_id_to_manager(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    with reset_game_route_state():
+        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
+        first = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello",
+                "request_id": "icebreaker-context-1",
+                "event": {"request_id": "fallback-id"},
+            }),
+        )
+        next_request = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello again",
+                "event": {"request_id": "icebreaker-context-2"},
+            }),
+        )
+
+    assert first["ok"] is True
+    assert next_request["ok"] is True
+    assert [call["request_id"] for call in mgr.calls] == [
+        "icebreaker-context-1",
+        "icebreaker-context-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_reports_manager_dedup(monkeypatch):
+    mgr = _FakeAppendContextManager(result=SimpleNamespace(appended=False, deduped=True, reason="duplicate_request_id"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    with reset_game_route_state():
+        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello",
+                "request_id": "icebreaker-context-1",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["deduped"] is True
+    assert mgr.calls[0]["request_id"] == "icebreaker-context-1"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_does_not_mask_internal_type_error(monkeypatch):
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=TypeError("internal append bug"))},
+    )
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route("Lan", "icebreaker-day1-test")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "hello",
+                "request_id": "icebreaker-context-1",
+            }),
+        )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert "internal append bug" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_requires_local_mutation_csrf(monkeypatch):
+    mgr = _FakeAppendContextManager(error=AssertionError("CSRF rejection should happen before append"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "blocked context",
+            "session_id": "icebreaker-csrf-test",
+        }, mutation_headers=False),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_unsupported_game_type():
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_project_context(
+            "soccer",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "choice a",
+            }),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "ok": False,
+        "reason": "unsupported_game_type",
+        "game_type": "soccer",
+    }
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_append_failure(monkeypatch):
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=RuntimeError("append failed"))},
+    )
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    _allow_icebreaker_route()
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "context line",
+            "session_id": "icebreaker-day1-test",
+        }),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["lanlan_name"] == "Lan"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_false_append(monkeypatch):
+    mgr = _FakeAppendContextManager(result=SimpleNamespace(appended=False, deduped=False, reason="no_context_target"))
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "context line",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_context_target"
+    assert result["lanlan_name"] == "Lan"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lanlan_name_value", [None, "", "   "])
+async def test_new_user_icebreaker_context_endpoint_rejects_empty_lanlan_name(monkeypatch, lanlan_name_value):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "FallbackLan"})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    payload = {
+        "role": "assistant",
+        "text": "context line",
+        "session_id": "icebreaker-day1-test",
+    }
+    if lanlan_name_value is not None:
+        payload["lanlan_name"] = lanlan_name_value
+
+    result = await game_router.game_project_context(
+        "new_user_icebreaker",
+        _FakeRequest(payload),
+    )
+
+    assert result == {"ok": False, "reason": "missing_lanlan_name"}
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_rejects_stale_session(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    with reset_game_route_state():
+        _allow_icebreaker_route(session_id="active-session")
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "late line",
+                "session_id": "old-session",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["method"] == "project_session_history"
+    assert mgr.calls == []
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_requires_public_append_method(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self._conversation_history = []
+
+    class FakeManager:
+        def __init__(self):
+            self.session = FakeSession()
+
+    mgr = FakeManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "choice a",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result == {
+        "ok": False,
+        "reason": "context_method_unavailable",
+        "lanlan_name": "Lan",
+    }
+    assert mgr.session._conversation_history == []
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_async_append_error(monkeypatch):
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=RuntimeError("session history unavailable"))},
+    )
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "icebreaker choice",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["error"] == "session history unavailable"
+    assert result["lanlan_name"] == "Lan"
+    assert result["game_type"] == "new_user_icebreaker"
+    assert result["session_id"] == "icebreaker-day1-test"
+
+
+@pytest.mark.asyncio
+async def test_new_user_icebreaker_context_endpoint_handles_async_append_error_from_manager(monkeypatch):
+    monkeypatch.setattr(
+        game_router,
+        "get_session_manager",
+        lambda: {"Lan": _FakeAppendContextManager(error=RuntimeError("session history unavailable"))},
+    )
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+
+    with reset_game_route_state():
+        _allow_icebreaker_route()
+        result = await game_router.game_project_context(
+            "new_user_icebreaker",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "role": "assistant",
+                "text": "教程看完啦？",
+                "session_id": "icebreaker-day1-test",
+            }),
+        )
+
+    assert result["ok"] is False
+    assert result["reason"] == "context_write_failed"
+    assert result["error"] == "session history unavailable"
+    assert result["lanlan_name"] == "Lan"
+    assert result["game_type"] == "new_user_icebreaker"
+    assert result["session_id"] == "icebreaker-day1-test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_llm_session_manager_appends_generic_context_to_session_history():
+    class FakeSession:
+        def __init__(self):
+            self._conversation_history = []
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.session = FakeSession()
+    mgr.message_cache_for_new_session = []
+    mgr.session_ready = True
+
+    first = await mgr.append_context(source="game.icebreaker", role="assistant", text=" hi ")
+    second = await mgr.append_context(source="game.icebreaker", role="user", text=" choice ")
+    assert first.appended is True
+    assert second.appended is True
+    assert isinstance(mgr.session._conversation_history[0], AIMessage)
+    assert mgr.session._conversation_history[0].content == "hi"
+    assert isinstance(mgr.session._conversation_history[1], HumanMessage)
+    assert mgr.session._conversation_history[1].content == "choice"
 
 
 @pytest.mark.unit
@@ -124,17 +634,17 @@ def test_parse_control_instructions_drops_internal_advice_lines_from_visible_lin
 
 
 @pytest.mark.unit
-def test_basketball_prompt_and_control_contract():
+def test_badminton_prompt_and_control_contract():
     prompt = game_router._build_game_prompt(
-        "basketball",
+        "badminton",
         "Lan",
         "傲娇但会认真看比赛。",
         language="zh",
     )
 
-    assert "投篮挑战小游戏" in prompt
-    assert "玩家在左侧" in prompt
-    assert "swish、bank、rim_in、rim_out、air_ball" in prompt
+    assert "羽毛球挑战小游戏" in prompt
+    assert "有效区域或目标落点" in prompt
+    assert "line_in、net_touch、zone_in、out、net" in prompt
     assert "expression" in prompt
     assert "intensity" in prompt
     assert "final_streak" in prompt
@@ -142,7 +652,7 @@ def test_basketball_prompt_and_control_contract():
 
     parsed = game_router._parse_control_instructions(
         '破纪录了喵！\n{"mood":"surprised","expression":"hype","intensity":"high","difficulty":"max"}',
-        game_type="basketball",
+        game_type="badminton",
     )
     assert parsed == {
         "line": "破纪录了喵！",
@@ -151,33 +661,33 @@ def test_basketball_prompt_and_control_contract():
 
 
 @pytest.mark.unit
-def test_basketball_shooter_prompt_contract():
+def test_badminton_shooter_prompt_contract():
     prompt = game_router._build_game_prompt(
-        "basketball",
+        "badminton",
         "Lan",
         "傲娇但会认真看比赛。",
         language="zh",
         mode="shooter",
     )
 
-    assert "被玩家操控投篮" in prompt
-    assert "投篮手是 Yui" in prompt
-    assert "评价的是玩家操控 Yui 的技术" in prompt
+    assert "被玩家操控挥拍" in prompt
+    assert "挥拍的是 Yui" in prompt
+    assert "评价的是玩家操控 Yui 控拍的技术" in prompt
     assert "shooterEvaluation" in prompt
     assert "shooterRating" in prompt
 
 
 @pytest.mark.unit
-def test_basketball_duel_prompt_contract():
+def test_badminton_duel_prompt_contract():
     prompt = game_router._build_game_prompt(
-        "basketball",
+        "badminton",
         "Lan",
         "傲娇但会认真看比赛。",
         language="zh",
         mode="duel",
     )
 
-    assert "篮球对战回合" in prompt
+    assert "羽毛球对拉回合" in prompt
     assert "label / duel 字段" in prompt
     assert "player_duel_shot" in prompt
     assert "duel.player_score" in prompt
@@ -186,39 +696,39 @@ def test_basketball_duel_prompt_contract():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
-def test_basketball_duel_prompts_use_duel_outcome_for_winner(lang):
-    prompt = game_router.get_basketball_system_prompt(lang, mode="duel")
+def test_badminton_duel_prompts_use_duel_outcome_for_winner(lang):
+    prompt = game_router.get_badminton_system_prompt(lang, mode="duel")
 
     assert "duel_outcome" in prompt
     assert "duel.active_shooter" in prompt
 
 
 @pytest.mark.unit
-def test_basketball_control_drops_invalid_values():
+def test_badminton_control_drops_invalid_values():
     parsed = game_router._parse_control_instructions(
         '嗯？\n{"mood":"evil","expression":"explode","intensity":"extreme"}',
-        game_type="basketball",
+        game_type="badminton",
     )
 
     assert parsed == {"line": "嗯？", "control": {}}
 
 
 @pytest.mark.unit
-def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields():
-    event, error = game_router._sanitize_basketball_event({
+def test_badminton_event_sanitizer_keeps_current_state_and_drops_invalid_fields():
+    event, error = game_router._sanitize_badminton_event({
         "kind": "shot_result",
         "result": "scored",
-        "shot_type": "swish",
+        "shot_type": "line_in",
         "streak": "7",
         "distance": "380",
         "currentState": {
-            "game": "basketball",
+            "game": "badminton",
             "streak": "7",
             "distance": "380",
             "record_distance": "520",
             "final_streak": "7",
             "final_distance": "380",
-            "last_shot_type": "swish",
+            "last_shot_type": "line_in",
             "score": {
                 "score": "42",
                 "best_streak": "7",
@@ -231,7 +741,7 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
         },
         "score": "42",
         "was_perfect": True,
-        "basketballGameMemoryEnabled": False,
+        "badmintonGameMemoryEnabled": False,
         "gameMemoryEnabled": False,
         "debugBlob": "x" * 5000,
     })
@@ -241,12 +751,14 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
     assert event["distance"] == 380
     assert event["score"] == 42
     assert event["was_perfect"] is True
-    assert event["basketballGameMemoryEnabled"] is False
+    assert event["badmintonGameMemoryEnabled"] is False
+    assert event["badmintonGameMemoryEnabled"] is False
     assert event["gameMemoryEnabled"] is False
     assert "debugBlob" not in event
+    assert event["shot_type"] == "line_in"
     assert event["currentState"] == {
-        "game": "basketball",
-        "last_shot_type": "swish",
+        "game": "badminton",
+        "last_shot_type": "line_in",
         "streak": 7,
         "distance": 380,
         "record_distance": 520,
@@ -261,7 +773,7 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
         },
     }
 
-    invalid, invalid_error = game_router._sanitize_basketball_event({
+    invalid, invalid_error = game_router._sanitize_badminton_event({
         "kind": "bad_kind",
         "shot_type": "explode",
     })
@@ -270,8 +782,8 @@ def test_basketball_event_sanitizer_keeps_current_state_and_drops_invalid_fields
 
 
 @pytest.mark.unit
-def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
-    event, error = game_router._sanitize_basketball_event({
+def test_badminton_event_sanitizer_keeps_duel_state_and_shot_missed():
+    event, error = game_router._sanitize_badminton_event({
         "kind": "shot_missed",
         "mode": "duel",
         "duel_outcome": "player_win",
@@ -285,7 +797,7 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
             "activeShooter": "neko",
         },
         "currentState": {
-            "game": "basketball",
+            "game": "badminton",
             "mode": "duel",
             "duel": {
                 "player_score": "2",
@@ -322,7 +834,7 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
         "active_shooter": "neko",
     }
 
-    event, error = game_router._sanitize_basketball_event({
+    event, error = game_router._sanitize_badminton_event({
         "kind": "shot_missed",
         "mode": "duel",
         "duel": {
@@ -338,8 +850,8 @@ def test_basketball_event_sanitizer_keeps_duel_state_and_shot_missed():
 
 
 @pytest.mark.unit
-def test_basketball_event_sanitizer_drops_removed_horse_state():
-    event, error = game_router._sanitize_basketball_event({
+def test_badminton_event_sanitizer_drops_removed_horse_state():
+    event, error = game_router._sanitize_badminton_event({
         "kind": "shot_missed",
         "mode": "horse",
         "horse": {
@@ -357,7 +869,7 @@ def test_basketball_event_sanitizer_drops_removed_horse_state():
             },
         },
         "currentState": {
-            "game": "basketball",
+            "game": "badminton",
             "mode": "horse",
             "horse": {
                 "letters_player": 2,
@@ -376,11 +888,11 @@ def test_basketball_event_sanitizer_drops_removed_horse_state():
 
 
 @pytest.mark.unit
-def test_basketball_event_sanitizer_keeps_bounded_current_state_attempts():
+def test_badminton_event_sanitizer_keeps_bounded_current_state_attempts():
     attempts = [
         {
             "shooter": "player",
-            "shot_type": "swish",
+            "shot_type": "line_in",
             "distance": str(100 + index),
             "distance_m": "3.5",
             "scored": index % 2 == 0,
@@ -393,11 +905,11 @@ def test_basketball_event_sanitizer_keeps_bounded_current_state_attempts():
         for index in range(14)
     ]
 
-    event, error = game_router._sanitize_basketball_event({
+    event, error = game_router._sanitize_badminton_event({
         "kind": "game_over",
         "mode": "duel",
         "currentState": {
-            "game": "basketball",
+            "game": "badminton",
             "mode": "duel",
             "attempts_results": attempts,
         },
@@ -409,7 +921,7 @@ def test_basketball_event_sanitizer_keeps_bounded_current_state_attempts():
     assert sanitized_attempts[0]["round"] == 2
     assert sanitized_attempts[-1] == {
         "shooter": "player",
-        "shot_type": "swish",
+        "shot_type": "line_in",
         "scored": False,
         "score": 2,
         "round": 13,
@@ -422,7 +934,7 @@ def test_basketball_event_sanitizer_keeps_bounded_current_state_attempts():
 
 
 @pytest.mark.unit
-def test_basketball_shooter_helper_boundaries():
+def test_badminton_shooter_helper_boundaries():
     assert game_router._compute_distance_tier(80) == "close"
     assert game_router._compute_distance_tier(150) == "mid"
     assert game_router._compute_distance_tier(300) == "far"
@@ -444,12 +956,12 @@ def test_basketball_shooter_helper_boundaries():
 
 
 @pytest.mark.unit
-def test_basketball_shooter_evaluation_and_sanitizer_fields():
-    event, error = game_router._sanitize_basketball_event({
+def test_badminton_shooter_evaluation_and_sanitizer_fields():
+    event, error = game_router._sanitize_badminton_event({
         "kind": "shot_result",
         "mode": "shooter",
         "result": "scored",
-        "shot_type": "swish",
+        "shot_type": "line_in",
         "streak": 3,
         "distance": 180,
         "shot_angle": 50,
@@ -482,7 +994,7 @@ def test_basketball_shooter_evaluation_and_sanitizer_fields():
     assert weak["power_deviation"] == 13.0
     assert weak["aim_duration_seconds"] == 0.0
 
-    invalid_mode, invalid_error = game_router._sanitize_basketball_event({
+    invalid_mode, invalid_error = game_router._sanitize_badminton_event({
         "kind": "shot_result",
         "mode": "invalid",
     })
@@ -492,7 +1004,7 @@ def test_basketball_shooter_evaluation_and_sanitizer_fields():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_quick_lines_returns_fallback_on_llm_failure(monkeypatch):
+async def test_badminton_quick_lines_returns_fallback_on_llm_failure(monkeypatch):
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
         "lanlan_prompt": "傲娇。",
@@ -509,13 +1021,13 @@ async def test_basketball_quick_lines_returns_fallback_on_llm_failure(monkeypatc
     monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
 
     result = await game_router.game_quick_lines(
-        "basketball",
-        _FakeRequest({"lanlan_name": "Lan", "session_id": "bb-1"}),
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-1"}),
     )
 
     assert result["ok"] is True
     assert result["fallback"] is True
-    assert "swish" in result["lines"]
+    assert "line_in" in result["lines"]
     assert "shot_missed" in result["lines"]
     assert "game_over" in result["lines"]
     assert "close_to_record" in result["lines"]
@@ -525,7 +1037,7 @@ async def test_basketball_quick_lines_returns_fallback_on_llm_failure(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_quick_lines_fallback_uses_request_language(monkeypatch):
+async def test_badminton_quick_lines_fallback_uses_request_language(monkeypatch):
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
         "lanlan_prompt": "Tsundere but focused.",
@@ -542,20 +1054,20 @@ async def test_basketball_quick_lines_fallback_uses_request_language(monkeypatch
     monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
 
     result = await game_router.game_quick_lines(
-        "basketball",
-        _FakeRequest({"lanlan_name": "Lan", "session_id": "bb-1", "i18n_language": "en-US"}),
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-1", "i18n_language": "en-US"}),
     )
 
     assert result["ok"] is True
     assert result["fallback"] is True
-    assert result["lines"]["swish"][0] == "Clean swish!"
+    assert result["lines"]["line_in"][0] == "On the line!"
     assert result["lines"]["shot_missed"][0] == "Still in it"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_quick_lines_uses_requested_character(monkeypatch):
-    game_router._basketball_quick_lines_cache.clear()
+async def test_badminton_quick_lines_uses_requested_character(monkeypatch):
+    game_router._badminton_quick_lines_cache.clear()
     captured = {}
 
     def fake_character_info(lanlan_name=None):
@@ -570,7 +1082,7 @@ async def test_basketball_quick_lines_uses_requested_character(monkeypatch):
         }
 
     class _FakeResult:
-        content = '{"swish":["Nice arc"]}'
+        content = '{"line_in":["Nice arc"]}'
 
     class _FakeLLM:
         async def __aenter__(self):
@@ -590,59 +1102,64 @@ async def test_basketball_quick_lines_uses_requested_character(monkeypatch):
     monkeypatch.setattr(llm_client, "create_chat_llm", lambda *_args, **_kwargs: _FakeLLM())
 
     result = await game_router.game_quick_lines(
-        "basketball",
-        _FakeRequest({"lanlan_name": "InviteLan", "session_id": "bb-1", "mode": "shooter"}),
+        "badminton",
+        _FakeRequest({"lanlan_name": "InviteLan", "session_id": "bd-1", "mode": "shooter"}),
     )
 
     assert result["ok"] is True
     assert result["character"] == "InviteLan"
-    assert result["lines"]["swish"] == ["Nice arc"]
+    assert result["lines"]["line_in"] == ["Nice arc"]
     assert "game_over" not in result["lines"]
     assert "Requested persona." in captured["system"]
     assert "Current persona." not in captured["system"]
 
 
 @pytest.mark.unit
-def test_basketball_template_contract():
+def test_badminton_template_contract():
     from pathlib import Path
 
-    html = Path(__file__).resolve().parents[2].joinpath("templates/basketball_demo.html").read_text(encoding="utf-8")
+    html = Path(__file__).resolve().parents[2].joinpath("templates/badminton_demo.html").read_text(encoding="utf-8")
 
-    assert "/api/game/basketball/route/start" in html
-    assert "/api/game/basketball/chat" in html
-    assert "/api/game/basketball/quick-lines" in html
-    assert "/api/game/basketball/speak" in html
-    assert "/api/game/basketball/mirror-assistant" in html
-    assert "/api/game/basketball/route/drain" in html
-    assert "/api/game/basketball/route/heartbeat" in html
-    assert "/api/game/basketball/route/end" in html
+    assert "/api/game/badminton/route/start" in html
+    assert "/api/game/badminton/chat" in html
+    assert "/api/game/badminton/quick-lines" in html
+    assert "/api/game/badminton/speak" in html
+    assert "/api/game/badminton/mirror-assistant" in html
+    assert "/api/game/badminton/route/drain" in html
+    assert "/api/game/badminton/route/heartbeat" in html
+    assert "/api/game/badminton/route/end" in html
     assert "pageVisible: pageVisible" in html
     assert "visibilityState: document.visibilityState" in html
     assert "var drainSessionId = sessionId" in html
     assert "if (sessionId !== drainSessionId || currentMode !== drainMode) return" in html
-    assert "/api/game/basketball/character" in html
-    assert "/api/game/basketball/leaderboard" in html
+    assert "/api/game/badminton/character" in html
+    assert "/api/game/badminton/leaderboard" in html
     assert "initNekoAvatar" in html
     assert "activeAvatarType" in html
     assert "model_type" in html
     assert "live3d_sub_type" in html
-    assert "initVRMAvatar(charData.vrm_path" in html
-    assert "initMMDAvatar(charData.mmd_path" in html
+    assert "async function initVRMAvatar(vrmPath)" in html
+    assert "async function initMMDAvatar(mmdPath)" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "window.lanlan_config.model_type = 'live2d';" in html
+    assert "window.lanlan_config.live3d_sub_type = '';" in html
+    assert "await initLive2DAvatar(live2dPath);" in html
+    assert "await initVRMAvatar(vrmPath);" not in html
     assert "initPIXI('neko-l2d-canvas', 'neko-l2d-container'" in html
     assert "loadModel(modelPath)" in html
     assert "var modelPath = live2dPath || '/static/yui-origin/yui-origin.model3.json'" in html
     assert "当前 Live2D 路径缺失" in html
-    assert "角色接口不可用或未返回 model_type" in html
-    assert "modelType === 'live3d' && subType === 'vrm'" in html
-    assert "modelType === 'live3d' && subType === 'mmd'" in html
+    assert "角色接口不可用或未返回 model_type" not in html
+    assert "modelType === 'live3d' && subType === 'vrm'" not in html
+    assert "modelType === 'live3d' && subType === 'mmd'" not in html
     assert "MMD audience embed is waiting for a safe independent manager API" in html
     assert "not loading Live2D fallback for MMD" in html
     assert "var modelPath = '/static/mao_pro/mao_pro.model3.json'" not in html
     assert "focusController" in html
-    assert "RIM_FRONT_IN_PROB = 0.20" in html
-    assert "RIM_BACK_IN_PROB = 0.08" in html
-    assert "rimHandled" in html
-    assert "banked" in html
+    assert "BADMINTON_COURT_METERS" in html
+    assert "checkShuttleLanding" in html
+    assert "drawNetPosts" in html
+    assert "netTouched" in html
     assert "score-label" in html
     assert "leaderboard-panel" in html
     assert "leaderboard-button" in html
@@ -653,60 +1170,68 @@ def test_basketball_template_contract():
     assert 'id="aiming-canvas"' in html
     assert "var aimingCanvas = document.getElementById('aiming-canvas')" in html
     assert "function drawCourt()" in html
-    assert "function drawHoop()" in html
+    assert "function drawNet()" in html
     assert "function drawAiming()" in html
     assert "drawDistanceMarkers" in html
     assert "drawFreeThrowLine" not in html
     assert "drawThreePointLine" not in html
-    assert "bb_last_final_streak" in html
+    assert "bd_last_final_streak" in html
     assert "navigator.sendBeacon" in html
     assert ".textContent" in html
     assert ".innerHTML" not in html
     assert "ctx.lineTo(px + Math.cos(radians) * 54, py - Math.sin(radians) * 54);" not in html
-    assert "key === 'g'" in html
-    assert "key === 's'" in html
-    assert "key === 'd'" in html
-    assert "return hoopCenterX - game.distance" in html
-    assert "vx: v * Math.cos(radians)" in html
+    keydown = html[
+        html.index("window.addEventListener('keydown'"):
+        html.index("if (bgmVolumeInput)", html.index("window.addEventListener('keydown'"))
+    ]
+    assert "key === 'g'" not in keydown
+    assert "key === 's'" not in keydown
+    assert "key === 'm'" in keydown
+    assert "key === ' ' || ev.code === 'Space'" in keydown
+    assert "var baseX = getPlayerX() + 10;" not in html
+    assert "var SWING_IMPACT_DELAY_MS = 120;" in html
+    assert "var SHUTTLE_MASS_KG = 0.005;" in html
+    assert "function buildSwingImpulse(angle, power, shooter, incomingBall)" in html
+    assert "shuttle.massKg = SHUTTLE_MASS_KG;" in html
     assert "currentMode" in html
     assert "function isPracticeMode()" in html
-    assert "currentMode === 'spectator'" in html
+    assert "var currentMode = 'duel';" in html
+    assert "function isPracticeMode() {\n    return false;\n  }" in html
     assert "不限次数" in html
-    assert "自由练习：不限投篮次数，不记录排行榜分数" in html
-    assert "自由练习：不记录排行榜分数" in html
+    assert "自由练习：不限挥拍次数，不记录排行榜分数" not in html
+    assert "自由练习：不记录排行榜分数" not in html
     assert "if (!isPracticeMode()) game.attemptsRemaining" in html
     assert "if (!isPracticeMode()) game.totalScore += shotScore" in html
     assert "var newRecord = !isPracticeMode() && previousDistance > game.recordDistance" in html
-    assert "if (playerSenseiLoading) return" in html
+    assert "async function initPlayerAvatar()" in html
     assert "playerSenseiLoading = true" in html
     assert "game.power = 0;" in html
-    assert 'id="mode-switcher"' in html
-    assert 'data-mode="spectator"' in html
-    assert 'data-mode="shooter"' in html
-    assert 'data-mode="duel"' in html
-    assert "自由练习" in html
-    assert "投篮挑战" in html
-    assert "跟Yui对战" in html
-    assert "function updateModeSwitcher()" in html
-    assert "function switchBasketballMode(nextMode)" in html
-    assert "url.searchParams.set('mode', mode)" in html
+    assert 'id="mode-switcher"' not in html
+    assert 'data-mode="spectator"' not in html
+    assert 'data-mode="shooter"' not in html
+    assert 'data-mode="duel"' not in html
+    assert "function updateModeSwitcher()" not in html
+    assert "function switchBadmintonMode(nextMode)" not in html
+    assert "url.searchParams.set('mode', mode)" not in html
     assert "queueNekoDuelTurnVoice" in html
     assert "voice_deadline_ms" in html
     assert "--neko-expression-y" in html
     assert "yui-neko-tease" in html
     assert "updateYuiPosition" in html
-    assert "shouldCallLLMShooter" in html
+    assert "shouldCallLLMShooter" not in html
     assert "shouldCallLLMDuel" in html
-    assert "YUI_PASSIVE_LINES_SHOOTER" in html
+    assert "function shouldCallLLMDuel(event) {\n    return false;" not in html
+    assert "YUI_PASSIVE_LINES_SHOOTER" not in html
     assert "YUI_PASSIVE_LINES_DUEL" in html
     assert "mode: currentMode" in html
-    assert "launchedFromInvite" in html
-    assert "basketballInviteRequired" not in html
-    assert "var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';" in html
-    assert "if (requestedMode === 'duel') currentMode = 'duel';" in html
-    assert "await initLive2DAvatar('/static/yui-origin/yui-origin.model3.json')" in html
+    assert "launchedFromInvite" not in html
+    assert "badmintonInviteRequired" not in html
+    assert "var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';" not in html
+    assert "if (requestedMode === 'duel') currentMode = 'duel';" not in html
+    assert "await initLive2DAvatar(live2dPath);" in html
     assert "aim_duration_seconds" in html
-    assert "操控评级" in html
+    assert "latestShooterRating" in html
+    assert "控拍评级" not in html
     assert "function getRequestLanguage()" in html
     assert "i18n_language: getRequestLanguage()" in html
     assert "function applyCharacterIdentity(charData)" in html
@@ -714,16 +1239,16 @@ def test_basketball_template_contract():
     assert "function applyRouteIdentity(state)" in html
     assert "lanlanName = resolvedName" in html
     assert "lanlan_name: queryLanlan || ''" in html
-    assert "lanlan_name: queryLanlan || 'basketball_demo'" not in html
+    assert "lanlan_name: queryLanlan || 'badminton_demo'" not in html
     assert "var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';" in html
     assert "var routeLanlanName = getRouteLanlanName();" in html
     assert "lanlan_name: routeLanlanName" in html
     assert "character_name: routeLanlanName" in html
     assert "applyRouteIdentity(res.state);" in html
-    assert "lanlan_name: lanlanName, source: 'basketball_demo'" not in html
+    assert "lanlan_name: lanlanName, source: 'badminton_demo'" not in html
     assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
-    assert "var basketballCharacterPromise = null;" in html
-    assert "loadBasketballCharacter().finally(function () { startRoute(); });" in html
+    assert "var badmintonCharacterPromise = null;" in html
+    assert "loadBadmintonCharacter().finally(function () { startRoute(); });" in html
     startup = html[html.rindex("startRouteAfterCharacterReady();"):]
     assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
     assert "voiceArbiter" in html
@@ -736,7 +1261,7 @@ def test_basketball_template_contract():
 
 
 @pytest.mark.unit
-def test_basketball_leaderboard_query_contract():
+def test_badminton_leaderboard_query_contract():
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[2].joinpath("main_routers/game_router.py").read_text(encoding="utf-8")
@@ -745,7 +1270,7 @@ def test_basketball_leaderboard_query_contract():
     assert "LIMIT ? OFFSET ?" in source
     assert "WHERE lanlan_name = ?" in source
     assert "WHERE session_id = ?" in source
-    assert "_basketball_score_order_clause" not in source
+    assert "_badminton_score_order_clause" not in source
 
 
 @pytest.mark.unit
@@ -766,44 +1291,44 @@ def test_strip_ssml_like_tags_only_removes_known_ssml_tags():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_post_and_get_sorting(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan A", "s1", "shooter")
-        first = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        _allow_badminton_score_session("Lan A", "s1", "shooter")
+        first = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "s1",
             "lanlan_name": "Lan A",
             "score": 15,
             "streak": 4,
             "max_distance_px": 200,
-            "swish_count": 1,
-            "bank_count": 0,
-            "rim_in_count": 0,
+            "line_in_count": 1,
+            "net_touch_count": 0,
+            "zone_in_count": 0,
             "mode": "shooter",
         }))
-        _allow_basketball_score_session("Lan B", "s2", "shooter")
-        second = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        _allow_badminton_score_session("Lan B", "s2", "shooter")
+        second = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "s2",
             "lanlan_name": "Lan B",
             "score": 20,
             "streak": 3,
             "max_distance_px": 300,
-            "swish_count": 0,
-            "bank_count": 1,
-            "rim_in_count": 0,
+            "line_in_count": 0,
+            "net_touch_count": 1,
+            "zone_in_count": 0,
             "mode": "shooter",
         }))
-        _allow_basketball_score_session("Lan A", "s3", "duel")
-        third = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        _allow_badminton_score_session("Lan A", "s3", "duel")
+        third = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "s3",
             "lanlan_name": "Lan A",
             "score": 20,
             "streak": 5,
             "max_distance_px": 250,
-            "swish_count": 2,
-            "bank_count": 0,
-            "rim_in_count": 1,
+            "line_in_count": 2,
+            "net_touch_count": 0,
+            "zone_in_count": 1,
             "mode": "duel",
         }))
 
@@ -813,8 +1338,8 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
         assert third["rank"] == 1
         assert third["is_personal_best"] is True
 
-        leaderboard = await game_router.game_basketball_leaderboard(
-            "basketball",
+        leaderboard = await game_router.game_badminton_leaderboard(
+            "badminton",
             session_id="s3",
             lanlan_name="Lan A",
         )
@@ -831,26 +1356,26 @@ async def test_basketball_leaderboard_post_and_get_sorting(tmp_path, monkeypatch
         assert leaderboard["top"][1]["streak"] == 3
         assert leaderboard["top"][1]["max_distance_m"] == "7.6"
 
-        unsupported = await game_router.game_basketball_leaderboard("football")
+        unsupported = await game_router.game_badminton_leaderboard("football")
         assert unsupported["ok"] is True
         assert unsupported["top"] == []
 
 
 @pytest.mark.unit
-def test_basketball_leaderboard_distance_uses_client_court_scale():
-    assert game_router._BASKETBALL_PX_PER_METER == pytest.approx(12 * 3.28084)
-    assert game_router._format_basketball_distance_meters(300) == "7.6"
+def test_badminton_leaderboard_distance_uses_client_court_scale():
+    assert game_router._BADMINTON_PX_PER_METER == pytest.approx(12 * 3.28084)
+    assert game_router._format_badminton_distance_meters(300) == "7.6"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_migrates_legacy_table_without_new_columns(tmp_path, monkeypatch):
-    db_path = tmp_path / "basketball_scores.db"
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", db_path)
+async def test_badminton_leaderboard_migrates_legacy_table_without_new_columns(tmp_path, monkeypatch):
+    db_path = tmp_path / "badminton_scores.db"
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", db_path)
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
             """
-            CREATE TABLE basketball_scores (
+            CREATE TABLE badminton_scores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 lanlan_name TEXT NOT NULL DEFAULT '',
@@ -863,8 +1388,8 @@ async def test_basketball_leaderboard_migrates_legacy_table_without_new_columns(
         )
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan Legacy", "legacy-session", "shooter")
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        _allow_badminton_score_session("Lan Legacy", "legacy-session", "shooter")
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "legacy-session",
             "lanlan_name": "Lan Legacy",
             "score": 24,
@@ -874,36 +1399,36 @@ async def test_basketball_leaderboard_migrates_legacy_table_without_new_columns(
         }))
 
         assert result["ok"] is True
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
 
     assert leaderboard["top"][0]["mode"] == "shooter"
     with sqlite3.connect(str(db_path)) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(basketball_scores)").fetchall()}
-    assert {"mode", "swish_count", "bank_count", "rim_in_count"} <= columns
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(badminton_scores)").fetchall()}
+    assert {"mode", "line_in_count", "net_touch_count", "zone_in_count"} <= columns
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_get_paginates_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
         for index in range(12):
-            _allow_basketball_score_session(f"Lan {index}", f"s{index}", "shooter")
-            await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+            _allow_badminton_score_session(f"Lan {index}", f"s{index}", "shooter")
+            await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
                 "session_id": f"s{index}",
                 "lanlan_name": f"Lan {index}",
                 "score": 120 - index,
                 "streak": 1,
                 "max_distance_px": 200,
-                "swish_count": 0,
-                "bank_count": 0,
-                "rim_in_count": 0,
+                "line_in_count": 0,
+                "net_touch_count": 0,
+                "zone_in_count": 0,
                 "mode": "shooter",
             }))
 
-        page = await game_router.game_basketball_leaderboard(
-            "basketball",
+        page = await game_router.game_badminton_leaderboard(
+            "badminton",
             limit=5,
             offset=5,
         )
@@ -915,8 +1440,8 @@ async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatc
         assert [row["score"] for row in page["top"]] == [115, 114, 113, 112, 111]
         assert [row["rank"] for row in page["top"]] == [6, 7, 8, 9, 10]
 
-        last_page = await game_router.game_basketball_leaderboard(
-            "basketball",
+        last_page = await game_router.game_badminton_leaderboard(
+            "badminton",
             limit=5,
             offset=10,
         )
@@ -928,20 +1453,20 @@ async def test_basketball_leaderboard_get_paginates_results(tmp_path, monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan C", "session-9", "shooter")
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        _allow_badminton_score_session("Lan C", "session-9", "shooter")
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "  session-9  ",
             "lanlan_name": "  Lan C  ",
             "score": "-7",
             "streak": "4.9",
             "max_distance_px": "nan",
-            "swish_count": "-2",
-            "bank_count": "2.8",
-            "rim_in_count": "3.2",
+            "line_in_count": "-2",
+            "net_touch_count": "2.8",
+            "zone_in_count": "3.2",
             "mode": "shooter",
         }))
 
@@ -950,8 +1475,8 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
         assert result["total_players"] == 1
         assert result["is_personal_best"] is True
 
-        leaderboard = await game_router.game_basketball_leaderboard(
-            "basketball",
+        leaderboard = await game_router.game_badminton_leaderboard(
+            "badminton",
             session_id="session-9",
             lanlan_name="Lan C",
         )
@@ -965,11 +1490,11 @@ async def test_basketball_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_p
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_rejects_unknown_score_session(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_rejects_unknown_score_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "fake-session",
             "lanlan_name": "Lan Fake",
             "score": 999999,
@@ -977,19 +1502,19 @@ async def test_basketball_leaderboard_rejects_unknown_score_session(tmp_path, mo
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 0
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_rejects_spectator_score_session(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_rejects_spectator_score_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        game_router._remember_basketball_score_session("Lan Practice", "practice-session", "spectator")
+        game_router._remember_badminton_score_session("Lan Practice", "practice-session", "spectator")
 
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "practice-session",
             "lanlan_name": "Lan Practice",
             "score": 999999,
@@ -997,14 +1522,14 @@ async def test_basketball_leaderboard_rejects_spectator_score_session(tmp_path, 
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
-        assert game_router._basketball_recent_score_sessions == {}
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        assert game_router._badminton_recent_score_sessions == {}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 0
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_route_end_uses_server_mode_for_score_session(monkeypatch):
+async def test_badminton_route_end_uses_server_mode_for_score_session(monkeypatch):
     async def fake_deliver_postgame(*_args, **_kwargs):
         return {"ok": True, "action": "skip", "reason": "test"}
 
@@ -1012,12 +1537,12 @@ async def test_basketball_route_end_uses_server_mode_for_score_session(monkeypat
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        state = game_router._activate_game_route("basketball", "practice-session", "Lan Practice")
+        state = game_router._activate_game_route("badminton", "practice-session", "Lan Practice")
         state["mode"] = "spectator"
         _mark_game_started(state)
 
         result = await game_router._complete_game_end_from_payload(
-            "basketball",
+            "badminton",
             {
                 "session_id": "practice-session",
                 "lanlan_name": "Lan Practice",
@@ -1030,12 +1555,12 @@ async def test_basketball_route_end_uses_server_mode_for_score_session(monkeypat
 
         assert result["ok"] is True
         assert result["route_closed"] is True
-        assert game_router._basketball_recent_score_sessions == {}
+        assert game_router._badminton_recent_score_sessions == {}
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_route_end_requires_completed_round_for_score_session(monkeypatch):
+async def test_badminton_route_end_requires_completed_round_for_score_session(monkeypatch):
     async def fake_deliver_postgame(*_args, **_kwargs):
         return {"ok": True, "action": "skip", "reason": "test"}
 
@@ -1043,12 +1568,12 @@ async def test_basketball_route_end_requires_completed_round_for_score_session(m
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        state = game_router._activate_game_route("basketball", "early-exit-session", "Lan Early")
+        state = game_router._activate_game_route("badminton", "early-exit-session", "Lan Early")
         state["mode"] = "shooter"
         _mark_game_started(state)
 
         result = await game_router._complete_game_end_from_payload(
-            "basketball",
+            "badminton",
             {
                 "session_id": "early-exit-session",
                 "lanlan_name": "Lan Early",
@@ -1061,12 +1586,12 @@ async def test_basketball_route_end_requires_completed_round_for_score_session(m
 
         assert result["ok"] is True
         assert result["route_closed"] is True
-        assert game_router._basketball_recent_score_sessions == {}
+        assert game_router._badminton_recent_score_sessions == {}
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_route_end_remembers_completed_round_score_session(monkeypatch):
+async def test_badminton_route_end_remembers_completed_round_score_session(monkeypatch):
     async def fake_deliver_postgame(*_args, **_kwargs):
         return {"ok": True, "action": "skip", "reason": "test"}
 
@@ -1074,12 +1599,12 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        state = game_router._activate_game_route("basketball", "completed-session", "Lan Done")
+        state = game_router._activate_game_route("badminton", "completed-session", "Lan Done")
         state["mode"] = "shooter"
         _mark_game_started(state)
 
         result = await game_router._complete_game_end_from_payload(
-            "basketball",
+            "badminton",
             {
                 "session_id": "completed-session",
                 "lanlan_name": "Lan Done",
@@ -1094,28 +1619,28 @@ async def test_basketball_route_end_remembers_completed_round_score_session(monk
         assert result["ok"] is True
         assert result["route_closed"] is True
         assert result["state"]["lanlan_name"] == "Lan Done"
-        score_session = game_router._basketball_recent_score_sessions[("Lan Done", "completed-session")]
+        score_session = game_router._badminton_recent_score_sessions[("Lan Done", "completed-session")]
         assert score_session["mode"] == "shooter"
         assert score_session["score_totals"] == {"score": 12, "streak": 4, "max_distance_px": 240.0}
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_rejects_score_mismatched_from_route_end(tmp_path, monkeypatch):
+async def test_badminton_leaderboard_rejects_score_mismatched_from_route_end(tmp_path, monkeypatch):
     async def fake_deliver_postgame(*_args, **_kwargs):
         return {"ok": True, "action": "skip", "reason": "test"}
 
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
     monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        state = game_router._activate_game_route("basketball", "bound-session", "Lan Bound")
+        state = game_router._activate_game_route("badminton", "bound-session", "Lan Bound")
         state["mode"] = "shooter"
         _mark_game_started(state)
 
         await game_router._complete_game_end_from_payload(
-            "basketball",
+            "badminton",
             {
                 "session_id": "bound-session",
                 "lanlan_name": "Lan Bound",
@@ -1127,7 +1652,7 @@ async def test_basketball_leaderboard_rejects_score_mismatched_from_route_end(tm
             default_reason="route_end",
         )
 
-        tampered = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        tampered = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "bound-session",
             "lanlan_name": "Lan Bound",
             "score": 999999,
@@ -1137,9 +1662,9 @@ async def test_basketball_leaderboard_rejects_score_mismatched_from_route_end(tm
         }))
 
         assert tampered == {"ok": False, "reason": "invalid_session"}
-        assert "reserved" not in game_router._basketball_recent_score_sessions[("Lan Bound", "bound-session")]
+        assert "reserved" not in game_router._badminton_recent_score_sessions[("Lan Bound", "bound-session")]
 
-        accepted = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        accepted = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "bound-session",
             "lanlan_name": "Lan Bound",
             "score": 12,
@@ -1149,7 +1674,7 @@ async def test_basketball_leaderboard_rejects_score_mismatched_from_route_end(tm
         }))
 
         assert accepted["ok"] is True
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 1
         assert leaderboard["top"][0]["score"] == 12
         assert leaderboard["top"][0]["streak"] == 3
@@ -1157,21 +1682,21 @@ async def test_basketball_leaderboard_rejects_score_mismatched_from_route_end(tm
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_rejects_live_active_route_score(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_rejects_live_active_route_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
         state = {
-            "game_type": "basketball",
+            "game_type": "badminton",
             "session_id": "live-session",
             "lanlan_name": "Lan Live",
             "game_route_active": True,
             "mode": "shooter",
         }
         _mark_game_started(state)
-        game_router._game_route_states[game_router._route_state_key("Lan Live", "basketball")] = state
+        game_router._game_route_states[game_router._route_state_key("Lan Live", "badminton")] = state
 
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "live-session",
             "lanlan_name": "Lan Live",
             "score": 999999,
@@ -1179,21 +1704,21 @@ async def test_basketball_leaderboard_rejects_live_active_route_score(tmp_path, 
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 0
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_allows_recently_ended_route_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        state = _allow_basketball_score_session("Lan Ended", "ended-session", "shooter")
+        state = _allow_badminton_score_session("Lan Ended", "ended-session", "shooter")
         state["game_route_active"] = False
-        game_router._remember_basketball_score_session("Lan Ended", "ended-session", "shooter")
+        game_router._remember_badminton_score_session("Lan Ended", "ended-session", "shooter")
 
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "ended-session",
             "lanlan_name": "Lan Ended",
             "score": 42,
@@ -1205,7 +1730,7 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
         assert result["ok"] is True
         assert result["rank"] == 1
 
-        duplicate = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        duplicate = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "ended-session",
             "lanlan_name": "Lan Ended",
             "score": 99,
@@ -1215,19 +1740,19 @@ async def test_basketball_leaderboard_allows_recently_ended_route_score(tmp_path
         }))
 
         assert duplicate == {"ok": False, "reason": "invalid_session"}
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 1
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_rejects_removed_horse_mode_score(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_rejects_removed_horse_mode_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan Horse", "horse-session", "horse")
+        _allow_badminton_score_session("Lan Horse", "horse-session", "horse")
 
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "horse-session",
             "lanlan_name": "Lan Horse",
             "score": 42,
@@ -1237,19 +1762,19 @@ async def test_basketball_leaderboard_rejects_removed_horse_mode_score(tmp_path,
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 0
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_rejects_removed_timed_mode_score(tmp_path, monkeypatch):
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", tmp_path / "basketball_scores.db")
+async def test_badminton_leaderboard_rejects_removed_timed_mode_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan Timed", "timed-session", "timed")
+        _allow_badminton_score_session("Lan Timed", "timed-session", "timed")
 
-        result = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest({
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "timed-session",
             "lanlan_name": "Lan Timed",
             "score": 42,
@@ -1259,26 +1784,26 @@ async def test_basketball_leaderboard_rejects_removed_timed_mode_score(tmp_path,
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
-        leaderboard = await game_router.game_basketball_leaderboard("basketball")
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
         assert leaderboard["total_scores"] == 0
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_leaderboard_keeps_score_session_when_insert_fails(monkeypatch):
+async def test_badminton_leaderboard_keeps_score_session_when_insert_fails(monkeypatch):
     calls = 0
 
-    def flaky_insert(_data):
+    def flaky_insert(_data, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise sqlite3.OperationalError("database is locked")
         return 1, 1, True
 
-    monkeypatch.setattr(game_router, "_basketball_insert_score", flaky_insert)
+    monkeypatch.setattr(game_router, "_badminton_insert_score", flaky_insert)
 
     with reset_game_route_state():
-        _allow_basketball_score_session("Lan Retry", "retry-session", "shooter")
+        _allow_badminton_score_session("Lan Retry", "retry-session", "shooter")
         payload = {
             "session_id": "retry-session",
             "lanlan_name": "Lan Retry",
@@ -1289,46 +1814,90 @@ async def test_basketball_leaderboard_keeps_score_session_when_insert_fails(monk
         }
 
         with pytest.raises(sqlite3.OperationalError):
-            await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest(payload))
+            await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest(payload))
 
-        assert game_router._basketball_recent_score_sessions[("Lan Retry", "retry-session")]["mode"] == "shooter"
-        assert "reserved" not in game_router._basketball_recent_score_sessions[("Lan Retry", "retry-session")]
+        assert game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]["mode"] == "shooter"
+        assert "reserved" not in game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]
 
-        retry = await game_router.game_basketball_leaderboard_submit("basketball", _FakeRequest(payload))
+        retry = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest(payload))
 
         assert retry == {"ok": True, "rank": 1, "total_players": 1, "is_personal_best": True}
-        assert ("Lan Retry", "retry-session") not in game_router._basketball_recent_score_sessions
+        assert ("Lan Retry", "retry-session") not in game_router._badminton_recent_score_sessions
         assert calls == 2
 
 
 @pytest.mark.unit
-def test_basketball_scores_default_path_uses_runtime_state_dir(tmp_path, monkeypatch):
+def test_badminton_scores_default_path_uses_runtime_state_dir(tmp_path, monkeypatch):
     fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
     monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
 
-    path = game_router._get_basketball_scores_db_path()
+    path = game_router._get_badminton_scores_db_path()
 
-    assert path == tmp_path / "runtime" / "state" / "game_scores" / "basketball_scores.db"
+    assert path == tmp_path / "runtime" / "state" / "game_scores" / "badminton_scores.db"
     assert "main_routers" not in str(path)
 
 
 @pytest.mark.unit
-def test_basketball_scores_legacy_db_migrates_to_runtime_path(tmp_path, monkeypatch):
-    legacy_path = tmp_path / "legacy" / "basketball_scores.db"
-    runtime_path = tmp_path / "runtime" / "state" / "game_scores" / "basketball_scores.db"
+def test_badminton_scores_default_path_uses_separate_runtime_db(tmp_path, monkeypatch):
+    fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    path = game_router._get_badminton_scores_db_path("badminton")
+
+    assert path == tmp_path / "runtime" / "state" / "game_scores" / "badminton_scores.db"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_uses_separate_scores_db(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    fake_config = type("FakeConfig", (), {"app_docs_dir": runtime_root})()
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    if hasattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted"):
+        monkeypatch.delattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted")
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan Badminton", "bd-session", "shooter")
+        submitted = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "bd-session",
+            "lanlan_name": "Lan Badminton",
+            "score": 12,
+            "streak": 3,
+            "max_distance_px": 180,
+            "mode": "shooter",
+        }))
+        leaderboard = await game_router.game_badminton_leaderboard(
+            "badminton",
+            session_id="bd-session",
+            lanlan_name="Lan Badminton",
+        )
+
+    scores_dir = runtime_root / "state" / "game_scores"
+    assert submitted == {"ok": True, "rank": 1, "total_players": 1, "is_personal_best": True}
+    assert leaderboard["top"][0]["name"] == "Lan Badminton"
+    assert (scores_dir / "badminton_scores.db").exists()
+
+
+@pytest.mark.unit
+def test_badminton_scores_legacy_db_migrates_to_runtime_path(tmp_path, monkeypatch):
+    legacy_path = tmp_path / "legacy" / "badminton_scores.db"
+    runtime_path = tmp_path / "runtime" / "state" / "game_scores" / "badminton_scores.db"
     legacy_path.parent.mkdir(parents=True)
     with sqlite3.connect(str(legacy_path)) as conn:
         conn.execute("CREATE TABLE marker (value TEXT)")
         conn.execute("INSERT INTO marker (value) VALUES ('legacy-score')")
 
     fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_PATH", None)
-    monkeypatch.setattr(game_router, "_BASKETBALL_LEGACY_SCORES_DB_PATH", legacy_path)
-    monkeypatch.setattr(game_router, "_BASKETBALL_SCORES_DB_MIGRATED", False)
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "_BADMINTON_LEGACY_SCORES_DB_PATH", legacy_path)
+    if hasattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted"):
+        monkeypatch.delattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted")
     monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
 
-    prepared = game_router._prepare_basketball_scores_db_path()
+    prepared = game_router._prepare_badminton_scores_db_path()
 
     assert prepared == runtime_path
     assert runtime_path.exists()
@@ -1378,7 +1947,7 @@ async def test_game_character_returns_live2d_path(monkeypatch):
 
     monkeypatch.setattr(characters_router, "get_current_live2d_model", fake_current_live2d_model)
 
-    result = await game_router.game_character("basketball")
+    result = await game_router.game_character("badminton")
 
     assert result["lanlan_name"] == "Lan"
     assert result["model_type"] == "live2d"
@@ -1402,7 +1971,7 @@ async def test_game_character_returns_vrm_path_for_live3d_vrm(monkeypatch, tmp_p
         vrm_dir=tmp_path / "user_vrm",
     ))
 
-    result = await game_router.game_character("basketball")
+    result = await game_router.game_character("badminton")
 
     assert result["lanlan_name"] == "VrmLan"
     assert result["model_type"] == "live3d"
@@ -1429,7 +1998,7 @@ async def test_game_character_returns_mmd_path_for_live3d_mmd(monkeypatch, tmp_p
         vrm_dir=tmp_path / "user_vrm",
     ))
 
-    result = await game_router.game_character("basketball")
+    result = await game_router.game_character("badminton")
 
     assert result["lanlan_name"] == "MmdLan"
     assert result["model_type"] == "live3d"
@@ -1918,10 +2487,10 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
 @pytest.mark.unit
 def test_game_archive_memory_prefers_explicit_score_text_for_horse_results():
     archive = {
-        "game_type": "basketball",
+        "game_type": "badminton",
         "session_id": "horse_1",
         "lanlan_name": "Neko",
-        "summary": "basketball 小游戏结束。",
+        "summary": "badminton 小游戏结束。",
         "finalScore": {
             "player": 3,
             "ai": 0,
@@ -1930,11 +2499,11 @@ def test_game_archive_memory_prefers_explicit_score_text_for_horse_results():
             "outcome": "player_win",
         },
         "last_state": {"score": {"player": 3, "ai": 0}},
-        "basketball_game_memory_enabled": True,
-        "basketball_game_memory_player_interaction_enabled": True,
-        "basketball_game_memory_event_reply_enabled": True,
-        "basketball_game_memory_archive_enabled": True,
-        "basketball_game_memory_postgame_context_enabled": True,
+        "badminton_game_memory_enabled": True,
+        "badminton_game_memory_player_interaction_enabled": True,
+        "badminton_game_memory_event_reply_enabled": True,
+        "badminton_game_memory_archive_enabled": True,
+        "badminton_game_memory_postgame_context_enabled": True,
         "full_dialogues": [],
     }
 
@@ -2172,7 +2741,7 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
 def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):
-            assert tier == "summary"
+            assert tier == "game_summary"
             return {
                 "model": "summary-model",
                 "base_url": "http://summary.test/v1",
@@ -2201,10 +2770,40 @@ def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
 
 
 @pytest.mark.unit
+def test_game_route_helper_llm_info_allows_no_auth_summary_tier(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "game_summary"
+            return {
+                "model": "local-summary-model",
+                "base_url": "http://localhost:8081/v1",
+                "api_key": "",
+                "api_type": "local",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["model"] == "local-summary-model"
+    assert info["base_url"] == "http://localhost:8081/v1"
+    assert info["api_key"] == ""
+    assert info["api_type"] == "local"
+
+
+@pytest.mark.unit
 def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):
-            assert tier == "summary"
+            assert tier == "game_summary"
             return {
                 "model": "summary-model",
                 "base_url": "",
@@ -2304,29 +2903,55 @@ def test_build_game_llm_visible_event_filters_soccer_internal_fields():
 
 
 @pytest.mark.unit
-def test_build_game_llm_visible_event_filters_basketball_memory_flags():
+def test_build_game_llm_visible_event_filters_badminton_memory_flags_from_camel_case():
     event = {
         "kind": "shot-made",
-        "basketballGameMemoryEnabled": True,
-        "basketball_game_memory_enabled": True,
-        "basketballGameMemoryPlayerInteractionEnabled": True,
-        "basketball_game_memory_player_interaction_enabled": True,
-        "basketballGameMemoryEventReplyEnabled": True,
-        "basketball_game_memory_event_reply_enabled": True,
-        "basketballGameMemoryArchiveEnabled": True,
-        "basketball_game_memory_archive_enabled": True,
-        "basketballGameMemoryPostgameContextEnabled": True,
-        "basketball_game_memory_postgame_context_enabled": True,
+        "badmintonGameMemoryEnabled": True,
+        "badminton_game_memory_enabled": True,
+        "badmintonGameMemoryPlayerInteractionEnabled": True,
+        "badminton_game_memory_player_interaction_enabled": True,
+        "badmintonGameMemoryEventReplyEnabled": True,
+        "badminton_game_memory_event_reply_enabled": True,
+        "badmintonGameMemoryArchiveEnabled": True,
+        "badminton_game_memory_archive_enabled": True,
+        "badmintonGameMemoryPostgameContextEnabled": True,
+        "badminton_game_memory_postgame_context_enabled": True,
         "currentState": {"mode": "shooter", "streak": 3},
     }
 
-    visible = game_router._build_game_llm_visible_event("basketball", event)
+    visible = game_router._build_game_llm_visible_event("badminton", event)
 
     assert visible == {
         "kind": "shot-made",
         "currentState": {"mode": "shooter", "streak": 3},
     }
-    assert event["basketballGameMemoryEnabled"] is True
+    assert event["badmintonGameMemoryEnabled"] is True
+
+
+@pytest.mark.unit
+def test_build_game_llm_visible_event_filters_badminton_memory_flags():
+    event = {
+        "kind": "shot-made",
+        "badmintonGameMemoryEnabled": True,
+        "badminton_game_memory_enabled": True,
+        "badmintonGameMemoryPlayerInteractionEnabled": True,
+        "badminton_game_memory_player_interaction_enabled": True,
+        "badmintonGameMemoryEventReplyEnabled": True,
+        "badminton_game_memory_event_reply_enabled": True,
+        "badmintonGameMemoryArchiveEnabled": True,
+        "badminton_game_memory_archive_enabled": True,
+        "badmintonGameMemoryPostgameContextEnabled": True,
+        "badminton_game_memory_postgame_context_enabled": True,
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+
+    visible = game_router._build_game_llm_visible_event("badminton", event)
+
+    assert visible == {
+        "kind": "shot-made",
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+    assert event["badmintonGameMemoryEnabled"] is True
 
 
 @pytest.mark.unit
@@ -2349,6 +2974,25 @@ def test_postgame_context_snapshot_excludes_recent_dialogues(monkeypatch):
 
     assert snapshot["game_context"]["summary"] == "summary"
     assert snapshot["game_context"]["recent_dialogues"] == []
+
+
+@pytest.mark.unit
+def test_postgame_context_request_id_is_archive_scoped():
+    first = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 10.5,
+    }
+    second = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 11.5,
+    }
+
+    assert game_router._postgame_context_request_id(first) == "soccer:default:10.5"
+    assert game_router._postgame_context_request_id(second) == "soccer:default:11.5"
+    assert game_router._postgame_context_request_id(first) != game_router._postgame_context_request_id(second)
+    assert game_router._postgame_context_request_id({"game_type": "soccer", "session_id": "default"}) is None
 
 
 @pytest.mark.unit
@@ -2487,18 +3131,18 @@ async def test_run_game_chat_sends_filtered_llm_visible_event(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_game_chat_rejects_stale_session_before_llm(monkeypatch):
+async def test_badminton_game_chat_rejects_stale_session_before_llm(monkeypatch):
     async def fake_run_game_chat(*_args, **_kwargs):
-        raise AssertionError("stale basketball chat should not start an LLM session")
+        raise AssertionError("stale badminton chat should not start an LLM session")
 
     monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        state = game_router._activate_game_route("basketball", "fresh-session", "Lan")
+        state = game_router._activate_game_route("badminton", "fresh-session", "Lan")
         state["mode"] = "shooter"
 
-        result = await game_router.game_chat("basketball", _FakeRequest({
+        result = await game_router.game_chat("badminton", _FakeRequest({
             "session_id": "old-session",
             "lanlan_name": "Lan",
             "event": {"kind": "shot_missed", "mode": "shooter"},
@@ -2513,15 +3157,15 @@ async def test_basketball_game_chat_rejects_stale_session_before_llm(monkeypatch
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_game_chat_rejects_missing_route_before_llm(monkeypatch):
+async def test_badminton_game_chat_rejects_missing_route_before_llm(monkeypatch):
     async def fake_run_game_chat(*_args, **_kwargs):
-        raise AssertionError("inactive basketball chat should not start an LLM session")
+        raise AssertionError("inactive badminton chat should not start an LLM session")
 
     monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        result = await game_router.game_chat("basketball", _FakeRequest({
+        result = await game_router.game_chat("badminton", _FakeRequest({
             "session_id": "old-session",
             "lanlan_name": "Lan",
             "event": {"kind": "shot_missed", "mode": "shooter"},
@@ -2541,7 +3185,7 @@ async def test_basketball_game_chat_rejects_missing_route_before_llm(monkeypatch
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_basketball_game_chat_does_not_archive_late_client_timeout_reply(monkeypatch):
+async def test_badminton_game_chat_does_not_archive_late_client_timeout_reply(monkeypatch):
     async def fake_run_game_chat(*_args, **_kwargs):
         return {
             "line": "这句来晚了",
@@ -2553,10 +3197,10 @@ async def test_basketball_game_chat_does_not_archive_late_client_timeout_reply(m
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
     with reset_game_route_state():
-        state = game_router._activate_game_route("basketball", "duel-session", "Lan")
+        state = game_router._activate_game_route("badminton", "duel-session", "Lan")
         state["mode"] = "duel"
 
-        result = await game_router.game_chat("basketball", _FakeRequest({
+        result = await game_router.game_chat("badminton", _FakeRequest({
             "session_id": "duel-session",
             "lanlan_name": "Lan",
             "event": {
@@ -2816,7 +3460,7 @@ class _FakeRealtimeSession:
 
 
 class _FakeRealtimeManager:
-    def __init__(self, session):
+    def __init__(self, session, append_context_result=None):
         self.session = session
         self.is_active = True
         self.user_language = "zh-CN"
@@ -2827,6 +3471,19 @@ class _FakeRealtimeManager:
         self.voice_nudge_calls = 0
         self.voice_nudge_kwargs = []
         self.voice_nudge_event = asyncio.Event()
+        self.append_context_calls = []
+        self.append_context_result = append_context_result
+
+    async def append_context(self, **kwargs):
+        self.append_context_calls.append(kwargs)
+        if self.append_context_result is not None:
+            return self.append_context_result
+        source = str(kwargs.get("source") or "")
+        text = kwargs["text"]
+        if source not in {"game.realtime_context", "game.postgame"}:
+            text = f"{kwargs['role']}: {text}"
+        await self.session.prime_context(text, skipped=True)
+        return SimpleNamespace(appended=True, deduped=False, targets=("realtime_prime",), reason=None)
 
     async def trigger_voice_proactive_nudge(self, **kwargs):
         self.voice_nudge_calls += 1
@@ -2871,6 +3528,60 @@ async def test_realtime_context_skips_gemini_prime_to_avoid_hidden_response(monk
     assert result["reason"] == "gemini_no_session_update"
     assert session.prime_context_calls == []
     assert session.create_response_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_endpoint_requires_local_mutation_csrf(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, mutation_headers=False, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert mgr.append_context_calls == []
+    assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_aborts_when_active_session_changes_before_append(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    def swap_session(_game_type, _payload, _language=None):
+        mgr.session = replacement
+        return "[Game Realtime Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_compact_realtime_context_text", swap_session)
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert result == {"ok": False, "reason": "realtime_session_changed", "lanlan_name": "Lan"}
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 class _FakeGameRouteManager:
@@ -3083,7 +3794,7 @@ async def test_route_end_holds_supersede_lock_until_finalize_releases_takeover(m
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
-    old_state = game_router._activate_game_route("basketball", "old_match", "Lan")
+    old_state = game_router._activate_game_route("badminton", "old_match", "Lan")
     _mark_game_started(old_state)
     mgr._takeover_active = True
     mgr._takeover_input_dispatcher = object()
@@ -3104,11 +3815,11 @@ async def test_route_end_holds_supersede_lock_until_finalize_releases_takeover(m
     )
 
     end_task = asyncio.create_task(game_router.game_route_end(
-        "basketball",
+        "badminton",
         _FakeRequest({
             "lanlan_name": "Lan",
             "session_id": "old_match",
-            "reason": "basketball_game_over",
+            "reason": "badminton_game_over",
             "game_started": True,
             "round_completed": True,
             "currentState": {"score": {"player": 1, "ai": 0}},
@@ -3811,7 +4522,7 @@ async def test_project_speak_rejects_closed_game_route_output(monkeypatch):
         monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
         result = await game_router.game_project_speak(
-            "basketball",
+            "badminton",
             _FakeRequest({
                 "line": "stale line",
                 "session_id": "closed-session",
@@ -3904,7 +4615,7 @@ async def test_project_mirror_assistant_rejects_closed_game_route_output(monkeyp
         monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
         result = await game_router.game_project_mirror_assistant(
-            "basketball",
+            "badminton",
             _FakeRequest({
                 "line": "stale mirror line",
                 "session_id": "closed-session",
@@ -4203,10 +4914,119 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     # now relies on plain prompt_ephemeral (server VAD + WAV nudge). The
     # postgame instruction reaches the model via prime_context (assert below).
     assert session.prime_context_calls
+    assert mgr.append_context_calls[0]["source"] == "game.postgame"
+    assert mgr.append_context_calls[0]["audience"] == "model"
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
+    assert not context_text.startswith("system: ")
     assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_postgame_nudge_when_context_append_deduped(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(
+        session,
+        append_context_result=SimpleNamespace(
+            appended=False,
+            deduped=True,
+            targets=(),
+            reason="duplicate_request_id",
+        ),
+    )
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+    state["last_state"] = {"score": {"player": 1, "ai": 3}}
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "别认输嘛，再来一脚。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "realtime"
+    assert result["postgame"]["context_injected"] is True
+    assert result["postgame"]["nudge_scheduled"] is False
+    assert result["postgame"]["reason"] == "context_deduped"
+    assert mgr.voice_nudge_calls == 0
+    assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_nudge_skips_replacement_session(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.01,))
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+    mgr.session = replacement
+    await asyncio.sleep(0.05)
+
+    assert result["mode"] == "realtime"
+    assert result["nudge_scheduled"] is True
+    assert mgr.voice_nudge_calls == 0
+    assert len(original.prime_context_calls) == 1
+    assert replacement.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_context_aborts_when_active_session_changes(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+
+    def swap_session(_archive):
+        mgr.session = replacement
+        return "[Game Module Postgame Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_build_game_postgame_context_text", swap_session)
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+
+    assert result == {
+        "ok": False,
+        "mode": "realtime",
+        "action": "skip",
+        "reason": "realtime_session_changed",
+    }
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 @pytest.mark.unit

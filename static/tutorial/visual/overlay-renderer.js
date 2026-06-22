@@ -878,7 +878,7 @@
                 return;
             }
 
-            if (this.shouldSuppressDom() || !spotlightRect) {
+            if (!spotlightRect) {
                 cutout.hidden = true;
                 cutout.setAttribute('x', '0');
                 cutout.setAttribute('y', '0');

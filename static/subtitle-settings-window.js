@@ -20,6 +20,13 @@
     function applyIncomingState(data) {
         if (!data || typeof data !== 'object') return;
         var patch = {};
+        if (data.type === 'fontSize') {
+            patch.subtitleFontSize = data.value;
+        } else if (data.type === 'colorScheme') {
+            patch.subtitleColorScheme = data.value;
+        } else if (data.type === 'danmakuMode') {
+            patch.subtitleDanmakuMode = !!data.value;
+        }
         if (Object.prototype.hasOwnProperty.call(data, 'language')) {
             patch.userLanguage = data.language;
         }
@@ -28,6 +35,16 @@
         }
         if (Object.prototype.hasOwnProperty.call(data, 'opacity')) {
             patch.subtitleOpacity = data.opacity;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'fontSize')) {
+            patch.subtitleFontSize = data.fontSize;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleFontSize')) {
+            patch.subtitleFontSize = data.subtitleFontSize;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'colorScheme')) {
+            patch.subtitleColorScheme = data.colorScheme;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleColorScheme')) {
+            patch.subtitleColorScheme = data.subtitleColorScheme;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'locked')) {
             patch.subtitlePanelLocked = !!data.locked;
@@ -38,6 +55,11 @@
             patch.subtitleInteractionPassthrough = data.interactionPassthrough !== false;
         } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleInteractionPassthrough')) {
             patch.subtitleInteractionPassthrough = data.subtitleInteractionPassthrough !== false;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'danmakuMode')) {
+            patch.subtitleDanmakuMode = !!data.danmakuMode;
+        } else if (Object.prototype.hasOwnProperty.call(data, 'subtitleDanmakuMode')) {
+            patch.subtitleDanmakuMode = !!data.subtitleDanmakuMode;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'userLanguage')) {
             patch.userLanguage = data.userLanguage;

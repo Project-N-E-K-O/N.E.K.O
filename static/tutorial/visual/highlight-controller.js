@@ -123,7 +123,7 @@
         }
 
         createVirtualSpotlight(key, rect, options) {
-            if (this.destroyed || !key || !rect || !this.document.body) {
+            if (this.destroyed || !key || !rect || !this.document || !this.document.body) {
                 return null;
             }
 
@@ -153,8 +153,14 @@
             const rawTop = Number.isFinite(rect.top) ? rect.top : 0;
             const left = Math.max(0, Math.floor(rawLeft));
             const top = Math.max(0, Math.floor(rawTop));
-            const right = Math.min(this.window.innerWidth, Math.ceil(getRectRight(rect)));
-            const bottom = Math.min(this.window.innerHeight, Math.ceil(getRectBottom(rect)));
+            const viewportWidth = this.window && Number.isFinite(this.window.innerWidth)
+                ? this.window.innerWidth
+                : Math.ceil(getRectRight(rect));
+            const viewportHeight = this.window && Number.isFinite(this.window.innerHeight)
+                ? this.window.innerHeight
+                : Math.ceil(getRectBottom(rect));
+            const right = Math.min(viewportWidth, Math.ceil(getRectRight(rect)));
+            const bottom = Math.min(viewportHeight, Math.ceil(getRectBottom(rect)));
             element.style.left = left + 'px';
             element.style.top = top + 'px';
             element.style.width = Math.max(0, right - left) + 'px';
