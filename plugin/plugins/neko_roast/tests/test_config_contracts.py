@@ -26,6 +26,13 @@ def test_roast_config_preserves_explicit_avatar_timeout_zero():
     assert RoastConfig.from_mapping({"avatar_fetch_timeout_seconds": 0}).avatar_fetch_timeout_seconds == 0
 
 
+def test_roast_config_parses_activity_level_with_standard_default():
+    assert RoastConfig.from_mapping({}).activity_level == "standard"
+    assert RoastConfig.from_mapping({"activity_level": "quiet"}).activity_level == "quiet"
+    assert RoastConfig.from_mapping({"activity_level": "active"}).activity_level == "active"
+    assert RoastConfig.from_mapping({"activity_level": "noisy"}).activity_level == "standard"
+
+
 def test_utc_now_iso_returns_timezone_aware_utc_timestamp():
     assert utc_now_iso().endswith("+00:00")
 

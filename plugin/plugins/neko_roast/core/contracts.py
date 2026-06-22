@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 LiveMode = Literal["co_stream", "solo_stream"]
 RoastStrength = Literal["gentle", "normal", "sharp"]
+ActivityLevel = Literal["quiet", "standard", "active"]
 TriggerSource = Literal["live_danmaku", "developer_sandbox", "manual_live_simulation", "idle_hosting"]
 SafetyStatus = Literal["running", "paused", "degraded", "tripped", "disconnected"]
 
@@ -53,6 +54,7 @@ class RoastConfig:
     dry_run: bool = True  # 安全测试态：跑完整 pipeline 但不真的投给猫猫
     roast_once_per_uid: bool = True
     roast_strength: RoastStrength = "normal"
+    activity_level: ActivityLevel = "standard"
     co_stream_output_policy: str = "auto_low_interrupt"
     solo_output_policy: str = "auto_rate_limited"
     avatar_fetch_timeout_seconds: float = 8.0
@@ -77,6 +79,9 @@ class RoastConfig:
         roast_strength = str(raw.get("roast_strength") or "normal")
         if roast_strength not in {"gentle", "normal", "sharp"}:
             roast_strength = "normal"
+        activity_level = str(raw.get("activity_level") or "standard")
+        if activity_level not in {"quiet", "standard", "active"}:
+            activity_level = "standard"
         return cls(
             live_room_id=parse_room_id(raw.get("live_room_id")),
             live_mode=live_mode,  # type: ignore[arg-type]
@@ -85,6 +90,7 @@ class RoastConfig:
             dry_run=bool(raw.get("dry_run", True)),
             roast_once_per_uid=bool(raw.get("roast_once_per_uid", True)),
             roast_strength=roast_strength,  # type: ignore[arg-type]
+            activity_level=activity_level,  # type: ignore[arg-type]
             co_stream_output_policy=str(raw.get("co_stream_output_policy") or "auto_low_interrupt"),
             solo_output_policy=str(raw.get("solo_output_policy") or "auto_rate_limited"),
             avatar_fetch_timeout_seconds=float(

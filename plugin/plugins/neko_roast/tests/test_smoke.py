@@ -26,6 +26,8 @@ def test_panel_renders_live_status_summary():
     assert "panel.liveModeRole." in source
     assert "panel.liveState." in source
     assert "panel.idleHostingCandidate." in source
+    assert "activity_level" in source
+    assert "panel.activity." in source
     assert "speech_explanation" in source
     assert "panel.speechExplanation." in source
     assert "idle_hosting_status" in source
@@ -51,6 +53,10 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusReason.safety_degraded",
         "panel.liveModeRole.co_stream",
         "panel.liveModeRole.solo_stream",
+        "panel.fields.activityLevel",
+        "panel.activity.quiet",
+        "panel.activity.standard",
+        "panel.activity.active",
         "panel.liveModeRoleHint.companion",
         "panel.liveModeRoleHint.solo_host",
         "panel.liveState.title",

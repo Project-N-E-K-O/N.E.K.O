@@ -393,6 +393,28 @@ async def test_idle_hosting_status_explains_minimum_interval(runtime: RoastRunti
 
 
 @pytest.mark.asyncio
+async def test_activity_level_controls_idle_hosting_minimum_interval(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._idle_hosting_last_attempt_at = 100.0
+    runtime._idle_hosting_now = lambda: 150.0
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    runtime.config.activity_level = "quiet"
+    quiet_state = await runtime.dashboard_state()
+    assert quiet_state["idle_hosting_status"]["min_interval_seconds"] == 180.0
+    assert quiet_state["idle_hosting_status"]["cooldown_remaining"] == 130.0
+
+    runtime.config.activity_level = "active"
+    active_state = await runtime.dashboard_state()
+    assert active_state["idle_hosting_status"]["min_interval_seconds"] == 60.0
+    assert active_state["idle_hosting_status"]["cooldown_remaining"] == 10.0
+
+
+@pytest.mark.asyncio
 async def test_live_state_allows_idle_hosting_candidate_in_dry_run(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True

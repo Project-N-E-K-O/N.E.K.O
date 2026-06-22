@@ -30,6 +30,7 @@ type RoastConfig = {
   live_enabled?: boolean
   developer_tools_enabled?: boolean
   live_mode?: string
+  activity_level?: string
   roast_strength?: string
   roast_once_per_uid?: boolean
   rate_limit_seconds?: number
@@ -61,6 +62,7 @@ const configDefaults = {
   live_enabled: false,
   developer_tools_enabled: false,
   live_mode: "co_stream",
+  activity_level: "standard",
   roast_strength: "normal",
   roast_once_per_uid: true,
   rate_limit_seconds: "20",
@@ -245,6 +247,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       live_room_id: String(config.live_room_id || ""),
       developer_tools_enabled: !!config.developer_tools_enabled,
       live_mode: String(config.live_mode || "co_stream"),
+      activity_level: String(config.activity_level || "standard"),
       roast_strength: String(config.roast_strength || "normal"),
       roast_once_per_uid: config.roast_once_per_uid !== false,
       rate_limit_seconds: String(config.rate_limit_seconds ?? 20),
@@ -258,6 +261,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     config.live_room_id,
     config.developer_tools_enabled,
     config.live_mode,
+    config.activity_level,
     config.roast_strength,
     config.roast_once_per_uid,
     config.rate_limit_seconds,
@@ -292,6 +296,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         live_room_id: configForm.values.live_room_id.trim(),  // 鎴垮彿鎴栫洿鎾棿閾炬帴锛屽悗绔?parse_room_id 褰掍竴
         developer_tools_enabled: configForm.values.developer_tools_enabled,
         live_mode: configForm.values.live_mode,
+        activity_level: configForm.values.activity_level,
         roast_strength: configForm.values.roast_strength,
         roast_once_per_uid: configForm.values.roast_once_per_uid,
         rate_limit_seconds: Number(configForm.values.rate_limit_seconds) || 0,
@@ -675,6 +680,21 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                   const next = String(value)
                   configForm.setField("live_mode", next)
                   saveConfig({ live_mode: next })
+                }}
+              />
+            </Field>
+            <Field label={t("panel.fields.activityLevel")}>
+              <Select
+                value={configForm.values.activity_level}
+                options={[
+                  { value: "quiet", label: t("panel.activity.quiet") },
+                  { value: "standard", label: t("panel.activity.standard") },
+                  { value: "active", label: t("panel.activity.active") },
+                ]}
+                onChange={(value) => {
+                  const next = String(value)
+                  configForm.setField("activity_level", next)
+                  saveConfig({ activity_level: next })
                 }}
               />
             </Field>

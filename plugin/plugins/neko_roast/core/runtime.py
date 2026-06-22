@@ -470,7 +470,7 @@ class RoastRuntime:
         if self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT:
             return None
         now = float(self._idle_hosting_now())
-        if now - self._idle_hosting_last_attempt_at < self._IDLE_HOSTING_MIN_INTERVAL_SECONDS:
+        if now - self._idle_hosting_last_attempt_at < self._idle_hosting_min_interval_seconds():
             return None
         live_connection = self.live_connection_snapshot()
         live_status = self.live_status_summary(live_connection)
@@ -669,10 +669,11 @@ class RoastRuntime:
     def idle_hosting_status(self, live_state: dict[str, Any] | None = None) -> dict[str, Any]:
         state = live_state or self.live_state_summary()
         now = float(self._idle_hosting_now())
+        min_interval = self._idle_hosting_min_interval_seconds()
         elapsed = max(0.0, now - float(self._idle_hosting_last_attempt_at or 0.0))
         cooldown_remaining = 0.0
         if self._idle_hosting_last_attempt_at > 0:
-            cooldown_remaining = round(max(0.0, self._IDLE_HOSTING_MIN_INTERVAL_SECONDS - elapsed), 1)
+            cooldown_remaining = round(max(0.0, min_interval - elapsed), 1)
 
         candidate = bool(state.get("idle_hosting_candidate"))
         auto_disabled = self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT
@@ -690,9 +691,16 @@ class RoastRuntime:
             "reason": reason,
             "candidate": candidate,
             "cooldown_remaining": cooldown_remaining,
-            "min_interval_seconds": float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS),
+            "min_interval_seconds": float(min_interval),
             "consecutive_failures": int(self._idle_hosting_consecutive_failures),
         }
+
+    def _idle_hosting_min_interval_seconds(self) -> float:
+        return {
+            "quiet": 180.0,
+            "active": 60.0,
+            "standard": float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS),
+        }.get(str(getattr(self.config, "activity_level", "standard")), float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS))
 
     def speech_explanation(
         self,
