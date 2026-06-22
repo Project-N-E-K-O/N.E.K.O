@@ -100,15 +100,6 @@ class SurveyStorage:
 
     # ----------------------------------------------------------------- ingest
 
-    def is_duplicate_batch(self, batch_id: str) -> bool:
-        if not batch_id:
-            return False
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT 1 FROM seen_batches WHERE batch_id = ?", (batch_id,)
-        ).fetchone()
-        return row is not None
-
     def store_response(
         self,
         *,
@@ -122,9 +113,25 @@ class SurveyStorage:
         action: str,
         answers: dict,
         batch_id: str,
-    ) -> None:
+    ) -> bool:
+        """Store one response. Returns False (idempotent skip) if the batch_id was already seen.
+
+        Dedup is done **inside** the BEGIN IMMEDIATE transaction via
+        ``INSERT OR IGNORE INTO seen_batches`` + rowcount, so the seen-check and the
+        responses insert are atomic under one write lock. A separate read-then-write
+        (the old is_duplicate_batch pre-check) left a TOCTOU window where two
+        concurrent identical batch_ids could both pass the read and double-insert
+        into responses. Empty batch_id (legacy clients) skips dedup and always stores.
+        """
         answers_json = json.dumps(answers, ensure_ascii=False, sort_keys=True)
         with self._transaction() as conn:
+            if batch_id:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO seen_batches (batch_id) VALUES (?)",
+                    (batch_id,),
+                )
+                if cur.rowcount == 0:
+                    return False  # 另一并发请求已写入同 batch，幂等跳过
             conn.execute(
                 """INSERT INTO responses
                    (device_id, app_version, survey_version, locale, branch,
@@ -133,11 +140,7 @@ class SurveyStorage:
                 (device_id, app_version, survey_version, locale, branch,
                  distribution, steam_user_id, action, answers_json, batch_id),
             )
-            if batch_id:
-                conn.execute(
-                    "INSERT OR IGNORE INTO seen_batches (batch_id) VALUES (?)",
-                    (batch_id,),
-                )
+        return True
 
     # ------------------------------------------------------------------ admin
 
@@ -211,7 +214,13 @@ class SurveyStorage:
         return buf.getvalue()
 
     def prune_old_responses(self, max_days: int = 365) -> int:
-        """Delete submissions older than max_days (kept long by default — surveys are cheap)."""
+        """Delete submissions older than max_days (kept long by default — surveys are cheap).
+
+        Also garbage-collects seen_batches: any batch_id no longer backed by a
+        responses row is dropped, so the idempotency table stays bounded to live
+        responses instead of growing forever across versions. A retry of a batch
+        that old is implausible (max_days >= 30), so re-acceptance risk is moot.
+        """
         days = max(max_days, 30)
         with self._transaction() as conn:
             cur = conn.execute(
@@ -219,4 +228,9 @@ class SurveyStorage:
                 "WHERE received_at < strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours', ?)",
                 (f"-{days} days",),
             )
-            return cur.rowcount
+            deleted = cur.rowcount
+            conn.execute(
+                "DELETE FROM seen_batches WHERE batch_id NOT IN "
+                "(SELECT batch_id FROM responses WHERE batch_id != '')"
+            )
+            return deleted

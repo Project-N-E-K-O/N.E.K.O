@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import hmac
 import io
 import json
 import logging
@@ -107,7 +108,9 @@ def require_admin(request: Request):
     if not ADMIN_TOKEN:
         raise HTTPException(503, "Admin API not configured (set SURVEY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
-    if not token or token != ADMIN_TOKEN:
+    # 常数时间比较：admin 口暴露 device_id / steam_user_id，普通 != 会泄漏逐字节
+    # 匹配进度给时序侧信道，compare_digest 消除该差异。
+    if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(401, "Invalid admin token")
 
 
@@ -147,9 +150,6 @@ async def submit_survey(request: Request):
         raise HTTPException(429, "Rate limit exceeded")
 
     batch_id = submission.batch_id
-    if storage.is_duplicate_batch(batch_id):
-        return SubmitResponse(ok=True, message="duplicate, skipped")
-
     action = submission.payload.action if submission.payload.action in ("submit", "skip") else "submit"
 
     # steam_user_id 边界白名单化：客户端串不可信，非法/伪造一律归 ''（纯十进制
@@ -158,7 +158,7 @@ async def submit_survey(request: Request):
     steam_user_id = raw_sid if (raw_sid.isascii() and raw_sid.isdigit() and 0 < len(raw_sid) <= 20) else ""
 
     try:
-        storage.store_response(
+        stored = storage.store_response(
             device_id=device_id,
             app_version=submission.payload.app_version,
             survey_version=submission.payload.survey_version,
@@ -173,6 +173,9 @@ async def submit_survey(request: Request):
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
         raise HTTPException(500, "Storage error")
+
+    if not stored:
+        return SubmitResponse(ok=True, message="duplicate, skipped")
 
     logger.info(
         f"OK device={device_id[:8]}... survey={submission.payload.survey_version} action={action}"

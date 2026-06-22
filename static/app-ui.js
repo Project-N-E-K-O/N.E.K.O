@@ -853,7 +853,7 @@
                 wrap.appendChild(err);
                 form.appendChild(wrap);
                 fields.push({
-                    q, type,
+                    q, type, wrap,
                     getValue,
                     isEmpty: () => {
                         const v = getValue();
@@ -939,7 +939,15 @@
                     }
                 });
                 if (firstMissing) {
-                    try { form.scrollTop = 0; } catch (_) { }
+                    // 滚到第一个未答的必填题，而不是一律回到顶部——否则底部的题报错时
+                    // 视口停在上方，用户看不到红字提示。
+                    try {
+                        if (firstMissing.wrap && typeof firstMissing.wrap.scrollIntoView === 'function') {
+                            firstMissing.wrap.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        } else {
+                            form.scrollTop = 0;
+                        }
+                    } catch (_) { try { form.scrollTop = 0; } catch (_) { } }
                     return;
                 }
                 teardown({ action: 'submit', answers: collectAnswers() });

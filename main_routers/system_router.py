@@ -1256,6 +1256,9 @@ async def get_changelog(since: str = "", lang: str = ""):
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
+    # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
+    # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
+    lang = _safe_locale(lang)
     # 确定 fallback 链：用户语言 -> en -> 中文原文
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
@@ -1293,6 +1296,20 @@ async def get_changelog(since: str = "", lang: str = ""):
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}
+
+
+_LOCALE_RE = re.compile(r'^[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*$')
+
+
+def _safe_locale(lang: object) -> str:
+    """Whitelist a client-supplied locale (zh-CN / en / ja / ...) before it touches a filesystem path.
+
+    ``lang`` arrives from the request query string and is joined into changelog /
+    survey file paths; an unfiltered ``../`` or an absolute prefix would let a
+    crafted value escape the content dir (path traversal). Anything not matching the
+    locale shape returns '' (→ caller falls back to the Chinese base / en).
+    """
+    return lang if (isinstance(lang, str) and _LOCALE_RE.match(lang)) else ""
 
 
 def _load_survey_for_version(version: str, lang: str) -> dict | None:
@@ -1392,7 +1409,7 @@ async def get_survey(lang: str = ""):
     except Exception:
         return {"has_survey": False, "survey_version": APP_VERSION}
 
-    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, lang)
+    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, _safe_locale(lang))
     if not survey:
         return {"has_survey": False, "survey_version": APP_VERSION}
     return {
