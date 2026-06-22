@@ -309,7 +309,9 @@ window.addEventListener('load', async () => {
 
         // 老玩家判定：必须在 step 1 改写 neko_last_notified_version 之前抓取，
         // 否则 step 1 给全新用户写入当前版本后就分不清新老了。问卷只对老玩家弹。
-        const _hadPriorVersion = !!localStorage.getItem('neko_last_notified_version');
+        // 存的是"上次已通知版本"原值（不是布尔）：后面要用它 ≠ 当前问卷版本来排除
+        // "首装本版第二次启动"——那种用户 last_notified 已是当前版，并非从旧版升上来的老玩家。
+        const _priorNotifiedVersion = localStorage.getItem('neko_last_notified_version') || '';
 
         // 1) 版本更新日志（先讲背景）
         try {
@@ -354,14 +356,16 @@ window.addEventListener('load', async () => {
         // 仅老玩家、当前版本有问卷、且这一版还没填过/跳过过时弹出。后端 /api/survey
         // 还会再做一道 DNT 门禁（关了被动统计的用户拿到 has_survey:false）。
         try {
-            if (_hadPriorVersion && typeof window.showSurveyModal === 'function') {
+            if (_priorNotifiedVersion && typeof window.showSurveyModal === 'function') {
                 const surveyLang = (window.i18next && window.i18next.language) || '';
                 const sr = await fetch(`/api/survey?lang=${encodeURIComponent(surveyLang)}`);
                 const sdata = await sr.json();
                 if (sdata && sdata.has_survey && sdata.survey) {
                     const surveyVer = sdata.survey_version || sdata.survey.survey_version || '';
                     const doneVer = localStorage.getItem('neko_last_survey_version') || '';
-                    if (surveyVer && doneVer !== surveyVer) {
+                    // _priorNotifiedVersion !== surveyVer：只对"从旧版升上来"的老玩家弹；
+                    // 首装本版的用户 last_notified 已等于当前版，排除掉（不是老玩家）。
+                    if (surveyVer && _priorNotifiedVersion !== surveyVer && doneVer !== surveyVer) {
                         const result = await window.showSurveyModal(sdata.survey);
                         const submitHeaders = { 'Content-Type': 'application/json' };
                         const sec = window.nekoLocalMutationSecurity;

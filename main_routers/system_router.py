@@ -1340,7 +1340,9 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
         except Exception:
             continue
         if isinstance(data, dict):
-            data.setdefault("survey_version", version)
+            # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
+            # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。
+            data["survey_version"] = version
             return data
     return None
 
@@ -1436,9 +1438,9 @@ async def submit_survey(request: Request):
     action = payload.get("action")
     if action not in ("submit", "skip"):
         action = "submit"
-    survey_version = payload.get("survey_version")
-    if not isinstance(survey_version, str) or not survey_version:
-        survey_version = APP_VERSION
+    # survey_version 用服务端 APP_VERSION 权威值，不信客户端传入——否则恶意请求可写
+    # 任意版本污染远端版本维度。问卷本就只对当前版本下发，没有跨版本提交的合法场景。
+    survey_version = APP_VERSION
     answers = _sanitize_survey_answers(payload.get("answers"))
 
     uploaded = False
