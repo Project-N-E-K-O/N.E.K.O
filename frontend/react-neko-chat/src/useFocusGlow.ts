@@ -67,11 +67,19 @@ export function useFocusGlow(ref: RefObject<HTMLElement | null>): void {
 
     const tick = () => {
       const el = ref.current;
+      const charge = liveCharge();
       if (!el) {
+        // No element (transient mount/unmount): keep waiting only while there is
+        // still charge to show; once it has decayed to 0, idle instead of
+        // spinning rAF forever on a permanently-null ref.
+        if (charge <= 0) {
+          raf = 0;
+          return;
+        }
         raf = requestAnimationFrame(tick);
         return;
       }
-      if (!render(el, liveCharge())) {
+      if (!render(el, charge)) {
         raf = 0; // fully decayed — stop until the next push
         return;
       }

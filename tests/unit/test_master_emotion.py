@@ -129,7 +129,6 @@ def test_emotion_signal_calm_negative_still_fires():
 
 
 def test_emotion_arousal_floor_knob(monkeypatch):
-    import config
     s = FocusScorer("t")
     # floor=0 → legacy pure arousal×negativity product (arousal gates): low
     # arousal stays weak, reproducing the old mapping exactly.

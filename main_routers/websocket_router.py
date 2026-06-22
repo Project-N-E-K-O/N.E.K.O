@@ -428,6 +428,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 try:
                     _fire_task(session_manager[lanlan_name]._push_focus_charge())
                 except Exception:
+                    # Best-effort cosmetic re-push (missing manager / not-yet-ready
+                    # session): the glow is non-essential and must never block or
+                    # break greeting_check, so swallow and move on.
                     pass
                 if _is_home_tutorial_blocking_greeting(lanlan_name):
                     logger.info(f"[{lanlan_name}] greeting_check: skipped by home tutorial guard")
