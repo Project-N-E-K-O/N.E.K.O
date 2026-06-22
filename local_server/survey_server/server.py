@@ -37,6 +37,7 @@ import hmac
 import io
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -137,8 +138,14 @@ def _sanitize_answers(answers) -> dict:
             out[key] = v
         elif isinstance(v, str):
             out[key] = v[:2000]
-        elif isinstance(v, (int, float)):
+        elif isinstance(v, int):
             out[key] = v
+        elif isinstance(v, float):
+            # 拒非有限浮点：JSON 允许 NaN/Infinity，但存回去后 FastAPI 渲染
+            # /api/v1/admin/responses 会对 non-finite 直接 500，一条投毒答案就能
+            # 整页挂掉（仓库既有约定：存前 math.isfinite 拒 NaN/Inf）。
+            if math.isfinite(v):
+                out[key] = v
         elif isinstance(v, list):
             out[key] = [str(x)[:200] for x in v[:50] if isinstance(x, (str, int, float, bool))]
     return out
@@ -175,7 +182,16 @@ async def submit_survey(request: Request):
     if not verify_signature(payload_json, submission.timestamp, submission.signature, HMAC_SECRET):
         raise HTTPException(403, "Invalid signature")
 
-    device_id = submission.payload.device_id
+    # 元数据裸存、无 Pydantic 长度上限：持开源密钥的伪造请求可把 survey_version
+    # （还建了索引）等字段塞到接近 1MB 解压上限。入口统一封顶到合理长度，挡少量
+    # 伪造提交把 SQLite / admin 响应灌大。device_id 同样封顶（它进限流键 + 幂等 key）。
+    device_id = (submission.payload.device_id or "")[:128]
+    app_version = (submission.payload.app_version or "")[:32]
+    survey_version = (submission.payload.survey_version or "")[:32]
+    locale = (submission.payload.locale or "")[:35]
+    branch = (submission.payload.branch or "")[:64]
+    distribution = (submission.payload.distribution or "")[:32]
+
     if not rate_limiter.is_allowed(device_id):
         raise HTTPException(429, "Rate limit exceeded")
 
@@ -186,7 +202,7 @@ async def submit_survey(request: Request):
     # 污染 submit/skip 漏斗。(device_id, survey_version, action) 三元组与客户端的
     # 幂等语义一致：每个设备每版本每动作只算一次。
     batch_id = hashlib.sha256(
-        f"{device_id}|{submission.payload.survey_version}|{action}".encode("utf-8")
+        f"{device_id}|{survey_version}|{action}".encode("utf-8")
     ).hexdigest()[:32]
 
     # steam_user_id 边界白名单化：客户端串不可信，非法/伪造一律归 ''（纯十进制
@@ -201,11 +217,11 @@ async def submit_survey(request: Request):
         stored = storage.store_response(
             device_id=device_id,
             device_id_legacy=device_id_legacy,
-            app_version=submission.payload.app_version,
-            survey_version=submission.payload.survey_version,
-            locale=submission.payload.locale,
-            branch=submission.payload.branch,
-            distribution=submission.payload.distribution,
+            app_version=app_version,
+            survey_version=survey_version,
+            locale=locale,
+            branch=branch,
+            distribution=distribution,
             steam_user_id=steam_user_id,
             action=action,
             answers=_sanitize_answers(submission.payload.answers),
