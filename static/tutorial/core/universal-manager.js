@@ -1036,6 +1036,7 @@ class UniversalTutorialManager {
     clearAllTutorialLifecycles(reason = 'destroy') {
         const rawReason = this.normalizeTutorialEndRawReason(reason);
         const director = this.yuiGuideDirector;
+        this.syncPcSystemCursorHidden(false, rawReason);
 
         try {
             this.notifyYuiGuideTutorialEnd(rawReason);
@@ -1102,6 +1103,15 @@ class UniversalTutorialManager {
             finalSteps: finalSteps,
             currentStep: this.currentStep
         });
+    }
+
+    syncPcSystemCursorHidden(hidden, reason = 'tutorial') {
+        if (
+            window.YuiGuideCommon
+            && typeof window.YuiGuideCommon.syncPcSystemCursorHidden === 'function'
+        ) {
+            window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
+        }
     }
 
     clearPcTutorialGlobalOverlay(reason = 'destroy') {
@@ -3016,6 +3026,7 @@ class UniversalTutorialManager {
 
     emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
         this.clearStartupGreetingRelease('tutorial-started');
+        this.syncPcSystemCursorHidden(true, 'tutorial-started');
         window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
             detail: {
                 page: page,

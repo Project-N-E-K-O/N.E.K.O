@@ -11478,6 +11478,7 @@
             document.documentElement.classList.add('yui-resistance-cursor-reveal');
             document.body.classList.add('yui-user-cursor-revealed');
             document.body.classList.add('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(false, 'user_cursor_revealed');
         }
 
         clearUserCursorReveal(resetCursor) {
@@ -11509,7 +11510,7 @@
         prepareResistanceCursorReveal() {
             if (this.userCursorRevealed) {
                 this.revealUserCursor();
-                return;
+                return false;
             }
 
             if (this.resistanceCursorTimer) {
@@ -11524,6 +11525,16 @@
                 document.body.classList.remove('yui-resistance-cursor-reveal');
                 this.restoreHiddenCursorAfterResistance = false;
             }, 3000);
+            return true;
+        }
+
+        syncSystemCursorHidden(hidden, reason = 'tutorial') {
+            if (
+                window.YuiGuideCommon
+                && typeof window.YuiGuideCommon.syncPcSystemCursorHidden === 'function'
+            ) {
+                window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
+            }
         }
 
         playLightResistance(x, y, options) {
@@ -11557,6 +11568,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.syncSystemCursorHidden(false, 'destroy');
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
                 console.warn('[YuiGuide] 销毁时恢复 Day1 Agent 开关失败:', error);
