@@ -1959,6 +1959,15 @@
                         detail: { active: !!response.active },
                     }));
 
+                // -------- focus_charge (凝神 edge-glow level) --------
+                // Continuous Focus charge (0..1) + wall-clock stamp. The React
+                // window scales its edge glow from this and extrapolates the
+                // time decay locally between pushes for a smooth fade.
+                } else if (response.type === 'focus_charge') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-charge', {
+                        detail: { charge: Number(response.charge) || 0, atMs: Number(response.at_ms) || 0 },
+                    }));
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;

@@ -56,136 +56,227 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
     "zh": frozenset(
         [
             # 疲惫 / 透支
-            "好累", "太累", "累死", "累了", "好疲惫", "撑不住", "扛不住",
-            "撑不下去", "顶不住", "精疲力尽", "身心俱疲",
-            # 低落 / 难受
-            "难受", "好难受", "不开心", "很难过", "好难过", "想哭", "难过",
-            "提不起劲", "没动力", "心里堵", "心里难受", "情绪低落", "好低落",
+            "好累", "太累", "累死", "累了", "好疲惫", "疲惫", "撑不住", "扛不住",
+            "撑不下去", "撑不住了", "顶不住", "精疲力尽", "身心俱疲", "好疲倦",
+            # 低落 / 难受 / 痛苦
+            "难受", "好难受", "不开心", "很难过", "好难过", "难过", "想哭",
+            "好想哭", "伤心", "好伤心", "痛苦", "好痛苦", "心痛", "心好痛",
+            "心碎", "压抑", "好压抑", "憋屈", "心塞", "心累", "好心累", "难熬",
+            "煎熬", "提不起劲", "没动力", "心里堵", "心里难受", "情绪低落",
+            "好低落", "低落", "丧", "好丧", "emo",
+            # 愤怒 / 烦躁
+            "好烦", "烦死", "烦死了", "好烦躁", "烦躁", "心烦", "生气", "好生气",
+            "气死", "气死了", "气炸", "火大", "好火大", "暴躁", "抓狂", "受够了",
+            "忍不了", "忍无可忍", "恼火",
             # 孤独 / 无依
             "一个人", "好孤独", "孤独", "没人懂", "没人理解", "孤单", "好孤单",
-            "没人陪", "没人在乎",
+            "没人陪", "没人在乎", "好寂寞", "寂寞",
             # 倦怠 / 空洞
             "没意思", "好无聊", "没劲", "提不起兴趣", "什么都不想", "好空虚",
-            "好迷茫", "迷茫", "麻木",
-            # 压力 / 自我怀疑
-            "压力好大", "压力太大", "好大压力", "好焦虑", "焦虑", "好慌",
-            "撑着", "好委屈", "委屈", "好绝望", "绝望", "坚持不下去",
-            "不想努力了", "想放弃", "快崩溃", "要崩溃",
+            "空虚", "好迷茫", "迷茫", "麻木",
+            # 压力 / 焦虑
+            "压力好大", "压力太大", "好大压力", "好焦虑", "焦虑", "好慌", "心慌",
+            "喘不过气", "透不过气", "好委屈", "委屈",
+            # 绝望 / 自我怀疑
+            "好绝望", "绝望", "坚持不下去", "不想努力了", "想放弃", "快崩溃",
+            "要崩溃", "崩溃", "没希望", "好无助", "无助", "活不下去", "撑不住了",
         ]
     ),
     "en": frozenset(
         [
             # Fatigue / depletion
-            "so tired", "exhausted", "worn out", "burnt out", "burned out",
-            "drained", "can't keep up", "can't go on", "can't take it",
-            "running on empty",
+            "so tired", "so exhausted", "exhausted", "worn out", "worn down",
+            "burnt out", "burned out", "burning out", "drained", "so drained",
+            "can't keep up", "can't go on", "can't take it", "can't take this",
+            "running on empty", "no energy left", "dead tired", "wiped out",
             # Low mood / hurting
             "feel down", "feeling down", "so sad", "really sad", "want to cry",
             "feel like crying", "heavy hearted", "no motivation",
-            "can't be bothered", "feeling low",
+            "can't be bothered", "feeling low", "so miserable", "feeling awful",
+            "really hurting",
             # Loneliness
-            "so alone", "all alone", "feel alone", "lonely", "so lonely",
-            "no one understands", "no one gets me", "nobody cares",
+            "so alone", "all alone", "feel alone", "feel so alone", "lonely",
+            "so lonely", "no one understands", "no one gets me", "nobody cares",
+            "nobody understands", "no one to talk to",
             # Emptiness / aimless
             "pointless", "what's the point", "so bored", "no energy",
-            "feel empty", "so lost", "feeling lost", "numb",
-            # Pressure / despair
-            "so stressed", "too much pressure", "so anxious", "anxious",
-            "overwhelmed", "want to give up", "about to break down",
-            "can't do this anymore", "falling apart", "hopeless",
+            "feel empty", "so empty", "so lost", "feeling lost", "feel numb",
+            "nothing matters", "don't care anymore",
+            # Pressure / anxiety
+            "so stressed", "too much pressure", "under so much pressure",
+            "so anxious", "really anxious", "overwhelmed", "so overwhelmed",
+            "panicking", "freaking out", "can't breathe",
+            # Despair / giving up
+            "want to give up", "about to break down", "can't do this anymore",
+            "falling apart", "hopeless", "so hopeless", "can't go on anymore",
+            "no way out", "want it to stop",
+            # Anger / irritation
+            "so angry", "pissed off", "so pissed", "fed up", "so fed up",
+            "so annoyed", "so irritated", "irritated", "furious", "can't stand it",
+            "had enough", "sick of it", "sick of this", "losing my temper",
+            # Pain / hurt
+            "hurts so much", "heartbroken", "in so much pain", "so upset",
         ]
     ),
     "ja": frozenset(
         [
             # 疲労
-            "疲れた", "しんどい", "もう限界", "へとへと", "つらい", "もう無理",
-            "やってられない",
+            "疲れた", "疲れすぎ", "しんどい", "もう限界", "限界かも", "へとへと",
+            "くたくた", "つらい", "つらすぎ", "もう無理", "やってられない",
+            "もうへとへと", "気力がない", "ぐったり",
             # 落ち込み
-            "悲しい", "泣きたい", "落ち込", "やる気が出ない", "気分が沈",
-            "元気が出ない",
+            "悲しい", "悲しすぎ", "泣きたい", "泣きそう", "落ち込", "やる気が出ない",
+            "気分が沈", "元気が出ない", "しんどすぎ", "へこんでる", "気分が重い",
             # 孤独
             "一人ぼっち", "ひとりぼっち", "寂しい", "さびしい", "誰もわかって",
-            "孤独",
+            "孤独", "独りぼっち", "誰も分かって", "話す相手がいない",
             # 空虚 / 倦怠
             "つまらない", "むなしい", "虚しい", "退屈", "何もしたくない",
-            "迷ってる",
-            # 圧力 / 絶望
-            "プレッシャー", "不安", "焦ってる", "もうダメ", "崩れそう",
-            "諦めたい", "頑張れない",
+            "迷ってる", "何もする気が", "心が空っぽ", "どうでもいい",
+            # 圧力 / 不安
+            "プレッシャー", "不安", "焦ってる", "焦って", "息が詰まる",
+            "押しつぶされそう", "パニック", "気が休まらない",
+            # 絶望
+            "もうダメ", "崩れそう", "諦めたい", "頑張れない", "もう頑張れない",
+            "立ち直れない", "どうしようもない", "消えてしまいたい",
+            # 怒り / イライラ
+            "ムカつく", "イライラ", "腹立つ", "腹が立つ", "うざい", "ウザい",
+            "もう嫌", "うんざり", "キレそう", "イラつく", "ムカムカ", "頭にくる",
+            # 痛み
+            "胸が痛い", "心が痛い", "苦しい", "苦しすぎ", "せつない", "胸が苦しい",
         ]
     ),
     "ko": frozenset(
         [
             # 피로
-            "너무 피곤", "지쳤어", "지친다", "힘들어", "못 버티", "한계야",
-            "탈진",
+            "너무 피곤", "너무 지쳐", "지쳤어", "지친다", "힘들어", "너무 힘들어",
+            "못 버티", "버티기 힘들", "한계야", "탈진", "기진맥진", "진이 빠",
+            "녹초",
             # 우울
-            "슬퍼", "울고 싶", "우울", "의욕이 없", "기운이 없", "마음이 무거",
+            "슬퍼", "너무 슬퍼", "울고 싶", "울고 싶어", "우울", "의욕이 없",
+            "기운이 없", "마음이 무거", "기분이 가라앉", "마음이 가라앉",
             # 외로움
-            "혼자야", "외로워", "외롭", "아무도 몰라", "아무도 없",
+            "혼자야", "외로워", "너무 외로워", "외롭", "아무도 몰라", "아무도 없",
+            "혼자인 것 같", "아무도 날 몰라", "얘기할 사람이 없",
             # 공허 / 권태
-            "재미없", "공허", "지루", "아무것도 하기 싫", "막막",
-            # 압박 / 절망
-            "스트레스", "불안", "초조", "무너질 것 같", "포기하고 싶",
-            "버틸 수 없", "절망",
+            "재미없", "공허", "지루", "아무것도 하기 싫", "막막", "텅 빈 것 같",
+            "다 부질없", "아무 의미 없",
+            # 압박 / 불안
+            "스트레스", "불안", "초조", "숨이 막혀", "압박감", "숨이 안 쉬",
+            "공황",
+            # 절망
+            "무너질 것 같", "포기하고 싶", "버틸 수 없", "절망", "다 포기하고",
+            "희망이 없", "더는 못 하겠",
+            # 분노 / 짜증
+            "짜증나", "너무 짜증", "짜증", "화나", "화가 치밀", "열받", "빡쳐",
+            "지긋지긋", "못 참", "신경질", "화가 나", "분통",
+            # 아픔
+            "마음이 아파", "가슴이 아파", "괴로워", "괴롭", "마음이 너무 아파",
+            "가슴이 미어",
         ]
     ),
     "ru": frozenset(
         [
             # Усталость
-            "так устал", "устала", "вымотан", "вымоталась", "нет сил",
-            "больше не могу", "выгорел", "выгорела",
+            "так устал", "очень устал", "устала", "вымотан", "вымоталась",
+            "нет сил", "больше нет сил", "больше не могу", "выгорел", "выгорела",
+            "сил совсем нет", "вымотался", "еле держусь",
             # Подавленность
-            "грустно", "хочется плакать", "тоскливо", "нет настроения",
-            "тяжело на душе", "подавлен",
+            "грустно", "так грустно", "хочется плакать", "вот-вот заплачу",
+            "тоскливо", "нет настроения", "тяжело на душе", "подавлен",
+            "паршиво на душе", "руки опускаются",
             # Одиночество
-            "совсем один", "совсем одна", "одиноко", "никто не понимает",
-            "никому не нужен", "никому не нужна",
+            "совсем один", "совсем одна", "одиноко", "так одиноко",
+            "никто не понимает", "никому не нужен", "никому не нужна",
+            "не с кем поговорить", "меня никто не понимает",
             # Пустота / апатия
             "бессмысленно", "какой смысл", "скучно", "пусто внутри",
-            "потерян", "потеряна",
-            # Давление / отчаяние
-            "столько стресса", "тревожно", "не справляюсь", "хочу сдаться",
-            "вот-вот сломаюсь", "безнадёжно", "опускаются руки",
+            "потерян", "потеряна", "всё надоело", "ничего не хочется",
+            "всё равно на всё",
+            # Давление / тревога
+            "столько стресса", "тревожно", "так тревожно", "не справляюсь",
+            "давит", "задыхаюсь", "паника", "накрывает",
+            # Отчаяние
+            "хочу сдаться", "вот-вот сломаюсь", "безнадёжно", "опускаются руки",
+            "не вижу выхода", "хочу всё бросить", "больше не выдержу",
+            # Гнев / раздражение
+            "бесит", "так зол", "так зла", "достало", "всё достало",
+            "раздражает", "сыт по горло", "выхожу из себя", "злюсь", "взбешён",
+            "сил нет это терпеть",
+            # Боль
+            "так больно", "сердце болит", "душа болит", "невыносимо больно",
         ]
     ),
     "es": frozenset(
         [
             # Cansancio
             "muy cansado", "muy cansada", "agotado", "agotada", "no puedo más",
-            "quemado", "sin energía",
+            "quemado", "sin energía", "reventado", "reventada", "sin fuerzas",
+            "hecho polvo", "hecha polvo", "no doy más",
             # Tristeza
-            "triste", "ganas de llorar", "ánimo por los suelos", "desanimado",
-            "desanimada", "sin motivación",
+            "triste", "muy triste", "ganas de llorar", "ánimo por los suelos",
+            "desanimado", "desanimada", "sin motivación", "hecho una mierda",
+            "me siento fatal", "se me cae el mundo",
             # Soledad
             "muy solo", "muy sola", "me siento solo", "me siento sola",
-            "nadie me entiende", "a nadie le importa",
+            "nadie me entiende", "a nadie le importa", "tan solo", "tan sola",
+            "no tengo a nadie", "nadie me escucha",
             # Vacío / apatía
             "sin sentido", "qué sentido tiene", "aburrido", "vacío por dentro",
-            "perdido", "perdida",
-            # Presión / desesperación
+            "perdido", "perdida", "todo me da igual", "nada me importa",
+            "no tengo ganas de nada",
+            # Presión / ansiedad
             "mucho estrés", "ansioso", "ansiosa", "abrumado", "abrumada",
+            "no puedo respirar", "me agobio", "ataque de ansiedad", "agobiado",
+            "agobiada",
+            # Desesperación
             "quiero rendirme", "a punto de derrumbarme", "sin esperanza",
+            "no veo salida", "quiero tirar la toalla", "ya no aguanto más",
+            "no puedo seguir",
+            # Ira / irritación
+            "muy enfadado", "muy enfadada", "harto", "harta", "muy harto",
+            "muy harta", "me irrita", "furioso", "furiosa", "no aguanto",
+            "estoy hasta las narices", "me saca de quicio", "cabreado",
+            "cabreada",
+            # Dolor
+            "me duele mucho", "con el corazón roto", "destrozado", "destrozada",
+            "me duele el alma",
         ]
     ),
     "pt": frozenset(
         [
             # Cansaço
             "muito cansado", "muito cansada", "exausto", "exausta",
-            "não aguento mais", "esgotado", "sem energia",
+            "não aguento mais", "esgotado", "sem energia", "acabado", "acabada",
+            "sem forças", "no limite", "morto de cansaço",
             # Tristeza
-            "triste", "vontade de chorar", "pra baixo", "desanimado",
-            "desanimada", "sem motivação",
+            "triste", "muito triste", "vontade de chorar", "pra baixo",
+            "desanimado", "desanimada", "sem motivação", "me sinto péssimo",
+            "me sinto horrível", "coração apertado",
             # Solidão
             "muito sozinho", "muito sozinha", "me sinto sozinho",
             "me sinto sozinha", "ninguém me entende", "ninguém se importa",
+            "tão sozinho", "tão sozinha", "não tenho ninguém",
+            "ninguém me escuta",
             # Vazio / apatia
             "sem sentido", "qual o sentido", "entediado", "vazio por dentro",
-            "perdido", "perdida",
-            # Pressão / desespero
+            "perdido", "perdida", "tanto faz", "nada me importa",
+            "sem vontade de nada",
+            # Pressão / ansiedade
             "muito estresse", "ansioso", "ansiosa", "sobrecarregado",
-            "sobrecarregada", "quero desistir", "prestes a desabar",
-            "sem esperança",
+            "sobrecarregada", "não consigo respirar", "sufocado", "sufocada",
+            "crise de ansiedade", "em pânico",
+            # Desespero
+            "quero desistir", "prestes a desabar", "sem esperança",
+            "não vejo saída", "quero jogar tudo pro alto", "não consigo seguir",
+            "no fundo do poço",
+            # Raiva / irritação
+            "com muita raiva", "puto", "puta da vida", "saco cheio",
+            "de saco cheio", "me irrita", "furioso", "furiosa", "não aguento",
+            "puto da vida", "estou de saco cheio", "tô puto",
+            # Dor
+            "dói muito", "de coração partido", "arrasado", "arrasada",
+            "dói demais",
         ]
     ),
 }

@@ -2388,6 +2388,8 @@ class LLMSessionManager:
                 self.lanlan_name, scored.score,
                 self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
             )
+            # Stream the post-turn charge for the frontend edge glow.
+            await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
@@ -2456,6 +2458,40 @@ class LLMSessionManager:
                     await ws.send_json(msg)
         except Exception as e:
             logger.debug("[%s] focus_state ws push failed: %s", self.lanlan_name, e)
+
+    async def _push_focus_charge(self, charge: Optional[float] = None) -> None:
+        """Stream the live Focus charge (0..1) to the frontend so the edge glow
+        can scale continuously: onset at FOCUS_CHARGE_EXIT, the non-linear jump +
+        breathing at FOCUS_CHARGE_ENTER, peak toward FOCUS_CHARGE_CAP. Carries the
+        wall-clock stamp so the frontend extrapolates the same time decay between
+        pushes for a smooth fade (no per-second server spam). Pushed on every
+        charge change AND on (re)connect so a freshly-opened window (e.g. the
+        separate /chat_full window) lands on the correct brightness immediately.
+        Ephemeral, ws + sync-queue only, never persisted. Best-effort."""
+        from config import FOCUS_MODE_ENABLED  # live read
+        if not FOCUS_MODE_ENABLED:
+            return
+        if charge is None:
+            try:
+                charge = float(self.state.snapshot().get("focus_charge") or 0.0)
+            except Exception:
+                charge = 0.0
+        msg = {"type": "focus_charge", "charge": round(float(charge), 4),
+               "at_ms": int(time.time() * 1000)}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_charge sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_charge ws push failed: %s", self.lanlan_name, e)
 
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
@@ -2579,6 +2615,7 @@ class LLMSessionManager:
                 self.lanlan_name, replied,
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
+            await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
         except Exception as e:
             logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
                            self.lanlan_name, e)

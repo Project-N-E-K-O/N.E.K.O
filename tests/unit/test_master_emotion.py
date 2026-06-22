@@ -48,10 +48,46 @@ def test_clamp_bounds_and_junk():
 
 
 # ── FocusScorer.emotion signal mapping ───────────────────────────────
-def _reading(valence, arousal):
+def _reading(valence, arousal, complexity=0.0):
     return MasterEmotionReading(
         valence=valence, arousal=arousal, confidence=0.9, updated_at=0.0,
+        complexity=complexity,
     )
+
+
+def test_question_signal_from_complexity():
+    s = FocusScorer("t")
+    # The cognitive-load bonus comes straight from the model's complexity read,
+    # positive-evidence-only (None when absent so it never dilutes emotion).
+    assert s._signal_question(_reading(0.0, 0.0, complexity=0.8)) == 0.8
+    assert s._signal_question(_reading(0.0, 0.0, complexity=0.0)) is None
+    assert s._signal_question(SimpleNamespace(complexity=None)) is None
+    assert s._signal_question(None) is None
+
+
+def test_question_can_trigger_alone_and_merges_with_emotion():
+    # A complex objective question with NO distress (neutral valence) still scores
+    # on its own — focus = emotion OR cognitive load.
+    s = FocusScorer("t")
+    res = s.score(user_text="求这道题的极限", emotion_reading=_reading(0.0, 0.2, complexity=0.9))
+    assert res.signals["emotion"] is None and res.signals["question"] == 0.9
+    assert abs(res.score - 0.9) < 1e-9  # lone present trigger renormalises to itself
+    # Distress + complex question merge via the weighted average (question lifts
+    # the score above the emotion-only value, never dilutes it).
+    s2 = FocusScorer("t")
+    res2 = s2.score(user_text="想搞懂这道题", emotion_reading=_reading(-0.8, 0.9, complexity=0.8))
+    assert res2.signals["keyword"] is None  # no vulnerability word in this text
+    assert res2.signals["emotion"] is not None and res2.signals["question"] == 0.8
+    assert res2.score > res2.signals["emotion"]
+
+
+def test_score_negative_when_user_is_happy():
+    s = FocusScorer("t")
+    res = s.score(user_text="今天超开心的", emotion_reading=_reading(0.9, 0.8))
+    assert res.signals["keyword"] is None
+    assert res.signals["emotion"] is not None and res.signals["emotion"] < 0
+    assert res.signals["cadence"] is None  # gated: a happy turn is not distress evidence
+    assert res.score < 0  # a good mood votes Focus DOWN (drains charge)
 
 
 def test_emotion_signal_distress_is_max():
@@ -59,28 +95,50 @@ def test_emotion_signal_distress_is_max():
     assert s._signal_emotion(_reading(-1.0, 1.0)) == 1.0
 
 
-def test_emotion_signal_happy_is_none():
+def test_emotion_signal_happy_pulls_focus_down():
     s = FocusScorer("t")
-    # positive valence + high arousal (excitement) → no distress → None (drops
-    # out of the weighted average, never counts as evidence against Focus)
-    assert s._signal_emotion(_reading(1.0, 1.0)) is None
+    # positive valence is now a SIGNED anti-focus vote (don't intrude on a good
+    # mood), capped at -POSITIVE_SCALE. valence +1, arousal 1 → m=1 → -0.5.
+    assert s._signal_emotion(_reading(1.0, 1.0)) == -0.5
+    # cited floor case: valence +1, arousal 0.3 → m=0.65 → -0.5*0.65 = -0.325.
+    assert abs(s._signal_emotion(_reading(1.0, 0.3)) - (-0.325)) < 1e-9
 
 
-def test_emotion_signal_neutral_high_arousal_is_none():
+def test_emotion_signal_neutral_is_none():
     s = FocusScorer("t")
-    # neutral valence → no distress even at high arousal (intensity ≠ distress)
+    # EXACTLY neutral valence → no vote either way (don't dilute other signals).
     assert s._signal_emotion(_reading(0.0, 1.0)) is None
 
 
-def test_emotion_signal_positive_high_arousal_is_none():
+def test_emotion_signal_mild_positive_is_small_negative():
     s = FocusScorer("t")
-    assert s._signal_emotion(_reading(0.5, 1.0)) is None
+    # +0.5, arousal 1 → -(0.5 * 1.0 * 0.5) = -0.25 (half the reach of distress).
+    assert abs(s._signal_emotion(_reading(0.5, 1.0)) - (-0.25)) < 1e-9
 
 
-def test_emotion_signal_calm_negative_is_low():
+def test_emotion_signal_calm_negative_still_fires():
     s = FocusScorer("t")
-    # negative but low arousal → weak signal
+    # Valence DRIVES distress; arousal only amplifies (with a floor). Quiet
+    # sadness (strong-negative valence, low arousal) must still produce a solid
+    # signal — exactly the vulnerability Focus is meant to catch — not get zeroed
+    # out the way a pure arousal×negativity product would.
+    calm = s._signal_emotion(_reading(-1.0, 0.1))
+    assert calm is not None and calm > 0.4
+    # arousal still amplifies: same valence, higher arousal → stronger signal.
+    assert s._signal_emotion(_reading(-1.0, 1.0)) > calm
+
+
+def test_emotion_arousal_floor_knob(monkeypatch):
+    import config
+    s = FocusScorer("t")
+    # floor=0 → legacy pure arousal×negativity product (arousal gates): low
+    # arousal stays weak, reproducing the old mapping exactly.
+    monkeypatch.setattr(config, "FOCUS_EMOTION_AROUSAL_FLOOR", 0.0)
     assert abs(s._signal_emotion(_reading(-1.0, 0.1)) - 0.1) < 1e-9
+    # floor=1 → arousal ignored entirely, distress = negativity (pure valence).
+    monkeypatch.setattr(config, "FOCUS_EMOTION_AROUSAL_FLOOR", 1.0)
+    assert abs(s._signal_emotion(_reading(-0.7, 0.0)) - 0.7) < 1e-9
+    assert abs(s._signal_emotion(_reading(-0.7, 1.0)) - 0.7) < 1e-9
 
 
 def test_emotion_signal_none_when_no_reading():
@@ -191,6 +249,22 @@ def test_parse_out_of_range_is_clamped():
         '{"valence": -5, "arousal": 9, "confidence": 2}', now=1.0, source="x",
     )
     assert r.valence == -1.0 and r.arousal == 1.0 and r.confidence == 1.0
+
+
+def test_parse_complexity_field():
+    r = MasterEmotionTracker._parse(
+        '{"valence": -0.5, "arousal": 0.5, "complexity": 0.9}', now=1.0, source="x",
+    )
+    assert r is not None and r.complexity == 0.9
+    # Missing complexity defaults to 0.0 (no cognitive bonus) — unlike the axes,
+    # its absence must NOT reject an otherwise-valid reading.
+    r2 = MasterEmotionTracker._parse('{"valence": -0.5, "arousal": 0.5}', now=1.0, source="x")
+    assert r2 is not None and r2.complexity == 0.0
+    # Out-of-range complexity clamps into [0, 1].
+    r3 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "complexity": 9}', now=1.0, source="x",
+    )
+    assert r3.complexity == 1.0
 
 
 def test_parse_rejects_garbage():
