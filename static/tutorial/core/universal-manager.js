@@ -509,6 +509,25 @@ class UniversalTutorialManager {
         return releaseDetail;
     }
 
+    clearStartupGreetingRelease(reason = 'tutorial-started') {
+        try {
+            const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
+            if (detail && detail.released === true) {
+                delete window.__NEKO_STARTUP_GREETING_RELEASED__;
+            }
+            window.dispatchEvent(new CustomEvent(STARTUP_GREETING_RELEASE_EVENT, {
+                detail: {
+                    released: false,
+                    page: this.currentPage,
+                    reason: reason || 'tutorial-started',
+                    timestamp: Date.now()
+                }
+            }));
+        } catch (error) {
+            console.warn('[Tutorial] 启动问候放行状态清理失败:', error);
+        }
+    }
+
     loadAvatarFloatingGuideState() {
         return loadAvatarFloatingGuideState();
     }
@@ -2996,6 +3015,7 @@ class UniversalTutorialManager {
     }
 
     emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
+        this.clearStartupGreetingRelease('tutorial-started');
         window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
             detail: {
                 page: page,
@@ -3140,10 +3160,12 @@ class UniversalTutorialManager {
         const startupGreetingReleaseReason = endMeta.reason === 'complete'
             ? 'tutorial-completed'
             : (endMeta.reason === 'skip' ? 'tutorial-skipped' : 'tutorial-' + endMeta.reason);
-        this.dispatchStartupGreetingRelease(startupGreetingReleaseReason, {
-            rawReason: endMeta.rawReason,
-            source: completedSource,
-            day: avatarFloatingRound || undefined
+        const startupGreetingReleasePromise = Promise.resolve(teardownPromise).finally(() => {
+            this.dispatchStartupGreetingRelease(startupGreetingReleaseReason, {
+                rawReason: endMeta.rawReason,
+                source: completedSource,
+                day: avatarFloatingRound || undefined
+            });
         });
 
         if (avatarFloatingRound) {
@@ -3191,7 +3213,7 @@ class UniversalTutorialManager {
                 rawReason: endMeta.rawReason
             });
             console.log('[Tutorial] 引导未完成即结束，页面:', this.currentPage, 'reason:', endMeta.rawReason);
-            return teardownPromise;
+            return startupGreetingReleasePromise;
         }
 
         // 标记用户已看过该页面的引导
@@ -3215,7 +3237,7 @@ class UniversalTutorialManager {
                 rawReason: endMeta.rawReason
             });
             console.log('[Tutorial] 引导已跳过并标记看过，页面:', this.currentPage);
-            return teardownPromise;
+            return startupGreetingReleasePromise;
         }
 
         window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
@@ -3233,7 +3255,7 @@ class UniversalTutorialManager {
             rawReason: endMeta.rawReason
         });
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
-        return teardownPromise;
+        return startupGreetingReleasePromise;
     }
 
     restoreYuiGuideChatInputState(reason = 'tutorial-ended') {

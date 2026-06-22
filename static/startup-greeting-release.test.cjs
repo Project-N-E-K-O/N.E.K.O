@@ -61,6 +61,7 @@ test('startup greeting waits for an explicit release instead of firing on websoc
 test('tutorial manager releases startup greeting after tutorial decisions and endings', () => {
     assert.match(universalManagerSource, /STARTUP_GREETING_RELEASE_EVENT/);
     assert.match(universalManagerSource, /dispatchStartupGreetingRelease\(reason/);
+    assert.match(universalManagerSource, /clearStartupGreetingRelease\(reason/);
     assert.match(universalManagerSource, /dispatchStartupGreetingReleaseWithoutManager\(reason/);
     assert.match(universalManagerSource, /new CustomEvent\(STARTUP_GREETING_RELEASE_EVENT/);
     assert.match(universalManagerSource, /dispatchStartupGreetingRelease\('avatar-floating-round-start-skipped'/);
@@ -82,6 +83,11 @@ test('tutorial manager releases startup greeting after tutorial decisions and en
     assert.notEqual(endBlockEnd, -1, 'expected end of tutorial end handler');
     const endBlock = universalManagerSource.slice(endBlockStart, endBlockEnd);
     assert.match(endBlock, /dispatchStartupGreetingRelease\(/);
+    assert.match(endBlock, /Promise\.resolve\(teardownPromise\)\.finally/);
+    assert.ok(
+        endBlock.indexOf('Promise.resolve(teardownPromise).finally') < endBlock.indexOf('this.dispatchStartupGreetingRelease(startupGreetingReleaseReason'),
+        'startup greeting release must wait for tutorial teardown to settle'
+    );
     assert.match(endBlock, /tutorial-completed/);
     assert.match(endBlock, /tutorial-skipped/);
 });
