@@ -6,10 +6,14 @@ services:
     ports:
       - "8100:8100"
     volumes:
-      - ./data:/app/data
+      # 命名卷：docker 用镜像层初始化，保留 /app/data 对 appuser(非 root) 的可写权限。
+      # bind mount ./data 会被 root 拥有的宿主目录覆盖，非 root 容器写不进 SQLite。
+      - survey-data:/app/data
     environment:
-      # ★ 必须修改：管理端鉴权 token（用于查询 / 导出）
-      - SURVEY_ADMIN_TOKEN=changeme
+      # ★ 启用管理端（查询/导出）请取消注释并改成强随机 token。
+      # 默认不设：require_admin 在 token 为空时返回 503，admin API 全程禁用，
+      # 避免「忘了改 changeme 就把含 device_id/steam_user_id 的接口暴露出去」。
+      # - SURVEY_ADMIN_TOKEN=please-change-me
       # 可选：启用 /docs Swagger 页面
       # - SURVEY_ENABLE_DOCS=1
     restart: unless-stopped
@@ -18,3 +22,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  survey-data:

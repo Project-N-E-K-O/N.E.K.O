@@ -363,15 +363,18 @@ window.addEventListener('load', async () => {
                     const doneVer = localStorage.getItem('neko_last_survey_version') || '';
                     if (surveyVer && doneVer !== surveyVer) {
                         const result = await window.showSurveyModal(sdata.survey);
-                        // 不论提交还是跳过都先记本地，避免上报失败导致反复弹。
-                        localStorage.setItem('neko_last_survey_version', surveyVer);
                         const submitHeaders = { 'Content-Type': 'application/json' };
                         const sec = window.nekoLocalMutationSecurity;
                         if (sec && typeof sec.getMutationHeaders === 'function') {
                             try { Object.assign(submitHeaders, await sec.getMutationHeaders()); } catch (_) { }
                         }
+                        // 只有后端成功受理（resp.ok）才记本地完成标记；本地 POST 失败
+                        // （CSRF token 没就绪 / 后端错误）时不标记，下次启动重弹一次，
+                        // 避免把用户填好的答卷直接丢掉。后端已是 best-effort（远程上报
+                        // 失败也回 ok:true），所以 resp.ok = 后端已受理即可视为完成。
+                        let submitted = false;
                         try {
-                            await fetch('/api/survey/submit', {
+                            const sresp = await fetch('/api/survey/submit', {
                                 method: 'POST',
                                 headers: submitHeaders,
                                 body: JSON.stringify({
@@ -380,8 +383,16 @@ window.addEventListener('load', async () => {
                                     answers: (result && result.answers) || {},
                                 }),
                             });
+                            submitted = !!(sresp && sresp.ok);
+                            if (!submitted) {
+                                console.warn('[survey/submit] backend rejected with HTTP '
+                                    + (sresp && sresp.status) + '; will re-prompt next launch');
+                            }
                         } catch (e) {
                             console.warn('[survey/submit] request failed:', e);
+                        }
+                        if (submitted) {
+                            localStorage.setItem('neko_last_survey_version', surveyVer);
                         }
                     }
                 }

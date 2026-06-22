@@ -114,6 +114,35 @@ def require_admin(request: Request):
         raise HTTPException(401, "Invalid admin token")
 
 
+def _sanitize_answers(answers) -> dict:
+    """Whitelist + cap the answer dict at ingest (defense-in-depth for the public collector).
+
+    The local backend (/api/survey/submit) already caps answers, but this public
+    endpoint accepts any HMAC-signed body (the secret ships in the open-source
+    client), so a crafted client could push oversized / deeply-nested answers. Bound
+    them here independently: <= 50 keys, key <= 64 chars, string <= 2000 chars, list
+    <= 50 items of <= 200 chars each; anything else is dropped.
+    """
+    out: dict = {}
+    if not isinstance(answers, dict):
+        return out
+    for i, (k, v) in enumerate(answers.items()):
+        if i >= 50:
+            break
+        if not isinstance(k, str) or not k:
+            continue
+        key = k[:64]
+        if isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, str):
+            out[key] = v[:2000]
+        elif isinstance(v, (int, float)):
+            out[key] = v
+        elif isinstance(v, list):
+            out[key] = [str(x)[:200] for x in v[:50] if isinstance(x, (str, int, float, bool))]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 客户端上报（公开，HMAC 验证）
 # ---------------------------------------------------------------------------
@@ -167,7 +196,7 @@ async def submit_survey(request: Request):
             distribution=submission.payload.distribution,
             steam_user_id=steam_user_id,
             action=action,
-            answers=submission.payload.answers or {},
+            answers=_sanitize_answers(submission.payload.answers),
             batch_id=batch_id,
         )
     except Exception as e:

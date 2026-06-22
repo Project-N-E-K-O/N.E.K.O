@@ -30,8 +30,9 @@ HMAC 密钥与端口和 telemetry **故意不同**：两条上报通道互不背
 pip install -r requirements.txt
 python server.py --port 8100 --admin-token YOUR_TOKEN
 
-# 2) Docker
-docker-compose up -d   # 记得改 docker-compose.yml 里的 SURVEY_ADMIN_TOKEN
+# 2) Docker（数据存命名卷 survey-data；admin API 默认禁用，
+#    需要查询/导出时在 docker-compose.yml 取消注释 SURVEY_ADMIN_TOKEN 并改强随机值）
+docker-compose up -d
 
 # 3) systemd 一键（Linux）
 cd deploy && ./setup.sh   # 自动建 venv + 装服务 + 生成 admin token
