@@ -224,11 +224,23 @@ def test_game_debug_logs_keep_latest_completed_session_until_next_active_session
 
 
 @pytest.mark.unit
+def test_game_debug_logs_drop_ended_session_when_active_session_exists():
+    game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_active("soccer", "soccer-new", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="superseded")
+
+    summaries = game_log.list_game_session_debug_log_summaries("soccer")
+
+    assert {item["session_id"] for item in summaries} == {"soccer-new"}
+
+
+@pytest.mark.unit
 def test_game_debug_logs_drop_completed_session_after_retention_ttl():
     now = 1_000_000.0
     game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="Lan")
     game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="test")
     entry = game_log.find_game_session_debug_log("soccer-old", "soccer")
+    assert entry is not None
     entry["ended_at"] = now - game_log.GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS - 1
     entry["updated_at"] = entry["ended_at"]
 

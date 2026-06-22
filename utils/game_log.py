@@ -156,6 +156,7 @@ def _get_or_create_game_session_debug_log(
         if activate:
             entry["status"] = "active"
             entry["ended_at"] = None
+            _drop_completed_game_session_debug_logs()
     return entry
 
 
@@ -163,10 +164,16 @@ def cleanup_game_session_debug_logs(now: float | None = None) -> None:
     current_time = time.time() if now is None else float(now)
     retained_keys: set[str] = set()
     completed_entries: list[dict] = []
+    has_active_session = False
     for entry in _game_session_debug_logs.values():
         if entry.get("status") == "active":
+            has_active_session = True
             continue
         completed_entries.append(entry)
+
+    if has_active_session:
+        _drop_completed_game_session_debug_logs()
+        return
 
     completed_entries.sort(
         key=lambda entry: float(entry.get("ended_at") or entry.get("updated_at") or entry.get("created_at") or 0.0),
