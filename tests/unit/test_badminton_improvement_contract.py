@@ -2242,14 +2242,14 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     draw_section = html[draw_start:html.index("function drawBall()", draw_start)]
     assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
     assert "function drawReturnChargeTrace(" not in draw_section
-    assert "function drawPlayerChargeMeter(" not in draw_section
-    assert "drawPlayerChargeMeter" not in draw_section
+    assert "function drawPlayerChargeMeter(" in draw_section
+    assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));" in draw_section
     assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
     assert "if (!canReturnNow) return;" in draw_section
     assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
     assert "drawReturnChargeTrace" not in draw_section
-    assert "var meterX = getPlayerX() - meterW / 2;" not in draw_section
-    assert "var meterY = getPlayerY() - 146;" not in draw_section
+    assert "var meterX = getPlayerX() - meterW / 2;" in draw_section
+    assert "var meterY = getPlayerY() - 146;" in draw_section
     assert "aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);" in draw_section
     assert "var chargePercent = game.charging ? clamp(game.power, 0, 100) : clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
 

@@ -7120,6 +7120,36 @@
   function drawAiming() {
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
     drawPlayerReturnHitCue();
+    if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));
+  }
+  function drawPlayerChargeMeter(percent) {
+    var chargePercent = clamp(percent, 0, 100);
+    if (chargePercent <= 0) return;
+    var now = performance.now();
+    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
+    var meterW = 74;
+    var meterH = 8;
+    var meterX = getPlayerX() - meterW / 2;
+    var meterY = getPlayerY() - 146;
+    var fillW = meterW * chargePercent / 100;
+    aimingCtx.save();
+    aimingCtx.globalCompositeOperation = 'lighter';
+    aimingCtx.shadowColor = 'rgba(114,216,255,.42)';
+    aimingCtx.shadowBlur = 8 + pulse * 4;
+    aimingCtx.fillStyle = 'rgba(5,13,19,.52)';
+    aimingCtx.strokeStyle = 'rgba(255,255,255,.32)';
+    aimingCtx.lineWidth = 1;
+    aimingCtx.beginPath();
+    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX, meterY, meterW, meterH, 4);
+    else aimingCtx.rect(meterX, meterY, meterW, meterH);
+    aimingCtx.fill();
+    aimingCtx.stroke();
+    aimingCtx.fillStyle = 'rgba(255,202,58,.92)';
+    aimingCtx.beginPath();
+    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3, 3);
+    else aimingCtx.rect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3);
+    aimingCtx.fill();
+    aimingCtx.restore();
   }
   function drawPlayerReturnHitCue() {
     if (!isIncomingPlayerReturnCandidate()) return;
