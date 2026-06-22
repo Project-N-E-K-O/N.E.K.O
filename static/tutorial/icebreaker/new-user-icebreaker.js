@@ -423,7 +423,7 @@
                 return;
             }
             if (typeof bridge.beginTurn === 'function') {
-                bridge.beginTurn();
+                bridge.beginTurn({ latch: false });
             }
             var result = bridge.finalizeTurnWithTranslation(line);
             if (result && typeof result.catch === 'function') {
@@ -454,8 +454,8 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        return appendLlmContext(role, messageText, meta || {}).then(function () {
-            if (role === 'assistant') {
+        return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {
+            if (role === 'assistant' && contextOk === true) {
                 finalizeIcebreakerAssistantSubtitle(messageText);
             }
             if (!shouldRenderIcebreakerOnLocalChatHost()) {

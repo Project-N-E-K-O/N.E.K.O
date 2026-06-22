@@ -18,6 +18,7 @@ INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
+SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
 
 
 def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
@@ -343,12 +344,13 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    context_then = "return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {"
+    assert context_then in append_message_block
     assert "broadcastIcebreakerAppendMessage(message);" in append_message_block
     assert append_message_block.index("broadcastIcebreakerAppendMessage(message);") < append_message_block.index(
-        "return appendLlmContext(role, messageText, meta || {}).then(function () {"
+        context_then
     )
-    assert append_message_block.index("return appendLlmContext(role, messageText, meta || {}).then(function () {") < append_message_block.index(
+    assert append_message_block.index(context_then) < append_message_block.index(
         "return waitForChatHost(30000).then(function (host) {"
     )
 
@@ -380,6 +382,7 @@ def test_icebreaker_context_append_requires_successful_json_payload():
 
 def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal_chat():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    subtitle_runtime = SUBTITLE_PATH.read_text(encoding="utf-8")
 
     assert "function finalizeIcebreakerAssistantSubtitle(text)" in runtime
     subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitle(text)", 1)[1].split(
@@ -387,17 +390,25 @@ def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal
         1,
     )[0]
     assert "window.subtitleBridge" in subtitle_block
-    assert "bridge.beginTurn()" in subtitle_block
+    assert "bridge.beginTurn({ latch: false })" in subtitle_block
+    assert "bridge.beginTurn()" not in subtitle_block
     assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
     assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
+    begin_turn_block = subtitle_runtime.split("function beginSubtitleTurn(", 1)[1].split(
+        "function onAssistantTurnStart()",
+        1,
+    )[0]
+    assert "options && options.latch === false" in begin_turn_block
+    assert "turnBoundaryLatched = !skipLatch;" in begin_turn_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "if (role === 'assistant') {" in append_message_block
+    assert "then(function (contextOk) {" in append_message_block
+    assert "if (role === 'assistant' && contextOk === true) {" in append_message_block
     assert "finalizeIcebreakerAssistantSubtitle(messageText);" in append_message_block
-    assert append_message_block.index("return appendLlmContext(role, messageText, meta || {}).then(function () {") < append_message_block.index(
+    assert append_message_block.index("return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {") < append_message_block.index(
         "finalizeIcebreakerAssistantSubtitle(messageText);"
     )
 
