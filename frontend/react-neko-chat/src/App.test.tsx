@@ -6622,6 +6622,88 @@ describe('App', () => {
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
   });
 
+  it('dispatches compact surface drag prime and renderer drag events from the input body', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const primes: Array<Record<string, number>> = [];
+    const primeEnds: Array<Record<string, number>> = [];
+    const grabs: Array<Record<string, number>> = [];
+    const moves: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrime = (event: Event) => primes.push((event as CustomEvent).detail);
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    const onMove = (event: Event) => moves.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime', onPrime);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    window.addEventListener('neko:compact-surface-drag-move', onMove);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 51, clientX: 160, clientY: 46, screenX: 460, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      expect(primes).toHaveLength(1);
+      expect(primes[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 160,
+        clientY: 46,
+        screenX: 460,
+        screenY: 340,
+      });
+      fireEvent.pointerMove(input, {
+        pointerId: 51, clientX: 182, clientY: 48, screenX: 482, screenY: 342,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 160,
+        clientY: 46,
+        screenX: 460,
+        screenY: 340,
+        currentClientX: 182,
+        currentClientY: 48,
+      });
+      expect(moves).toHaveLength(0);
+      fireEvent.pointerMove(input, {
+        pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(moves).toHaveLength(1);
+      expect(moves[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 202,
+        clientY: 60,
+        screenX: 502,
+        screenY: 354,
+      });
+      fireEvent.pointerUp(input, {
+        pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
+        buttons: 0, pointerType: 'mouse',
+      });
+      expect(primeEnds).toHaveLength(1);
+      expect(primeEnds[0]).toMatchObject({ pointerId: 51 });
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 202,
+        clientY: 60,
+        screenX: 502,
+        screenY: 354,
+        reason: 'pointerup',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime', onPrime);
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      window.removeEventListener('neko:compact-surface-drag-move', onMove);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
   it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {
     render(
       <App
