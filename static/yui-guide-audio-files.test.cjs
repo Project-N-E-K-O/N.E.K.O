@@ -300,7 +300,7 @@ test('day5 round scenes use timeline playback after settings and panic delegate 
     assert.equal(timelineSceneIds[3], 'day5_wrap');
 });
 
-test('day5 settings scenes delegate narration, stand-in timing and panic performance to SettingsTourFlow from timeline', () => {
+test('day5 settings scenes delegate narration and panic performance to SettingsTourFlow from timeline', () => {
     const guides = loadGuides();
     const sceneIds = ['day5_character_settings', 'day5_character_panic'];
 
@@ -315,7 +315,7 @@ test('day5 settings scenes delegate narration, stand-in timing and panic perform
         assert.equal(scene.timeline[0].at, 0);
         assert.equal(scene.timeline[0].command, 'settingsTour.play');
         assert.equal(scene.timeline[0].blocking, true);
-        assert.notEqual(scene.avatarStandIn, false);
+        assert.equal(Object.prototype.hasOwnProperty.call(scene, 'avatarStandIn'), false);
     }
 });
 

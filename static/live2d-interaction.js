@@ -959,6 +959,26 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
+            const isYuiGuideFaceForwardLocked = window.nekoYuiGuideFaceForwardLock === true
+                && window.nekoYuiGuideIntroVoiceLookAtActive !== true;
+            const centerYuiGuideLookAt = () => {
+                if (model.internalModel && model.internalModel.focusController) {
+                    const fc = model.internalModel.focusController;
+                    fc.targetX = 0;
+                    fc.targetY = 0;
+                    if (Number.isFinite(Number(fc.x))) fc.x = 0;
+                    if (Number.isFinite(Number(fc.y))) fc.y = 0;
+                }
+                const coreModel = model.internalModel && model.internalModel.coreModel;
+                if (coreModel && typeof coreModel.setParameterValueById === 'function') {
+                    try {
+                        coreModel.setParameterValueById('ParamAngleX', 0);
+                        coreModel.setParameterValueById('ParamAngleY', 0);
+                        coreModel.setParameterValueById('ParamEyeBallX', 0);
+                        coreModel.setParameterValueById('ParamEyeBallY', 0);
+                    } catch (_) {}
+                }
+            };
 
             if (distance < threshold) {
                 if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
@@ -977,7 +997,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
-                    if (isMouseTrackingEnabled) {
+                    if (isYuiGuideFaceForwardLocked) {
+                        centerYuiGuideLookAt();
+                    } else if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {
                         if (model.internalModel && model.internalModel.focusController) {
@@ -995,7 +1017,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     canvasEl.style.cursor = 'grab';
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
-                if (isMouseTrackingEnabled) {
+                if (isYuiGuideFaceForwardLocked) {
+                    centerYuiGuideLookAt();
+                } else if (isMouseTrackingEnabled) {
                     model.focus(pointer.x, pointer.y);
                 } else {
                     if (model.internalModel && model.internalModel.focusController) {

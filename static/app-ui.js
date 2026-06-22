@@ -845,6 +845,7 @@
     mod.hideLive2d = hideLive2d;
 
     function restoreLive2DDisplaySurface(reason) {
+        const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         if (document.body && document.body.classList) {
             document.body.classList.remove('yui-guide-live2d-preparing');
             document.body.classList.remove('yui-guide-return-petal-fade');
@@ -861,7 +862,9 @@
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            live2dContainer.style.removeProperty('opacity');
+            if (!preserveAvatarCornerPeekOpacity) {
+                live2dContainer.style.removeProperty('opacity');
+            }
             live2dContainer.style.removeProperty('pointer-events');
         }
 
@@ -870,13 +873,16 @@
             live2dCanvas.classList.remove('minimized');
             live2dCanvas.style.display = 'block';
             live2dCanvas.style.removeProperty('transition');
-            live2dCanvas.style.setProperty('opacity', '1', 'important');
+            if (!preserveAvatarCornerPeekOpacity) {
+                live2dCanvas.style.setProperty('opacity', '1', 'important');
+            }
             live2dCanvas.style.setProperty('visibility', 'visible', 'important');
             live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
         }
     }
 
     function activateLive2DRenderForDisplay(reason) {
+        const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const manager = window.live2dManager || null;
         const app = manager && manager.pixi_app;
         const ticker = app && app.ticker;
@@ -887,14 +893,18 @@
         try {
             if (model) {
                 model.visible = true;
-                model.alpha = 1;
+                if (!preserveAvatarCornerPeekOpacity) {
+                    model.alpha = 1;
+                }
                 if (model.renderable !== undefined) {
                     model.renderable = true;
                 }
             }
             if (app && app.stage) {
                 app.stage.visible = true;
-                app.stage.alpha = 1;
+                if (!preserveAvatarCornerPeekOpacity) {
+                    app.stage.alpha = 1;
+                }
                 if (app.stage.renderable !== undefined) {
                     app.stage.renderable = true;
                 }
