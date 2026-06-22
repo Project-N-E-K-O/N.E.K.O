@@ -259,6 +259,79 @@ def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.Mon
     assert adapter.init_ok is True
 
 
+def test_check_connectivity_accepts_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    class TextBlock:
+        type = "text"
+        text = "ok"
+
+    class AnthropicMessage:
+        content = [TextBlock()]
+
+    fake_llm = MagicMock()
+    fake_llm.invoke_raw = MagicMock(return_value=AnthropicMessage())
+
+    monkeypatch.setattr(cu_module, "create_chat_llm", lambda **kwargs: fake_llm)
+
+    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
+    adapter._config_manager = MagicMock()
+    adapter._config_manager.get_model_api_config = MagicMock(return_value={
+        "api_key": "sk-test",
+        "base_url": "https://api.kimi.com/coding",
+        "model": "kimi-for-coding",
+    })
+    adapter._llm_client = None
+    adapter._llm_client_sig = None
+    adapter.init_ok = False
+    adapter.last_error = "stale"
+
+    ok, reason = adapter.check_connectivity(timeout_s=4.0)
+    assert ok is True
+    assert reason == ""
+    assert adapter.init_ok is True
+
+
+def test_call_llm_parses_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    class TextBlock:
+        type = "text"
+        text = """## Observation
+Ready.
+
+## Thought
+Use a special action.
+
+## Action
+Finish.
+
+## Code
+```python
+computer.terminate(status="success", answer="done")
+```"""
+
+    class AnthropicMessage:
+        content = [TextBlock()]
+
+    fake_llm = MagicMock()
+    fake_llm.invoke_raw = MagicMock(return_value=AnthropicMessage())
+
+    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
+    adapter._cancelled = False
+    adapter._llm_client = fake_llm
+    adapter._agent_model_cfg = {"model": "kimi-for-coding"}
+    adapter.max_completion_tokens = 128
+    adapter.thinking = False
+    adapter._config_manager = MagicMock()
+    adapter._config_manager.consume_agent_daily_quota = MagicMock(return_value=(True, {}))
+    adapter._interruptible_sleep = MagicMock()
+
+    parsed = adapter._call_llm([{"role": "user", "content": "finish"}])
+    assert parsed["action"] == "Finish."
+    assert parsed["code"] == 'computer.terminate(status="success", answer="done")'
+
+
 # ---------------------------------------------------------------------------
 # 3. Master switch semantics: set_agent_enabled(False) preserves sub flags
 # ---------------------------------------------------------------------------

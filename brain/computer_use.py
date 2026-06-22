@@ -348,6 +348,33 @@ def parse_response(
     return result
 
 
+def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
+    """Extract text from either OpenAI-compatible or Anthropic raw responses."""
+    choices = getattr(resp, "choices", None)
+    if choices is not None:
+        choice = choices[0] if choices else None
+        msg = getattr(choice, "message", None) if choice else None
+        content = getattr(msg, "content", "") if msg else ""
+        reasoning = getattr(msg, "reasoning_content", None) if msg else None
+        return content or "", reasoning
+
+    content = getattr(resp, "content", None)
+    if isinstance(content, str):
+        return content, None
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(str(block.get("text") or ""))
+                continue
+            if getattr(block, "type", None) == "text":
+                text_parts.append(str(getattr(block, "text", "") or ""))
+        return "".join(text_parts), None
+
+    return str(resp or ""), None
+
+
 # ─── Coordinate-scaling proxy ───────────────────────────────────────────
 
 
@@ -712,9 +739,7 @@ class ComputerUseAdapter:
                 # 连通性检测只关心 HTTP 层是否通、响应结构是否合法；某些上游
                 # （如 free-agent-model）会返回 choices 非空但 message=None
                 # 的合法 200，message 为空也视为成功。
-                choice = resp.choices[0] if resp.choices else None
-                msg = choice.message if choice else None
-                _ = getattr(msg, "content", None)
+                _extract_raw_llm_text(resp)
                 self.init_ok = True
                 self.last_error = None
                 logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
@@ -1188,9 +1213,7 @@ class ComputerUseAdapter:
                     max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,
                 )
-                msg = resp.choices[0].message
-                content = msg.content or ""
-                reasoning = getattr(msg, "reasoning_content", None)
+                content, reasoning = _extract_raw_llm_text(resp)
 
                 parsed = parse_response(content, reasoning if self.thinking else None)
                 if parsed["code"]:
