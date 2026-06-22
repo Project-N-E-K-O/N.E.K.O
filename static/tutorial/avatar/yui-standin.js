@@ -15,8 +15,8 @@
 
     function cue(position, delayMs) {
         return Object.freeze({
-            delayMs: Number.isFinite(delayMs) ? delayMs : DELAY_MS,
-            durationMs: DURATION_MS,
+            delay: Number.isFinite(delayMs) ? delayMs : DELAY_MS,
+            duration: DURATION_MS,
             position: position
         });
     }

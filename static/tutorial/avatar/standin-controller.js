@@ -40,6 +40,10 @@
             this.clear({ clearPending: true, restoreModel: true });
             const token = director.avatarStandInToken + 1;
             director.avatarStandInToken = token;
+            const rawDelayMs = Number.isFinite(Number(cue.delay))
+                ? Number(cue.delay)
+                : Number(cue.delayMs);
+            const delayMs = Math.max(0, Number.isFinite(rawDelayMs) ? rawDelayMs : 0);
             director.avatarStandInShowTimer = root.setTimeout(() => {
                 director.avatarStandInShowTimer = null;
                 if (
@@ -50,7 +54,7 @@
                     return;
                 }
                 director.showAvatarStandIn(cue, token);
-            }, Math.max(0, Number(cue.delayMs) || 0));
+            }, delayMs);
             return true;
         }
 

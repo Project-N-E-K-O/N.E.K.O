@@ -3234,26 +3234,12 @@
         }
     }
 
-    function isStartupGreetingHomePage() {
-        try {
-            var path = window.location && typeof window.location.pathname === 'string'
-                ? window.location.pathname
-                : '';
-            return path === '/' || path === '/index.html';
-        } catch (_) {
-            return false;
-        }
-    }
-
     function hasStartupGreetingReleaseProducer() {
         try {
             if (window.universalTutorialManager) {
                 return true;
             }
         } catch (_) {}
-        if (isStartupGreetingHomePage()) {
-            return true;
-        }
         try {
             return !!document.querySelector('script[src*="/static/tutorial/core/universal-manager.js"],script[src*="tutorial/core/universal-manager.js"]');
         } catch (_) {
@@ -3445,6 +3431,9 @@
 
     window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, function (event) {
         var detail = event && event.detail ? event.detail : {};
+        if (detail.released === false) {
+            return;
+        }
         releaseStartupGreetingCheck(detail.reason || 'startup-greeting-release');
     });
 

@@ -56,6 +56,20 @@ test('startup greeting waits for an explicit release instead of firing on websoc
         1,
     )[0];
     assert.match(releaseBlock, /clearTimeout\(S\._startupGreetingReleaseFallbackTimer\)/);
+
+    const producerBlock = appWebsocketSource.split('function hasStartupGreetingReleaseProducer()')[1].split(
+        'function isStartupTutorialActiveForGreeting()',
+        1,
+    )[0];
+    assert.doesNotMatch(producerBlock, /isStartupGreetingHomePage/);
+    assert.match(producerBlock, /window\.universalTutorialManager/);
+    assert.match(producerBlock, /querySelector\('script\[src\*="\/static\/tutorial\/core\/universal-manager\.js"\]/);
+
+    const listenerBlock = appWebsocketSource.split('window.addEventListener(STARTUP_GREETING_RELEASE_EVENT')[1].split(
+        "window.addEventListener('neko:cat-greeting-check'",
+        1,
+    )[0];
+    assert.match(listenerBlock, /if \(detail\.released === false\) \{\s*return;\s*\}/);
 });
 
 test('tutorial manager releases startup greeting after tutorial decisions and endings', () => {

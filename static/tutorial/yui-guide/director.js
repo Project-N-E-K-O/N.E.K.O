@@ -2907,11 +2907,15 @@
                     return;
                 }
                 this.avatarStandInPerformanceHandle = handle;
+                const rawDurationMs = Number.isFinite(Number(cue.duration))
+                    ? Number(cue.duration)
+                    : Number(cue.durationMs);
+                const durationMs = Math.max(0, Number.isFinite(rawDurationMs) ? rawDurationMs : 0);
                 this.avatarStandInHideTimer = window.setTimeout(() => {
                     if (token === this.avatarStandInToken) {
                         this.clearAvatarStandIn({ clearPending: false, restoreModel: true });
                     }
-                }, Math.max(0, Number(cue.durationMs) || 0));
+                }, durationMs);
             }).catch((error) => {
                 console.warn('[YuiGuide] Live2D 探身动作启动失败:', error);
                 this.avatarStandInActive = false;

@@ -235,23 +235,23 @@ function createHeadAnchoredCornerPeekSession(position) {
 
 test('returns fixed Live2D corner peek cues without image resources', () => {
     assert.deepEqual(standIn.getCue(3, 'day3_avatar_tools'), {
-        delayMs: 900,
-        durationMs: 5000,
+        delay: 900,
+        duration: 5000,
         position: 'bottom-left'
     });
     assert.deepEqual(standIn.getCue(3, 'day3_galgame_entry'), {
-        delayMs: 900,
-        durationMs: 5000,
+        delay: 900,
+        duration: 5000,
         position: 'top-right'
     });
     assert.deepEqual(standIn.getCue(4, 'day4_privacy_mode'), {
-        delayMs: 900,
-        durationMs: 5000,
+        delay: 900,
+        duration: 5000,
         position: 'bottom-right'
     });
     assert.deepEqual(standIn.getCue(5, 'day5_character_settings'), {
-        delayMs: 2900,
-        durationMs: 5000,
+        delay: 2900,
+        duration: 5000,
         position: 'top-right'
     });
     assert.equal(standIn.getCue(7, 'day7_wrap'), null);
@@ -274,7 +274,9 @@ test('exports all fixed day two through seven cue positions', () => {
     for (const day of [2, 3, 4, 5, 6, 7]) {
         assert.equal(Object.keys(cues[day]).length, expectedCueCounts[day]);
         Object.values(cues[day]).forEach((cue) => {
-            assert.equal(cue.durationMs, 5000);
+            assert.equal(cue.duration, 5000);
+            assert.equal(Object.prototype.hasOwnProperty.call(cue, 'durationMs'), false);
+            assert.equal(Object.prototype.hasOwnProperty.call(cue, 'delayMs'), false);
             assert.equal(allowedPositions.has(cue.position), true);
             assert.equal(Object.prototype.hasOwnProperty.call(cue, 'resource'), false);
         });
@@ -294,6 +296,8 @@ test('director routes avatar stand-ins through Live2D corner peek, not overlay i
     assert.match(controllerSource, /class AvatarStandInController/);
     assert.match(directorSource, /this\.avatarStandInController = new TutorialVisualControllers\.AvatarStandInController\(this\);/);
     assert.match(directorSource, /this\.startAvatarCornerPeekPerformance\({[\s\S]*position: cue\.position/);
+    assert.match(controllerSource, /Number\.isFinite\(Number\(cue\.delay\)\)/);
+    assert.match(directorSource, /Number\.isFinite\(Number\(cue\.duration\)\)/);
     assert.match(directorSource, /await this\.stopAvatarCornerPeekPerformance\(handle,\s*reason \|\| 'avatar_standin_clear'\);/);
     assert.doesNotMatch(directorSource, /overlay\.showAvatarStandIn/);
     assert.doesNotMatch(overlaySource, /showAvatarStandIn/);

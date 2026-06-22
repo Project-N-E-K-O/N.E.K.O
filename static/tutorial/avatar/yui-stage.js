@@ -5604,7 +5604,7 @@
             return null;
         }
         if (activeAvatarCornerPeekSession && activeAvatarCornerPeekSession.active) {
-            activeAvatarCornerPeekSession.stop('replaced');
+            await activeAvatarCornerPeekSession.stop('replaced');
         }
         const session = new Live2DAvatarCornerPeekSession(context, {
             document: normalizedOptions.document || document,

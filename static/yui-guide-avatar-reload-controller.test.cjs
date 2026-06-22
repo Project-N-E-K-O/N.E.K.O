@@ -45,8 +45,8 @@ function loadReloadControllerWindow() {
         scheduleProactiveChat() {
             this.scheduleCalls += 1;
         },
-        setTimeout(fn) {
-            return setTimeout(fn, 0);
+        setTimeout(fn, ms = 0) {
+            return setTimeout(fn, ms);
         },
         clearTimeout
     };

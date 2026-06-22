@@ -37,9 +37,11 @@ def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     assert "function sendStartupGreetingReleaseRequest(reason)" in source
     assert "function releaseStartupGreetingCheck(reason)" in source
     assert "function hasStartupGreetingReleaseProducer()" in source
+    assert "function isStartupGreetingHomePage()" not in source
     assert "function isStartupTutorialActiveForGreeting()" in source
     assert "function scheduleStartupGreetingReleaseFallback()" in source
     assert "window.addEventListener(STARTUP_GREETING_RELEASE_EVENT" in source
+    assert "if (detail.released === false)" in source
     assert "releaseStartupGreetingCheck(reason || 'startup-greeting-no-release-producer')" in source
     assert "releaseStartupGreetingCheck('startup-greeting-release-timeout')" in source
     assert "scheduleStartupGreetingReleaseFallback();" in source
@@ -54,6 +56,14 @@ def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     assert "manager.isTutorialRunning === true" in active_block
     assert "document.body.classList.contains('yui-taking-over')" in active_block
     assert "window.isInTutorial === true" not in active_block
+
+    producer_block = source.split("function hasStartupGreetingReleaseProducer()", 1)[1].split(
+        "function isStartupTutorialActiveForGreeting()",
+        1,
+    )[0]
+    assert "window.universalTutorialManager" in producer_block
+    assert "universal-manager.js" in producer_block
+    assert "isStartupGreetingHomePage" not in producer_block
 
 
 def test_blocked_greeting_check_retries_without_home_tutorial_state():

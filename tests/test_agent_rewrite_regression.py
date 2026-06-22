@@ -953,7 +953,7 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     assert "this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress)" in avatar_source
     assert "this.applyFrame(\n                    this.cornerFrame," in avatar_source
     assert "this.applyFrame(\n                    this.initialModelFrame," in avatar_source
-    assert "activeAvatarCornerPeekSession.stop('replaced')" in avatar_source
+    assert "await activeAvatarCornerPeekSession.stop('replaced')" in avatar_source
 
     assert "await avatarStageApi.startPluginDashboardCornerPeek({" in director_source
     assert "async startPluginDashboardCornerPeekPerformance" not in director_source
@@ -962,6 +962,7 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     assert "position: normalizedOptions.position" in director_source
     assert "this.startAvatarCornerPeekPerformance({" in director_source
     assert "position: cue.position" in director_source
+    assert "Number.isFinite(Number(cue.duration))" in director_source
     assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup')" in director_source
     assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy')" in director_source
     assert "this.takeoverTopPeekHandle = null" in director_source
