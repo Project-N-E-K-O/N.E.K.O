@@ -202,6 +202,85 @@ def test_create_chat_llm_routes_kimi_code_to_anthropic_client(monkeypatch):
         client.close()
 
 
+def test_create_chat_llm_keeps_kimi_openai_compatible_url_on_openai_client():
+    client = llm_client_module.create_chat_llm(
+        "kimi-for-coding",
+        "https://api.kimi.com/coding/v1",
+        "sk-test",
+        max_completion_tokens=10,
+        timeout=1,
+    )
+    try:
+        assert isinstance(client, llm_client_module.ChatOpenAI)
+        assert not llm_client_module._is_anthropic_endpoint("https://api.kimi.com/coding/v1")
+    finally:
+        client.close()
+
+
+def test_anthropic_image_media_type_requires_webp_fourcc():
+    webp = b"RIFF\x00\x00\x00\x00WEBPVP8 "
+    wav = b"RIFF\x00\x00\x00\x00WAVEfmt "
+
+    assert llm_client_module._detect_image_media_type(webp) == "image/webp"
+    assert llm_client_module._detect_image_media_type(wav) == "image/jpeg"
+
+
+def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
+    captured = {}
+
+    class _TextBlock:
+        type = "text"
+        text = "ok"
+
+    class _Resp:
+        content = [_TextBlock()]
+        usage = None
+
+    class _Messages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.messages = _Messages()
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+
+    client = llm_client_module.ChatAnthropic(
+        model="claude-test",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-test",
+    )
+    try:
+        assert client._client.kwargs["base_url"] == "https://api.anthropic.com"
+        default_payload = client._build_payload([{"role": "user", "content": "hi"}])
+        assert default_payload["max_tokens"] == 2048
+
+        response = client.invoke(
+            [{"role": "user", "content": "hi"}],
+            max_completion_tokens=123,
+            metadata={"source": "unit"},
+            stream=True,
+        )
+
+        assert response.content == "ok"
+        assert captured["max_tokens"] == 123
+        assert captured["metadata"] == {"source": "unit"}
+        assert "stream" not in captured
+    finally:
+        client.close()
+
+
 @pytest.mark.asyncio
 async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkeypatch):
     captured = {}

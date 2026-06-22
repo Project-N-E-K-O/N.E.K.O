@@ -1062,15 +1062,18 @@ function getProviderDefaultModelId(providerKey, modelType) {
     return '';
 }
 
-function getProviderModeSourceKey(modelType, providerMode) {
+function getProviderModeSourceKey(modelType, providerMode, visited = new Set()) {
     if (!providerMode || providerMode === 'custom') return '';
+    const visitKey = `${modelType}:${providerMode}`;
+    if (visited.has(visitKey)) return '';
+    visited.add(visitKey);
     if (providerMode === 'follow_conversation') {
         const sourceSelect = document.getElementById('conversationModelProvider');
-        return getProviderModeSourceKey('conversation', sourceSelect ? sourceSelect.value : '');
+        return getProviderModeSourceKey('conversation', sourceSelect ? sourceSelect.value : '', visited);
     }
     if (providerMode === 'follow_summary') {
         const sourceSelect = document.getElementById('summaryModelProvider');
-        return getProviderModeSourceKey('summary', sourceSelect ? sourceSelect.value : '');
+        return getProviderModeSourceKey('summary', sourceSelect ? sourceSelect.value : '', visited);
     }
     if (providerMode === 'follow_core') {
         const coreSelect = document.getElementById('coreApiSelect');
@@ -2662,13 +2665,16 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
 
-    const resolveModel = (modelType, providerMode) => {
+    const resolveModel = (modelType, providerMode, visited = new Set()) => {
         if (!providerMode || providerMode === 'custom') return '';
+        const visitKey = `${modelType}:${providerMode}`;
+        if (visited.has(visitKey)) return '';
+        visited.add(visitKey);
         if (providerMode === 'follow_conversation') {
-            return params.conversationModelId || resolveModel('conversation', params.conversationModelProvider);
+            return params.conversationModelId || resolveModel('conversation', params.conversationModelProvider, visited);
         }
         if (providerMode === 'follow_summary') {
-            return params.summaryModelId || resolveModel('summary', params.summaryModelProvider);
+            return params.summaryModelId || resolveModel('summary', params.summaryModelProvider, visited);
         }
 
         let providerKey = providerMode;

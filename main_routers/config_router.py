@@ -887,7 +887,7 @@ async def update_core_config(request: Request):
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
             'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
-            'assistApiKeyClaude', 'assistApiKeyOpenrouter',
+            'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
@@ -1496,10 +1496,15 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
 
 async def _test_anthropic(url: str, api_key: str, model: str = "kimi-for-coding", is_free: bool = False) -> dict:
     """Test an Anthropic Messages API endpoint (Kimi Code / Anthropic)."""
-    from utils.llm_client import ChatAnthropic as _ChatAnthropic
+    from utils.llm_client import ChatAnthropic as _ChatAnthropic, _is_kimi_code_anthropic_base_url
     from config import CONNECTIVITY_TEST_MAX_TOKENS
 
     try:
+        default_headers = (
+            {"User-Agent": "claude-code/0.1.0"}
+            if _is_kimi_code_anthropic_base_url(url)
+            else None
+        )
         client = _ChatAnthropic(
             model=model or "kimi-for-coding",
             base_url=url,
@@ -1507,6 +1512,7 @@ async def _test_anthropic(url: str, api_key: str, model: str = "kimi-for-coding"
             max_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
             timeout=10.0,
             max_retries=0,
+            default_headers=default_headers,
         )
         try:
             await client.ainvoke([{"role": "user", "content": "hi"}])

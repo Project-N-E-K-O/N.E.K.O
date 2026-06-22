@@ -36,6 +36,7 @@ import threading
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
+from urllib.parse import urlparse
 
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
@@ -237,6 +238,14 @@ def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI)
         client.close()
     except Exception:
         # Destructors/finalizers must never raise during GC or interpreter shutdown.
+        pass
+    _schedule_async_openai_client_close_best_effort(aclient)
+
+
+def _close_chat_clients_best_effort(client: Any, aclient: Any) -> None:
+    try:
+        client.close()
+    except Exception:
         pass
     _schedule_async_openai_client_close_best_effort(aclient)
 
@@ -862,14 +871,44 @@ class ChatOpenAI:
 # Anthropic-compatible chat client (Kimi Code / Anthropic)
 # ────────────────────────────────────────────────────────────────
 
+def _parse_base_url(base_url: str | None):
+    if not base_url:
+        return None
+    raw = str(base_url).strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = f"//{raw}"
+    return urlparse(raw)
+
+
+def _is_kimi_code_anthropic_base_url(base_url: str | None) -> bool:
+    parsed = _parse_base_url(base_url)
+    if parsed is None:
+        return False
+    return (parsed.hostname or "").lower() == "api.kimi.com" and parsed.path.rstrip("/") == "/coding"
+
+
+def _normalize_anthropic_sdk_base_url(base_url: str | None) -> str | None:
+    parsed = _parse_base_url(base_url)
+    if parsed is None:
+        return base_url
+    if (parsed.hostname or "").lower() == "api.anthropic.com" and parsed.path.rstrip("/") == "/v1":
+        scheme = parsed.scheme or "https"
+        return f"{scheme}://{parsed.netloc}"
+    return base_url
+
+
 def _is_anthropic_endpoint(base_url: str | None, provider_type: str | None = None) -> bool:
     """Detect endpoints that speak the Anthropic Messages API format."""
     if provider_type and str(provider_type).lower() == "anthropic":
         return True
-    if not base_url:
+    parsed = _parse_base_url(base_url)
+    if parsed is None:
         return False
-    url_lower = str(base_url).lower()
-    return "api.anthropic.com" in url_lower or "api.kimi.com/coding" in url_lower
+    if (parsed.hostname or "").lower() == "api.anthropic.com":
+        return True
+    return _is_kimi_code_anthropic_base_url(base_url)
 
 
 def _detect_image_media_type(image_bytes: bytes) -> str:
@@ -880,7 +919,7 @@ def _detect_image_media_type(image_bytes: bytes) -> str:
         return "image/gif"
     if image_bytes[:2] == b"BM":
         return "image/bmp"
-    if image_bytes[:4] == b"RIFF":
+    if image_bytes[:4] == b"RIFF" and len(image_bytes) >= 12 and image_bytes[8:12] == b"WEBP":
         return "image/webp"
     if image_bytes[:2] == b"\xff\xd8":
         return "image/jpeg"
@@ -1004,10 +1043,10 @@ class ChatAnthropic:
         if Anthropic is None or AsyncAnthropic is None:
             raise RuntimeError("anthropic package is required for Anthropic-compatible providers")
         self.model = model
-        self.base_url = base_url
+        self.base_url = _normalize_anthropic_sdk_base_url(base_url)
         self.temperature = temperature
         self.extra_body = dict(extra_body) if extra_body else {}
-        self.max_tokens = max_tokens or max_completion_tokens
+        self.max_tokens = max_tokens or max_completion_tokens or 2048
         self.enable_cache_control = enable_cache_control
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
@@ -1021,8 +1060,8 @@ class ChatAnthropic:
         _api_key = api_key or "sk-placeholder"
         _timeout = timeout or request_timeout
         client_kw: dict[str, Any] = dict(api_key=_api_key, max_retries=max_retries)
-        if base_url:
-            client_kw["base_url"] = base_url
+        if self.base_url:
+            client_kw["base_url"] = self.base_url
         if _timeout is not None:
             client_kw["timeout"] = _timeout
         if default_headers:
@@ -1032,16 +1071,16 @@ class ChatAnthropic:
         self._aclient = AsyncAnthropic(**client_kw)
         self._client_finalizer = weakref.finalize(
             self,
-            _close_async_openai_client_from_sync_best_effort,
+            _close_chat_clients_best_effort,
+            self._client,
             self._aclient,
         )
 
-    def _build_payload(self, messages: Any, *, stream: bool = False) -> dict:
+    def _build_payload(self, messages: Any) -> dict:
         system, anthropic_messages = _normalize_messages_to_anthropic(messages)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages,
-            "stream": stream,
         }
         if system:
             payload["system"] = system
@@ -1063,12 +1102,21 @@ class ChatAnthropic:
                 )[0]["content"]
         return payload
 
+    def _apply_overrides(self, payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+        max_tokens = overrides.pop("max_tokens", None)
+        if max_tokens is None:
+            max_tokens = overrides.pop("max_completion_tokens", None)
+        else:
+            overrides.pop("max_completion_tokens", None)
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+        overrides.pop("stream", None)
+        payload.update(overrides)
+        return payload
+
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload(messages)
-        max_tokens = overrides.pop("max_tokens", None) or overrides.pop("max_completion_tokens", None)
-        if max_tokens:
-            payload["max_tokens"] = int(max_tokens)
-        payload.pop("stream", None)
+        payload = self._apply_overrides(payload, overrides)
         resp = await self._aclient.messages.create(**payload)
         text_parts = []
         for block in resp.content:
@@ -1081,10 +1129,7 @@ class ChatAnthropic:
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload(messages)
-        max_tokens = overrides.pop("max_tokens", None) or overrides.pop("max_completion_tokens", None)
-        if max_tokens:
-            payload["max_tokens"] = int(max_tokens)
-        payload.pop("stream", None)
+        payload = self._apply_overrides(payload, overrides)
         resp = self._client.messages.create(**payload)
         text_parts = []
         for block in resp.content:
@@ -1096,11 +1141,8 @@ class ChatAnthropic:
         return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
 
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
-        payload = self._build_payload(messages, stream=True)
-        max_tokens = overrides.pop("max_tokens", None) or overrides.pop("max_completion_tokens", None)
-        if max_tokens:
-            payload["max_tokens"] = int(max_tokens)
-        payload.pop("stream", None)
+        payload = self._build_payload(messages)
+        payload = self._apply_overrides(payload, overrides)
         stream = self._aclient.messages.stream(**payload)
         async with stream as response_stream:
             async for event in response_stream:
@@ -1124,19 +1166,13 @@ class ChatAnthropic:
     async def ainvoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object."""
         payload = self._build_payload(messages)
-        max_tokens = overrides.pop("max_tokens", None) or overrides.pop("max_completion_tokens", None)
-        if max_tokens:
-            payload["max_tokens"] = int(max_tokens)
-        payload.pop("stream", None)
+        payload = self._apply_overrides(payload, overrides)
         return await self._aclient.messages.create(**payload)
 
     def invoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object (sync)."""
         payload = self._build_payload(messages)
-        max_tokens = overrides.pop("max_tokens", None) or overrides.pop("max_completion_tokens", None)
-        if max_tokens:
-            payload["max_tokens"] = int(max_tokens)
-        payload.pop("stream", None)
+        payload = self._apply_overrides(payload, overrides)
         return self._client.messages.create(**payload)
 
     async def aclose(self) -> None:
@@ -1216,7 +1252,7 @@ def create_chat_llm(
         cache_default_headers = cache_kw.pop("default_headers", None) or {}
         default_headers = dict(cache_default_headers)
         default_headers.update(dict(kw.pop("default_headers", {}) or {}))
-        if base_url and "api.kimi.com/coding" in str(base_url).lower():
+        if _is_kimi_code_anthropic_base_url(base_url):
             default_headers.setdefault("User-Agent", "claude-code/0.1.0")
         return ChatAnthropic(
             model=model,
@@ -1234,6 +1270,7 @@ def create_chat_llm(
             tool_choice=tool_choice,
             default_headers=default_headers or None,
             **cache_kw,
+            **kw,
         )
 
     # Anthropic API 使用 x-api-key 而非 Bearer token，需要注入专用 headers

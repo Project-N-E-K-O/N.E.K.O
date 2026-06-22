@@ -26,6 +26,7 @@ from main_routers.config_router import (
     _auto_resolve_provider_urls_for_save,
     _get_save_provider_api_key,
     _test_openai_compatible,
+    _test_anthropic,
     _test_websocket,
     _test_vllm_omni_ws_handshake,
     _classify_openai_error,
@@ -158,6 +159,32 @@ class TestSchemaValidation:
             result = await _endpoint_test_connectivity(req)
             mock_ws.assert_awaited_once()
             assert result["success"] is True
+
+    async def test_anthropic_connectivity_sets_kimi_code_user_agent(self, monkeypatch):
+        captured = {}
+
+        class FakeChatAnthropic:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def ainvoke(self, messages):
+                captured["messages"] = messages
+                return MagicMock(content="ok")
+
+            async def aclose(self):
+                captured["closed"] = True
+
+        monkeypatch.setattr("utils.llm_client.ChatAnthropic", FakeChatAnthropic)
+
+        result = await _test_anthropic(
+            "https://api.kimi.com/coding",
+            "sk-test",
+            model="kimi-for-coding",
+        )
+
+        assert result["success"] is True
+        assert captured["default_headers"]["User-Agent"] == "claude-code/0.1.0"
+        assert captured["closed"] is True
 
     async def test_builtin_assist_accepts_any_successful_candidate_url(self):
         """内置辅助 provider 有多个候选 URL 时，任一通过即返回可用 URL。"""

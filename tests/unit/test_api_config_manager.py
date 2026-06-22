@@ -51,6 +51,7 @@ class TestKeybookSaveLoad:
         'assistApiKeySilicon': 'ASSIST_API_KEY_SILICON',
         'assistApiKeyGemini': 'ASSIST_API_KEY_GEMINI',
         'assistApiKeyKimi': 'ASSIST_API_KEY_KIMI',
+        'assistApiKeyKimiCode': 'ASSIST_API_KEY_KIMI_CODE',
         'assistApiKeyDeepseek': 'ASSIST_API_KEY_DEEPSEEK',
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
@@ -97,7 +98,8 @@ class TestKeybookSaveLoad:
         # 其余所有槽位保持空，不应被 CORE_API_KEY 污染
         for upper in ['ASSIST_API_KEY_GLM', 'ASSIST_API_KEY_STEP',
                        'ASSIST_API_KEY_SILICON', 'ASSIST_API_KEY_GEMINI',
-                       'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_DEEPSEEK',
+                       'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_KIMI_CODE',
+                       'ASSIST_API_KEY_DEEPSEEK',
                        'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_QWEN_INTL',
@@ -1718,6 +1720,28 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get('gptsovitsEnabled') is True
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_update_core_config_persists_kimi_code_assist_key(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'enableCustomApi': True,
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyKimiCode') == 'sk-kimi-code-test'
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
 
 
 if __name__ == '__main__':
