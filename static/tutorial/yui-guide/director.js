@@ -476,7 +476,6 @@
     const DAY6_PLUGIN_SIDE_PANEL_ACTION_TIMEOUT_MS = 1200;
     const DAY6_PLUGIN_SIDE_PANEL_DASHBOARD_WAIT_MS = 900;
     const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;
-    const AVATAR_STAND_IN_MODEL_FADE_MS = 1000;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
@@ -2592,9 +2591,8 @@
             this.avatarFloatingGuideTutorialModeActive = false;
             this.avatarFloatingGuidePreviousIsInTutorial = false;
             this.avatarStandInShowTimer = null;
-            this.avatarStandInFadeTimer = null;
             this.avatarStandInHideTimer = null;
-            this.avatarStandInOpacityRestores = null;
+            this.avatarStandInPerformanceHandle = null;
             this.avatarStandInActive = false;
             this.avatarStandInToken = 0;
             this.avatarStandInController = new TutorialVisualControllers.AvatarStandInController(this);
@@ -2880,62 +2878,8 @@
             return this.avatarStandInController.getCue(day, sceneId);
         }
 
-        getAvatarStandInResourcePath(resource) {
-            const api = window.YuiGuideAvatarStandIn;
-            if (api && typeof api.getResourcePath === 'function') {
-                try {
-                    return api.getResourcePath(resource);
-                } catch (_) {}
-            }
-            return '';
-        }
-
         scheduleAvatarStandInForScene(scene, day, sceneRunId) {
             return this.avatarStandInController.schedule(scene, day, sceneRunId);
-        }
-
-        prepareAvatarStandInOpacityTargets() {
-            const elements = this.getReturnPetalTransitionOpacityElements();
-            const model = this.getReturnPetalTransitionModel();
-            const restores = [];
-            elements.forEach((element) => {
-                const originalInlineOpacity = element.style.opacity;
-                const originalInlineTransition = element.style.transition;
-                restores.push(() => {
-                    if (originalInlineTransition) {
-                        element.style.setProperty('transition', originalInlineTransition);
-                    } else {
-                        element.style.removeProperty('transition');
-                    }
-                    if (originalInlineOpacity) {
-                        element.style.setProperty('opacity', originalInlineOpacity);
-                    } else {
-                        element.style.removeProperty('opacity');
-                    }
-                });
-                element.style.setProperty('transition', 'opacity ' + AVATAR_STAND_IN_MODEL_FADE_MS + 'ms ease', 'important');
-                void element.offsetWidth;
-                element.style.setProperty('opacity', '0', 'important');
-            });
-            if (model && Number.isFinite(Number(model.alpha))) {
-                const originalAlpha = Number(model.alpha);
-                restores.push(() => {
-                    try {
-                        model.alpha = originalAlpha;
-                    } catch (_) {}
-                });
-            }
-            this.avatarStandInOpacityRestores = restores;
-        }
-
-        hideAvatarStandInModelAlpha() {
-            const model = this.getReturnPetalTransitionModel();
-            if (!model || !Number.isFinite(Number(model.alpha))) {
-                return;
-            }
-            try {
-                model.alpha = 0;
-            } catch (_) {}
         }
 
         showAvatarStandIn(cue, token) {
@@ -2944,27 +2888,38 @@
             }
             this.clearAvatarStandIn({ clearPending: false, restoreModel: true, preserveToken: true });
             this.avatarStandInActive = true;
-            this.prepareAvatarStandInOpacityTargets();
-            this.avatarStandInFadeTimer = window.setTimeout(() => {
-                this.avatarStandInFadeTimer = null;
-                if (token !== this.avatarStandInToken || this.isStopping() || this.destroyed) {
+            Promise.resolve(this.startAvatarCornerPeekPerformance({
+                position: cue.position,
+                isCancelled: () => token !== this.avatarStandInToken
+                    || this.isStopping()
+                    || this.destroyed
+            })).then((handle) => {
+                if (
+                    token !== this.avatarStandInToken
+                    || this.isStopping()
+                    || this.destroyed
+                ) {
+                    this.stopAvatarCornerPeekPerformance(handle, 'avatar_standin_cancelled').catch(() => {});
                     return;
                 }
-                this.hideAvatarStandInModelAlpha();
-                if (this.overlay && typeof this.overlay.showAvatarStandIn === 'function') {
-                    this.overlay.showAvatarStandIn({
-                        resource: cue.resource,
-                        position: cue.position,
-                        durationMs: cue.durationMs,
-                        url: this.getAvatarStandInResourcePath(cue.resource)
-                    });
+                if (!handle) {
+                    this.avatarStandInActive = false;
+                    return;
                 }
+                this.avatarStandInPerformanceHandle = handle;
+                const rawDurationMs = Number.isFinite(Number(cue.duration))
+                    ? Number(cue.duration)
+                    : Number(cue.durationMs);
+                const durationMs = Math.max(0, Number.isFinite(rawDurationMs) ? rawDurationMs : 0);
                 this.avatarStandInHideTimer = window.setTimeout(() => {
                     if (token === this.avatarStandInToken) {
                         this.clearAvatarStandIn({ clearPending: false, restoreModel: true });
                     }
-                }, Math.max(0, Number(cue.durationMs) || 0));
-            }, AVATAR_STAND_IN_MODEL_FADE_MS);
+                }, durationMs);
+            }).catch((error) => {
+                console.warn('[YuiGuide] Live2D 探身动作启动失败:', error);
+                this.avatarStandInActive = false;
+            });
         }
 
         clearAvatarStandIn(options) {
@@ -9638,9 +9593,19 @@
             if (guardFailed()) {
                 return false;
             }
-            this.takeoverTopPeekHandle = await this.startPluginDashboardCornerPeekPerformance(runId, {
-                targetPreset: 'top_flipped'
-            });
+            const avatarStageApi = window.YuiGuideAvatarStage;
+            if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
+                try {
+                    this.takeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
+                        targetPreset: 'top_flipped',
+                        reducedMotion: this.shouldReduceTutorialMotion(),
+                        isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                    this.takeoverTopPeekHandle = null;
+                }
+            }
             if (guardFailed()) {
                 return false;
             }
@@ -11297,20 +11262,24 @@
             } catch (_) {}
         }
 
-        async startPluginDashboardCornerPeekPerformance(runId, options) {
+        async startAvatarCornerPeekPerformance(options) {
             const api = window.YuiGuideAvatarStage;
-            if (!api || typeof api.startPluginDashboardCornerPeek !== 'function') {
+            if (!api || typeof api.startAvatarCornerPeek !== 'function') {
                 return null;
             }
             const normalizedOptions = options || {};
             try {
-                return await api.startPluginDashboardCornerPeek({
+                return await api.startAvatarCornerPeek({
+                    position: normalizedOptions.position,
                     targetPreset: normalizedOptions.targetPreset,
-                    reducedMotion: this.shouldReduceTutorialMotion(),
-                    isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                    performanceLockKey: normalizedOptions.performanceLockKey,
+                    reducedMotion: normalizedOptions.reducedMotion === true || this.shouldReduceTutorialMotion(),
+                    isCancelled: typeof normalizedOptions.isCancelled === 'function'
+                        ? normalizedOptions.isCancelled
+                        : () => this.isStopping()
                 });
             } catch (error) {
-                console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                console.warn('[YuiGuide] Live2D 探身动作启动失败:', error);
                 return null;
             }
         }
@@ -11407,6 +11376,24 @@
             }
             try {
                 await handle.stop(reason || 'plugin_dashboard_closed');
+            } catch (_) {}
+        }
+
+        async stopAvatarStandInPerformance(reason) {
+            const handle = this.avatarStandInPerformanceHandle;
+            this.avatarStandInPerformanceHandle = null;
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            await this.stopAvatarCornerPeekPerformance(handle, reason || 'avatar_standin_clear');
+        }
+
+        async stopAvatarCornerPeekPerformance(handle, reason) {
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'avatar_corner_peek_clear');
             } catch (_) {}
         }
 

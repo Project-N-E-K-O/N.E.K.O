@@ -68,6 +68,50 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
     assert "notifyYuiGuideStepLeave" not in source
 
 
+def test_universal_tutorial_manager_releases_startup_greeting_without_manager_or_auto_round():
+    source = _read_manager()
+
+    assert "function dispatchStartupGreetingReleaseWithoutManager(reason, detail = {})" in source
+    assert "window.__NEKO_STARTUP_GREETING_RELEASED__ = releaseDetail;" in source
+    assert "window.dispatchEvent(new CustomEvent(STARTUP_GREETING_RELEASE_EVENT" in source
+    assert "dispatchStartupGreetingReleaseWithoutManager('mobile-tutorial-disabled'" in source
+    assert "viewportWidth: window.innerWidth" in source
+
+    auto_round_block = source.split("this.maybeStartAvatarFloatingGuideAutoRound(1200).then((started) => {", 1)[1].split(
+        "            });",
+        1,
+    )[0]
+    assert "this.dispatchStartupGreetingRelease('no-avatar-floating-round');" in auto_round_block
+    assert "}).catch((error) => {" in auto_round_block
+    assert "this.dispatchStartupGreetingRelease('avatar-floating-auto-round-check-failed');" in auto_round_block
+
+
+def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release():
+    source = _read_manager()
+
+    assert "clearStartupGreetingRelease(reason = 'tutorial-started')" in source
+    assert "delete window.__NEKO_STARTUP_GREETING_RELEASED__;" in source
+    emit_block = source.split("    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {", 1)[1].split(
+        "    /**",
+        1,
+    )[0]
+    assert "this.clearStartupGreetingRelease('tutorial-started');" in emit_block
+    assert emit_block.index("this.clearStartupGreetingRelease('tutorial-started');") < emit_block.index(
+        "window.dispatchEvent(new CustomEvent('neko:tutorial-started'"
+    )
+
+    end_block = source.split("    onTutorialEnd() {", 1)[1].split(
+        "    restoreYuiGuideChatInputState",
+        1,
+    )[0]
+    assert "const startupGreetingReleasePromise = Promise.resolve(teardownPromise).finally(() => {" in end_block
+    assert "this.dispatchStartupGreetingRelease(startupGreetingReleaseReason, {" in end_block
+    assert end_block.index("Promise.resolve(teardownPromise).finally") < end_block.index(
+        "this.dispatchStartupGreetingRelease(startupGreetingReleaseReason"
+    )
+    assert "return startupGreetingReleasePromise;" in end_block
+
+
 def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model():
     source = _read_manager()
 

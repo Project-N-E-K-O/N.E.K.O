@@ -630,7 +630,6 @@ _YUI_RUNTIME_SCRIPTS = (
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/steps.js",
-    "tutorial/avatar/yui-standin.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
     "avatar-performance-stage.js",
@@ -679,7 +678,6 @@ def test_home_template_loads_yui_wakeup_before_director():
     positions = [
         _script_tag_position(source, name)
         for name in (
-            "tutorial/avatar/yui-standin.js",
             "tutorial/yui-guide/overlay.js",
             "tutorial/yui-guide/page-handoff.js",
             "avatar-performance-stage.js",
@@ -912,15 +910,21 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
 
-    assert "class Live2DPluginDashboardCornerSession" in avatar_source
+    assert "class Live2DAvatarCornerPeekSession" in avatar_source
+    assert "startAvatarCornerPeek: startAvatarCornerPeek" in avatar_source
     assert "startPluginDashboardCornerPeek: startPluginDashboardCornerPeek" in avatar_source
+    assert "Live2DPluginDashboardCornerSession: Live2DAvatarCornerPeekSession" in avatar_source
     assert "YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame'])" in avatar_source
     assert "home-yui-guide-plugin-dashboard-corner" in avatar_source
     assert "readModelAlpha" in avatar_source
     assert "writeModelAlpha" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35" in avatar_source
+    assert "function resolveAvatarCornerPeekRotationDegrees(position)" in avatar_source
+    assert "return 135;" in avatar_source
+    assert "return -135;" in avatar_source
+    assert "return 45;" in avatar_source
+    assert "return -45;" in avatar_source
+    assert "AVATAR_CORNER_PEEK_EDGE_INSET_RATIO = 0.18" in avatar_source
+    assert "AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO = 0.36" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647'" in avatar_source
     assert "elevateContainerZIndex" in avatar_source
     assert "restoreContainerZIndex" in avatar_source
@@ -931,29 +935,46 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
         avatar_source.index("this.elevateContainerZIndex()", avatar_source.index("this.phase = 'hold'")),
     ]
     assert source_order == sorted(source_order)
-    assert "const desiredCenterX = viewport.width + (bounds.width * PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO)" in avatar_source
-    assert "const desiredCenterY = viewport.height - Math.max(36, bounds.height * PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO)" in avatar_source
-    assert "modelCenterOffsetX" in avatar_source
-    assert "modelCenterOffsetY" in avatar_source
+    assert "const isLeft = this.targetPosition === 'bottom-left' || this.targetPosition === 'top-left';" in avatar_source
+    assert "const isTop = this.targetPosition === 'top-right' || this.targetPosition === 'top-left';" in avatar_source
+    for position in ("bottom-right", "bottom-left", "top-right", "top-left"):
+        assert position in avatar_source
+    assert "const rotationDelta = resolveAvatarCornerPeekRotationDegrees(this.targetPosition) * Math.PI / 180;" in avatar_source
+    assert "const rotatedPeekRegion = this.resolveRotatedRectOffset(peekRegion, rotationDelta)" in avatar_source
+    assert "x: desiredLeft - rotatedPeekRegion.left" in avatar_source
+    assert "y: desiredTop - rotatedPeekRegion.top" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_BOTTOM_OVERHANG_PX" not in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_RIGHT_PADDING_PX" not in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_SCALE" not in avatar_source
     assert "cornerScale" not in avatar_source
     assert "scaleX: base.scaleX," in avatar_source
     assert "scaleY: base.scaleY," in avatar_source
-    assert "rotation: base.rotation - (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)" in avatar_source
-    assert "this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress)" in avatar_source
-    assert "this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress)" in avatar_source
-    assert "activePluginDashboardCornerSession.stop('replaced')" in avatar_source
+    assert "rotation: base.rotation + rotationDelta" in avatar_source
+    assert "this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress)" in avatar_source
+    assert "this.applyFrame(\n                    this.cornerFrame," in avatar_source
+    assert "this.applyFrame(\n                    this.initialModelFrame," in avatar_source
+    assert "await activeAvatarCornerPeekSession.stop('replaced')" in avatar_source
 
-    assert "pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId)" in director_source
-    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed')" in director_source
-    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup')" in director_source
+    assert "await avatarStageApi.startPluginDashboardCornerPeek({" in director_source
+    assert "async startPluginDashboardCornerPeekPerformance" not in director_source
+    assert "async startAvatarCornerPeekPerformance(options)" in director_source
+    assert "return await api.startAvatarCornerPeek({" in director_source
+    assert "position: normalizedOptions.position" in director_source
+    assert "this.startAvatarCornerPeekPerformance({" in director_source
+    assert "position: cue.position" in director_source
+    assert "Number.isFinite(Number(cue.duration))" in director_source
+    assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup')" in director_source
+    assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy')" in director_source
+    assert "this.takeoverTopPeekHandle = null" in director_source
     assert "async stopPluginDashboardCornerPeekPerformance(handle, reason)" in director_source
+    assert "async stopAvatarCornerPeekPerformance(handle, reason)" in director_source
+    assert "async stopAvatarStandInPerformance(reason)" in director_source
     assert "await handle.stop(reason || 'plugin_dashboard_closed')" in director_source
+    assert "await this.stopAvatarCornerPeekPerformance(handle, reason || 'avatar_standin_clear')" in director_source
     assert "isCancelled: () => runId !== this.sceneRunId || this.isStopping()" in director_source
     assert "reducedMotion: this.shouldReduceTutorialMotion()" in director_source
 
+    assert "AvatarCornerPeek" not in performance_source
     assert "PluginDashboardCorner" not in performance_source
     assert "plugin-dashboard" not in performance_source
 
@@ -1078,7 +1099,10 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/tutorial/visual/resistance-controllers.js" in tracked_paths
     assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
     assert "static/tutorial/avatar/yui-standin.js" in tracked_paths
+    assert "static/tutorial/avatar/standin-controller.js" in tracked_paths
+    assert "static/live2d-init.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
+    assert "static/live2d-interaction.js" in tracked_paths
 
 
 def test_react_chat_templates_use_react_asset_version_for_chat_bundle():

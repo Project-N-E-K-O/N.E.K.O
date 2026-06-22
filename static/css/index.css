@@ -582,12 +582,14 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(1);
     --neko-idle-return-edge-transform: rotate(0deg);
+    --neko-idle-return-edge-visual-shift-y: 0px;
     width: 100%;
     height: 100%;
     display: block;
     object-fit: contain;
     object-position: center;
     position: relative;
+    top: var(--neko-idle-return-edge-visual-shift-y);
     z-index: 1;
     will-change: opacity, transform, filter;
     transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);

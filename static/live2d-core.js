@@ -57,6 +57,7 @@ const LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS = 1800;
 const LIVE2D_LINUX_X11_DEFAULT_QUALITY = 'low';
 const LIVE2D_LINUX_X11_INTERACTIVE_FPS = 60;
 const LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS = 900;
+const LIVE2D_RETURN_BALL_VIEWPORT_MAX_SIZE = 200;
 
 function isDesktopLinuxX11Runtime() {
     return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11);
@@ -79,6 +80,16 @@ function isValidModelPreferences(scale, position) {
     const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
                            Math.abs(posX) < MODEL_PREFERENCES.POSITION_MAX && Math.abs(posY) < MODEL_PREFERENCES.POSITION_MAX;
     return isValidScale && isValidPosition;
+}
+
+function isLive2DReturnBallViewportSize(width, height) {
+    if (!window.__LANLAN_IS_ELECTRON_PET__) return false;
+    const w = Number(width);
+    const h = Number(height);
+    return Number.isFinite(w) && Number.isFinite(h) &&
+        w > 0 && h > 0 &&
+        w <= LIVE2D_RETURN_BALL_VIEWPORT_MAX_SIZE &&
+        h <= LIVE2D_RETURN_BALL_VIEWPORT_MAX_SIZE;
 }
 
 // Live2D 管理器类
@@ -311,6 +322,12 @@ class Live2DManager {
                     const newH = Math.max(window.innerHeight || window.screen.height || 1, 1);
                     const prevResolution = renderer.resolution || 1;
                     const nextResolution = this._getRenderResolutionForQuality(getEffectiveLive2DRenderQuality(window.renderQuality));
+                    if (isLive2DReturnBallViewportSize(newW, newH)) {
+                        return;
+                    }
+                    const restoringFromReturnBallViewport =
+                        isLive2DReturnBallViewportSize(prevW, prevH) &&
+                        !isLive2DReturnBallViewportSize(newW, newH);
                     const sizeChanged = prevW !== newW || prevH !== newH;
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
@@ -329,8 +346,16 @@ class Live2DManager {
                     // 主动把 model.x/y 设置为新屏窗口坐标。若这里再按 (newW/prevW, newH/prevH) 缩放，
                     // 会对同一个值双重作用，导致模型偏移。通过 _pendingDisplaySwitch 跳过缩放，
                     // 仅 resize renderer（renderer 尺寸必须更新，否则 canvas 仍是旧尺寸裁切模型）。
-                    if (this._pendingDisplaySwitch) {
-                        console.log('[Live2D Core] renderer 已 resize（跨屏切换中，跳过模型缩放）:', { reason, prevW, prevH, newW, newH });
+                    if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {
+                        if (restoringFromReturnBallViewport && !this._pendingDisplaySwitch) return;
+                        console.log('[Live2D Core] renderer 已 resize（跳过模型缩放）:', {
+                            reason,
+                            prevW,
+                            prevH,
+                            newW,
+                            newH,
+                            pendingDisplaySwitch: !!this._pendingDisplaySwitch
+                        });
                         return;
                     }
 
@@ -350,11 +375,19 @@ class Live2DManager {
                     const sw = window.screen.width;
                     const sh = window.screen.height;
                     const dpr = window.devicePixelRatio || 1;
-                    if (sw === lastScreenW && sh === lastScreenH && Math.abs(dpr - lastDevicePixelRatio) < 0.001) return;
+                    const renderer = this.pixi_app && this.pixi_app.renderer;
+                    const shouldRecoverReturnBallRenderer = !!(renderer && renderer.screen &&
+                        isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height) &&
+                        !isLive2DReturnBallViewportSize(window.innerWidth, window.innerHeight));
+                    if (sw === lastScreenW && sh === lastScreenH &&
+                        Math.abs(dpr - lastDevicePixelRatio) < 0.001 &&
+                        !shouldRecoverReturnBallRenderer) return;
                     lastScreenW = sw;
                     lastScreenH = sh;
                     lastDevicePixelRatio = dpr;
-                    doResize('window.screen/devicePixelRatio changed');
+                    doResize(shouldRecoverReturnBallRenderer
+                        ? 'window.resize:return-ball-renderer-recovery'
+                        : 'window.screen/devicePixelRatio changed');
                 };
                 // 跨屏切换信号：主进程 setBounds 后广播；这里等一帧让 innerWidth/Height 落地再 resize
                 this._displayChangeHandler = () => {
@@ -582,6 +615,22 @@ class Live2DManager {
         renderer.resolution = resolution;
         renderer.resize(width, height);
         console.log('[Live2D Core] 画质已应用:', { quality: effectiveQuality, requestedQuality: quality, resolution, width, height });
+    }
+
+    recoverRendererFromReturnBallViewport(reason = 'manual') {
+        if (!this.pixi_app || !this.pixi_app.renderer) return false;
+        const renderer = this.pixi_app.renderer;
+        const currentW = Math.max(window.innerWidth || 0, 0);
+        const currentH = Math.max(window.innerHeight || 0, 0);
+        if (isLive2DReturnBallViewportSize(currentW, currentH)) return false;
+        if (!renderer.screen ||
+            !isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height)) {
+            return false;
+        }
+        const targetW = Math.max(currentW || window.screen.width || 1, 1);
+        const targetH = Math.max(currentH || window.screen.height || 1, 1);
+        renderer.resize(targetW, targetH);
+        return true;
     }
 
     // 加载用户偏好

@@ -583,6 +583,7 @@
 
         function ensureLive2DRenderActive(reason) {
             try {
+                var preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
                 var manager = window.live2dManager || null;
                 var app = manager && manager.pixi_app;
                 var ticker = app && app.ticker;
@@ -592,14 +593,18 @@
 
                 if (currentModel) {
                     currentModel.visible = true;
-                    currentModel.alpha = 1;
+                    if (!preserveAvatarCornerPeekOpacity) {
+                        currentModel.alpha = 1;
+                    }
                     if (currentModel.renderable !== undefined) {
                         currentModel.renderable = true;
                     }
                 }
                 if (app && app.stage) {
                     app.stage.visible = true;
-                    app.stage.alpha = 1;
+                    if (!preserveAvatarCornerPeekOpacity) {
+                        app.stage.alpha = 1;
+                    }
                     if (app.stage.renderable !== undefined) {
                         app.stage.renderable = true;
                     }

@@ -29,6 +29,7 @@
     const NEKO_MODEL_CAT_TRANSITION_EDGE_MASK = 'radial-gradient(circle at center, #000 0%, #000 44%, rgba(0,0,0,0.72) 58%, rgba(0,0,0,0.18) 72%, rgba(0,0,0,0) 88%, rgba(0,0,0,0) 100%)';
     const NEKO_MODEL_RETURN_ENTER_TRANSITION = 'opacity 1120ms ease-out, transform 1080ms cubic-bezier(0.22, 1, 0.36, 1)';
     const NEKO_MODEL_RETURN_ENTER_CLEANUP_MS = 1160;
+    const NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS = 180;
     const NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out';
     const NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS = 1160;
     const NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in';
@@ -845,6 +846,7 @@
     mod.hideLive2d = hideLive2d;
 
     function restoreLive2DDisplaySurface(reason) {
+        const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         if (document.body && document.body.classList) {
             document.body.classList.remove('yui-guide-live2d-preparing');
             document.body.classList.remove('yui-guide-return-petal-fade');
@@ -861,7 +863,9 @@
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            live2dContainer.style.removeProperty('opacity');
+            if (!preserveAvatarCornerPeekOpacity) {
+                live2dContainer.style.removeProperty('opacity');
+            }
             live2dContainer.style.removeProperty('pointer-events');
         }
 
@@ -870,13 +874,16 @@
             live2dCanvas.classList.remove('minimized');
             live2dCanvas.style.display = 'block';
             live2dCanvas.style.removeProperty('transition');
-            live2dCanvas.style.setProperty('opacity', '1', 'important');
+            if (!preserveAvatarCornerPeekOpacity) {
+                live2dCanvas.style.setProperty('opacity', '1', 'important');
+            }
             live2dCanvas.style.setProperty('visibility', 'visible', 'important');
             live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
         }
     }
 
     function activateLive2DRenderForDisplay(reason) {
+        const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const manager = window.live2dManager || null;
         const app = manager && manager.pixi_app;
         const ticker = app && app.ticker;
@@ -887,14 +894,18 @@
         try {
             if (model) {
                 model.visible = true;
-                model.alpha = 1;
+                if (!preserveAvatarCornerPeekOpacity) {
+                    model.alpha = 1;
+                }
                 if (model.renderable !== undefined) {
                     model.renderable = true;
                 }
             }
             if (app && app.stage) {
                 app.stage.visible = true;
-                app.stage.alpha = 1;
+                if (!preserveAvatarCornerPeekOpacity) {
+                    app.stage.alpha = 1;
+                }
                 if (app.stage.renderable !== undefined) {
                     app.stage.renderable = true;
                 }
@@ -1138,6 +1149,180 @@
             : (window.innerWidth <= 768);
     }
 
+    const NEKO_MODEL_VIEWPORT_RESTORE_FALLBACK_MS = 900;
+    const NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS = 300;
+    const NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE = 160;
+    let pendingNativeModelViewportRestoreBounds = null;
+
+    function normalizeModelViewportBounds(bounds) {
+        const candidate = bounds && typeof bounds === 'object'
+            ? (bounds.requestedBounds || bounds.bounds || bounds)
+            : null;
+        if (!candidate) return null;
+        const x = Number.isFinite(Number(candidate.x))
+            ? Math.round(Number(candidate.x))
+            : (Number.isFinite(Number(window.screenX)) ? Math.round(Number(window.screenX)) : 0);
+        const y = Number.isFinite(Number(candidate.y))
+            ? Math.round(Number(candidate.y))
+            : (Number.isFinite(Number(window.screenY)) ? Math.round(Number(window.screenY)) : 0);
+        const width = Math.round(Number(candidate.width));
+        const height = Math.round(Number(candidate.height));
+        if (![x, y, width, height].every(Number.isFinite) || width <= 1 || height <= 1) {
+            return null;
+        }
+        if (isNativeReturnBallViewportSize(width, height)) {
+            return null;
+        }
+        return { x, y, width, height };
+    }
+
+    function setPendingNativeModelViewportRestoreBounds(bounds) {
+        pendingNativeModelViewportRestoreBounds = normalizeModelViewportBounds(bounds);
+        return pendingNativeModelViewportRestoreBounds;
+    }
+
+    function isNativeReturnBallViewportSize(width, height) {
+        const w = Math.round(Number(width));
+        const h = Math.round(Number(height));
+        if (!Number.isFinite(w) || !Number.isFinite(h)) return false;
+        return Math.abs(w - NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE) <= 2
+            && Math.abs(h - NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE) <= 2;
+    }
+
+    function isModelViewportRestored(bounds) {
+        const target = normalizeModelViewportBounds(bounds);
+        if (!target) return true;
+        const tolerance = 2;
+        return Math.abs((window.innerWidth || 0) - target.width) <= tolerance &&
+            Math.abs((window.innerHeight || 0) - target.height) <= tolerance;
+    }
+
+    function waitForModelViewportRestore(bounds, options = {}) {
+        const target = normalizeModelViewportBounds(bounds);
+        if (!target || isModelViewportRestored(target)) {
+            return waitForAnimationFrames(2).then(() => ({ restored: true, skipped: !target }));
+        }
+
+        const timeoutMs = Number.isFinite(options.timeoutMs)
+            ? Math.max(0, Number(options.timeoutMs))
+            : NEKO_MODEL_VIEWPORT_RESTORE_FALLBACK_MS;
+        const deadline = Date.now() + timeoutMs;
+
+        return new Promise((resolve) => {
+            let timerId = null;
+            let finished = false;
+            const finish = (restored, timedOut) => {
+                if (finished) return;
+                finished = true;
+                if (timerId) {
+                    clearTimeout(timerId);
+                    timerId = null;
+                }
+                window.removeEventListener('resize', check);
+                waitForAnimationFrames(2).then(() => resolve({
+                    restored: !!restored,
+                    timedOut: !!timedOut
+                }));
+            };
+            const check = () => {
+                if (isModelViewportRestored(target)) {
+                    finish(true, false);
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    finish(false, true);
+                    return;
+                }
+                timerId = setTimeout(check, 16);
+            };
+            window.addEventListener('resize', check);
+            timerId = setTimeout(check, 16);
+        });
+    }
+
+    function recoverLive2DRendererFromReturnBallViewport(reason) {
+        try {
+            if (!window.live2dManager ||
+                typeof window.live2dManager.recoverRendererFromReturnBallViewport !== 'function') {
+                return false;
+            }
+            const recovered = window.live2dManager.recoverRendererFromReturnBallViewport(reason);
+            return !!recovered;
+        } catch (error) {
+            console.warn('[showCurrentModel] recover Live2D renderer from return-ball viewport failed:', error);
+            return false;
+        }
+    }
+
+    function getPendingModelViewportRestoreBounds() {
+        const pending = normalizeModelViewportBounds(pendingNativeModelViewportRestoreBounds);
+        if (pending) return pending;
+        if (multiWindowReturnBallDragState) {
+            const width = Math.round(Number(multiWindowReturnBallDragState.savedWindowW));
+            const height = Math.round(Number(multiWindowReturnBallDragState.savedWindowH));
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 1 && height > 1) {
+                return {
+                    x: Number.isFinite(Number(window.screenX)) ? Math.round(Number(window.screenX)) : 0,
+                    y: Number.isFinite(Number(window.screenY)) ? Math.round(Number(window.screenY)) : 0,
+                    width,
+                    height
+                };
+            }
+        }
+        return null;
+    }
+
+    async function ensureModelViewportReadyBeforeShowCurrentModel() {
+        const restoreBounds = getPendingModelViewportRestoreBounds();
+        if (!restoreBounds) {
+            if (isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)) {
+                return {
+                    ready: false,
+                    restored: false,
+                    missingRestoreBounds: true,
+                    returnBallViewport: true
+                };
+            }
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:no-restore-bounds');
+            return { ready: true, skipped: true };
+        }
+        if (isModelViewportRestored(restoreBounds)) {
+            pendingNativeModelViewportRestoreBounds = null;
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:already-restored');
+            return { ready: true, restored: true };
+        }
+
+        if (window.nekoPetDrag && typeof window.nekoPetDrag.reveal === 'function') {
+            try {
+                const revealResult = await Promise.resolve(window.nekoPetDrag.reveal());
+                if (revealResult === false) {
+                    await waitForModelViewportRestore(restoreBounds, {
+                        timeoutMs: NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS
+                    });
+                }
+            } catch (error) {
+                console.warn('[showCurrentModel] restore model viewport reveal retry failed:', error);
+            }
+        }
+
+        const viewportWait = await waitForModelViewportRestore(restoreBounds);
+        if (viewportWait.restored) {
+            pendingNativeModelViewportRestoreBounds = null;
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:after-wait');
+            return { ready: true, restored: true, viewportWait };
+        }
+
+        console.warn('[showCurrentModel] blocked model display because Pet viewport is still return-ball sized:', {
+            target: restoreBounds,
+            current: {
+                width: window.innerWidth,
+                height: window.innerHeight
+            },
+            returnBallViewport: isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)
+        });
+        return { ready: false, restored: false, viewportWait, restoreBounds };
+    }
+
     // --- showCurrentModel ---
     async function showCurrentModel() {
         // 检查"请她离开"状态
@@ -1152,6 +1337,11 @@
         if (window.mmdManager && window.mmdManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态（MMD），跳过显示逻辑');
             return;
+        }
+
+        const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+        if (!modelViewportReady.ready) {
+            return false;
         }
 
         // 重置 goodbye 标志
@@ -1643,6 +1833,47 @@
     let idleReturnBallDesktopDragStatePending = null;
     let pendingPngtuberReturnConfig = null;
 
+    function resolveModelReturnEnter(reason) {
+        const resolve = window._nekoModelReturnEnterResolve;
+        window._nekoModelReturnEnterResolve = null;
+        window._nekoModelReturnEnterPromise = null;
+        window._nekoModelReturnEnterContainer = null;
+        if (typeof resolve === 'function') {
+            try {
+                resolve({ reason });
+            } catch (_) {}
+        }
+    }
+
+    function startModelReturnEnterWait(container) {
+        resolveModelReturnEnter('replaced');
+        let resolveWait = null;
+        const promise = new Promise(resolve => {
+            resolveWait = resolve;
+        });
+        window._nekoModelReturnEnterContainer = container || null;
+        window._nekoModelReturnEnterResolve = resolveWait;
+        window._nekoModelReturnEnterPromise = promise;
+        return promise;
+    }
+
+    async function waitForModelReturnEnterToSettle() {
+        const promise = window._nekoModelReturnEnterPromise;
+        if (promise && typeof promise.then === 'function') {
+            let timeoutId = null;
+            await Promise.race([
+                promise,
+                new Promise(resolve => {
+                    timeoutId = setTimeout(resolve, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS + NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS);
+                })
+            ]);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+        }
+        await waitForAnimationFrames(2);
+    }
+
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
         return new Promise(resolve => {
@@ -1803,6 +2034,7 @@
 
     async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
         // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
+        await waitForModelReturnEnterToSettle();
         await waitForAnimationFrames(2);
 
         let activeModelType = null;
@@ -2130,7 +2362,9 @@
         if (window._nekoModelReturnEnterTimer) {
             clearTimeout(window._nekoModelReturnEnterTimer);
             window._nekoModelReturnEnterTimer = null;
+            resolveModelReturnEnter('timer-cleared');
         }
+        startModelReturnEnterWait(container);
 
         container.style.transition = 'none';
         container.style.opacity = '0';
@@ -2138,7 +2372,10 @@
         void container.offsetWidth;
 
         requestAnimationFrame(() => {
-            if (!container || !container.isConnected) return;
+            if (!container || !container.isConnected) {
+                resolveModelReturnEnter('disconnected-before-raf');
+                return;
+            }
             container.style.transition = NEKO_MODEL_RETURN_ENTER_TRANSITION;
             container.style.opacity = '1';
             container.style.transform = 'scale(1) translateZ(0)';
@@ -2149,6 +2386,7 @@
                     container.style.removeProperty('transform');
                 }
                 window._nekoModelReturnEnterTimer = null;
+                resolveModelReturnEnter('cleanup');
             }, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS);
         });
         return true;
@@ -2291,6 +2529,16 @@
         );
     }
 
+    function shouldBlockCatToModelTransitionForModelViewport(direction) {
+        if (direction !== 'cat-to-model') return false;
+        const restoreBounds = getPendingModelViewportRestoreBounds();
+        if (restoreBounds && !isModelViewportRestored(restoreBounds)) {
+            return true;
+        }
+        const blockRawShrink = isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight);
+        return blockRawShrink;
+    }
+
     function playNekoModelCatTransition(options = {}) {
         const container = options.container || null;
         const anchorRect = options.anchorRect || null;
@@ -2304,6 +2552,13 @@
             ? Math.max(0, Number(options.beforeOverlayCleanupMs))
             : NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS;
         let token = transitionToken;
+        if (shouldBlockCatToModelTransitionForModelViewport(direction)) {
+            return Promise.resolve({
+                blocked: true,
+                direction,
+                reason: 'model-viewport-not-restored'
+            });
+        }
         if (nekoModelCatTransitionActive) {
             const ownsActiveTransition = transitionToken &&
                 nekoModelCatTransitionActive.token === transitionToken &&
@@ -2735,6 +2990,10 @@
         NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
             button.classList.remove(className);
         });
+        const art = button.querySelector('.neko-idle-return-art');
+        if (art) {
+            art.style.removeProperty('--neko-idle-return-edge-visual-shift-y');
+        }
     }
 
     function isNekoIdleCat1EdgePeekEligible(container) {
@@ -2798,12 +3057,26 @@
         if (!container || !button || !placement || !placement.edge) return false;
         clearNekoIdleCat1EdgePeek(container);
         button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+        const visualShiftY = Number(placement.visualShiftY);
+        if (Number.isFinite(visualShiftY) && visualShiftY !== 0) {
+            const art = button.querySelector('.neko-idle-return-art');
+            if (art) {
+                art.style.setProperty('--neko-idle-return-edge-visual-shift-y', `${Math.round(visualShiftY)}px`);
+            }
+        }
         container.style.left = `${placement.left}px`;
         container.style.top = `${placement.top}px`;
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
         return true;
+    }
+
+    function _getNekoIdleCat1EdgePeekVisualShiftY(bounds, height) {
+        const offsetY = Number(bounds && bounds.actualBoundsOffset && bounds.actualBoundsOffset.y);
+        if (!Number.isFinite(offsetY) || offsetY <= 0) return 0;
+        const maxShift = Math.max(0, Math.round(Number(height) || 0));
+        return -Math.min(Math.round(offsetY), maxShift || Math.round(offsetY));
     }
 
     function restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
@@ -2992,10 +3265,15 @@
 
         function normalizeWindowBounds(bounds) {
             if (!bounds) return null;
-            const x = Number(bounds.x);
-            const y = Number(bounds.y);
-            const width = Number(bounds.width);
-            const height = Number(bounds.height);
+            const source = bounds.requestedBounds || (
+                bounds.bounds && !Number.isFinite(Number(bounds.x))
+                    ? bounds.bounds
+                    : bounds
+            );
+            const x = Number(source.x);
+            const y = Number(source.y);
+            const width = Number(source.width);
+            const height = Number(source.height);
             if (!Number.isFinite(x) || !Number.isFinite(y) ||
                 !Number.isFinite(width) || !Number.isFinite(height)) {
                 return null;
@@ -3003,7 +3281,17 @@
             if (width <= 0 || height <= 0) {
                 return null;
             }
-            return { x, y, width, height };
+            const normalized = { x, y, width, height };
+            const offset = bounds.actualBoundsOffset || source.actualBoundsOffset;
+            const offsetX = Number(offset && offset.x);
+            const offsetY = Number(offset && offset.y);
+            if (Number.isFinite(offsetX) && Number.isFinite(offsetY)) {
+                normalized.actualBoundsOffset = {
+                    x: offsetX,
+                    y: offsetY
+                };
+            }
+            return normalized;
         }
 
         function isActiveDragToken(token) {
@@ -3383,7 +3671,12 @@
                 } catch (error) {
                     console.warn('[App] 返回球点击结束时恢复窗口失败:', error);
                 }
+                const pendingRestoreBounds = restoreBounds || {
+                    width: state.savedWindowW,
+                    height: state.savedWindowH
+                };
                 if (!isActiveDragToken(dragToken)) return;
+                setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
                 waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
@@ -3415,6 +3708,10 @@
             }
             const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
             if (!isActiveDragToken(dragToken)) return;
+            setPendingNativeModelViewportRestoreBounds(finalBounds || {
+                width: state.savedWindowW,
+                height: state.savedWindowH
+            });
             const movedDistancePx = Math.hypot(
                 state.releaseScreenX - state.startScreenX,
                 state.releaseScreenY - state.startScreenY
@@ -3440,6 +3737,9 @@
                         finalBounds.height
                     )
                     : null;
+                if (placement && placement.edge && placement.edge.includes('bottom')) {
+                    placement.visualShiftY = _getNekoIdleCat1EdgePeekVisualShiftY(finalBounds, height);
+                }
 
                 if (!applyNekoIdleCat1EdgePeek(container, placement)) {
                     clearNekoIdleCat1EdgePeek(container);
@@ -4168,14 +4468,34 @@
                 }, 10);
             } else {
                 console.error('[App] resetSessionButton 未找到！');
+        }
+    });
+
+        function restoreReturnBallAfterBlockedModelViewport(event) {
+            const eventType = String(event && event.type || '');
+            const match = eventType.match(/^([a-z0-9-]+)-return-click$/i);
+            const returnRect = event && event.detail && event.detail.returnButtonRect;
+            const container = match && match[1]
+                ? document.getElementById(`${match[1]}-return-button-container`)
+                : getVisibleIdleReturnBallContainer();
+            if (!container) return;
+            if (container.style.display === 'none') {
+                showReturnBallContainer(container, returnRect);
             }
-        });
+            revealReturnBallContainer(container, 'return-ball-model-viewport-blocked');
+        }
 
         // 请她回来按钮（统一处理函数）
         const handleReturnClick = async (event) => {
             console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
             if (isNekoModelCatTransitionActive('model-to-cat')) {
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
+                return;
+            }
+            const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+            if (!preReturnViewportReady.ready) {
+                console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
+                restoreReturnBallAfterBlockedModelViewport(event);
                 return;
             }
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
@@ -4277,11 +4597,15 @@
                 : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
+            let modelDisplayReady = true;
             try {
-                await showCurrentModel();
+                modelDisplayReady = await showCurrentModel();
             } catch (error) {
                 console.error('[App] showCurrentModel 失败:', error);
                 showLive2d();
+            }
+            if (modelDisplayReady === false) {
+                return;
             }
 
             await settleReturnedModelBounds(returnModelWasMoved);

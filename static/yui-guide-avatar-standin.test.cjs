@@ -2,172 +2,575 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const standIn = require('./tutorial/avatar/yui-standin.js');
-const repoRoot = path.resolve(__dirname, '..');
 const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
-const visualControllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/visual/controllers.js'), 'utf8');
-const avatarStandInControllerSource = fs.readFileSync(
-    path.join(__dirname, 'tutorial/avatar/standin-controller.js'),
-    'utf8'
-);
-const petalTransitionControllerSource = fs.readFileSync(
-    path.join(__dirname, 'tutorial/visual/petal-transition-controller.js'),
-    'utf8'
-);
+const avatarStageSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/yui-stage.js'), 'utf8');
+const controllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/standin-controller.js'), 'utf8');
+const overlaySource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/overlay.js'), 'utf8');
+const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d-interaction.js'), 'utf8');
+const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d-init.js'), 'utf8');
+const appUiSource = fs.readFileSync(path.join(__dirname, 'app-ui.js'), 'utf8');
+const appInterpageSource = fs.readFileSync(path.join(__dirname, 'app-interpage.js'), 'utf8');
+const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
 
-test('tutorial pages load the canonical stand-in cue table before the stand-in controller', () => {
-    for (const templatePath of [
-        'templates/index.html',
-        'templates/api_key_settings.html',
-        'templates/memory_browser.html'
-    ]) {
-        const source = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
-        const cueTableIndex = source.indexOf('/static/tutorial/avatar/yui-standin.js');
-        const controllerIndex = source.indexOf('/static/tutorial/avatar/standin-controller.js');
-
-        assert.notEqual(cueTableIndex, -1, templatePath + ' should load tutorial/avatar/yui-standin.js');
-        assert.notEqual(controllerIndex, -1, templatePath + ' should load tutorial/avatar/standin-controller.js');
-        assert.ok(
-            cueTableIndex < controllerIndex,
-            templatePath + ' should load the stand-in cue table before the stand-in controller'
-        );
-        assert.equal(
-            source.includes('/static/tutorial/yui-guide/avatar-standin.js'),
-            false,
-            templatePath + ' should not load the stale yui-guide/avatar-standin.js cue table'
-        );
+function loadAvatarStageContext(options) {
+    const normalizedOptions = options || {};
+    const elements = normalizedOptions.elements || {};
+    let now = Number.isFinite(Number(normalizedOptions.now)) ? Number(normalizedOptions.now) : 0;
+    const window = {
+        innerWidth: 1024,
+        innerHeight: 768,
+        requestAnimationFrame() {
+            return 0;
+        },
+        cancelAnimationFrame() {},
+        __setNow(value) {
+            now = Number(value) || 0;
+        }
+    };
+    if (typeof normalizedOptions.configureWindow === 'function') {
+        normalizedOptions.configureWindow(window);
     }
-});
-
-test('returns fixed stand-in cues for the selected tutorial scenes', () => {
-    assert.deepEqual(standIn.getCue(2, 'day2_intro_context'), {
-        delayMs: 900,
-        durationMs: 5000,
-        resource: 'peek-head',
-        position: 'bottom-right'
+    const context = vm.createContext({
+        window,
+        document: {
+            getElementById(id) {
+                return elements[id] || null;
+            },
+            querySelector() {
+                return null;
+            }
+        },
+        performance: {
+            now() {
+                return now;
+            }
+        },
+        console
     });
+    vm.runInContext(avatarStageSource, context, {
+        filename: path.join(__dirname, 'tutorial/avatar/yui-stage.js')
+    });
+    return {
+        api: window.YuiGuideAvatarStage,
+        window
+    };
+}
+
+function loadAvatarStageApi() {
+    return loadAvatarStageContext().api;
+}
+
+function createCornerPeekSession(position, options) {
+    const normalizedOptions = options || {};
+    const context = loadAvatarStageContext(normalizedOptions);
+    const api = context.api;
+    const coreModel = normalizedOptions.coreModel || {};
+    const model = {
+        x: 512,
+        y: 384,
+        rotation: 0,
+        alpha: 0.8,
+        destroyed: false,
+        scale: {
+            x: 1,
+            y: 1,
+            set(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+        },
+        internalModel: {
+            coreModel
+        },
+        getBounds() {
+            return {
+                x: 362,
+                y: 84,
+                width: 300,
+                height: 600
+            };
+        }
+    };
+    const manager = {
+        currentModel: model,
+        pixi_app: {
+            renderer: {
+                screen: {
+                    width: 1024,
+                    height: 768
+                }
+            }
+        }
+    };
+    const session = new api.Live2DAvatarCornerPeekSession({
+        manager,
+        model,
+        coreModel
+    }, {
+        position,
+        isCancelled: normalizedOptions.isCancelled,
+        container: normalizedOptions.container || {
+            style: {}
+        }
+    });
+    session.initialModelFrame = {
+        x: model.x,
+        y: model.y,
+        scaleX: 1,
+        scaleY: 1,
+        rotation: 0
+    };
+    session.initialAlpha = model.alpha;
+    session.initialBounds = model.getBounds();
+    session.hiddenFrame = session.resolveHiddenFrame();
+    session.peekRegionBounds = session.resolvePeekRegionBounds();
+    session.cornerFrame = session.resolveCornerFrame();
+    session.cornerHiddenFrame = session.resolveCornerHiddenFrame();
+    return {
+        session,
+        model,
+        window: context.window
+    };
+}
+
+function createHeadAnchoredCornerPeekSession(position) {
+    const api = loadAvatarStageApi();
+    const coreModel = {};
+    const model = {
+        x: 512,
+        y: 384,
+        rotation: 0,
+        alpha: 0.8,
+        destroyed: false,
+        scale: {
+            x: 1,
+            y: 1,
+            set(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+        },
+        internalModel: {
+            coreModel
+        },
+        getBounds() {
+            return {
+                x: 362,
+                y: 84,
+                width: 300,
+                height: 600
+            };
+        }
+    };
+    const headRect = {
+        left: 438,
+        top: 104,
+        right: 586,
+        bottom: 252,
+        width: 148,
+        height: 148,
+        centerX: 512,
+        centerY: 178
+    };
+    const bodyRect = {
+        left: 414,
+        top: 250,
+        right: 610,
+        bottom: 560,
+        width: 196,
+        height: 310,
+        centerX: 512,
+        centerY: 405
+    };
+    const manager = {
+        currentModel: model,
+        getHeadScreenRectInfo() {
+            return { rect: headRect };
+        },
+        getBodyScreenRectInfo() {
+            return { rect: bodyRect };
+        },
+        pixi_app: {
+            renderer: {
+                screen: {
+                    width: 1024,
+                    height: 768
+                }
+            }
+        }
+    };
+    const session = new api.Live2DAvatarCornerPeekSession({
+        manager,
+        model,
+        coreModel
+    }, {
+        position,
+        container: {
+            style: {}
+        }
+    });
+    session.initialModelFrame = {
+        x: model.x,
+        y: model.y,
+        scaleX: 1,
+        scaleY: 1,
+        rotation: 0
+    };
+    session.initialAlpha = model.alpha;
+    session.initialBounds = model.getBounds();
+    session.hiddenFrame = session.resolveHiddenFrame();
+    session.peekRegionBounds = session.resolvePeekRegionBounds();
+    session.cornerFrame = session.resolveCornerFrame();
+    session.cornerHiddenFrame = session.resolveCornerHiddenFrame();
+    return {
+        session,
+        model,
+        headRect,
+        bodyRect
+    };
+}
+
+test('returns fixed Live2D corner peek cues without image resources', () => {
     assert.deepEqual(standIn.getCue(3, 'day3_avatar_tools'), {
-        delayMs: 900,
-        durationMs: 5000,
-        resource: 'peek-left-border',
-        position: 'top-left-border'
+        delay: 900,
+        duration: 5000,
+        position: 'bottom-left'
     });
-    assert.deepEqual(standIn.getCue(6, 'day6_wrap_cleanup'), {
-        delayMs: 900,
-        durationMs: 5000,
-        resource: 'peek-head',
+    assert.deepEqual(standIn.getCue(3, 'day3_galgame_entry'), {
+        delay: 900,
+        duration: 5000,
+        position: 'top-right'
+    });
+    assert.deepEqual(standIn.getCue(4, 'day4_privacy_mode'), {
+        delay: 900,
+        duration: 5000,
         position: 'bottom-right'
     });
+    assert.deepEqual(standIn.getCue(5, 'day5_character_settings'), {
+        delay: 2900,
+        duration: 5000,
+        position: 'top-right'
+    });
+    assert.equal(standIn.getCue(7, 'day7_wrap'), null);
+    assert.equal(typeof standIn.getResourcePath, 'undefined');
 });
 
-test('does not return cues for final petal scenes or unselected scenes', () => {
-    assert.equal(standIn.getCue(2, 'day2_wrap'), null);
-    assert.equal(standIn.getCue(3, 'day3_wrap_ready'), null);
-    assert.equal(standIn.getCue(7, 'day7_graduation_wrap'), null);
-    assert.equal(standIn.getCue(4, 'day4_intro_companion'), null);
-});
-
-test('exports all fixed day two through seven cues with legal assets and positions', () => {
+test('exports all fixed day two through seven cue positions', () => {
     const cues = standIn.getAllCues();
-    const allowedResources = new Set(['peek-left-border', 'peek-right-border', 'peek-head', 'day5-character-settings']);
-    const allowedPositions = new Set(['top-left-border', 'top-right-border', 'bottom-right', 'top-left-flipped', 'middle-left']);
+    const allowedPositions = new Set(['bottom-right', 'bottom-left', 'top-right', 'top-left']);
+    const expectedCueCounts = {
+        2: 2,
+        3: 2,
+        4: 2,
+        5: 1,
+        6: 2,
+        7: 1
+    };
 
     assert.equal(Object.keys(cues).length, 6);
     for (const day of [2, 3, 4, 5, 6, 7]) {
-        const dayCues = Object.values(cues[String(day)] || {});
-        assert.equal(dayCues.length, 2);
-        for (const cue of dayCues) {
-            assert.ok(cue.delayMs === 900 || cue.delayMs === 2900);
-            assert.equal(cue.durationMs, 5000);
-            assert.equal(allowedResources.has(cue.resource), true);
+        assert.equal(Object.keys(cues[day]).length, expectedCueCounts[day]);
+        Object.values(cues[day]).forEach((cue) => {
+            assert.equal(cue.duration, 5000);
+            assert.equal(Object.prototype.hasOwnProperty.call(cue, 'durationMs'), false);
+            assert.equal(Object.prototype.hasOwnProperty.call(cue, 'delayMs'), false);
             assert.equal(allowedPositions.has(cue.position), true);
-        }
+            assert.equal(Object.prototype.hasOwnProperty.call(cue, 'resource'), false);
+        });
     }
 });
 
-test('day five first stand-in cue uses the supplied replacement artwork only', () => {
-    assert.deepEqual(standIn.getCue(5, 'day5_character_settings'), {
-        delayMs: 2900,
-        durationMs: 5000,
-        resource: 'day5-character-settings',
-        position: 'middle-left'
+test('does not schedule Live2D corner peek on final wrap-adjacent scenes', () => {
+    assert.equal(standIn.getCue(3, 'day3_galgame_choices'), null);
+    assert.equal(standIn.getCue(4, 'day4_return_home'), null);
+    assert.equal(standIn.getCue(5, 'day5_memory_entry'), null);
+    assert.equal(standIn.getCue(6, 'day6_wrap_cleanup'), null);
+    assert.equal(standIn.getCue(7, 'day7_memory_control'), null);
+    assert.equal(standIn.getCue(7, 'day7_graduation_wrap'), null);
+});
+
+test('director routes avatar stand-ins through Live2D corner peek, not overlay images', () => {
+    assert.match(controllerSource, /class AvatarStandInController/);
+    assert.match(directorSource, /this\.avatarStandInController = new TutorialVisualControllers\.AvatarStandInController\(this\);/);
+    assert.match(directorSource, /this\.startAvatarCornerPeekPerformance\({[\s\S]*position: cue\.position/);
+    assert.match(controllerSource, /Number\.isFinite\(Number\(cue\.delay\)\)/);
+    assert.match(directorSource, /Number\.isFinite\(Number\(cue\.duration\)\)/);
+    assert.match(directorSource, /await this\.stopAvatarCornerPeekPerformance\(handle,\s*reason \|\| 'avatar_standin_clear'\);/);
+    assert.doesNotMatch(directorSource, /overlay\.showAvatarStandIn/);
+    assert.doesNotMatch(overlaySource, /showAvatarStandIn/);
+    assert.doesNotMatch(overlaySource, /avatarStandIn:\s*\{/);
+});
+
+test('avatar stage exposes generic Live2D corner peek while keeping plugin-dashboard entry', () => {
+    assert.match(avatarStageSource, /class Live2DAvatarCornerPeekSession/);
+    assert.match(avatarStageSource, /async function startAvatarCornerPeek\(options\)/);
+    assert.match(avatarStageSource, /startAvatarCornerPeek: startAvatarCornerPeek/);
+    assert.match(avatarStageSource, /startPluginDashboardCornerPeek: startPluginDashboardCornerPeek/);
+    assert.match(avatarStageSource, /Live2DPluginDashboardCornerSession: Live2DAvatarCornerPeekSession/);
+});
+
+test('Live2D corner peek keeps center model still while fading and uses one second phases', () => {
+    const { session, model } = createCornerPeekSession('bottom-right');
+
+    assert.equal(session.hideMs, 1000);
+    assert.equal(session.appearMs, 1000);
+    assert.equal(session.totalDurationMs, 2000);
+
+    session.tickEnter(500);
+    assert.equal(model.x, 512);
+    assert.equal(model.y, 384);
+    assert.equal(model.alpha, 0.4);
+
+    session.tickEnter(1500);
+    assert.notEqual(model.x, 512);
+    assert.notEqual(model.y, 384);
+    assert.ok(model.alpha > 0);
+    assert.ok(model.alpha < 1);
+
+    session.tickExit(500);
+    assert.equal(model.x, session.cornerFrame.x);
+    assert.equal(model.y, session.cornerFrame.y);
+    assert.equal(model.alpha, 0.5);
+
+    session.tickExit(1500);
+    assert.equal(model.x, 512);
+    assert.equal(model.y, 384);
+    assert.ok(model.alpha > 0);
+    assert.ok(model.alpha < 0.8);
+});
+
+test('Live2D corner peek fades the visible layer and centers look-at during playback', () => {
+    const acquiredLocks = [];
+    const releasedLocks = [];
+    const paramWrites = [];
+    const canvas = { style: {} };
+    const container = { style: {} };
+    const coreModel = {
+        setParameterValueById(id, value) {
+            paramWrites.push({ id, value });
+        }
+    };
+    const { session, window } = createCornerPeekSession('bottom-right', {
+        container,
+        coreModel,
+        elements: {
+            'live2d-canvas': canvas
+        },
+        configureWindow(testWindow) {
+            testWindow.AvatarPerformance = {
+                getDefaultCoordinator() {
+                    return {
+                        acquire(request) {
+                            acquiredLocks.push(request);
+                            return { id: 'corner-peek-lock' };
+                        },
+                        release(sessionRecord, reason) {
+                            releasedLocks.push({ sessionRecord, reason });
+                            return true;
+                        }
+                    };
+                }
+            };
+        }
     });
-    assert.equal(
-        standIn.getResourcePath('day5-character-settings'),
-        '/static/assets/tutorial/avatar-standins/day5-character-settings.png'
-    );
-    assert.equal(standIn.getCue(2, 'day2_proactive_chat').resource, 'peek-right-border');
-    assert.equal(standIn.getCue(6, 'day6_plugin_dashboard').resource, 'peek-right-border');
+
+    assert.equal(session.start(), true);
+    assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, true);
+    assert.equal(window.nekoYuiGuideFaceForwardLock, true);
+    assert.deepEqual(Array.from(acquiredLocks[0].capabilities), ['frame', 'lookAt']);
+    assert.deepEqual(paramWrites.slice(-4), [
+        { id: 'ParamAngleX', value: 0 },
+        { id: 'ParamAngleY', value: 0 },
+        { id: 'ParamEyeBallX', value: 0 },
+        { id: 'ParamEyeBallY', value: 0 }
+    ]);
+
+    session.tickEnter(500);
+    assert.equal(container.style.opacity, '0.4');
+    assert.equal(canvas.style.opacity, '0.4');
+
+    session.finish('test_complete');
+    assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, false);
+    assert.equal(window.nekoYuiGuideFaceForwardLock, false);
+    assert.equal(container.style.opacity, '');
+    assert.equal(canvas.style.opacity, '');
+    assert.equal(releasedLocks.length, 1);
 });
 
-test('director schedules day five first stand-in two seconds later than default cues', () => {
-    assert.match(avatarStandInControllerSource, /director\.avatarStandInShowTimer = root\.setTimeout\(\(\) => \{[\s\S]*\}, Math\.max\(0, Number\(cue\.delayMs\) \|\| 0\)\);/);
-    assert.equal(standIn.getCue(5, 'day5_character_settings').delayMs - standIn.DELAY_MS, 2000);
+test('Live2D corner peek disables opacity transitions while it owns the visible layer', () => {
+    const canvas = { style: { opacity: '1', transition: 'opacity 0.28s ease' } };
+    const container = { style: { opacity: '1', transition: 'opacity 0.28s ease' } };
+    const { session } = createCornerPeekSession('bottom-right', {
+        container,
+        elements: {
+            'live2d-canvas': canvas
+        }
+    });
+
+    assert.equal(session.start(), true);
+    session.tickEnter(500);
+
+    assert.equal(container.style.opacity, '0.4');
+    assert.equal(canvas.style.opacity, '0.4');
+    assert.equal(container.style.transition, 'none');
+    assert.equal(canvas.style.transition, 'none');
+
+    session.finish('test_complete');
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'opacity 0.28s ease');
+    assert.equal(canvas.style.transition, 'opacity 0.28s ease');
 });
 
-test('director fades the model before showing avatar stand-in overlay', () => {
-    assert.match(directorSource, /const AVATAR_STAND_IN_MODEL_FADE_MS\s*=\s*1000;/);
-    assert.match(directorSource, /this\.avatarStandInFadeTimer = null;/);
-    assert.match(directorSource, /element\.style\.setProperty\('transition', 'opacity ' \+ AVATAR_STAND_IN_MODEL_FADE_MS \+ 'ms ease', 'important'\);/);
-    assert.match(directorSource, /element\.style\.setProperty\('transition', 'opacity ' \+ AVATAR_STAND_IN_MODEL_FADE_MS \+ 'ms ease', 'important'\);[\s\S]*void element\.offsetWidth;[\s\S]*element\.style\.setProperty\('opacity', '0', 'important'\);/);
-    assert.match(directorSource, /this\.prepareAvatarStandInOpacityTargets\(\);[\s\S]*this\.avatarStandInFadeTimer = window\.setTimeout\(\(\) => \{[\s\S]*this\.overlay\.showAvatarStandIn/);
-    assert.match(avatarStandInControllerSource, /root\.clearTimeout\(director\.avatarStandInFadeTimer\);[\s\S]*director\.avatarStandInFadeTimer = null;/);
+test('Live2D corner peek does not self-cancel its return fade after stand-in token changes', () => {
+    let cancelled = false;
+    const { session, model, window } = createCornerPeekSession('bottom-right', {
+        isCancelled: () => cancelled
+    });
+
+    assert.equal(session.start(), true);
+    window.__setNow(2500);
+    session.tick();
+    assert.equal(session.phase, 'hold');
+
+    session.stop('avatar_standin_clear');
+    cancelled = true;
+    window.__setNow(3000);
+    session.tick();
+
+    assert.equal(session.phase, 'exit');
+    assert.equal(model.x, session.cornerFrame.x);
+    assert.equal(model.y, session.cornerFrame.y);
+    assert.equal(model.alpha, 0.5);
 });
 
-test('director routes avatar stand-in and petal transitions through phase three controllers', () => {
-    const constructorBlock = directorSource.split('    class YuiGuideDirector {')[1].split(
-        '            this.latestExternalizedChatCursorMoveSceneId =',
-        1
-    )[0];
-    const standInEntryBlock = directorSource.split('        scheduleAvatarStandInForScene(scene, day, sceneRunId) {')[1].split(
-        '        prepareAvatarStandInOpacityTargets',
-        1
-    )[0];
-    const standInClearBlock = directorSource.split('        clearAvatarStandIn(options) {')[1].split(
-        '        setGuideChatInputLocked',
-        1
-    )[0];
-    const petalEntryBlock = directorSource.split('        async playReturnPetalTransition(options) {')[1].split(
-        '        resolveGuideCopy(textKey, fallbackText) {',
-        1
-    )[0];
-    const petalCueEntryBlock = directorSource.split('        async playAvatarFloatingPetalTransitionAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt) {')[1].split(
-        '        rememberAvatarFloatingSceneCursorAnchor(sceneId, element) {',
-        1
-    )[0];
-
-    assert.match(avatarStandInControllerSource, /class AvatarStandInController/);
-    assert.match(visualControllerSource, /avatarStandInControllerApi\.AvatarStandInController/);
-    assert.doesNotMatch(visualControllerSource, /class AvatarStandInController/);
-    assert.match(petalTransitionControllerSource, /class PetalTransitionController/);
-    assert.match(visualControllerSource, /petalTransitionControllerApi\.PetalTransitionController/);
-    assert.doesNotMatch(visualControllerSource, /class PetalTransitionController/);
-    assert.match(constructorBlock, /this\.avatarStandInController = new TutorialVisualControllers\.AvatarStandInController\(this\);/);
-    assert.match(constructorBlock, /this\.petalTransitionController = new TutorialVisualControllers\.PetalTransitionController\(this\);/);
-    assert.match(standInEntryBlock, /return this\.avatarStandInController\.schedule\(scene,\s*day,\s*sceneRunId\);/);
-    assert.match(standInClearBlock, /return this\.avatarStandInController\.clear\(options\);/);
-    assert.doesNotMatch(directorSource, /getAvatarStandInCueLegacy/);
-    assert.doesNotMatch(directorSource, /scheduleAvatarStandInForSceneLegacy/);
-    assert.doesNotMatch(directorSource, /clearAvatarStandInLegacy/);
-    assert.match(petalEntryBlock, /return this\.petalTransitionController\.playReturn\(options\);/);
-    assert.match(petalCueEntryBlock, /return this\.petalTransitionController\.playAtCue\(scene,\s*sceneRunId,\s*voiceKey,\s*text,\s*narrationStartedAt\);/);
-    assert.doesNotMatch(directorSource, /playReturnPetalTransitionLegacy/);
-    assert.doesNotMatch(directorSource, /playAvatarFloatingPetalTransitionAtCueLegacy/);
+test('Live2D visibility recovery preserves opacity while avatar corner peek is active', () => {
+    assert.match(live2dInitSource, /nekoYuiGuideAvatarCornerPeekActive[\s\S]{0,120}return;/);
+    assert.match(appUiSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}model\.alpha = 1;/);
+    assert.match(appInterpageSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}currentModel\.alpha = 1;/);
+    assert.match(universalManagerSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,360}restoreTutorialLive2dDisplayState/);
+    assert.match(universalManagerSource, /preserveOpacity[\s\S]{0,360}live2dCanvas\.style\.setProperty\('opacity', '1', 'important'\)/);
 });
 
-test('avatar stand-in controller prefers scene config before fixed cue fallback', () => {
-    const controllerBlock = avatarStandInControllerSource.split('    class AvatarStandInController {')[1].split(
-        '\n    return {\n        AvatarStandInController',
-        1
-    )[0];
-    assert.match(controllerBlock, /normalizeSceneCue\(scene\) \{/);
-    assert.match(controllerBlock, /const config = scene && scene\.avatarStandIn;/);
-    assert.match(controllerBlock, /resolveCue\(scene,\s*day\) \{/);
-    assert.match(controllerBlock, /const sceneCue = this\.normalizeSceneCue\(scene\);/);
-    assert.match(controllerBlock, /return sceneCue \|\| this\.getCue\(day,\s*scene && scene\.id\);/);
-    assert.match(controllerBlock, /const cue = this\.resolveCue\(scene,\s*day\);/);
-    assert.doesNotMatch(controllerBlock, /getAvatarStandInCueLegacy/);
-    assert.doesNotMatch(controllerBlock, /scheduleAvatarStandInForSceneLegacy/);
-    assert.doesNotMatch(controllerBlock, /clearAvatarStandInLegacy/);
+test('Live2D corner peek can continue across scene boundaries until its cue duration ends', () => {
+    const showBlock = directorSource
+        .split('        showAvatarStandIn(cue, token) {')[1]
+        .split('        clearAvatarStandIn(options) {')[0];
+    assert.doesNotMatch(showBlock, /sceneRunId !== this\.sceneRunId/);
+    assert.match(showBlock, /isCancelled: \(\) => token !== this\.avatarStandInToken[\s\S]*this\.isStopping\(\)[\s\S]*this\.destroyed/);
+});
+
+test('Live2D interaction skips cursor focus while YUI face-forward lock is active', () => {
+    assert.match(live2dInteractionSource, /nekoYuiGuideFaceForwardLock/);
+    assert.match(live2dInteractionSource, /ParamAngleX/);
+    assert.match(live2dInteractionSource, /ParamEyeBallY/);
+    assert.match(live2dInteractionSource, /isYuiGuideFaceForwardLocked[\s\S]*model\.focus\(pointer\.x,\s*pointer\.y\)/);
+});
+
+test('top-left Live2D corner peek keeps enough of the model visible', () => {
+    const { session } = createCornerPeekSession('top-left');
+    const visibleWidth = Math.min(1024, session.cornerFrame.x + 150) - Math.max(0, session.cornerFrame.x - 150);
+    const visibleHeight = Math.min(768, session.cornerFrame.y + 300) - Math.max(0, session.cornerFrame.y - 300);
+
+    assert.ok(visibleWidth >= 120);
+    assert.ok(visibleHeight >= 240);
+});
+
+test('Live2D corner peek uses corner-specific head-first rotation angles', () => {
+    const expectedDegrees = {
+        'bottom-right': -45,
+        'bottom-left': 45,
+        'top-right': -135,
+        'top-left': 135
+    };
+
+    Object.keys(expectedDegrees).forEach((position) => {
+        const { session } = createHeadAnchoredCornerPeekSession(position);
+        const degrees = Math.round(session.cornerFrame.rotation * 180 / Math.PI);
+        assert.equal(degrees, expectedDegrees[position], position);
+    });
+});
+
+function transformRectFromFrame(rect, fromFrame, toFrame) {
+    const rotation = (toFrame.rotation || 0) - (fromFrame.rotation || 0);
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const points = [
+        { x: rect.x, y: rect.y },
+        { x: rect.x + rect.width, y: rect.y },
+        { x: rect.x, y: rect.y + rect.height },
+        { x: rect.x + rect.width, y: rect.y + rect.height }
+    ].map((point) => {
+        const dx = point.x - fromFrame.x;
+        const dy = point.y - fromFrame.y;
+        return {
+            x: toFrame.x + dx * cos - dy * sin,
+            y: toFrame.y + dx * sin + dy * cos
+        };
+    });
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    const right = Math.max(...xs);
+    const bottom = Math.max(...ys);
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        width: right - left,
+        height: bottom - top
+    };
+}
+
+function intersectionArea(rect, viewport) {
+    const left = Math.max(rect.left, viewport.left);
+    const top = Math.max(rect.top, viewport.top);
+    const right = Math.min(rect.right, viewport.right);
+    const bottom = Math.min(rect.bottom, viewport.bottom);
+    return Math.max(0, right - left) * Math.max(0, bottom - top);
+}
+
+test('Live2D corner peek anchors the head and upper chest from every corner', () => {
+    const viewport = { left: 0, top: 0, right: 1024, bottom: 768 };
+    for (const position of ['bottom-right', 'bottom-left', 'top-right', 'top-left']) {
+        const { session } = createHeadAnchoredCornerPeekSession(position);
+        const visiblePeekRect = transformRectFromFrame(
+            session.peekRegionBounds,
+            session.initialModelFrame,
+            session.cornerFrame
+        );
+        const visibleModelRect = transformRectFromFrame(
+            session.initialBounds,
+            session.initialModelFrame,
+            session.cornerFrame
+        );
+        const peekArea = visiblePeekRect.width * visiblePeekRect.height;
+        const modelArea = visibleModelRect.width * visibleModelRect.height;
+        const peekVisibleRatio = intersectionArea(visiblePeekRect, viewport) / peekArea;
+        const modelVisibleRatio = intersectionArea(visibleModelRect, viewport) / modelArea;
+
+        assert.ok(peekVisibleRatio >= 0.8, position);
+        assert.ok(modelVisibleRatio <= 0.62, position);
+        if (position === 'top-left' || position === 'top-right') {
+            assert.ok(visiblePeekRect.top >= 40, position);
+            assert.ok(visiblePeekRect.top <= 80, position);
+            assert.ok(visiblePeekRect.bottom < 360, position);
+        } else {
+            assert.ok(visiblePeekRect.bottom >= 688, position);
+            assert.ok(visiblePeekRect.bottom <= 728, position);
+            assert.ok(visiblePeekRect.top > 400, position);
+        }
+        if (position === 'top-left' || position === 'bottom-left') {
+            assert.ok(visiblePeekRect.left >= 40, position);
+            assert.ok(visiblePeekRect.left <= 80, position);
+        } else {
+            assert.ok(visiblePeekRect.right >= 944, position);
+            assert.ok(visiblePeekRect.right <= 984, position);
+        }
+    }
 });

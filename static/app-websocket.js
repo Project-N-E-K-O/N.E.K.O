@@ -19,6 +19,8 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
+    const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
@@ -547,34 +549,6 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
-    function isHomeTutorialLockedForGreeting() {
-        try {
-            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
-                if (window.isNekoHomeTutorialBlockingGreeting() === true) {
-                    return true;
-                }
-            }
-            if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
-                if (window.isNekoHomeTutorialInteractionLocked() === true) {
-                    return true;
-                }
-            }
-        } catch (_) {}
-        try {
-            if (window.NekoHomeTutorialFeatureController
-                && typeof window.NekoHomeTutorialFeatureController.isActive === 'function'
-                && window.NekoHomeTutorialFeatureController.isActive() === true) {
-                return true;
-            }
-        } catch (_) {}
-        try {
-            if (document.body && document.body.classList.contains('yui-taking-over')) {
-                return true;
-            }
-        } catch (_) {}
-        return false;
-    }
-
     function readNewUserIcebreakerStore() {
         try {
             if (typeof localStorage === 'undefined') return null;
@@ -640,20 +614,6 @@
             return false;
         }
         return isNewUserIcebreakerPeriodActive();
-    }
-
-    function sendHomeTutorialState(reason) {
-        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
-        try {
-            S.socket.send(JSON.stringify({
-                action: 'home_tutorial_state',
-                blocking_greeting: isHomeTutorialLockedForGreeting() || isNewUserIcebreakerBlockingGreeting(reason),
-                reason: reason || 'state-sync',
-                timestamp: Date.now(),
-            }));
-        } catch (error) {
-            console.warn('[HomeTutorial] failed to sync tutorial state:', error);
-        }
     }
 
     function normalizeAssistantTurnId(turnId) {
@@ -1429,8 +1389,6 @@
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
 
-            sendHomeTutorialState('ws-open');
-
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             var goodbyeActiveOnOpen = false;
             var goodbyeSyncOnOpen = null;
@@ -1482,9 +1440,16 @@
                 S._greetingCheckReason = '';
                 S._pendingGreetingSwitch = false;
             } else {
-                _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
+                var isGreetingSwitchOnOpen = !!S._pendingGreetingSwitch;
+                var greetingReasonOnOpen = S._greetingCheckReason || (isGreetingSwitchOnOpen ? 'character-switch' : 'ws-open');
+                _markGreetingCheckPending(isGreetingSwitchOnOpen, greetingReasonOnOpen);
                 S._pendingGreetingSwitch = false;
-                _sendGreetingCheckIfReady();
+                if (isGreetingSwitchOnOpen || S._startupGreetingReleaseGateUsed) {
+                    _sendGreetingCheckIfReady();
+                } else {
+                    S._startupGreetingReleaseGateUsed = true;
+                    sendStartupGreetingReleaseRequest('ws-open');
+                }
             }
 
             // ── game-window-state 重连兜底（codex P2）──
@@ -3283,27 +3248,8 @@
         }
         return false;
     }
-    function _isHomeTutorialPage() {
-        if (window.location && typeof window.location.pathname === 'string') {
-            var path = window.location.pathname || '/';
-            return path === '/' || path === '/index.html';
-        }
-        var manager = window.universalTutorialManager || null;
-        return !!(manager && manager.currentPage === 'home');
-    }
-    function _isTutorialBlockingGreeting() {
-        if (!_isHomeTutorialPage()) return false;
-        try {
-            if (isHomeTutorialLockedForGreeting()) {
-                return true;
-            }
-        } catch (_) {}
-        return window.isInTutorial === true
-            || !!(window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning);
-    }
     function _isGreetingCheckBlocked() {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return true;
-        if (_isTutorialBlockingGreeting()) return true;
         if (S.isRecording || S.isPlaying) return true;
         if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
         if (S.assistantTurnAwaitingBubble || S.assistantSpeechActiveTurnId) return true;
@@ -3339,10 +3285,94 @@
         S._greetingCheckIsSwitch = !!isSwitch;
         S._greetingCheckReason = reason || '';
     }
+
+    function consumeStartupGreetingReleasedDetail() {
+        try {
+            const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
+            if (detail && detail.released === true) {
+                delete window.__NEKO_STARTUP_GREETING_RELEASED__;
+            }
+            return detail && detail.released === true ? detail : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function hasStartupGreetingReleaseProducer() {
+        try {
+            if (window.universalTutorialManager) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            return !!document.querySelector('script[src*="/static/tutorial/core/universal-manager.js"],script[src*="tutorial/core/universal-manager.js"]');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isStartupTutorialActiveForGreeting() {
+        try {
+            var manager = window.universalTutorialManager || null;
+            if (manager && manager.isTutorialRunning === true) return true;
+            if (manager && manager.activeAvatarFloatingGuideRound) return true;
+            if (document.body && document.body.classList && document.body.classList.contains('yui-taking-over')) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function scheduleStartupGreetingReleaseFallback() {
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+        }
+        S._startupGreetingReleaseFallbackTimer = setTimeout(function () {
+            S._startupGreetingReleaseFallbackTimer = 0;
+            if (S._startupGreetingReleasePending) {
+                if (isStartupTutorialActiveForGreeting()) {
+                    scheduleStartupGreetingReleaseFallback();
+                    return;
+                }
+                releaseStartupGreetingCheck('startup-greeting-release-timeout');
+            }
+        }, STARTUP_GREETING_RELEASE_FALLBACK_MS);
+    }
+
+    function sendStartupGreetingReleaseRequest(reason) {
+        const released = consumeStartupGreetingReleasedDetail();
+        if (released) {
+            releaseStartupGreetingCheck(released.reason || 'startup-greeting-release');
+            return;
+        }
+        if (!hasStartupGreetingReleaseProducer()) {
+            releaseStartupGreetingCheck(reason || 'startup-greeting-no-release-producer');
+            return;
+        }
+        S._startupGreetingReleasePending = true;
+        S._startupGreetingReleaseReason = reason || 'ws-open';
+        scheduleStartupGreetingReleaseFallback();
+    }
+
+    function releaseStartupGreetingCheck(reason) {
+        if (!S._startupGreetingReleasePending && !S._greetingCheckPending) {
+            return;
+        }
+        S._startupGreetingReleasePending = false;
+        S._startupGreetingReleaseReason = '';
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+            S._startupGreetingReleaseFallbackTimer = 0;
+        }
+        if (reason) {
+            S._greetingCheckReason = reason;
+        }
+        _sendGreetingCheckIfReady();
+    }
+
     function _consumeGreetingCheckForNewUserIcebreaker() {
         if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;
         if (!isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)) return false;
-        sendHomeTutorialState('greeting-check-consumed-by-icebreaker');
         S._greetingCheckPending = false;
         S._greetingCheckIsSwitch = false;
         S._greetingCheckReason = '';
@@ -3355,11 +3385,13 @@
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
+        if (S._startupGreetingReleasePending) {
+            return;
+        }
         if (_consumeGreetingCheckForNewUserIcebreaker()) {
             return;
         }
         if (_isGreetingCheckBlocked()) {
-            sendHomeTutorialState('greeting-check-blocked');
             _scheduleGreetingCheckRetry();
             return;
         }
@@ -3384,10 +3416,6 @@
                 } catch (_) { greetingLang = ''; }
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                var homeTutorialStateReason = isTutorialReleaseGreetingReason(greetingReason)
-                    ? greetingReason
-                    : 'greeting-check-ready';
-                sendHomeTutorialState(homeTutorialStateReason);
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
@@ -3465,28 +3493,12 @@
         });
     }
 
-    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+    window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, function (event) {
         var detail = event && event.detail ? event.detail : {};
-        sendHomeTutorialState(detail.reason || 'lock-changed');
-        if (detail.locked === false) {
-            if ((detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped')
-                && S._greetingCheckPending) {
-                S._greetingCheckReason = detail.reason;
-            }
-            _sendGreetingCheckIfReady();
+        if (detail.released === false) {
+            return;
         }
-    });
-
-    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
-        var detail = event && event.detail ? event.detail : {};
-        var reason = detail.reason || (detail.active === false ? 'features-restored' : 'features-suppressed');
-        if (detail.active === false && reason) {
-            S._greetingCheckReason = reason;
-        }
-        sendHomeTutorialState(reason);
-        if (detail.active === false) {
-            _sendGreetingCheckIfReady();
-        }
+        releaseStartupGreetingCheck(detail.reason || 'startup-greeting-release');
     });
 
     // 从猫咪形态变回猫娘（请她回来）时，按猫咪停留时长 + tier 请求一次专属问候。

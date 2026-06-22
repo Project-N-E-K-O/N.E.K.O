@@ -86,23 +86,6 @@ async def _publish_agent_intent_restore_signal(lanlan_name: str) -> None:
 # 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
 _ws_disconnect_time: dict[str, float] = {}
 
-# 前端首页新手引导的轻量兜底状态。只用于阻止已经穿过前端的 greeting_check，
-# 带 TTL，避免断线或前端异常导致后端长期误判仍在教程中。
-_HOME_TUTORIAL_STATE_TTL_SECONDS = 60.0
-_home_tutorial_blocking_greeting: dict[str, tuple[bool, float]] = {}
-
-
-def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
-    state = _home_tutorial_blocking_greeting.get(lanlan_name)
-    if not state:
-        return False
-    blocking, updated_at = state
-    if time.time() - updated_at > _HOME_TUTORIAL_STATE_TTL_SECONDS:
-        _home_tutorial_blocking_greeting.pop(lanlan_name, None)
-        return False
-    return bool(blocking)
-
-
 # ---- Telemetry helpers ----
 
 # Dim 字段安全限制 —— 前端是 untrusted 输入，必须挡掉：
@@ -402,14 +385,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = None
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
 
-            elif action == "home_tutorial_state":
-                blocking = bool(message.get("blocking_greeting"))
-                _home_tutorial_blocking_greeting[lanlan_name] = (blocking, time.time())
-                logger.debug(
-                    "[%s] home_tutorial_state: blocking_greeting=%s reason=%s",
-                    lanlan_name, blocking, message.get("reason") or "",
-                )
-
             elif action == "greeting_check":
                 # 首次连接或切换角色时，前端请求检查是否需要主动搭话
                 # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
@@ -417,9 +392,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 顺便：这也是 agent_server 启动后第一个"用户实际进入会话"的信号 ——
                 # 我们用它来触发 agent runtime intent restore (analyzer_enabled +
                 # 5 个 sub flag 上次会话的开关状态)。restore 是 fire-and-forget 的
-                # ZMQ event，agent_server 端有 once-flag 保证只跑一次；即使本次
-                # greeting_check 被 home tutorial guard 阻塞，agent intent 也应该
-                # 趁机会恢复（无害：用户在新手引导期一般也没旧 intent 要恢复）。
+                # ZMQ event，agent_server 端有 once-flag 保证只跑一次。
                 _fire_task(_publish_agent_intent_restore_signal(lanlan_name))
                 # A freshly-connected window (notably the separate /chat_full
                 # window, which has its own ws and misses any earlier Focus
@@ -432,9 +405,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # session): the focus glow/indicator is non-essential and must
                     # never block or break greeting_check, so swallow and move on.
                     pass
-                if _is_home_tutorial_blocking_greeting(lanlan_name):
-                    logger.info(f"[{lanlan_name}] greeting_check: skipped by home tutorial guard")
-                    continue
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
@@ -453,9 +423,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
                 # 与 greeting_check 对偶，但独立计时：时长由前端测量传入，不查对话 gap；
                 # 不发 agent intent restore（那是"首次进入会话"信号，变回不是）。
-                if _is_home_tutorial_blocking_greeting(lanlan_name):
-                    logger.info(f"[{lanlan_name}] cat_greeting_check: skipped by home tutorial guard")
-                    continue
                 try:
                     cat_duration = float(message.get("cat_duration_seconds", 0) or 0)
                 except (TypeError, ValueError):

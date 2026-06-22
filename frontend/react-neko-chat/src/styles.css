@@ -4234,6 +4234,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: var(--compact-tool-button-active-shadow);
 }
 
+.compact-input-tool-fan button.compact-input-tool-item[data-compact-tool-active="true"]:not(:disabled)[data-compact-tool-pointer-hovered="true"]::after,
+.compact-input-tool-fan button.compact-input-tool-item[data-compact-tool-active="true"]:not(:disabled):focus-within::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-active="true"][data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled))::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-active="true"]:has(> .composer-emoji-btn:not(:disabled)):focus-within::after {
+  background: var(--compact-tool-button-active-fill);
+  box-shadow: var(--compact-tool-button-active-shadow);
+}
+
 .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::before {
   content: "";
   position: absolute;
