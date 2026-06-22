@@ -3225,9 +3225,12 @@
         S._greetingCheckReason = reason || '';
     }
 
-    function readStartupGreetingReleasedDetail() {
+    function consumeStartupGreetingReleasedDetail() {
         try {
             const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
+            if (detail && detail.released === true) {
+                delete window.__NEKO_STARTUP_GREETING_RELEASED__;
+            }
             return detail && detail.released === true ? detail : null;
         } catch (_) {
             return null;
@@ -3276,7 +3279,7 @@
     }
 
     function sendStartupGreetingReleaseRequest(reason) {
-        const released = readStartupGreetingReleasedDetail();
+        const released = consumeStartupGreetingReleasedDetail();
         if (released) {
             releaseStartupGreetingCheck(released.reason || 'startup-greeting-release');
             return;

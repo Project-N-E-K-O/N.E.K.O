@@ -12,6 +12,7 @@ test('startup greeting waits for an explicit release instead of firing on websoc
     assert.match(appWebsocketSource, /STARTUP_GREETING_RELEASE_EVENT/);
     assert.match(appWebsocketSource, /STARTUP_GREETING_RELEASE_FALLBACK_MS/);
     assert.match(appWebsocketSource, /function releaseStartupGreetingCheck\(reason\)/);
+    assert.match(appWebsocketSource, /function consumeStartupGreetingReleasedDetail\(\)/);
     assert.match(appWebsocketSource, /window\.addEventListener\(STARTUP_GREETING_RELEASE_EVENT,\s*function/);
 
     const wsOpenStart = appWebsocketSource.lastIndexOf(
@@ -48,8 +49,15 @@ test('startup greeting waits for an explicit release instead of firing on websoc
         'function releaseStartupGreetingCheck(reason)',
         1,
     )[0];
+    assert.match(requestBlock, /const released = consumeStartupGreetingReleasedDetail\(\)/);
     assert.match(requestBlock, /if \(!hasStartupGreetingReleaseProducer\(\)\) \{\s*releaseStartupGreetingCheck\(reason \|\| 'startup-greeting-no-release-producer'\);\s*return;\s*\}/);
     assert.match(requestBlock, /scheduleStartupGreetingReleaseFallback\(\)/);
+
+    const consumeBlock = appWebsocketSource.split('function consumeStartupGreetingReleasedDetail()')[1].split(
+        'function hasStartupGreetingReleaseProducer()',
+        1,
+    )[0];
+    assert.match(consumeBlock, /delete window\.__NEKO_STARTUP_GREETING_RELEASED__/);
 
     const releaseBlock = appWebsocketSource.split('function releaseStartupGreetingCheck(reason)')[1].split(
         'function _consumeGreetingCheckForNewUserIcebreaker()',

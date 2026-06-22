@@ -35,6 +35,9 @@ def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     assert "STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release'" in source
     assert "STARTUP_GREETING_RELEASE_FALLBACK_MS" in source
     assert "function sendStartupGreetingReleaseRequest(reason)" in source
+    assert "function consumeStartupGreetingReleasedDetail()" in source
+    assert "delete window.__NEKO_STARTUP_GREETING_RELEASED__" in source
+    assert "const released = consumeStartupGreetingReleasedDetail()" in source
     assert "function releaseStartupGreetingCheck(reason)" in source
     assert "function hasStartupGreetingReleaseProducer()" in source
     assert "function isStartupGreetingHomePage()" not in source
