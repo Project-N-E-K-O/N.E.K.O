@@ -379,13 +379,16 @@ def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
 
 
 class _ScaledPyAutoGUI:
-    """Projects [0, 999] model coordinates to physical screen pixels.
+    """Projects model coordinates to physical screen pixels.
 
     If both x and y are in [0, 999] they are scaled to screen dimensions.
+    Float pairs in [0, 1] are accepted as normalized coordinates because
+    some OpenAI-compatible vision models emit that form despite the prompt.
     Values > 999 are passed through as absolute pixel coordinates.
     """
 
     _COORD_MAX = 999
+    _FAILSAFE_EDGE_PX = 4
 
     def __init__(
         self,
@@ -422,28 +425,52 @@ class _ScaledPyAutoGUI:
             and 0 <= y <= self._COORD_MAX
         )
 
+    def _in_unit_range(self, x, y) -> bool:
+        return (
+            (isinstance(x, float) or isinstance(y, float))
+            and isinstance(x, (int, float))
+            and isinstance(y, (int, float))
+            and 0 <= x <= 1
+            and 0 <= y <= 1
+        )
+
+    def _safe_screen_point(self, x: float, y: float) -> Tuple[int, int]:
+        max_x = max(0, self._w - 1)
+        max_y = max(0, self._h - 1)
+        px = int(round(x))
+        py = int(round(y))
+        px = max(0, min(px, max_x))
+        py = max(0, min(py, max_y))
+        if self._w > self._FAILSAFE_EDGE_PX * 2:
+            px = max(self._FAILSAFE_EDGE_PX, min(px, max_x - self._FAILSAFE_EDGE_PX))
+        if self._h > self._FAILSAFE_EDGE_PX * 2:
+            py = max(self._FAILSAFE_EDGE_PX, min(py, max_y - self._FAILSAFE_EDGE_PX))
+        return px, py
+
+    def _project_pair(self, x, y) -> Tuple[int, int]:
+        if self._in_unit_range(x, y):
+            return self._safe_screen_point(
+                float(x) * max(0, self._w - 1),
+                float(y) * max(0, self._h - 1),
+            )
+        if self._in_range(x, y):
+            return self._safe_screen_point(
+                float(x) * max(0, self._w - 1) / self._COORD_MAX,
+                float(y) * max(0, self._h - 1) / self._COORD_MAX,
+            )
+        return self._safe_screen_point(float(x), float(y))
+
     def _project(self, args, kwargs):
         if (
             len(args) >= 2
             and isinstance(args[0], (int, float))
             and isinstance(args[1], (int, float))
         ):
-            x, y = args[0], args[1]
-            if self._in_range(x, y):
-                x = int(round(x * self._w / self._COORD_MAX))
-                y = int(round(y * self._h / self._COORD_MAX))
-            else:
-                x, y = int(round(x)), int(round(y))
+            x, y = self._project_pair(args[0], args[1])
             return (x, y) + tuple(args[2:]), kwargs
         if "x" in kwargs and "y" in kwargs:
             kw = dict(kwargs)
-            x, y = kw["x"], kw["y"]
-            if self._in_range(x, y):
-                kw["x"] = int(round(x * self._w / self._COORD_MAX))
-                kw["y"] = int(round(y * self._h / self._COORD_MAX))
-            else:
-                kw["x"] = int(round(x))
-                kw["y"] = int(round(y))
+            kw["x"], kw["y"] = self._project_pair(kw["x"], kw["y"])
             return args, kw
         return args, kwargs
 
@@ -494,11 +521,7 @@ class _ScaledPyAutoGUI:
     def scroll(self, clicks, x=None, y=None, *args, **kwargs):
         self._ensure_not_cancelled()
         if x is not None and y is not None:
-            if self._in_range(x, y):
-                scaled_x = int(round(x * self._w / self._COORD_MAX))
-                scaled_y = int(round(y * self._h / self._COORD_MAX))
-            else:
-                scaled_x, scaled_y = int(round(x)), int(round(y))
+            scaled_x, scaled_y = self._project_pair(x, y)
             return self._backend.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
         return self._backend.scroll(clicks, x=x, y=y, *args, **kwargs)
 

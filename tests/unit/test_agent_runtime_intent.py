@@ -206,6 +206,52 @@ def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: py
     assert cu_module._PYAUTOGUI_IMPORT_ERROR is None
 
 
+def test_scaled_pyautogui_accepts_normalized_float_coordinates():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(0.097, 0.336)
+
+    assert backend.calls[-1] == ("click", (186, 363), {})
+    assert backend.calls[0][0] == "moveTo"
+    assert backend.calls[0][1][:2] == (186, 363)
+
+
+def test_scaled_pyautogui_clamps_model_coordinates_away_from_failsafe_corner():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(0, 0)
+    gui.click(999, 999)
+
+    assert backend.calls[1] == ("click", (4, 4), {})
+    assert backend.calls[3] == ("click", (1915, 1075), {})
+
+
 def test_check_connectivity_returns_tuple_on_missing_config(monkeypatch: pytest.MonkeyPatch):
     """If base_url/model not configured, must return ``(False, 'AGENT_ENDPOINT_NOT_CONFIGURED')``
     immediately without trying to construct an LLM client."""

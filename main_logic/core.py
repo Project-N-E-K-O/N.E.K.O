@@ -6214,6 +6214,32 @@ class LLMSessionManager:
             res += f"{i['role']} | {i['text']}\n"
         return res
 
+    def _build_runtime_agent_capability_prefix(self) -> str:
+        """Return a short live capability hint for the current text turn."""
+        if not self._is_agent_enabled():
+            return ""
+        runtime_caps = []
+        if self.agent_flags.get('computer_use_enabled'):
+            runtime_caps.append("computer_use (mouse/keyboard)")
+        if self.agent_flags.get('browser_use_enabled'):
+            runtime_caps.append("browser_use")
+        if self.agent_flags.get('user_plugin_enabled'):
+            runtime_caps.append("user_plugin")
+        if self.agent_flags.get('openclaw_enabled'):
+            runtime_caps.append("openclaw")
+        if self.agent_flags.get('openfang_enabled'):
+            runtime_caps.append("openfang")
+        if not runtime_caps:
+            return ""
+        return (
+            "[Runtime agent capability state]\n"
+            f"Enabled host-side capabilities: {', '.join(runtime_caps)}.\n"
+            "When the user asks whether you can use an enabled capability, do not say you lack permission. "
+            "Say the host agent can attempt it asynchronously.\n"
+            "Do not invent task progress or results. Only say a task started, completed, failed, or what it did "
+            "when a system/task callback in the current context says so."
+        )
+
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""
         _lang = normalize_language_code(self.user_language, format='short')
@@ -9344,6 +9370,9 @@ class LLMSessionManager:
                         "system_prefix": _agent_cb_ctx or None,
                         "thinking_on": _focus_thinking,
                     }
+                    runtime_agent_prefix = self._build_runtime_agent_capability_prefix()
+                    if runtime_agent_prefix:
+                        stream_text_kwargs["ephemeral_system_prefix"] = runtime_agent_prefix
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:

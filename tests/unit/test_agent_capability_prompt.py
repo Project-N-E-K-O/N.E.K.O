@@ -36,3 +36,29 @@ async def test_initial_prompt_exposes_enabled_agent_capabilities():
     assert "browser_use" in prompt
     assert "do not say you lack permission" in prompt
     assert "user_plugin" not in prompt
+
+
+def test_runtime_capability_prefix_uses_current_agent_flags():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.agent_flags = {
+        "agent_enabled": True,
+        "computer_use_enabled": True,
+        "browser_use_enabled": False,
+        "user_plugin_enabled": False,
+        "openclaw_enabled": False,
+        "openfang_enabled": True,
+    }
+
+    class ConfigManager:
+        def is_agent_api_ready(self):
+            return True, []
+
+    mgr._config_manager = ConfigManager()
+
+    prefix = mgr._build_runtime_agent_capability_prefix()
+
+    assert "Runtime agent capability state" in prefix
+    assert "computer_use (mouse/keyboard)" in prefix
+    assert "openfang" in prefix
+    assert "browser_use" not in prefix
+    assert "lack permission" in prefix
