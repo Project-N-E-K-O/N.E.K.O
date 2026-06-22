@@ -11,6 +11,7 @@ from main_routers import game_router, pages_router
 ROOT = Path(__file__).resolve().parents[2]
 BADMINTON_TEMPLATE = ROOT / "templates" / "badminton_demo.html"
 BADMINTON_RACKET_SPRITE = ROOT / "static" / "game" / "games" / "badminton" / "images" / "badminton-racket-sprite.svg"
+BADMINTON_EMOTES_DIR = ROOT / "static" / "game" / "games" / "badminton" / "images" / "emotes"
 LOCALES_DIR = ROOT / "static" / "locales"
 
 
@@ -125,7 +126,7 @@ def test_badminton_improvement_static_contract():
     assert "updateModeSwitcher" not in html
     assert "YUI_PASSIVE_LINES_SHOOTER" not in html
     assert "function shouldCallLLMShooter(" not in html
-    assert "return !!(badmintonLoading && !badmintonLoading.hidden);" in html
+    assert "return !!(badmintonLoading && !badmintonLoading.hidden) || isBadmintonStartOverlayActive();" in html
     assert "badmintonLoading.classList.contains('hide')" not in html
     assert "badmintonLoading.hidden = true;\n      window.__badmintonInitialLoadingHidden = true;" in html
     assert "setTimeout(finish, 5000);" in html
@@ -287,6 +288,115 @@ def test_badminton_duel_applies_llm_difficulty_before_neko_shot():
 
 
 @pytest.mark.unit
+def test_badminton_duel_ramps_yui_difficulty_from_player_wins():
+    html = _badminton_html()
+
+    assert "var duelDifficultyIdx = 2;" in html
+    assert "var storedDuelDifficulty = readJson('bd_duel_difficulty', 'lv3');" in html
+    assert "function getPlayerWinDifficultyIndex(playerWins) {" in html
+    assert "if (wins >= 8) return 0;" in html
+    assert "if (wins >= 5) return 1;" in html
+    assert "return 2;" in html
+    assert "function getEffectiveDuelDifficultyIndex() {" in html
+    assert "return Math.min(duelDifficultyIdx, rampIdx);" in html
+    assert "function getEffectiveDuelDifficulty() {" in html
+    assert "return getEffectiveDuelDifficulty().name;" in html
+    assert "function speakDuelDifficultyRampLine(difficulty) {" in html
+    assert "difficulty === 'max' ? 'lines.duel.difficultyMax' : 'lines.duel.difficultyLv2'" in html
+    assert "var lines = _i18nArray(lineKey, fallbackLines);" in html
+    assert "var rampEmote = difficulty === 'max' ? 'dominant' : 'surprised';" in html
+    assert "speakDuelDifficultyRampLine(currentDifficulty);" in html
+    assert "'过家家时间结束了'" in html
+    assert "'从现在起天上地下唯我独尊'" in html
+    assert "'现在你才是挑战者'" in html
+    assert "'如果未来是你的，证明给我看！'" in html
+    assert "'今天手感不太好，下球我要认真了'" in html
+    assert "{ name: 'max', skillBase: 0.985" in html
+    assert "angleVar: 0.25" in html
+    assert "powerVar: 0.55" in html
+    assert "windupMs: 90" in html
+    assert "reactionMs: 120" in html
+    assert ", 0.40, 0.995)" in html
+
+
+@pytest.mark.unit
+def test_badminton_yui_rally_return_uses_pro_difficulty_table():
+    html = _badminton_html()
+
+    assert "shot.angle = clamp(43 + Math.random()" not in html
+    assert "shot.power = clamp(50 + Math.random()" not in html
+    assert "var diff = getEffectiveDuelDifficulty();" in html
+    assert "var previewDiff = getEffectiveDuelDifficulty();" in html
+    assert "var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);" in html
+    assert "shot.angle = clamp(shot.angle - Math.min(2.5, game.duel.rallyHits * 0.16), 38, 52);" in html
+    assert "shot.power = clamp(shot.power + returnPressureBoost, 48, 66);" in html
+
+
+@pytest.mark.unit
+def test_badminton_yui_bubble_anchors_to_avatar_and_supports_emote_marks():
+    html = _badminton_html()
+
+    assert "var BADMINTON_BUBBLE_EMOTE_IMAGES = {" in html
+    assert 'font: 16px/1.45 "PingFang SC", "Segoe UI", sans-serif;' in html
+    assert "max-width: 380px; text-align: left;" in html
+    assert "padding: 12px 15px; border-radius: 8px;" in html
+    assert ".neko-bubble-body" in html
+    assert ".neko-bubble-text" in html
+    assert ".neko-bubble-emote" in html
+    assert "display: flex; align-items: center; gap: 12px;" in html
+    assert "flex: 0 0 72px; width: 72px; height: 72px;" in html
+    assert "surprised: '/static/game/games/badminton/images/emotes/yui-surprised.png'" in html
+    assert "dominant: '/static/game/games/badminton/images/emotes/yui-dominant.png'" in html
+    assert "awkward: '/static/game/games/badminton/images/emotes/yui-awkward.png'" in html
+    assert "joy: '/static/game/games/badminton/images/emotes/yui-joy.png'" in html
+    assert "function positionBubbleNearYui() {" in html
+    assert "var anchor = getActiveAvatarContainer();" in html
+    assert "bubble.style.left = clamp(anchorX, 96, window.innerWidth - 96) + 'px';" in html
+    assert "bubble.style.top = clamp(anchorY, 70, window.innerHeight - 120) + 'px';" in html
+    assert "if (bubble.classList.contains('show')) positionBubbleNearYui();" in html
+    assert "function renderBubbleContent(text, emote) {" in html
+    assert "function showBubbleEmote(emote, control) {" in html
+    assert "body.dataset.emoteOnly = text ? 'false' : 'true';" in html
+    assert '.neko-bubble-body[data-emote-only="true"] .neko-bubble-text { display: none; }' in html
+    assert "renderBubbleContent(text, getBubbleEmote(control || {}));" in html
+    assert "var sticker = document.createElement('img');" in html
+    assert "sticker.className = 'neko-bubble-emote';" in html
+    assert "sticker.dataset.emote = emote;" in html
+    assert "sticker.src = BADMINTON_BUBBLE_EMOTE_IMAGES[emote] || BADMINTON_BUBBLE_EMOTE_IMAGES.surprised;" in html
+    assert "sticker.decoding = 'async';" in html
+    assert "copy.className = 'neko-bubble-text';" in html
+    assert "copy.textContent = text;" in html
+    assert "if (expression === 'dominant' || expression === 'pro' || expression === 'serious') return 'dominant';" in html
+    assert "if (expression === 'awkward' || expression === 'excuse' || expression === 'sweat') return 'awkward';" in html
+    assert "if (expression === 'joy' || expression === 'happy' || expression === 'cheer' || expression === 'celebrate') return 'joy';" in html
+    assert "if (mood === 'happy') return 'joy';" in html
+    assert "{ expression: 'awkward', intensity: 'medium', mood: 'surprised', emote: 'awkward' }" in html
+    for emote in ("surprised", "dominant", "awkward", "joy"):
+        path = BADMINTON_EMOTES_DIR / f"yui-{emote}.png"
+        assert path.exists()
+        assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@pytest.mark.unit
+def test_badminton_yui_smash_result_uses_contextual_emotes():
+    html = _badminton_html()
+    finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]
+    emote_start = html.index("function showYuiDuelResultEmote(scored, shotType, ball, pointWinner) {")
+    emote_section = html[emote_start:html.index("function finishDuelShot(", emote_start)]
+
+    assert "function showYuiDuelResultEmote(scored, shotType, ball, pointWinner) {" in html
+    assert "if (ball && ball.shooter === 'neko' && ball.isSmash) {" in emote_section
+    assert "if (scored) {\n        showBubbleEmote('dominant', { expression: 'dominant', intensity: 'high', mood: 'surprised' });\n        return;\n      }" in emote_section
+    assert "if (missType === 'net' || missType === 'net_touch') {" in emote_section
+    assert "showBubbleEmote('awkward', { expression: 'awkward', intensity: 'medium', mood: 'surprised' });" in emote_section
+    assert "if (pointWinner === 'neko') {" in emote_section
+    assert "showBubbleEmote('joy', { expression: 'joy', intensity: 'medium', mood: 'happy' });" in emote_section
+    assert "if (pointWinner === 'player' && scored && ball && ball.shooter === 'player') {" in emote_section
+    assert "showBubbleEmote('surprised', { expression: 'surprised', intensity: 'medium', mood: 'surprised' });" in emote_section
+    assert "showYuiDuelResultEmote(scored, shotType, ball, pointWinner);" in finish_duel
+
+
+@pytest.mark.unit
 def test_badminton_audio_config_contract():
     source = (ROOT / "static" / "game" / "games" / "badminton" / "badminton-audio-config.js")
     assert source.exists()
@@ -313,6 +423,16 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.title",
         "badminton.loading.title",
         "badminton.loading.subtitle",
+        "badminton.startScreen.readyToStart",
+        "badminton.startScreen.startButton",
+        "badminton.startScreen.never",
+        "badminton.startTutorial.title",
+        "badminton.startTutorial.aim",
+        "badminton.startTutorial.charge",
+        "badminton.startTutorial.release",
+        "badminton.startTutorial.jump",
+        "badminton.startTutorial.duel",
+        "badminton.startTutorial.duel11",
         "badminton.modeSwitcher",
         "badminton.audio.controls",
         "badminton.memoryOption.label",
@@ -406,6 +526,7 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.court.baseline",
         "badminton.toast.difficulty",
         "badminton.toast.nekoShoot",
+        "badminton.toast.nekoSmash",
         "badminton.toast.nekoThinking",
         "badminton.toast.nekoTurn",
         "badminton.toast.copyNeko",
@@ -441,6 +562,8 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.lines.pressure.playerBehind",
         "badminton.lines.duel.clutch",
         "badminton.lines.duel.excuse",
+        "badminton.lines.duel.difficultyLv2",
+        "badminton.lines.duel.difficultyMax",
         "badminton.lines.mindGame",
         "badminton.lines.easterEgg.lateNight",
         "badminton.lines.easterEgg.xmas",
@@ -483,6 +606,16 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
         missing = sorted(key for key in required_keys if _get_nested(payload, key) is None)
         assert not missing, f"{locale_path.name} missing badminton i18n keys: {missing}"
+        duel_title = _get_nested(payload, "badminton.hud.duelTitle")
+        eleven_point_markers = ("11", "十一", "１１")
+        assert isinstance(duel_title, str) and any(
+            marker in duel_title for marker in eleven_point_markers
+        ), (
+            f"{locale_path.name} badminton.hud.duelTitle should mention the 11-point win rule"
+        )
+        assert len(_get_nested(payload, "badminton.lines.duel.excuse")) == 2
+        assert len(_get_nested(payload, "badminton.lines.duel.difficultyLv2")) == 2
+        assert len(_get_nested(payload, "badminton.lines.duel.difficultyMax")) == 4
 
 
 @pytest.mark.unit
@@ -1109,6 +1242,25 @@ def test_badminton_duel_uses_eleven_miss_elimination_instead_of_five_round_cap()
 
 
 @pytest.mark.unit
+def test_badminton_result_bgm_only_starts_once_per_completed_game():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    show_result = html[html.index("function showResult() {"):html.index("function persistCompletedResult()", html.index("function showResult() {"))]
+    reset_start = html.index("function resetGame() {")
+    reset_section = html[reset_start:html.index("function updateHud()", reset_start)]
+    result_bgm_start = html.index("function playResultBgmOnce() {")
+    result_bgm_section = html[result_bgm_start:html.index("function showResult()", result_bgm_start)]
+
+    assert "resultBgmPlayed: false," in html
+    assert "function playResultBgmOnce() {" in html
+    assert "if (game.resultBgmPlayed) return false;" in result_bgm_section
+    assert "game.resultBgmPlayed = true;" in result_bgm_section
+    assert "badmintonGameAudio.sync('game-over');" in result_bgm_section
+    assert "playResultBgmOnce();" in show_result
+    assert "badmintonGameAudio.sync('game-over');" not in show_result.replace("playResultBgmOnce();", "")
+    assert "game.resultBgmPlayed = false;" in reset_section
+
+
+@pytest.mark.unit
 def test_badminton_normal_chat_request_carries_client_timeout_for_memory_guard():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
     chat_start = html.index("var chatClientTimeoutMs = 6500;")
@@ -1196,9 +1348,11 @@ def test_badminton_starts_route_after_character_resolution_before_avatar_loading
     assert "lanlan_name: routeLanlanName" in html
     assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return res;" in html
     assert "applyRouteIdentity(res.state);" in html
+    assert "function startBadmintonFromStartScreen(options) {" in html
+    assert "badmintonRouteStartPromise = startRouteAfterCharacterReady();" in html
     startup = html[html.rindex("afterInitialPaint(function () {"):]
-    assert startup.index("var routeReady = startRouteAfterCharacterReady();") < startup.index("var nekoAvatarReady = initNekoAvatar();")
-    assert "scheduleBadmintonLoadingDismiss([routeReady, playerAvatarReady, nekoAvatarReady]);" in startup
+    assert startup.index("var characterReady = loadBadmintonCharacter();") < startup.index("var nekoAvatarReady = initNekoAvatar();")
+    assert "scheduleBadmintonLoadingDismiss([characterReady, playerAvatarReady, nekoAvatarReady]);" in startup
 
 
 @pytest.mark.unit
@@ -1244,7 +1398,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "SENSEI_LIVE2D_PATH" not in html
     assert "badmintonPlayerLive2DManager" not in html
     assert "_i18n('hud.nekoTurn', 'Yui 挥拍')" in html
-    assert "_i18n('hud.duelTitle', 'Yui 对拉模式：轮流挥拍，谁先失误 3 球谁输')" in html
+    assert "_i18n('hud.duelTitle', 'Yui 对拉模式：轮流挥拍，先到 11 分获胜')" in html
     assert "_i18n('result.outcome.nekoWin', 'Yui 赢了')" in html
     assert "Neko挥拍" not in html
     assert "Neko 对拉模式" not in html
@@ -1265,8 +1419,8 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var NET_COLS = 17;" in html
     assert "var NET_ROWS = 7;" in html
     assert "var NET_CONTACT_RADIUS = 42;" in html
-    assert "var NET_CONTACT_IMPULSE = 240;" in html
-    assert "var NET_CONTACT_HOLD_MS = 180;" in html
+    assert "var NET_CONTACT_IMPULSE = 320;" in html
+    assert "var NET_CONTACT_HOLD_MS = 230;" in html
     assert "function getSideViewCourtTop() {" in html
     assert "return FLOOR_Y - 62;" in html
     assert "function getSideViewCourtBottom() {" in html
@@ -1289,7 +1443,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var bottomLeft = netNodes[0][NET_ROWS - 1];" in html
     assert "var bottomRight = netNodes[NET_COLS - 1][NET_ROWS - 1];" in html
     assert "meshGrad.addColorStop" not in html
-    assert "var rippleY = (rowT - 0.5) * 0.12 * NET_CONTACT_IMPULSE * impact * weight;" in html
+    assert "var rippleY = (rowT - 0.5) * 0.16 * NET_CONTACT_IMPULSE * impact * weight;" in html
     assert "var dropY = NET_CONTACT_IMPULSE * impact * weight;" not in html
     assert "for (var row = 0; row < NET_ROWS; row++) {" in html
     assert "for (var meshCol = 0; meshCol < NET_COLS; meshCol += 2) {" in html
@@ -1449,7 +1603,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "z <= getNetTopZ() + shuttleRadius * 0.12" in html
     assert "function applyNetContactImpulse(ball, crossing) {" in html
     assert "var incomingSpeed = typeof ball.speed === 'function'" in html
-    assert "var impact = clamp(incomingSpeed / 360, 0.55, 1.35);" in html
+    assert "var impact = clamp(incomingSpeed / 330, 0.68, 1.55);" in html
     assert "node.vx += recoilX;" in html
     assert "node.vy += rippleY;" in html
     assert "function applyMidcourtNetContact(ball, crossing) {" in html
@@ -1458,8 +1612,8 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "ball.netTouched = true;" in html
     assert "ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;" in html
     assert "applyNetContactImpulse(ball, crossing);" in html
-    assert "ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.22, 32, 130);" in html
-    assert "ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.18 + 115, 115);" in html
+    assert "ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.14, 24, 88);" in html
+    assert "ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + 132, 132);" in html
     assert "applyMidcourtNetContact(ball, netCrossing);" in html
     assert "var targetLeft = direction > 0 ? BADMINTON.netX + ballRadius * 0.5 : BADMINTON.courtLeft;" in html
     assert "var targetRight = direction > 0 ? BADMINTON.courtRight : BADMINTON.netX - ballRadius * 0.5;" in html
@@ -1716,6 +1870,8 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
     assert "var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';" in html
     assert "return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);" in html
     assert "function isIncomingPlayerShuttleInReach(ball) {" in html
+    assert "var PLAYER_RETURN_REACH_X = 84;" in html
+    assert "var PLAYER_RETURN_REACH_Y = 108;" in html
     assert "function canPlayerReturnIncomingShuttle() {" in html
 
     assert "function shouldIgnoreBadmintonPointerEvent(ev) {" in html
@@ -1741,7 +1897,7 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
     assert "window.addEventListener('mousemove', function (ev) {" in mousedown
     assert "window.addEventListener('mousedown', function (ev) {" in mousedown
     assert "handleBadmintonPointerDown(ev);" in mousedown
-    assert "if (!canPlayerControlShot()) return;" in mousedown
+    assert "if (!canPlayerChargeShot()) return;" in mousedown
     assert "if (game.state !== 'ready') return;" not in mousedown
     assert "if (!isPlayerTurn()) return;" not in mousedown
 
@@ -1750,6 +1906,7 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
         html.index("window.addEventListener('keydown'")
     ]
     assert "if (isBadmintonLoadingActive()) return;" in mouseup
+    assert "if (game.charging && returnIncomingPlayerShuttle()) return;" in mouseup
     assert "if (game.charging && canPlayerControlShot()) shoot();" in mouseup
     assert "game.charging = false;" in mouseup
 
@@ -1847,7 +2004,7 @@ def test_badminton_racket_swing_applies_physics_to_shuttle():
     assert "var verticalDeflection = impulse.incomingSpeed ? clamp((impulse.incomingVy || 0) * -0.10, -55, 55) : 0;" in html
     assert "var aiReturnLift = 0;" in html
     assert "var baseVy = -v * Math.sin(radians) * impulse.lift + verticalDeflection + aiReturnLift;" in html
-    assert "var smashDownVelocity = impulse.isSmash ? 250 + impulse.smashQuality * 210 + impulse.force * 90 : 0;" in html
+    assert "var smashDownVelocity = impulse.isSmash ? (shotShooter === 'neko' ? 180 + impulse.smashQuality * 145 + impulse.force * 54 : 250 + impulse.smashQuality * 210 + impulse.force * 90) : 0;" in html
     assert "shuttle.vy = impulse.isSmash ? smashDownVelocity : baseVy;" in html
     assert "function buildShuttleSpinRate(launchAngle, power, direction, impulse) {" in html
     assert "var baseSpinRate = direction * getBackspinRate(launchAngle, power, game.distance);" in html
@@ -1864,7 +2021,8 @@ def test_badminton_racket_swing_applies_physics_to_shuttle():
     assert "var drag = clamp((ball.dragPerSecond || 0) * subDt, 0, 0.18);" in html
     assert "var playerReturnWobble = impulse.incomingSpeed && direction > 0 ? 1 : 0;" in html
     assert "var playerReturnAngle = clamp(game.aimAngle - 10, 34, 48);" in html
-    assert "queueRacketSwing(playerReturnAngle, 53, 'player', { incomingBall: game.ball });" in html
+    assert "var returnPower = clamp(game.power || 56, 24, 100);" in html
+    assert "queueRacketSwing(playerReturnAngle, returnPower, 'player', { incomingBall: game.ball });" in html
     assert "var aero = ball.aero || null;" in html
     assert "var flutter = Math.sin((aero.flutterPhase || 0) + aero.age * (aero.flutterRate || 0)) * (aero.flutterStrength || 0);" in html
     assert "var slice = (aero.sliceAccel || 0) * Math.exp(-aero.age * 2.2);" in html
@@ -1937,10 +2095,10 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var shuttleCourtY = getShuttleCourtY(ball, false);" in html
     assert "var previousShuttleCourtY = getShuttleCourtY(ball, true);" in html
     assert "var shuttleZ = getShuttleCourtZ(ball, false);" in html
-    assert "var yuiContactTopZ = screenYToCourtZ(contact.y - 92);" in html
-    assert "var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 18);" in html
-    assert "var yuiReachLeft = contact.x - 54;" in html
-    assert "var yuiReachRight = contact.x + 122;" in html
+    assert "var yuiContactTopZ = screenYToCourtZ(contact.y - 26);" in html
+    assert "var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);" in html
+    assert "var yuiReachLeft = contact.x;" in html
+    assert "var yuiReachRight = contact.x + 23;" in html
     assert "var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft" in html
     assert "&& Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;" in html
     assert "var inYuiReach = crossesYuiReach" in html
@@ -1948,10 +2106,15 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "&& shuttleZ >= yuiContactBottomZ" in html
     assert "game.duel.activeShooter = 'neko';" in html
     assert "game.duel.rallyHits += 1;" in html
-    assert "shot.angle = clamp(43 + Math.random() * 5 - Math.min(3, game.duel.rallyHits * 0.18), 38, 50);" in html
-    assert "shot.power = clamp(50 + Math.random() * 5 + Math.min(4, game.duel.rallyHits * 0.25), 46, 56);" in html
-    assert "showAssistHint(_i18n('toast.nekoReturn', 'Yui 回球'));" in html
-    assert "queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball });" in html
+    assert "var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);" in html
+    assert "shot.angle = clamp(shot.angle - Math.min(2.5, game.duel.rallyHits * 0.16), 38, 52);" in html
+    assert "shot.power = clamp(shot.power + returnPressureBoost, 48, 66);" in html
+    assert "var yuiSmashQuality = getYuiSmashQuality(ball, shot);" in html
+    assert "var yuiSmash = shouldYuiSmashReturn(ball, shot, yuiSmashQuality);" in html
+    assert "shot.angle = clamp(shot.angle - (10 + yuiSmashQuality * 5), 24, 46);" in html
+    assert "shot.power = clamp(shot.power + 7 + yuiSmashQuality * 9, 56, 78);" in html
+    assert "showAssistHint(_i18n(yuiSmash ? 'toast.nekoSmash' : 'toast.nekoReturn', yuiSmash ? 'Yui 扣杀！' : 'Yui 回球'));" in html
+    assert "queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball, smash: yuiSmash, smashQuality: yuiSmashQuality });" in html
 
     update_start = html.index("function update(dt) {")
     update_section = html[update_start:html.index("function drawDistanceMarkers()", update_start)]
@@ -2027,7 +2190,7 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "function isPlayerReceivingReturn() {" in html
     assert "return !!(game.ball && game.ball.awaitingReturnBy === 'player');" in html
     assert "return getPlayerVrmRacketContactPoint() || getShotOrigin();" in html
-    assert "return isPlayerReceivingReturn() && !game.ball.resolved && isIncomingPlayerShuttleInReach(game.ball);" in html
+    assert "return isPlayerReceivingReturn() && !game.ball.resolved && !game.ball.hitNet && isIncomingPlayerShuttleInReach(game.ball);" in html
     assert "function maybePlayerReceiveIncomingShuttle(ball) {" in html
     assert "if (ball.shooter !== 'neko' || ball.direction !== -1 || ball.awaitingReturnBy) return false;" in html
     assert "var shuttleCourtY = getShuttleCourtY(ball, false);" in html
@@ -2042,9 +2205,32 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "ball.awaitingReturnBy = 'player';" in html
     assert "ball.returnDeadlineAt = performance.now() + 2400;" in html
     assert "showAssistHint(_i18n('toast.playerReturn', '接住 Yui 的回球'));" in html
+    assert 'id="assist-hint-text"' in html
+    assert 'id="assist-charge-meter"' not in html
+    assert 'id="assist-charge-fill"' not in html
+    assert "function getAssistChargeMeterState() {" not in html
+    assert "function updateAssistChargeMeter() {" not in html
+    assert "function isIncomingPlayerReturnCandidate() {" in html
+    assert "function canPrechargePlayerReturn() {" not in html
+    assert "function canPlayerPrepareIncomingReturn() {" in html
+    assert "if (isPlayerReceivingReturn()) return game.state === 'ready' && isIncomingPlayerReturnCandidate();" in html
+    assert "return game.state === 'in_flight' && isIncomingPlayerReturnCandidate();" in html
+    assert "function canPlayerChargeShot() {" in html
+    assert "return canPlayerControlShot() || canPlayerPrepareIncomingReturn();" in html
+    assert "var PLAYER_CHARGE_SPEED = 145;" in html
+    assert "function stepPlayerCharge(dt) {" in html
+    assert "game.power += game.chargeDir * dt * PLAYER_CHARGE_SPEED;" in html
+    assert "if (game.charging && canPrechargePlayerReturn()) stepPlayerCharge(dt);" not in html
+    assert "var isChargingPlayerShot = game.charging && canPlayerChargeShot();" in html
+    assert "if (isChargingPlayerShot) stepPlayerCharge(dt);" in html
     assert "if (game.ball && game.ball.shooter !== shotShooter && !incomingBall) game.ball = null;" in html
+    assert "var preserveIncomingCharge = game.charging && canPlayerPrepareIncomingReturn();" in html
+    assert "game.charging = preserveIncomingCharge;" in html
+    assert "if (!preserveIncomingCharge) {" in html
     assert "var receivingReturn = isPlayerReceivingReturn();" in html
-    assert "var shotPower = receivingReturn ? 56 : game.power;" in html
+    assert "var shotPower = receivingReturn ? clamp(game.power || 56, 24, 100) : game.power;" in html
+    assert "var returnPower = clamp(game.power || 56, 24, 100);" in html
+    assert "queueRacketSwing(playerReturnAngle, returnPower, 'player', { incomingBall: game.ball });" in html
     assert "queueRacketSwing(game.aimAngle, shotPower, 'player', { forceScore: shouldGuaranteeFirstTutorialShot, incomingBall: receivingReturn ? game.ball : null });" in html
 
     update_start = html.index("function update(dt) {")
@@ -2067,16 +2253,38 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     draw_start = html.index("function drawAiming() {")
     draw_section = html[draw_start:html.index("function drawBall()", draw_start)]
     assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
-    assert "quadraticCurveTo" not in draw_section
-    assert "var meterX" not in draw_section
-    assert "fillRect(meterX" not in draw_section
+    assert "function drawReturnChargeTrace(" not in draw_section
+    assert "function drawPlayerChargeMeter(" in draw_section
+    assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));" in draw_section
+    assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
+    assert "if (!canReturnNow) return;" not in draw_section
+    assert "var cueAlpha = canReturnNow ? 1 : 0.46;" in draw_section
+    assert "'rgba(114,216,255,.055)'" in draw_section
+    assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
+    assert "drawReturnChargeTrace" not in draw_section
+    assert "var meterX = getPlayerX() - meterW / 2;" in draw_section
+    assert "var meterY = getPlayerY() - 146;" in draw_section
+    assert "aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);" in draw_section
+    assert "var chargePercent = game.charging ? clamp(game.power, 0, 100) : clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
+
+    pointer_down = html[
+        html.index("function handleBadmintonPointerDown(ev) {"):
+        html.index("canvas.addEventListener('mousemove'", html.index("function handleBadmintonPointerDown(ev) {"))
+    ]
+    assert "if (returnIncomingPlayerShuttle()) return;" not in pointer_down
+    assert "if (!canPlayerChargeShot()) return;" in pointer_down
+    assert pointer_down.index("if (!canPlayerChargeShot()) return;") < pointer_down.index("game.charging = true;")
 
     mousedown = html[
         html.index("function handleBadmintonPointerDown(ev) {"):
         html.index("window.addEventListener('mouseup'")
     ]
-    assert "if (isPlayerReceivingReturn()) {\n      game.power = 56;\n      shoot();\n      return;\n    }" in mousedown
-    assert mousedown.index("if (isPlayerReceivingReturn())") < mousedown.index("game.charging = true;")
+    assert "game.power = 56;" not in mousedown
+    assert "if (!canPlayerChargeShot()) return;" in mousedown
+    assert "canPrechargePlayerReturn" not in mousedown
+    assert mousedown.index("if (!canPlayerChargeShot()) return;") < mousedown.index("game.charging = true;")
+    mouseup = html[html.index("window.addEventListener('mouseup'"):html.index("window.addEventListener('keydown'")]
+    assert "if (game.charging && returnIncomingPlayerShuttle()) return;" in mouseup
 
 
 @pytest.mark.unit
@@ -2105,6 +2313,11 @@ def test_badminton_space_jump_enables_air_smash():
     assert "function getPlayerSmashQuality(incomingBall) {" in html
     assert "function getPlayerSmashSweetSpot() {" in html
     assert "function isPlayerSmashReady(incomingBall) {" in html
+    assert "function getYuiSmashQuality(incomingBall, shot) {" in html
+    assert "function shouldYuiSmashReturn(incomingBall, shot, quality) {" in html
+    assert "if (!incomingBall || !shot || quality < 0.52) return false;" in html
+    assert "var yuiSmashClearance = contact.y - (incomingBall.y || contact.y);" in html
+    assert "if (yuiSmashClearance < 58) return false;" in html
     assert "return clamp(game.playerCourt.y - getPlayerJumpOffset(), PLAYER_COURT_Y_MIN - PLAYER_JUMP_MAX_OFFSET, PLAYER_COURT_Y_MAX);" in html
     assert "game.playerJump.offset += game.playerJump.velocity * dt;" in html
     assert "game.playerJump.velocity -= PLAYER_JUMP_GRAVITY * dt;" in html
@@ -2115,8 +2328,8 @@ def test_badminton_space_jump_enables_air_smash():
         html.index("function launchShot(angle, power, shooter, swingImpulse) {")
     ]
     assert "var swingOptions = arguments.length > 4 && arguments[4] ? arguments[4] : {};" in swing_section
-    assert "var isSmash = shooter !== 'neko' && !!swingOptions.smash;" in swing_section
-    assert "var smashQuality = isSmash ? getPlayerSmashQuality(incomingBall) : 0;" in swing_section
+    assert "var isSmash = !!swingOptions.smash;" in swing_section
+    assert "var smashQuality = isSmash ? (shooter === 'neko' ? clamp(Number(swingOptions.smashQuality) || 0.72, 0, 1) : getPlayerSmashQuality(incomingBall)) : 0;" in swing_section
     assert "if (isSmash && smashQuality <= 0) isSmash = false;" in swing_section
     assert "var smashSpeedBonus = isSmash ? 130 + smashQuality * 150 : 0;" in swing_section
     assert "isSmash: isSmash," in swing_section
@@ -2126,9 +2339,17 @@ def test_badminton_space_jump_enables_air_smash():
         html.index("function queueRacketSwing(angle, power, shooter, options) {"):
         html.index("function returnIncomingPlayerShuttle() {")
     ]
-    assert "var smash = shotShooter === 'player' && (options && options.smash || isPlayerSmashReady(incomingBall));" in queue_section
-    assert "impulse: buildSwingImpulse(angle, power, shotShooter, incomingBall, { smash: smash })," in queue_section
+    assert "var smash = !!(options && options.smash);" in queue_section
+    assert "if (shotShooter === 'player') smash = smash || isPlayerSmashReady(incomingBall);" in queue_section
+    assert "var smashQuality = options && typeof options.smashQuality === 'number' ? options.smashQuality : 0;" in queue_section
+    assert "impulse: buildSwingImpulse(angle, power, shotShooter, incomingBall, { smash: smash, smashQuality: smashQuality })," in queue_section
+    assert "if (shotShooter === 'player') setPlayerAction('shooting', 460);" in queue_section
+    assert "else setYuiAction(smash ? 'smashing' : 'shooting', smash ? 520 : 420);" in queue_section
+    assert "if (smash && shotShooter === 'player') {" in queue_section
     assert "showAssistHint(_i18n('toast.smash', '跳杀！'));" in queue_section
+    assert ".neko-avatar-container[data-court-avatar=\"opponent\"].smashing { animation: yui-smashing .52s cubic-bezier(.2,.82,.18,1); }" in html
+    assert "@keyframes yui-smashing {" in html
+    assert "container.classList.remove('charging', 'shooting', 'smashing', 'react-celebrate', 'react-disappointed');" in html
 
     launch_section = html[
         html.index("function launchShot(angle, power, shooter, swingImpulse) {"):
@@ -2136,7 +2357,7 @@ def test_badminton_space_jump_enables_air_smash():
     ]
     assert "var launchAngle = impulse.isSmash ? clamp(angle - (20 + impulse.smashQuality * 12), 12, 48) : angle;" in launch_section
     assert "y: origin.y - PLAYER_SMASH_CONTACT_LIFT * (0.7 + impulse.smashQuality * 0.6)" in launch_section
-    assert "var smashDownVelocity = impulse.isSmash ? 250 + impulse.smashQuality * 210 + impulse.force * 90 : 0;" in launch_section
+    assert "var smashDownVelocity = impulse.isSmash ? (shotShooter === 'neko' ? 180 + impulse.smashQuality * 145 + impulse.force * 54 : 250 + impulse.smashQuality * 210 + impulse.force * 90) : 0;" in launch_section
     assert "shuttle.vy = impulse.isSmash ? smashDownVelocity : baseVy;" in launch_section
     assert "shuttle.isSmash = !!impulse.isSmash;" in launch_section
     assert "shuttle.smashQuality = impulse.smashQuality || 0;" in launch_section

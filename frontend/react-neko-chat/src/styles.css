@@ -68,6 +68,10 @@ svg {
 .app-shell {
   width: 100%;
   height: 100%;
+  /* Positioned containing block for absolutely-placed overlays anchored to the
+     surface (e.g. .chat-focus-overlay). The compact variant already sets this;
+     declaring it on the base keeps the full surface consistent. */
+  position: relative;
 }
 
 .avatar-cursor-overlay {
@@ -409,7 +413,7 @@ svg {
   }
 }
 /* SR-only — gives assistive tech the "in Focus" tell without any visual text
-   (the glow above is the visual cue). */
+   (the topbar badge below is aria-hidden, so this stays the single AT announce). */
 .chat-surface-focus-indicator {
   position: absolute;
   width: 1px;
@@ -420,6 +424,107 @@ svg {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+/* ===== Focus 凝神 — charge-driven edge glow =====
+   useFocusGlow (driven by the streamed `focus_charge`) sets on `.app-shell`:
+     --focus-glow            intensity 0..1 that the box-shadows scale by
+     data-focus-glow="true"  charge >= onset (0.3) — glow visible
+     data-focus-breathing    charge >= enter (0.6) — the non-linear jump + breathe
+   Below enter: a steady glow rising with charge. At/above enter: a step up to
+   the baseline + breathing whose peak scales toward the 1.0 cap (brighter, and
+   — via the slower time decay — more persistent). Compact glows the rounded
+   capsule's OUTER ring; full rings the panel via the on-top overlay (z-index 60,
+   pointer-events:none) so neither is occluded. The pill/banner is gone. */
+.chat-focus-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 900; /* above topbar/composer/messages so the band isn't occluded; below the history modal (100001) */
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* --- Full surface: on-top inset glow band on the overlay. A DEFINED bright
+   band (thick spread border + a tight-ish halo) at HIGH alpha — needs to read
+   clearly on the large panel, not wash out into faint diffuse haze. --- */
+.app-shell:not(.chat-surface-mode-compact)[data-focus-glow="true"] .chat-focus-overlay {
+  box-shadow:
+    inset 0 0 calc(12px + 28px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(150, 195, 255, calc(0.32 + 0.45 * var(--focus-glow, 0))),
+    inset 0 0 calc(30px + 64px * var(--focus-glow, 0)) calc(3px + 10px * var(--focus-glow, 0)) rgba(130, 180, 255, calc(0.2 + 0.4 * var(--focus-glow, 0)));
+}
+.app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
+  animation: focus-glow-breathe-full 3.4s ease-in-out infinite;
+}
+@keyframes focus-glow-breathe-full {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 calc(20px * var(--focus-glow, 0.6)) calc(2px * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc(0.5 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(44px * var(--focus-glow, 0.6)) calc(7px * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc(0.38 * var(--focus-glow, 0.6)));
+  }
+  50% {
+    box-shadow:
+      inset 0 0 calc(46px * var(--focus-glow, 0.6)) calc(9px * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc(0.95 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(100px * var(--focus-glow, 0.6)) calc(22px * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc(0.78 * var(--focus-glow, 0.6)));
+  }
+}
+
+/* Electron /chat_full is a translucent GLASS window — the desktop shows through,
+   so the blue glow that reads well on index.html's opaque white edge loses
+   contrast. Only in the Electron runtime: raise the alpha floor hard (so even
+   the low/mid charge range is clearly visible against glass) and lift the peak.
+   index.html (no neko-electron-runtime) keeps the already-good base above. */
+body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-glow="true"] .chat-focus-overlay {
+  box-shadow:
+    inset 0 0 calc(14px + 24px * var(--focus-glow, 0)) calc(2px + 4px * var(--focus-glow, 0)) rgba(165, 205, 255, calc(0.46 + 0.3 * var(--focus-glow, 0))),
+    inset 0 0 calc(30px + 56px * var(--focus-glow, 0)) calc(4px + 10px * var(--focus-glow, 0)) rgba(140, 185, 255, calc(0.3 + 0.3 * var(--focus-glow, 0)));
+}
+body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
+  animation: focus-glow-breathe-full-electron 3.4s ease-in-out infinite;
+}
+/* The non-linear jump at 0.6 is intentional but kept SMALL: the breathing band
+   only sits a touch above the just-below-0.6 (≈0.59) level and climbs gently to
+   the cap — not the old hard ramp to full brightness. */
+@keyframes focus-glow-breathe-full-electron {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 calc(16px + 14px * var(--focus-glow, 0.6)) calc(2px + 3px * var(--focus-glow, 0.6)) rgba(165, 205, 255, calc(0.45 + 0.12 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(32px + 28px * var(--focus-glow, 0.6)) calc(5px + 7px * var(--focus-glow, 0.6)) rgba(140, 185, 255, calc(0.32 + 0.1 * var(--focus-glow, 0.6)));
+  }
+  50% {
+    box-shadow:
+      inset 0 0 calc(26px + 20px * var(--focus-glow, 0.6)) calc(5px + 5px * var(--focus-glow, 0.6)) rgba(175, 210, 255, calc(0.55 + 0.15 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(55px + 30px * var(--focus-glow, 0.6)) calc(12px + 10px * var(--focus-glow, 0.6)) rgba(140, 185, 255, calc(0.4 + 0.12 * var(--focus-glow, 0.6)));
+  }
+}
+
+/* --- Compact surface: outer glow on the rounded capsule frame --- */
+.app-shell.chat-surface-mode-compact[data-focus-glow="true"] .compact-chat-surface-frame {
+  box-shadow:
+    0 0 0 1px rgba(150, 190, 255, calc(0.3 + 0.5 * var(--focus-glow, 0))),
+    0 0 calc(6px + 22px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(120, 170, 255, calc(0.25 + 0.55 * var(--focus-glow, 0)));
+}
+.app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
+  animation: focus-glow-breathe-compact 3.4s ease-in-out infinite;
+}
+@keyframes focus-glow-breathe-compact {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(150, 190, 255, calc(0.35 * var(--focus-glow, 0.6))),
+      0 0 calc(8px * var(--focus-glow, 0.6)) 1px rgba(120, 170, 255, calc(0.4 * var(--focus-glow, 0.6)));
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(150, 190, 255, calc(0.9 * var(--focus-glow, 0.6))),
+      0 0 calc(30px * var(--focus-glow, 0.6)) calc(6px * var(--focus-glow, 0.6)) rgba(120, 170, 255, calc(0.85 * var(--focus-glow, 0.6)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay,
+  body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay,
+  .app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
+    animation: none;
+  }
 }
 
 .window-topbar {
@@ -2062,11 +2167,6 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
       rgba(255, 255, 255, 0) 100%
     );
   border-color: transparent;
-}
-
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option-text {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
-  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
@@ -3782,9 +3882,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-wheel-charge-first-angle: 0deg;
   --compact-tool-wheel-charge-second-angle: 0deg;
   --compact-tool-wheel-charge-third-angle: 0deg;
-  --compact-tool-wheel-selection-angle: 29.59deg;
-  --compact-tool-wheel-selection-pointer-deflection-angle: 0deg;
-  --compact-tool-wheel-selection-pointer-deflection-shift: 0px;
+  --compact-tool-wheel-selection-angle: 45deg;
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
@@ -3927,13 +4025,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform:
     translate(-1px, -50%)
     rotate(var(--compact-tool-wheel-selection-angle))
-    translateX(43px)
-    translateY(var(--compact-tool-wheel-selection-pointer-deflection-shift))
-    rotate(var(--compact-tool-wheel-selection-pointer-deflection-angle));
+    translateX(43px);
   transform-origin: 1px 50%;
   transition:
     opacity 0.16s ease,
-    transform 0.08s cubic-bezier(0.18, 0.86, 0.32, 1.24);
+    transform 0.14s cubic-bezier(0.22, 0.78, 0.24, 1);
   z-index: 4;
 }
 
@@ -4134,6 +4230,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::after {
+  background: var(--compact-tool-button-active-fill);
+  box-shadow: var(--compact-tool-button-active-shadow);
+}
+
+.compact-input-tool-fan button.compact-input-tool-item[data-compact-tool-active="true"]:not(:disabled)[data-compact-tool-pointer-hovered="true"]::after,
+.compact-input-tool-fan button.compact-input-tool-item[data-compact-tool-active="true"]:not(:disabled):focus-within::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-active="true"][data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled))::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-active="true"]:has(> .composer-emoji-btn:not(:disabled)):focus-within::after {
   background: var(--compact-tool-button-active-fill);
   box-shadow: var(--compact-tool-button-active-shadow);
 }

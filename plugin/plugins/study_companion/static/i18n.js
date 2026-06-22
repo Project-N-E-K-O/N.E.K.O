@@ -143,6 +143,12 @@ const I18n = {
         el.setAttribute('placeholder', this.t(key, el.getAttribute('placeholder') || ''));
       }
     });
+    root.querySelectorAll('[data-i18n-alt]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-alt');
+      if (key) {
+        el.setAttribute('alt', this.t(key, el.getAttribute('alt') || ''));
+      }
+    });
     root.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
       const key = el.getAttribute('data-i18n-aria-label');
       if (key) {

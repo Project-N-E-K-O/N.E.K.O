@@ -28,6 +28,7 @@ import CompactExportHistoryPanel, {
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
+import { useFocusGlow } from './useFocusGlow';
 import {
   type ChatMessage,
   type MessageAction,
@@ -1287,6 +1288,13 @@ export default function FullChatSurface({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
+  // Focus 凝神: this frozen legacy full surface is rendered via App's early
+  // return (App.tsx), BEFORE the compact `focusActive` state exists — so it
+  // never receives that prop and must self-subscribe to the same backend
+  // `focus_state` signal. Self-contained on purpose (legacy isolation): it only
+  // reads the flag and reuses the shared `data-focus-active`/.chat-window glow
+  // CSS, touching no other legacy logic.
+  const [focusActive, setFocusActive] = useState(false);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
@@ -2042,6 +2050,23 @@ export default function FullChatSurface({
       speechPlaybackChannel?.close();
     };
   }, []);
+
+  // Focus 凝神 indicator: reflect backend enter/exit. Mirrors the compact
+  // surface's subscription (App.tsx) — app-websocket.js translates the
+  // `focus_state` ws message into this `neko-focus-state` event.
+  useEffect(() => {
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusActive(Boolean(detail && detail.active));
+    };
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
+  useFocusGlow(appShellRef);
 
   useEffect(() => {
     const textNode = compactPreviewTextRef.current;
@@ -4490,7 +4515,21 @@ export default function FullChatSurface({
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
+      data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {focusActive ? (
+        <div
+          className="chat-surface-focus-indicator"
+          role="status"
+          aria-live="polite"
+          title={i18n('chat.focusIndicator', '凝神中')}
+        >
+          <span className="chat-surface-focus-indicator-label">
+            {i18n('chat.focusIndicator', '凝神中')}
+          </span>
+        </div>
+      ) : null}
+      <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (

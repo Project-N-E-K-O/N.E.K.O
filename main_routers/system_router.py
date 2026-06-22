@@ -1639,8 +1639,13 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
-def _phase1_text_is_pass(text: str) -> bool:
-    """Return True when a Phase 1 section explicitly says PASS."""
+def _text_is_pass_sentinel(text: str) -> bool:
+    """Return True when ``text`` as a whole is the PASS skip sentinel.
+
+    Brackets are optional: matches both "[PASS]" (the prompted form) and a
+    bare "PASS" the model occasionally emits. Phase-agnostic — used by both
+    the Phase 1 section parser and the Phase 2 stream guards.
+    """
     return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
 
 
@@ -1723,14 +1728,14 @@ def _parse_unified_phase1_result(text: str) -> dict:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result['web'] = parsed_web
-        elif _phase1_text_is_pass(web_text):
+        elif _text_is_pass_sentinel(web_text):
             result['web_pass'] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
     if music_text:
         music_text = music_text.strip()
-        if _phase1_text_is_pass(music_text):
+        if _text_is_pass_sentinel(music_text):
             result['music_pass'] = True
         elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
@@ -1748,7 +1753,7 @@ def _parse_unified_phase1_result(text: str) -> dict:
     meme_text = sections.get('meme', '')
     if meme_text:
         meme_text = meme_text.strip()
-        if _phase1_text_is_pass(meme_text):
+        if _text_is_pass_sentinel(meme_text):
             result['meme_pass'] = True
         elif meme_text:
             keyword = re.sub(
@@ -6386,9 +6391,13 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = picked_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
-                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
-                    phase1_topics.append(('music', music_topic))
+                    # formatted_content 非空时 _format_music_content 必已输出至少一条
+                    # 曲目，所以这里实际不可达；保留为防御兜底，并与上面 picked_track
+                    # is None 路径对偶：没有可播曲目就不进 active_channels，守住
+                    # "music ∈ active_channels ⟺ selected_music_link 非空" 这条不变量，
+                    # 避免 Phase 2 出现音乐素材却无歌可投（发了 [MUSIC] 转译不出）。
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐 formatted_content 非空但无曲目数据，跳过音乐通道")
+                    music_content = None
 
         # ============================================================
         # 表情包话题组装（遍历候选 → 去重 → 限1张）
@@ -6550,9 +6559,12 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
-        # （冷却期时 music_content 已在上游被清空，music_topic 必为 None，此分支不会命中）
-        if music_topic and not is_playing_music and not music_cooldown:
+        # gate 钉在 selected_music_link（本轮真选中、可播的曲目）而非 music_topic：
+        # 保证 Phase 2 prompt 一旦出现音乐素材 / output-format 列出 [MUSIC]，下游必有
+        # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
+        # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
+        # music_content / selected_music_link 已在上游清空，此分支自然不命中。
+        if selected_music_link and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
@@ -6660,7 +6672,8 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         dynamic_context_for_phase2 = ""
-        if music_topic:
+        # 同 music_section：[MUSIC] tag 强制指令只在真有可播曲目时注入。
+        if selected_music_link:
             dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
@@ -6837,9 +6850,14 @@ async def proactive_chat(request: Request):
                                 if _leak_tag:
                                     source_tag = _leak_tag
                             tag_parsed = True
-                            
-                            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                                print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+
+                            # 模型本该输出带括号的 [PASS]，但偶尔吐裸 PASS：tag 正则
+                            # 认不出 → source_tag 空、'[PASS]' 也不在 cleaned 里。再补
+                            # 一道整段哨兵判定（fullmatch，方括号可选），裸 PASS 与
+                            # [PASS] 一视同仁 abort；fullmatch 不会误伤正文里的 "pass"。
+                            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                                    or _text_is_pass_sentinel(cleaned)):
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
                                 aborted = True
                                 break
                             
@@ -6906,7 +6924,11 @@ async def proactive_chat(request: Request):
                 cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
                 if _leak_tag:
                     source_tag = _leak_tag
-            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
+            # 短 bare-PASS 回复（如整段就 "PASS"，4 字 < 80 无换行）流式期一直
+            # 在 buffer 里 continue、tag_parsed 始终 False，最终落到这里兜底。
+            # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
+            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                    or _text_is_pass_sentinel(cleaned)):
                 aborted = True
             elif cleaned.strip():
                 await _emit_safe(cleaned)

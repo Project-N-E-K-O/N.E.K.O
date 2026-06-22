@@ -4252,6 +4252,20 @@
              "title": "バドミントンコートに入場中",
              "subtitle": "コート、キャラクター、音声を読み込み中..."
          },
+         "startScreen": {
+             "readyToStart": "準備完了。クリックして開始",
+             "startButton": "開始",
+             "never": "今後表示しない"
+         },
+         "startTutorial": {
+             "title": "遊び方",
+             "aim": "マウスを上下に動かしてラケット角度を調整します。",
+             "charge": "左クリック長押しでチャージし、離すとスイングします。",
+             "release": "ライン、スイートスポット、距離が得点に影響します。",
+             "jump": "Space キーでジャンプスマッシュできます。",
+             "duel": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
+             "duel11": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。"
+         },
          "modeSwitcher": "バドミントンモード",
          "mode": {
              "spectator": "フリー練習",
@@ -4278,7 +4292,7 @@
              "chances": "残り {{count}}",
              "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
              "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
-             "duelTitle": "Neko 対戦：あなたと Neko が交互にショットします",
+             "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
              "timedTitle": "タイムアタック：60 秒間は何度でも打てます",
              "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
@@ -4395,6 +4409,7 @@
          "toast": {
              "difficulty": "難度 {{difficulty}}",
              "nekoShoot": "Neko のショット",
+             "nekoSmash": "Yui のスマッシュ！",
              "nekoThinking": "Neko が考え中",
              "nekoTurn": "Neko の番",
              "copyNeko": "Neko を再現",
@@ -4583,7 +4598,20 @@
                      "20連続？信じられない。"
                  ],
                  "clutch": "……これは決めなきゃ。",
-                 "excuse": "ああ、少し腕が疲れた。",
+                 "excuse": [
+                     "ああ、少し腕が疲れた。",
+                     "今日は調子が悪いだけ。次は本気でいく。"
+                 ],
+                 "difficultyLv2": [
+                     "ウォームアップは終わり。少し速くいくよ。",
+                     "おままごとの時間は終わり。"
+                 ],
+                 "difficultyMax": [
+                     "ここから本気でいくよ。",
+                     "今から天地で私が一番。",
+                     "今度はあなたが挑戦者だよ。",
+                     "未来があなたのものなら、証明してみせて！"
+                 ],
                  "line_in": [
                      "きれいに決まった！",
                      "きれいに決まった！"

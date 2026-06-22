@@ -2339,6 +2339,13 @@ const expectedKnowledge = zhBundle['ui.settings.knowledge.loaded_summary']
 const expectedMemory = zhBundle['ui.settings.memory.loaded_summary']
   .replace('{cards}', '12')
   .replace('{due}', '3');
+const initialOcrSummary = document.getElementById('settingsOcrSummary').textContent.trim();
+const initialKnowledgeSummary = document.getElementById('settingsKnowledgeSummary').textContent.trim();
+const initialMemorySummary = document.getElementById('settingsMemorySummary').textContent.trim();
+window.eval("updateStudySummaries({ habit: { available: true, checkin: { checked_in: true }, pomodoro: { state: 'idle' } } });");
+const checkedInStatus = document.getElementById('quickCheckinStatus').textContent.trim();
+window.eval("updateStudySummaries({ habit: { available: true, checkin: { checked_in: false }, pomodoro: { state: 'idle' } } });");
+const pendingCheckinStatus = document.getElementById('quickCheckinStatus').textContent.trim();
 
 const checks = [
   ['eyebrow', document.querySelector('.hero__eyebrow').textContent, zhBundle['ui.eyebrow']],
@@ -2347,11 +2354,13 @@ const checks = [
   ['duration value', document.getElementById('summaryDuration').textContent.trim(), '42 min'],
   ['goal label', document.querySelector('[data-summary-goal-label]').textContent.trim(), zhBundle['ui.label.goal']],
   ['goal value', document.getElementById('summaryGoal').textContent.trim(), '2/5'],
+  ['checked-in status', checkedInStatus, zhBundle['ui.status.checkin_done']],
+  ['pending checkin status', pendingCheckinStatus, zhBundle['ui.status.checkin_pending']],
   ['knowledge tab', document.getElementById('tab-knowledge').textContent.trim(), zhBundle['ui.settings.tab.knowledge']],
   ['first run title', document.getElementById('firstRunTitle').textContent.trim(), zhBundle['ui.onboarding.title']],
-  ['OCR summary', document.getElementById('settingsOcrSummary').textContent.trim(), expectedOcr],
-  ['knowledge summary', document.getElementById('settingsKnowledgeSummary').textContent.trim(), expectedKnowledge],
-  ['memory summary', document.getElementById('settingsMemorySummary').textContent.trim(), expectedMemory],
+  ['OCR summary', initialOcrSummary, expectedOcr],
+  ['knowledge summary', initialKnowledgeSummary, expectedKnowledge],
+  ['memory summary', initialMemorySummary, expectedMemory],
 ];
 for (const [label, actual, expected] of checks) {
   if (actual !== expected) {
@@ -3363,6 +3372,69 @@ eval(source);
         text=True,
         # Windows Actions runners can briefly starve plain Node subprocesses
         # while the full plugin suite is cleaning up browser-heavy tests.
+        timeout=45,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_i18n_scan_dom_localizes_alt_attributes() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    script = r"""
+const fs = require('node:fs');
+const source = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
+
+globalThis.window = globalThis;
+globalThis.document = { documentElement: { lang: '' } };
+globalThis.console = console;
+
+eval(source);
+
+function element(attrs) {
+  return {
+    attrs: { ...attrs },
+    textContent: '',
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    },
+    setAttribute(name, value) {
+      this.attrs[name] = value;
+    },
+  };
+}
+
+const image = element({
+  'data-i18n-alt': 'ui.coach.sprite_alt',
+  alt: 'Neko study companion',
+});
+const root = {
+  querySelectorAll(selector) {
+    return selector === '[data-i18n-alt]' ? [image] : [];
+  },
+};
+
+window.I18n._bundle = {
+  'ui.coach.sprite_alt': 'Localized companion alt',
+};
+window.I18n.scanDOM(root);
+
+if (image.getAttribute('alt') !== 'Localized companion alt') {
+  throw new Error(`unexpected alt: ${image.getAttribute('alt')}`);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_I18N_JS": str(plugin_dir / "static" / "i18n.js"),
+    }
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=plugin_dir,
+        env=env,
+        capture_output=True,
+        text=True,
         timeout=45,
         check=False,
     )

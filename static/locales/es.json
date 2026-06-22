@@ -4252,6 +4252,20 @@
              "title": "Entrando a la cancha de bádminton",
              "subtitle": "Cargando la cancha, los personajes y el audio..."
          },
+         "startScreen": {
+             "readyToStart": "Listo: haz clic para empezar",
+             "startButton": "Empezar",
+             "never": "No volver a mostrar"
+         },
+         "startTutorial": {
+             "title": "Cómo jugar",
+             "aim": "Mueve el mouse arriba y abajo para apuntar.",
+             "charge": "Mantén clic izquierdo para cargar y suelta para golpear.",
+             "release": "Las líneas, el punto dulce y la distancia afectan la puntuación.",
+             "jump": "Pulsa Espacio para hacer un remate en salto.",
+             "duel": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
+             "duel11": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos."
+         },
          "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",
@@ -4278,7 +4292,7 @@
              "chances": "Oportunidades {{count}}",
              "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
              "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
-             "duelTitle": "Duelo Neko: tú y Neko golpean por turnos",
+             "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
              "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
              "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
@@ -4395,6 +4409,7 @@
          "toast": {
              "difficulty": "Dificultad {{difficulty}}",
              "nekoShoot": "Golpe de Neko",
+             "nekoSmash": "¡Remate de Yui!",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Turno de Neko",
              "copyNeko": "Replica a Neko",
@@ -4583,7 +4598,20 @@
                      "¿Veinte seguidas? Increíble."
                  ],
                  "clutch": "...Este tiene que entrar.",
-                 "excuse": "Ay, el brazo está algo cansado.",
+                 "excuse": [
+                     "Ay, el brazo está algo cansado.",
+                     "Hoy no tengo buen toque. En la próxima voy en serio."
+                 ],
+                 "difficultyLv2": [
+                     "Se acabó el calentamiento. Voy a acelerar.",
+                     "Se acabó jugar a las casitas."
+                 ],
+                 "difficultyMax": [
+                     "Ahora me pongo seria.",
+                     "Desde ahora, mando en cielo y tierra.",
+                     "Ahora tú eres quien desafía.",
+                     "Si el futuro es tuyo, demuéstralo."
+                 ],
                  "line_in": [
                      "¡En la línea!",
                      "¡En la línea!"

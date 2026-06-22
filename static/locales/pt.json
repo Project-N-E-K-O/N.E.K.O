@@ -4252,6 +4252,20 @@
              "title": "Entrando na quadra de badminton",
              "subtitle": "Carregando a quadra, os personagens e o áudio..."
          },
+         "startScreen": {
+             "readyToStart": "Pronto: clique para começar",
+             "startButton": "Começar",
+             "never": "Não mostrar novamente"
+         },
+         "startTutorial": {
+             "title": "Como jogar",
+             "aim": "Mova o mouse para cima e para baixo para mirar.",
+             "charge": "Segure o botão esquerdo para carregar e solte para rebater.",
+             "release": "Linha, ponto ideal e distância afetam a pontuação.",
+             "jump": "Pressione Espaço para um smash em salto.",
+             "duel": "No duelo, você e NEKO rebatem em turnos. Quem chegar primeiro a 11 pontos vence.",
+             "duel11": "No duelo, você e NEKO rebatem em turnos. Quem chegar primeiro a 11 pontos vence."
+         },
          "modeSwitcher": "Modo de badminton",
          "mode": {
              "spectator": "Treino livre",
@@ -4278,7 +4292,7 @@
              "chances": "Chances {{count}}",
              "practiceTitle": "Treino livre: rebatidas ilimitadas e sem pontuação no ranking",
              "attemptsTitle": "Restam {{remaining}}/{{total}}, erros {{missed}}",
-             "duelTitle": "Duelo Neko: você e Neko rebatem em turnos",
+             "duelTitle": "No duelo, você e NEKO rebatem em turnos. Quem chegar primeiro a 11 pontos vence.",
              "timedTitle": "Contra o tempo: rebatidas ilimitadas em 60 segundos",
              "horseTitle": "HORSE: copie distância, ângulo e zona ideal da rebatida acertada",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
@@ -4395,6 +4409,7 @@
          "toast": {
              "difficulty": "Dificuldade {{difficulty}}",
             "nekoShoot": "Neko rebate",
+            "nekoSmash": "Smash da Yui!",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Vez da Neko",
              "copyNeko": "Copie a Neko",
@@ -4583,7 +4598,20 @@
                      "Vinte seguidas? Incrível."
                  ],
                  "clutch": "...Este precisa entrar.",
-                 "excuse": "Ai, meu braço está cansado.",
+                 "excuse": [
+                     "Ai, meu braço está cansado.",
+                     "Hoje meu toque não está bom. Na próxima eu jogo sério."
+                 ],
+                 "difficultyLv2": [
+                     "O aquecimento acabou. Vou acelerar.",
+                     "A brincadeira acabou."
+                 ],
+                 "difficultyMax": [
+                     "Agora vou jogar sério.",
+                     "A partir de agora, céu e terra são meus.",
+                     "Agora você é quem desafia.",
+                     "Se o futuro é seu, prove."
+                 ],
                  "line_in": [
                     "Na linha!",
                     "Na linha!"

@@ -304,7 +304,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
-                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio"))
+                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio", user_initiated=True))
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
@@ -317,7 +317,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # _starting_session_count > 0 的早退拦掉。
                     if session_manager[lanlan_name]._starting_session_count == 0:
                         session_manager[lanlan_name].reset_session_start_circuit()
-                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
+                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode, user_initiated=True))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
@@ -394,6 +394,17 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 5 个 sub flag 上次会话的开关状态)。restore 是 fire-and-forget 的
                 # ZMQ event，agent_server 端有 once-flag 保证只跑一次。
                 _fire_task(_publish_agent_intent_restore_signal(lanlan_name))
+                # A freshly-connected window (notably the separate /chat_full
+                # window, which has its own ws and misses any earlier Focus
+                # enter) must land on the current edge-glow brightness — push the
+                # live charge now. Best-effort; harmless when charge is 0.
+                try:
+                    _fire_task(session_manager[lanlan_name].resync_focus_for_new_window())
+                except Exception:
+                    # Best-effort cosmetic re-sync (missing manager / not-yet-ready
+                    # session): the focus glow/indicator is non-essential and must
+                    # never block or break greeting_check, so swallow and move on.
+                    pass
                 is_switch = message.get("is_switch", False)
                 greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)

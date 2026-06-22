@@ -4252,6 +4252,20 @@
              "title": "Entering the badminton court",
              "subtitle": "Loading the court, characters, and audio..."
          },
+         "startScreen": {
+             "readyToStart": "Ready - click to start",
+             "startButton": "Start",
+             "never": "Do not show again"
+         },
+         "startTutorial": {
+             "title": "How to play",
+             "aim": "Move the mouse up and down to aim your racket.",
+             "charge": "Hold left click to charge, then release to swing.",
+             "release": "Line shots, sweet spots, and distance affect scoring.",
+             "jump": "Press Space to jump smash.",
+             "duel": "In duel mode, you and NEKO take turns. First to 11 points wins.",
+             "duel11": "In duel mode, you and NEKO take turns. First to 11 points wins."
+         },
          "modeSwitcher": "Badminton mode",
          "mode": {
              "spectator": "Free Practice",
@@ -4278,7 +4292,7 @@
              "chances": "Chances {{count}}",
              "practiceTitle": "Free Practice: unlimited shots and no leaderboard score",
              "attemptsTitle": "Remaining {{remaining}}/{{total}}, misses {{missed}}",
-             "duelTitle": "Neko Duel: you and Neko take turns hitting shots",
+             "duelTitle": "In duel mode, you and NEKO take turns. First to 11 points wins.",
              "timedTitle": "Time Attack: unlimited shots in 60 seconds",
              "horseTitle": "HORSE: copy the made shot distance, angle, and sweet spot",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
@@ -4395,6 +4409,7 @@
          "toast": {
              "difficulty": "Difficulty {{difficulty}}",
              "nekoShoot": "Neko's shot",
+             "nekoSmash": "Yui smash!",
              "nekoThinking": "Neko is thinking",
              "nekoTurn": "Neko's turn",
              "copyNeko": "Copy Neko",
@@ -4583,7 +4598,20 @@
                      "This round is unreal."
                  ],
                  "clutch": "...This has to go in.",
-                 "excuse": "Ow, my arm is a little tired.",
+                 "excuse": [
+                     "Ow, my arm is a little tired.",
+                     "My touch is off today. Next shot, I get serious."
+                 ],
+                 "difficultyLv2": [
+                     "Warm-up is over. I am speeding up.",
+                     "Playtime is over."
+                 ],
+                 "difficultyMax": [
+                     "Now I am getting serious.",
+                     "From now on, I rule above and below.",
+                     "Now you are the challenger.",
+                     "If the future is yours, prove it!"
+                 ],
                  "line_in": [
                      "Caught the line!",
                      "Clean landing."

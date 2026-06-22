@@ -4252,6 +4252,20 @@
              "title": "正在进入羽毛球场",
              "subtitle": "加载场地、角色和音效..."
          },
+         "startScreen": {
+             "readyToStart": "准备完成，点击开始",
+             "startButton": "开始",
+             "never": "不再提示"
+         },
+         "startTutorial": {
+             "title": "玩法说明",
+             "aim": "上下移动鼠标调整挥拍角度。",
+             "charge": "按住左键蓄力，松开后挥拍。",
+             "release": "压线、甜区和距离会影响得分。",
+             "jump": "按空格可以起跳扣杀。",
+             "duel": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。",
+             "duel11": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。"
+         },
          "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由练习",
@@ -4278,7 +4292,7 @@
              "chances": "机会 {{count}}",
              "practiceTitle": "自由练习：不限羽毛球次数，不记录排行榜分数",
              "attemptsTitle": "剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}",
-             "duelTitle": "Yui 对拉模式：轮流挥拍，谁先失误 3 球谁输",
+             "duelTitle": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。",
             "timedTitle": "限时挑战：60 秒内不限挥拍次数",
              "horseTitle": "HORSE：复刻对手命中的距离、角度和甜区",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
@@ -4395,6 +4409,7 @@
          "toast": {
              "difficulty": "难度 {{difficulty}}",
              "nekoShoot": "Yui 挥拍",
+             "nekoSmash": "Yui 扣杀！",
              "nekoThinking": "Yui 思考中",
              "nekoTurn": "Yui 回合",
              "copyNeko": "复刻Neko",
@@ -4583,7 +4598,20 @@
                      "这回合彻底疯了"
                  ],
                  "clutch": "……这球必须进",
-                 "excuse": "哎，手有点酸了",
+                 "excuse": [
+                     "哎，手有点酸了",
+                     "今天手感不太好，下球我要认真了"
+                 ],
+                 "difficultyLv2": [
+                     "热身结束，接下来我会快一点。",
+                     "过家家时间结束了"
+                 ],
+                 "difficultyMax": [
+                     "现在认真起来了。",
+                     "从现在起天上地下唯我独尊",
+                     "现在你才是挑战者",
+                     "如果未来是你的，证明给我看！"
+                 ],
                  "line_in": [
                      "这回合我拿下了",
                      "轮到我发力"
