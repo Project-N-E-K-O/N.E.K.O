@@ -492,28 +492,17 @@
         let node = element;
         while (node && node instanceof Element) {
             if (node.hidden) return true;
+            if (node.getAttribute('aria-hidden') === 'true') return true;
+            if (node.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
+            try {
+                const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse')) {
+                    return true;
+                }
+            } catch (_) { /* ignore */ }
             node = node.parentElement;
         }
         return false;
-    }
-
-    function isMusicMountUnavailable(mount) {
-        if (!mount || isElementInHiddenTree(mount)) return true;
-        if (mount.getAttribute('aria-hidden') === 'true') return true;
-        if (mount.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
-        try {
-            const style = window.getComputedStyle ? window.getComputedStyle(mount) : null;
-            // React hides empty full/compact mounts with :empty; they are still valid targets.
-            const emptyChatMusicMount = mount.id === 'music-player-mount'
-                && !mount.firstElementChild;
-            return !!(style && (
-                (style.display === 'none' && !emptyChatMusicMount)
-                || style.visibility === 'hidden'
-                || style.visibility === 'collapse'
-            ));
-        } catch (_) {
-            return false;
-        }
     }
 
     function hasUsableLocalChatMusicSurface() {
@@ -522,7 +511,11 @@
         const mount = mode === 'compact'
             ? getCompactMusicMountTarget()
             : (mode === 'full' ? getFullMusicMountTarget() : (getFullMusicMountTarget() || getCompactMusicMountTarget()));
-        return !isMusicMountUnavailable(mount);
+        if (!mount || isElementInHiddenTree(mount)) return false;
+
+        const overlay = document.getElementById('react-chat-window-overlay');
+        if (overlay && isElementInHiddenTree(overlay)) return false;
+        return true;
     }
 
     function isLocalChatMusicSurfaceFocused() {
@@ -530,9 +523,6 @@
         try {
             if (document.visibilityState === 'hidden') return false;
         } catch (_) { /* ignore */ }
-        if (getChatMusicSurfaceMode() === 'full' && isDedicatedChatMusicSurface()) {
-            return true;
-        }
         try {
             return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
         } catch (_) {
@@ -560,27 +550,23 @@
         };
     }
 
-    function getValidBridgeActiveChatMusicSurface() {
+    function hasBridgeActiveChatMusicSurface() {
         if (!musicPlayerBridgeActiveSurface) return false;
         if ((musicPlayerBridgeActiveSurface.expireAt || 0) <= Date.now()) {
             musicPlayerBridgeActiveSurface = null;
             return false;
         }
-        if (!(
+        if (musicPlayerBridgeActiveSurface.sender === MUSIC_COORD_SENDER_ID) return false;
+        return !!(
             musicPlayerBridgeActiveSurface.active ||
             musicPlayerBridgeActiveSurface.focused ||
             musicPlayerBridgeActiveSurface.visible
-        )) return false;
-        return musicPlayerBridgeActiveSurface;
+        );
     }
 
     function shouldRenderMusicBarInThisSurface() {
-        const bridgeSurface = getValidBridgeActiveChatMusicSurface();
-        const localActive = isLocalChatMusicSurfaceFocused();
-        if (bridgeSurface && bridgeSurface.sender !== MUSIC_COORD_SENDER_ID) {
-            return localActive && getChatMusicSurfaceMode() === 'full';
-        }
-        if (localActive) return true;
+        if (isLocalChatMusicSurfaceFocused()) return true;
+        if (hasBridgeActiveChatMusicSurface()) return false;
         if (isDedicatedChatMusicSurface()) return hasUsableLocalChatMusicSurface();
         return hasUsableLocalChatMusicSurface();
     }
@@ -1009,8 +995,7 @@
     }
 
     const renderMirrorBar = (state) => {
-        if (!state) return false;
-        ensureMusicMountObserver();
+        if (!state) return;
         if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
         mirrorBarLastState = state;
 
@@ -1021,18 +1006,18 @@
         const firstRender = !musicBar;
 
         // 已存在但属于本窗口的 owner bar（非 mirror）：说明 leader 是自己，不应覆盖
-        if (musicBar && musicBar.dataset.mirror !== 'true') return false;
+        if (musicBar && musicBar.dataset.mirror !== 'true') return;
 
         if (firstRender) {
             ensureMusicUiCSS();
             const mountTarget = getPreferredMusicMountTarget().mountTarget;
-            if (!mountTarget) return false;
+            if (!mountTarget) return;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
             musicBar.dataset.mirror = 'true';
-            if (!mountMusicBar(musicBar) || musicBar.hidden) return false;
+            mountMusicBar(musicBar);
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -1075,7 +1060,7 @@
             bindMirrorBarControls(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
-            if (!mountMusicBar(musicBar) || musicBar.hidden) return false;
+            mountMusicBar(musicBar);
         }
 
         // 切歌 / 首次：刷新标题 + 歌手 + 封面
@@ -1144,7 +1129,6 @@
                 else volumeBtn.textContent = '🔊';
             }
         }
-        return true;
     };
 
     const teardownMirrorBar = (fullTeardown) => {
@@ -1252,33 +1236,32 @@
     }
 
     function applyMusicPlayerBridgeEvent(event) {
-        if (!event || typeof event !== 'object') return false;
+        if (!event || typeof event !== 'object') return;
         const sender = event.sender;
-        if (!sender || sender === MUSIC_COORD_SENDER_ID) return false;
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
         const payload = event.payload || {};
         try {
             if (event.type === 'coord') {
                 applyMusicPlayerBridgeCoord(sender, payload.coordType, payload);
             } else if (event.type === 'bar_state') {
-                if (isBarOwner()) return false;
+                if (isBarOwner()) return;
                 setMirrorBarLeader(sender, 'bridge');
-                return renderMirrorBar(payload);
+                renderMirrorBar(payload);
             } else if (event.type === 'bar_destroyed') {
-                if (isBarOwner()) return false;
-                if (sender !== mirrorBarLeaderSender) return false;
-                if (!isCurrentMirrorPlayback(payload)) return false;
+                if (isBarOwner()) return;
+                if (sender !== mirrorBarLeaderSender) return;
+                if (!isCurrentMirrorPlayback(payload)) return;
                 setMirrorBarLeader(null);
                 teardownMirrorBar(!!payload.fullTeardown);
             } else if (event.type === 'bar_ctrl') {
-                if (!isBarOwner()) return false;
-                if (payload.target !== MUSIC_COORD_SENDER_ID) return false;
-                if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return false;
+                if (!isBarOwner()) return;
+                if (payload.target !== MUSIC_COORD_SENDER_ID) return;
+                if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return;
                 handleRemoteBarCtrl(payload.action, payload.value);
             }
         } catch (e) {
             console.warn('[Music UI] music player bridge event failed:', e);
         }
-        return false;
     }
 
     async function pollMusicPlayerBridge() {
@@ -1322,8 +1305,8 @@
             const latestPlaybackId = data.latest_state && data.latest_state.playbackId;
             if (Array.isArray(data.events)) {
                 for (const event of data.events) {
-                    const renderedEvent = applyMusicPlayerBridgeEvent(event);
-                    if (renderedEvent && event && event.type === 'bar_state' && event.sender === data.owner
+                    applyMusicPlayerBridgeEvent(event);
+                    if (event && event.type === 'bar_state' && event.sender === data.owner
                         && (!latestPlaybackId || (event.payload && event.payload.playbackId === latestPlaybackId))) {
                         sawOwnerBarStateEvent = true;
                     }
