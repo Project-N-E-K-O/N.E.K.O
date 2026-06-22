@@ -2,7 +2,7 @@ import re
 import time
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from main_routers import system_router
 
@@ -68,9 +68,12 @@ def _goto_badminton(
     )
     if auto_start:
         start_button = page.locator("#badminton-start-button")
-        if start_button.count() > 0 and start_button.is_visible():
+        try:
+            start_button.wait_for(state="visible", timeout=3000)
             start_button.click()
             expect(page.locator("#badminton-start-overlay")).not_to_be_visible(timeout=3000)
+        except PlaywrightTimeoutError:
+            pass
 
 
 @pytest.mark.e2e
@@ -80,8 +83,9 @@ def test_badminton_start_tutorial_memory_and_never_prompt(mock_page: Page, runni
 
     expect(page.locator("#badminton-start-overlay")).to_be_visible(timeout=3000)
     expect(page.locator("#badminton-start-tutorial")).to_be_visible()
-    expect(page.locator("#badminton-start-tutorial")).to_contain_text("11 分")
-    expect(page.locator("#badminton-start-tutorial")).not_to_contain_text("3 球")
+    duel_rule = page.locator('#badminton-start-tutorial [data-i18n="badminton.startTutorial.duel11"]')
+    expect(duel_rule).to_contain_text("11")
+    expect(duel_rule).not_to_contain_text("3")
     expect(page.locator("#badminton-start-overlay #game-memory-option")).to_be_visible()
     expect(page.locator("#badminton-start-never-option")).to_be_visible()
 

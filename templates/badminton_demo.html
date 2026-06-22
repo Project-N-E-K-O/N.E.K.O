@@ -7184,7 +7184,6 @@
     var endX = ball.x + ux * 38 + nx * 7;
     var endY = ball.y + uy * 38 + ny * 7;
     var canReturnNow = canPlayerReturnIncomingShuttle();
-    if (!canReturnNow) return;
     var cueAlpha = canReturnNow ? 1 : 0.46;
 
     aimingCtx.save();

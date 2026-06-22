@@ -4292,7 +4292,7 @@
              "chances": "Chances {{count}}",
              "practiceTitle": "Free Practice: unlimited shots and no leaderboard score",
              "attemptsTitle": "Remaining {{remaining}}/{{total}}, misses {{missed}}",
-             "duelTitle": "Neko Duel: you and Neko take turns hitting shots",
+             "duelTitle": "In duel mode, you and NEKO take turns. First to 11 points wins.",
              "timedTitle": "Time Attack: unlimited shots in 60 seconds",
              "horseTitle": "HORSE: copy the made shot distance, angle, and sweet spot",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",

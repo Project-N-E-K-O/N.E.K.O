@@ -4265,7 +4265,8 @@
              "jump": "按空格可以起跳扣杀。",
              "duel": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。",
              "duel11": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。"
-         },         "modeSwitcher": "羽毛球模式",
+         },
+         "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由练习",
              "shooter": "羽毛球挑战",
@@ -4291,7 +4292,7 @@
              "chances": "机会 {{count}}",
              "practiceTitle": "自由练习：不限羽毛球次数，不记录排行榜分数",
              "attemptsTitle": "剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}",
-             "duelTitle": "Yui 对拉模式：轮流挥拍，先到 11 分获胜",
+             "duelTitle": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。",
             "timedTitle": "限时挑战：60 秒内不限挥拍次数",
              "horseTitle": "HORSE：复刻对手命中的距离、角度和甜区",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",

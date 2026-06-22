@@ -4265,7 +4265,8 @@
              "jump": "Space를 누르면 점프 스매시를 할 수 있습니다.",
              "duel": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
              "duel11": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다."
-         },         "modeSwitcher": "배드민턴 모드",
+         },
+         "modeSwitcher": "배드민턴 모드",
          "mode": {
              "spectator": "자유 연습",
              "shooter": "샷 챌린지",
@@ -4291,7 +4292,7 @@
              "chances": "기회 {{count}}",
              "practiceTitle": "자유 연습: 샷은 무제한이며 순위표에 기록되지 않습니다",
              "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
-             "duelTitle": "Neko 대결: 나와 Neko가 번갈아 샷을 칩니다",
+             "duelTitle": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
              "timedTitle": "타임 어택: 60초 동안 무제한 샷",
              "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",

@@ -4265,7 +4265,8 @@
              "jump": "Pulsa Espacio para hacer un remate en salto.",
              "duel": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
              "duel11": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos."
-         },         "modeSwitcher": "Modo de bádminton",
+         },
+         "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",
              "shooter": "Desafío de golpe",
@@ -4291,7 +4292,7 @@
              "chances": "Oportunidades {{count}}",
              "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
              "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
-             "duelTitle": "Duelo Neko: tú y Neko golpean por turnos",
+             "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
              "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
              "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",

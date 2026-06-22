@@ -4265,7 +4265,8 @@
              "jump": "按空白鍵可以起跳扣殺。",
              "duel": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
              "duel11": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。"
-         },         "modeSwitcher": "羽毛球模式",
+         },
+         "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由練習",
              "shooter": "羽毛球挑戰",
@@ -4291,7 +4292,7 @@
              "chances": "機會 {{count}}",
              "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
              "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
-             "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流打羽毛球",
+             "duelTitle": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
             "timedTitle": "限時挑戰：60 秒內不限揮拍次數",
              "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",

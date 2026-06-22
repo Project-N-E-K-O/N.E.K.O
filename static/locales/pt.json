@@ -4265,7 +4265,8 @@
              "jump": "Pressione Espaço para um smash em salto.",
              "duel": "No duelo, você e NEKO rebatem em turnos. Quem chegar primeiro a 11 pontos vence.",
              "duel11": "No duelo, você e NEKO rebatem em turnos. Quem chegar primeiro a 11 pontos vence."
-         },         "modeSwitcher": "Modo de badminton",
+         },
+         "modeSwitcher": "Modo de badminton",
          "mode": {
              "spectator": "Treino livre",
              "shooter": "Desafio de rebatida",
@@ -4291,7 +4292,7 @@
              "chances": "Chances {{count}}",
              "practiceTitle": "Treino livre: rebatidas ilimitadas e sem pontuação no ranking",
              "attemptsTitle": "Restam {{remaining}}/{{total}}, erros {{missed}}",
-             "duelTitle": "Duelo Neko: você e Neko rebatem em turnos",
+             "duelTitle": "No duelo, você e NEKO rebatem em turnos. Quem chegar primeiro a 11 pontos vence.",
              "timedTitle": "Contra o tempo: rebatidas ilimitadas em 60 segundos",
              "horseTitle": "HORSE: copie distância, ângulo e zona ideal da rebatida acertada",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",

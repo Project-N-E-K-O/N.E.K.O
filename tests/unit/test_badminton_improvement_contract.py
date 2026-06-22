@@ -606,6 +606,10 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
         missing = sorted(key for key in required_keys if _get_nested(payload, key) is None)
         assert not missing, f"{locale_path.name} missing badminton i18n keys: {missing}"
+        duel_title = _get_nested(payload, "badminton.hud.duelTitle")
+        assert isinstance(duel_title, str) and "11" in duel_title, (
+            f"{locale_path.name} badminton.hud.duelTitle should mention the 11-point win rule"
+        )
         assert len(_get_nested(payload, "badminton.lines.duel.excuse")) == 2
         assert len(_get_nested(payload, "badminton.lines.duel.difficultyLv2")) == 2
         assert len(_get_nested(payload, "badminton.lines.duel.difficultyMax")) == 4
@@ -2250,7 +2254,9 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "function drawPlayerChargeMeter(" in draw_section
     assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));" in draw_section
     assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
-    assert "if (!canReturnNow) return;" in draw_section
+    assert "if (!canReturnNow) return;" not in draw_section
+    assert "var cueAlpha = canReturnNow ? 1 : 0.46;" in draw_section
+    assert "'rgba(114,216,255,.055)'" in draw_section
     assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
     assert "drawReturnChargeTrace" not in draw_section
     assert "var meterX = getPlayerX() - meterW / 2;" in draw_section

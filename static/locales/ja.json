@@ -4265,7 +4265,8 @@
              "jump": "Space キーでジャンプスマッシュできます。",
              "duel": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
              "duel11": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。"
-         },         "modeSwitcher": "バドミントンモード",
+         },
+         "modeSwitcher": "バドミントンモード",
          "mode": {
              "spectator": "フリー練習",
              "shooter": "バドミントンチャレンジ",
@@ -4291,7 +4292,7 @@
              "chances": "残り {{count}}",
              "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
              "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
-             "duelTitle": "Neko 対戦：あなたと Neko が交互にショットします",
+             "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
              "timedTitle": "タイムアタック：60 秒間は何度でも打てます",
              "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
