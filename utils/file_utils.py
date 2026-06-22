@@ -196,6 +196,24 @@ def _escape_inner_quotes(s: str) -> str:
     valid-but-wrong JSON —— the silent corruption this module avoids everywhere else.
     This is the last, most aggressive transform in the fallback pipeline; it only runs
     after every cheaper repair has failed.
+
+    Known best-effort limitations (consciously accepted —— this repair targets the
+    common Qwen single-/multi-field prose case and trades a little adversarial-corner
+    safety for that coverage; only ever runs on input that already fails strict parse):
+      1. Comma boundary is fundamentally ambiguous. A legitimate multi-field object like
+         ``{"summary": "他说"晚安"了", "reason": "..."}`` is structurally *identical* to
+         an adversarial ``{"content": "User wrote "x", "y": "z""}``. Repairing the first
+         (needs the comma to close) necessarily mis-splits the second. There is no local
+         signal to tell them apart, so the latter is silently mis-repaired.
+      2. Adjacent quoted tokens with a missing separator (``["x" "y"]``, ``{"a" "b": 1}``)
+         get merged into one string rather than left to fail —— missing *commas/colons*
+         are out of scope for an inner-quote repair, but this transform incidentally
+         "fixes" them wrongly.
+      3. Earlier text transforms (Python-literal / ``{{}}``) run *before* this one
+         (they must, and this one must run after quote-normalization + unquoted-key, or
+         its lookahead misreads bare keys), so a stray ``True`` / ``{{x}}`` *inside* an
+         unescaped-inner-quote string can be rewritten before the string is made whole,
+         e.g. ``{"a":"he said "True" today"}`` → ``...said "true"...``.
     """  # noqa: DOCSTRING_CJK
     out: list[str] = []
     i = 0
