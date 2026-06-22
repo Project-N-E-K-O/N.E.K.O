@@ -7824,7 +7824,6 @@
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
     if (ev && ev.__badmintonPointerDownHandled) return;
     if (ev) ev.__badmintonPointerDownHandled = true;
-    if (returnIncomingPlayerShuttle()) return;
     if (!canPlayerChargeShot()) return;
     resumeAudio();
     if (game.tutorialStep === 1) {

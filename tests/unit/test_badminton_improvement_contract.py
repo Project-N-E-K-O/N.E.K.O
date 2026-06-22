@@ -2253,6 +2253,14 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);" in draw_section
     assert "var chargePercent = game.charging ? clamp(game.power, 0, 100) : clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
 
+    pointer_down = html[
+        html.index("function handleBadmintonPointerDown(ev) {"):
+        html.index("canvas.addEventListener('mousemove'", html.index("function handleBadmintonPointerDown(ev) {"))
+    ]
+    assert "if (returnIncomingPlayerShuttle()) return;" not in pointer_down
+    assert "if (!canPlayerChargeShot()) return;" in pointer_down
+    assert pointer_down.index("if (!canPlayerChargeShot()) return;") < pointer_down.index("game.charging = true;")
+
     mousedown = html[
         html.index("function handleBadmintonPointerDown(ev) {"):
         html.index("window.addEventListener('mouseup'")
