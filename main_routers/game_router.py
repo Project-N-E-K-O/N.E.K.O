@@ -105,6 +105,8 @@ from utils.game_log import (
     append_game_session_debug_log as _append_game_session_debug_log,
     find_game_session_debug_log as _find_game_session_debug_log,
     GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
+    GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
+    GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
     list_game_session_debug_log_summaries,
     mark_game_session_debug_log_active as _mark_game_session_debug_log_active,
     mark_game_session_debug_log_ended as _mark_game_session_debug_log_ended,
@@ -138,7 +140,8 @@ async def game_logs(session_id: str = "", game_type: str = "", since: int = 0, l
         "sessions": list_game_session_debug_log_summaries(str(game_type or "").strip()),
         "retention": {
             "entry_limit": GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
-            "ended_session_cleanup": "disabled",
+            "retained_completed_session_limit": GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
+            "retained_completed_session_ttl_seconds": GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
         },
     }
 

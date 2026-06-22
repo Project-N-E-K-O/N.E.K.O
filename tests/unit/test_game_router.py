@@ -207,19 +207,34 @@ async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate
 
 
 @pytest.mark.unit
-def test_game_debug_logs_do_not_drop_ended_sessions_when_new_sessions_open():
-    for index in range(14):
+def test_game_debug_logs_keep_latest_completed_session_until_next_active_session():
+    for index in range(3):
         session_id = f"soccer-old-{index}"
         game_log.mark_game_session_debug_log_active("soccer", session_id, lanlan_name="Lan")
         game_log.mark_game_session_debug_log_ended("soccer", session_id, lanlan_name="Lan", reason="test")
+
+    summaries_before_new_session = game_log.list_game_session_debug_log_summaries("soccer")
+    assert {item["session_id"] for item in summaries_before_new_session} == {"soccer-old-2"}
 
     game_log.mark_game_session_debug_log_active("soccer", "soccer-new", lanlan_name="Lan")
     summaries = game_log.list_game_session_debug_log_summaries("soccer")
 
     session_ids = {item["session_id"] for item in summaries}
-    assert "soccer-old-0" in session_ids
-    assert "soccer-old-13" in session_ids
-    assert "soccer-new" in session_ids
+    assert session_ids == {"soccer-new"}
+
+
+@pytest.mark.unit
+def test_game_debug_logs_drop_completed_session_after_retention_ttl():
+    now = 1_000_000.0
+    game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="test")
+    entry = game_log.find_game_session_debug_log("soccer-old", "soccer")
+    entry["ended_at"] = now - game_log.GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS - 1
+    entry["updated_at"] = entry["ended_at"]
+
+    game_log.cleanup_game_session_debug_logs(now)
+
+    assert game_log.find_game_session_debug_log("soccer-old", "soccer") is None
 
 
 @pytest.mark.unit

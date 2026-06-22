@@ -33,6 +33,8 @@ from datetime import datetime
 from typing import Any
 
 GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT = 1000
+GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT = 1
+GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS = 5 * 60
 _GAME_SESSION_DEBUG_MESSAGE_LIMIT = 1200
 _GAME_SESSION_DEBUG_STRING_LIMIT = 2000
 _GAME_SESSION_DEBUG_DICT_LIMIT = 48
@@ -64,6 +66,7 @@ def _find_game_session_debug_log(session_id: Any, game_type: Any = "") -> dict |
 
 
 def find_game_session_debug_log(session_id: Any, game_type: Any = "") -> dict | None:
+    cleanup_game_session_debug_logs()
     return _find_game_session_debug_log(session_id, game_type)
 
 
@@ -105,6 +108,12 @@ def _game_debug_log_time(ts: float) -> str:
         return ""
 
 
+def _drop_completed_game_session_debug_logs() -> None:
+    for key, entry in list(_game_session_debug_logs.items()):
+        if entry.get("status") != "active":
+            del _game_session_debug_logs[key]
+
+
 def _get_or_create_game_session_debug_log(
     game_type: Any,
     session_id: Any,
@@ -137,6 +146,8 @@ def _get_or_create_game_session_debug_log(
             "entries": [],
         }
         _game_session_debug_logs[key] = entry
+        if activate:
+            _drop_completed_game_session_debug_logs()
     else:
         _game_session_debug_logs.move_to_end(key)
         entry["updated_at"] = now
@@ -149,8 +160,28 @@ def _get_or_create_game_session_debug_log(
 
 
 def cleanup_game_session_debug_logs(now: float | None = None) -> None:
-    # 用户要求旧场次留在内存中用于对比；这里只保留函数入口，便于以后接入手动清理。
-    return None
+    current_time = time.time() if now is None else float(now)
+    retained_keys: set[str] = set()
+    completed_entries: list[dict] = []
+    for entry in _game_session_debug_logs.values():
+        if entry.get("status") == "active":
+            continue
+        completed_entries.append(entry)
+
+    completed_entries.sort(
+        key=lambda entry: float(entry.get("ended_at") or entry.get("updated_at") or entry.get("created_at") or 0.0),
+        reverse=True,
+    )
+    for entry in completed_entries[:GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT]:
+        reference_time = float(entry.get("ended_at") or entry.get("updated_at") or entry.get("created_at") or 0.0)
+        if reference_time and current_time - reference_time <= GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS:
+            retained_keys.add(str(entry.get("key") or ""))
+
+    for key, entry in list(_game_session_debug_logs.items()):
+        if entry.get("status") == "active":
+            continue
+        if key not in retained_keys:
+            del _game_session_debug_logs[key]
 
 
 def append_game_session_debug_log(
