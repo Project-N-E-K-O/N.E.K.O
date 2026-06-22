@@ -557,9 +557,20 @@ class _ScaledPyAutoGUI:
         self._backend.hotkey(paste_key, "v")
         time.sleep(0.05)
 
-    def write(self, text, *a, **kw):
+    def _coerce_write_args(self, args, kwargs):
+        if args:
+            return str(args[0]), tuple(args[1:]), kwargs
+
+        kw = dict(kwargs)
+        for key in ("text", "message", "string"):
+            if key in kw:
+                return str(kw.pop(key)), (), kw
+
+        raise TypeError("write() missing required text argument")
+
+    def write(self, *a, **kw):
         self._ensure_not_cancelled()
-        text_str = str(text)
+        text_str, a, kw = self._coerce_write_args(a, kw)
         # Clipboard paste is only needed for non-ASCII (CJK, emoji, etc.)
         # that pyautogui.write() cannot handle natively.
         # For ASCII-only text, use real key simulation so it works in games
@@ -572,8 +583,8 @@ class _ScaledPyAutoGUI:
                 pass
         self._backend.write(text_str, *a, **kw)
 
-    def typewrite(self, text, *a, **kw):
-        self.write(text, *a, **kw)
+    def typewrite(self, *a, **kw):
+        self.write(*a, **kw)
 
 
 # ─── Main Adapter ───────────────────────────────────────────────────────

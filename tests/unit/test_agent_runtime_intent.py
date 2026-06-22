@@ -332,6 +332,30 @@ computer.terminate(status="success", answer="done")
     assert parsed["code"] == 'computer.terminate(status="success", answer="done")'
 
 
+def test_scaled_pyautogui_write_accepts_keyword_aliases():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        def write(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+    backend = Backend()
+    gui = _ScaledPyAutoGUI(backend, screen_w=1920, screen_h=1080)
+
+    gui.write(message="notepad", interval=0.01)
+    gui.typewrite(text="calc")
+    gui.write(string="cmd")
+
+    assert backend.calls == [
+        (("notepad",), {"interval": 0.01}),
+        (("calc",), {}),
+        (("cmd",), {}),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 3. Master switch semantics: set_agent_enabled(False) preserves sub flags
 # ---------------------------------------------------------------------------
