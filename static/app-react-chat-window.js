@@ -269,7 +269,7 @@
     function readGalgameModePreference() {
         try {
             var raw = localStorage.getItem(GALGAME_STORAGE_KEY);
-            if (raw === null) return true; // default ON per spec
+            if (raw === null) return true; // legacy default ON unless new-user tutorial seeds OFF
             return raw === 'true';
         } catch (_) {
             return true;
@@ -280,6 +280,20 @@
         try {
             localStorage.setItem(GALGAME_STORAGE_KEY, enabled ? 'true' : 'false');
         } catch (_) {}
+    }
+
+    function hasGalgameModePreference() {
+        try {
+            return localStorage.getItem(GALGAME_STORAGE_KEY) !== null;
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function ensureNewUserGalgameModeDefaultOff() {
+        if (state.galgameModeEnabled) return;
+        if (hasGalgameModePreference()) return;
+        persistGalgameModePreference(false);
     }
 
     // composer 隐藏（请她离开）时强制视为 OFF：保留 state.galgameModeEnabled，
@@ -3235,6 +3249,65 @@
         }
     }
 
+    function setTranslateEnabled(enabled, options) {
+        var requestOptions = options || {};
+        var next = !!enabled;
+        if (requestOptions.syncBridge !== false) {
+            try {
+                var bridge = window.subtitleBridge;
+                if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
+                    bridge.setSubtitleEnabled(next);
+                } else {
+                    throw new Error('subtitleBridge.setSubtitleEnabled unavailable');
+                }
+            } catch (err) {
+                console.warn('[ReactChatWindow] bridge set enabled failed, using fallback:', err);
+                var appSt = window.appState;
+                var subtitleStore = window.nekoSubtitleShared;
+                if (appSt) appSt.subtitleEnabled = next;
+                var synced = false;
+                if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+                    try {
+                        subtitleStore.updateSettings({
+                            subtitleEnabled: next
+                        }, {
+                            source: 'react-chat-fallback-set-enabled'
+                        });
+                        synced = true;
+                    } catch (storeErr) {
+                        console.warn('[ReactChatWindow] subtitle shared update failed:', storeErr);
+                    }
+                }
+                if (!synced) {
+                    try {
+                        localStorage.setItem('subtitleEnabled', String(next));
+                    } catch (storageErr) {
+                        console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:', storageErr);
+                    }
+                }
+            }
+        }
+
+        if (requestOptions.persist !== false
+            && window.appSettings
+            && typeof window.appSettings.saveSettings === 'function') {
+            try {
+                window.appSettings.saveSettings();
+            } catch (saveErr) {
+                console.warn('[ReactChatWindow] appSettings.saveSettings failed:', saveErr);
+            }
+        }
+
+        state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        syncSubtitleWindowFromTranslateToggle(next);
+        renderWindow();
+
+        if (requestOptions.suppressHostEvent !== true) {
+            dispatchHostEvent('translate-toggle', { enabled: next });
+        }
+        return next;
+    }
+
     function handleTranslateToggle() {
         var bridge = window.subtitleBridge;
         var next;
@@ -3355,6 +3428,7 @@
         state.galgameTemporarilyDisabled = next;
 
         if (next) {
+            ensureNewUserGalgameModeDefaultOff();
             setGalgameModeEnabled(false, { persist: false });
         } else if (changed) {
             setGalgameModeEnabled(readGalgameModePreference(), {
@@ -6485,25 +6559,25 @@
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInputLocked(false, 'tutorial-completed');
             setHomeTutorialInteractionLocked(false, 'tutorial-completed');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInputLocked(false, 'tutorial-skipped');
             setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
             setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         // Refresh option list whenever an assistant turn finishes streaming.
@@ -6574,6 +6648,7 @@
         // setGalgameModeEnabled idempotently syncs state + body class + fires
         // the change event when the resolved pref differs from the safe default.
         if (isHomeTutorialInteractionLocked()) {
+            ensureNewUserGalgameModeDefaultOff();
             setGalgameModeTemporarilyDisabled(true);
         } else {
             setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
@@ -6895,6 +6970,9 @@
         syncGoodbyeComposerHidden: syncGoodbyeComposerHidden,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
+        },
+        setTranslateEnabled: function (enabled, options) {
+            return setTranslateEnabled(enabled, options || {});
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return getCurrentChatSurfaceMode(); },
