@@ -40,8 +40,15 @@ def _slugify_name(name: str) -> str:
 
 
 def _safe_relative_path(raw_path: str) -> PurePosixPath | None:
-    normalized = (raw_path or "").replace("\\", "/").strip("/")
+    normalized = (raw_path or "").replace("\\", "/").strip()
     if not normalized:
+        return None
+    if normalized.startswith("/"):
+        return None
+    if urlsplit(normalized).scheme:
+        return None
+    raw_parts = normalized.split("/")
+    if any(part in ("", ".", "..") for part in raw_parts):
         return None
     rel = PurePosixPath(normalized)
     if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
@@ -59,6 +66,8 @@ def _resolve_delete_folder_from_key(key: str) -> str | None:
         normalized = parsed.path
     else:
         normalized = normalized.split("?", 1)[0].split("#", 1)[0]
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
 
     rel = _safe_relative_path(normalized)
     if rel is None:
@@ -236,10 +245,10 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         if target_dir.exists():
             return JSONResponse(status_code=400, content={"success": False, "error": f"PNGTuber模型 {model_dir_name} 已存在，请先删除或重命名"})
 
+        source_format = str(model_json.get("source_format") or import_result.source_format)
         normalized_config = _normalize_pngtuber_config(model_dir_name, model_json)
         model_json["model_type"] = "pngtuber"
-        model_json["pngtuber"] = normalized_config
-        model_json["source_format"] = import_result.source_format
+        model_json["source_format"] = source_format
         with open(temp_dir / "model.json", "w", encoding="utf-8") as f:
             json.dump(model_json, f, ensure_ascii=False, indent=2)
 
@@ -254,7 +263,7 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
             "folder": model_dir_name,
             "url": f"{PNGTUBER_USER_PATH}/{model_dir_name}/model.json",
             "pngtuber": normalized_config,
-            "source_format": import_result.source_format,
+            "source_format": source_format,
             "warnings": import_result.warnings,
             "file_size": total_size,
         })

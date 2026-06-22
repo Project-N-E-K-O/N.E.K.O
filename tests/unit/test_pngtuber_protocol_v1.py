@@ -14,7 +14,7 @@ from main_routers.pngtuber_router import _normalize_pngtuber_config, _validate_m
 def _write_minimal_neko_pngtuber_v1_package(package_dir):
     assets_dir = package_dir / "assets"
     layers_dir = assets_dir / "layers"
-    layers_dir.mkdir(parents=True)
+    layers_dir.mkdir(parents=True, exist_ok=True)
     for rel_path in [
         "assets/idle.png",
         "assets/talking.png",
@@ -99,3 +99,25 @@ def test_neko_pngtuber_v1_validator_rejects_missing_layer_asset(tmp_path):
 
     assert ok is False
     assert "metadata.layers[4].image" in error
+
+
+def test_neko_pngtuber_v1_validator_rejects_unsafe_package_paths(tmp_path):
+    package_dir = tmp_path / "sample"
+    package_dir.mkdir()
+
+    unsafe_values = [
+        "/assets/idle.png",
+        "//evil.example/assets/idle.png",
+        "assets/../idle.png",
+        "assets//idle.png",
+        "assets/./idle.png",
+        "https://example.invalid/idle.png",
+    ]
+    for index, unsafe_path in enumerate(unsafe_values):
+        model_json = _write_minimal_neko_pngtuber_v1_package(package_dir)
+        model_json["pngtuber"]["idle_image"] = unsafe_path
+
+        ok, error = validate_neko_pngtuber_v1_package(package_dir, model_json)
+
+        assert ok is False, f"unsafe path accepted at case {index}: {unsafe_path}"
+        assert "pngtuber.idle_image" in error

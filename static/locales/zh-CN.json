@@ -1535,7 +1535,57 @@
         "cannotDeleteBoundModel": "无法删除当前正在使用的模型",
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "测试说话",
-        "pngtuberStatePreview": "状态预览"
+        "pngtuberStatePreview": "状态预览",
+        "pngtuberDiagnostics": {
+            "title": "PNGTuber 诊断",
+            "refresh": "刷新",
+            "copyJson": "复制 JSON",
+            "unknown": "未知",
+            "unknownError": "未知错误",
+            "modelNotLoaded": "PNGTuber 模型尚未加载",
+            "copySuccess": "PNGTuber 诊断 JSON 已复制",
+            "copyFailed": "复制诊断 JSON 失败",
+            "status": {
+                "ok": "OK",
+                "unloaded": "未加载",
+                "fallback": "Fallback",
+                "partial": "部分加载",
+                "image": "Image",
+                "layered": "Layered"
+            },
+            "rows": {
+                "mode": "模式",
+                "adapter": "Adapter",
+                "metadata": "Metadata",
+                "metadataCheck": "Metadata 检查",
+                "format": "Format",
+                "layers": "图层",
+                "layerAssets": "图层资源",
+                "missing": "缺失",
+                "canvas": "画布",
+                "roles": "角色",
+                "mouthEye": "嘴/眼",
+                "state": "状态",
+                "fallback": "Fallback",
+                "error": "错误"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "失败: {{error}}",
+                "modePlan": "{{mode}} / planned {{planned}}",
+                "layers": "{{loaded}}/{{total}} runtime / {{metadata}} metadata",
+                "layerAssets": "{{checked}}/{{total}} checked, missing {{missing}}, invalid {{invalid}}, skipped {{skipped}}",
+                "mouth": "mouth",
+                "eye": "eye",
+                "speaking": "speaking"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "metadata 获取失败: {{error}}",
+                "layeredModeFallback": "计划使用 layered，但运行时模式是 {{mode}}",
+                "layerImagesFailed": "一个或多个图层图片加载失败",
+                "emptyLayerRefs": "一个或多个图层图片引用为空"
+            }
+        }
     },
     "voice": {
         "title": "音色注册",

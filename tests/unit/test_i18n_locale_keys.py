@@ -36,6 +36,49 @@ PNG_TUBER_PREVIEW_LABELS = {
     "pt.json": ("Testar fala", "Prévia de estado"),
 }
 
+PNG_TUBER_DIAGNOSTICS_KEYS = (
+    "live2d.pngtuberDiagnostics.title",
+    "live2d.pngtuberDiagnostics.refresh",
+    "live2d.pngtuberDiagnostics.copyJson",
+    "live2d.pngtuberDiagnostics.unknown",
+    "live2d.pngtuberDiagnostics.unknownError",
+    "live2d.pngtuberDiagnostics.modelNotLoaded",
+    "live2d.pngtuberDiagnostics.copySuccess",
+    "live2d.pngtuberDiagnostics.copyFailed",
+    "live2d.pngtuberDiagnostics.status.ok",
+    "live2d.pngtuberDiagnostics.status.unloaded",
+    "live2d.pngtuberDiagnostics.status.fallback",
+    "live2d.pngtuberDiagnostics.status.partial",
+    "live2d.pngtuberDiagnostics.status.image",
+    "live2d.pngtuberDiagnostics.status.layered",
+    "live2d.pngtuberDiagnostics.rows.mode",
+    "live2d.pngtuberDiagnostics.rows.adapter",
+    "live2d.pngtuberDiagnostics.rows.metadata",
+    "live2d.pngtuberDiagnostics.rows.metadataCheck",
+    "live2d.pngtuberDiagnostics.rows.format",
+    "live2d.pngtuberDiagnostics.rows.layers",
+    "live2d.pngtuberDiagnostics.rows.layerAssets",
+    "live2d.pngtuberDiagnostics.rows.missing",
+    "live2d.pngtuberDiagnostics.rows.canvas",
+    "live2d.pngtuberDiagnostics.rows.roles",
+    "live2d.pngtuberDiagnostics.rows.mouthEye",
+    "live2d.pngtuberDiagnostics.rows.state",
+    "live2d.pngtuberDiagnostics.rows.fallback",
+    "live2d.pngtuberDiagnostics.rows.error",
+    "live2d.pngtuberDiagnostics.values.ok",
+    "live2d.pngtuberDiagnostics.values.failedWithError",
+    "live2d.pngtuberDiagnostics.values.modePlan",
+    "live2d.pngtuberDiagnostics.values.layers",
+    "live2d.pngtuberDiagnostics.values.layerAssets",
+    "live2d.pngtuberDiagnostics.values.mouth",
+    "live2d.pngtuberDiagnostics.values.eye",
+    "live2d.pngtuberDiagnostics.values.speaking",
+    "live2d.pngtuberDiagnostics.fallbackReasons.metadataFetchFailed",
+    "live2d.pngtuberDiagnostics.fallbackReasons.layeredModeFallback",
+    "live2d.pngtuberDiagnostics.fallbackReasons.layerImagesFailed",
+    "live2d.pngtuberDiagnostics.fallbackReasons.emptyLayerRefs",
+)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
@@ -137,6 +180,19 @@ def test_pngtuber_preview_labels_are_localized():
             mismatches[locale_name] = actual
 
     assert mismatches == {}
+
+
+@pytest.mark.unit
+def test_pngtuber_diagnostics_labels_exist_in_all_locales():
+    missing_by_locale: dict[str, list[str]] = {}
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        missing = [key for key in PNG_TUBER_DIAGNOSTICS_KEYS if not _has_nested_key(data, key)]
+        if missing:
+            missing_by_locale[locale_path.name] = missing
+
+    assert missing_by_locale == {}
 
 
 @pytest.mark.unit

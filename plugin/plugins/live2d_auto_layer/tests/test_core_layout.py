@@ -13,6 +13,7 @@ from plugin.plugins.live2d_auto_layer.core.assembly import Live2DAssembler, clas
 from plugin.plugins.live2d_auto_layer.core.auto_rig import export_auto_rig_model, load_auto_rig_model
 from plugin.plugins.live2d_auto_layer.core.importing import import_layer_source
 from plugin.plugins.live2d_auto_layer.core.pngtuber import export_pngtuber_model, install_pngtuber_package
+from plugin.plugins.live2d_auto_layer.core.pngtuber.export import _layer_role
 from plugin.plugins.live2d_auto_layer.core.pipeline import process_image, process_layer_source
 from plugin.plugins.live2d_auto_layer.core.auto_rig.template import classify_rig_group, infer_bindings
 from main_routers.pngtuber_router import _validate_model_package
@@ -328,7 +329,7 @@ def test_export_pngtuber_model_package(tmp_path) -> None:
     assert metadata["source_session_id"] == "pngtuber-smoke"
     assert metadata["canvas"] == {"width": 16, "height": 16}
     assert metadata["fallback"] == {"idle": "idle.png", "talking": "talking.png"}
-    assert len(metadata["layers"]) == 4
+    assert len(metadata["layers"]) == 5
     assert metadata["state_count"] == 2
     assert metadata["capabilities"]["generated_talking_mouth"] is True
     assert metadata["layers"][0]["id"] == "layer_00_body"
@@ -336,9 +337,15 @@ def test_export_pngtuber_model_package(tmp_path) -> None:
     assert metadata["layers"][1]["image"] == "layers/01_Eye_White.png"
     assert metadata["layers"][1]["showBlink"] == 1
     assert metadata["layers"][2]["image"] == "layers/02_Mouth.png"
+    assert metadata["layers"][2]["showTalk"] == 1
+    assert metadata["layers"][3]["id"] == "layer_02_mouth_open"
+    assert metadata["layers"][3]["image"] == "layers/02_Mouth_Open.png"
+    assert metadata["layers"][3]["showTalk"] == 2
 
     with Image.open(package_dir / "idle.png") as idle_image, Image.open(package_dir / "talking.png") as talking_image:
         assert ImageChops.difference(idle_image.convert("RGB"), talking_image.convert("RGB")).getbbox() is not None
+    with Image.open(package_dir / "layers" / "02_Mouth.png") as mouth_closed, Image.open(package_dir / "layers" / "02_Mouth_Open.png") as mouth_open:
+        assert ImageChops.difference(mouth_closed.convert("RGB"), mouth_open.convert("RGB")).getbbox() is not None
 
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
@@ -349,8 +356,20 @@ def test_export_pngtuber_model_package(tmp_path) -> None:
         assert "layers/00_Body.png" in names
         assert "layers/01_Eye_White.png" in names
         assert "layers/02_Mouth.png" in names
+        assert "layers/02_Mouth_Open.png" in names
         assert "layers/03_Hair_Front.png" in names
         assert not any(name.endswith(".model3.json") or name.endswith(".moc3") for name in names)
+
+
+def test_pngtuber_export_detects_multilingual_layer_roles() -> None:
+    assert _layer_role("嘴") == "mouth"
+    assert _layer_role("口元") == "mouth"
+    assert _layer_role("眼睛") == "eye"
+    assert _layer_role("目") == "eye"
+    assert _layer_role("头发") == "hair"
+    assert _layer_role("前髪") == "hair"
+    assert _layer_role("身体") == "body"
+    assert _layer_role("衣服") == "body"
 
 
 def test_install_pngtuber_package_from_export(tmp_path) -> None:
@@ -384,10 +403,15 @@ def test_install_pngtuber_package_from_export(tmp_path) -> None:
     assert model["model_type"] == "pngtuber"
     assert model["source_format"] == "live2d_auto_layer"
     assert model["pngtuber"]["adapter"] == "neko_pngtuber_v1"
-    assert model["pngtuber"]["protocol"] == "neko.pngtuber.v1"
-    assert model["pngtuber"]["idle_image"] == f"/user_pngtuber/{installed['folder']}/idle.png"
-    assert model["pngtuber"]["metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v1.json"
-    assert model["pngtuber"]["layered_metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v1.json"
+    assert model["pngtuber"]["idle_image"] == "idle.png"
+    assert model["pngtuber"]["metadata"] == "metadata.neko-pngtuber.v1.json"
+    assert model["pngtuber"]["layered_metadata"] == "metadata.neko-pngtuber.v1.json"
+    ok, error = _validate_model_package(target_dir, model)
+    assert ok is True, error
+    assert installed["pngtuber"]["protocol"] == "neko.pngtuber.v1"
+    assert installed["pngtuber"]["idle_image"] == f"/user_pngtuber/{installed['folder']}/idle.png"
+    assert installed["pngtuber"]["metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v1.json"
+    assert installed["pngtuber"]["layered_metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v1.json"
     assert metadata["format"] == "neko.pngtuber.v1"
     assert (target_dir / "layers" / "00_Body.png").is_file()
 

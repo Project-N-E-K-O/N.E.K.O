@@ -1535,7 +1535,57 @@
         "cannotDeleteBoundModel": "No se puede eliminar el modelo en uso",
         "modelInUse": "En uso",
         "pngtuberTalkPreview": "Probar habla",
-        "pngtuberStatePreview": "Vista previa de estado"
+        "pngtuberStatePreview": "Vista previa de estado",
+        "pngtuberDiagnostics": {
+            "title": "PNGTuber Diagnostics",
+            "refresh": "Refresh",
+            "copyJson": "Copy JSON",
+            "unknown": "unknown",
+            "unknownError": "unknown error",
+            "modelNotLoaded": "PNGTuber model is not loaded yet",
+            "copySuccess": "PNGTuber diagnostics JSON copied",
+            "copyFailed": "Failed to copy diagnostics JSON",
+            "status": {
+                "ok": "OK",
+                "unloaded": "Not loaded",
+                "fallback": "Fallback",
+                "partial": "Partially loaded",
+                "image": "Image",
+                "layered": "Layered"
+            },
+            "rows": {
+                "mode": "Mode",
+                "adapter": "Adapter",
+                "metadata": "Metadata",
+                "metadataCheck": "Metadata Check",
+                "format": "Format",
+                "layers": "Layers",
+                "layerAssets": "Layer Assets",
+                "missing": "Missing",
+                "canvas": "Canvas",
+                "roles": "Roles",
+                "mouthEye": "Mouth/Eye",
+                "state": "State",
+                "fallback": "Fallback",
+                "error": "Error"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "Failed: {{error}}",
+                "modePlan": "{{mode}} / planned {{planned}}",
+                "layers": "{{loaded}}/{{total}} runtime / {{metadata}} metadata",
+                "layerAssets": "{{checked}}/{{total}} checked, missing {{missing}}, invalid {{invalid}}, skipped {{skipped}}",
+                "mouth": "mouth",
+                "eye": "eye",
+                "speaking": "speaking"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "metadata fetch failed: {{error}}",
+                "layeredModeFallback": "planned layered but runtime mode is {{mode}}",
+                "layerImagesFailed": "one or more layer images failed to load",
+                "emptyLayerRefs": "one or more layer image refs are empty"
+            }
+        }
     },
     "voice": {
         "title": "Registro de voz",

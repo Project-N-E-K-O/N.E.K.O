@@ -4647,6 +4647,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const PNGTUBER_DIAGNOSTIC_LAYER_CHECK_LIMIT = 80;
     const PNGTUBER_DIAGNOSTIC_IMAGE_TIMEOUT_MS = 3500;
 
+    function pngtuberDiagnosticsText(key, fallback, params = {}) {
+        return t(`live2d.pngtuberDiagnostics.${key}`, fallback, params);
+    }
+
     function clearPNGTuberPreviewControls() {
         if (pngtuberTalkPreviewTimer) {
             clearTimeout(pngtuberTalkPreviewTimer);
@@ -4690,8 +4694,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             textSpan = pngtuberStatePreviewSelectBtn.querySelector('span');
         }
         if (!textSpan) return;
-        textSpan.textContent = '状态预览';
-        textSpan.setAttribute('data-text', '状态预览');
+        const label = t('live2d.pngtuberStatePreview', '状态预览');
+        textSpan.textContent = label;
+        textSpan.setAttribute('data-text', label);
     }
 
     function getPNGTuberDiagnosticMetadataUrl(pngtuberConfig) {
@@ -4724,7 +4729,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             return await response.json();
         } catch (error) {
             console.warn('[PNGTuber] 读取分层 metadata 失败:', error);
-            lastPNGTuberDiagnosticsMetadataError = error && error.message ? error.message : String(error || 'unknown error');
+            lastPNGTuberDiagnosticsMetadataError = error && error.message
+                ? error.message
+                : String(error || pngtuberDiagnosticsText('unknownError', 'unknown error'));
             return null;
         }
     }
@@ -4835,10 +4842,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         const plannedLayered = debugState && debugState.plannedMode === 'layered';
         const fellBack = plannedLayered && debugState.mode !== 'layered';
         const fallbackReason = debugState.lastError
-            || (lastPNGTuberDiagnosticsMetadataError ? `metadata fetch failed: ${lastPNGTuberDiagnosticsMetadataError}` : '')
-            || (fellBack ? `planned layered but runtime mode is ${debugState.mode || 'unknown'}` : '')
-            || (Number(assetCheck.missing || 0) > 0 ? 'one or more layer images failed to load' : '')
-            || (Number(assetCheck.invalidRefs || 0) > 0 ? 'one or more layer image refs are empty' : '');
+            || (lastPNGTuberDiagnosticsMetadataError
+                ? pngtuberDiagnosticsText('fallbackReasons.metadataFetchFailed', 'metadata fetch failed: {{error}}', { error: lastPNGTuberDiagnosticsMetadataError })
+                : '')
+            || (fellBack
+                ? pngtuberDiagnosticsText('fallbackReasons.layeredModeFallback', 'planned layered but runtime mode is {{mode}}', { mode: debugState.mode || pngtuberDiagnosticsText('unknown', 'unknown') })
+                : '')
+            || (Number(assetCheck.missing || 0) > 0
+                ? pngtuberDiagnosticsText('fallbackReasons.layerImagesFailed', 'one or more layer images failed to load')
+                : '')
+            || (Number(assetCheck.invalidRefs || 0) > 0
+                ? pngtuberDiagnosticsText('fallbackReasons.emptyLayerRefs', 'one or more layer image refs are empty')
+                : '');
         return {
             ...debugState,
             metadataFormat: metadata && metadata.format ? String(metadata.format) : '',
@@ -4869,22 +4884,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         const hasMissingAssets = Number(snapshot?.missingLayerImages || 0) > 0 || Number(snapshot?.invalidLayerRefs || 0) > 0;
         const partialLayers = Number(snapshot?.layerCount || 0) > 0
             && Number(snapshot?.loadedLayerImages || 0) < Number(snapshot?.layerCount || 0);
-        let label = 'OK';
+        let label = pngtuberDiagnosticsText('status.ok', 'OK');
         let className = 'pngtuber-diagnostics-status is-ok';
         if (!snapshot || snapshot.mode === 'unloaded') {
-            label = '未加载';
+            label = pngtuberDiagnosticsText('status.unloaded', '未加载');
             className = 'pngtuber-diagnostics-status is-idle';
         } else if (hasError || fellBack || hasMissingAssets) {
-            label = 'Fallback';
+            label = pngtuberDiagnosticsText('status.fallback', 'Fallback');
             className = 'pngtuber-diagnostics-status is-error';
         } else if (partialLayers) {
-            label = '部分加载';
+            label = pngtuberDiagnosticsText('status.partial', '部分加载');
             className = 'pngtuber-diagnostics-status is-warning';
         } else if (snapshot.mode === 'image') {
-            label = 'Image';
+            label = pngtuberDiagnosticsText('status.image', 'Image');
             className = 'pngtuber-diagnostics-status is-warning';
         } else if (snapshot.mode === 'layered') {
-            label = 'Layered';
+            label = pngtuberDiagnosticsText('status.layered', 'Layered');
         }
         pngtuberDiagnosticsStatus.textContent = label;
         pngtuberDiagnosticsStatus.className = className;
@@ -4893,20 +4908,53 @@ document.addEventListener('DOMContentLoaded', async () => {
     function renderPNGTuberDiagnosticsRows(snapshot) {
         if (!pngtuberDiagnosticsRows) return;
         const rows = [
-            ['模式', `${snapshot?.mode || '-'} / planned ${snapshot?.plannedMode || '-'}`],
-            ['Adapter', snapshot?.adapter || '-'],
-            ['Metadata', shortPNGTuberPath(snapshot?.metadataUrl || '')],
-            ['Metadata Check', snapshot?.metadataError ? `失败: ${snapshot.metadataError}` : (snapshot?.metadataUrl ? 'OK' : '-')],
-            ['Format', snapshot?.metadataFormat || snapshot?.metadataRuntime || '-'],
-            ['Layers', `${snapshot?.loadedLayerImages || 0}/${snapshot?.layerCount || 0} runtime / ${snapshot?.metadataLayerCount || 0} metadata`],
-            ['Layer Assets', `${snapshot?.layerAssetChecked || 0}/${snapshot?.layerAssetTotal || 0} checked, missing ${snapshot?.missingLayerImages || 0}, invalid ${snapshot?.invalidLayerRefs || 0}, skipped ${snapshot?.skippedLayerImages || 0}`],
-            ['Missing', snapshot?.missingLayerSamples && snapshot.missingLayerSamples.length ? snapshot.missingLayerSamples.join('; ') : '-'],
-            ['Canvas', snapshot?.canvas || '-'],
-            ['Roles', snapshot?.roleSummary || '-'],
-            ['Mouth/Eye', `${snapshot?.hasMouthLayer ? 'mouth' : '-'} / ${snapshot?.hasEyeLayer ? 'eye' : '-'}`],
-            ['State', `${snapshot?.currentState || '-'}${snapshot?.isSpeaking ? ' · speaking' : ''}`],
-            ['Fallback', snapshot?.fallbackReason || '-'],
-            ['Error', snapshot?.lastError || '-'],
+            [
+                pngtuberDiagnosticsText('rows.mode', '模式'),
+                pngtuberDiagnosticsText('values.modePlan', '{{mode}} / planned {{planned}}', {
+                    mode: snapshot?.mode || '-',
+                    planned: snapshot?.plannedMode || '-',
+                }),
+            ],
+            [pngtuberDiagnosticsText('rows.adapter', 'Adapter'), snapshot?.adapter || '-'],
+            [pngtuberDiagnosticsText('rows.metadata', 'Metadata'), shortPNGTuberPath(snapshot?.metadataUrl || '')],
+            [
+                pngtuberDiagnosticsText('rows.metadataCheck', 'Metadata Check'),
+                snapshot?.metadataError
+                    ? pngtuberDiagnosticsText('values.failedWithError', '失败: {{error}}', { error: snapshot.metadataError })
+                    : (snapshot?.metadataUrl ? pngtuberDiagnosticsText('values.ok', 'OK') : '-'),
+            ],
+            [pngtuberDiagnosticsText('rows.format', 'Format'), snapshot?.metadataFormat || snapshot?.metadataRuntime || '-'],
+            [
+                pngtuberDiagnosticsText('rows.layers', 'Layers'),
+                pngtuberDiagnosticsText('values.layers', '{{loaded}}/{{total}} runtime / {{metadata}} metadata', {
+                    loaded: snapshot?.loadedLayerImages || 0,
+                    total: snapshot?.layerCount || 0,
+                    metadata: snapshot?.metadataLayerCount || 0,
+                }),
+            ],
+            [
+                pngtuberDiagnosticsText('rows.layerAssets', 'Layer Assets'),
+                pngtuberDiagnosticsText('values.layerAssets', '{{checked}}/{{total}} checked, missing {{missing}}, invalid {{invalid}}, skipped {{skipped}}', {
+                    checked: snapshot?.layerAssetChecked || 0,
+                    total: snapshot?.layerAssetTotal || 0,
+                    missing: snapshot?.missingLayerImages || 0,
+                    invalid: snapshot?.invalidLayerRefs || 0,
+                    skipped: snapshot?.skippedLayerImages || 0,
+                }),
+            ],
+            [pngtuberDiagnosticsText('rows.missing', 'Missing'), snapshot?.missingLayerSamples && snapshot.missingLayerSamples.length ? snapshot.missingLayerSamples.join('; ') : '-'],
+            [pngtuberDiagnosticsText('rows.canvas', 'Canvas'), snapshot?.canvas || '-'],
+            [pngtuberDiagnosticsText('rows.roles', 'Roles'), snapshot?.roleSummary || '-'],
+            [
+                pngtuberDiagnosticsText('rows.mouthEye', 'Mouth/Eye'),
+                `${snapshot?.hasMouthLayer ? pngtuberDiagnosticsText('values.mouth', 'mouth') : '-'} / ${snapshot?.hasEyeLayer ? pngtuberDiagnosticsText('values.eye', 'eye') : '-'}`,
+            ],
+            [
+                pngtuberDiagnosticsText('rows.state', 'State'),
+                `${snapshot?.currentState || '-'}${snapshot?.isSpeaking ? ` · ${pngtuberDiagnosticsText('values.speaking', 'speaking')}` : ''}`,
+            ],
+            [pngtuberDiagnosticsText('rows.fallback', 'Fallback'), snapshot?.fallbackReason || '-'],
+            [pngtuberDiagnosticsText('rows.error', 'Error'), snapshot?.lastError || '-'],
         ];
         const fragment = document.createDocumentFragment();
         rows.forEach(([label, value]) => {
@@ -5026,7 +5074,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (pngtuberTalkPreviewBtn) {
         pngtuberTalkPreviewBtn.addEventListener('click', () => {
             if (!window.pngtuberManager || typeof window.pngtuberManager.setSpeaking !== 'function') {
-                showStatus('PNGTuber 模型尚未加载', 2000);
+                showStatus(pngtuberDiagnosticsText('modelNotLoaded', 'PNGTuber 模型尚未加载'), 2000);
                 return;
             }
             if (pngtuberTalkPreviewTimer) clearTimeout(pngtuberTalkPreviewTimer);
@@ -5095,10 +5143,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     document.execCommand('copy');
                     textarea.remove();
                 }
-                showStatus('PNGTuber 诊断 JSON 已复制', 1800);
+                showStatus(pngtuberDiagnosticsText('copySuccess', 'PNGTuber 诊断 JSON 已复制'), 1800);
             } catch (error) {
                 console.warn('[PNGTuber] 复制诊断 JSON 失败:', error);
-                showStatus('复制诊断 JSON 失败', 2200);
+                showStatus(pngtuberDiagnosticsText('copyFailed', '复制诊断 JSON 失败'), 2200);
             }
         });
     }

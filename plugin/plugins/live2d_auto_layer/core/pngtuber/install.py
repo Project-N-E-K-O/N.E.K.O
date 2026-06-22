@@ -56,7 +56,6 @@ def install_pngtuber_package(
         source_format = str(model_json.get("source_format") or import_result.source_format or "simple_package")
         normalized_config = _normalize_pngtuber_config(target_name, model_json)
         model_json["model_type"] = "pngtuber"
-        model_json["pngtuber"] = normalized_config
         model_json["source_format"] = source_format
         (temp_dir / "model.json").write_text(
             json.dumps(model_json, ensure_ascii=False, indent=2),

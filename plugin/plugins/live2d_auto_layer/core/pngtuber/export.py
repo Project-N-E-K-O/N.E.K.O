@@ -103,16 +103,25 @@ def _copy_layers(layers: list[LayerArtifact], layers_dir: Path) -> list[dict[str
         filename = f"{index:02d}_{safe_name}.png"
         target_path = layers_dir / filename
         shutil.copyfile(source_path, target_path)
+        role = _layer_role(layer.name)
+        open_file = ""
+        if role == "mouth":
+            open_filename = f"{index:02d}_{safe_name}_Open.png"
+            open_target_path = layers_dir / open_filename
+            with Image.open(source_path) as image:
+                _open_mouth_layer(image.convert("RGBA")).save(open_target_path, format="PNG")
+            open_file = f"layers/{open_filename}"
         rows.append(
             {
                 "order": index,
                 "name": layer.name,
                 "file": f"layers/{filename}",
+                "open_file": open_file,
                 "path": str(target_path),
                 "width": layer.width,
                 "height": layer.height,
                 "area": layer.area,
-                "role": _layer_role(layer.name),
+                "role": role,
             }
         )
     return rows
@@ -152,7 +161,17 @@ def _build_layered_metadata(
         }
         if enable_basic_blink and role == "eye":
             layer["showBlink"] = 1
+        if role == "mouth" and row.get("open_file"):
+            layer["showTalk"] = 1
         metadata_layers.append(layer)
+        if role == "mouth" and row.get("open_file"):
+            open_layer = dict(layer)
+            open_layer["id"] = f"{layer['id']}_open"
+            open_layer["name"] = f"{layer['name']} Open"
+            open_layer["image"] = str(row["open_file"])
+            open_layer["showTalk"] = 2
+            open_layer["generated_from"] = str(row["file"])
+            metadata_layers.append(open_layer)
 
     return {
         "format": NEKO_PNGTUBER_METADATA_FORMAT,
@@ -289,15 +308,26 @@ def _canvas_size(layers: list[LayerArtifact]) -> tuple[int, int]:
 
 def _layer_role(name: str) -> str:
     normalized = name.strip().lower().replace(" ", "_").replace("-", "_")
-    if "mouth" in normalized:
+    if any(token in normalized for token in ("mouth", "lip", "嘴", "口", "くち")):
         return "mouth"
-    if "eye" in normalized or normalized in {"iris", "eyelash", "eyebrow"}:
+    if (
+        "eye" in normalized
+        or normalized in {"iris", "eyelash", "eyebrow"}
+        or any(token in normalized for token in ("眼", "目", "瞳", "まばたき"))
+    ):
         return "eye"
-    if "hair" in normalized:
+    if any(token in normalized for token in ("hair", "发", "髮", "髪", "頭髪", "头发")):
         return "hair"
-    if normalized in {"face_skin", "face_detail", "head", "neck", "ears", "nose"}:
+    if (
+        normalized in {"face_skin", "face_detail", "head", "neck", "ears", "nose"}
+        or any(token in normalized for token in ("脸", "臉", "頭", "头", "鼻", "耳", "首"))
+    ):
         return "head"
-    if "body" in normalized or normalized.endswith("wear"):
+    if (
+        "body" in normalized
+        or normalized.endswith("wear")
+        or any(token in normalized for token in ("身体", "身體", "躯干", "軀幹", "衣", "服"))
+    ):
         return "body"
     return "accessory"
 

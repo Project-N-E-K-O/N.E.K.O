@@ -45,8 +45,15 @@ def _warn(logger, message: str) -> None:
 
 
 def safe_relative_path(raw_path: str) -> PurePosixPath | None:
-    normalized = str(raw_path or "").replace("\\", "/").strip("/")
+    normalized = str(raw_path or "").replace("\\", "/").strip()
     if not normalized:
+        return None
+    if normalized.startswith("/"):
+        return None
+    if urlsplit(normalized).scheme:
+        return None
+    raw_parts = normalized.split("/")
+    if any(part in ("", ".", "..") for part in raw_parts):
         return None
     rel = PurePosixPath(normalized)
     if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
