@@ -83,6 +83,12 @@ from config import (
 from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
+    SESSION_INIT_PROMPT_AGENT_DYNAMIC,
+    AGENT_CAPABILITY_COMPUTER_USE,
+    AGENT_CAPABILITY_BROWSER_USE,
+    AGENT_CAPABILITY_USER_PLUGIN_USE,
+    AGENT_CAPABILITY_GENERIC,
+    AGENT_CAPABILITY_SEPARATOR,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
@@ -6212,25 +6218,38 @@ class LLMSessionManager:
         """Build the system prompt and inject active task summary when agent is enabled."""
         _lang = normalize_language_code(self.user_language, format='short')
         if self._is_agent_enabled():
-            # Keep the current wrapper structure but revert prompt semantics:
-            # do not distinguish browser/computer/plugin in the initial capability text.
-            # Historical dynamic capability block kept for rollback:
-            # capability_parts = []
-            # if self.agent_flags.get('computer_use_enabled'):
-            #     capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
-            # if self.agent_flags.get('browser_use_enabled'):
-            #     capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
-            # if self.agent_flags.get('user_plugin_enabled'):
-            #     capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
-            # caps_text = (
-            #     _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
-            #     if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
-            # )
-            # prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
-            #     name=self.lanlan_name,
-            #     capabilities=caps_text,
-            # ) + self.lanlan_prompt
-            prompt = _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+            capability_parts = []
+            runtime_caps = []
+            if self.agent_flags.get('computer_use_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
+                runtime_caps.append("computer_use (mouse/keyboard)")
+            if self.agent_flags.get('browser_use_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
+                runtime_caps.append("browser_use")
+            if self.agent_flags.get('user_plugin_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
+                runtime_caps.append("user_plugin")
+            if self.agent_flags.get('openclaw_enabled'):
+                runtime_caps.append("openclaw")
+            if self.agent_flags.get('openfang_enabled'):
+                runtime_caps.append("openfang")
+            caps_text = (
+                _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
+                if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
+            )
+            prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
+                name=self.lanlan_name,
+                capabilities=caps_text,
+            ) + self.lanlan_prompt
+            if runtime_caps:
+                prompt += (
+                    "\n\n[Runtime agent capability state]\n"
+                    f"Enabled host-side capabilities: {', '.join(runtime_caps)}.\n"
+                    "When the user asks whether you can use an enabled capability, do not say you lack permission. "
+                    "Say the host agent can attempt it asynchronously.\n"
+                    "Do not invent task progress or results. Only say a task started, completed, failed, or what it did "
+                    "when a system/task callback in the current context says so.\n"
+                )
         else:
             prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
