@@ -218,10 +218,15 @@ async def submit_survey(request: Request):
         f"{device_id}|{survey_version}|{action}".encode("utf-8")
     ).hexdigest()[:32]
 
-    # steam_user_id 边界白名单化：客户端串不可信，非法/伪造一律归 ''（纯十进制
-    # Steam64，<= 20 位）。与 telemetry 同口径，守零 PII 之外的低基数契约。
+    # steam_user_id 归一到 canonical 十进制 Steam64，与 telemetry normalize_steam_id
+    # 同规则：纯 ASCII 数字 + <= 20 位 + 0 < int < 2^64 + str(int()) 去前导零。否则
+    # 伪造请求塞 '0' / 前导零 / 超 u64 的串会污染 survey↔telemetry 的账号级 JOIN。
     raw_sid = submission.payload.steam_user_id or ""
-    steam_user_id = raw_sid if (raw_sid.isascii() and raw_sid.isdigit() and 0 < len(raw_sid) <= 20) else ""
+    steam_user_id = ""
+    if raw_sid.isascii() and raw_sid.isdigit() and len(raw_sid) <= 20:
+        _sid_val = int(raw_sid)
+        if 0 < _sid_val < (1 << 64):
+            steam_user_id = str(_sid_val)
 
     # 旧算法 device id（迁移期跨表 JOIN 同一个人用）。不可信串，封顶长度即可。
     device_id_legacy = (submission.payload.device_id_legacy or "")[:128]
@@ -247,8 +252,10 @@ async def submit_survey(request: Request):
     if not stored:
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
+    # !r 转义控制符：device_id/survey_version 即便已封顶长度仍可能含伪造的 \n 等，
+    # 裸 log 会让一次提交往 journald 注入额外日志行（log forging）。
     logger.info(
-        f"OK device={device_id[:8]}... survey={survey_version} action={action}"
+        f"OK device={device_id[:8]!r} survey={survey_version!r} action={action}"
     )
     return SubmitResponse()
 
