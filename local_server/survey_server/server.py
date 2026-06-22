@@ -168,6 +168,7 @@ async def submit_survey(request: Request):
             if int(content_length) > MAX_BODY_SIZE:
                 raise HTTPException(413, "Payload too large")
         except ValueError:
+            # CL 头不是合法整数：忽略这个预检，交给下面的实读 len 检查兜底。
             pass
 
     body_bytes = await request.body()
