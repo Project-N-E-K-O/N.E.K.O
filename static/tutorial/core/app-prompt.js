@@ -150,35 +150,10 @@
         return window.reactChatWindowHost || null;
     }
 
-    function shouldUseNewUserGalgameDefaultOff() {
-        return !!(
-            isHomePage()
-            && !state.homeTutorialCompleted
-            && !state.manualHomeTutorialViewed
-            && !isHomeTutorialSeen()
-        );
-    }
-
-    function hasStoredGalgamePreference() {
-        try {
-            return localStorage.getItem('neko.reactChatWindow.galgameMode') !== null;
-        } catch (_) {
-            return true;
-        }
-    }
-
-    function ensureNewUserGalgameDefaultOffPreference() {
-        if (!shouldUseNewUserGalgameDefaultOff()) return;
-        if (hasStoredGalgamePreference()) return;
-        try {
-            localStorage.setItem('neko.reactChatWindow.galgameMode', 'false');
-        } catch (_) {}
-    }
-
     function getStoredGalgamePreference() {
         try {
             const raw = localStorage.getItem('neko.reactChatWindow.galgameMode');
-            if (raw === null) return shouldUseNewUserGalgameDefaultOff() ? false : true;
+            if (raw === null) return true;
             return raw === 'true';
         } catch (_) {
             return true;
@@ -186,9 +161,6 @@
     }
 
     function snapshotGalgameState() {
-        if (shouldUseNewUserGalgameDefaultOff() && !hasStoredGalgamePreference()) {
-            return false;
-        }
         const host = getReactChatWindowHost();
         if (host && typeof host.isGalgameModeEnabled === 'function') {
             try {
@@ -197,8 +169,6 @@
         }
         return getStoredGalgamePreference();
     }
-
-    ensureNewUserGalgameDefaultOffPreference();
 
     function setGalgameState(enabled, options) {
         const requestOptions = options || {};

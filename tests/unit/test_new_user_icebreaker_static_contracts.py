@@ -411,52 +411,6 @@ def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal
     assert "finalizeIcebreakerAssistantSubtitle(text);" in sync_block
 
 
-def test_new_user_tutorial_seeds_galgame_default_off_without_changing_legacy_default():
-    chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")
-    app_prompt = APP_PROMPT_PATH.read_text(encoding="utf-8")
-    preference_block = chat_host.split("function readGalgameModePreference()", 1)[1].split(
-        "function persistGalgameModePreference",
-        1,
-    )[0]
-    seed_block = chat_host.split("function ensureNewUserGalgameModeDefaultOff()", 1)[1].split(
-        "function getEffectiveComposerHidden",
-        1,
-    )[0]
-    temp_disable_block = chat_host.split("function setGalgameModeTemporarilyDisabled(disabled)", 1)[1].split(
-        "function setGalgameModeEnabled",
-        1,
-    )[0]
-    init_block = chat_host.split("Resolve the persisted GalGame preference", 1)[1].split(
-        "} else {",
-        1,
-    )[0]
-
-    assert "if (raw === null) return true; // legacy default ON unless new-user tutorial seeds OFF" in preference_block
-    assert "return true;" in preference_block
-    assert "if (state.galgameModeEnabled) return;" in seed_block
-    assert "if (hasGalgameModePreference()) return;" in seed_block
-    assert "persistGalgameModePreference(false);" in seed_block
-    assert "if (next) {" in temp_disable_block
-    assert "ensureNewUserGalgameModeDefaultOff();" in temp_disable_block
-    assert "ensureNewUserGalgameModeDefaultOff();" in init_block
-
-    prompt_preference_block = app_prompt.split("function getStoredGalgamePreference()", 1)[1].split(
-        "function snapshotGalgameState",
-        1,
-    )[0]
-    assert "if (raw === null) return shouldUseNewUserGalgameDefaultOff() ? false : true;" in prompt_preference_block
-    prompt_snapshot_block = app_prompt.split("function snapshotGalgameState()", 1)[1].split(
-        "function setGalgameState",
-        1,
-    )[0]
-    assert "function ensureNewUserGalgameDefaultOffPreference()" in app_prompt
-    assert "ensureNewUserGalgameDefaultOffPreference();" in app_prompt
-    assert "localStorage.setItem('neko.reactChatWindow.galgameMode', 'false');" in app_prompt
-    assert prompt_snapshot_block.index("shouldUseNewUserGalgameDefaultOff()") < prompt_snapshot_block.index(
-        "const host = getReactChatWindowHost();"
-    )
-
-
 def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")

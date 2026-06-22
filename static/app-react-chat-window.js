@@ -269,7 +269,7 @@
     function readGalgameModePreference() {
         try {
             var raw = localStorage.getItem(GALGAME_STORAGE_KEY);
-            if (raw === null) return true; // legacy default ON unless new-user tutorial seeds OFF
+            if (raw === null) return true; // default ON per spec
             return raw === 'true';
         } catch (_) {
             return true;
@@ -280,20 +280,6 @@
         try {
             localStorage.setItem(GALGAME_STORAGE_KEY, enabled ? 'true' : 'false');
         } catch (_) {}
-    }
-
-    function hasGalgameModePreference() {
-        try {
-            return localStorage.getItem(GALGAME_STORAGE_KEY) !== null;
-        } catch (_) {
-            return true;
-        }
-    }
-
-    function ensureNewUserGalgameModeDefaultOff() {
-        if (state.galgameModeEnabled) return;
-        if (hasGalgameModePreference()) return;
-        persistGalgameModePreference(false);
     }
 
     // composer 隐藏（请她离开）时强制视为 OFF：保留 state.galgameModeEnabled，
@@ -3428,7 +3414,6 @@
         state.galgameTemporarilyDisabled = next;
 
         if (next) {
-            ensureNewUserGalgameModeDefaultOff();
             setGalgameModeEnabled(false, { persist: false });
         } else if (changed) {
             setGalgameModeEnabled(readGalgameModePreference(), {
@@ -6648,7 +6633,6 @@
         // setGalgameModeEnabled idempotently syncs state + body class + fires
         // the change event when the resolved pref differs from the safe default.
         if (isHomeTutorialInteractionLocked()) {
-            ensureNewUserGalgameModeDefaultOff();
             setGalgameModeTemporarilyDisabled(true);
         } else {
             setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
