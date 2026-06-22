@@ -426,11 +426,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # enter) must land on the current edge-glow brightness — push the
                 # live charge now. Best-effort; harmless when charge is 0.
                 try:
-                    _fire_task(session_manager[lanlan_name]._push_focus_charge())
+                    _fire_task(session_manager[lanlan_name].resync_focus_for_new_window())
                 except Exception:
-                    # Best-effort cosmetic re-push (missing manager / not-yet-ready
-                    # session): the glow is non-essential and must never block or
-                    # break greeting_check, so swallow and move on.
+                    # Best-effort cosmetic re-sync (missing manager / not-yet-ready
+                    # session): the focus glow/indicator is non-essential and must
+                    # never block or break greeting_check, so swallow and move on.
                     pass
                 if _is_home_tutorial_blocking_greeting(lanlan_name):
                     logger.info(f"[{lanlan_name}] greeting_check: skipped by home tutorial guard")

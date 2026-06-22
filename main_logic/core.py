@@ -2433,17 +2433,25 @@ class LLMSessionManager:
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
         await self._push_focus_charge()
 
-    async def _push_focus_indicator(self, active: bool) -> None:
-        """Mirror the cognition indicator (focus_state) to the frontend — a
-        subtle breathing glow (see react-neko-chat). Idempotent on the cached
-        state so the event path and the per-turn reconcile never double-fire.
-        Ephemeral UI state: pushed live over the websocket and mirrored to the
-        sync queue for cross-server, but never persisted to history (the badge
-        is not conversation; memory consumes FOCUS_EXIT's payload separately).
+    async def resync_focus_for_new_window(self) -> None:
+        """Re-emit BOTH focus signals to a freshly-connected window (greeting_check):
+        the charge glow AND the binary focus_state. ``force=True`` bypasses the
+        idempotent cache so a window opened mid-FOCUS gets the current indicator
+        even though no enter/exit transition fires for it."""
+        await self._push_focus_charge()
+        await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS, force=True)
+
+    async def _push_focus_indicator(self, active: bool, *, force: bool = False) -> None:
+        """Mirror the cognition indicator (focus_state) to the frontend (drives
+        the screen-reader status node; the visible glow is charge-driven). Idempotent
+        on the cached state so the event path and the per-turn reconcile never
+        double-fire — except ``force=True`` (a new window re-sync) re-pushes even
+        when unchanged. Ephemeral UI state: pushed live over the websocket and
+        mirrored to the sync queue for cross-server, but never persisted to history.
         Best-effort: a ws failure must never disturb the caller."""
         # getattr default guards bypass-__init__ constructions (bare test mgrs,
         # cross-server / unpickled managers) — they simply have no badge to sync.
-        if active == getattr(self, "_focus_indicator_active", False):
+        if not force and active == getattr(self, "_focus_indicator_active", False):
             return
         self._focus_indicator_active = active
         msg = {"type": "focus_state", "active": active}
