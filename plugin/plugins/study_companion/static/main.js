@@ -90,6 +90,17 @@ const quickCheckinStatus = document.getElementById('quickCheckinStatus');
 const diagnosisTitle = document.getElementById('diagnosisTitle');
 const diagnosisBody = document.getElementById('diagnosisBody');
 const primaryDiagnosis = document.getElementById('primaryDiagnosis');
+const nekoCoachPanel = document.getElementById('nekoCoachPanel');
+const nekoCoachScene = document.getElementById('nekoCoachScene');
+const nekoCoachMessage = document.getElementById('nekoCoachMessage');
+const nekoCoachRecommendation = document.getElementById('nekoCoachRecommendation');
+const nekoCoachMode = document.getElementById('nekoCoachMode');
+const nekoCoachTimer = document.getElementById('nekoCoachTimer');
+const nekoCoachGoal = document.getElementById('nekoCoachGoal');
+const nekoCoachReview = document.getElementById('nekoCoachReview');
+const nekoCoachPrimaryAction = document.getElementById('nekoCoachPrimaryAction');
+const nekoCoachSecondaryAction = document.getElementById('nekoCoachSecondaryAction');
+const nekoCoachActionButtons = Array.from(document.querySelectorAll('[data-neko-coach-action]'));
 const firstRunGuide = document.getElementById('firstRunGuide');
 const firstRunSteps = document.getElementById('firstRunSteps');
 const firstRunSkipBtn = document.getElementById('firstRunSkipBtn');
@@ -119,6 +130,22 @@ const MODE_SHORTCUTS = Object.freeze({
   1: 'companion',
   2: 'interactive',
   3: 'teaching',
+});
+const NEKO_COACH_ACTION_LABELS = Object.freeze({
+  'explain-current': 'ui.coach.action.explain_current',
+  'quiz-me': 'ui.coach.action.quiz_me',
+  'start-review': 'ui.coach.action.start_review',
+  'session-summary': 'ui.coach.action.session_summary',
+});
+const NEKO_COACH_SCENE_ACTIONS = Object.freeze({
+  idle: 'explain-current/quiz-me',
+  focus: 'explain-current/quiz-me',
+  thinking: 'explain-current/quiz-me',
+  happy: 'quiz-me/session-summary',
+  review: 'start-review/quiz-me',
+  break: 'session-summary/start-review',
+  error: 'explain-current/session-summary',
+  teaching: 'explain-current/quiz-me',
 });
 let lastStatusPayload = {};
 let settingsConfig = null;
@@ -815,6 +842,135 @@ function pomodoroStateLabel(value) {
   return pair ? t(pair[0], pair[1]) : normalized;
 }
 
+function dueReviewCount(data = {}) {
+  const deck = data.memory_deck || {};
+  if (Number.isFinite(Number(deck.due_count))) {
+    return Number(deck.due_count);
+  }
+  if (Array.isArray(data.review_queue)) {
+    return data.review_queue.length;
+  }
+  if (Array.isArray(deck.due_cards)) {
+    return deck.due_cards.length;
+  }
+  if (Array.isArray(deck.due_reviews)) {
+    return deck.due_reviews.length;
+  }
+  return 0;
+}
+
+function pomodoroStatus(data = {}) {
+  const habit = data.habit || {};
+  const pomodoro = habit.pomodoro || {};
+  return String(pomodoro.state || data.pomodoro_state || 'idle').trim().toLowerCase();
+}
+
+function checkinStatusLabel(habit = {}) {
+  const checkin = habit.checkin || {};
+  if (checkin.checked_in) {
+    return t('ui.status.checkin_done', 'Checked in today');
+  }
+  if (habit.available === false || checkin.available === false) {
+    return t('ui.status.disabled', 'Disabled');
+  }
+  return t('ui.status.checkin_pending', 'Check-in pending');
+}
+
+function deriveNekoCoachScene(data = {}) {
+  if (data.last_error || data.status === 'error') {
+    return 'error';
+  }
+  const pomodoroState = pomodoroStatus(data);
+  if (pomodoroState === 'short_break' || pomodoroState === 'long_break') {
+    return 'break';
+  }
+  const verdict = String(data.last_answer_evaluation?.verdict || '').trim().toLowerCase();
+  if (['correct', 'right', 'pass'].includes(verdict)) {
+    return 'happy';
+  }
+  if (['incorrect', 'partial', 'wrong', 'dont_know'].includes(verdict)) {
+    return 'thinking';
+  }
+  if (dueReviewCount(data) > 0) {
+    return 'review';
+  }
+  const activeMode = String(data.active_mode || data.mode || currentMode || 'companion').trim();
+  if (activeMode === 'teaching') {
+    return 'teaching';
+  }
+  if (pomodoroState === 'focusing') {
+    return 'focus';
+  }
+  return activeMode === 'interactive' ? 'idle' : 'focus';
+}
+
+function nekoCoachActionLabel(action) {
+  const key = NEKO_COACH_ACTION_LABELS[action];
+  return key ? t(key, action) : '';
+}
+
+function deriveNekoCoachActions(scene, data = {}) {
+  const actions = (NEKO_COACH_SCENE_ACTIONS[scene] || NEKO_COACH_SCENE_ACTIONS.idle).split('/');
+  if (scene === 'break' && dueReviewCount(data) <= 0) {
+    actions[1] = 'quiz-me';
+  }
+  return actions;
+}
+
+function renderNekoCoachActionButton(button, action) {
+  if (!button) {
+    return;
+  }
+  if (!action) {
+    button.hidden = true;
+    button.removeAttribute('data-neko-coach-action');
+    return;
+  }
+  button.hidden = false;
+  button.setAttribute('data-neko-coach-action', action);
+  button.textContent = nekoCoachActionLabel(action);
+}
+
+function renderNekoCoachActions(scene, data = {}) {
+  if (nekoCoachRecommendation) {
+    const recommendationScene = Object.prototype.hasOwnProperty.call(NEKO_COACH_SCENE_ACTIONS, scene) ? scene : 'idle';
+    nekoCoachRecommendation.textContent = t(`ui.coach.recommendation.${recommendationScene}`, '');
+  }
+  const [primaryAction, secondaryAction] = deriveNekoCoachActions(scene, data);
+  renderNekoCoachActionButton(nekoCoachPrimaryAction, primaryAction);
+  renderNekoCoachActionButton(nekoCoachSecondaryAction, secondaryAction);
+}
+
+function renderNekoCoach(data = {}) {
+  if (!nekoCoachPanel) {
+    return;
+  }
+  const scene = deriveNekoCoachScene(data);
+  nekoCoachPanel.dataset.scene = scene;
+  if (nekoCoachScene) {
+    nekoCoachScene.textContent = t(`ui.coach.scene.${scene}`, scene);
+  }
+  if (nekoCoachMessage) {
+    nekoCoachMessage.textContent = t(`ui.coach.message.${scene}`, t('ui.coach.message.idle', 'I will react to your study flow automatically.'));
+  }
+  renderNekoCoachActions(scene, data);
+  const modeValue = String(data.active_mode || data.mode || currentMode || 'companion');
+  if (nekoCoachMode) {
+    nekoCoachMode.textContent = modeLabel(modeValue);
+  }
+  const habit = data.habit || {};
+  const progress = goalProgressFromHabit(habit);
+  if (nekoCoachGoal) {
+    nekoCoachGoal.textContent = `${progress.completed}/${progress.total}`;
+  }
+  if (nekoCoachReview) {
+    nekoCoachReview.textContent = String(dueReviewCount(data));
+  }
+  if (nekoCoachTimer) {
+    nekoCoachTimer.textContent = pomodoroStateLabel(pomodoroStatus(data));
+  }
+}
+
 function updateStudySummaries(data = {}) {
   const habit = data.habit || {};
   const pomodoro = habit.pomodoro || {};
@@ -822,10 +978,7 @@ function updateStudySummaries(data = {}) {
     quickFocusState.textContent = pomodoroStateLabel(pomodoro.state);
   }
   if (quickCheckinStatus) {
-    const checkin = habit.checkin || {};
-    quickCheckinStatus.textContent = checkin.checked_in
-      ? t('ui.status.enabled', 'Enabled')
-      : t('ui.status.disabled', 'Disabled');
+    quickCheckinStatus.textContent = checkinStatusLabel(habit);
   }
   const deps = data.dependencies || {};
   const dependencyCount = Object.values(deps).filter((value) => value && typeof value === 'object').length;
@@ -999,6 +1152,7 @@ function setStatusLine(data) {
   renderDiagnosis(data);
   renderFirstRunGuide(data);
   updateStudySummaries(data);
+  renderNekoCoach(data);
   setModeButtons(modeValue, false);
   setStudyState(data);
 }
@@ -1753,15 +1907,18 @@ async function loadQuestionContext(options = {}) {
   }
 }
 
-async function runOcr() {
+async function runOcr(options = {}) {
   setStatus(t('ui.status.capturing_ocr', 'Capturing OCR...'));
   const data = await callPlugin('study_ocr_snapshot');
   setStatus(tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   if (data.text) {
     studyInput.value = data.text;
+  } else if (options.clearWhenEmpty && studyInput) {
+    studyInput.value = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
   await refreshStatus({ updateReply: false });
+  return data;
 }
 
 async function explainText() {
@@ -1964,6 +2121,28 @@ function bindButton(button, handler) {
   });
 }
 
+async function handleNekoCoachAction(action) {
+  const normalized = String(action || '').trim();
+  if (normalized === 'explain-current') {
+    const ocrData = await runOcr({ clearWhenEmpty: true });
+    if (String(ocrData?.text || '').trim() || studyInputImageValue) {
+      await explainText();
+    }
+    return;
+  }
+  if (normalized === 'quiz-me') {
+    await generateQuestion();
+    return;
+  }
+  if (normalized === 'start-review') {
+    openHostedSurface('due-review-panel', 'review');
+    return;
+  }
+  if (normalized === 'session-summary') {
+    openHostedSurface('session-summary', 'export');
+  }
+}
+
 async function bootstrap() {
   if (window.I18n && typeof window.I18n.init === 'function') {
     await window.I18n.init(PLUGIN_ID);
@@ -1977,6 +2156,9 @@ async function bootstrap() {
   bindButton(explainBtn, explainText);
   bindButton(evaluateAnswerBtn, evaluateAnswer);
   bindButton(summarizeBtn, summarizeSession);
+  nekoCoachActionButtons.forEach((button) => {
+    bindButton(button, () => handleNekoCoachAction(button.getAttribute('data-neko-coach-action')));
+  });
   if (hintToggleBtn) {
     hintToggleBtn.addEventListener('click', () => {
       const expanded = hintToggleBtn.getAttribute('aria-expanded') === 'true';

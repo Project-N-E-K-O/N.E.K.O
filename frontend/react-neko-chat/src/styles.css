@@ -2064,11 +2064,6 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
   border-color: transparent;
 }
 
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option-text {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
-  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
-}
-
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
   display: none;
 }

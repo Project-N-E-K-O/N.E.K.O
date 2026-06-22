@@ -1639,8 +1639,13 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
-def _phase1_text_is_pass(text: str) -> bool:
-    """Return True when a Phase 1 section explicitly says PASS."""
+def _text_is_pass_sentinel(text: str) -> bool:
+    """Return True when ``text`` as a whole is the PASS skip sentinel.
+
+    Brackets are optional: matches both "[PASS]" (the prompted form) and a
+    bare "PASS" the model occasionally emits. Phase-agnostic — used by both
+    the Phase 1 section parser and the Phase 2 stream guards.
+    """
     return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
 
 
@@ -1723,14 +1728,14 @@ def _parse_unified_phase1_result(text: str) -> dict:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result['web'] = parsed_web
-        elif _phase1_text_is_pass(web_text):
+        elif _text_is_pass_sentinel(web_text):
             result['web_pass'] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
     if music_text:
         music_text = music_text.strip()
-        if _phase1_text_is_pass(music_text):
+        if _text_is_pass_sentinel(music_text):
             result['music_pass'] = True
         elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
@@ -1748,7 +1753,7 @@ def _parse_unified_phase1_result(text: str) -> dict:
     meme_text = sections.get('meme', '')
     if meme_text:
         meme_text = meme_text.strip()
-        if _phase1_text_is_pass(meme_text):
+        if _text_is_pass_sentinel(meme_text):
             result['meme_pass'] = True
         elif meme_text:
             keyword = re.sub(
@@ -6837,9 +6842,14 @@ async def proactive_chat(request: Request):
                                 if _leak_tag:
                                     source_tag = _leak_tag
                             tag_parsed = True
-                            
-                            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                                print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+
+                            # 模型本该输出带括号的 [PASS]，但偶尔吐裸 PASS：tag 正则
+                            # 认不出 → source_tag 空、'[PASS]' 也不在 cleaned 里。再补
+                            # 一道整段哨兵判定（fullmatch，方括号可选），裸 PASS 与
+                            # [PASS] 一视同仁 abort；fullmatch 不会误伤正文里的 "pass"。
+                            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                                    or _text_is_pass_sentinel(cleaned)):
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
                                 aborted = True
                                 break
                             
@@ -6906,7 +6916,11 @@ async def proactive_chat(request: Request):
                 cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
                 if _leak_tag:
                     source_tag = _leak_tag
-            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
+            # 短 bare-PASS 回复（如整段就 "PASS"，4 字 < 80 无换行）流式期一直
+            # 在 buffer 里 continue、tag_parsed 始终 False，最终落到这里兜底。
+            # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
+            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                    or _text_is_pass_sentinel(cleaned)):
                 aborted = True
             elif cleaned.strip():
                 await _emit_safe(cleaned)
