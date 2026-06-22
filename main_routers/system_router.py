@@ -6979,6 +6979,13 @@ async def proactive_chat(request: Request):
         # full_text 是去标签后真正投递给 TTS / send_lanlan_response 的内容。
         # 两者拼起来打印会让正文头部"复读"一遍，看着像 bug 实际不是。
         # 调试只需要 tag + 实际投递文本即可。
+        # 兜底：模型本该输出 "[PASS]"（带括号），但偶尔吐裸 "PASS"——流式里的
+        # 标签解析 / abort 检测全是认方括号的，裸 PASS 会漏网成空 tag、落到下游
+        # CHAT 兜底被当正常台词念出来。复用 Phase 1 的 helper（方括号可选）统一
+        # 拦截，保持两阶段对偶。
+        if not aborted and _phase1_text_is_pass(full_text):
+            print(f"[{lanlan_name}] Phase 2 整体输出为裸 PASS 哨兵，abort")
+            aborted = True
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
         if aborted or not full_text.strip():
             # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
