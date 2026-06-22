@@ -162,6 +162,7 @@ def test_format_sections_omit_music_tag_without_playable_track():
         has_screen=False, has_web=True, has_music=False, has_meme=False, lang="zh",
     )
     assert "[MUSIC]" not in fmt
+    assert "[MEME]" not in fmt
     assert "[WEB]" in fmt  # 其它有副作用通道仍正常列出
 
 
@@ -172,6 +173,8 @@ def test_format_sections_expose_music_tag_with_playable_track():
         has_screen=False, has_web=False, has_music=True, has_meme=False, lang="zh",
     )
     assert "[MUSIC]" in fmt
+    assert "[WEB]" not in fmt
+    assert "[MEME]" not in fmt
 
 
 def test_format_sections_no_side_effect_tags_is_tagless():
@@ -182,6 +185,7 @@ def test_format_sections_no_side_effect_tags_is_tagless():
     assert "[MUSIC]" not in fmt
     assert "[WEB]" not in fmt
     assert "[MEME]" not in fmt
+    assert "[CHAT]" not in fmt
 
 
 def test_recent_proactive_similarity_ignores_expired_history():
