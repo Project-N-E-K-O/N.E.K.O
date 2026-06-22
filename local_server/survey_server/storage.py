@@ -35,6 +35,18 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def _csv_safe(value) -> str:
+    """Neutralize CSV formula injection: prefix a cell that starts with = + - @ (or a
+    leading control char) with a single quote, so spreadsheet apps treat forged
+    metadata (e.g. a signed-but-malicious device_id like ``=cmd|...``) as text rather
+    than a formula when an admin opens the export.
+    """
+    s = "" if value is None else str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 class SurveyStorage:
     def __init__(self, db_path: str):
         self._db_path = db_path
@@ -207,12 +219,12 @@ class SurveyStorage:
         ])
         for r in rows:
             writer.writerow([
-                r.get("received_at", ""), r.get("device_id", ""),
-                r.get("device_id_legacy", ""),
-                r.get("app_version", ""), r.get("survey_version", ""),
-                r.get("locale", ""), r.get("branch", ""),
-                r.get("distribution", ""), r.get("steam_user_id", ""),
-                json.dumps(r.get("answers", {}), ensure_ascii=False, sort_keys=True),
+                _csv_safe(r.get("received_at", "")), _csv_safe(r.get("device_id", "")),
+                _csv_safe(r.get("device_id_legacy", "")),
+                _csv_safe(r.get("app_version", "")), _csv_safe(r.get("survey_version", "")),
+                _csv_safe(r.get("locale", "")), _csv_safe(r.get("branch", "")),
+                _csv_safe(r.get("distribution", "")), _csv_safe(r.get("steam_user_id", "")),
+                _csv_safe(json.dumps(r.get("answers", {}), ensure_ascii=False, sort_keys=True)),
             ])
         return buf.getvalue()
 

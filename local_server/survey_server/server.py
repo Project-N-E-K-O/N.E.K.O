@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import hashlib
 import hmac
 import io
 import json
@@ -178,8 +179,15 @@ async def submit_survey(request: Request):
     if not rate_limiter.is_allowed(device_id):
         raise HTTPException(429, "Rate limit exceeded")
 
-    batch_id = submission.batch_id
     action = submission.payload.action if submission.payload.action in ("submit", "skip") else "submit"
+
+    # 幂等 key 从**已签名**的 payload 字段派生，不信任信封里的 batch_id——后者不在
+    # HMAC 覆盖范围内，可被中间人/持密钥客户端改值，从而把同一份提交伪造成新行、
+    # 污染 submit/skip 漏斗。(device_id, survey_version, action) 三元组与客户端的
+    # 幂等语义一致：每个设备每版本每动作只算一次。
+    batch_id = hashlib.sha256(
+        f"{device_id}|{submission.payload.survey_version}|{action}".encode("utf-8")
+    ).hexdigest()[:32]
 
     # steam_user_id 边界白名单化：客户端串不可信，非法/伪造一律归 ''（纯十进制
     # Steam64，<= 20 位）。与 telemetry 同口径，守零 PII 之外的低基数契约。

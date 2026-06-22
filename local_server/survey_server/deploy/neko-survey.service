@@ -26,6 +26,13 @@ Group=nogroup
 
 # ★ 修改为实际路径
 WorkingDirectory=/opt/neko-survey
+
+# 起服务前确保数据目录存在且归服务用户所有：手动 copy 本 unit 时该目录可能不存在
+# 或仍属 root，而服务以 nobody 运行写不进 SQLite（ReadWritePaths 只放开 systemd
+# 的只读挂载，不改 Unix 属主）。+ 前缀让这两步以 root 执行，绕过 User=nobody。
+ExecStartPre=+/bin/mkdir -p /opt/neko-survey/data
+ExecStartPre=+/bin/chown nobody:nogroup /opt/neko-survey/data
+
 ExecStart=/usr/bin/python3 server.py --port 8100
 
 # ★ 启用管理端（查询/导出）请取消注释并改成强随机 token。默认不设：
