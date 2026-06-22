@@ -1650,6 +1650,8 @@ function CompactChatApp({
     primeEnded?: boolean;
     lastForwardedClientX?: number;
     lastForwardedClientY?: number;
+    lastForwardedScreenX?: number;
+    lastForwardedScreenY?: number;
     captureTarget: Element | null;
   } | null>(null);
   const compactToolOriginDocumentCleanupRef = useRef<(() => void) | null>(null);
@@ -4568,6 +4570,8 @@ function CompactChatApp({
     }
     state.lastForwardedClientX = event.clientX;
     state.lastForwardedClientY = event.clientY;
+    state.lastForwardedScreenX = event.screenX;
+    state.lastForwardedScreenY = event.screenY;
     window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-move', {
       detail: {
         pointerId: state.pointerId,
@@ -4613,6 +4617,8 @@ function CompactChatApp({
     state.moved = true;
     state.lastForwardedClientX = event.clientX;
     state.lastForwardedClientY = event.clientY;
+    state.lastForwardedScreenX = event.screenX;
+    state.lastForwardedScreenY = event.screenY;
     // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
     // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
     // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
@@ -4681,19 +4687,52 @@ function CompactChatApp({
     dispatchCompactToolOriginDragPrimeEnd,
   ]);
 
+  const cancelCompactToolOriginDrag = useCallback((reason: string) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state) {
+      clearCompactToolOriginDocumentListeners();
+      return;
+    }
+    const pointerId = state.pointerId;
+    dispatchCompactToolOriginDragEnd({
+      pointerId,
+      clientX: state.lastForwardedClientX ?? state.startClientX,
+      clientY: state.lastForwardedClientY ?? state.startClientY,
+      screenX: state.lastForwardedScreenX ?? state.startScreenX,
+      screenY: state.lastForwardedScreenY ?? state.startScreenY,
+    }, reason);
+    if (!state.primeEnded) {
+      state.primeEnded = true;
+      dispatchCompactToolOriginDragPrimeEnd(pointerId);
+    }
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    clearCompactToolOriginDocumentListeners();
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(pointerId)) {
+          captureTarget.releasePointerCapture(pointerId);
+        }
+      } catch (_) {}
+    }
+  }, [
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragEnd,
+    dispatchCompactToolOriginDragPrimeEnd,
+  ]);
+
   const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const existing = compactToolOriginDragRef.current;
     if (existing && existing.pointerId === event.pointerId) return;
+    if (existing) {
+      cancelCompactToolOriginDrag('replaced');
+    } else {
+      clearCompactToolOriginDocumentListeners();
+    }
     // 每次新的原点按下都清掉可能残留的抑制标志（上一次拖拽若没补发 click 会留下 true），
     // 保证本次点按/拖拽自洁——抑制只靠「拖动置位 + click 消费 / 下次按下清零」，不再用定时器。
     compactToolOriginSuppressClickRef.current = false;
-    clearCompactToolOriginDocumentListeners();
-    const previous = compactToolOriginDragRef.current;
-    if (previous && previous.captureTarget && previous.captureTarget.hasPointerCapture?.(previous.pointerId)) {
-      // 兜底：上一手势没收到 pointerup（罕见）→ 释放旧捕获再重置，避免卡死。
-      try { previous.captureTarget.releasePointerCapture(previous.pointerId); } catch (_) {}
-    }
     const captureTarget = event.target instanceof Element
       ? event.target
       : (event.currentTarget instanceof Element ? event.currentTarget : null);
@@ -4728,6 +4767,7 @@ function CompactChatApp({
       document.removeEventListener('pointercancel', handleDocumentPointerEnd, true);
     };
   }, [
+    cancelCompactToolOriginDrag,
     clearCompactToolOriginDocumentListeners,
     dispatchCompactToolOriginDragPrime,
     finishCompactToolOriginDragFromPointer,
@@ -4742,15 +4782,22 @@ function CompactChatApp({
     finishCompactToolOriginDragFromPointer(event.nativeEvent);
   }, [finishCompactToolOriginDragFromPointer]);
 
+  const suppressCompactToolOriginClickAfterDrag = useCallback((event: ReactMouseEvent) => {
+    if (!compactToolOriginSuppressClickRef.current) return;
+    compactToolOriginSuppressClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
   useEffect(() => () => {
-    clearCompactToolOriginDocumentListeners();
+    cancelCompactToolOriginDrag('unmount');
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     clearCompactInputToolWheelDragGuardTimer();
     clearCompactInputToolWheelFastAnimationTimer();
     clearCompactInputToolWheelChargeReleaseTimer();
   }, [
-    clearCompactToolOriginDocumentListeners,
+    cancelCompactToolOriginDrag,
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
     clearCompactInputToolWheelDragGuardTimer,
@@ -7145,6 +7192,7 @@ function CompactChatApp({
                     onPointerMove={updateCompactToolOriginDrag}
                     onPointerUp={endCompactToolOriginDrag}
                     onPointerCancel={endCompactToolOriginDrag}
+                    onClickCapture={suppressCompactToolOriginClickAfterDrag}
                   >
                     {effectiveCompactChatState === 'input' ? (
                       <>

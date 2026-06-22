@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -12,10 +13,13 @@ def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():
     end = source.index("// 设置触摸缩放", start)
     block = source[start:end]
 
-    assert "const isWheelPointOnCurrentModel = (event) => {" in block
-    guard_index = block.index("if (!isWheelPointOnCurrentModel(event)) return;")
-    prevent_index = block.index("event.preventDefault();")
-    scale_index = block.index("this.currentModel.scale.set(newScale);")
+    assert re.search(r"const\s+isWheelPointOnCurrentModel\s*=\s*\(event\)\s*=>\s*{", block)
+    assert re.search(r"getBoundingClientRect\s*\(\)", block)
+    assert re.search(r"event\.clientX\s*-\s*canvasRect\.left", block)
+    assert re.search(r"event\.clientY\s*-\s*canvasRect\.top", block)
+    guard_index = re.search(r"if\s*\(!isWheelPointOnCurrentModel\(event\)\)\s*return;", block).start()
+    prevent_index = re.search(r"event\.preventDefault\(\);", block).start()
+    scale_index = re.search(r"this\.currentModel\.scale\.set\(newScale\);", block).start()
     assert guard_index < prevent_index < scale_index
 
 
@@ -25,8 +29,9 @@ def test_vrm_wheel_zoom_requires_model_hit_before_consuming_event():
     end = source.index("this.auxClickHandler = (e) => {", start)
     block = source[start:end]
 
-    assert "if (!this._hitTestModel(e.clientX, e.clientY)) {" in block
-    guard_index = block.index("if (!this._hitTestModel(e.clientX, e.clientY)) {")
-    prevent_index = block.index("e.preventDefault();")
-    scale_index = block.index("const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;")
+    hit_guard = re.search(r"if\s*\(!this\._hitTestModel\(e\.clientX,\s*e\.clientY\)\)\s*{", block)
+    assert hit_guard
+    guard_index = hit_guard.start()
+    prevent_index = re.search(r"e\.preventDefault\(\);", block).start()
+    scale_index = re.search(r"const\s+scaleFactor\s*=\s*e\.deltaY\s*>\s*0\s*\?\s*0\.95\s*:\s*1\.05;", block).start()
     assert guard_index < prevent_index < scale_index

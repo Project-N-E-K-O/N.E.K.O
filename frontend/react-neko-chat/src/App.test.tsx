@@ -6653,7 +6653,7 @@ describe('App', () => {
         screenX: 460,
         screenY: 340,
       });
-      fireEvent.pointerMove(input, {
+      fireEvent.pointerMove(document, {
         pointerId: 51, clientX: 182, clientY: 48, screenX: 482, screenY: 342,
         buttons: 1, pointerType: 'mouse',
       });
@@ -6668,7 +6668,7 @@ describe('App', () => {
         currentClientY: 48,
       });
       expect(moves).toHaveLength(0);
-      fireEvent.pointerMove(input, {
+      fireEvent.pointerMove(document, {
         pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
         buttons: 1, pointerType: 'mouse',
       });
@@ -6680,7 +6680,7 @@ describe('App', () => {
         screenX: 502,
         screenY: 354,
       });
-      fireEvent.pointerUp(input, {
+      fireEvent.pointerUp(document, {
         pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
         buttons: 0, pointerType: 'mouse',
       });
@@ -6704,6 +6704,94 @@ describe('App', () => {
     }
   });
 
+  it('dispatches compact surface drag cleanup from document pointercancel', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const primeEnds: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 61, clientX: 120, clientY: 40, screenX: 320, screenY: 240,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 61, clientX: 150, clientY: 46, screenX: 350, screenY: 246,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerCancel(document, {
+        pointerId: 61, clientX: 150, clientY: 46, screenX: 350, screenY: 246,
+        buttons: 0, pointerType: 'mouse',
+      });
+      expect(primeEnds).toEqual([{ pointerId: 61 }]);
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 61,
+        clientX: 150,
+        clientY: 46,
+        screenX: 350,
+        screenY: 246,
+        reason: 'pointercancel',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
+  it('finishes a replaced compact surface drag before priming the next pointer', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const minimize = document.body.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement;
+    const primes: Array<Record<string, number>> = [];
+    const primeEnds: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrime = (event: Event) => primes.push((event as CustomEvent).detail);
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime', onPrime);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 71, clientX: 150, clientY: 50, screenX: 450, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 71, clientX: 175, clientY: 58, screenX: 475, screenY: 348,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerDown(minimize, {
+        pointerId: 72, clientX: 95, clientY: 50, screenX: 395, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      expect(primes).toHaveLength(2);
+      expect(primes[0]).toMatchObject({ pointerId: 71 });
+      expect(primes[1]).toMatchObject({ pointerId: 72 });
+      expect(primeEnds).toContainEqual({ pointerId: 71 });
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 71,
+        clientX: 175,
+        clientY: 58,
+        screenX: 475,
+        screenY: 348,
+        reason: 'replaced',
+      });
+      fireEvent.pointerUp(document, {
+        pointerId: 72, clientX: 95, clientY: 50, screenX: 395, screenY: 340,
+        buttons: 0, pointerType: 'mouse',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime', onPrime);
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
   it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {
     render(
       <App
@@ -6721,13 +6809,13 @@ describe('App', () => {
         pointerId: 7, clientX: 100, clientY: 100, screenX: 300, screenY: 320,
         button: 0, buttons: 1, pointerType: 'mouse',
       });
-      fireEvent.pointerMove(toggle, {
+      fireEvent.pointerMove(document, {
         pointerId: 7, clientX: 122, clientY: 108, buttons: 1, pointerType: 'mouse',
       });
       // 拖动超阈值 → 派发一次抓取事件，锚点用按下点（不跳变）。
       expect(grabs).toHaveLength(1);
       expect(grabs[0]).toMatchObject({ clientX: 100, clientY: 100, screenX: 300, screenY: 320 });
-      fireEvent.pointerUp(toggle, {
+      fireEvent.pointerUp(document, {
         pointerId: 7, clientX: 122, clientY: 108, buttons: 0, pointerType: 'mouse',
       });
       // 拖完补发的 click 被吞掉，不应展开轮盘。
@@ -6737,6 +6825,37 @@ describe('App', () => {
     } finally {
       window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
     }
+  });
+
+  it('suppresses the submit default action after dragging the compact submit toggle', () => {
+    const onComposerSubmit = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    fireEvent.change(input, { target: { value: 'hello' } });
+    expect(toggle).toHaveAttribute('type', 'submit');
+
+    fireEvent.pointerDown(toggle, {
+      pointerId: 81, clientX: 120, clientY: 48, screenX: 420, screenY: 338,
+      button: 0, buttons: 1, pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(document, {
+      pointerId: 81, clientX: 150, clientY: 56, screenX: 450, screenY: 346,
+      buttons: 1, pointerType: 'mouse',
+    });
+    fireEvent.pointerUp(document, {
+      pointerId: 81, clientX: 150, clientY: 56, screenX: 450, screenY: 346,
+      buttons: 0, pointerType: 'mouse',
+    });
+    fireEvent.click(toggle);
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
   });
 
   it('keeps origin drag click suppression armed across a slow drag (no timeout clear)', () => {

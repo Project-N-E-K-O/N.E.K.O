@@ -495,16 +495,39 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
         if (!activeModel || !event) return false;
 
         try {
+            const view = this.pixi_app && this.pixi_app.view;
+            const canvasRect = view && typeof view.getBoundingClientRect === 'function'
+                ? view.getBoundingClientRect()
+                : null;
+            const rendererScreen = this.pixi_app && this.pixi_app.renderer
+                ? this.pixi_app.renderer.screen
+                : null;
+            const rendererWidth = rendererScreen && Number.isFinite(rendererScreen.width)
+                ? rendererScreen.width
+                : 0;
+            const rendererHeight = rendererScreen && Number.isFinite(rendererScreen.height)
+                ? rendererScreen.height
+                : 0;
+            const scaleX = canvasRect && canvasRect.width > 0 && rendererWidth > 0
+                ? rendererWidth / canvasRect.width
+                : 1;
+            const scaleY = canvasRect && canvasRect.height > 0 && rendererHeight > 0
+                ? rendererHeight / canvasRect.height
+                : 1;
+            const x = canvasRect
+                ? (event.clientX - canvasRect.left) * scaleX
+                : event.clientX;
+            const y = canvasRect
+                ? (event.clientY - canvasRect.top) * scaleY
+                : event.clientY;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+
             const bounds = activeModel.getBounds();
             const left = Number.isFinite(bounds.left) ? bounds.left : bounds.x;
             const top = Number.isFinite(bounds.top) ? bounds.top : bounds.y;
             const width = Number.isFinite(bounds.width) ? bounds.width : (bounds.right - bounds.left);
             const height = Number.isFinite(bounds.height) ? bounds.height : (bounds.bottom - bounds.top);
             if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0 || height <= 0) return false;
-
-            const x = event.clientX;
-            const y = event.clientY;
-            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
             if (x < left || x > left + width || y < top || y > top + height) return false;
 
             try {
