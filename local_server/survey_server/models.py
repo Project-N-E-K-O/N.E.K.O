@@ -67,6 +67,9 @@ class SurveyPayload(BaseModel):
     locale: str = "unknown"
     branch: str = "unknown"
     distribution: str = "unknown"
+    # Steam64（十进制字符串，缓存优先）。survey 是 steam-only，但允许为空：
+    # Steam 版从未观测到登录 id 的尾部情况（与 telemetry 的 "steam + 空 id" 一致）。
+    steam_user_id: str = ""
     # 'submit'（用户填完提交）或 'skip'（用户点跳过）。skip 也上报一条，
     # 用来算弹出量/跳过率/完成率漏斗。
     action: str = "submit"

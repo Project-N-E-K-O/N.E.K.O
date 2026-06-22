@@ -1355,13 +1355,32 @@ def _sanitize_survey_answers(answers: object) -> dict:
     return out
 
 
+def _resolve_survey_for_request(version: str, lang: str, config_dir) -> dict | None:
+    """Steam gate + localized survey load (sync; runs in a worker thread).
+
+    Survey is Steam-only: a non-Steam install gets None (-> has_survey:false). The
+    judgment is cached-Steam64-first with a distribution==steam fallback (see
+    survey_client.is_steam_user). On any error in the steam check we fail closed
+    (None) — better to skip the popup than to show it to a possibly-non-Steam user.
+    """
+    try:
+        from utils.survey_client import is_steam_user
+        if not is_steam_user(config_dir):
+            return None
+    except Exception:
+        return None
+    return _load_survey_for_version(version, lang)
+
+
 @router.get("/survey")
 async def get_survey(lang: str = ""):
     """Return the survey for the current app version, or {has_survey: false}.
 
-    DNT gate: when the user opted out of telemetry (NEKO_DO_NOT_TRACK / DO_NOT_TRACK),
-    no survey is served — the same switch governs both passive stats and surveys,
-    so opted-out users never see the popup.
+    Two gates before content is served:
+    - DNT: opted-out users (NEKO_DO_NOT_TRACK / DO_NOT_TRACK) get nothing — the same
+      switch governs passive stats and surveys.
+    - Steam-only: non-Steam installs get nothing (judged by the cached Steam64 +
+      distribution==steam fallback).
     """
     from config import APP_VERSION
 
@@ -1372,7 +1391,13 @@ async def get_survey(lang: str = ""):
     except Exception:
         return {"has_survey": False, "survey_version": APP_VERSION}
 
-    survey = await asyncio.to_thread(_load_survey_for_version, APP_VERSION, lang)
+    config_dir = None
+    try:
+        config_dir = get_config_manager().config_dir
+    except Exception:
+        config_dir = None
+
+    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, lang, config_dir)
     if not survey:
         return {"has_survey": False, "survey_version": APP_VERSION}
     return {

@@ -55,7 +55,7 @@ _SURVEY_GZIP_THRESHOLD = 1024  # >= 1KB 才 gzip（小 payload 不划算）
 
 
 def _compute_signature(payload_json: str, timestamp: float) -> str:
-    """HMAC-SHA256(secret, f"{timestamp}|{sha256(payload_json)}") —— 与 telemetry 同算法、不同密钥。"""
+    """HMAC-SHA256(secret, f"{timestamp}|{sha256(payload_json)}") — same algorithm as telemetry, different secret."""
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     message = f"{timestamp}|{body_hash}"
     return hmac.new(
@@ -66,10 +66,11 @@ def _compute_signature(payload_json: str, timestamp: float) -> str:
 
 
 def is_reporting_enabled() -> bool:
-    """问卷上报是否启用：未配置服务器地址、或用户开了 Do-Not-Track 时返回 False。
+    """Whether survey reporting is enabled: False when no server URL is configured or Do-Not-Track is on.
 
-    与 telemetry 共用同一个 DNT 开关 —— 关了被动统计的用户，问卷弹窗与上报一并跳过
-    （DNT gate 同时作用于 ``GET /api/survey`` 的下发与本上报）。
+    Shares telemetry's single DNT switch — a user who disabled passive stats has
+    both the survey popup and its reporting skipped (the DNT gate governs both the
+    ``GET /api/survey`` serving and this upload).
     """
     if not _SURVEY_SERVER_URL:
         return False
@@ -81,6 +82,32 @@ def is_reporting_enabled() -> bool:
         # 读不到开关时保守不上报。
         return False
     return True
+
+
+def is_steam_user(config_dir=None) -> bool:
+    """Whether this install counts as a Steam user (survey is Steam-only).
+
+    Lenient rule: an observed/cached Steam64, OR distribution=='steam' (which itself
+    covers workshop subscriptions / the workshop_config.json disk fallback that prove
+    this machine ran the Steam edition). A source/dev build (distribution=='source')
+    sees no Steam signal -> non-Steam, skipping the survey exactly like production
+    (no dev backdoor).
+    """
+    dist, live = "release", ""
+    try:
+        from utils.token_tracker import _get_telemetry_metadata
+        dist, live = _get_telemetry_metadata()
+    except Exception:
+        dist, live = "release", ""
+    if dist == "steam" or live:
+        return True
+    try:
+        from utils.steam_id_cache import get_cached_steam_id
+        if get_cached_steam_id(config_dir):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def report_survey(
@@ -120,7 +147,15 @@ def report_survey(
         )
 
         device_id = _get_anonymous_device_id()
-        distribution, _steam_user_id = _get_telemetry_metadata()
+        distribution, live_steam_user_id = _get_telemetry_metadata()
+        # steam id 以缓存为准：实时拿不到（Steam 客户端没开）时回落到落盘缓存。
+        steam_user_id = live_steam_user_id
+        if not steam_user_id:
+            try:
+                from utils.steam_id_cache import get_cached_steam_id
+                steam_user_id = get_cached_steam_id(config_dir)
+            except Exception:
+                steam_user_id = ""
         branch = "unknown"
         if config_dir is not None:
             try:
@@ -136,6 +171,9 @@ def report_survey(
             "locale": _get_telemetry_locale(),
             "branch": branch,
             "distribution": distribution,
+            # Steam64（缓存优先）。survey 是 steam-only，附带 id 便于与 telemetry
+            # 的 device↔account 维度对齐；非 steam 走不到这里（下发口已拦）。
+            "steam_user_id": steam_user_id or "",
             "action": action,
             "answers": answers,
         }

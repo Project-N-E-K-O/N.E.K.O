@@ -153,6 +153,11 @@ async def submit_survey(request: Request):
 
     action = submission.payload.action if submission.payload.action in ("submit", "skip") else "submit"
 
+    # steam_user_id 边界白名单化：客户端串不可信，非法/伪造一律归 ''（纯十进制
+    # Steam64，<= 20 位）。与 telemetry 同口径，守零 PII 之外的低基数契约。
+    raw_sid = submission.payload.steam_user_id or ""
+    steam_user_id = raw_sid if (raw_sid.isascii() and raw_sid.isdigit() and 0 < len(raw_sid) <= 20) else ""
+
     try:
         storage.store_response(
             device_id=device_id,
@@ -161,6 +166,7 @@ async def submit_survey(request: Request):
             locale=submission.payload.locale,
             branch=submission.payload.branch,
             distribution=submission.payload.distribution,
+            steam_user_id=steam_user_id,
             action=action,
             answers=submission.payload.answers or {},
             batch_id=batch_id,

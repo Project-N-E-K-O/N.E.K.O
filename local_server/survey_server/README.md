@@ -23,12 +23,18 @@ HMAC 密钥与端口和 telemetry **故意不同**：两条上报通道互不背
 
 ## 部署
 
+与 telemetry 互不依赖，可同机共存（不同端口 8100）也可单独一台。三种方式任选：
+
 ```bash
+# 1) 直接跑
 pip install -r requirements.txt
 python server.py --port 8100 --admin-token YOUR_TOKEN
 
-# 或 Docker
+# 2) Docker
 docker-compose up -d   # 记得改 docker-compose.yml 里的 SURVEY_ADMIN_TOKEN
+
+# 3) systemd 一键（Linux）
+cd deploy && ./setup.sh   # 自动建 venv + 装服务 + 生成 admin token
 ```
 
 环境变量：
@@ -54,8 +60,18 @@ docker-compose up -d   # 记得改 docker-compose.yml 里的 SURVEY_ADMIN_TOKEN
 - `GET /api/v1/admin/export/responses.csv?survey_version=` —— 导出 CSV
 - `POST /api/v1/admin/prune?max_days=365` —— 清理过期答卷
 
+## Steam-only + 字段
+
+问卷只发给 **Steam 用户**：客户端下发口 `GET /api/survey` 判定「是否 Steam 用户」
+以**缓存的 Steam64 为准**（`config_dir/steam_id_cache.json`，每次观测到登录 id 时落盘），
+并以 `distribution=='steam'`（含 workshop_config.json 磁盘兜底）为宽松兜底；非 Steam /
+source 构建一律 `has_survey:false`，不弹也不上报。
+
+上报字段：`device_id` / `device_id_legacy`（与 telemetry 同源同函数，可跨表 JOIN 同一个人）、
+`steam_user_id`（缓存优先；Steam 版从未登录过则可为空）、`app_version` / `survey_version` /
+`locale` / `branch` / `distribution`、`action`（submit/skip）、`answers`。
+
 ## 数据最小化
 
-只存一个匿名 device id + 各题答案，零对话内容、零 PII。`device_id` / `device_id_legacy`
-与 telemetry 同源（`utils/token_tracker` 的匿名设备 ID），便于跨表 JOIN 同一个人；
-但本服务不做 canonical 身份聚合（问卷量级小，无此必要）。
+只存匿名 device id + Steam64 + 各题答案，零对话内容。本服务不做 canonical 身份聚合
+（问卷量级小，无此必要）。

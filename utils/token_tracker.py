@@ -700,6 +700,14 @@ def _get_telemetry_metadata() -> tuple[str, str]:
             except Exception:
                 sid = 0
             if sid > 0:
+                # 顺手把观测到的 Steam64 落盘缓存：survey 的"是否 steam 用户"
+                # 判定以缓存为准，这样客户端下次没开/没登录 Steam 时仍能识别。
+                # best-effort，绝不让缓存写入影响 telemetry 上报。
+                try:
+                    from utils.steam_id_cache import write_cached_steam_id
+                    write_cached_steam_id(str(sid))
+                except Exception:
+                    pass
                 return "steam", str(sid)
             # 没拿到登录用户，但订阅过工坊也算 Steam 版（steam + 空 ID）。
             try:

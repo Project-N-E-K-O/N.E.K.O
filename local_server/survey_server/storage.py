@@ -86,6 +86,7 @@ class SurveyStorage:
                     locale         TEXT    NOT NULL DEFAULT 'unknown',
                     branch         TEXT    NOT NULL DEFAULT 'unknown',
                     distribution   TEXT    NOT NULL DEFAULT 'unknown',
+                    steam_user_id  TEXT    NOT NULL DEFAULT '',
                     action         TEXT    NOT NULL DEFAULT 'submit',
                     answers        TEXT    NOT NULL DEFAULT '{}',
                     batch_id       TEXT    NOT NULL DEFAULT ''
@@ -120,6 +121,7 @@ class SurveyStorage:
         locale: str,
         branch: str,
         distribution: str,
+        steam_user_id: str,
         action: str,
         answers: dict,
         batch_id: str,
@@ -129,10 +131,10 @@ class SurveyStorage:
             conn.execute(
                 """INSERT INTO responses
                    (device_id, app_version, survey_version, locale, branch,
-                    distribution, action, answers, batch_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    distribution, steam_user_id, action, answers, batch_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (device_id, app_version, survey_version, locale, branch,
-                 distribution, action, answers_json, batch_id),
+                 distribution, steam_user_id, action, answers_json, batch_id),
             )
             if batch_id:
                 conn.execute(
@@ -173,7 +175,7 @@ class SurveyStorage:
         params.append(min(limit, 50000))
         rows = conn.execute(
             f"""SELECT received_at, device_id, app_version, survey_version,
-                       locale, branch, distribution, answers
+                       locale, branch, distribution, steam_user_id, answers
                 FROM responses {where}
                 ORDER BY id DESC LIMIT ?""",
             params,
@@ -199,14 +201,14 @@ class SurveyStorage:
         writer = csv.writer(buf)
         writer.writerow([
             "received_at", "device_id", "app_version", "survey_version",
-            "locale", "branch", "distribution", "answers",
+            "locale", "branch", "distribution", "steam_user_id", "answers",
         ])
         for r in rows:
             writer.writerow([
                 r.get("received_at", ""), r.get("device_id", ""),
                 r.get("app_version", ""), r.get("survey_version", ""),
                 r.get("locale", ""), r.get("branch", ""),
-                r.get("distribution", ""),
+                r.get("distribution", ""), r.get("steam_user_id", ""),
                 json.dumps(r.get("answers", {}), ensure_ascii=False, sort_keys=True),
             ])
         return buf.getvalue()
