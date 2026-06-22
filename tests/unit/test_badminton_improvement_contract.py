@@ -607,7 +607,10 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         missing = sorted(key for key in required_keys if _get_nested(payload, key) is None)
         assert not missing, f"{locale_path.name} missing badminton i18n keys: {missing}"
         duel_title = _get_nested(payload, "badminton.hud.duelTitle")
-        assert isinstance(duel_title, str) and "11" in duel_title, (
+        eleven_point_markers = ("11", "十一", "１１")
+        assert isinstance(duel_title, str) and any(
+            marker in duel_title for marker in eleven_point_markers
+        ), (
             f"{locale_path.name} badminton.hud.duelTitle should mention the 11-point win rule"
         )
         assert len(_get_nested(payload, "badminton.lines.duel.excuse")) == 2
