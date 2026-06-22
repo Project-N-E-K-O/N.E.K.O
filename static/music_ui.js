@@ -95,20 +95,34 @@
     const MUSIC_COORD_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
     const REMOTE_MUSIC_TTL_MS = 30 * 1000; // 心跳超时
     const REMOTE_MUSIC_PENDING_TTL_MS = 12 * 1000;
-    const MUSIC_PLAYER_BRIDGE_ENDPOINT = '/api/music/player/bridge';
-    const MUSIC_PLAYER_BRIDGE_POLL_MS = 900;
-    const MUSIC_PLAYER_BRIDGE_SURFACE_PULSE_MS = 2500;
+    // 跨窗口音乐协调走桌面端主进程 IPC relay：compact 与 full 聊天窗处于隔离的
+    // Electron partition（persist:neko-full-chat），BroadcastChannel/localStorage
+    // 不跨 partition，无法保证「一次只有一个播放器 owner + 当前可见聊天窗镜像显示」。
+    // 沿用 goodbye composer 同样的「partition 隔离 → 主进程 IPC」做法（N.E.K.O.-PC
+    // 的 ipc-router 把事件 sender-aware 转发给其它窗口）。Web / 非 Electron 没有
+    // IPC 时回落到 BroadcastChannel：同 session 多 tab 本就互通、无 partition 隔离。
+    const MUSIC_BRIDGE_EVENT_NAME = 'neko:electron-music-bridge';
+    const PEER_SURFACE_TTL_MS = 8 * 1000;
+    const MUSIC_SURFACE_PULSE_MS = 2500;
     // sender_id -> expireAt
     const remoteMusicSenders = new Map();
-    let musicPlayerBridgeSeq = 0;
-    let musicPlayerBridgePollInFlight = false;
-    let musicPlayerBridgePollTimer = null;
-    let musicPlayerBridgeSurfacePulseTimer = null;
-    let musicPlayerBridgeRemoteActiveUntil = 0;
-    let musicPlayerBridgeActiveSurface = null;
+    // sender_id -> { sender, mode, active, focused, visible, updatedAt, expireAt }
+    // 对端上报的 surface 状态，用于在客户端复刻原服务端的 active_surface 仲裁
+    // （谁该显示镜像播放器条）。
+    const peerMusicSurfaces = new Map();
+    let musicSurfacePulseTimer = null;
     let musicCoordChannel = null;
+
+    // 桌面端主进程注入的音乐协调 IPC 桥（preload-common.js 的 setupMusicPlayerBridge）。
+    // 存在即用 IPC（覆盖跨 partition 的 compact/full）；不存在则回落 BroadcastChannel。
+    function getMusicIpcBridge() {
+        const b = window.nekoElectronMusicBridge;
+        return (b && typeof b.send === 'function') ? b : null;
+    }
     try {
-        if (typeof BroadcastChannel !== 'undefined') {
+        // 有 IPC 桥时只走 IPC（覆盖跨 partition 的全部窗口），不再开 BroadcastChannel，
+        // 否则同 partition 窗口（pet+compact）会同时收到 IPC 与 BC 两份、重复处理。
+        if (typeof BroadcastChannel !== 'undefined' && !getMusicIpcBridge()) {
             musicCoordChannel = new BroadcastChannel('neko_music_coord');
             musicCoordChannel.onmessage = (event) => {
                 const data = event && event.data;
@@ -179,7 +193,6 @@
 
     const isRemoteMusicActive = () => {
         const now = Date.now();
-        if (musicPlayerBridgeRemoteActiveUntil > now) return true;
         if (remoteMusicSenders.size === 0) return false;
         // 顺手清理已过期的 sender
         for (const [sid, exp] of remoteMusicSenders) {
@@ -613,18 +626,70 @@
         };
     }
 
-    function hasBridgeActiveChatMusicSurface() {
-        if (!musicPlayerBridgeActiveSurface) return false;
-        if ((musicPlayerBridgeActiveSurface.expireAt || 0) <= Date.now()) {
-            musicPlayerBridgeActiveSurface = null;
-            return false;
+    // --- 客户端 active surface 仲裁（替代原服务端 _choose_music_player_active_surface）---
+    // 每个窗口周期性 pulse 自己的 surface 状态，其它窗口收到后存入 peerMusicSurfaces。
+    // 判断「本窗口是否该显示镜像条」时，在 {本地 live surface} ∪ {对端 surface} 里
+    // 取最强者：本地胜/平 → 显示；对端严格胜 → 让位。排序键纯由 surface 权重 + sender id
+    // 决定（确定性，跨窗口一致），不掺本地时间戳，避免各窗口都以为自己最新而同时渲染。
+    const MUSIC_SURFACE_MODE_WEIGHT = { full: 4, compact: 3, web: 2, pet: 1, unknown: 0, minimized: -1 };
+
+    function updatePeerMusicSurface(sender, surface) {
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
+        const s = surface || {};
+        const active = !!s.active;
+        const focused = !!(s.focused || active);
+        peerMusicSurfaces.set(sender, {
+            sender: sender,
+            mode: typeof s.mode === 'string' ? s.mode : 'unknown',
+            active: active,
+            focused: focused,
+            visible: !!(s.visible || active || focused),
+            updatedAt: Date.now(),
+            expireAt: Date.now() + PEER_SURFACE_TTL_MS
+        });
+    }
+
+    function purgePeerMusicSurfaces(now) {
+        for (const [sid, s] of peerMusicSurfaces) {
+            if ((s.expireAt || 0) <= now) peerMusicSurfaces.delete(sid);
         }
-        if (musicPlayerBridgeActiveSurface.sender === MUSIC_COORD_SENDER_ID) return false;
-        return !!(
-            musicPlayerBridgeActiveSurface.active ||
-            musicPlayerBridgeActiveSurface.focused ||
-            musicPlayerBridgeActiveSurface.visible
-        );
+    }
+
+    function musicSurfaceWeights(s) {
+        return [
+            s.active ? 2 : (s.focused ? 1 : 0),
+            s.visible ? 1 : 0,
+            MUSIC_SURFACE_MODE_WEIGHT[s.mode] || 0
+        ];
+    }
+
+    // 返回 >0 表示 a 胜出。tiebreak 用 sender id 字典序，保证各窗口一致地选出同一个赢家。
+    function compareMusicSurface(a, b) {
+        const wa = musicSurfaceWeights(a), wb = musicSurfaceWeights(b);
+        for (let i = 0; i < wa.length; i++) {
+            if (wa[i] !== wb[i]) return wa[i] - wb[i];
+        }
+        if (a.sender === b.sender) return 0;
+        return a.sender > b.sender ? 1 : -1;
+    }
+
+    function hasBridgeActiveChatMusicSurface() {
+        const now = Date.now();
+        purgePeerMusicSurfaces(now);
+        const mine = getMusicBridgeSurfaceState('arbitrate');
+        let winner = (mine.active || mine.focused || mine.visible)
+            ? { sender: MUSIC_COORD_SENDER_ID, mode: mine.mode, active: mine.active, focused: mine.focused, visible: mine.visible }
+            : null;
+        for (const [sid, s] of peerMusicSurfaces) {
+            if (!(s.active || s.focused || s.visible)) continue;
+            if (!winner || compareMusicSurface(s, winner) > 0) {
+                winner = { sender: sid, mode: s.mode, active: s.active, focused: s.focused, visible: s.visible };
+            }
+        }
+        // 没有任何可用 surface（含本地）→ 无 active surface 信息，不拦截本地渲染。
+        if (!winner) return false;
+        // 赢家是对端 → 让对端显示，本窗口不渲染镜像条。
+        return winner.sender !== MUSIC_COORD_SENDER_ID;
     }
 
     function shouldRenderMusicBarInThisSurface() {
@@ -834,98 +899,22 @@
         });
     }
 
-    async function getMusicPlayerBridgeMutationHeaders() {
-        const headers = { 'Content-Type': 'application/json' };
-        const sec = window.nekoLocalMutationSecurity;
-        if (!sec || typeof sec.getMutationHeaders !== 'function') {
-            return null;
-        }
-        try {
-            Object.assign(headers, await sec.getMutationHeaders());
-        } catch (_) {
-            return null;
-        }
-        return headers;
-    }
-
-    function getMusicPlayerBridgeCachedMutationHeaders(body) {
-        const headers = { 'Content-Type': 'application/json' };
-        const sec = window.nekoLocalMutationSecurity;
-        if (!sec || typeof sec.peekCachedToken !== 'function') {
-            return null;
-        }
-        try {
-            const token = sec.peekCachedToken();
-            if (!token) return null;
-            headers['X-CSRF-Token'] = token;
-            if (body && typeof body === 'object') body._csrf_token = token;
-            return headers;
-        } catch (_) {
-            return null;
-        }
-    }
-
-    async function isMusicPlayerBridgeCsrfFailure(response) {
-        if (!response || response.status !== 403) return false;
-        try {
-            const cloned = typeof response.clone === 'function' ? response.clone() : response;
-            const data = await cloned.json();
-            return !!(data && data.error_code === 'csrf_validation_failed');
-        } catch (_) {
-            return false;
-        }
-    }
-
+    // 把一条音乐协调事件经主进程 IPC relay 发给其它窗口。无 IPC 桥（Web）时是
+    // no-op —— 那条路径由 BroadcastChannel 直接承载（见 broadcastMusicCoord /
+    // broadcastBarState 等里的 musicCoordChannel / musicBarChannel 分支）。
+    // ipcRenderer.send 是 fire-and-forget，beforeunload 里也能可靠送出，
+    // 故不再需要原 HTTP 路径的 cachedOnly / CSRF 处理。
     function postMusicPlayerBridgeEvent(type, payload, options = {}) {
-        const body = {
+        const bridge = getMusicIpcBridge();
+        if (!bridge) return;
+        const message = {
             sender: MUSIC_COORD_SENDER_ID,
             type: type,
             payload: payload || {},
-            surface: options.surface || getMusicBridgeSurfaceState(type)
+            surface: options.surface || getMusicBridgeSurfaceState(type),
+            ts: Date.now()
         };
-        if (options.cachedOnly) {
-            const headers = getMusicPlayerBridgeCachedMutationHeaders(body);
-            if (!headers) return;
-            try {
-                const request = fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify(body),
-                    keepalive: true,
-                    cache: 'no-store'
-                });
-                if (request && typeof request.catch === 'function') request.catch(() => { /* ignore */ });
-            } catch (_) { /* ignore */ }
-            return;
-        }
-        (async () => {
-            let headers = await getMusicPlayerBridgeMutationHeaders();
-            if (!headers) return;
-            let response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(body),
-                keepalive: true,
-                cache: 'no-store'
-            });
-            const sec = window.nekoLocalMutationSecurity;
-            if (await isMusicPlayerBridgeCsrfFailure(response)
-                && sec && typeof sec.refreshToken === 'function') {
-                try { await sec.refreshToken(); } catch (_) { /* ignore */ }
-                headers = await getMusicPlayerBridgeMutationHeaders();
-                if (!headers) return;
-                response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify(body),
-                    keepalive: true,
-                    cache: 'no-store'
-                });
-            }
-            if (response && response.ok) {
-                try { await response.json(); } catch (_) { /* ignore */ }
-            }
-        })().catch(() => { /* bridge unavailable: BroadcastChannel/local owner still works */ });
+        try { bridge.send(message); } catch (_) { /* ignore */ }
     }
 
     const bindMirrorBarControls = (musicBar) => {
@@ -1341,7 +1330,17 @@
         const payload = event.payload || {};
         try {
             if (event.type === 'coord') {
+                if (payload.coordType === 'request_state') {
+                    // 晚加入的窗口请求当前 owner 状态：我是 owner 就立即补发一帧 bar_state，
+                    // 让它无需等下一次 timeupdate / 心跳就能镜像出播放器条。
+                    if (isBarOwner()) emitBarState();
+                    return true;
+                }
                 applyMusicPlayerBridgeCoord(sender, payload.coordType, payload);
+                return true;
+            } else if (event.type === 'surface_state') {
+                // 对端上报的 surface 状态：存入 peerMusicSurfaces 供 active surface 仲裁。
+                updatePeerMusicSurface(sender, payload);
                 return true;
             } else if (event.type === 'bar_state') {
                 if (!acceptRemoteMusicOwnerState(sender, payload, event.ts)) return false;
@@ -1369,117 +1368,54 @@
         return false;
     }
 
-    async function pollMusicPlayerBridge() {
-        if (musicPlayerBridgePollInFlight) return;
-        musicPlayerBridgePollInFlight = true;
-        let abortController = null;
-        let abortTimer = 0;
-        try {
-            if (typeof AbortController !== 'undefined') {
-                abortController = new AbortController();
-                abortTimer = window.setTimeout(() => {
-                    try { abortController.abort(); } catch (_) { /* ignore */ }
-                }, MUSIC_PLAYER_BRIDGE_POLL_MS + 2000);
-            }
-            const surface = getMusicBridgeSurfaceState('poll');
-            const params = new URLSearchParams({
-                sender: MUSIC_COORD_SENDER_ID,
-                since: String(musicPlayerBridgeSeq || 0)
-            });
-            const requestOptions = {
-                method: 'GET',
-                cache: 'no-store'
-            };
-            if (abortController) requestOptions.signal = abortController.signal;
-            const response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT + '?' + params.toString(), requestOptions);
-            if (!response.ok) return;
-            const data = await response.json();
-            if (!data || data.success === false) return;
-
-            if (typeof data.seq === 'number') {
-                if (data.seq < musicPlayerBridgeSeq) {
-                    musicPlayerBridgeSeq = 0;
-                } else if (data.seq > musicPlayerBridgeSeq) {
-                    musicPlayerBridgeSeq = data.seq;
-                }
-            }
-
-            if (data.active_surface && data.active_surface.sender) {
-                musicPlayerBridgeActiveSurface = Object.assign({}, data.active_surface, {
-                    expireAt: Date.now() + MUSIC_PLAYER_BRIDGE_SURFACE_PULSE_MS + 1200
-                });
-            } else {
-                musicPlayerBridgeActiveSurface = null;
-            }
-
-            musicPlayerBridgeRemoteActiveUntil = data.remote_music_active
-                ? Date.now() + MUSIC_PLAYER_BRIDGE_POLL_MS + 1400
-                : 0;
-
-            let sawOwnerBarStateEvent = false;
-            const latestPlaybackId = data.latest_state && data.latest_state.playbackId;
-            if (Array.isArray(data.events)) {
-                for (const event of data.events) {
-                    const eventRendered = applyMusicPlayerBridgeEvent(event);
-                    if (event && event.type === 'bar_state' && event.sender === data.owner
-                        && (!latestPlaybackId || (event.payload && event.payload.playbackId === latestPlaybackId))
-                        && eventRendered) {
-                        sawOwnerBarStateEvent = true;
-                    }
-                }
-            }
-
-            if (data.owner && data.owner !== MUSIC_COORD_SENDER_ID && data.latest_state && !isBarOwner() && !sawOwnerBarStateEvent) {
-                setMirrorBarLeader(data.owner, 'bridge');
-                if (!renderMirrorBar(data.latest_state)) scheduleMusicBarRelocation();
-            } else if (!data.owner && mirrorBarLeaderSender && mirrorBarLeaderSource === 'bridge' && !isBarOwner()) {
-                setMirrorBarLeader(null);
-                teardownMirrorBar(false);
-            }
-
-            if (surface.active || surface.visible) scheduleMusicBarRelocation();
-        } catch (_) {
-            // Bridge is best-effort; BroadcastChannel/local owner remain usable.
-        } finally {
-            if (abortTimer) window.clearTimeout(abortTimer);
-            musicPlayerBridgePollInFlight = false;
-        }
-    }
+    const publishMusicSurfaceState = (reason) => {
+        postMusicPlayerBridgeEvent('surface_state', getMusicBridgeSurfaceState(reason));
+        scheduleMusicBarRelocation();
+    };
 
     function initializeMusicPlayerBridge() {
-        if (musicPlayerBridgePollTimer) return;
-        pollMusicPlayerBridge();
-        musicPlayerBridgePollTimer = window.setInterval(pollMusicPlayerBridge, MUSIC_PLAYER_BRIDGE_POLL_MS);
-        musicPlayerBridgeSurfacePulseTimer = window.setInterval(() => {
-            postMusicPlayerBridgeEvent('surface_state', getMusicBridgeSurfaceState('bridge-pulse'));
-        }, MUSIC_PLAYER_BRIDGE_SURFACE_PULSE_MS);
-        const publishSurfaceState = (reason) => {
-            postMusicPlayerBridgeEvent('surface_state', getMusicBridgeSurfaceState(reason));
-            scheduleMusicBarRelocation();
-        };
-        window.addEventListener('focus', () => publishSurfaceState('focus'));
-        window.addEventListener('blur', () => publishSurfaceState('blur'));
-        window.addEventListener('react-chat-window:chat-surface-mode-change', () => publishSurfaceState('surface-mode'));
-        window.addEventListener('neko:chat-music-surface-change', () => publishSurfaceState('surface-state'));
-        document.addEventListener('visibilitychange', () => publishSurfaceState('visibility'));
-        window.setTimeout(() => publishSurfaceState('init'), 0);
+        const bridge = getMusicIpcBridge();
+        if (!bridge) return; // Web / 非 Electron：BroadcastChannel 已承载，无需 IPC bridge
+
+        // 主进程把其它窗口的协调事件经此 CustomEvent 投递进来（preload 的 ipcRenderer.on）。
+        window.addEventListener(MUSIC_BRIDGE_EVENT_NAME, (e) => {
+            const event = e && e.detail;
+            applyMusicPlayerBridgeEvent(event);
+            // surface / owner 变化后本窗口可能需要重新判断是否显示镜像条。
+            if (event && (event.type === 'surface_state' || event.type === 'bar_state' || event.type === 'bar_destroyed')) {
+                scheduleMusicBarRelocation();
+            }
+        });
+
+        // 周期性 pulse 本窗口 surface 状态，供其它窗口做 active surface 仲裁。
+        musicSurfacePulseTimer = window.setInterval(() => publishMusicSurfaceState('pulse'), MUSIC_SURFACE_PULSE_MS);
+        window.addEventListener('focus', () => publishMusicSurfaceState('focus'));
+        window.addEventListener('blur', () => publishMusicSurfaceState('blur'));
+        window.addEventListener('react-chat-window:chat-surface-mode-change', () => publishMusicSurfaceState('surface-mode'));
+        window.addEventListener('neko:chat-music-surface-change', () => publishMusicSurfaceState('surface-state'));
+        document.addEventListener('visibilitychange', () => publishMusicSurfaceState('visibility'));
+
+        // 初次 pulse 本窗口 surface + 主动请求当前 owner 状态：晚加入的窗口立即补镜像，
+        // 不必等 owner 下一次 timeupdate / 心跳。
+        window.setTimeout(() => {
+            publishMusicSurfaceState('init');
+            postMusicPlayerBridgeEvent('coord', { coordType: 'request_state' });
+        }, 0);
+
         window.addEventListener('beforeunload', () => {
+            // 退出前明确通告本窗口不再可用 + 若是 owner 则摘镜像，避免对端等 TTL。
             postMusicPlayerBridgeEvent('surface_state', Object.assign(
                 getMusicBridgeSurfaceState('unload'),
                 { active: false, focused: false, visible: false, reason: 'unload' }
-            ), { cachedOnly: true });
+            ));
             if (isBarOwner()) {
                 const playbackId = getCurrentMusicPlaybackId();
-                postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: true, playbackId: playbackId }, { cachedOnly: true });
-                postMusicPlayerBridgeEvent('coord', { coordType: 'music_ended', playbackId: playbackId }, { cachedOnly: true });
+                postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: true, playbackId: playbackId });
+                postMusicPlayerBridgeEvent('coord', { coordType: 'music_ended', playbackId: playbackId });
             }
-            if (musicPlayerBridgePollTimer) {
-                window.clearInterval(musicPlayerBridgePollTimer);
-                musicPlayerBridgePollTimer = null;
-            }
-            if (musicPlayerBridgeSurfacePulseTimer) {
-                window.clearInterval(musicPlayerBridgeSurfacePulseTimer);
-                musicPlayerBridgeSurfacePulseTimer = null;
+            if (musicSurfacePulseTimer) {
+                window.clearInterval(musicSurfacePulseTimer);
+                musicSurfacePulseTimer = null;
             }
         });
     }
@@ -1487,7 +1423,8 @@
     initializeMusicPlayerBridge();
 
     try {
-        if (typeof BroadcastChannel !== 'undefined') {
+        // 同 coord channel：有 IPC 桥时不开 BroadcastChannel，避免与 IPC 双发。
+        if (typeof BroadcastChannel !== 'undefined' && !getMusicIpcBridge()) {
             musicBarChannel = new BroadcastChannel(MUSIC_BAR_CHANNEL_NAME);
             musicBarChannel.onmessage = (event) => {
                 const data = event && event.data;
