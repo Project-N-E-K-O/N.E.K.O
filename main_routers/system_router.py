@@ -6391,9 +6391,13 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = picked_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
-                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
-                    phase1_topics.append(('music', music_topic))
+                    # formatted_content 非空时 _format_music_content 必已输出至少一条
+                    # 曲目，所以这里实际不可达；保留为防御兜底，并与上面 picked_track
+                    # is None 路径对偶：没有可播曲目就不进 active_channels，守住
+                    # "music ∈ active_channels ⟺ selected_music_link 非空" 这条不变量，
+                    # 避免 Phase 2 出现音乐素材却无歌可投（发了 [MUSIC] 转译不出）。
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐 formatted_content 非空但无曲目数据，跳过音乐通道")
+                    music_content = None
 
         # ============================================================
         # 表情包话题组装（遍历候选 → 去重 → 限1张）
@@ -6555,9 +6559,12 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
-        # （冷却期时 music_content 已在上游被清空，music_topic 必为 None，此分支不会命中）
-        if music_topic and not is_playing_music and not music_cooldown:
+        # gate 钉在 selected_music_link（本轮真选中、可播的曲目）而非 music_topic：
+        # 保证 Phase 2 prompt 一旦出现音乐素材 / output-format 列出 [MUSIC]，下游必有
+        # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
+        # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
+        # music_content / selected_music_link 已在上游清空，此分支自然不命中。
+        if selected_music_link and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
@@ -6665,7 +6672,8 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         dynamic_context_for_phase2 = ""
-        if music_topic:
+        # 同 music_section：[MUSIC] tag 强制指令只在真有可播曲目时注入。
+        if selected_music_link:
             dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
