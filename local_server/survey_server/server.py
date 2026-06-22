@@ -186,9 +186,13 @@ async def submit_survey(request: Request):
     raw_sid = submission.payload.steam_user_id or ""
     steam_user_id = raw_sid if (raw_sid.isascii() and raw_sid.isdigit() and 0 < len(raw_sid) <= 20) else ""
 
+    # 旧算法 device id（迁移期跨表 JOIN 同一个人用）。不可信串，封顶长度即可。
+    device_id_legacy = (submission.payload.device_id_legacy or "")[:128]
+
     try:
         stored = storage.store_response(
             device_id=device_id,
+            device_id_legacy=device_id_legacy,
             app_version=submission.payload.app_version,
             survey_version=submission.payload.survey_version,
             locale=submission.payload.locale,

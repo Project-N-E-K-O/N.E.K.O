@@ -76,8 +76,9 @@ class SurveyStorage:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS responses (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                    received_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
-                    device_id      TEXT    NOT NULL,
+                    received_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+                    device_id        TEXT    NOT NULL,
+                    device_id_legacy TEXT    NOT NULL DEFAULT '',
                     app_version    TEXT    NOT NULL DEFAULT 'unknown',
                     survey_version TEXT    NOT NULL DEFAULT 'unknown',
                     locale         TEXT    NOT NULL DEFAULT 'unknown',
@@ -104,6 +105,7 @@ class SurveyStorage:
         self,
         *,
         device_id: str,
+        device_id_legacy: str,
         app_version: str,
         survey_version: str,
         locale: str,
@@ -134,11 +136,11 @@ class SurveyStorage:
                     return False  # 另一并发请求已写入同 batch，幂等跳过
             conn.execute(
                 """INSERT INTO responses
-                   (device_id, app_version, survey_version, locale, branch,
-                    distribution, steam_user_id, action, answers, batch_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (device_id, app_version, survey_version, locale, branch,
-                 distribution, steam_user_id, action, answers_json, batch_id),
+                   (device_id, device_id_legacy, app_version, survey_version, locale,
+                    branch, distribution, steam_user_id, action, answers, batch_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (device_id, device_id_legacy, app_version, survey_version, locale,
+                 branch, distribution, steam_user_id, action, answers_json, batch_id),
             )
         return True
 
@@ -174,7 +176,7 @@ class SurveyStorage:
             params.append(survey_version)
         params.append(min(limit, 50000))
         rows = conn.execute(
-            f"""SELECT received_at, device_id, app_version, survey_version,
+            f"""SELECT received_at, device_id, device_id_legacy, app_version, survey_version,
                        locale, branch, distribution, steam_user_id, answers
                 FROM responses {where}
                 ORDER BY id DESC LIMIT ?""",
@@ -200,12 +202,13 @@ class SurveyStorage:
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow([
-            "received_at", "device_id", "app_version", "survey_version",
+            "received_at", "device_id", "device_id_legacy", "app_version", "survey_version",
             "locale", "branch", "distribution", "steam_user_id", "answers",
         ])
         for r in rows:
             writer.writerow([
                 r.get("received_at", ""), r.get("device_id", ""),
+                r.get("device_id_legacy", ""),
                 r.get("app_version", ""), r.get("survey_version", ""),
                 r.get("locale", ""), r.get("branch", ""),
                 r.get("distribution", ""), r.get("steam_user_id", ""),
