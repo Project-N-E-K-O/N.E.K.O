@@ -4035,6 +4035,12 @@
             "title": "更新信息"
         }
     },
+    "survey": {
+        "title": "问卷调查",
+        "submit": "提交",
+        "skip": "跳过",
+        "requiredHint": "这道题需要先回答哦"
+    },
     "proactive": {
         "meme": {
             "title": "表情包",

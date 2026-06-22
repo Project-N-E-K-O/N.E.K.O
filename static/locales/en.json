@@ -4035,6 +4035,12 @@
             "title": "Update Info"
         }
     },
+    "survey": {
+        "title": "Survey",
+        "submit": "Submit",
+        "skip": "Skip",
+        "requiredHint": "Please answer this question first"
+    },
     "proactive": {
         "meme": {
             "title": "Meme",

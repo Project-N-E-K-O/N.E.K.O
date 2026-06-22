@@ -4035,6 +4035,12 @@
             "title": "Información de actualización"
         }
     },
+    "survey": {
+        "title": "Encuesta",
+        "submit": "Enviar",
+        "skip": "Omitir",
+        "requiredHint": "Por favor, responde esta pregunta primero"
+    },
     "proactive": {
         "meme": {
             "title": "meme",

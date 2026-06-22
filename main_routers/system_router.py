@@ -1295,6 +1295,132 @@ async def get_changelog(since: str = "", lang: str = ""):
     return {"current_version": APP_VERSION, "entries": entries}
 
 
+def _load_survey_for_version(version: str, lang: str) -> dict | None:
+    """Load config/surveys/<version>.json with the same locale fallback chain as changelog.
+
+    Returns the parsed (localized) survey dict, or None when no survey exists for
+    the version. Fallback chain: user locale -> en -> the Chinese base file; the
+    whole file is swapped per locale (question ids must stay identical across
+    locales — answers are reported by id).
+    """
+    surveys_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "surveys")
+    base_file = os.path.join(surveys_dir, f"{version}.json")
+    if not os.path.isfile(base_file):
+        return None
+
+    is_chinese = lang.startswith("zh") if lang else True
+    candidates: list[str] = []
+    if not is_chinese:
+        if lang:
+            candidates.append(os.path.join(surveys_dir, lang, f"{version}.json"))
+        candidates.append(os.path.join(surveys_dir, "en", f"{version}.json"))
+    candidates.append(base_file)
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            data.setdefault("survey_version", version)
+            return data
+    return None
+
+
+def _sanitize_survey_answers(answers: object) -> dict:
+    """Whitelist + cap the answer dict before forwarding (abuse / oversized-payload guard).
+
+    Mirrors the remote server's data-minimization contract: at most 50 questions,
+    keys <= 64 chars, string answers <= 2000 chars, list answers <= 50 items of
+    <= 200 chars each. Anything else is dropped.
+    """
+    out: dict = {}
+    if not isinstance(answers, dict):
+        return out
+    for i, (k, v) in enumerate(answers.items()):
+        if i >= 50:
+            break
+        if not isinstance(k, str) or not k:
+            continue
+        key = k[:64]
+        if isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, str):
+            out[key] = v[:2000]
+        elif isinstance(v, (int, float)):
+            out[key] = v
+        elif isinstance(v, list):
+            out[key] = [str(x)[:200] for x in v[:50] if isinstance(x, (str, int, float, bool))]
+    return out
+
+
+@router.get("/survey")
+async def get_survey(lang: str = ""):
+    """Return the survey for the current app version, or {has_survey: false}.
+
+    DNT gate: when the user opted out of telemetry (NEKO_DO_NOT_TRACK / DO_NOT_TRACK),
+    no survey is served — the same switch governs both passive stats and surveys,
+    so opted-out users never see the popup.
+    """
+    from config import APP_VERSION
+
+    try:
+        from utils.survey_client import is_reporting_enabled
+        if not is_reporting_enabled():
+            return {"has_survey": False, "survey_version": APP_VERSION}
+    except Exception:
+        return {"has_survey": False, "survey_version": APP_VERSION}
+
+    survey = await asyncio.to_thread(_load_survey_for_version, APP_VERSION, lang)
+    if not survey:
+        return {"has_survey": False, "survey_version": APP_VERSION}
+    return {
+        "has_survey": True,
+        "survey_version": survey.get("survey_version", APP_VERSION),
+        "survey": survey,
+    }
+
+
+@router.post("/survey/submit")
+async def submit_survey(request: Request):
+    """Receive the user's survey answers (or a skip) and forward them, HMAC-signed, to the remote survey server.
+
+    Best-effort: a failed upload still returns ok=True so the frontend records the
+    survey as done and never re-prompts; uploaded reflects whether the remote 200'd.
+    """
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        return validation_error
+
+    from config import APP_VERSION
+
+    action = payload.get("action")
+    if action not in ("submit", "skip"):
+        action = "submit"
+    survey_version = payload.get("survey_version")
+    if not isinstance(survey_version, str) or not survey_version:
+        survey_version = APP_VERSION
+    answers = _sanitize_survey_answers(payload.get("answers"))
+
+    uploaded = False
+    try:
+        from utils.survey_client import report_survey
+        config_dir = None
+        try:
+            config_dir = get_config_manager().config_dir
+        except Exception:
+            config_dir = None
+        uploaded = await asyncio.to_thread(
+            report_survey, survey_version, action, answers, config_dir=config_dir
+        )
+    except Exception as e:
+        logger.warning("survey submit forward failed: %s", e)
+
+    return {"ok": True, "uploaded": bool(uploaded)}
+
+
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}

@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  survey:
+    build: .
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # ★ 必须修改：管理端鉴权 token（用于查询 / 导出）
+      - SURVEY_ADMIN_TOKEN=changeme
+      # 可选：启用 /docs Swagger 页面
+      # - SURVEY_ENABLE_DOCS=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

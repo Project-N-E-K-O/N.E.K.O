@@ -4035,6 +4035,12 @@
             "title": "更新情報"
         }
     },
+    "survey": {
+        "title": "アンケート",
+        "submit": "送信",
+        "skip": "スキップ",
+        "requiredHint": "この質問にお答えください"
+    },
     "proactive": {
         "meme": {
             "title": "ミーム",

@@ -307,6 +307,10 @@ window.addEventListener('load', async () => {
             }
         } catch (_) { }
 
+        // 老玩家判定：必须在 step 1 改写 neko_last_notified_version 之前抓取，
+        // 否则 step 1 给全新用户写入当前版本后就分不清新老了。问卷只对老玩家弹。
+        const _hadPriorVersion = !!localStorage.getItem('neko_last_notified_version');
+
         // 1) 版本更新日志（先讲背景）
         try {
             const lastVer = localStorage.getItem('neko_last_notified_version') || '';
@@ -342,6 +346,44 @@ window.addEventListener('load', async () => {
                 await Promise.all(changelogPromises);
                 if (cdata.current_version) {
                     localStorage.setItem('neko_last_notified_version', cdata.current_version);
+                }
+            }
+        } catch (_) { }
+
+        // 1.5) 版本问卷（changelog 确认后，对老玩家追加）
+        // 仅老玩家、当前版本有问卷、且这一版还没填过/跳过过时弹出。后端 /api/survey
+        // 还会再做一道 DNT 门禁（关了被动统计的用户拿到 has_survey:false）。
+        try {
+            if (_hadPriorVersion && typeof window.showSurveyModal === 'function') {
+                const surveyLang = (window.i18next && window.i18next.language) || '';
+                const sr = await fetch(`/api/survey?lang=${encodeURIComponent(surveyLang)}`);
+                const sdata = await sr.json();
+                if (sdata && sdata.has_survey && sdata.survey) {
+                    const surveyVer = sdata.survey_version || sdata.survey.survey_version || '';
+                    const doneVer = localStorage.getItem('neko_last_survey_version') || '';
+                    if (surveyVer && doneVer !== surveyVer) {
+                        const result = await window.showSurveyModal(sdata.survey);
+                        // 不论提交还是跳过都先记本地，避免上报失败导致反复弹。
+                        localStorage.setItem('neko_last_survey_version', surveyVer);
+                        const submitHeaders = { 'Content-Type': 'application/json' };
+                        const sec = window.nekoLocalMutationSecurity;
+                        if (sec && typeof sec.getMutationHeaders === 'function') {
+                            try { Object.assign(submitHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                        }
+                        try {
+                            await fetch('/api/survey/submit', {
+                                method: 'POST',
+                                headers: submitHeaders,
+                                body: JSON.stringify({
+                                    survey_version: surveyVer,
+                                    action: (result && result.action) || 'skip',
+                                    answers: (result && result.answers) || {},
+                                }),
+                            });
+                        } catch (e) {
+                            console.warn('[survey/submit] request failed:', e);
+                        }
+                    }
                 }
             }
         } catch (_) { }

@@ -4035,6 +4035,12 @@
             "title": "업데이트 정보"
         }
     },
+    "survey": {
+        "title": "설문조사",
+        "submit": "제출",
+        "skip": "건너뛰기",
+        "requiredHint": "이 질문에 먼저 답해 주세요"
+    },
     "proactive": {
         "meme": {
             "title": "밈",

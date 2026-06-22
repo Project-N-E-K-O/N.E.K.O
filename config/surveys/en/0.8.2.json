@@ -1,0 +1,48 @@
+{
+  "survey_version": "0.8.2",
+  "title": "You've stayed with me this far — tell us what you think",
+  "intro": "One minute to help us do better. Everything is optional, and you can skip anytime.",
+  "questions": [
+    {
+      "id": "usage_freq",
+      "type": "single",
+      "label": "How often do you open me these days?",
+      "options": [
+        { "value": "daily", "label": "Almost every day" },
+        { "value": "weekly", "label": "A few times a week" },
+        { "value": "monthly", "label": "Once in a while" },
+        { "value": "rarely", "label": "Haven't in a long time" }
+      ]
+    },
+    {
+      "id": "fav_features",
+      "type": "multi",
+      "label": "Which parts do you use and enjoy most? (Choose any)",
+      "options": [
+        { "value": "chat", "label": "Everyday chat" },
+        { "value": "voice", "label": "Voice / timbre" },
+        { "value": "proactive", "label": "Proactive messages" },
+        { "value": "games", "label": "Mini-games / interaction" },
+        { "value": "appearance", "label": "Appearance / outfits" },
+        { "value": "other", "label": "Something else" }
+      ]
+    },
+    {
+      "id": "nps",
+      "type": "single",
+      "label": "Would you recommend me to a friend?",
+      "options": [
+        { "value": "yes", "label": "Yes, already telling people" },
+        { "value": "maybe", "label": "It depends" },
+        { "value": "no", "label": "Not for now" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "Anything else you'd like to tell us? Gripes or wishes welcome.",
+      "placeholder": "Optional, up to 500 characters",
+      "max_length": 500
+    }
+  ]
+}

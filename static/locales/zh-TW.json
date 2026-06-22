@@ -4035,6 +4035,12 @@
             "title": "更新資訊"
         }
     },
+    "survey": {
+        "title": "問卷調查",
+        "submit": "送出",
+        "skip": "略過",
+        "requiredHint": "這題需要先回答喔"
+    },
     "proactive": {
         "meme": {
             "title": "表情包",
