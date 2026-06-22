@@ -1370,7 +1370,11 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
     }
 
     if (typeof this.recoverRendererFromReturnBallViewport === 'function') {
-        this.recoverRendererFromReturnBallViewport('save-position-before');
+        try {
+            this.recoverRendererFromReturnBallViewport('save-position-before');
+        } catch (error) {
+            console.warn('[Live2D Interaction] 恢复 return-ball viewport 失败，继续保存位置:', error);
+        }
     }
 
     const position = { x: this.currentModel.x, y: this.currentModel.y };

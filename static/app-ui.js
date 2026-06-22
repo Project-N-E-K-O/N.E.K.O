@@ -29,6 +29,7 @@
     const NEKO_MODEL_CAT_TRANSITION_EDGE_MASK = 'radial-gradient(circle at center, #000 0%, #000 44%, rgba(0,0,0,0.72) 58%, rgba(0,0,0,0.18) 72%, rgba(0,0,0,0) 88%, rgba(0,0,0,0) 100%)';
     const NEKO_MODEL_RETURN_ENTER_TRANSITION = 'opacity 1120ms ease-out, transform 1080ms cubic-bezier(0.22, 1, 0.36, 1)';
     const NEKO_MODEL_RETURN_ENTER_CLEANUP_MS = 1160;
+    const NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS = 180;
     const NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out';
     const NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS = 1160;
     const NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in';
@@ -1853,7 +1854,7 @@
             await Promise.race([
                 promise,
                 new Promise(resolve => {
-                    timeoutId = setTimeout(resolve, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS + 180);
+                    timeoutId = setTimeout(resolve, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS + NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS);
                 })
             ]);
             if (timeoutId) {
