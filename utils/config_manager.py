@@ -2891,11 +2891,27 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_vllm_omni_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for vLLM-Omni cloned voices.
+
+        Dual to :meth:`_get_mimo_storage_keys`, with one key difference: vLLM-Omni
+        is a self-hosted local service with **no API key**, so cloned voices live
+        in a single fixed ``__VLLM_OMNI__`` bucket (no key suffix) instead of a
+        per-key ``__MIMO__{suffix}`` bucket. A vLLM-Omni clone is selected by
+        ``voice_meta.provider`` at dispatch (the inline reference-audio model, see
+        ``workers/vllm_omni.py``), so the bucket merges into the current-API voice
+        list regardless of which core/TTS provider is otherwise active."""
+        voice_storage = self.load_voice_storage()
+        bucket = '__VLLM_OMNI__'
+        return [bucket] if bucket in voice_storage else []
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__VLLM_OMNI__'):
+            return 'vllm_omni'
         if storage_key.startswith('__MIMO__'):
             return 'mimo'
         if storage_key.startswith('__ELEVENLABS__'):
@@ -3022,6 +3038,16 @@ class ConfigManager:
                         vdata['provider'] = 'mimo'
                     result[vid] = vdata
 
+        # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶
+        # + voice_meta 选中，与 MiMo 同构。差异：vLLM-Omni 是本地服务无 API key，桶名固定）
+        for vllm_key in self._get_vllm_omni_storage_keys():
+            vllm_voices = voice_storage.get(vllm_key, {})
+            for vid, vdata in vllm_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'vllm_omni'
+                    result[vid] = vdata
+
         if for_listing:
             # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
             # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
@@ -3136,7 +3162,7 @@ class ConfigManager:
         """Delete the given voice under the current TTS config (including standalone-provider voices)"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查带前缀的独立服务商存储
+        # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
         for storage_key in list(voice_storage.keys()):
             if (
                 storage_key.startswith('__MINIMAX__')
@@ -3144,6 +3170,7 @@ class ConfigManager:
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
+                or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
                 # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
                 # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。

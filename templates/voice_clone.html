@@ -44,6 +44,7 @@
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
                         <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
+                        <option value="vllm_omni" data-i18n="voice.provider.vllm_omni">vLLM-Omni（本地克隆）</option>
                     </select>
                 </div>
                 <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
@@ -117,6 +118,12 @@
                         <option value="ko" data-i18n="voice.lang.ko">韩语</option>
                         <option value="ru" data-i18n="voice.lang.ru">俄语</option>
                     </select>
+                </div>
+
+                <div class="field-row" id="vllmRefTextRow" style="display: none;">
+                    <label for="vllmRefText" data-i18n="voice.vllmRefTextLabel">参考音频原文（vLLM-Omni 克隆必填，须与音频内容严格对应）</label>
+                    <label class="hint" data-i18n="voice.vllmRefTextHint">逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降</label>
+                    <textarea id="vllmRefText" rows="3" data-i18n-placeholder="voice.vllmRefTextPlaceholder" placeholder="例如：希望你以后能够做的比我还好呦"></textarea>
                 </div>
 
                 <div class="field-row">

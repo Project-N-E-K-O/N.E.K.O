@@ -543,7 +543,8 @@ body .container-header {
 }
 
 .field-row input,
-.field-row select {
+.field-row select,
+.field-row textarea {
     width: 100%;
     max-width: 600px;
     padding: 10px 16px;
@@ -558,7 +559,8 @@ body .container-header {
 }
 
 .field-row input:disabled,
-.field-row select:disabled {
+.field-row select:disabled,
+.field-row textarea:disabled {
     background-color: #f8f9fa;
     color: #b3e5fc;
     cursor: not-allowed;
@@ -592,8 +594,20 @@ body .container-header {
     color: #b3e5fc;
 }
 
+.field-row textarea {
+    border-radius: 12px;
+    resize: vertical;
+    min-height: 60px;
+}
+
+.field-row textarea::placeholder {
+    font-size: 0.9rem;
+    color: #b3e5fc;
+}
+
 .field-row input:focus,
-.field-row select:focus {
+.field-row select:focus,
+.field-row textarea:focus {
     outline: none;
     border-color: #40C5F1;
     box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
