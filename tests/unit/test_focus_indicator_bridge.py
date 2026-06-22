@@ -35,11 +35,18 @@ def _stub(mode=CognitionMode.REGULAR):
         websocket_lock=None,
         lanlan_name="测试娘",
         _focus_indicator_active=False,
-        state=types.SimpleNamespace(mode=mode),
+        # snapshot feeds _push_focus_charge (reconcile also re-pushes the glow).
+        state=types.SimpleNamespace(
+            mode=mode,
+            snapshot=lambda: {"focus_charge": 0.0, "focus_charge_at": 0.0},
+        ),
     )
-    # _on_focus_transition / _reconcile delegate to _push_focus_indicator via
-    # self — attach it so the delegation resolves on the bare stub.
+    # _on_focus_transition / _reconcile delegate to these via self — attach so
+    # the delegation resolves on the bare stub.
     stub._push_focus_indicator = LLMSessionManager._push_focus_indicator.__get__(
+        stub, LLMSessionManager
+    )
+    stub._push_focus_charge = LLMSessionManager._push_focus_charge.__get__(
         stub, LLMSessionManager
     )
     return stub
@@ -51,6 +58,11 @@ def _bind(stub, name):
 
 def _pushed(stub):
     return [m["data"] for m in stub.sync_message_queue.items if m.get("type") == "json"]
+
+
+def _pushed_states(stub):
+    """Only the binary focus_state messages — reconcile also emits focus_charge."""
+    return [m for m in _pushed(stub) if m.get("type") == "focus_state"]
 
 
 def test_enter_then_exit_pushes_active_on_off():
@@ -92,8 +104,8 @@ def test_reconcile_clears_badge_after_silent_focus_drop():
     stub = _stub(mode=CognitionMode.FOCUS)
     stub._focus_indicator_active = True
     reconcile = _bind(stub, "_reconcile_focus_indicator")
-    asyncio.run(reconcile())                      # mode still FOCUS → no-op
-    assert _pushed(stub) == []
+    asyncio.run(reconcile())                      # mode still FOCUS → badge no-op
+    assert _pushed_states(stub) == []             # (charge is re-pushed separately)
     stub.state.mode = CognitionMode.REGULAR       # silent clear happened
     asyncio.run(reconcile())
-    assert _pushed(stub) == [{"type": "focus_state", "active": False}]
+    assert _pushed_states(stub) == [{"type": "focus_state", "active": False}]

@@ -45,9 +45,24 @@
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
+    function _isElectronFullChatHost(path) {
+        const normalizedPath = path || '';
+        if (normalizedPath !== '/chat_full' && normalizedPath !== '/chat_full/') return false;
+        const body = document.body;
+        return !!(
+            body &&
+            body.classList &&
+            body.classList.contains('neko-electron-runtime') &&
+            body.getAttribute('data-chat-host-kind') === 'full'
+        );
+    }
+
     function _computeSelfRank() {
         try {
             const path = (window.location && window.location.pathname) || '';
+            // Electron full chat 使用独立 session，只显示/控制同步过来的聊天与播放器。
+            // Web /chat_full 没有 neko-electron-runtime，仍需参与 proactive leader 选举。
+            if (_isElectronFullChatHost(path)) return 99;
             // chat.html 浮窗 → 从节点
             if (path === '/chat') return 1;
             // 不参与 proactive 的页面（model_manager / jukebox / subtitle / agenthud / toast / cookies_login 等）
@@ -627,6 +642,12 @@
             S.proactiveChatTimer = null;
         }
 
+        // 明确不参与的页面不挂 recheck；/chat_full 独立 session 下会一直自封失败。
+        if (PROACTIVE_SELF_RANK === 99) {
+            console.log('[Proactive] 当前页面不参与 proactive 调度，跳过');
+            return;
+        }
+
         // 主备协调：非 leader 不调度，只挂一个轻量的 recheck，
         // 一旦 leader 失联（peer 过期）就自动接班。
         if (!isProactiveLeader()) {
@@ -1068,9 +1089,12 @@
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
                 var musicPlaying = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                var musicPending = (typeof window.isMusicPending === 'function') && window.isMusicPending();
+                var remoteMusicActive = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                var musicRateLimited = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                 var musicCooldown = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                if (musicPlaying || musicCooldown) {
-                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', cooldown=' + musicCooldown);
+                if (musicPlaying || musicPending || remoteMusicActive || musicRateLimited || musicCooldown) {
+                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', pending=' + musicPending + ', remote=' + remoteMusicActive + ', rateLimited=' + musicRateLimited + ', cooldown=' + musicCooldown);
                 } else {
                     console.log('[ProactiveChat] 音乐模式已启用');
                     availableModes.push('music');
@@ -1189,8 +1213,11 @@
                 // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
                     var musicPlayingNow = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                    var musicPendingNow = (typeof window.isMusicPending === 'function') && window.isMusicPending();
+                    var remoteMusicActiveNow = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                    var musicRateLimitedNow = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                     var musicCooldownNow = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                    if (!musicPlayingNow && !musicCooldownNow) {
+                    if (!musicPlayingNow && !musicPendingNow && !remoteMusicActiveNow && !musicRateLimitedNow && !musicCooldownNow) {
                         latestModes.push('music');
                     }
                 }
@@ -1365,12 +1392,25 @@
                                 url: musicLink.url,
                                 cover: musicLink.cover
                             };
-                            console.log('[ProactiveChat] 发送音乐消息:', track);
-                            var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                            await new Promise(function (resolve) {
+                                setTimeout(resolve, 50 + Math.floor(Math.random() * 120));
+                            });
+                            var musicBusyBeforeDispatch =
+                                ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying()) ||
+                                ((typeof window.isMusicPending === 'function') && window.isMusicPending()) ||
+                                ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive()) ||
+                                ((typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited()) ||
+                                ((typeof window.isMusicCooldown === 'function') && window.isMusicCooldown());
+                            if (musicBusyBeforeDispatch) {
+                                console.log('[ProactiveChat] 音乐 dispatch 前检测到播放器已占用，跳过本次音乐链接');
+                            } else {
+                                console.log('[ProactiveChat] 发送音乐消息:', track);
+                                var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
 
-                            // 仅在明确成功派发时标记；'queued' 仍是等待态，不应提前隐藏链接
-                            if (dispatchResult === true) {
-                                dispatchedTrackUrl = musicLink.url;
+                                // 仅在明确成功派发时标记；'queued' 仍是等待态，不应提前隐藏链接
+                                if (dispatchResult === true) {
+                                    dispatchedTrackUrl = musicLink.url;
+                                }
                             }
                         } else if (musicLink) {
                             console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);

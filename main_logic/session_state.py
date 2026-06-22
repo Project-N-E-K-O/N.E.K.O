@@ -124,6 +124,7 @@ class SessionStateMachine:
     _focus_episode_started_at: float = 0.0
     _focus_turn_count: int = 0
     _focus_charge: float = 0.0  # leaky accumulator: charge*retention + score each scored turn
+    _focus_charge_at: float = 0.0  # wall-clock (time.time()) of last charge change, for time decay
     _subscribers: "dict[Union[SessionEvent, str], list[Subscriber]]" = field(
         default_factory=lambda: defaultdict(list)
     )
@@ -326,6 +327,17 @@ class SessionStateMachine:
                 self._clear_focus_state()
                 return self.mode
 
+            # Double decay, time component: bleed the charge for the wall-clock
+            # seconds since it last changed, BEFORE this turn's retention+score.
+            # Lazy (no ticker) — silence between turns still ages the charge, and
+            # the frontend extrapolates the same curve for a smooth glow.
+            now = time.time()
+            if self._focus_charge > 0.0 and self._focus_charge_at > 0.0:
+                self._focus_charge = _decay_charge_over_time(
+                    self._focus_charge, now - self._focus_charge_at, th,
+                )
+            self._focus_charge_at = now
+
             decision = _focus_decide(
                 mode=self.mode,
                 focus_turn_count=self._focus_turn_count,
@@ -388,6 +400,7 @@ class SessionStateMachine:
         self._focus_episode_started_at = 0.0
         self._focus_turn_count = 0
         self._focus_charge = 0.0
+        self._focus_charge_at = 0.0
 
     def snapshot(self) -> dict:
         """Consistent snapshot for logging / diagnostics."""
@@ -402,6 +415,7 @@ class SessionStateMachine:
             "mode": self.mode.value,
             "focus_turn_count": self._focus_turn_count,
             "focus_charge": round(self._focus_charge, 3),
+            "focus_charge_at": self._focus_charge_at,
             "focus_episode_id": self._focus_episode_id,
         }
 
@@ -543,9 +557,12 @@ class FocusThresholds:
 
     enabled: bool
     retention: float       # leaky-accumulator retention per turn (0..1)
-    enter: float           # charge >= enter ⇒ REGULAR → FOCUS
+    enter: float           # charge >= enter ⇒ REGULAR → FOCUS (also "full activation")
     exit: float            # charge < exit (while FOCUS) ⇒ FOCUS → REGULAR
     hard_cap_turns: int
+    cap: float = 1.0               # charge ceiling (enter is entry, climbs past it to cap)
+    time_decay: float = 0.0        # per-second wall-clock decay while charge < enter
+    time_decay_activated: float = 0.0  # per-second decay while charge >= enter (slower)
 
 
 @dataclass(frozen=True)
@@ -569,13 +586,17 @@ def _focus_decide(
     """Pure leaky-accumulator transition for one scored turn.
 
     Each turn integrates the score into a leaky charge:
-    ``new_charge = charge * retention + score`` (capped at ``enter`` so a long
-    heavy episode can't build an over-long decay tail). Entry: ``REGULAR`` +
-    ``new_charge >= enter`` ⇒ ENTER — so scattered mild cues accumulate to the
-    bar over several turns, while one strong message (score ≈ enter) enters at
-    once. Exit while ``FOCUS``: an explicit topic switch, the hard turn cap, or
-    ``new_charge < exit`` (the charge has leaked away as the signal faded).
-    Otherwise STAY. ``TRUE_NAME`` (v2) is inert here.
+    ``new_charge = clamp(charge * retention + score, 0, cap)``. ``score`` can be
+    NEGATIVE (a positive/happy emotion votes Focus down), so the result is
+    clamped at 0 — a good mood drains charge but never goes below empty; the
+    ``cap`` (≥ ``enter``) lets sustained strong evidence climb past the entry bar
+    for a brighter/longer glow. Entry: ``REGULAR`` + ``new_charge >= enter`` ⇒
+    ENTER — scattered mild cues accumulate over several turns, one strong message
+    enters at once. A ``topic_changed`` turn drops the old accumulator and reseeds
+    from this turn's score alone. Exit while ``FOCUS``: explicit topic switch,
+    hard turn cap, or ``new_charge < exit``. Otherwise STAY. ``TRUE_NAME`` (v2)
+    inert. (Wall-clock time decay is applied separately in ``update_focus`` before
+    this; see ``_decay_charge_over_time``.)
 
     The leak replaces the old "K consecutive low turns" streak, which a single
     noisy mid-score turn could reset and thereby stick focus on indefinitely.
@@ -590,12 +611,14 @@ def _focus_decide(
             # Pivot away from the active episode ends it; the new topic
             # re-accumulates from REGULAR starting next turn.
             return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="topic_switch")
-        new_charge = min(score, th.enter)
+        new_charge = max(0.0, min(score, th.cap))
         if new_charge >= th.enter:
             return _FocusDecision(_FocusAction.ENTER, turn_count=1, charge=new_charge, reason="charge")
         return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=new_charge)
 
-    new_charge = min(charge * th.retention + score, th.enter)
+    # score can be NEGATIVE now (a positive/happy emotion votes Focus down), so
+    # clamp the accumulator at 0 — a good mood drains charge but never goes below empty.
+    new_charge = max(0.0, min(charge * th.retention + score, th.cap))
 
     if mode is CognitionMode.REGULAR:
         if new_charge >= th.enter:
@@ -621,6 +644,28 @@ def _focus_decide(
     return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=charge)
 
 
+def _decay_charge_over_time(charge: float, elapsed_s: float, th: FocusThresholds) -> float:
+    """Wall-clock time decay of the charge over ``elapsed_s`` seconds.
+
+    The TIME component of the double decay (the per-turn ``retention`` in
+    ``_focus_decide`` is the other). Floored at the "full activation" line
+    (``enter``): once activated (charge >= enter) time decay can only bleed the
+    charge DOWN TO ``enter`` at the slower ``time_decay_activated`` rate, never
+    below — dropping out of activation requires a conversation turn (retention),
+    not mere silence. Below ``enter`` the charge bleeds to 0 at the faster
+    ``time_decay`` rate. Clamped — decay never raises charge.
+    """
+    if elapsed_s <= 0 or charge <= 0:
+        return max(0.0, charge)
+    if charge >= th.enter:
+        if th.time_decay_activated <= 0:
+            return charge
+        return max(th.enter, charge - th.time_decay_activated * elapsed_s)
+    if th.time_decay <= 0:
+        return charge
+    return max(0.0, charge - th.time_decay * elapsed_s)
+
+
 def _focus_thresholds_from_config() -> FocusThresholds:
     """Read the live Focus knobs from ``config`` (call-time read so tests can monkeypatch)."""
     import config
@@ -630,6 +675,9 @@ def _focus_thresholds_from_config() -> FocusThresholds:
         enter=float(config.FOCUS_CHARGE_ENTER),
         exit=float(config.FOCUS_CHARGE_EXIT),
         hard_cap_turns=int(config.FOCUS_HARD_CAP_TURNS),
+        cap=float(getattr(config, "FOCUS_CHARGE_CAP", 1.0)),
+        time_decay=float(getattr(config, "FOCUS_TIME_DECAY_PER_SEC", 0.0)),
+        time_decay_activated=float(getattr(config, "FOCUS_TIME_DECAY_PER_SEC_ACTIVATED", 0.0)),
     )
 
 

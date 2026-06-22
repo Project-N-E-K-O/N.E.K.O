@@ -249,9 +249,6 @@ test('SceneOrchestrator can execute legacy scene fields through timeline playbac
         clearSpotlightVariantHints() {
             calls.push('variant-hints:clear');
         },
-        scheduleAvatarStandInForScene(scene, day, sceneRunId) {
-            calls.push(['standin:schedule', scene.id, day, sceneRunId]);
-        },
         prepareAvatarFloatingScene(scene) {
             calls.push(['prepare', scene.id, scene.operation]);
             return Promise.resolve();
@@ -381,9 +378,6 @@ test('SceneOrchestrator routes timeline graduation wrap through the petal cue ha
         },
         clearSpotlightVariantHints() {
             calls.push('variant-hints:clear');
-        },
-        scheduleAvatarStandInForScene(scene, day, sceneRunId) {
-            calls.push(['standin:schedule', scene.id, day, sceneRunId]);
         },
         prepareAvatarFloatingScene(scene) {
             calls.push(['prepare', scene.id, scene.operation]);
@@ -1213,6 +1207,7 @@ test('director delegates avatar floating scene playback to SceneOrchestrator', (
     assert.match(playSceneBlock, /return this\.sceneOrchestrator\.playScene\(scene,\s*day,\s*index,\s*total\);/);
     assert.doesNotMatch(playSceneBlock, /const sceneRunId = \+\+this\.sceneRunId;/);
     assert.doesNotMatch(playSceneBlock, /scheduleAvatarStandInForScene/);
+    assert.match(orchestratorSource, /director\.scheduleAvatarStandInForScene\(scene,\s*context\.day,\s*sceneRunId\);/);
     assert.match(orchestratorPlaySceneBlock, /director\.settingsTourFlow\.canHandle\(scene\)/);
     assert.match(orchestratorPlaySceneBlock, /director\.settingsTourFlow\.play\(scene,\s*\{/);
     assert.doesNotMatch(orchestratorPlaySceneBlock, /day4_chat_settings/);

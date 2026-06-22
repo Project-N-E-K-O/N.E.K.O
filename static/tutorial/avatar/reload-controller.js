@@ -3,6 +3,95 @@
 
     function noop() {}
 
+    const PROACTIVE_STATE_KEYS = Object.freeze([
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled'
+    ]);
+
+    function snapshotProactiveState() {
+        const appState = window.appState || null;
+        const snapshot = {};
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            if (typeof window[key] !== 'undefined') {
+                snapshot[key] = !!window[key];
+            } else if (appState && typeof appState[key] !== 'undefined') {
+                snapshot[key] = !!appState[key];
+            } else {
+                snapshot[key] = false;
+            }
+        });
+        return snapshot;
+    }
+
+    function stopProactiveRuntime() {
+        [
+            'stopProactiveChatSchedule',
+            'stopProactiveVisionDuringSpeech',
+            'releaseProactiveVisionStream'
+        ].forEach((methodName) => {
+            if (typeof window[methodName] === 'function') {
+                try {
+                    window[methodName]();
+                } catch (error) {
+                    console.warn('[TutorialAvatarReloadController] 主动搭话运行时停止失败:', methodName, error);
+                }
+            }
+        });
+    }
+
+    function maybeRestartProactiveRuntime(snapshot) {
+        if (!snapshot || !snapshot.proactiveChatEnabled) {
+            return;
+        }
+        const hasMode = PROACTIVE_STATE_KEYS.some((key) => key !== 'proactiveChatEnabled' && !!snapshot[key]);
+        const scheduler = window.appProactive && typeof window.appProactive.scheduleProactiveChat === 'function'
+            ? window.appProactive.scheduleProactiveChat
+            : window.scheduleProactiveChat;
+        if (hasMode && typeof scheduler === 'function') {
+            try {
+                scheduler.call(window);
+            } catch (error) {
+                console.warn('[TutorialAvatarReloadController] 主动搭话调度恢复失败:', error);
+            }
+        }
+    }
+
+    function applyProactiveState(values, options) {
+        if (!values || typeof values !== 'object') {
+            return;
+        }
+        const appState = window.appState || null;
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(values, key)) {
+                return;
+            }
+            const next = !!values[key];
+            window[key] = next;
+            if (appState && typeof appState[key] !== 'undefined') {
+                appState[key] = next;
+            }
+        });
+        stopProactiveRuntime();
+        if (options && options.restart) {
+            maybeRestartProactiveRuntime(values);
+        }
+    }
+
+    function buildDisabledProactiveState() {
+        const state = {};
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            state[key] = false;
+        });
+        return state;
+    }
+
     class TutorialAvatarReloadController {
         constructor(options) {
             const normalizedOptions = options || {};
@@ -87,6 +176,8 @@
                 };
                 this.override.currentName = currentName;
                 this.override.snapshotPayload = snapshotPayload;
+                this.override.proactiveSnapshot = snapshotProactiveState();
+                applyProactiveState(buildDisabledProactiveState());
 
                 this.setPreparing(true);
                 await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });
@@ -160,6 +251,7 @@
 
             const currentName = override.currentName;
             const snapshotPayload = override.snapshotPayload;
+            const proactiveSnapshot = override.proactiveSnapshot;
             override.restoring = true;
 
             const restorePromise = Promise.resolve().then(async () => {
@@ -181,6 +273,7 @@
                         } catch (_) {}
                     }
                 } finally {
+                    applyProactiveState(proactiveSnapshot, { restart: true });
                     this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {

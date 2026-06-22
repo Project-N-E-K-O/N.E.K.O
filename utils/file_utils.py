@@ -152,6 +152,106 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
     return ''.join(out)
 
 
+def _looks_like_structural_close(s: str, pos: int) -> bool:
+    """Whether an in-string ``"`` at index ``pos-1`` is a real string terminator.
+
+    Look at the first non-whitespace char from ``pos``:
+      - ``:`` / ``}`` / ``]`` / end-of-input → strong structural signal → close.
+      - ``,`` → ambiguous (commas appear in prose). Only a real close when the token
+        *after* the comma looks like a valid next key/value head (``_VALUE_START_CHARS``,
+        which already includes ``"``); otherwise the ``"`` is content.
+      - anything else → content quote (not a close).
+    """
+    n = len(s)
+    j = pos
+    while j < n and s[j].isspace():
+        j += 1
+    if j >= n:
+        return True  # EOF —— 最后一个字符串的合法收尾
+    c = s[j]
+    if c in ':}]':
+        return True
+    if c == ',':
+        k = j + 1
+        while k < n and s[k].isspace():
+            k += 1
+        # `,` 后必须紧跟下一个合法 key/value 起始才算真的分隔符；否则偏向当内容
+        return k < n and s[k] in _VALUE_START_CHARS
+    return False
+
+
+def _escape_inner_quotes(s: str) -> str:
+    """Escape unescaped double-quotes that appear *inside* JSON string values.
+
+    Some fast LLMs (notably Qwen) write Chinese prose with literal English double
+    quotes around quoted speech / terms and forget to escape them, e.g.
+    ``{"content": "他对我说"晚安"然后走了"}`` —— ``json.loads`` then treats the first
+    inner ``"`` as the string terminator and chokes.
+
+    Scan char by char. Inside a string, when an unescaped ``"`` is hit, decide whether
+    it terminates the string (``_looks_like_structural_close``) or is stray content; if
+    content, rewrite it to ``\\"``. The bias is deliberately toward *escaping*: a wrong
+    "this is content" guess merely fails to parse and json.loads raises with full
+    context (no regression vs. today), whereas closing too eagerly would yield
+    valid-but-wrong JSON —— the silent corruption this module avoids everywhere else.
+    This is the last, most aggressive transform in the fallback pipeline; it only runs
+    after every cheaper repair has failed.
+
+    Known best-effort limitations (consciously accepted —— this repair targets the
+    common Qwen single-/multi-field prose case and trades a little adversarial-corner
+    safety for that coverage; only ever runs on input that already fails strict parse):
+      1. Comma boundary is fundamentally ambiguous. A legitimate multi-field object like
+         ``{"summary": "他说"晚安"了", "reason": "..."}`` is structurally *identical* to
+         an adversarial ``{"content": "User wrote "x", "y": "z""}``. Repairing the first
+         (needs the comma to close) necessarily mis-splits the second. There is no local
+         signal to tell them apart, so the latter is silently mis-repaired.
+      2. Adjacent quoted tokens with a missing separator (``["x" "y"]``, ``{"a" "b": 1}``)
+         get merged into one string rather than left to fail —— missing *commas/colons*
+         are out of scope for an inner-quote repair, but this transform incidentally
+         "fixes" them wrongly.
+      3. Earlier text transforms (Python-literal / ``{{}}``) run *before* this one
+         (they must, and this one must run after quote-normalization + unquoted-key, or
+         its lookahead misreads bare keys), so a stray ``True`` / ``{{x}}`` *inside* an
+         unescaped-inner-quote string can be rewritten before the string is made whole,
+         e.g. ``{"a":"he said "True" today"}`` → ``...said "true"...``.
+    """  # noqa: DOCSTRING_CJK
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    in_string = False
+    escape = False
+    while i < n:
+        c = s[i]
+        if not in_string:
+            out.append(c)
+            if c == '"':
+                in_string = True
+            i += 1
+            continue
+        if escape:
+            out.append(c)
+            escape = False
+            i += 1
+            continue
+        if c == '\\':
+            out.append(c)
+            escape = True
+            i += 1
+            continue
+        if c != '"':
+            out.append(c)
+            i += 1
+            continue
+        # 字符串内未转义的 `"`：闭合 or 内容？
+        if _looks_like_structural_close(s, i + 1):
+            out.append(c)
+            in_string = False
+        else:
+            out.append('\\"')
+        i += 1
+    return ''.join(out)
+
+
 def _try_json_loads(s: str) -> tuple[Any, bool]:
     try:
         return json.loads(s), True
@@ -297,7 +397,8 @@ def robust_json_loads(raw: str) -> Any:
 
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
     single-quoted strings (including mixed-quote scenarios), stray hallucinated
-    chars between structural tokens (e.g. ``,결{`` → ``,{``), and over-escaped
+    chars between structural tokens (e.g. ``,결{`` → ``,{``), unescaped English
+    double-quotes inside string values (e.g. ``"他说"晚安"走了"``), and over-escaped
     ``---`` memo dividers in string values.
     """  # noqa: DOCSTRING_CJK
     parsed, ok = _try_json_loads(raw)
@@ -321,8 +422,10 @@ def robust_json_loads(raw: str) -> Any:
         lambda s: _apply_outside_strings(s, lambda t: _UNQUOTED_KEY_RE.sub(r' "\1":', t)),
         # 单引号 → 双引号；自身已段感知
         _normalize_quotes,
-        # 最后才动：清掉 `,결{` 类结构 token 间幻觉污染；自身已双引号感知
+        # 清掉 `,결{` 类结构 token 间幻觉污染；自身已双引号感知
         _strip_stray_chars_between_tokens,
+        # 最后才动、最激进：转义字符串值内未转义的英文双引号（qwen 等模型常犯）
+        _escape_inner_quotes,
     )
     s = raw
     for transform in transforms:

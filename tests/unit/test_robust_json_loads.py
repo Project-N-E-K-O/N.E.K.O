@@ -361,3 +361,44 @@ def test_clean_string_passes_through_unchanged():
     raw = '{"s": "hello world"}'
     parsed = robust_json_loads(raw)
     assert parsed["s"] == "hello world"
+
+
+# ── 字符串值内未转义英文双引号（qwen 等快模型常犯） ──────────────────────
+
+
+@pytest.mark.unit
+def test_unescaped_inner_quotes_in_value():
+    """实测案例：qwen 在中文里塞未转义的英文引号。
+    内层 `"晚安"` 应被当内容转义，结尾 `"` 后接 `}` 才闭合。"""  # noqa: DOCSTRING_CJK
+    raw = '{"content": "他对我说"晚安"然后走了"}'
+    parsed = robust_json_loads(raw)
+    assert parsed == {"content": '他对我说"晚安"然后走了'}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # 结尾 `"` 后接 `,` 且 `,` 后是合法下一个 key → 真分隔符 → 闭合
+        ('{"a": "他说"好"了", "b": 1}', {"a": '他说"好"了', "b": 1}),
+        # 数组里：内层引号转义，逗号后是合法 value 起始 → 闭合
+        ('["他说"好"了", "ok"]', ['他说"好"了', "ok"]),
+        # 关键反例：`"` 后是 `,` 但逗号后 ` bob"` 不是合法 token 起始 →
+        # 当内容转义，不误闭合（避免静默截断 `, bob`）
+        ('{"a": "he said "hi", bob"}', {"a": 'he said "hi", bob'}),
+        # 多字段、多处内层引号
+        (
+            '{"x": "说"A"完", "y": "再说"B""}',
+            {"x": '说"A"完', "y": '再说"B"'},
+        ),
+    ],
+)
+def test_unescaped_inner_quotes_various(raw, expected):
+    assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
+def test_inner_quotes_transform_is_noop_on_valid_json():
+    """已合法的 JSON（含已转义引号）不应被这步动到。"""  # noqa: DOCSTRING_CJK
+    raw = '{"a": "say \\"hi\\" loud", "b": ["x", "y"]}'
+    assert robust_json_loads(raw) == {"a": 'say "hi" loud', "b": ["x", "y"]}

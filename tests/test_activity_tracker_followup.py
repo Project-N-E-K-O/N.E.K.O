@@ -960,6 +960,73 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
+def test_narration_suppressed_check_defaults_and_injection():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    tracker = UserActivityTracker('test_lanlan')
+
+    # No predicate injected → never suppressed (old behavior preserved).
+    assert tracker._is_narration_suppressed() is False
+
+    # Predicate returning True → suppressed.
+    tracker.set_narration_suppressed_check(lambda: True)
+    assert tracker._is_narration_suppressed() is True
+
+    # Predicate returning False → not suppressed.
+    tracker.set_narration_suppressed_check(lambda: False)
+    assert tracker._is_narration_suppressed() is False
+
+    # Raising predicate → fail-open (don't suppress, don't crash the heartbeat).
+    def _boom():
+        raise RuntimeError('boom')
+
+    tracker.set_narration_suppressed_check(_boom)
+    assert tracker._is_narration_suppressed() is False
+
+    # Cleared → back to never suppressed.
+    tracker.set_narration_suppressed_check(None)
+    assert tracker._is_narration_suppressed() is False
+
+
+def test_activity_guess_loop_skips_llm_when_narration_suppressed():
+    """The narration-suppressed gate sits with the other no-consumer skips:
+    after the proactive-disabled gate, before the away bail, and uses the
+    fail-open helper rather than calling the predicate inline."""
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    assert "if self._is_narration_suppressed():" in source
+    assert (
+        source.index("if not _proactive_chat_enabled():")
+        < source.index("if self._is_narration_suppressed():")
+    )
+    assert (
+        source.index("if self._is_narration_suppressed():")
+        < source.index("if rule_snap.state == 'away':")
+    )
+
+
+def test_activity_guess_signature_excludes_idle_bucket():
+    """idle seconds growing must not flip the dedup signature.
+
+    While AFK, system_idle_seconds keeps climbing; the old code folded
+    idle//30 into the signature, flipping it every ~30s, defeating dedup
+    and burning one emotion-tier LLM call every ~40s during pure idle.
+    The signature now keys only on "what the user is doing" (state +
+    window + subcategory); the active->idle->away transition is still
+    caught by state (away bails anyway).
+    """
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
+    # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
+    # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
+    # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
+    assert "idle_bucket" not in source
+    assert "sig = (" in source
+
+
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():
     from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
 

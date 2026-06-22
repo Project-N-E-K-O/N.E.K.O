@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 
+from PIL import Image
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -27,7 +28,7 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert '<link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />' in index
     assert '<script src="./katex.min.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./katex-render.js?v=study-hotfix-20260615v"></script>' in index
-    assert '<script src="./main.js?v=study-hotfix-20260621-comments"></script>' in index
+    assert '<script src="./main.js?v=study-hotfix-20260621-yui-static"></script>' in index
     assert ".study-panel__image-preview[hidden]" in css
     assert ".study-panel__image-preview:not([hidden])" in css
     assert "window.renderMathInText" in renderer
@@ -488,6 +489,47 @@ def test_phase9_onboarding_doc_is_registered_as_markdown_surface() -> None:
     assert (PLUGIN_DIR / "onboarding.md").is_file()
     assert 'id = "onboarding"' in plugin_toml
     assert 'entry = "onboarding.md"' in plugin_toml
+
+
+def test_phase9_neko_coach_uses_static_yui_asset_with_scene_driven_copy() -> None:
+    index = (PLUGIN_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    main_js = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    css = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+    asset = PLUGIN_DIR / "static" / "assets" / "yui" / "yui_companion_upper.webp"
+    assert asset.is_file()
+    assert asset.stat().st_size < 80_000
+    asset_image = Image.open(asset).convert("RGBA")
+    assert asset_image.size == (512, 576)
+    asset_bounds = asset_image.getbbox()
+    assert asset_bounds is not None
+    assert asset_bounds[1] >= 16
+    assert asset_bounds[2] < 512
+    assert 'id="nekoCoachPanel"' in index
+    assert index.index('<aside id="nekoCoachPanel"') > index.index("</main>")
+    assert 'id="nekoCoachSprite"' in index
+    assert "./assets/yui/yui_companion_upper.webp" in index
+    assert 'id="nekoCoachRecommendation"' in index
+    assert 'id="nekoCoachPrimaryAction"' in index
+    assert 'id="nekoCoachSecondaryAction"' in index
+    assert "./assets/vendor/" not in index
+    assert 'data-neko-coach-action="explain-current"' in index
+    assert 'data-neko-coach-action="quiz-me"' in index
+    assert 'data-neko-coach-action="start-review"' not in index
+    assert 'data-neko-coach-action="session-summary"' not in index
+    assert 'data-neko-coach-expression' not in index
+    assert "NEKO_COACH_SCENE_ASSETS" not in main_js
+    assert "NEKO_COACH_SCENE_RECOMMENDATIONS" not in main_js
+    assert "NEKO_COACH_SCENE_ACTIONS" in main_js
+    assert "const recommendationScene = Object.prototype.hasOwnProperty.call(NEKO_COACH_SCENE_ACTIONS, scene) ? scene : 'idle';" in main_js
+    assert "function deriveNekoCoachScene" in main_js
+    assert "function deriveNekoCoachActions" in main_js
+    assert "function renderNekoCoachSprite" not in main_js
+    assert "function renderNekoCoachActions" in main_js
+    assert "PIXI.live2d.Live2DModel.from" not in main_js
+    assert "renderNekoCoach(data)" in main_js
+    assert ".neko-coach__sprite" in css
+    assert "neko-coach-sprites.png" not in css
 
 
 def test_phase9_i18n_keys_and_placeholders_are_consistent() -> None:

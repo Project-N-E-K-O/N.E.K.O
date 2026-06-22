@@ -399,6 +399,10 @@ class VRMInteraction {
                 return; // 不拦截，允许事件继续传播到聊天区域
             }
 
+            if (!this._hitTestModel(e.clientX, e.clientY)) {
+                return;
+            }
+
             e.preventDefault();
             e.stopPropagation();
 

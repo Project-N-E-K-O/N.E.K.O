@@ -240,6 +240,10 @@ async function loadPageConfig() {
     }
 }
 
+// 暴露给模型初始化层做"模型路径缺失"时的有界自愈重取（live2d-init.js scheduleLive2DConfigRetry）。
+// 重新拉取 page_config 并刷新 window.cubism4Model / window.vrmModel 等全局，再由调用方重试初始化。
+window.reloadPageConfig = loadPageConfig;
+
 let resolvePageConfigReady = null;
 window.pageConfigReady = new Promise(function (resolve) {
     resolvePageConfigReady = resolve;

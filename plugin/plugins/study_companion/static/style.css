@@ -452,6 +452,7 @@ button.loading {
 .study-hub {
   display: grid;
   gap: 16px;
+  align-items: start;
 }
 
 .feature-dock {
@@ -700,6 +701,7 @@ button.loading {
 
 .primary-diagnosis,
 .first-run-guide,
+.neko-coach,
 .panel,
 .quick-card,
 .meta-item {
@@ -708,6 +710,173 @@ button.loading {
   background: var(--paper);
   box-shadow: var(--shadow);
   backdrop-filter: none;
+}
+
+.first-run-guide {
+  grid-column: 1 / -1;
+}
+
+.neko-coach {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  width: min(1240px, calc(100vw - 24px));
+  min-width: 0;
+  margin: 0 auto 28px;
+  padding: 14px;
+  overflow: hidden;
+  border-color: rgba(47, 125, 87, 0.22);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(242, 248, 244, 0.92)),
+    var(--paper);
+}
+
+.neko-coach::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: linear-gradient(90deg, rgba(47, 125, 87, 0.72), rgba(213, 139, 43, 0.72));
+}
+
+.neko-coach__stage {
+  position: relative;
+  aspect-ratio: 1 / 1.12;
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid rgba(31, 41, 36, 0.11);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(235, 244, 238, 0.72)),
+    #ffffff;
+}
+
+.neko-coach__sprite-wrap,
+.neko-coach__sprite {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.neko-coach__sprite {
+  display: block;
+  object-fit: contain;
+  object-position: center center;
+  opacity: 1;
+  transition: opacity 240ms ease, transform 220ms ease;
+}
+
+.neko-coach[data-scene="happy"] .neko-coach__sprite {
+  transform: translateY(-2px) scale(1.01);
+}
+
+.neko-coach[data-scene="focus"] .neko-coach__stage,
+.neko-coach[data-scene="teaching"] .neko-coach__stage {
+  border-color: rgba(47, 125, 87, 0.24);
+}
+
+.neko-coach[data-scene="review"] .neko-coach__stage {
+  border-color: rgba(83, 106, 163, 0.28);
+}
+
+.neko-coach[data-scene="error"] .neko-coach__stage {
+  border-color: rgba(178, 73, 64, 0.30);
+}
+
+.neko-coach__body {
+  display: grid;
+  gap: 10px;
+}
+
+.neko-coach__body h2 {
+  font-size: 18px;
+}
+
+.neko-coach__message {
+  min-height: 44px;
+  color: var(--muted);
+  line-height: 1.48;
+}
+
+.neko-coach__scene {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(47, 125, 87, 0.14);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.neko-coach__scene span,
+.neko-coach__recommendation span,
+.neko-coach__stats em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.neko-coach__scene strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.neko-coach__recommendation {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(31, 41, 36, 0.10);
+  border-left: 3px solid rgba(220, 160, 82, 0.60);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 251, 244, 0.78);
+}
+
+.neko-coach__recommendation strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.neko-coach__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.neko-coach__stats span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(31, 41, 36, 0.10);
+  border-left: 3px solid rgba(47, 125, 87, 0.42);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.neko-coach__stats strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.neko-coach__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.neko-coach__actions .button {
+  min-height: 38px;
+  padding-inline: 10px;
 }
 
 .primary-diagnosis {
@@ -969,6 +1138,11 @@ button.loading {
 .study-workflow {
   display: grid;
   gap: 16px;
+}
+
+.memory-panel,
+.reply-panel {
+  grid-column: 1 / -1;
 }
 
 .adaptive-practice {
@@ -2050,9 +2224,29 @@ pre {
   min-height: 120px;
 }
 
+@media (min-width: 1180px) {
+  .page-shell {
+    width: min(1040px, calc(100vw - 392px));
+    margin-left: max(24px, calc((100vw - 1432px) / 2));
+    margin-right: 368px;
+  }
+
+  .neko-coach {
+    position: fixed;
+    z-index: 40;
+    top: 22px;
+    right: 18px;
+    width: min(340px, calc(100vw - 36px));
+    max-height: calc(100vh - 44px);
+    margin: 0;
+    overflow: auto;
+  }
+}
+
 @supports not (backdrop-filter: blur(16px)) {
   .primary-diagnosis,
   .first-run-guide,
+  .neko-coach,
   .panel,
   .quick-card,
   .meta-item {
@@ -2193,6 +2387,15 @@ pre {
 
   .feature-action {
     min-height: 66px;
+  }
+
+  .neko-coach__stage {
+    min-height: 260px;
+  }
+
+  .neko-coach__stats,
+  .neko-coach__actions {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .surface-drawer__actions {

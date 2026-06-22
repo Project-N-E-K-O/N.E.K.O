@@ -14,7 +14,6 @@
     'use strict';
 
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
-    const DEFAULT_AVATAR_STAND_IN_STORAGE_KEY = 'yuiGuidePcOverlayAvatarStandIn';
     const PC_OVERLAY_CURSOR_EASE = Object.freeze([0.22, 1, 0.36, 1]);
 
     function sampleCubicBezier(progress, x1, y1, x2, y2) {
@@ -84,8 +83,6 @@
         const now = typeof normalizedOptions.now === 'function'
             ? normalizedOptions.now
             : () => Date.now();
-        const storage = normalizedOptions.storage || null;
-        const avatarStandInStorageKey = normalizedOptions.avatarStandInStorageKey || DEFAULT_AVATAR_STAND_IN_STORAGE_KEY;
         const defaultCursorClickVisibleMs = Number.isFinite(Number(normalizedOptions.defaultCursorClickVisibleMs))
             ? Math.max(0, Math.floor(Number(normalizedOptions.defaultCursorClickVisibleMs)))
             : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
@@ -93,7 +90,6 @@
         let currentCursor = null;
         let currentCursorEffectSuppressUntil = 0;
         let currentPetal = null;
-        let currentAvatarStandIn = null;
 
         function hasOwn(value, key) {
             return !!value && Object.prototype.hasOwnProperty.call(value, key);
@@ -103,23 +99,9 @@
             return currentCursorEffectSuppressUntil > 0 && now() < currentCursorEffectSuppressUntil;
         }
 
-        function persistAvatarStandIn() {
-            if (!storage || !avatarStandInStorageKey) {
-                return;
-            }
-            try {
-                if (currentAvatarStandIn) {
-                    storage.setItem(avatarStandInStorageKey, JSON.stringify(currentAvatarStandIn));
-                } else {
-                    storage.removeItem(avatarStandInStorageKey);
-                }
-            } catch (_) {}
-        }
-
         function applyPatch(patch) {
             const hasCursor = hasOwn(patch, 'cursor');
             const hasPetal = hasOwn(patch, 'petal');
-            const hasAvatarStandIn = hasOwn(patch, 'avatarStandIn');
             if (hasOwn(patch, 'spotlights')) {
                 currentSpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
             }
@@ -133,10 +115,6 @@
             if (hasPetal) {
                 currentPetal = patch.petal || null;
             }
-            if (hasAvatarStandIn) {
-                currentAvatarStandIn = patch.avatarStandIn || null;
-                persistAvatarStandIn();
-            }
             const payload = {};
             if (hasOwn(patch, 'spotlights') || currentSpotlights.length > 0) {
                 payload.spotlights = currentSpotlights;
@@ -149,9 +127,6 @@
             if (currentPetal || hasPetal) {
                 payload.petal = currentPetal;
             }
-            if (currentAvatarStandIn || hasAvatarStandIn) {
-                payload.avatarStandIn = currentAvatarStandIn;
-            }
             return payload;
         }
 
@@ -160,8 +135,6 @@
             currentCursor = null;
             currentCursorEffectSuppressUntil = 0;
             currentPetal = null;
-            currentAvatarStandIn = null;
-            persistAvatarStandIn();
         }
 
         return {
@@ -1028,18 +1001,6 @@
                 return true;
             }
             return false;
-        }
-
-        showAvatarStandIn(standIn) {
-            if (this.pcOverlayBridge && typeof this.pcOverlayBridge.showAvatarStandIn === 'function') {
-                this.pcOverlayBridge.showAvatarStandIn(standIn);
-            }
-        }
-
-        clearAvatarStandIn() {
-            if (this.pcOverlayBridge && typeof this.pcOverlayBridge.clearAvatarStandIn === 'function') {
-                this.pcOverlayBridge.clearAvatarStandIn();
-            }
         }
 
         clear() {

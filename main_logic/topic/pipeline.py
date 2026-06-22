@@ -42,6 +42,7 @@ DeliveryAvailable = Callable[..., bool]
 _MAX_TEXT_TOKENS = 1000
 _TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _TRIGGER_RETRY_DELAY_SECONDS = 60.0
+_CANDIDATE_MATURE_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
 _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
@@ -526,6 +527,9 @@ class TopicHookPool:
             last_turn_at = self._signal_store.last_turn_at(name)
             if last_turn_at is None:
                 self._dirty.discard(name)
+                continue
+            current_time = time.time() if now is None else float(now)
+            if current_time - float(last_turn_at) < _CANDIDATE_MATURE_SECONDS:
                 continue
             try:
                 await self.process_now(name, lang=lang)

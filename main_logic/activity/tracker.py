@@ -338,6 +338,12 @@ class UserActivityTracker:
         #     —— context 取 'play'（游戏/娱乐）或 'work'（专注工作）。未注入则不推。
         self._context_prompt_pending: dict | None = None
         self._on_context_prompt: Callable[[str], Awaitable[None]] | None = None
+        # activity_guess narration 的「下游是否还有消费方」谓词。注入方
+        # （core.py）给一个返回 bool 的回调：True 表示当前 narration 无人消费
+        # （会话已 goodbye_silent，proactive Phase 2 会在入口 bail），本 tick
+        # 跳过昂贵的 emotion-tier LLM 外呼。规则心跳（break-reminder / 情境弹窗）
+        # 不受影响照常 tick。未注入则恒不抑制（保持旧行为）。
+        self._narration_suppressed_check: Callable[[], bool] | None = None
         # 情境弹窗专属的「上一状态」基线，独立于 break-reminder 的 _last_known_state
         # ——这样可以在每个 session 开始时单独清掉（reset_context_prompt_baseline），让
         # 「跨 session 仍在同一状态」也能重新算作一次「进入」并再弹（前端按 app 会话去
@@ -914,6 +920,39 @@ class UserActivityTracker:
         """
         self._on_context_prompt = callback
 
+    def set_narration_suppressed_check(
+        self, predicate: Callable[[], bool] | None
+    ) -> None:
+        """Inject the predicate that decides whether activity_guess narration has a live consumer.
+
+        ``predicate()`` returns True when narration is currently pointless — the
+        only consumer (proactive Phase 2) will bail at its ``goodbye_silent``
+        guard, so computing the emotion-tier guess just burns an LLM call with
+        nobody to read it. The 20s heartbeat keeps ticking the rule-based
+        break-reminder / context-prompt logic regardless; only the LLM
+        narration step is skipped. Pass None to clear (never suppress).
+        """
+        self._narration_suppressed_check = predicate
+
+    def _is_narration_suppressed(self) -> bool:
+        """Whether this tick should skip the activity_guess LLM (no consumer).
+
+        Fail-open: a missing predicate or a raising one both mean "don't
+        suppress" — losing the cost optimization is harmless, but wrongly
+        suppressing would silently starve a proactive-on user's narration.
+        """
+        check = self._narration_suppressed_check
+        if check is None:
+            return False
+        try:
+            return bool(check())
+        except Exception as e:
+            logger.debug(
+                '[%s] narration suppressed-check failed, not suppressing: %s',
+                self.lanlan_name, e,
+            )
+            return False
+
     async def _drain_context_prompt(self) -> None:
         """Push the one-shot context signals accumulated by ``_tick_break_reminders`` to the frontend.
 
@@ -1108,6 +1147,14 @@ class UserActivityTracker:
                 if not _proactive_chat_enabled():
                     continue
 
+                # 会话已 goodbye_silent（猫娘挂机静默）时跳过 activity_guess 的 LLM：
+                # 唯一消费方 proactive Phase 2 会在入口直接 bail，narration 没人读。
+                # 上面的 _tick_break_reminders + 情境弹窗 drain + topic 候选都是规则/
+                # 已限流路径，已经跑过，这里只省掉昂贵且无意义的 emotion-tier 外呼。
+                # 用户被唤回（goodbye_silent 清除）后，下一 tick 自然恢复 narration。
+                if self._is_narration_suppressed():
+                    continue
+
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':
                     continue
@@ -1120,17 +1167,23 @@ class UserActivityTracker:
                     continue
 
                 # State signature: which "kind of activity" the rule
-                # machine sees right now, plus whether the user has
-                # said something new. Quantize idle to coarse buckets
-                # so minor jitter doesn't trigger recompute.
-                idle_bucket = int((rule_snap.system_idle_seconds or 0) // 30)
+                # machine sees right now. Deliberately does NOT include the
+                # idle-seconds bucket: idle time grows monotonically while a
+                # user is AFK, so bucketing it (idle // 30) flips the signature
+                # every ~30s even when nothing about "what the user is doing"
+                # changed — defeating dedup and burning one emotion-tier call
+                # every ~40s during pure idle. The activity narration describes
+                # *what* the user is doing, and the only idle transitions worth
+                # re-narrating (active → idle → away) already show up in
+                # ``state`` (away itself bails above). Finer idle gradations add
+                # no narration value, so excluding the bucket lets a stable
+                # state + window + no-new-turn settle into a permanent skip.
                 sig = (
                     rule_snap.state,
                     (rule_snap.active_window.canonical
                         if rule_snap.active_window else None),
                     (rule_snap.active_window.subcategory
                         if rule_snap.active_window else None),
-                    idle_bucket,
                 )
                 if sig == self._activity_guess_state_sig and self._conv_seq == last_conv_seq:
                     continue

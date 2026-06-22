@@ -646,7 +646,7 @@ export default {
         sayHello: 'Olá',
       },
       lines: {
-        introActivationHint: 'Clica aqui pra eu poder começar a falar, nya~!',
+        introActivationHint: 'Espera um pouquinho, já vou começar a falar, nya~!',
         introGreetingReply: "Uma brisa suave, sol quentinho e você aparecendo bem na hora certa. Prazer em te conhecer! Eu sou Lin Youyi; cuida bem de mim daqui pra frente, miau~! Escrevi tudo sobre este lugar neste guia de iniciante. Pense nele como nosso primeiro presentinho por termos nos conhecido, aceita, por favor!",
         introBasic: "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente. Quer me contar algo novo que aconteceu hoje? Ou só dizer meu nome? Vai, experimenta! Mal posso esperar pra ouvir sua voz!",
         takeoverCaptureCursor: "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo colocar minhas patinhas no seu teclado e mouse. Posso ajudar a digitar, abrir páginas... mas se esse cursor ficar se mexendo sem parar, talvez eu não resista a pular nele! Está pronto pras minhas travessuras... quer dizer, pra minha ajuda? Miau!",

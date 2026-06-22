@@ -867,6 +867,7 @@
         if (element) {
             element.hidden = true;
             element.removeAttribute('data-active');
+            element.removeAttribute('data-neko-cat1-wide-art');
             element.style.removeProperty('left');
             element.style.removeProperty('top');
             element.style.removeProperty('width');
@@ -931,6 +932,11 @@
         if (image) {
             var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            if (src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif') !== -1) {
+                element.setAttribute('data-neko-cat1-wide-art', 'true');
+            } else {
+                element.removeAttribute('data-neko-cat1-wide-art');
+            }
             image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
         }
         element.style.left = rect.left + 'px';
@@ -976,6 +982,27 @@
             return;
         }
         showIdleCat1CompactMirror(detail);
+    }
+
+    function handleIdleCat1PlayYarnVisibility(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        var hidden = !!(detail && detail.hidden);
+        var shell = getShell();
+        if (shell && shell.classList) {
+            if (hidden && shell.classList.contains('is-minimized')) {
+                shell.setAttribute('data-neko-cat1-play-hidden', 'true');
+                syncCompactInteractionGeometry();
+            } else if (!hidden) {
+                shell.removeAttribute('data-neko-cat1-play-hidden');
+                syncCompactInteractionGeometry();
+            }
+        }
+        var bridge = window.nekoChatWindow;
+        if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
+            try {
+                bridge.setCompactChatBallTemporarilyHidden(hidden);
+            } catch (_) {}
+        }
     }
 
     function dispatchCompactSurfaceLayoutChange(rect) {
@@ -2155,6 +2182,7 @@
         if (!body) return false;
         return body.classList.contains('yui-guide-home-ui-suppressed')
             || body.classList.contains('yui-taking-over')
+            || body.classList.contains('yui-guide-standalone-input-shield-active')
             || body.classList.contains('yui-guide-chat-buttons-disabled');
     }
 
@@ -3205,6 +3233,65 @@
         } catch (error) {
             console.warn('[ReactChatWindow] subtitle window visibility sync failed:', error);
         }
+    }
+
+    function setTranslateEnabled(enabled, options) {
+        var requestOptions = options || {};
+        var next = !!enabled;
+        if (requestOptions.syncBridge !== false) {
+            try {
+                var bridge = window.subtitleBridge;
+                if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
+                    bridge.setSubtitleEnabled(next);
+                } else {
+                    throw new Error('subtitleBridge.setSubtitleEnabled unavailable');
+                }
+            } catch (err) {
+                console.warn('[ReactChatWindow] bridge set enabled failed, using fallback:', err);
+                var appSt = window.appState;
+                var subtitleStore = window.nekoSubtitleShared;
+                if (appSt) appSt.subtitleEnabled = next;
+                var synced = false;
+                if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+                    try {
+                        subtitleStore.updateSettings({
+                            subtitleEnabled: next
+                        }, {
+                            source: 'react-chat-fallback-set-enabled'
+                        });
+                        synced = true;
+                    } catch (storeErr) {
+                        console.warn('[ReactChatWindow] subtitle shared update failed:', storeErr);
+                    }
+                }
+                if (!synced) {
+                    try {
+                        localStorage.setItem('subtitleEnabled', String(next));
+                    } catch (storageErr) {
+                        console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:', storageErr);
+                    }
+                }
+            }
+        }
+
+        if (requestOptions.persist !== false
+            && window.appSettings
+            && typeof window.appSettings.saveSettings === 'function') {
+            try {
+                window.appSettings.saveSettings();
+            } catch (saveErr) {
+                console.warn('[ReactChatWindow] appSettings.saveSettings failed:', saveErr);
+            }
+        }
+
+        state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        syncSubtitleWindowFromTranslateToggle(next);
+        renderWindow();
+
+        if (requestOptions.suppressHostEvent !== true) {
+            dispatchHostEvent('translate-toggle', { enabled: next });
+        }
+        return next;
     }
 
     function handleTranslateToggle() {
@@ -6457,25 +6544,25 @@
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInputLocked(false, 'tutorial-completed');
             setHomeTutorialInteractionLocked(false, 'tutorial-completed');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInputLocked(false, 'tutorial-skipped');
             setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
-            setGalgameModeTemporarilyDisabled(false);
             setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
             setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
+            setGalgameModeTemporarilyDisabled(false);
         });
 
         // Refresh option list whenever an assistant turn finishes streaming.
@@ -6715,6 +6802,7 @@
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
+        window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);
         window.addEventListener('live2d-goodbye-click', function () {
             setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });
@@ -6866,6 +6954,9 @@
         syncGoodbyeComposerHidden: syncGoodbyeComposerHidden,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
+        },
+        setTranslateEnabled: function (enabled, options) {
+            return setTranslateEnabled(enabled, options || {});
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return getCurrentChatSurfaceMode(); },

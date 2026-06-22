@@ -184,12 +184,13 @@ outward_emotion_analysis_prompt = OUTWARD_EMOTION_ANALYSIS_PROMPT['zh']
 # （用户）自己」的情绪，产出连续的 valence（效价）/ arousal（唤醒度）二维读数，
 # 供凝神等后端基建消费。module-agnostic，不绑定任何具体角色 / 场景。
 MASTER_EMOTION_VA_PROMPT = {
-    'zh': """你是一个情感分析专家。请分析下面这段对话中说话者流露出的情绪状态，用二维连续值表示，并只返回 JSON：{"valence": 效价, "arousal": 唤醒度, "confidence": 置信度}。
+    'zh': """你是一个情感分析专家。请分析下面这段对话中说话者流露出的情绪状态，并只返回 JSON：{"valence": 效价, "arousal": 唤醒度, "confidence": 置信度, "complexity": 认知复杂度}。
 
 维度定义：
 - valence（效价）：-1 到 1 之间的小数。-1 = 强烈负面（痛苦、难过、愤怒、绝望），0 = 中性，+1 = 强烈正面（开心、满足、兴奋、温暖）。
 - arousal（唤醒度）：0 到 1 之间的小数。0 = 平静、低能量、放松，1 = 高度激动、强烈、能量很高（无论正负）。
 - confidence（置信度）：0 到 1 之间的小数，表示你对本次判断的把握。
+- complexity（认知复杂度）：0 到 1 之间的小数。表示说话者正在提出一个**复杂的、客观的问题**（数学题、逻辑题、推理题、需要多步推导的客观问题等）的程度。1 = 明确在问这类烧脑客观题，0 = 没有在问、或只是闲聊／情绪倾诉／简单问题。与情绪独立判断。
 
 判断规则：
 1. 只依据这段文本本身流露的情绪，不要脑补未给出的背景。
@@ -199,12 +200,13 @@ MASTER_EMOTION_VA_PROMPT = {
 
 只返回 JSON，不要附加任何解释文本。""",
 
-    'en': """你是一个情感分析专家。Analyze the emotional state the speaker reveals in the conversation text below, expressed as two continuous values, and return JSON only: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+    'en': """你是一个情感分析专家。Analyze the emotional state the speaker reveals in the conversation text below and return JSON only: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity}.
 
 Dimensions:
 - valence: a number between -1 and 1. -1 = strongly negative (distress, sadness, anger, despair), 0 = neutral, +1 = strongly positive (joy, contentment, excitement, warmth).
 - arousal: a number between 0 and 1. 0 = calm, low energy, relaxed; 1 = highly activated, intense, high energy (regardless of sign).
 - confidence: a number between 0 and 1 indicating your certainty.
+- complexity: a number between 0 and 1 — how much the speaker is posing a COMPLEX, OBJECTIVE question (math, logic, reasoning, multi-step analytical problems). 1 = clearly asking such a hard objective question; 0 = not asking, or just chatting / venting / a simple question. Judge independently of emotion.
 
 Rules:
 1. Judge only from the emotion this text reveals; do not invent unstated context.
@@ -214,12 +216,13 @@ Rules:
 
 Return JSON only, with no explanation.""",
 
-    'ja': """你是一个情感分析专家。次の会話文で話し手がにじませている感情の状態を、2つの連続値で表し、JSONのみで返してください：{"valence": valence, "arousal": arousal, "confidence": confidence}。
+    'ja': """你是一个情感分析专家。次の会話文で話し手がにじませている感情の状態を JSONのみで返してください：{"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity}。
 
 各次元の定義：
 - valence（感情価）：-1〜1 の数値。-1 = 強い負（つらさ・悲しみ・怒り・絶望）、0 = 中立、+1 = 強い正（喜び・満足・高揚・あたたかさ）。
 - arousal（覚醒度）：0〜1 の数値。0 = 落ち着き・低エネルギー・リラックス、1 = 強い興奮・激しさ・高エネルギー（正負を問わず）。
 - confidence（確信度）：0〜1 の数値で、今回の判断の確かさ。
+- complexity（認知的複雑さ）：0〜1 の数値。話し手が**複雑で客観的な問い**（数学・論理・推論、多段階の分析が要る客観的な問題など）をどれだけ投げかけているか。1 = 明確にそうした難しい客観的問題を問うている、0 = 問うていない、または雑談／感情の吐露／単純な質問。感情とは独立に判断する。
 
 判断ルール：
 1. この文章がにじませる感情だけで判断し、書かれていない背景を補わない。
@@ -229,12 +232,13 @@ Return JSON only, with no explanation.""",
 
 JSONのみを返し、説明文は付けないでください。""",
 
-    'ko': """你是一个情感分析专家。아래 대화문에서 말하는 사람이 드러내는 감정 상태를 두 개의 연속 값으로 나타내고 JSON만 반환하세요: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+    'ko': """你是一个情感分析专家。아래 대화문에서 말하는 사람이 드러내는 감정 상태를 JSON만 반환하세요: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity}.
 
 차원 정의:
 - valence(정서가): -1~1 사이 숫자. -1 = 강한 부정(괴로움, 슬픔, 분노, 절망), 0 = 중립, +1 = 강한 긍정(기쁨, 만족, 들뜸, 따뜻함).
 - arousal(각성도): 0~1 사이 숫자. 0 = 차분함, 낮은 에너지, 이완; 1 = 강한 흥분, 격렬함, 높은 에너지(긍·부정 무관).
 - confidence(확신도): 0~1 사이 숫자로 이번 판단에 대한 확신.
+- complexity(인지적 복잡도): 0~1 사이 숫자. 말하는 사람이 **복잡하고 객관적인 질문**(수학·논리·추론, 다단계 분석이 필요한 객관적 문제 등)을 얼마나 던지고 있는지. 1 = 그런 어려운 객관적 문제를 분명히 묻는 중, 0 = 묻지 않음, 또는 잡담／감정 토로／단순한 질문. 감정과 독립적으로 판단.
 
 판단 규칙:
 1. 이 문장이 드러내는 감정만으로 판단하고, 주어지지 않은 배경을 지어내지 마세요.
@@ -244,12 +248,13 @@ JSONのみを返し、説明文は付けないでください。""",
 
 설명 없이 JSON만 반환하세요.""",
 
-    'ru': """你是一个情感分析专家。Проанализируйте эмоциональное состояние, которое говорящий выражает в приведённом ниже тексте разговора, представьте его двумя непрерывными значениями и верните только JSON: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+    'ru': """你是一个情感分析专家。Проанализируйте эмоциональное состояние, которое говорящий выражает в приведённом ниже тексте разговора, и верните только JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity}.
 
 Измерения:
 - valence (валентность): число от -1 до 1. -1 = сильно негативное (боль, грусть, гнев, отчаяние), 0 = нейтрально, +1 = сильно позитивное (радость, удовлетворение, воодушевление, теплота).
 - arousal (возбуждение): число от 0 до 1. 0 = спокойствие, низкая энергия, расслабленность; 1 = сильное возбуждение, интенсивность, высокая энергия (независимо от знака).
 - confidence (уверенность): число от 0 до 1, отражающее вашу уверенность.
+- complexity (когнитивная сложность): число от 0 до 1 — насколько говорящий задаёт СЛОЖНЫЙ ОБЪЕКТИВНЫЙ вопрос (математика, логика, рассуждение, многошаговые аналитические задачи). 1 = явно задаёт такой трудный объективный вопрос; 0 = не задаёт, либо просто болтает / делится чувствами / простой вопрос. Оценивайте независимо от эмоции.
 
 Правила:
 1. Судите только по эмоции, выраженной в этом тексте; не домысливайте неуказанный контекст.
@@ -259,12 +264,13 @@ JSONのみを返し、説明文は付けないでください。""",
 
 Верните только JSON без пояснений.""",
 
-    'es': """你是一个情感分析专家。Analiza el estado emocional que revela quien habla en el texto de conversación siguiente, exprésalo con dos valores continuos y devuelve solo JSON: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+    'es': """你是一个情感分析专家。Analiza el estado emocional que revela quien habla en el texto de conversación siguiente y devuelve solo JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity}.
 
 Dimensiones:
 - valence (valencia): un número entre -1 y 1. -1 = fuertemente negativo (dolor, tristeza, ira, desesperación), 0 = neutral, +1 = fuertemente positivo (alegría, satisfacción, entusiasmo, calidez).
 - arousal (activación): un número entre 0 y 1. 0 = calma, baja energía, relajación; 1 = muy activado, intenso, alta energía (sin importar el signo).
 - confidence (confianza): un número entre 0 y 1 que indica tu seguridad.
+- complexity (complejidad cognitiva): un número entre 0 y 1 — cuánto está planteando quien habla una PREGUNTA COMPLEJA y OBJETIVA (matemáticas, lógica, razonamiento, problemas analíticos de varios pasos). 1 = claramente hace una de esas preguntas objetivas difíciles; 0 = no pregunta, o solo charla / se desahoga / pregunta simple. Júzgalo independientemente de la emoción.
 
 Reglas:
 1. Juzga solo por la emoción que revela este texto; no inventes contexto no dado.
@@ -274,12 +280,13 @@ Reglas:
 
 Devuelve solo JSON, sin explicación.""",
 
-    'pt': """你是一个情感分析专家。Analise o estado emocional que o falante revela no texto de conversa abaixo, expresso por dois valores contínuos, e retorne apenas JSON: {"valence": valence, "arousal": arousal, "confidence": confidence}.
+    'pt': """你是一个情感分析专家。Analise o estado emocional que o falante revela no texto de conversa abaixo e retorne apenas JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity}.
 
 Dimensões:
 - valence (valência): um número entre -1 e 1. -1 = fortemente negativo (sofrimento, tristeza, raiva, desespero), 0 = neutro, +1 = fortemente positivo (alegria, satisfação, empolgação, calor).
 - arousal (ativação): um número entre 0 e 1. 0 = calmo, baixa energia, relaxado; 1 = muito ativado, intenso, alta energia (independente do sinal).
 - confidence (confiança): um número entre 0 e 1 indicando sua certeza.
+- complexity (complexidade cognitiva): um número entre 0 e 1 — o quanto o falante está fazendo uma PERGUNTA COMPLEXA e OBJETIVA (matemática, lógica, raciocínio, problemas analíticos de várias etapas). 1 = claramente faz uma dessas perguntas objetivas difíceis; 0 = não pergunta, ou apenas conversa / desabafa / pergunta simples. Julgue independentemente da emoção.
 
 Regras:
 1. Julgue apenas pela emoção que este texto revela; não invente contexto não fornecido.

@@ -13,11 +13,13 @@ LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
 CHAT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
 APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
 APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
+APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
 UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
+SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
 
 
 def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
@@ -343,12 +345,13 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    context_then = "return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {"
+    assert context_then in append_message_block
     assert "broadcastIcebreakerAppendMessage(message);" in append_message_block
     assert append_message_block.index("broadcastIcebreakerAppendMessage(message);") < append_message_block.index(
-        "return appendLlmContext(role, messageText, meta || {}).then(function () {"
+        context_then
     )
-    assert append_message_block.index("return appendLlmContext(role, messageText, meta || {}).then(function () {") < append_message_block.index(
+    assert append_message_block.index(context_then) < append_message_block.index(
         "return waitForChatHost(30000).then(function (host) {"
     )
 
@@ -356,7 +359,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
 def test_icebreaker_context_append_requires_successful_json_payload():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     append_context_block = runtime.split("function appendLlmContext(role, text, meta)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
+        "function finalizeIcebreakerAssistantSubtitle(text)",
         1,
     )[0]
 
@@ -376,6 +379,103 @@ def test_icebreaker_context_append_requires_successful_json_payload():
     assert "return parseContextResponse(response);" in append_context_block
     assert "return response;\n            }).then(function (response)" not in append_context_block
     assert "return true;" not in append_context_block
+
+
+def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal_chat():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    subtitle_runtime = SUBTITLE_PATH.read_text(encoding="utf-8")
+
+    assert "function finalizeIcebreakerAssistantSubtitle(text)" in runtime
+    subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitle(text)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+    assert "window.subtitleBridge" in subtitle_block
+    assert "bridge.beginTurn({ latch: false })" in subtitle_block
+    assert "bridge.beginTurn()" not in subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
+    assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
+    begin_turn_block = subtitle_runtime.split("function beginSubtitleTurn(", 1)[1].split(
+        "function onAssistantTurnStart()",
+        1,
+    )[0]
+    assert "options && options.latch === false" in begin_turn_block
+    assert "turnBoundaryLatched = !skipLatch;" in begin_turn_block
+
+    sync_block = runtime.split("function syncIcebreakerAssistantSubtitle(role, contextOk, text)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+    assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
+    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" in sync_block
+    assert "finalizeIcebreakerAssistantSubtitle(text);" in sync_block
+
+
+def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")
+
+    assert "function openSubtitleTranslationForIcebreakerAssistantMessage()" in runtime
+    open_block = runtime.split("function openSubtitleTranslationForIcebreakerAssistantMessage()", 1)[1].split(
+        "function startIcebreakerRoute(session)",
+        1,
+    )[0]
+    assert "window.subtitleBridge" in open_block
+    assert "bridge.setSubtitleEnabled(true)" in open_block
+    assert "window.reactChatWindowHost" in open_block
+    assert "host.setTranslateEnabled(true" in open_block
+    assert "console.warn('[NewUserIcebreaker] subtitle bridge open failed:'" in open_block
+    assert "console.warn('[NewUserIcebreaker] subtitle host translation open failed:'" in open_block
+
+    start_block = runtime.split("return startIcebreakerRoute(nextSession).then(function (started)", 1)[1].split(
+        "activeSession = nextSession;",
+        1,
+    )[0]
+    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" not in start_block
+
+    sync_block = runtime.split("function syncIcebreakerAssistantSubtitle(role, contextOk, text)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+    assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
+    assert "if (shouldOpenIcebreakerSubtitlePanelOnce()) {" in sync_block
+    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" in sync_block
+    assert sync_block.index("openSubtitleTranslationForIcebreakerAssistantMessage();") < sync_block.index(
+        "finalizeIcebreakerAssistantSubtitle(text);"
+    )
+    open_once_block = runtime.split("function shouldOpenIcebreakerSubtitlePanelOnce()", 1)[1].split(
+        "function syncIcebreakerAssistantSubtitle",
+        1,
+    )[0]
+    assert "icebreakerSubtitlePanelOpenedSessionId === sessionId" in open_once_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = sessionId;" in open_once_block
+
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
+        "function speakViaProjectTts",
+        1,
+    )[0]
+    assert "return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {" in append_message_block
+    assert "return host.appendMessage(message);" in append_message_block
+    assert "syncIcebreakerAssistantSubtitle(role, contextOk, messageText);" in append_message_block
+    assert append_message_block.index("return host.appendMessage(message);") < append_message_block.rindex(
+        "syncIcebreakerAssistantSubtitle(role, contextOk, messageText);"
+    )
+
+    assert "setTranslateEnabled: function (enabled, options)" in chat_host
+    set_translate_block = chat_host.split("function setTranslateEnabled(enabled, options)", 1)[1].split(
+        "function handleTranslateToggle()",
+        1,
+    )[0]
+    assert "var synced = false;" in set_translate_block
+    assert "console.warn('[ReactChatWindow] subtitle shared update failed:'" in set_translate_block
+    assert "console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:'" in set_translate_block
+    assert "console.warn('[ReactChatWindow] appSettings.saveSettings failed:'" in set_translate_block
+    assert set_translate_block.index("window.appSettings.saveSettings();") > set_translate_block.index(
+        "} catch (err) {"
+    )
+    assert set_translate_block.index("window.appSettings.saveSettings();") < set_translate_block.index(
+        "state.viewProps = Object.assign"
+    )
 
 
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():

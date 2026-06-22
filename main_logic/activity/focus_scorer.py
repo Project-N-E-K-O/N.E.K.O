@@ -94,16 +94,21 @@ class FocusScorer:
         """
         kw = self._signal_keyword(user_text)
         emotion = self._signal_emotion(emotion_reading)
+        question = self._signal_question(emotion_reading)
         cadence = self._signal_cadence(user_text)
-        # cadence amplifies distress evidence; it is NOT a trigger on its own.
-        # With keyword/emotion using positive-evidence-only (None) semantics, a
-        # lone cadence signal would renormalise to a full 1.0 — so an ordinary
-        # short reply ("ok") could enter Focus with no distress evidence at all.
-        # Gate it: when neither keyword nor emotion is present, drop cadence too.
-        if kw is None and emotion is None:
+        # cadence amplifies distress evidence; it is NOT a trigger on its own, and
+        # must NOT fire on a happy turn (emotion < 0) — a short cheerful reply
+        # should not push Focus. Gate it on POSITIVE evidence only: a present
+        # keyword, a complex question, or a distress-side emotion (> 0).
+        has_distress_evidence = (
+            kw is not None
+            or question is not None
+            or (emotion is not None and emotion > 0.0)
+        )
+        if not has_distress_evidence:
             cadence = None
 
-        signals = {"keyword": kw, "cadence": cadence, "emotion": emotion}
+        signals = {"keyword": kw, "cadence": cadence, "emotion": emotion, "question": question}
         score = _weighted_average(signals, config.FOCUS_SIGNAL_WEIGHTS)
 
         # Update the cadence baseline for this inline message.
@@ -148,13 +153,17 @@ class FocusScorer:
         return (baseline - cur) / (baseline - lo)
 
     def _signal_emotion(self, emotion_reading) -> Optional[float]:
-        """Distress signal from the master emotion VA reading.
+        """SIGNED emotion signal from the master emotion VA reading.
 
-        High arousal × negative valence → distress, the model-grade upgrade of
-        the vulnerability-keyword signal. Returns ``None`` (drops out of the
-        weighted average) when there is no reading OR no distress — a stale
-        neutral/positive reading must not dilute a current keyword-positive
-        turn, same "positive evidence only" rule as ``_signal_keyword``.
+        Negative valence → POSITIVE distress (push toward Focus, up to +1);
+        positive valence → NEGATIVE value (pull Focus down — don't intrude on a
+        good mood), down to ``-FOCUS_EMOTION_POSITIVE_SCALE`` (≈ -0.5). Both
+        sides share the same arousal amplifier ``m = floor + (1-floor)×arousal``
+        (floor = FOCUS_EMOTION_AROUSAL_FLOOR). The positive side is deliberately
+        weaker (scaled by POSITIVE_SCALE) — joy nudges away, distress pulls in
+        harder. Returns ``None`` ONLY at neutral valence (no reading / no axis /
+        valence ≈ 0) so a flat turn doesn't dilute keyword/question; a genuine
+        positive reading is a real (negative) vote, not a no-op.
         """
         if emotion_reading is None:
             return None
@@ -167,16 +176,37 @@ class FocusScorer:
             arousal = float(arousal)
         except (TypeError, ValueError):
             return None
-        # arousal ∈ [0,1] = intensity; negativity = max(0, -valence) fires ONLY
-        # in the negative-valence half (valence -1→1, 0→0, +1→0). So distress =
-        # arousal × negativity ≈ 1 for strong-negative & high-arousal, and 0 for
-        # neutral OR positive affect — neither calm, mere intensity, nor elation
-        # triggers Focus, matching the "high arousal + NEGATIVE valence" def.
-        # Focus is for vulnerability / distress.
-        negativity = max(0.0, -valence)
-        distress = max(0.0, min(1.0, arousal * negativity))
-        # No distress (neutral / positive / stale) → None, not 0.0 (see above).
-        return distress if distress > 0.0 else None
+        floor = max(0.0, min(1.0, float(getattr(config, "FOCUS_EMOTION_AROUSAL_FLOOR", 0.5))))
+        pos_scale = max(0.0, min(1.0, float(getattr(config, "FOCUS_EMOTION_POSITIVE_SCALE", 0.5))))
+        arousal = max(0.0, min(1.0, arousal))
+        m = floor + (1.0 - floor) * arousal  # arousal amplifier ∈ [floor, 1]
+        if valence < 0.0:
+            # distress: strong-negative (even low-arousal/quiet) reads high.
+            return min(1.0, -valence * m)
+        if valence > 0.0:
+            # joy: pull Focus down, capped at POSITIVE_SCALE (half the distress reach).
+            return -min(1.0, valence * m * pos_scale)
+        return None  # exactly neutral → no vote (don't dilute other signals)
+
+    def _signal_question(self, emotion_reading) -> Optional[float]:
+        """Cognitive-load bonus from the master model's ``complexity`` read — how
+        much the user is posing a COMPLEX, OBJECTIVE question (math / logic /
+        reasoning), which also merits thinking-on. Orthogonal to distress but
+        folded into the same charge. Same "positive evidence only" rule: ``None``
+        (drops out) when there is no reading or no complexity, so it never dilutes
+        an emotional turn — it only ever adds.
+        """
+        if emotion_reading is None:
+            return None
+        complexity = getattr(emotion_reading, "complexity", None)
+        if complexity is None:
+            return None
+        try:
+            complexity = float(complexity)
+        except (TypeError, ValueError):
+            return None
+        complexity = max(0.0, min(1.0, complexity))
+        return complexity if complexity > 0.0 else None
 
 
 def _weighted_average(signals: dict, weights: dict) -> float:

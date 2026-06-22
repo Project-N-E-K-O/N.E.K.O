@@ -107,6 +107,8 @@ REQUIRED_DYNAMIC_UI_KEYS = [
     "ui.settings.knowledge.loaded_summary",
     "ui.settings.knowledge.empty_summary",
     "ui.settings.memory.loaded_summary",
+    "ui.status.checkin_done",
+    "ui.status.checkin_pending",
     "ui.status.config_loading",
     "ui.status.config_loaded",
     "ui.status.config_saving",
@@ -220,7 +222,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert 'style="' not in index_html
     assert "<style" not in index_html
 
-    assert "@media (min-width" not in style_css
+    assert "@media (min-width: 1180px)" in style_css
     assert "responsive" not in index_html.lower()
     assert "responsive" not in style_css.lower()
     assert "responsive" not in main_js.lower()
@@ -296,9 +298,9 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "(=^・ω・^=)" in style_css
 
     assert len(index_html.splitlines()) <= 1000
-    assert len(style_css.splitlines()) <= 2270
-    assert len(main_js.encode("utf-8")) <= 82500
-    assert len(gzip.compress(main_js.encode("utf-8"))) <= 19500
+    assert len(style_css.splitlines()) <= 2500
+    assert len(main_js.encode("utf-8")) <= 95000
+    assert len(gzip.compress(main_js.encode("utf-8"))) <= 22000
 
 
 def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> None:
@@ -371,6 +373,10 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                     content_type, body = static_files[file_name]
                     route.fulfill(status=200, content_type=content_type, body=body)
                     return
+                if path.startswith("plugin/study_companion/ui/assets/yui/"):
+                    asset = STATIC_DIR / path.removeprefix("plugin/study_companion/ui/")
+                    route.fulfill(status=200, content_type="image/webp", body=asset.read_bytes())
+                    return
             if path == "plugin/study_companion/ui-api/i18n/en.json":
                 route.fulfill(
                     status=200,
@@ -432,6 +438,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                 const hero = document.querySelector('.hero').getBoundingClientRect();
                 const hub = document.querySelector('.study-hub').getBoundingClientRect();
                 const modeSwitch = document.querySelector('#modeSwitch').getBoundingClientRect();
+                const coach = document.querySelector('#nekoCoachPanel').getBoundingClientRect();
                 const transitionDuration = getComputedStyle(
                     document.querySelector('#modeSwitch'),
                     '::before'
@@ -440,7 +447,10 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                     fcp: paint ? paint.startTime : null,
                     domContentLoaded: navigation ? navigation.domContentLoadedEventEnd : performance.now(),
                     shellWidth: shell.width,
+                    shellRight: shell.right,
                     heroWidth: hero.width,
+                    coachLeft: coach.left,
+                    coachWidth: coach.width,
                     hubTop: hub.top,
                     heroTop: hero.top,
                     modeSwitchWidth: modeSwitch.width,
@@ -455,8 +465,10 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         assert paint_or_dom_ready <= 1200, metrics
         assert metrics["reducedMotion"] is True
         assert metrics["transitionDuration"] in {"0.001s", "1ms"}, metrics
-        assert metrics["shellWidth"] >= 1180, metrics
-        assert metrics["heroWidth"] >= 1180, metrics
+        assert metrics["shellWidth"] >= 1000, metrics
+        assert metrics["heroWidth"] >= 1000, metrics
+        assert metrics["coachWidth"] >= 300, metrics
+        assert metrics["coachLeft"] >= metrics["shellRight"], metrics
         assert metrics["hubTop"] > metrics["heroTop"], metrics
         assert metrics["modeSwitchWidth"] >= 360, metrics
         assert metrics["scrollWidth"] <= metrics["viewportWidth"] + 1, metrics
@@ -568,6 +580,19 @@ def test_study_companion_static_ui_copy_is_i18n_backed() -> None:
                 if "??" in bundle.get(key, "")
             )
             assert broken == [], f"{locale}: {broken}"
+
+
+def test_study_companion_neko_coach_actions_avoid_stale_ocr_and_unused_scene_cache() -> None:
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+
+    assert "NEKO_COACH_SCENE_RECOMMENDATIONS" not in main_js
+    assert "nekoCoachCurrentScene" not in main_js
+    assert "async function runOcr(options = {})" in main_js
+    assert "options.clearWhenEmpty && studyInput" in main_js
+    assert "studyInput.value = '';" in main_js
+    assert "return data;" in main_js
+    assert "const ocrData = await runOcr({ clearWhenEmpty: true });" in main_js
+    assert "String(ocrData?.text || '').trim() || studyInputImageValue" in main_js
 
 
 def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> None:

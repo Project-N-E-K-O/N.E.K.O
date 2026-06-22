@@ -96,6 +96,7 @@ from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
     ANTI_REPEAT_INJECT_TOP_K,
     ANTI_REPEAT_REGEN_THRESHOLD,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
     MINI_GAME_INVITE_ENABLED,
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
@@ -1298,6 +1299,15 @@ async def get_changelog(since: str = "", lang: str = ""):
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
 
+# --- 主动搭话"素材标识"近期去重暂存区（ANTI_REPEAT_EXEMPT_SOURCE_TAGS 用）---
+# {lanlan_name: {source_tag: deque([(timestamp, material_key), ...], maxlen=N)}}
+# 素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
+# MUSIC 看曲目（title|artist），MEME 看搜索关键词。本轮素材与近期不雷同就放行；
+# 雷同才回落到台词判定。进程内、重启清零——短期复读保护，与 _proactive_chat_
+# history / _mini_game_invite_state 同样是内存态即可。
+_proactive_material_history: dict[str, dict[str, deque]] = {}
+_PROACTIVE_MATERIAL_HISTORY_MAX = 10
+
 # --- Mini-game 邀请短路状态（每角色独立）---
 # {lanlan_name: {'delivered_at': float|None,
 #                'responded_at': float|None,
@@ -1629,8 +1639,13 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
-def _phase1_text_is_pass(text: str) -> bool:
-    """Return True when a Phase 1 section explicitly says PASS."""
+def _text_is_pass_sentinel(text: str) -> bool:
+    """Return True when ``text`` as a whole is the PASS skip sentinel.
+
+    Brackets are optional: matches both "[PASS]" (the prompted form) and a
+    bare "PASS" the model occasionally emits. Phase-agnostic — used by both
+    the Phase 1 section parser and the Phase 2 stream guards.
+    """
     return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
 
 
@@ -1713,14 +1728,14 @@ def _parse_unified_phase1_result(text: str) -> dict:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result['web'] = parsed_web
-        elif _phase1_text_is_pass(web_text):
+        elif _text_is_pass_sentinel(web_text):
             result['web_pass'] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
     if music_text:
         music_text = music_text.strip()
-        if _phase1_text_is_pass(music_text):
+        if _text_is_pass_sentinel(music_text):
             result['music_pass'] = True
         elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
@@ -1738,7 +1753,7 @@ def _parse_unified_phase1_result(text: str) -> dict:
     meme_text = sections.get('meme', '')
     if meme_text:
         meme_text = meme_text.strip()
-        if _phase1_text_is_pass(meme_text):
+        if _text_is_pass_sentinel(meme_text):
             result['meme_pass'] = True
         elif meme_text:
             keyword = re.sub(
@@ -1933,6 +1948,62 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     except Exception:
         # 埋点失败不能影响主动搭话投递
         pass
+
+
+def _normalize_material_key(raw: str) -> str:
+    """Normalize a material identity string for exact-match dedup (lowercase + collapse whitespace)."""
+    s = (raw or "").strip().lower()
+    return re.sub(r'\s+', ' ', s)
+
+
+def _proactive_material_key(
+    source_tag: str | None,
+    selected_music_link: dict | None,
+    meme_content: dict | None,
+) -> str:
+    """Compute the dedup identity of the material this round pushes.
+
+    - MUSIC → the picked track (title|artist); two different songs never collide
+    - MEME → the **search keyword** (not the image): same keyword reused soon is a
+      repeat, a fresh keyword is not. Random hot-word fallback has an empty keyword
+      → empty key → treated as "never a repeat" (each random fetch is varied)
+
+    Empty/unknown → "" (caller treats as non-repeat, i.e. always exempt).
+    """
+    if source_tag == 'MUSIC' and selected_music_link:
+        title = (selected_music_link.get('title') or '').strip()
+        artist = (selected_music_link.get('artist') or '').strip()
+        return _normalize_material_key(f"{title}|{artist}") if (title or artist) else ""
+    if source_tag == 'MEME' and meme_content:
+        return _normalize_material_key(meme_content.get('keyword') or '')
+    return ""
+
+
+def _is_recent_proactive_material(lanlan_name: str, source_tag: str, key: str) -> bool:
+    """Whether *key* was pushed for *source_tag* within the recent window (exact match).
+
+    Empty key → never a repeat (no material identity to compare on).
+    """
+    if not key:
+        return False
+    bucket = _proactive_material_history.get(lanlan_name, {}).get(source_tag)
+    if not bucket:
+        return False
+    now = time.time()
+    return any(
+        k == key and now - ts < _RECENT_CHAT_MAX_AGE_SECONDS
+        for ts, k in bucket
+    )
+
+
+def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> None:
+    """Record one successfully delivered material identity (skip empty keys)."""
+    if not key:
+        return
+    per_tag = _proactive_material_history.setdefault(lanlan_name, {})
+    if source_tag not in per_tag:
+        per_tag[source_tag] = deque(maxlen=_PROACTIVE_MATERIAL_HISTORY_MAX)
+    per_tag[source_tag].append((time.time(), key))
 
 
 def _open_threads_for_activity_state(activity_snapshot, fresh_open_threads) -> list[str]:
@@ -6320,9 +6391,13 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = picked_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
-                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
-                    phase1_topics.append(('music', music_topic))
+                    # formatted_content 非空时 _format_music_content 必已输出至少一条
+                    # 曲目，所以这里实际不可达；保留为防御兜底，并与上面 picked_track
+                    # is None 路径对偶：没有可播曲目就不进 active_channels，守住
+                    # "music ∈ active_channels ⟺ selected_music_link 非空" 这条不变量，
+                    # 避免 Phase 2 出现音乐素材却无歌可投（发了 [MUSIC] 转译不出）。
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐 formatted_content 非空但无曲目数据，跳过音乐通道")
+                    music_content = None
 
         # ============================================================
         # 表情包话题组装（遍历候选 → 去重 → 限1张）
@@ -6484,9 +6559,12 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
-        # （冷却期时 music_content 已在上游被清空，music_topic 必为 None，此分支不会命中）
-        if music_topic and not is_playing_music and not music_cooldown:
+        # gate 钉在 selected_music_link（本轮真选中、可播的曲目）而非 music_topic：
+        # 保证 Phase 2 prompt 一旦出现音乐素材 / output-format 列出 [MUSIC]，下游必有
+        # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
+        # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
+        # music_content / selected_music_link 已在上游清空，此分支自然不命中。
+        if selected_music_link and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
@@ -6594,7 +6672,8 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         dynamic_context_for_phase2 = ""
-        if music_topic:
+        # 同 music_section：[MUSIC] tag 强制指令只在真有可播曲目时注入。
+        if selected_music_link:
             dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
@@ -6771,9 +6850,14 @@ async def proactive_chat(request: Request):
                                 if _leak_tag:
                                     source_tag = _leak_tag
                             tag_parsed = True
-                            
-                            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                                print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+
+                            # 模型本该输出带括号的 [PASS]，但偶尔吐裸 PASS：tag 正则
+                            # 认不出 → source_tag 空、'[PASS]' 也不在 cleaned 里。再补
+                            # 一道整段哨兵判定（fullmatch，方括号可选），裸 PASS 与
+                            # [PASS] 一视同仁 abort；fullmatch 不会误伤正文里的 "pass"。
+                            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                                    or _text_is_pass_sentinel(cleaned)):
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
                                 aborted = True
                                 break
                             
@@ -6840,7 +6924,11 @@ async def proactive_chat(request: Request):
                 cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
                 if _leak_tag:
                     source_tag = _leak_tag
-            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
+            # 短 bare-PASS 回复（如整段就 "PASS"，4 字 < 80 无换行）流式期一直
+            # 在 buffer 里 continue、tag_parsed 始终 False，最终落到这里兜底。
+            # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
+            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                    or _text_is_pass_sentinel(cleaned)):
                 aborted = True
             elif cleaned.strip():
                 await _emit_safe(cleaned)
@@ -6938,7 +7026,46 @@ async def proactive_chat(request: Request):
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
-        is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
+        # 素材推送类 channel（MUSIC/MEME）的复读按"素材本身"去重而非台词：本轮
+        # 素材（曲目 / 搜索关键词）与近期不雷同时，台词级硬拦截（字面相似度 +
+        # 下面的 BM25 regen/drop）一律豁免，免得模板化 intro 被误判为复读、把自
+        # 发推歌/推图压到极低频。素材雷同（反复推同一曲目 / 同一关键词）才回落
+        # 到正常台词判定。一次算清，下面两道门共用。
+        #
+        # 归类按"真实投递 channel"而非模型原始 source_tag——gate 在
+        # build_proactive_response 之前，用 Phase-1 已定的 selected_*/active_channels
+        # 预测最终投递（Codex P2）：
+        # - music-only 且已选中曲目 → 无论模型出 [CHAT] 还是 [MUSIC]，下面的
+        #   should_try_music_fallback 都会挂上曲目，本轮等于一次音乐投递，fresh
+        #   曲目不该被 CHAT 文案的字面相似度 / BM25 连带 drop/regen。
+        # - 模型出 [MEME] 但没选中表情包（selected_meme_link 为空）→ 最终
+        #   build_proactive_response 回退 web/vision/plain、meme 没真发出，按非豁免
+        #   走正常台词判定（不能凭模型 tag 就豁免）。
+        _music_only_pending = (
+            'music' in active_channels and selected_music_link is not None
+            and not is_playing_music and not music_cooldown
+            and not any(ch in ('vision', 'web', 'meme') for ch in active_channels)
+        )
+        if _music_only_pending and source_tag != 'MUSIC':
+            _dedup_tag = 'MUSIC'
+        elif source_tag == 'MEME' and selected_meme_link is None:
+            _dedup_tag = 'CHAT'
+        else:
+            _dedup_tag = source_tag
+        _material_key = _proactive_material_key(_dedup_tag, selected_music_link, meme_content)
+        _exempt_text_dedup = (
+            _dedup_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+            and not _is_recent_proactive_material(lanlan_name, _dedup_tag, _material_key)
+        )
+        if _exempt_text_dedup:
+            logger.info(
+                "[%s] proactive text-dedup exempt: tag=%s (model_tag=%s) material=%r (fresh material, skip similarity+BM25)",
+                lanlan_name, _dedup_tag, source_tag, _material_key or "(none)",
+            )
+
+        is_duplicate, similarity_score = (False, 0.0)
+        if not _exempt_text_dedup:
+            is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
         if is_duplicate:
             logger.info(
                 "[%s] proactive repeat guard blocked Phase 2 output (similarity=%.3f threshold=%.2f)",
@@ -6972,14 +7099,25 @@ async def proactive_chat(request: Request):
         # ``PROACTIVE_PHASE2_GENERATE_MAX_TOKENS`` / ``render_regen_avoid_instruction``）；
         # 这里 try 仅包 corpus 单例与评分本身——若把常量 import 也塞进 try，
         # except 后下面的 ``>= ANTI_REPEAT_DROP_THRESHOLD`` 会 NameError（codex P1）。
-        try:
-            from memory.anti_repeat import get_anti_repeat_corpus
-            _ar_corpus = get_anti_repeat_corpus()
-            _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
-        except Exception as _ar_exc:  # pragma: no cover - defensive
-            logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+        # 素材推送类 channel（推歌/推图）的开场白天生模板化、台词长一个样而素材
+        # （曲目 / 搜索关键词）却不同，用台词 BM25 判复读属于天生误杀（博士连点几
+        # 首后 FG 窗被音乐 intro 占满，分数爆表，后续自发推歌全被 drop → "放音乐
+        # 频率极低"）。本轮素材与近期不雷同时（_exempt_text_dedup，已在上方字面
+        # 相似度门一并算好）跳过整段评分 + regen/drop；录入 corpus 时也豁免（见
+        # finish_proactive_delivery），免得模板化 intro 污染 FG 窗。素材雷同时
+        # 回落到正常台词 BM25（台词没雷同仍可发）。
+        if _exempt_text_dedup:
             _bm25_total, _bm25_terms = 0.0, {}
             _ar_corpus = None
+        else:
+            try:
+                from memory.anti_repeat import get_anti_repeat_corpus
+                _ar_corpus = get_anti_repeat_corpus()
+                _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
+            except Exception as _ar_exc:  # pragma: no cover - defensive
+                logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+                _bm25_total, _bm25_terms = 0.0, {}
+                _ar_corpus = None
 
         # ANTI_REPEAT_DROP_THRESHOLD 仅在 regen 之后才生效：初稿超 DROP 也得
         # 给 LLM 一次纠正机会，跑完再用同阈值二判。之前的版本初稿 ≥ DROP
@@ -7229,7 +7367,34 @@ async def proactive_chat(request: Request):
             music_already_appended = any(link.get('source') == '音乐推荐' for link in source_links)
             if not music_already_appended:
                 _append_music_recommendations(source_links, music_content)
-        
+
+        # anti-repeat / 素材去重按"真实投递的 channel"归类，而非模型原始 source_tag
+        # （此处 primary_channel 已由 build_proactive_response 按实际 source_links 定下，
+        # 比 gate 的 Phase-1 预测更准）（Codex P2）：
+        # - is_music_used（含模型出 [CHAT] 但 should_try_music_fallback 追加了曲目）
+        #   或 primary_channel=='music' → 实际投递音乐 → MUSIC：否则模板 intro 会被
+        #   按 CHAT 录进 BM25 corpus、且曲目 key 不记，重新引入 fallback 推歌污染。
+        # - 仅当 primary_channel=='meme' 且确有表情包链接（selected_meme_link 非空，
+        #   build_proactive_response 此时才真 append 图）才算 MEME 投递；模型出 [MEME]
+        #   但选空时它已回退别的 channel（甚至 primary 仍是 'meme' 但无链接），不能按
+        #   MEME 记——否则模板文案漏录 corpus，且把没发出的关键词记成已投递，害得之后
+        #   同关键词的真表情包被当复读跳过。
+        # - 其余落到非豁免 CHAT（WEB/vision 同样非豁免，对 anti-repeat 等价）。
+        if is_music_used or primary_channel == 'music':
+            _delivered_tag = 'MUSIC'
+        elif primary_channel == 'meme' and selected_meme_link is not None:
+            _delivered_tag = 'MEME'
+        else:
+            _delivered_tag = 'CHAT'
+        # 曲目优先取 selected_music_link；regen 把 tag 降级 CHAT 时它已被清空，则从已
+        # 追加的 source_links（source=='音乐推荐'）里取首条。
+        _delivered_music_link = selected_music_link
+        if _delivered_tag == 'MUSIC' and not _delivered_music_link:
+            _delivered_music_link = next(
+                (l for l in (source_links or []) if isinstance(l, dict) and l.get('source') == '音乐推荐'),
+                None,
+            )
+
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
         # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
@@ -7249,6 +7414,7 @@ async def proactive_chat(request: Request):
                 response_text,
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
+                source_tag=_delivered_tag,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
@@ -7279,6 +7445,14 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # 记录本轮实际投递的"素材标识"（曲目 / 搜索关键词），供下次同 channel 的
+        # 素材级去重。按"真实投递 channel"_delivered_tag/_delivered_music_link 归类
+        # （含模型出 CHAT 但 fallback 追加了曲目的情形），key 为空则不记录。
+        _record_proactive_material(
+            lanlan_name,
+            _delivered_tag,
+            _proactive_material_key(_delivered_tag, _delivered_music_link, meme_content),
+        )
         # Mini-game 邀请冷却 counter 推进：spec 是"被回应后再 10 次搭话才解禁"，
         # 任何 channel 的成功投递都算一次，pending 期间（responded_at=None）函数
         # 内部自然 no-op，不靠"邀请自身"提前耗 counter。
