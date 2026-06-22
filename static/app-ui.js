@@ -1298,6 +1298,11 @@
             return;
         }
 
+        const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+        if (!modelViewportReady.ready) {
+            return false;
+        }
+
         // 重置 goodbye 标志
         if (window.live2dManager) {
             window.live2dManager._goodbyeClicked = false;
@@ -1307,11 +1312,6 @@
         }
         if (window.mmdManager) {
             window.mmdManager._goodbyeClicked = false;
-        }
-
-        const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
-        if (!modelViewportReady.ready) {
-            return false;
         }
 
         try {
@@ -3565,11 +3565,12 @@
                 } catch (error) {
                     console.warn('[App] 返回球点击结束时恢复窗口失败:', error);
                 }
-                setPendingNativeModelViewportRestoreBounds(restoreBounds || {
+                const pendingRestoreBounds = restoreBounds || {
                     width: state.savedWindowW,
                     height: state.savedWindowH
-                });
+                };
                 if (!isActiveDragToken(dragToken)) return;
+                setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
                 waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
@@ -4364,6 +4365,20 @@
             }
         });
 
+        function restoreReturnBallAfterBlockedModelViewport(event) {
+            const eventType = String(event && event.type || '');
+            const match = eventType.match(/^([a-z0-9-]+)-return-click$/i);
+            const returnRect = event && event.detail && event.detail.returnButtonRect;
+            const container = match && match[1]
+                ? document.getElementById(`${match[1]}-return-button-container`)
+                : getVisibleIdleReturnBallContainer();
+            if (!container) return;
+            if (container.style.display === 'none') {
+                showReturnBallContainer(container, returnRect);
+            }
+            revealReturnBallContainer(container, 'return-ball-model-viewport-blocked');
+        }
+
         // 请她回来按钮（统一处理函数）
         const handleReturnClick = async (event) => {
             console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
@@ -4374,6 +4389,7 @@
             const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
             if (!preReturnViewportReady.ready) {
                 console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
+                restoreReturnBallAfterBlockedModelViewport(event);
                 return;
             }
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';

@@ -163,10 +163,12 @@ def test_model_cat_transition_contract_is_present():
     assert "window._nekoModelReturnEnterRect = returnRect || savedRect || null" in source
     assert "consumeModelReturnEnterRect()" in source
     assert "function ensureModelViewportReadyBeforeShowCurrentModel()" in source
+    assert "function restoreReturnBallAfterBlockedModelViewport(event)" in source
     assert "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();" in source
     assert "blocked model display because Pet viewport is still return-ball sized" in source
     assert "function setPendingNativeModelViewportRestoreBounds(bounds)" in source
-    assert "setPendingNativeModelViewportRestoreBounds(restoreBounds || {" in source
+    assert "const pendingRestoreBounds = restoreBounds || {" in source
+    assert "setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);" in source
     assert "setPendingNativeModelViewportRestoreBounds(finalBounds || {" in source
     assert "bounds.requestedBounds || (" in source
     assert "NEKO_MODEL_CAT_TRANSITION_MODEL_SCALE = 0.38" in source
@@ -264,6 +266,8 @@ def test_model_cat_transition_contract_is_present():
         "if (!modelViewportReady.ready) {",
         "return false;",
     )
+    goodbye_reset_index = source.index("// 重置 goodbye 标志")
+    assert viewport_guard_start < goodbye_reset_index
     return_handler_guard_start = source.index("let modelDisplayReady = true;")
     return_handler_block = source[
         return_handler_guard_start:
@@ -292,9 +296,18 @@ def test_model_cat_transition_contract_is_present():
         "return handler preserves cat state until viewport can restore",
         "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
         "if (!preReturnViewportReady.ready) {",
+        "restoreReturnBallAfterBlockedModelViewport(event);",
         "return;",
     )
     assert return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
+    restore_block = source[
+        source.index("function restoreReturnBallAfterBlockedModelViewport(event)"):
+        source.index("// 请她回来按钮（统一处理函数）")
+    ]
+    assert "String(event && event.type || '')" in restore_block
+    assert "document.getElementById(`${match[1]}-return-button-container`)" in restore_block
+    assert "revealReturnBallContainer(container, 'return-ball-model-viewport-blocked')" in restore_block
+    assert "showReturnBallContainer(container, returnRect)" in restore_block
 
     transition_promise_start = source.index("const transitionPromise = new Promise((resolve) => {")
     transition_promise_block = source[
@@ -833,6 +846,13 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     no_move_end = source.index("const finalBounds = await resolveFinalWindowBounds", no_move_start)
     no_move_block = source[no_move_start:no_move_end]
 
+    _assert_source_order(
+        no_move_block,
+        "no-move drag records pending bounds only while the drag token is current",
+        "const pendingRestoreBounds = restoreBounds || {",
+        "if (!isActiveDragToken(dragToken)) return;",
+        "setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);",
+    )
     assert no_move_block.index("revealReturnBallDragWindow();") < no_move_block.index("dispatchReturnBallClick();")
     assert "reason: 'return-ball-drag-cancel'" not in no_move_block
     suppress_click_block = _source_slice_between(
@@ -1800,7 +1820,7 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
 
     assert "Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble." not in source
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
-    assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09" in source
+    assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06" in source
     assert "function _playNekoIdleSound(state, src, volume)" in source
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
@@ -1827,8 +1847,10 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
 
     assert "Dev-only short interval for tuning cat sounds and the linked thought bubble." not in source
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14" in source
-    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16" in source
+    assert "_NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10" in source
+    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900" in source
     assert "'/static/assets/neko-idle/cat1-voice1.mp3'" in source
     assert "'/static/assets/neko-idle/cat1-voice2.mp3'" in source
