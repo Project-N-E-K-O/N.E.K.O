@@ -33,15 +33,17 @@ The next phase should validate two promises first:
 
 ## Current Implementation Status
 
-Independent Mode is now past the first infrastructure check and should move into live-effect validation.
+Independent Mode is now past the first implementation and acceptance check and should move into controlled live-effect validation.
 
 - Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
-- The current validation target is not another event type. It is a 30-minute low-danmaku solo-stream simulation.
-- The next product decision should be based on that simulation:
+- Slice 4 base is landed: activity level gives the streamer a small quiet / standard / active pacing control instead of many parameters.
+- The current validation target is not another event type. It is a controlled solo-stream validation with low danmaku, occasional danmaku, and no-danmaku moments.
+- The next product decision should be based on controlled validation:
   - if NEKO is too quiet or too noisy, do Pacing Control next;
   - if NEKO sounds generic or awkward, tune Idle Hosting wording first;
   - if the streamer cannot tell why NEKO is silent, refine Live Status before adding more behavior.
+  - if the baseline feels stable, prepare a 3-5 streamer closed beta before adding Active Engagement.
 
 ## Current Development Split
 
@@ -257,7 +259,7 @@ Key signals:
 
 - Now: friendly streamer observation is acceptable, but do not claim Independent Mode is solved.
 - After Slice 1: run small "streamer trust" validation.
-- After Slice 2 + Slice 4: start a 3-5 streamer Independent Mode closed beta.
+- After Slice 2 + Slice 4 acceptance: start a 3-5 streamer Independent Mode closed beta.
 - Slice 3 should be introduced cautiously after beta feedback.
 
 ## Product Principles

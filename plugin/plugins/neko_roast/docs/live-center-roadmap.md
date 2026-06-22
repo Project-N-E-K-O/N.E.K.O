@@ -33,9 +33,10 @@ Independent Mode 的产品命题、Slice 顺序、MVP、非目标和内测节奏
 
 当前阶段先做：
 
-1. Live Status / 开播前检查 / 为什么没说话：基础能力已落地，进入主播信任验证。
-2. Idle Hosting / 冷场陪播：状态推导、手动触发和自动触发基础能力已落地，进入 30 分钟低弹幕模拟验证。
-3. Pacing Control / 节奏控制：等 Idle Hosting 验证结果决定优先级和档位。
+1. Live Status / 开播前检查 / 为什么没说话：基础能力已落地并完成首轮验收。
+2. Idle Hosting / 冷场陪播：状态推导、手动触发和自动触发基础能力已落地并完成首轮验收。
+3. Pacing Control / 节奏控制：quiet / standard / active 三档基础能力已落地并完成首轮验收。
+4. 下一步：进入受控猫猫独播验证，先看 30 分钟低弹幕 / 偶发弹幕 / 无弹幕场景是否不尴尬，再决定是否引入 Active Engagement。
 
 Gift / SC / Guard 专属行为先视为增强项，不作为 Independent Mode 成立条件。
 
