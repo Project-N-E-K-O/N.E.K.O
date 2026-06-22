@@ -26,6 +26,8 @@ def test_panel_renders_live_status_summary():
     assert "panel.liveModeRole." in source
     assert "panel.liveState." in source
     assert "panel.idleHostingCandidate." in source
+    assert "speech_explanation" in source
+    assert "panel.speechExplanation." in source
 
 
 def test_all_locales_define_live_status_summary_labels():
@@ -62,6 +64,31 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStateReason.blocked_by_live_status",
         "panel.idleHostingCandidate.true",
         "panel.idleHostingCandidate.false",
+        "panel.speechExplanation.title",
+        "panel.speechExplanation.lastResult",
+        "panel.speechExplanation.summary.ready",
+        "panel.speechExplanation.summary.test_only",
+        "panel.speechExplanation.summary.temporarily_not_speaking",
+        "panel.speechExplanation.summary.cannot_stream",
+        "panel.speechExplanation.summary.waiting_for_activity",
+        "panel.speechExplanation.summary.recently_spoke",
+        "panel.speechExplanation.summary.recently_skipped",
+        "panel.speechExplanation.summary.failed",
+        "panel.speechExplanation.reason.ready",
+        "panel.speechExplanation.reason.dry_run",
+        "panel.speechExplanation.reason.manual_paused",
+        "panel.speechExplanation.reason.room_not_configured",
+        "panel.speechExplanation.reason.live_ingest_disconnected",
+        "panel.speechExplanation.reason.cooldown",
+        "panel.speechExplanation.reason.safety_tripped",
+        "panel.speechExplanation.reason.safety_degraded",
+        "panel.speechExplanation.reason.idle_hosting_candidate",
+        "panel.speechExplanation.reason.quiet_activity_gap",
+        "panel.speechExplanation.reason.no_recent_activity",
+        "panel.speechExplanation.reason.recent_output",
+        "panel.speechExplanation.reason.recently_skipped",
+        "panel.speechExplanation.reason.failed",
+        "panel.speechExplanation.reason.dispatcher.dry_run",
     }
 
     for locale_path in sorted((root / "i18n").glob("*.json")):

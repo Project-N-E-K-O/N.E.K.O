@@ -548,11 +548,13 @@ class RoastRuntime:
         live_connection = self.live_connection_snapshot()
         live_status = self.live_status_summary(live_connection)
         health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
         return {
             "config": self.config.to_dict(),
             "live_connection": live_connection,
             "live_status": live_status,
-            "live_state": self.live_state_summary(live_status, health_rows),
+            "live_state": live_state,
+            "speech_explanation": self.speech_explanation(live_status, live_state),
             # 观众档案改走本地 JSON（不依赖宿主 PluginStore，见 docs/devlog.md）。
             # store_enabled 保留旧字段名兼容面板，现指"档案目录是否可写=能否持久化"。
             "store_enabled": bool(storage.get("writable")),
@@ -660,6 +662,70 @@ class RoastRuntime:
             "mode_role": mode_role,
             "idle_hosting_candidate": idle_hosting_candidate,
             "last_activity_age_sec": last_activity_age_sec,
+        }
+
+    def speech_explanation(
+        self,
+        live_status: dict[str, Any] | None = None,
+        live_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        status = live_status or self.live_status_summary()
+        state = live_state or self.live_state_summary(status)
+        latest = self.recent_results[-1] if self.recent_results else {}
+        latest_status = str(latest.get("status") or "") if isinstance(latest, dict) else ""
+        latest_reason = str(latest.get("reason") or "") if isinstance(latest, dict) else ""
+        latest_age = self._iso_age_sec(latest.get("created_at")) if isinstance(latest, dict) else None
+        latest_event = latest.get("event") if isinstance(latest, dict) else {}
+        latest_source = str(latest_event.get("source") or "") if isinstance(latest_event, dict) else ""
+
+        status_summary = str(status.get("summary") or "cannot_stream")
+        status_reason = str(status.get("reason") or "room_not_configured")
+        state_name = str(state.get("state") or "")
+        state_reason = str(state.get("reason") or "")
+
+        summary = "ready"
+        reason = "ready"
+        if status_summary == "cannot_stream":
+            summary = "cannot_stream"
+            reason = status_reason
+        elif status_summary == "test_only":
+            summary = "test_only"
+            reason = status_reason
+        elif status_summary == "temporarily_not_speaking":
+            summary = "temporarily_not_speaking"
+            reason = status_reason
+        elif bool(state.get("idle_hosting_candidate")):
+            summary = "waiting_for_activity"
+            reason = "idle_hosting_candidate"
+        elif state_name in {"quiet", "idle"}:
+            summary = "waiting_for_activity"
+            reason = state_reason or state_name
+        elif latest_status == "pushed":
+            summary = "recently_spoke"
+            reason = "recent_output"
+        elif latest_status == "skipped":
+            summary = "recently_skipped"
+            reason = "recently_skipped"
+        elif latest_status == "failed":
+            summary = "failed"
+            reason = "failed"
+        elif latest_status == "dry_run":
+            summary = "test_only"
+            reason = latest_reason or "dispatcher.dry_run"
+
+        return {
+            "summary": summary,
+            "reason": reason,
+            "live_status_summary": status_summary,
+            "live_status_reason": status_reason,
+            "live_state": state_name,
+            "live_state_reason": state_reason,
+            "cooldown_remaining": round(float(status.get("cooldown_remaining") or 0.0), 1),
+            "idle_hosting_candidate": bool(state.get("idle_hosting_candidate")),
+            "last_result_status": latest_status,
+            "last_result_reason": latest_reason,
+            "last_result_source": latest_source,
+            "last_result_age_sec": latest_age,
         }
 
     @staticmethod

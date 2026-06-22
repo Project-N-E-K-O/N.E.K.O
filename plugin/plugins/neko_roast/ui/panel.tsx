@@ -52,6 +52,7 @@ type DashboardState = {
   recent_results?: Array<Record<string, any>>
   recent_sandbox_results?: Array<Record<string, any>>
   recent_audit?: Array<Record<string, any>>
+  speech_explanation?: Record<string, any>
 }
 
 const configDefaults = {
@@ -100,6 +101,13 @@ function liveStateTone(state: string): "success" | "warning" | "danger" | "defau
   if (state === "engaged") return "success"
   if (state === "quiet" || state === "idle" || state === "paused") return "warning"
   if (state === "blocked") return "danger"
+  return "default"
+}
+
+function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
+  if (summary === "ready" || summary === "recently_spoke") return "success"
+  if (summary === "cannot_stream" || summary === "failed") return "danger"
+  if (summary === "test_only" || summary === "temporarily_not_speaking" || summary === "waiting_for_activity" || summary === "recently_skipped") return "warning"
   return "default"
 }
 
@@ -216,6 +224,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const safety = safeState.safety || {}
   const liveStatus = safeState.live_status || {}
   const liveState = safeState.live_state || {}
+  const speechExplanation = safeState.speech_explanation || {}
   const profiles = Array.isArray(safeState.recent_profiles) ? safeState.recent_profiles : []
   const results = Array.isArray(safeState.recent_results) ? safeState.recent_results : []
   const sandboxResults = Array.isArray(safeState.recent_sandbox_results) ? safeState.recent_sandbox_results : []
@@ -498,6 +507,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveStateName = String(liveState.state || "blocked")
   const liveStateReason = String(liveState.reason || "blocked_by_live_status")
   const idleHostingCandidate = !!liveState.idle_hosting_candidate
+  const speechSummary = String(speechExplanation.summary || "cannot_stream")
+  const speechReason = String(speechExplanation.reason || "room_not_configured")
+  const speechLastStatus = String(speechExplanation.last_result_status || "")
+  const speechLastReason = String(speechExplanation.last_result_reason || "")
+  const speechLastSource = String(speechExplanation.last_result_source || "")
   const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
@@ -584,6 +598,16 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <Alert tone={idleHostingCandidate ? "success" : "info"}>
             {t(`panel.idleHostingCandidate.${idleHostingCandidate ? "true" : "false"}`)}
           </Alert>
+          <Alert tone={speechExplanationTone(speechSummary)}>
+            {t("panel.speechExplanation.title")} · {t(`panel.speechExplanation.summary.${speechSummary}`)} · {t(`panel.speechExplanation.reason.${speechReason}`)}
+          </Alert>
+          {speechLastStatus ? (
+            <Text>
+              {t("panel.speechExplanation.lastResult")}: {speechLastStatus}
+              {speechLastReason ? ` / ${speechLastReason}` : ""}
+              {speechLastSource ? ` / ${speechLastSource}` : ""}
+            </Text>
+          ) : null}
         </Stack>
       </Card>
       <Card title={t("panel.room.title")}>

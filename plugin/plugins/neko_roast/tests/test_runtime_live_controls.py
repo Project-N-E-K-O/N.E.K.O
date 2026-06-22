@@ -263,6 +263,43 @@ async def test_dashboard_state_says_cannot_stream_without_room(runtime: RoastRun
     assert state["live_status"]["summary"] == "cannot_stream"
     assert state["live_status"]["reason"] == "room_not_configured"
     assert state["live_status"]["can_output"] is False
+    assert state["speech_explanation"]["summary"] == "cannot_stream"
+    assert state["speech_explanation"]["reason"] == "room_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_speech_explanation_keeps_dry_run_result_visible(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    await runtime.trigger_idle_hosting()
+    state = await runtime.dashboard_state()
+
+    assert state["speech_explanation"]["summary"] == "test_only"
+    assert state["speech_explanation"]["reason"] == "dry_run"
+    assert state["speech_explanation"]["last_result_status"] == "dry_run"
+    assert state["speech_explanation"]["last_result_reason"] == "dispatcher.dry_run"
+    assert state["speech_explanation"]["last_result_source"] == "idle_hosting"
+
+
+@pytest.mark.asyncio
+async def test_speech_explanation_marks_solo_idle_as_waiting_for_idle_hosting(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["idle_hosting_candidate"] is True
+    assert state["speech_explanation"]["summary"] == "waiting_for_activity"
+    assert state["speech_explanation"]["reason"] == "idle_hosting_candidate"
 
 
 def _created_at_age(seconds: int) -> str:
