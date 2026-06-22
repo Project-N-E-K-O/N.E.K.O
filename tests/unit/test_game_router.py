@@ -16,6 +16,7 @@ from .game_route_test_helpers import (
 from main_routers import game_router, system_router
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
 from main_logic.core import LLMSessionManager
+from utils import game_log
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -93,6 +94,13 @@ class _FakeAppendContextManager:
         return self.result
 
 
+@pytest.fixture(autouse=True)
+def _clear_game_session_debug_logs():
+    game_log._game_session_debug_logs.clear()
+    yield
+    game_log._game_session_debug_logs.clear()
+
+
 @pytest.mark.unit
 def test_badminton_removed_modes_are_not_public_or_scored():
     assert game_router._normalize_badminton_mode("horse") == "spectator"
@@ -125,6 +133,93 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
         assert result["state"]["session_id"] == "debug-badminton"
         assert result["state"]["mode"] == "shooter"
         assert game_router._route_state_key("Lan", "badminton") in game_router._game_route_states
+        debug_log = await game_router.game_logs(session_id="debug-badminton", game_type="badminton")
+        events = [item["event"] for item in debug_log["log"]["entries"]]
+        assert "session_active" in events
+        assert "route_start_requested" in events
+        assert "route_start_completed" in events
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_and_query():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-1",
+            "game_type": "soccer",
+            "lanlan_name": "Lan",
+            "level": "error",
+            "category": "frontend",
+            "event": "window_error",
+            "message": "boom",
+            "details": {"filename": "soccer_demo.html", "line": 12},
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["seq"] == 1
+    queried = await game_router.game_logs(session_id="soccer-debug-1", game_type="soccer")
+    assert queried["ok"] is True
+    assert queried["log"]["lanlan_name"] == "Lan"
+    assert queried["log"]["entries"][0]["event"] == "window_error"
+    assert queried["log"]["entries"][0]["details"]["filename"] == "soccer_demo.html"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_requires_local_mutation_csrf():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-csrf",
+            "game_type": "soccer",
+            "message": "blocked",
+        }, mutation_headers=False, path="/api/game/logs"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert game_log.find_game_session_debug_log("soccer-debug-csrf", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-truncate",
+            "game_type": "soccer",
+            "message": "m" * 1500,
+            "details": {"long": "d" * 2500},
+            "preserve_message": "false",
+            "preserve_details": "false",
+            "no_truncate": True,
+        }, path="/api/game/logs"),
+    )
+
+    assert result["ok"] is True
+    queried = await game_router.game_logs(session_id="soccer-debug-truncate", game_type="soccer")
+    entry = queried["log"]["entries"][0]
+    assert len(entry["message"]) < 1500
+    assert "<truncated" in entry["message"]
+    assert len(entry["details"]["long"]) < 2500
+    assert "<truncated" in entry["details"]["long"]
+
+
+@pytest.mark.unit
+def test_game_debug_logs_do_not_drop_ended_sessions_when_new_sessions_open():
+    for index in range(14):
+        session_id = f"soccer-old-{index}"
+        game_log.mark_game_session_debug_log_active("soccer", session_id, lanlan_name="Lan")
+        game_log.mark_game_session_debug_log_ended("soccer", session_id, lanlan_name="Lan", reason="test")
+
+    game_log.mark_game_session_debug_log_active("soccer", "soccer-new", lanlan_name="Lan")
+    summaries = game_log.list_game_session_debug_log_summaries("soccer")
+
+    session_ids = {item["session_id"] for item in summaries}
+    assert "soccer-old-0" in session_ids
+    assert "soccer-old-13" in session_ids
+    assert "soccer-new" in session_ids
 
 
 @pytest.mark.unit
@@ -3033,6 +3128,54 @@ async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     assert result["line"] == ""
     assert "======以上为游戏事件输入======" in fake_session.last_text
     assert '"kind": "goal-scored"' in fake_session.last_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pregame_context_ai_human_message_keeps_watermark(monkeypatch):
+    from config.prompts.prompts_game import PREGAME_CONTEXT_INPUT_WATERMARK
+
+    captured = {}
+
+    class FakeResult:
+        content = '{"launchIntent": "unknown"}'
+
+    class FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return FakeResult()
+
+    async def fake_create(*_args, **_kwargs):
+        return FakeLLM()
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", fake_create)
+    monkeypatch.setattr(
+        game_router,
+        "_get_character_info",
+        lambda _name: {"model": "m", "base_url": "u", "api_key": "k"},
+    )
+
+    await game_router._run_pregame_context_ai(
+        lanlan_name="Lan",
+        master_name="玩家",
+        lanlan_prompt="人设摘录",
+        recent_history="昨天一起聊了很久",
+        neko_initiated=True,
+        neko_invite_text="一起踢球吗",
+        prompt_template="开局上下文分析器系统提示",
+        extra_payload={"gameType": "soccer"},
+    )
+
+    human_message = captured["messages"][1]
+    # 收尾水印必须在 human message 末尾，且把近期记录原文包在水印之上。
+    assert human_message.content.endswith(PREGAME_CONTEXT_INPUT_WATERMARK)
+    assert "昨天一起聊了很久" in human_message.content
 
 
 @pytest.mark.unit

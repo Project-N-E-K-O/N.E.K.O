@@ -1396,6 +1396,29 @@
       if (!audio) return;
       const { key: nextKey, type, playlist, config: loopedConfig } = resolvePlaylist();
       if (nextKey === currentKey && isCurrentBgmTarget(type, playlist, loopedConfig)) return;
+      const beforeKey = currentKey || '';
+      const details = {
+        reason,
+        beforeKey,
+        nextKey,
+        type,
+        mood: moodKey,
+        difficulty: DIFFICULTY[difficultyIdx]?.name || '',
+        score: { player: state.score.player, ai: state.score.ai, round: state.round },
+        currentSrc: getCurrentBgmSrc(),
+        targetSrcs: type === 'loopedBgm'
+          ? [loopedConfig?.intro, loopedConfig?.loop, loopedConfig?.outro].filter(Boolean)
+          : (Array.isArray(playlist) ? playlist : [playlist]).map(item => item?.src || item).filter(Boolean),
+      };
+      try {
+        window.SoccerDemoDebugLog?.(
+          'info',
+          'audio',
+          'bgm_switch',
+          '足球小游戏 BGM 切换',
+          details,
+        );
+      } catch (_) {}
       currentKey = nextKey;
       if (type === 'loopedBgm') {
         console.log(`[SoccerAudio] 切换循环 BGM=${nextKey} reason=${reason}`);
@@ -3201,6 +3224,132 @@
     },
   };
 
+  const _soccerDebugConsole = {
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+  };
+  const _soccerDebugLogState = {
+    lastWindowStart: 0,
+    sentInWindow: 0,
+  };
+  const _soccerSpeechPlaybackLogState = {
+    lastSignature: '',
+    lastLoggedAt: 0,
+    lastHeartbeatAt: 0,
+  };
+  function _safeSoccerDebugValue(value, depth = 0, preserve = false) {
+    if (preserve) return value;
+    if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+    if (typeof value === 'string') return value.length > 1200 ? `${value.slice(0, 1200)}...<truncated>` : value;
+    if (depth >= 3) return String(value).slice(0, 240);
+    if (Array.isArray(value)) {
+      const result = value.slice(0, 20).map((item) => _safeSoccerDebugValue(item, depth + 1));
+      if (value.length > 20) result.push({ _truncated: `+${value.length - 20} items` });
+      return result;
+    }
+    if (typeof value === 'object') {
+      const result = {};
+      const keys = Object.keys(value);
+      for (const key of keys.slice(0, 30)) {
+        result[key] = _safeSoccerDebugValue(value[key], depth + 1);
+      }
+      if (keys.length > 30) result._truncated = `+${keys.length - 30} keys`;
+      return result;
+    }
+    return String(value).slice(0, 1200);
+  }
+  function _soccerDebugCsrfTokenFromHeaders(headers = {}) {
+    return headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
+  }
+  function _postSoccerDebugLogPayload(payload, mutationHeaders = {}) {
+    const token = _soccerDebugCsrfTokenFromHeaders(mutationHeaders);
+    const body = JSON.stringify(token ? { ...payload, _csrf_token: token } : payload);
+    try {
+      if (navigator.sendBeacon) {
+        const ok = navigator.sendBeacon('/api/game/logs', new Blob([body], { type: 'application/json' }));
+        if (ok) return;
+      }
+    } catch (_) {}
+    fetch('/api/game/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...mutationHeaders },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  }
+  function _sendSoccerDebugLog(payload) {
+    const now = Date.now();
+    if (now - _soccerDebugLogState.lastWindowStart > 60000) {
+      _soccerDebugLogState.lastWindowStart = now;
+      _soccerDebugLogState.sentInWindow = 0;
+    }
+    if (_soccerDebugLogState.sentInWindow >= 120) return;
+    _soccerDebugLogState.sentInWindow += 1;
+    const logPayload = {
+      session_id: _llm.sessionId,
+      game_type: 'soccer',
+      lanlan_name: _llm.routeLanlanName || '',
+      source: 'soccer_demo',
+      ...payload,
+    };
+    const security = window.nekoLocalMutationSecurity;
+    try {
+      if (security && typeof security.peekCachedToken === 'function') {
+        const token = security.peekCachedToken();
+        if (token) {
+          _postSoccerDebugLogPayload(logPayload, { 'X-CSRF-Token': token });
+          return;
+        }
+      }
+    } catch (_) {}
+    if (security && typeof security.getMutationHeaders === 'function') {
+      Promise.resolve(security.getMutationHeaders())
+        .then((headers) => _postSoccerDebugLogPayload(logPayload, headers || {}))
+        .catch(() => _postSoccerDebugLogPayload(logPayload));
+      return;
+    }
+    _postSoccerDebugLogPayload(logPayload);
+  }
+  function soccerSessionDebugLog(level, category, event, message, details = {}, sensitivePossible = false, options = {}) {
+    try {
+      const preserveDetails = !!(options.preserveDetails || options.noTruncate);
+      const preserveMessage = !!(options.preserveMessage || options.noTruncate);
+      _sendSoccerDebugLog({
+        level,
+        category,
+        event,
+        message: String(message || ''),
+        details: _safeSoccerDebugValue(details, 0, preserveDetails),
+        sensitive_possible: !!sensitivePossible,
+        preserve_message: preserveMessage,
+        preserve_details: preserveDetails,
+      });
+    } catch (_) {}
+  }
+  window.SoccerDemoDebugLog = soccerSessionDebugLog;
+  window.addEventListener('error', (event) => {
+    soccerSessionDebugLog('error', 'frontend', 'window_error', event.message || '前端脚本错误', {
+      filename: event.filename || '',
+      lineno: event.lineno || 0,
+      colno: event.colno || 0,
+      error: event.error && (event.error.stack || event.error.message || String(event.error)),
+    });
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    soccerSessionDebugLog('error', 'frontend', 'unhandled_rejection', '前端 Promise 未处理异常', {
+      reason: reason && (reason.stack || reason.message || String(reason)),
+    });
+  });
+  console.warn = function soccerDebugConsoleWarn(...args) {
+    _soccerDebugConsole.warn(...args);
+    soccerSessionDebugLog('warning', 'frontend', 'console_warn', args.map((item) => String(item)).join(' '), { args }, true);
+  };
+  console.error = function soccerDebugConsoleError(...args) {
+    _soccerDebugConsole.error(...args);
+    soccerSessionDebugLog('error', 'frontend', 'console_error', args.map((item) => String(item)).join(' '), { args }, true);
+  };
+
   const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
   const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
   function _soccerGameMemoryPolicyPayload(enabled = _isGameMemoryEnabled()) {
@@ -3369,6 +3518,70 @@
     return { active: false, speechId: '', turnId: '', remainingSeconds: 0, updatedAt: 0, reason: 'missing' };
   }
 
+  function _speechPlaybackDebugDetails(raw, bridgeSource = '') {
+    const updatedAt = Number(raw?.updatedAt || 0);
+    return {
+      bridgeSource,
+      reason: raw?.reason || '',
+      active: !!raw?.active,
+      speechId: raw?.speechId || '',
+      turnId: raw?.turnId || '',
+      playbackTurnId: raw?.playbackTurnId || '',
+      remainingSeconds: Number(raw?.remainingSeconds || 0),
+      pendingAudioWork: !!raw?.pendingAudioWork,
+      audioContextState: raw?.audioContextState || '',
+      audioContextTime: Number(raw?.audioContextTime || 0),
+      scheduledEndAudioTime: Number(raw?.scheduledEndAudioTime || 0),
+      playbackStartAudioTime: Number(raw?.playbackStartAudioTime || 0),
+      playbackEndAudioTime: Number(raw?.playbackEndAudioTime || 0),
+      updatedAt,
+      updatedAtIso: updatedAt ? new Date(updatedAt).toISOString() : '',
+      source: raw?.source || '',
+    };
+  }
+
+  function _logSpeechPlaybackState(raw, bridgeSource = '') {
+    if (!raw || typeof raw !== 'object') return;
+    const details = _speechPlaybackDebugDetails(raw, bridgeSource);
+    const now = Date.now();
+    const roundedRemaining = Math.round(details.remainingSeconds * 10) / 10;
+    const signature = [
+      details.reason,
+      details.active,
+      details.speechId,
+      details.turnId,
+      details.playbackTurnId,
+      details.audioContextState,
+      roundedRemaining,
+    ].join('|');
+    const important = details.reason && details.reason !== 'heartbeat';
+    if (!important) {
+      if (
+        signature === _soccerSpeechPlaybackLogState.lastSignature &&
+        now - _soccerSpeechPlaybackLogState.lastHeartbeatAt < 2500
+      ) {
+        return;
+      }
+      _soccerSpeechPlaybackLogState.lastHeartbeatAt = now;
+    } else if (
+      signature === _soccerSpeechPlaybackLogState.lastSignature &&
+      now - _soccerSpeechPlaybackLogState.lastLoggedAt < 500
+    ) {
+      return;
+    }
+    _soccerSpeechPlaybackLogState.lastSignature = signature;
+    _soccerSpeechPlaybackLogState.lastLoggedAt = now;
+    soccerSessionDebugLog(
+      'info',
+      'speech',
+      'speech_playback_state',
+      '主说话播放器状态更新',
+      details,
+      false,
+      { preserveDetails: true },
+    );
+  }
+
   function _initSpeechPlaybackStateBridge() {
     try {
       if (typeof BroadcastChannel !== 'undefined') {
@@ -3376,6 +3589,7 @@
         _llm.speechPlaybackChannel.onmessage = (event) => {
           if (event?.data?.type === 'speech_playback_state') {
             _llm.speechPlaybackState = event.data;
+            _logSpeechPlaybackState(event.data, 'broadcast_channel');
           }
         };
       }
@@ -3386,8 +3600,17 @@
       if (event.key !== SPEECH_PLAYBACK_STATE_KEY || !event.newValue) return;
       try {
         const data = JSON.parse(event.newValue);
-        if (data?.type === 'speech_playback_state') _llm.speechPlaybackState = data;
+        if (data?.type === 'speech_playback_state') {
+          _llm.speechPlaybackState = data;
+          _logSpeechPlaybackState(data, 'local_storage');
+        }
       } catch (_) { /* noop */ }
+    });
+    window.addEventListener('neko-speech-playback-state', (event) => {
+      const data = event?.detail;
+      if (data?.type !== 'speech_playback_state') return;
+      _llm.speechPlaybackState = data;
+      _logSpeechPlaybackState(data, 'window_event');
     });
     _readSpeechPlaybackState();
   }
@@ -4085,6 +4308,35 @@
           `line_match=${data.line_match !== undefined ? !!data.line_match : '-'} ` +
           `transcript="${(data.spoken_transcript || '').slice(0, 80)}" bytes=${data.bytes || 0}`
         );
+        soccerSessionDebugLog(
+          'info',
+          'speech',
+          'project_voice_result',
+          '小游戏项目语音返回成功',
+          {
+            ok: data.ok,
+            method: data.method || 'unknown',
+            language: data.language || '',
+            speech_id: data.speech_id || '',
+            audio_sent: data.audio_sent,
+            audio_queued: data.audio_queued,
+            audio_committed: data.audio_committed,
+            response_observed: data.response_observed,
+            audio_observed: data.audio_observed,
+            response_done: data.response_done,
+            line_match: data.line_match,
+            bytes: data.bytes,
+            voice_source: data.voice_source,
+            tts_pipeline: data.tts_pipeline,
+            interruptAudio,
+            voiceArbiterReason,
+            request_id: meta.request_id || result.request_id || '',
+            event_kind: meta.kind || 'mailbox',
+            round: meta.round,
+          },
+          false,
+          { preserveDetails: true },
+        );
         return data;
       }
       const skipDiag = [
@@ -4099,6 +4351,36 @@
       console.log(
         `[SoccerVoice] 原流水线输出未送达 | 原因=${data.reason || resp.status} ` +
         `来源=${_formatSourceLabel(data.voice_source || { provider: 'project_voice_unavailable' })} ${skipDiag}`
+      );
+      soccerSessionDebugLog(
+        'warning',
+        'speech',
+        'project_voice_result',
+        '小游戏项目语音未送达',
+        {
+          ok: data.ok,
+          status: resp.status,
+          reason: data.reason || '',
+          audio_sent: data.audio_sent,
+          audio_queued: data.audio_queued,
+          audio_committed: data.audio_committed,
+          response_observed: data.response_observed,
+          audio_observed: data.audio_observed,
+          response_done: data.response_done,
+          line_match: data.line_match,
+          use_tts: data.use_tts,
+          voice_source: data.voice_source || { provider: 'project_voice_unavailable' },
+          tts_pipeline: data.tts_pipeline,
+          error_type: data.error_type,
+          error: data.error,
+          interruptAudio,
+          voiceArbiterReason,
+          request_id: meta.request_id || result.request_id || '',
+          event_kind: meta.kind || 'mailbox',
+          round: meta.round,
+        },
+        false,
+        { preserveDetails: true },
       );
       _llm.lastVoiceFailure = {
         ok: false,
@@ -4116,6 +4398,23 @@
       return _llm.lastVoiceFailure;
     } catch (e) {
       console.log(`[SoccerVoice] 原流水线输出请求失败 | ${String(e)}`);
+      soccerSessionDebugLog(
+        'error',
+        'speech',
+        'project_voice_request_failed',
+        '小游戏项目语音请求失败',
+        {
+          reason: 'request_failed',
+          error: String(e),
+          interruptAudio,
+          voiceArbiterReason,
+          request_id: meta.request_id || result.request_id || '',
+          event_kind: meta.kind || 'mailbox',
+          round: meta.round,
+        },
+        false,
+        { preserveDetails: true },
+      );
       _llm.lastVoiceFailure = {
         ok: false,
         reason: 'request_failed',
@@ -4563,6 +4862,21 @@
       );
       const controlText = Object.keys(control).length > 0 ? JSON.stringify(control) : '无';
       console.log(`[SoccerLLM][Control] 返回 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) 指令=${controlText}`);
+      if (Object.keys(control).length > 0) {
+        soccerSessionDebugLog(
+          'info',
+          'llm',
+          'game_control_returned',
+          '小游戏 LLM 返回控制指令',
+          {
+            round: eventPayload.round,
+            kind,
+            control,
+            mood: SoccerDemo.getMood(),
+            difficulty: SoccerDemo.getDifficulty(),
+          },
+        );
+      }
       if (control.reason) {
         console.log(`[SoccerLLM][Control] 理由 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) ${control.reason}`);
       }
@@ -4664,6 +4978,22 @@
       }
       if (ignored.length > 0) {
         console.log(`[SoccerLLM][Control] 忽略 | 回合=${meta?.round ?? '?'} 非法指令 ${ignored.join('；')}，可选心情=${SoccerDemo.MOODS.join('/')}，可选难度=${SoccerDemo.DIFFICULTIES.join('/')}`);
+      }
+      if (applied.length > 0 || ignored.length > 0) {
+        soccerSessionDebugLog(
+          'info',
+          'llm',
+          'game_control_applied',
+          '小游戏 LLM 控制指令处理完成',
+          {
+            round: meta?.round ?? null,
+            requested: result.control,
+            applied,
+            ignored,
+            finalMood: SoccerDemo.getMood(),
+            finalDifficulty: SoccerDemo.getDifficulty(),
+          },
+        );
       }
 	    }
 	  }

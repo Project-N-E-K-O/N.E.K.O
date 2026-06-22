@@ -678,6 +678,297 @@
     mod.showProminentNotice = showProminentNotice;
     window.showProminentNotice = showProminentNotice;
 
+    // --- showSurveyModal ---
+    // 版本问卷弹窗：在 changelog 确认后对老玩家弹出。题目来自后端 /api/survey
+    // （已本地化），支持单选 / 多选 / 填空。返回 Promise，resolve 为
+    //   { action: 'submit', answers: {qid: value|[values]|text} }  或
+    //   { action: 'skip',   answers: {} }
+    // 调用方据此 POST /api/survey/submit 并记 localStorage（不再重复弹）。
+    function _surveyText(key, fallback) {
+        try {
+            if (typeof window.t === 'function') {
+                const v = window.t(key);
+                if (typeof v === 'string' && v && v !== key) return v;
+            }
+        } catch (_) { }
+        return fallback;
+    }
+
+    function showSurveyModal(survey) {
+        survey = survey || {};
+        const questions = Array.isArray(survey.questions) ? survey.questions : [];
+
+        return new Promise((resolve) => {
+            const bodyPE = document.body.style.pointerEvents;
+            const needRestoreBodyPE = getComputedStyle(document.body).pointerEvents === 'none';
+            if (needRestoreBodyPE) document.body.style.pointerEvents = 'auto';
+
+            const overlay = document.createElement('div');
+            overlay.id = 'survey-modal-overlay';
+            overlay.style.cssText = `
+                position: fixed; inset: 0;
+                background: rgba(0,0,0,0.55);
+                z-index: 2147483647;
+                display: flex; align-items: center; justify-content: center;
+                pointer-events: auto;
+                animation: pnOverlayIn 0.25s ease;
+            `;
+
+            const box = document.createElement('div');
+            box.setAttribute('role', 'dialog');
+            box.setAttribute('aria-modal', 'true');
+            box.setAttribute('aria-label', survey.title || 'Survey');
+            box.tabIndex = -1;
+            box.className = 'survey-modal-box';
+            box.style.cssText = `
+                position: relative;
+                background: linear-gradient(180deg, #fffafd 0%, #f1f8ff 100%);
+                color: #334155;
+                border: 1px solid rgba(255,255,255,0.92);
+                border-radius: 26px;
+                padding: 26px 28px 22px;
+                width: min(560px, calc(100vw - 44px));
+                max-height: min(86vh, 760px);
+                box-sizing: border-box;
+                box-shadow: 0 24px 70px rgba(92,132,184,0.28), inset 0 1px 0 rgba(255,255,255,0.95);
+                text-align: left;
+                pointer-events: auto;
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                animation: pnBoxIn 0.3s ease;
+            `;
+
+            // 标题 + 引导语
+            const head = document.createElement('div');
+            head.style.cssText = 'margin:0 0 14px;flex-shrink:0;';
+            const h2 = document.createElement('h2');
+            h2.textContent = survey.title || _surveyText('survey.title', '问卷调查');
+            h2.style.cssText = 'margin:0;color:#334155;font-size:21px;line-height:1.3;font-weight:800;';
+            head.appendChild(h2);
+            if (survey.intro) {
+                const intro = document.createElement('p');
+                intro.textContent = survey.intro;
+                intro.style.cssText = 'margin:8px 0 0;color:#64748b;font-size:13px;line-height:1.55;font-weight:600;';
+                head.appendChild(intro);
+            }
+
+            // 题目滚动区
+            const form = document.createElement('form');
+            form.className = 'survey-modal-form';
+            form.style.cssText = [
+                'display:flex', 'flex-direction:column', 'gap:18px',
+                'flex:1 1 auto', 'min-height:0', 'overflow-y:auto', 'overflow-x:hidden',
+                'padding:4px 8px 4px 2px', 'margin:0',
+                'scrollbar-width:thin',
+                'scrollbar-color:rgba(148,163,184,0.55) transparent',
+            ].join(';');
+
+            // 每题状态记录：{ q, getValue, markError }
+            const fields = [];
+
+            questions.forEach((q, idx) => {
+                if (!q || typeof q !== 'object' || !q.id) return;
+                const type = (q.type === 'multi' || q.type === 'text') ? q.type : 'single';
+                const qid = String(q.id);
+
+                const wrap = document.createElement('div');
+                wrap.className = 'survey-q';
+                wrap.style.cssText = 'display:flex;flex-direction:column;gap:9px;';
+
+                const label = document.createElement('div');
+                label.style.cssText = 'color:#475569;font-size:15px;line-height:1.4;font-weight:800;';
+                label.textContent = (q.required ? '* ' : '') + (q.label || '');
+                wrap.appendChild(label);
+
+                const err = document.createElement('div');
+                err.style.cssText = 'display:none;color:#e11d48;font-size:12px;font-weight:700;margin-top:-2px;';
+                err.textContent = _surveyText('survey.requiredHint', '这道题需要先回答哦');
+
+                let getValue;
+                if (type === 'text') {
+                    const ta = document.createElement('textarea');
+                    ta.rows = 3;
+                    ta.placeholder = q.placeholder || '';
+                    const maxLen = (typeof q.max_length === 'number' && q.max_length > 0) ? q.max_length : 500;
+                    ta.maxLength = maxLen;
+                    ta.className = 'survey-input';
+                    ta.style.cssText = `
+                        width:100%;box-sizing:border-box;resize:vertical;
+                        border:1px solid rgba(148,163,184,0.4);border-radius:12px;
+                        padding:10px 12px;font-size:14px;line-height:1.5;color:#334155;
+                        background:rgba(255,255,255,0.78);font-family:inherit;
+                    `;
+                    wrap.appendChild(ta);
+                    getValue = () => ta.value.trim();
+                } else {
+                    // single / multi —— 选项组
+                    const optionsBox = document.createElement('div');
+                    optionsBox.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+                    const opts = Array.isArray(q.options) ? q.options : [];
+                    const inputs = [];
+                    opts.forEach((opt) => {
+                        if (!opt || typeof opt !== 'object') return;
+                        const optRow = document.createElement('label');
+                        optRow.className = 'survey-opt';
+                        optRow.style.cssText = `
+                            display:flex;align-items:flex-start;gap:10px;cursor:pointer;
+                            padding:10px 12px;border-radius:12px;
+                            background:rgba(255,255,255,0.62);
+                            box-shadow:inset 0 0 0 1px rgba(148,163,184,0.18);
+                            font-size:14px;line-height:1.4;color:#475569;font-weight:600;
+                            transition:box-shadow 0.15s, background 0.15s;
+                        `;
+                        const input = document.createElement('input');
+                        input.type = (type === 'multi') ? 'checkbox' : 'radio';
+                        input.name = 'survey_' + qid;
+                        input.value = String(opt.value != null ? opt.value : '');
+                        input.style.cssText = 'margin-top:2px;flex-shrink:0;accent-color:#65aef4;';
+                        const span = document.createElement('span');
+                        span.textContent = opt.label || input.value;
+                        optRow.appendChild(input);
+                        optRow.appendChild(span);
+                        const sync = () => {
+                            optRow.style.background = input.checked ? 'rgba(141,204,255,0.18)' : 'rgba(255,255,255,0.62)';
+                            optRow.style.boxShadow = input.checked
+                                ? 'inset 0 0 0 1.5px rgba(101,174,244,0.7)'
+                                : 'inset 0 0 0 1px rgba(148,163,184,0.18)';
+                            if (err.style.display !== 'none') err.style.display = 'none';
+                        };
+                        input.addEventListener('change', () => {
+                            if (type === 'single') inputs.forEach((i) => i._sync && i._sync());
+                            sync();
+                        });
+                        input._sync = sync;
+                        inputs.push(input);
+                        optionsBox.appendChild(optRow);
+                    });
+                    wrap.appendChild(optionsBox);
+                    getValue = () => {
+                        const checked = inputs.filter((i) => i.checked).map((i) => i.value);
+                        if (type === 'multi') return checked;
+                        return checked.length ? checked[0] : '';
+                    };
+                }
+
+                wrap.appendChild(err);
+                form.appendChild(wrap);
+                fields.push({
+                    q, type, wrap,
+                    getValue,
+                    isEmpty: () => {
+                        const v = getValue();
+                        return Array.isArray(v) ? v.length === 0 : !v;
+                    },
+                    showError: () => { err.style.display = 'block'; },
+                });
+            });
+
+            // 底部按钮：跳过（次） + 提交（主）
+            const footer = document.createElement('div');
+            footer.style.cssText = 'display:flex;gap:12px;justify-content:flex-end;align-items:center;margin-top:18px;flex-shrink:0;';
+
+            const skipBtn = document.createElement('button');
+            skipBtn.type = 'button';
+            skipBtn.textContent = _surveyText('survey.skip', '跳过');
+            skipBtn.style.cssText = `
+                background:transparent;color:#94a3b8;border:none;
+                border-radius:999px;padding:11px 22px;font-size:14px;font-weight:700;
+                cursor:pointer;pointer-events:auto;transition:color 0.15s;
+            `;
+            skipBtn.addEventListener('mouseenter', () => { skipBtn.style.color = '#64748b'; });
+            skipBtn.addEventListener('mouseleave', () => { skipBtn.style.color = '#94a3b8'; });
+
+            const submitBtn = document.createElement('button');
+            submitBtn.type = 'submit';
+            submitBtn.textContent = _surveyText('survey.submit', '提交');
+            submitBtn.style.cssText = `
+                min-width:130px;
+                background:linear-gradient(180deg, #8dccff 0%, #65aef4 100%);
+                color:#fff;border:none;border-radius:999px;
+                padding:12px 36px;font-size:15px;font-weight:700;cursor:pointer;
+                pointer-events:auto;transition:transform 0.15s ease, filter 0.15s ease;
+                box-shadow:0 14px 30px rgba(101,174,244,0.34), inset 0 3px 6px rgba(255,255,255,0.36);
+            `;
+            submitBtn.addEventListener('mouseenter', () => { submitBtn.style.filter = 'brightness(1.03)'; submitBtn.style.transform = 'translateY(-2px)'; });
+            submitBtn.addEventListener('mouseleave', () => { submitBtn.style.filter = ''; submitBtn.style.transform = ''; });
+
+            footer.appendChild(skipBtn);
+            footer.appendChild(submitBtn);
+
+            box.appendChild(head);
+            box.appendChild(form);
+            box.appendChild(footer);
+            overlay.appendChild(box);
+
+            const prevActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            let done = false;
+
+            const teardown = (result) => {
+                if (done) return;
+                done = true;
+                overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
+                setTimeout(() => {
+                    overlay.remove();
+                    if (needRestoreBodyPE) document.body.style.pointerEvents = bodyPE;
+                    if (prevActive && document.contains(prevActive)) prevActive.focus();
+                    resolve(result);
+                }, 200);
+            };
+
+            const collectAnswers = () => {
+                const answers = {};
+                fields.forEach((f) => {
+                    const v = f.getValue();
+                    if (Array.isArray(v)) {
+                        if (v.length) answers[String(f.q.id)] = v;
+                    } else if (v) {
+                        answers[String(f.q.id)] = v;
+                    }
+                });
+                return answers;
+            };
+
+            const onSubmit = (e) => {
+                if (e) e.preventDefault();
+                // 必填校验：仅对 submit 生效
+                let firstMissing = null;
+                fields.forEach((f) => {
+                    if (f.q.required && f.isEmpty()) {
+                        f.showError();
+                        if (!firstMissing) firstMissing = f;
+                    }
+                });
+                if (firstMissing) {
+                    // 滚到第一个未答的必填题，而不是一律回到顶部——否则底部的题报错时
+                    // 视口停在上方，用户看不到红字提示。
+                    try {
+                        if (firstMissing.wrap && typeof firstMissing.wrap.scrollIntoView === 'function') {
+                            firstMissing.wrap.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        } else {
+                            form.scrollTop = 0;
+                        }
+                    } catch (_) { try { form.scrollTop = 0; } catch (_) { } }
+                    return;
+                }
+                teardown({ action: 'submit', answers: collectAnswers() });
+            };
+
+            form.addEventListener('submit', onSubmit);
+            submitBtn.addEventListener('click', onSubmit);
+            skipBtn.addEventListener('click', () => teardown({ action: 'skip', answers: {} }));
+
+            document.body.appendChild(overlay);
+            try {
+                const firstInput = form.querySelector('input, textarea');
+                (firstInput || submitBtn).focus();
+            } catch (_) { submitBtn.focus(); }
+        });
+    }
+
+    mod.showSurveyModal = showSurveyModal;
+    window.showSurveyModal = showSurveyModal;
+
     // --- showReadyToSpeakToast ---
     function showReadyToSpeakToast() {
         let toast = document.getElementById('voice-ready-toast');
