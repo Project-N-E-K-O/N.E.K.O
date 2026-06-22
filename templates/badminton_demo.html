@@ -7568,6 +7568,7 @@
     drawPlayerReturnHitCue();
     drawYuiInkOverlay();
     if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));
+    drawYuiInkOverlay();
   }
   function drawYuiInkOverlay() {
     if (!aimingCtx || !game.yuiCheat) return;
@@ -7622,6 +7623,32 @@
     if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3, 3);
     else aimingCtx.rect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3);
     aimingCtx.fill();
+    aimingCtx.restore();
+  }
+  function drawYuiInkOverlay() {
+    if (!aimingCtx || !game.yuiCheat) return;
+    var now = performance.now();
+    var ink = getYuiInkState(now);
+    if (!ink.active || ink.alpha <= 0) return;
+    var pulse = 0.5 + Math.sin(now / 180) * 0.5;
+    aimingCtx.save();
+    aimingCtx.globalAlpha = ink.alpha;
+    aimingCtx.fillStyle = 'rgba(6,8,14,.82)';
+    aimingCtx.beginPath();
+    aimingCtx.ellipse(BASE_W * 0.36, BASE_H * 0.42, 190 + pulse * 18, 138 + pulse * 10, -0.18, 0, Math.PI * 2);
+    aimingCtx.ellipse(BASE_W * 0.63, BASE_H * 0.36, 158 + pulse * 12, 122 + pulse * 14, 0.24, 0, Math.PI * 2);
+    aimingCtx.ellipse(BASE_W * 0.55, BASE_H * 0.62, 218 + pulse * 10, 116 + pulse * 12, 0.06, 0, Math.PI * 2);
+    aimingCtx.fill();
+    aimingCtx.globalAlpha = Math.min(1, ink.alpha + 0.12);
+    aimingCtx.fillStyle = 'rgba(0,0,0,.72)';
+    for (var i = 0; i < 14; i++) {
+      var angle = i * 1.74 + now / 650;
+      var x = BASE_W * (0.24 + ((i * 37) % 52) / 100) + Math.cos(angle) * (18 + (i % 4) * 8);
+      var y = BASE_H * (0.22 + ((i * 29) % 54) / 100) + Math.sin(angle) * (12 + (i % 5) * 6);
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(x, y, 18 + (i % 5) * 5, 10 + (i % 4) * 3, angle * 0.2, 0, Math.PI * 2);
+      aimingCtx.fill();
+    }
     aimingCtx.restore();
   }
   function drawPlayerReturnHitCue() {
