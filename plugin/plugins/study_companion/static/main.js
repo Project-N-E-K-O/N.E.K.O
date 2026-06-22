@@ -137,16 +137,6 @@ const NEKO_COACH_ACTION_LABELS = Object.freeze({
   'start-review': 'ui.coach.action.start_review',
   'session-summary': 'ui.coach.action.session_summary',
 });
-const NEKO_COACH_SCENE_RECOMMENDATIONS = Object.freeze({
-  idle: 'idle',
-  focus: 'focus',
-  thinking: 'thinking',
-  happy: 'happy',
-  review: 'review',
-  break: 'break',
-  error: 'error',
-  teaching: 'teaching',
-});
 const NEKO_COACH_SCENE_ACTIONS = Object.freeze({
   idle: 'explain-current/quiz-me',
   focus: 'explain-current/quiz-me',
@@ -157,7 +147,6 @@ const NEKO_COACH_SCENE_ACTIONS = Object.freeze({
   error: 'explain-current/session-summary',
   teaching: 'explain-current/quiz-me',
 });
-let nekoCoachCurrentScene = '';
 let lastStatusPayload = {};
 let settingsConfig = null;
 let settingsConfigLoading = false;
@@ -944,8 +933,8 @@ function renderNekoCoachActionButton(button, action) {
 
 function renderNekoCoachActions(scene, data = {}) {
   if (nekoCoachRecommendation) {
-    const key = NEKO_COACH_SCENE_RECOMMENDATIONS[scene] || NEKO_COACH_SCENE_RECOMMENDATIONS.idle;
-    nekoCoachRecommendation.textContent = t(`ui.coach.recommendation.${key}`, '');
+    const recommendationScene = Object.prototype.hasOwnProperty.call(NEKO_COACH_SCENE_ACTIONS, scene) ? scene : 'idle';
+    nekoCoachRecommendation.textContent = t(`ui.coach.recommendation.${recommendationScene}`, '');
   }
   const [primaryAction, secondaryAction] = deriveNekoCoachActions(scene, data);
   renderNekoCoachActionButton(nekoCoachPrimaryAction, primaryAction);
@@ -957,7 +946,6 @@ function renderNekoCoach(data = {}) {
     return;
   }
   const scene = deriveNekoCoachScene(data);
-  nekoCoachCurrentScene = scene;
   nekoCoachPanel.dataset.scene = scene;
   if (nekoCoachScene) {
     nekoCoachScene.textContent = t(`ui.coach.scene.${scene}`, scene);
@@ -1919,15 +1907,18 @@ async function loadQuestionContext(options = {}) {
   }
 }
 
-async function runOcr() {
+async function runOcr(options = {}) {
   setStatus(t('ui.status.capturing_ocr', 'Capturing OCR...'));
   const data = await callPlugin('study_ocr_snapshot');
   setStatus(tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   if (data.text) {
     studyInput.value = data.text;
+  } else if (options.clearWhenEmpty && studyInput) {
+    studyInput.value = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
   await refreshStatus({ updateReply: false });
+  return data;
 }
 
 async function explainText() {
@@ -2133,8 +2124,8 @@ function bindButton(button, handler) {
 async function handleNekoCoachAction(action) {
   const normalized = String(action || '').trim();
   if (normalized === 'explain-current') {
-    await runOcr();
-    if (studyInput?.value?.trim() || studyInputImageValue) {
+    const ocrData = await runOcr({ clearWhenEmpty: true });
+    if (String(ocrData?.text || '').trim() || studyInputImageValue) {
       await explainText();
     }
     return;

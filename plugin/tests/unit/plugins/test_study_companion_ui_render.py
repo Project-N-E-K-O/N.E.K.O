@@ -582,6 +582,19 @@ def test_study_companion_static_ui_copy_is_i18n_backed() -> None:
             assert broken == [], f"{locale}: {broken}"
 
 
+def test_study_companion_neko_coach_actions_avoid_stale_ocr_and_unused_scene_cache() -> None:
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+
+    assert "NEKO_COACH_SCENE_RECOMMENDATIONS" not in main_js
+    assert "nekoCoachCurrentScene" not in main_js
+    assert "async function runOcr(options = {})" in main_js
+    assert "options.clearWhenEmpty && studyInput" in main_js
+    assert "studyInput.value = '';" in main_js
+    assert "return data;" in main_js
+    assert "const ocrData = await runOcr({ clearWhenEmpty: true });" in main_js
+    assert "String(ocrData?.text || '').trim() || studyInputImageValue" in main_js
+
+
 def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")

@@ -3378,6 +3378,69 @@ eval(source);
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_study_companion_i18n_scan_dom_localizes_alt_attributes() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    script = r"""
+const fs = require('node:fs');
+const source = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
+
+globalThis.window = globalThis;
+globalThis.document = { documentElement: { lang: '' } };
+globalThis.console = console;
+
+eval(source);
+
+function element(attrs) {
+  return {
+    attrs: { ...attrs },
+    textContent: '',
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    },
+    setAttribute(name, value) {
+      this.attrs[name] = value;
+    },
+  };
+}
+
+const image = element({
+  'data-i18n-alt': 'ui.coach.sprite_alt',
+  alt: 'Neko study companion',
+});
+const root = {
+  querySelectorAll(selector) {
+    return selector === '[data-i18n-alt]' ? [image] : [];
+  },
+};
+
+window.I18n._bundle = {
+  'ui.coach.sprite_alt': 'Localized companion alt',
+};
+window.I18n.scanDOM(root);
+
+if (image.getAttribute('alt') !== 'Localized companion alt') {
+  throw new Error(`unexpected alt: ${image.getAttribute('alt')}`);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_I18N_JS": str(plugin_dir / "static" / "i18n.js"),
+    }
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=plugin_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_study_ocr_pipeline_uses_local_capture_profile() -> None:
     capture = _FakeCaptureBackend(image=object())
     ocr = _FakeOcrBackend("captured text")
