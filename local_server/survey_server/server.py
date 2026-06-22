@@ -111,8 +111,9 @@ def require_admin(request: Request):
         raise HTTPException(503, "Admin API not configured (set SURVEY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
     # 常数时间比较：admin 口暴露 device_id / steam_user_id，普通 != 会泄漏逐字节
-    # 匹配进度给时序侧信道，compare_digest 消除该差异。
-    if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+    # 匹配进度给时序侧信道，compare_digest 消除该差异。先挡非 ASCII：compare_digest
+    # 对含非 ASCII 的 str 抛 TypeError，否则一个 ?token=é 就把 401 变成 500。
+    if not token or not token.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(401, "Invalid admin token")
 
 
@@ -158,6 +159,17 @@ def _sanitize_answers(answers) -> dict:
 @app.post("/api/v1/survey", response_model=SubmitResponse)
 async def submit_survey(request: Request):
     """Receive a survey response. Validation: body size → decompress → timestamp → HMAC → rate limit → store."""
+    # Content-Length 预检：诚实客户端会带这个头，超限直接 413，省得先把整个 body
+    # buffer 进内存再拒。无 CL / chunked 的请求落到下面的实读检查（uvicorn 自身也有
+    # 帧上限兜底）。
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_BODY_SIZE:
+                raise HTTPException(413, "Payload too large")
+        except ValueError:
+            pass
+
     body_bytes = await request.body()
     if len(body_bytes) > MAX_BODY_SIZE:
         raise HTTPException(413, "Payload too large")
