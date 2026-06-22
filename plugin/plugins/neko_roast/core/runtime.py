@@ -549,11 +549,13 @@ class RoastRuntime:
         live_status = self.live_status_summary(live_connection)
         health_rows = self.runtime_health_rows()
         live_state = self.live_state_summary(live_status, health_rows)
+        idle_hosting_status = self.idle_hosting_status(live_state)
         return {
             "config": self.config.to_dict(),
             "live_connection": live_connection,
             "live_status": live_status,
             "live_state": live_state,
+            "idle_hosting_status": idle_hosting_status,
             "speech_explanation": self.speech_explanation(live_status, live_state),
             # 观众档案改走本地 JSON（不依赖宿主 PluginStore，见 docs/devlog.md）。
             # store_enabled 保留旧字段名兼容面板，现指"档案目录是否可写=能否持久化"。
@@ -662,6 +664,34 @@ class RoastRuntime:
             "mode_role": mode_role,
             "idle_hosting_candidate": idle_hosting_candidate,
             "last_activity_age_sec": last_activity_age_sec,
+        }
+
+    def idle_hosting_status(self, live_state: dict[str, Any] | None = None) -> dict[str, Any]:
+        state = live_state or self.live_state_summary()
+        now = float(self._idle_hosting_now())
+        elapsed = max(0.0, now - float(self._idle_hosting_last_attempt_at or 0.0))
+        cooldown_remaining = 0.0
+        if self._idle_hosting_last_attempt_at > 0:
+            cooldown_remaining = round(max(0.0, self._IDLE_HOSTING_MIN_INTERVAL_SECONDS - elapsed), 1)
+
+        candidate = bool(state.get("idle_hosting_candidate"))
+        auto_disabled = self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT
+        eligible = candidate and cooldown_remaining <= 0.0 and not auto_disabled
+        reason = "eligible"
+        if auto_disabled:
+            reason = "auto_disabled"
+        elif not candidate:
+            reason = "not_candidate"
+        elif cooldown_remaining > 0.0:
+            reason = "minimum_interval"
+
+        return {
+            "eligible": eligible,
+            "reason": reason,
+            "candidate": candidate,
+            "cooldown_remaining": cooldown_remaining,
+            "min_interval_seconds": float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS),
+            "consecutive_failures": int(self._idle_hosting_consecutive_failures),
         }
 
     def speech_explanation(

@@ -53,6 +53,7 @@ type DashboardState = {
   recent_sandbox_results?: Array<Record<string, any>>
   recent_audit?: Array<Record<string, any>>
   speech_explanation?: Record<string, any>
+  idle_hosting_status?: Record<string, any>
 }
 
 const configDefaults = {
@@ -225,6 +226,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveStatus = safeState.live_status || {}
   const liveState = safeState.live_state || {}
   const speechExplanation = safeState.speech_explanation || {}
+  const idleHostingStatus = safeState.idle_hosting_status || {}
   const profiles = Array.isArray(safeState.recent_profiles) ? safeState.recent_profiles : []
   const results = Array.isArray(safeState.recent_results) ? safeState.recent_results : []
   const sandboxResults = Array.isArray(safeState.recent_sandbox_results) ? safeState.recent_sandbox_results : []
@@ -507,6 +509,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveStateName = String(liveState.state || "blocked")
   const liveStateReason = String(liveState.reason || "blocked_by_live_status")
   const idleHostingCandidate = !!liveState.idle_hosting_candidate
+  const idleHostingEligible = !!idleHostingStatus.eligible
+  const idleHostingReason = String(idleHostingStatus.reason || "not_candidate")
+  const idleHostingCooldown = Number(idleHostingStatus.cooldown_remaining || 0)
+  const idleHostingMinInterval = Number(idleHostingStatus.min_interval_seconds || 0)
   const speechSummary = String(speechExplanation.summary || "cannot_stream")
   const speechReason = String(speechExplanation.reason || "room_not_configured")
   const speechLastStatus = String(speechExplanation.last_result_status || "")
@@ -598,6 +604,15 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <Alert tone={idleHostingCandidate ? "success" : "info"}>
             {t(`panel.idleHostingCandidate.${idleHostingCandidate ? "true" : "false"}`)}
           </Alert>
+          <Grid cols={3}>
+            <StatCard
+              label={t("panel.idleHostingStatus.title")}
+              value={<StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={t(`panel.idleHostingStatus.eligible.${idleHostingEligible ? "true" : "false"}`)} />}
+            />
+            <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${idleHostingCooldown.toFixed(1)}s`} />
+            <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
+          </Grid>
+          <Text>{t(`panel.idleHostingStatus.reason.${idleHostingReason}`)}</Text>
           <Alert tone={speechExplanationTone(speechSummary)}>
             {t("panel.speechExplanation.title")} · {t(`panel.speechExplanation.summary.${speechSummary}`)} · {t(`panel.speechExplanation.reason.${speechReason}`)}
           </Alert>

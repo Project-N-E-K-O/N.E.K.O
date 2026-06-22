@@ -28,6 +28,8 @@ def test_panel_renders_live_status_summary():
     assert "panel.idleHostingCandidate." in source
     assert "speech_explanation" in source
     assert "panel.speechExplanation." in source
+    assert "idle_hosting_status" in source
+    assert "panel.idleHostingStatus." in source
 
 
 def test_all_locales_define_live_status_summary_labels():
@@ -64,6 +66,15 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStateReason.blocked_by_live_status",
         "panel.idleHostingCandidate.true",
         "panel.idleHostingCandidate.false",
+        "panel.idleHostingStatus.title",
+        "panel.idleHostingStatus.cooldown",
+        "panel.idleHostingStatus.minInterval",
+        "panel.idleHostingStatus.eligible.true",
+        "panel.idleHostingStatus.eligible.false",
+        "panel.idleHostingStatus.reason.eligible",
+        "panel.idleHostingStatus.reason.not_candidate",
+        "panel.idleHostingStatus.reason.minimum_interval",
+        "panel.idleHostingStatus.reason.auto_disabled",
         "panel.speechExplanation.title",
         "panel.speechExplanation.lastResult",
         "panel.speechExplanation.summary.ready",

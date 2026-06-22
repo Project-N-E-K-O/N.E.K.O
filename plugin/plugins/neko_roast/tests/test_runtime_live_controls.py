@@ -368,6 +368,28 @@ async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(run
     assert state["live_state"]["reason"] == "no_recent_activity"
     assert state["live_state"]["mode_role"] == "solo_host"
     assert state["live_state"]["idle_hosting_candidate"] is True
+    assert state["idle_hosting_status"]["eligible"] is True
+    assert state["idle_hosting_status"]["cooldown_remaining"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_idle_hosting_status_explains_minimum_interval(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._idle_hosting_last_attempt_at = 100.0
+    runtime._idle_hosting_now = lambda: 150.0
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["idle_hosting_candidate"] is True
+    assert state["idle_hosting_status"]["eligible"] is False
+    assert state["idle_hosting_status"]["reason"] == "minimum_interval"
+    assert state["idle_hosting_status"]["cooldown_remaining"] == 70.0
+    assert state["idle_hosting_status"]["min_interval_seconds"] == 120.0
 
 
 @pytest.mark.asyncio
