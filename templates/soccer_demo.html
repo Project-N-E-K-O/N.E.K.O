@@ -3258,21 +3258,12 @@
     }
     return String(value).slice(0, 1200);
   }
-  function _sendSoccerDebugLog(payload) {
-    const now = Date.now();
-    if (now - _soccerDebugLogState.lastWindowStart > 60000) {
-      _soccerDebugLogState.lastWindowStart = now;
-      _soccerDebugLogState.sentInWindow = 0;
-    }
-    if (_soccerDebugLogState.sentInWindow >= 120) return;
-    _soccerDebugLogState.sentInWindow += 1;
-    const body = JSON.stringify({
-      session_id: _llm.sessionId,
-      game_type: 'soccer',
-      lanlan_name: _llm.routeLanlanName || '',
-      source: 'soccer_demo',
-      ...payload,
-    });
+  function _soccerDebugCsrfTokenFromHeaders(headers = {}) {
+    return headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
+  }
+  function _postSoccerDebugLogPayload(payload, mutationHeaders = {}) {
+    const token = _soccerDebugCsrfTokenFromHeaders(mutationHeaders);
+    const body = JSON.stringify(token ? { ...payload, _csrf_token: token } : payload);
     try {
       if (navigator.sendBeacon) {
         const ok = navigator.sendBeacon('/api/game/logs', new Blob([body], { type: 'application/json' }));
@@ -3281,10 +3272,43 @@
     } catch (_) {}
     fetch('/api/game/logs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...mutationHeaders },
       body,
       keepalive: true,
     }).catch(() => {});
+  }
+  function _sendSoccerDebugLog(payload) {
+    const now = Date.now();
+    if (now - _soccerDebugLogState.lastWindowStart > 60000) {
+      _soccerDebugLogState.lastWindowStart = now;
+      _soccerDebugLogState.sentInWindow = 0;
+    }
+    if (_soccerDebugLogState.sentInWindow >= 120) return;
+    _soccerDebugLogState.sentInWindow += 1;
+    const logPayload = {
+      session_id: _llm.sessionId,
+      game_type: 'soccer',
+      lanlan_name: _llm.routeLanlanName || '',
+      source: 'soccer_demo',
+      ...payload,
+    };
+    const security = window.nekoLocalMutationSecurity;
+    try {
+      if (security && typeof security.peekCachedToken === 'function') {
+        const token = security.peekCachedToken();
+        if (token) {
+          _postSoccerDebugLogPayload(logPayload, { 'X-CSRF-Token': token });
+          return;
+        }
+      }
+    } catch (_) {}
+    if (security && typeof security.getMutationHeaders === 'function') {
+      Promise.resolve(security.getMutationHeaders())
+        .then((headers) => _postSoccerDebugLogPayload(logPayload, headers || {}))
+        .catch(() => _postSoccerDebugLogPayload(logPayload));
+      return;
+    }
+    _postSoccerDebugLogPayload(logPayload);
   }
   function soccerSessionDebugLog(level, category, event, message, details = {}, sensitivePossible = false, options = {}) {
     try {

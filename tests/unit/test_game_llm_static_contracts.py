@@ -85,6 +85,10 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
 @pytest.mark.unit
 def test_soccer_template_posts_session_debug_errors():
     html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    debug_block = html.split("function _sendSoccerDebugLog(payload)", 1)[1].split(
+        "function soccerSessionDebugLog",
+        1,
+    )[0]
 
     assert "/api/game/logs" in html
     assert "window.SoccerDemoDebugLog = soccerSessionDebugLog" in html
@@ -95,6 +99,10 @@ def test_soccer_template_posts_session_debug_errors():
     assert "session_id: _llm.sessionId" in html
     assert "game_type: 'soccer'" in html
     assert "lanlan_name: _llm.routeLanlanName || ''" in html
+    assert "window.nekoLocalMutationSecurity" in debug_block
+    assert "peekCachedToken" in debug_block
+    assert "getMutationHeaders" in debug_block
+    assert "_csrf_token: token" in html
 
 
 @pytest.mark.unit

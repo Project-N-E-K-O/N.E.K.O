@@ -210,7 +210,7 @@ async def game_log_ingest(request: Request):
         "category", "event", "type", "source", "message",
         "sensitive_possible", "sensitivePossible",
         "preserve_message", "preserveMessage", "preserve_details", "preserveDetails",
-        "no_truncate", "noTruncate",
+        "no_truncate", "noTruncate", "_csrf_token",
     }
     preserve_message = (
         _game_log_payload_flag_is_true(data.get("preserve_message"))
