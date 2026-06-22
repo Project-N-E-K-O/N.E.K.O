@@ -35,6 +35,11 @@ from typing import Any
 GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT = 1000
 GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT = 1
 GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS = 5 * 60
+# Retention is scoped to the single current mini-game scene for this process.
+# game_type and lanlan_name are diagnostic/filter metadata, not retention keys:
+# a new active scene intentionally clears completed logs from other game types
+# or characters. A future multi-scene log pool should introduce an explicit
+# scene/scope id instead of reusing these metadata fields.
 _GAME_SESSION_DEBUG_MESSAGE_LIMIT = 1200
 _GAME_SESSION_DEBUG_STRING_LIMIT = 2000
 _GAME_SESSION_DEBUG_DICT_LIMIT = 48

@@ -235,6 +235,19 @@ def test_game_debug_logs_drop_ended_session_when_active_session_exists():
 
 
 @pytest.mark.unit
+def test_game_debug_logs_retention_is_not_partitioned_by_type_or_lanlan():
+    game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="LanA")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="LanA", reason="test")
+
+    assert game_log.find_game_session_debug_log("soccer-old", "soccer") is not None
+
+    game_log.mark_game_session_debug_log_active("badminton", "badminton-new", lanlan_name="LanB")
+
+    assert game_log.find_game_session_debug_log("soccer-old", "soccer") is None
+    assert {item["session_id"] for item in game_log.list_game_session_debug_log_summaries()} == {"badminton-new"}
+
+
+@pytest.mark.unit
 def test_game_debug_logs_drop_completed_session_after_retention_ttl():
     now = 1_000_000.0
     game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="Lan")
