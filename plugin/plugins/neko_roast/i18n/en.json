@@ -3,6 +3,7 @@
   "plugin.description": "Roast first-time Bilibili viewers from nickname and avatar during live streams.",
   "plugin.short_description": "First danmaku triggers avatar and nickname roast.",
   "panel.title": "NEKO Live",
+  "panel.actions.refreshStatus": "Refresh Status",
   "panel.subtitle": "Live room setup, roast controls, summary, profiles, and developer sandbox",
   "panel.tabs.live": "Live Console",
   "panel.tabs.dev": "Developer Sandbox",

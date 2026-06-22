@@ -3,6 +3,7 @@
   "plugin.description": "NEKO 的直播互动中心：连接 B站直播互动，承载弹幕、观众档案与锐评流程。",
   "plugin.short_description": "NEKO 的直播互动中心。",
   "panel.title": "NEKO Live",
+  "panel.actions.refreshStatus": "刷新状态",
   "panel.subtitle": "直播间配置、锐评、总结、档案与开发者沙盒",
   "panel.tabs.live": "直播控制台",
   "panel.tabs.dev": "开发者沙盒",

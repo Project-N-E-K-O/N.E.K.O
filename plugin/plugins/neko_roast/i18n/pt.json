@@ -3,6 +3,7 @@
   "plugin.description": "Comenta novos espectadores do Bilibili pelo apelido e avatar durante lives.",
   "plugin.short_description": "O primeiro danmaku aciona roast de avatar e apelido.",
   "panel.title": "NEKO Live",
+  "panel.actions.refreshStatus": "Atualizar status",
   "panel.subtitle": "Live room setup, roast controls, summary, profiles, and developer sandbox",
   "panel.tabs.live": "Console da Live",
   "panel.tabs.dev": "Sandbox",

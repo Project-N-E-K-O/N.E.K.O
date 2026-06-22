@@ -3,6 +3,7 @@
   "plugin.description": "Оценивает новых зрителей Bilibili по нику и аватару во время эфира.",
   "plugin.short_description": "Первый danmaku запускает оценку аватара и ника.",
   "panel.title": "NEKO Live",
+  "panel.actions.refreshStatus": "Обновить статус",
   "panel.subtitle": "Live room setup, roast controls, summary, profiles, and developer sandbox",
   "panel.tabs.live": "Консоль эфира",
   "panel.tabs.dev": "Песочница",

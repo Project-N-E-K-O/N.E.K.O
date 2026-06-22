@@ -3,6 +3,7 @@
   "plugin.description": "配信中に初見視聴者の Bilibili ニックネームとアバターからローストします。",
   "plugin.short_description": "初回コメントでアバターと名前のローストを起動します。",
   "panel.title": "NEKO Live",
+  "panel.actions.refreshStatus": "状態を更新",
   "panel.subtitle": "Live room setup, roast controls, summary, profiles, and developer sandbox",
   "panel.tabs.live": "ライブコンソール",
   "panel.tabs.dev": "開発者サンドボックス",

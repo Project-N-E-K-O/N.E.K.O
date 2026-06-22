@@ -9,12 +9,15 @@ import {
   Input,
   JsonView,
   Page,
+  RefreshButton,
   Select,
   Stack,
   StatCard,
   StatusBadge,
   Tabs,
   Text,
+  Toolbar,
+  ToolbarGroup,
   useEffect,
   useForm,
   useState,
@@ -1056,6 +1059,19 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   return (
     <Page title={t("panel.title")} subtitle={t("panel.subtitle")}>
       {!safeState.store_enabled ? <Alert tone="warning">{t("panel.store.disabled")}</Alert> : null}
+      <Toolbar>
+        <ToolbarGroup>
+          <StatusBadge
+            tone={liveStatusTone(liveStatusSummary)}
+            label={t(`panel.liveStatusSummary.${liveStatusSummary}`)}
+          />
+          <StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />
+          <StatusBadge tone={statusTone(String(safety.status || ""))} label={t(`panel.safety.${safety.status || "unknown"}`)} />
+        </ToolbarGroup>
+        <ToolbarGroup>
+          <RefreshButton label={t("panel.actions.refreshStatus")} />
+        </ToolbarGroup>
+      </Toolbar>
       <Tabs items={tabItems} />
     </Page>
   )

@@ -3,6 +3,7 @@
   "plugin.description": "라이브 중 새 Bilibili 시청자의 닉네임과 아바타로 로스트합니다.",
   "plugin.short_description": "첫 탄막으로 아바타와 닉네임 로스트를 실행합니다.",
   "panel.title": "NEKO Live",
+  "panel.actions.refreshStatus": "상태 새로고침",
   "panel.subtitle": "Live room setup, roast controls, summary, profiles, and developer sandbox",
   "panel.tabs.live": "라이브 콘솔",
   "panel.tabs.dev": "개발자 샌드박스",
