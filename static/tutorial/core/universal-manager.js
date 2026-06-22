@@ -1106,44 +1106,12 @@ class UniversalTutorialManager {
     }
 
     syncPcSystemCursorHidden(hidden, reason = 'tutorial') {
-        let tutorialRunId = '';
-        try {
-            tutorialRunId = window.localStorage
-                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
-                : '';
-        } catch (_) {}
-        const message = {
-            action: 'yui_guide_system_cursor_visibility',
-            hidden: hidden === true,
-            tutorialRunId: tutorialRunId,
-            reason: reason,
-            timestamp: Date.now()
-        };
-        try {
-            if (
-                window.nekoTutorialOverlay
-                && typeof window.nekoTutorialOverlay.relayToChat === 'function'
-            ) {
-                window.nekoTutorialOverlay.relayToChat(message);
-            }
-        } catch (_) {}
-        try {
-            if (
-                window.nekoTutorialOverlay
-                && typeof window.nekoTutorialOverlay.relayToPet === 'function'
-            ) {
-                window.nekoTutorialOverlay.relayToPet(message);
-            }
-        } catch (_) {}
-        try {
-            if (
-                window.appInterpage
-                && window.appInterpage.nekoBroadcastChannel
-                && typeof window.appInterpage.nekoBroadcastChannel.postMessage === 'function'
-            ) {
-                window.appInterpage.nekoBroadcastChannel.postMessage(message);
-            }
-        } catch (_) {}
+        if (
+            window.YuiGuideCommon
+            && typeof window.YuiGuideCommon.syncPcSystemCursorHidden === 'function'
+        ) {
+            window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
+        }
     }
 
     clearPcTutorialGlobalOverlay(reason = 'destroy') {

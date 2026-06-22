@@ -43,6 +43,8 @@
             const normalizedOptions = options || {};
             this.overlay = normalizedOptions.overlay || null;
             this.cursor = normalizedOptions.cursor || null;
+            // syncSystemCursorHidden: optional callback for PC builds that need
+            // to reveal the real cursor during resistance and angry-exit scenes.
             this.callbacks = normalizedOptions.callbacks || {};
             this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
                 && normalizedOptions.resistanceVoiceKeys.length

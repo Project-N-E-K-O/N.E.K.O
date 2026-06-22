@@ -249,6 +249,46 @@
         throw new Error('TutorialVisualRuntime is required before tutorial/yui-guide/common.js');
     }
 
+    function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options) {
+        const normalizedOptions = options || {};
+        const host = normalizedOptions.window || root || {};
+        let tutorialRunId = '';
+        try {
+            const storage = normalizedOptions.localStorage || host.localStorage;
+            tutorialRunId = storage
+                ? (storage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+        const message = {
+            action: 'yui_guide_system_cursor_visibility',
+            hidden: hidden === true,
+            tutorialRunId: tutorialRunId,
+            reason: reason,
+            timestamp: Date.now()
+        };
+        const overlay = normalizedOptions.nekoTutorialOverlay || host.nekoTutorialOverlay;
+        try {
+            if (overlay && typeof overlay.relayToChat === 'function') {
+                overlay.relayToChat(message);
+            }
+        } catch (_) {}
+        try {
+            if (overlay && typeof overlay.relayToPet === 'function') {
+                overlay.relayToPet(message);
+            }
+        } catch (_) {}
+        try {
+            const channel = normalizedOptions.channel
+                || (
+                    host.appInterpage
+                    && host.appInterpage.nekoBroadcastChannel
+                );
+            if (channel && typeof channel.postMessage === 'function') {
+                channel.postMessage(message);
+            }
+        } catch (_) {}
+    }
+
     return {
         deepFreeze,
         registerGuide,
@@ -261,6 +301,7 @@
         createTutorialCommandRegistry,
         normalizeTutorialScene,
         createTutorialTimelineEngine,
-        createTutorialVisualRuntime
+        createTutorialVisualRuntime,
+        syncPcSystemCursorHidden
     };
 });
