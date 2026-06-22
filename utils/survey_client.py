@@ -84,30 +84,22 @@ def is_reporting_enabled() -> bool:
     return True
 
 
-def is_steam_user(config_dir=None) -> bool:
+def is_steam_user() -> bool:
     """Whether this install counts as a Steam user (survey is Steam-only).
 
-    Lenient rule: an observed/cached Steam64, OR distribution=='steam' (which itself
-    covers workshop subscriptions / the workshop_config.json disk fallback that prove
-    this machine ran the Steam edition). A source/dev build (distribution=='source')
-    sees no Steam signal -> non-Steam, skipping the survey exactly like production
-    (no dev backdoor).
+    Lenient rule: distribution=='steam' — which covers a live Steam64, workshop
+    subscriptions, or the workshop_config.json disk fallback that proves this
+    machine ran the Steam edition. A Steam-launched session always has the client
+    running, so the live signal is reliable; the disk fallback catches the rest. A
+    source/dev build (distribution=='source') sees no Steam signal -> non-Steam,
+    skipping the survey exactly like production (no dev backdoor).
     """
-    dist, live = "release", ""
     try:
         from utils.token_tracker import _get_telemetry_metadata
-        dist, live = _get_telemetry_metadata()
+        dist, _live = _get_telemetry_metadata()
     except Exception:
-        dist, live = "release", ""
-    if dist == "steam" or live:
-        return True
-    try:
-        from utils.steam_id_cache import get_cached_steam_id
-        if get_cached_steam_id(config_dir):
-            return True
-    except Exception:
-        pass
-    return False
+        return False
+    return dist == "steam"
 
 
 def report_survey(
@@ -147,15 +139,10 @@ def report_survey(
         )
 
         device_id = _get_anonymous_device_id()
-        distribution, live_steam_user_id = _get_telemetry_metadata()
-        # steam id 以缓存为准：实时拿不到（Steam 客户端没开）时回落到落盘缓存。
-        steam_user_id = live_steam_user_id
-        if not steam_user_id:
-            try:
-                from utils.steam_id_cache import get_cached_steam_id
-                steam_user_id = get_cached_steam_id(config_dir)
-            except Exception:
-                steam_user_id = ""
+        # distribution + 实时 Steam64 同源一次取出。survey 是 steam-only（下发口已拦），
+        # 这里附带 id 便于与 telemetry 的 device↔account 维度对齐；Steam 客户端没开
+        # 拿不到 id 时为空串，与 telemetry 的 "steam + 空 id" 语义一致。
+        distribution, steam_user_id = _get_telemetry_metadata()
         branch = "unknown"
         if config_dir is not None:
             try:

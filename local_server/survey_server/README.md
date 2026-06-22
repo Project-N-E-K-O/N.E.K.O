@@ -62,14 +62,14 @@ cd deploy && ./setup.sh   # 自动建 venv + 装服务 + 生成 admin token
 
 ## Steam-only + 字段
 
-问卷只发给 **Steam 用户**：客户端下发口 `GET /api/survey` 判定「是否 Steam 用户」
-以**缓存的 Steam64 为准**（`config_dir/steam_id_cache.json`，每次观测到登录 id 时落盘），
-并以 `distribution=='steam'`（含 workshop_config.json 磁盘兜底）为宽松兜底；非 Steam /
-source 构建一律 `has_survey:false`，不弹也不上报。
+问卷只发给 **Steam 用户**：客户端下发口 `GET /api/survey` 以 `distribution=='steam'`
+判定——Steam 版正常通过 Steam 启动、客户端在跑，`GetSteamID()` 实时即得；客户端没开时
+也有 workshop 订阅 / workshop_config.json 磁盘兜底证明跑过 Steam 版。非 Steam / source
+构建一律 `has_survey:false`，不弹也不上报。
 
 上报字段：`device_id` / `device_id_legacy`（与 telemetry 同源同函数，可跨表 JOIN 同一个人）、
-`steam_user_id`（缓存优先；Steam 版从未登录过则可为空）、`app_version` / `survey_version` /
-`locale` / `branch` / `distribution`、`action`（submit/skip）、`answers`。
+`steam_user_id`（实时 Steam64；客户端没开时可为空，与 telemetry 的 "steam + 空 id" 语义一致）、
+`app_version` / `survey_version` / `locale` / `branch` / `distribution`、`action`（submit/skip）、`answers`。
 
 ## 数据最小化
 

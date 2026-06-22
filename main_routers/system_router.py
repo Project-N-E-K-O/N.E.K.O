@@ -1355,17 +1355,18 @@ def _sanitize_survey_answers(answers: object) -> dict:
     return out
 
 
-def _resolve_survey_for_request(version: str, lang: str, config_dir) -> dict | None:
+def _resolve_survey_for_request(version: str, lang: str) -> dict | None:
     """Steam gate + localized survey load (sync; runs in a worker thread).
 
     Survey is Steam-only: a non-Steam install gets None (-> has_survey:false). The
-    judgment is cached-Steam64-first with a distribution==steam fallback (see
-    survey_client.is_steam_user). On any error in the steam check we fail closed
-    (None) — better to skip the popup than to show it to a possibly-non-Steam user.
+    judgment is distribution=='steam' (live Steam64 / workshop subscription /
+    workshop_config.json disk fallback; see survey_client.is_steam_user). On any
+    error in the steam check we fail closed (None) — better to skip the popup than
+    to show it to a possibly-non-Steam user.
     """
     try:
         from utils.survey_client import is_steam_user
-        if not is_steam_user(config_dir):
+        if not is_steam_user():
             return None
     except Exception:
         return None
@@ -1391,13 +1392,7 @@ async def get_survey(lang: str = ""):
     except Exception:
         return {"has_survey": False, "survey_version": APP_VERSION}
 
-    config_dir = None
-    try:
-        config_dir = get_config_manager().config_dir
-    except Exception:
-        config_dir = None
-
-    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, lang, config_dir)
+    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, lang)
     if not survey:
         return {"has_survey": False, "survey_version": APP_VERSION}
     return {
