@@ -289,6 +289,7 @@ def test_pngtuber_return_restores_pointer_events():
 
 def test_return_button_idle_tier_styles_are_present():
     source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
 
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat2"]' in source
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat3"]' in source
@@ -302,12 +303,21 @@ def test_return_button_idle_tier_styles_are_present():
     assert '.neko-idle-return-btn.is-cat1-edge-peek-bottom-left > .neko-idle-return-art' in source
     assert '.neko-idle-return-btn.is-cat1-edge-peek-bottom-right > .neko-idle-return-art' in source
     assert "--neko-idle-return-edge-transform: rotate(0deg);" in source
-    assert "transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);" in source
     assert "--neko-idle-return-edge-transform: rotate(60deg);" in source
     assert "--neko-idle-return-edge-transform: rotate(-60deg);" in source
     assert "--neko-idle-return-edge-transform: rotate(180deg);" in source
     assert "--neko-idle-return-edge-transform: rotate(120deg);" in source
     assert "--neko-idle-return-edge-transform: rotate(240deg);" in source
+    assert "--neko-idle-return-edge-visual-shift-y: 0px;" in source
+    assert "top: var(--neko-idle-return-edge-visual-shift-y);" in source
+    assert "transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);" in source
+    assert "function _getNekoIdleCat1EdgePeekVisualShiftY" in app_ui_source
+    assert "actualBoundsOffset" in app_ui_source
+    assert "placement.visualShiftY" in app_ui_source
+    assert "art.style.setProperty('--neko-idle-return-edge-visual-shift-y'" in app_ui_source
+    assert "art.style.removeProperty('--neko-idle-return-edge-visual-shift-y')" in app_ui_source
+    assert "button.style.setProperty('--neko-idle-return-edge-visual-shift-y'" not in app_ui_source
+    assert "--neko-idle-return-edge-visual-shift-y:-30px" not in app_ui_source
 
 
 def test_cat1_edge_peek_only_applies_after_drag_release():

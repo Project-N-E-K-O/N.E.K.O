@@ -2735,6 +2735,10 @@
         NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
             button.classList.remove(className);
         });
+        const art = button.querySelector('.neko-idle-return-art');
+        if (art) {
+            art.style.removeProperty('--neko-idle-return-edge-visual-shift-y');
+        }
     }
 
     function isNekoIdleCat1EdgePeekEligible(container) {
@@ -2798,12 +2802,26 @@
         if (!container || !button || !placement || !placement.edge) return false;
         clearNekoIdleCat1EdgePeek(container);
         button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+        const visualShiftY = Number(placement.visualShiftY);
+        if (Number.isFinite(visualShiftY) && visualShiftY !== 0) {
+            const art = button.querySelector('.neko-idle-return-art');
+            if (art) {
+                art.style.setProperty('--neko-idle-return-edge-visual-shift-y', `${Math.round(visualShiftY)}px`);
+            }
+        }
         container.style.left = `${placement.left}px`;
         container.style.top = `${placement.top}px`;
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
         return true;
+    }
+
+    function _getNekoIdleCat1EdgePeekVisualShiftY(bounds, height) {
+        const offsetY = Number(bounds && bounds.actualBoundsOffset && bounds.actualBoundsOffset.y);
+        if (!Number.isFinite(offsetY) || offsetY <= 0) return 0;
+        const maxShift = Math.max(0, Math.round(Number(height) || 0));
+        return -Math.min(Math.round(offsetY), maxShift || Math.round(offsetY));
     }
 
     function restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
@@ -2992,10 +3010,13 @@
 
         function normalizeWindowBounds(bounds) {
             if (!bounds) return null;
-            const x = Number(bounds.x);
-            const y = Number(bounds.y);
-            const width = Number(bounds.width);
-            const height = Number(bounds.height);
+            const source = bounds.bounds && !Number.isFinite(Number(bounds.x))
+                ? bounds.bounds
+                : bounds;
+            const x = Number(source.x);
+            const y = Number(source.y);
+            const width = Number(source.width);
+            const height = Number(source.height);
             if (!Number.isFinite(x) || !Number.isFinite(y) ||
                 !Number.isFinite(width) || !Number.isFinite(height)) {
                 return null;
@@ -3003,7 +3024,17 @@
             if (width <= 0 || height <= 0) {
                 return null;
             }
-            return { x, y, width, height };
+            const normalized = { x, y, width, height };
+            const offset = bounds.actualBoundsOffset || source.actualBoundsOffset;
+            const offsetX = Number(offset && offset.x);
+            const offsetY = Number(offset && offset.y);
+            if (Number.isFinite(offsetX) && Number.isFinite(offsetY)) {
+                normalized.actualBoundsOffset = {
+                    x: offsetX,
+                    y: offsetY
+                };
+            }
+            return normalized;
         }
 
         function isActiveDragToken(token) {
@@ -3440,6 +3471,9 @@
                         finalBounds.height
                     )
                     : null;
+                if (placement && placement.edge && placement.edge.includes('bottom')) {
+                    placement.visualShiftY = _getNekoIdleCat1EdgePeekVisualShiftY(finalBounds, height);
+                }
 
                 if (!applyNekoIdleCat1EdgePeek(container, placement)) {
                     clearNekoIdleCat1EdgePeek(container);
