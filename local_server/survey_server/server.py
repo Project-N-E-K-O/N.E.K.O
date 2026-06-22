@@ -36,14 +36,13 @@ import io
 import json
 import logging
 import os
-import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
-from models import SurveySubmission, SubmitResponse, model_to_dict, model_from_json
+from models import SurveySubmission, SubmitResponse, model_from_json
 from security import verify_signature, verify_timestamp, RateLimiter, DEFAULT_HMAC_SECRET
 from storage import SurveyStorage
 
@@ -232,6 +231,8 @@ async def _periodic_rate_limiter_cleanup():
         try:
             rate_limiter.cleanup_stale()
         except Exception:
+            # 后台清理是纯优化（防内存缓慢膨胀），失败无碍正确性；下个 tick 再试，
+            # 不能让一次异常杀掉清理循环。
             pass
 
 

@@ -22,7 +22,7 @@ conversation content. Compatible with both Pydantic v1 and v2.
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 # Pydantic v1/v2 兼容
 PYDANTIC_V2 = int(getattr(__import__('pydantic'), 'VERSION', '1.0').split('.')[0]) >= 2

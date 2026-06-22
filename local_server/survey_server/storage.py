@@ -29,13 +29,10 @@ from __future__ import annotations
 import csv
 import io
 import json
-import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-
-_logger = logging.getLogger("survey.storage")
 
 
 class SurveyStorage:
