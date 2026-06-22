@@ -4825,6 +4825,13 @@
             "downloadSvg": "下載貓娘畫作",
             "downloadPng": "下載我的畫"
         },
+        "voice": {
+            "connected": "語音已接入這一局。",
+            "connectHint": "在主頁面開啟語音聊天後，這一局會接管語音。",
+            "connectedNotice": "語音聊天已接入這一局。",
+            "connectHintNotice": "先在主頁面開啟語音聊天；開啟後這一局會自動接管。",
+            "routeNotReady": "先等遊戲路由準備好，再使用語音。"
+        },
         "exitConfirm": {
             "title": "要離開嗎？",
             "message": "最終結算已經整理好了。要離開這個小遊戲頁面嗎？",

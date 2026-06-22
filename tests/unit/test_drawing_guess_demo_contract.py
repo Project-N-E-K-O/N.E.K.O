@@ -82,6 +82,16 @@ def test_drawing_guess_demo_static_route_contract():
     assert "--dg-bg: #eef7ff;" in html
     assert "--dg-accent: #17a7ff;" in html
     assert "/static/icons/icon_systray.ico" in html
+    assert 'id="debug-trigger" class="dg-header-icon"' in html
+    assert 'id="debug-panel" class="dg-debug-panel"' in html
+    assert 'id="debug-character-select"' in html
+    assert 'id="debug-ai-round"' in html
+    assert 'id="debug-user-round"' in html
+    assert 'id="debug-rotate-rounds" type="checkbox" checked' in html
+    assert 'id="debug-ai-guess-countdown"' in html
+    assert 'id="debug-trigger-ai-guess"' in html
+    assert ".dg-header-icon.is-shaking" in html
+    assert ".dg-debug-panel" in html
     assert "/static/icons/paw_ui.png" not in html
     assert "/static/icons/image_icon.svg" in html
     assert "/static/icons/chat_icon.png" in html
@@ -225,6 +235,23 @@ def test_drawing_guess_demo_static_route_contract():
     assert "ROUND_API + '/choose-word'" in script
     assert "ROUND_API + '/timeout'" in script
     assert "ROUND_API + '/vision-guess'" in script
+    assert "debugGesture: []" in script
+    assert "function recordDebugGesture" in script
+    assert "state.debugGesture.join('') === 'LLRR'" in script
+    assert "function startDebugAiRound" in script
+    assert "function startDebugUserRound" in script
+    assert "debug_start_phase: 'word_picking'" in script
+    assert "function triggerDebugAiGuessNow" in script
+    assert "function updateDebugGuessCountdown" in script
+    assert "state.aiGuessNextAt = Date.now() + delay;" in script
+    assert "roundFlowToken: 0" in script
+    assert "client_round_token: state.roundFlowToken" in script
+    assert "function ensureCurrentRoundFlow" in script
+    assert "if (err && err.staleRoundFlow) return;" in script
+    assert "!state.debugRotateRounds && state.debugRoundMode === 'ai'" in script
+    assert "!state.debugRotateRounds && state.debugRoundMode === 'user'" in script
+    assert "els.debugTrigger.addEventListener('contextmenu'" in script
+    assert "els.debugRotateRounds.addEventListener('change'" in script
     assert "memory_consent: state.memoryConsent" in script
     assert "gameStarted: state.phase !== 'tutorial'" in script
     assert "var tutorialOpen = !!els.tutorialOverlay && !els.tutorialOverlay.hidden;" in script

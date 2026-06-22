@@ -4825,6 +4825,13 @@
             "downloadSvg": "Baixar desenho dela",
             "downloadPng": "Baixar meu desenho"
         },
+        "voice": {
+            "connected": "A voz está conectada a esta rodada.",
+            "connectHint": "Inicie o chat de voz na página principal; esta rodada vai assumir quando estiver ativo.",
+            "connectedNotice": "O chat de voz está conectado a esta rodada.",
+            "connectHintNotice": "Inicie o chat de voz na página principal; quando estiver ativo, esta rodada vai assumir.",
+            "routeNotReady": "Aguarde a rota do jogo ficar pronta antes de usar voz."
+        },
         "exitConfirm": {
             "title": "Sair desta página?",
             "message": "O resumo final está pronto. Quer sair desta página do minijogo?",

@@ -21,6 +21,13 @@ def _clear_sessions():
     dgr._drawing_guess_sessions.clear()
 
 
+def _load_drawing_guess_context_payload(raw: str) -> dict:
+    assert raw.startswith(dgr._DRAWING_GUESS_CONTEXT_BEGIN)
+    assert raw.endswith(dgr._DRAWING_GUESS_CONTEXT_END)
+    body = raw.removeprefix(dgr._DRAWING_GUESS_CONTEXT_BEGIN).removesuffix(dgr._DRAWING_GUESS_CONTEXT_END)
+    return json.loads(body.strip())
+
+
 @pytest.mark.unit
 def test_drawing_guess_word_bank_has_40_easy_words_with_all_locales():
     assert len(dgr.WORDS) == 40
@@ -40,25 +47,35 @@ def test_drawing_guess_round_timers_are_five_minutes():
 
 
 @pytest.mark.unit
+def test_safe_llm_error_summary_redacts_image_data_and_api_key():
+    err = RuntimeError("400 data:image/jpeg;base64,abcdEFG123== api_key='secret-token' tail")
+    summary = dgr._safe_llm_error_summary(err)
+
+    assert "abcdEFG123" not in summary
+    assert "secret-token" not in summary
+    assert "<redacted>" in summary
+
+
+@pytest.mark.unit
 def test_persona_game_line_prompt_gives_premise_for_free_reply():
     system_prompt, payload_raw = dgr._build_drawing_guess_game_line_prompts(
         session={"phase": "user_guessing", "game_chat_history": []},
         locale="en",
         lanlan_name="YUI",
         master_name="Master",
-        lanlan_prompt="Teasing but warm catgirl who calls the user Master.",
+        lanlan_prompt="Teasing but warm companion who calls the user Partner.",
         event="user_guess_wrong",
         details={},
-        character_profile_prompt="- 语癖强调: YUI calls herself YUI and teases Master with hearts.",
+        character_profile_prompt="- Speech style: YUI calls herself YUI and teases Partner with hearts.",
     )
     payload = json.loads(payload_raw)
 
-    assert system_prompt.startswith("Teasing but warm catgirl who calls the user Master.")
+    assert system_prompt.startswith("Teasing but warm companion who calls the user Partner.")
     assert "Character card profile fields" in system_prompt
     assert "YUI calls herself YUI" in system_prompt
     assert "stronger than the mini-game premise" in system_prompt
     assert "Temporary mini-game premise" in system_prompt
-    assert "Do not invent generic catgirl/mascot tropes" in system_prompt
+    assert "Do not invent generic mascot tropes" in system_prompt
     assert "Character persona excerpt" not in system_prompt
     assert payload["task"] == "free_in_character_game_reply"
     assert payload["premise"].startswith("The user's latest guess is not the answer")
@@ -71,9 +88,9 @@ def test_persona_game_line_prompt_marks_ai_guess_roles_unambiguously():
     system_prompt, payload_raw = dgr._build_drawing_guess_game_line_prompts(
         session={"phase": "summary", "game_chat_history": []},
         locale="zh-CN",
-        lanlan_name="水水",
-        master_name="主人",
-        lanlan_prompt="水水会调侃主人。",
+        lanlan_name="Companion",
+        master_name="Player",
+        lanlan_prompt="Companion teases Player.",
         event="ai_guess_correct",
         details={"guess_label": "苹果", "answer_label": "苹果", "allow_answer_reveal": True},
         character_profile_prompt="",
@@ -84,7 +101,7 @@ def test_persona_game_line_prompt_marks_ai_guess_roles_unambiguously():
     assert payload["premise"].startswith("The character guessed the user's drawing correctly")
     assert payload["event_roles"]["character_role"] == "guesser"
     assert payload["event_roles"]["user_role"] == "drawer"
-    assert "主人猜对了" in payload["event_roles"]["must_not_say"]
+    assert "用户猜对了" in payload["event_roles"]["must_not_say"]
 
 
 @pytest.mark.unit
@@ -105,12 +122,58 @@ def test_persona_chat_prompt_gives_premise_for_free_reply():
     assert "Character card profile fields" in system_prompt
     assert "answer as a relaxed companion" in system_prompt
     assert "Temporary mini-game premise" in system_prompt
-    assert "Do not invent generic catgirl/mascot tropes" in system_prompt
+    assert "Do not invent generic mascot tropes" in system_prompt
     assert "Character persona excerpt" not in system_prompt
     assert payload["task"] == "free_in_character_reply"
     assert payload["premise"].startswith("The round is over")
     assert "event_intent" not in payload
     assert "persona_style" not in payload
+
+
+@pytest.mark.unit
+def test_vision_guess_prompt_keeps_character_setting_first_and_wraps_context():
+    system_prompt, payload_raw = dgr._build_vision_guess_prompt_parts(
+        session={"phase": "ai_guessing", "ai_guess_attempts": 1, "game_chat_history": []},
+        locale="zh-CN",
+        lanlan_name="Companion",
+        master_name="Player",
+        lanlan_prompt="Companion teases Player lightly but takes the game seriously.",
+        user_hint="线条有点歪",
+        character_profile_prompt="- Self-reference rule: Companion must refer to themself as Companion.",
+    )
+    payload = _load_drawing_guess_context_payload(payload_raw)
+
+    assert system_prompt.startswith("Companion teases Player")
+    assert "Character card profile fields" in system_prompt
+    assert "Companion must refer to themself as Companion" in system_prompt
+    assert "Temporary mini-game task" in system_prompt
+    assert "Stay in character" in system_prompt
+    assert "Character persona excerpt" not in system_prompt
+    assert payload["task"] == "guess_user_drawing"
+    assert payload["user_hint"] == "线条有点歪"
+
+
+@pytest.mark.unit
+def test_text_context_guess_prompt_keeps_character_setting_first_and_wraps_context():
+    system_prompt, payload_raw = dgr._build_text_context_guess_prompts(
+        session={"phase": "ai_guessing", "ai_guess_attempts": 2, "game_chat_history": []},
+        locale="zh-CN",
+        lanlan_name="Companion",
+        master_name="Player",
+        lanlan_prompt="Companion teases Player lightly but takes the game seriously.",
+        user_hint="有一条尾巴",
+        character_profile_prompt="- Speech habit: occasionally uses a configured verbal tic.",
+    )
+    payload = _load_drawing_guess_context_payload(payload_raw)
+
+    assert system_prompt.startswith("Companion teases Player")
+    assert "Character card profile fields" in system_prompt
+    assert "configured verbal tic" in system_prompt
+    assert "The image reader is unavailable" in system_prompt
+    assert "Do not claim that you can see the image" in system_prompt
+    assert "Character persona excerpt" not in system_prompt
+    assert payload["task"] == "guess_user_drawing_from_text_context"
+    assert payload["user_hint"] == "有一条尾巴"
 
 
 @pytest.mark.unit
@@ -120,7 +183,7 @@ def test_input_intent_prompt_requires_explicit_guess_word():
         locale="en",
         lanlan_name="YUI",
         master_name="Master",
-        lanlan_prompt="Playful catgirl.",
+        lanlan_prompt="Playful companion.",
         user_text="something flying in the sky",
         phase="user_guessing",
     )
@@ -315,6 +378,72 @@ async def test_round_start_does_not_expose_candidates_or_hidden_ai_answer():
     assert "aliases" not in payload_text
     assert "forbidden" not in payload_text
     assert "ai_word" not in payload_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_debug_round_start_can_begin_at_word_picking_without_hidden_ai_answer():
+    result = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-debug-word-pick",
+        "i18n_language": "zh-CN",
+        "debug_start_phase": "word_picking",
+    }))
+
+    assert result["ok"] is True
+    assert result["phase"] == "word_picking"
+    assert result["state"]["phase"] == "word_picking"
+    assert result["state"]["user_draw_answer"] is None
+    assert len(result["user_draw_options"]) == dgr.USER_DRAW_OPTION_COUNT
+    assert result["draw_seconds"] == dgr.ROUND_DRAW_SECONDS
+    payload_text = str(result)
+    assert "aliases" not in payload_text
+    assert "forbidden" not in payload_text
+    assert "ai_word" not in payload_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_client_round_token_is_rejected_before_mutating_session():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-stale-token",
+        "i18n_language": "zh-CN",
+        "client_round_token": 2,
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-stale-token"]
+    assert session["phase"] == "ai_drawing"
+
+    result = await dgr.drawing_guess_ai_draw(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-stale-token",
+        "i18n_language": "zh-CN",
+        "client_round_token": 1,
+    }))
+
+    assert result == {"ok": False, "reason": "stale_round_flow"}
+    assert session["phase"] == "ai_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_missing_client_round_token_is_stale_when_session_has_token():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-missing-token",
+        "i18n_language": "zh-CN",
+        "client_round_token": 2,
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-missing-token"]
+
+    result = await dgr.drawing_guess_ai_draw(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-missing-token",
+        "i18n_language": "zh-CN",
+    }))
+
+    assert result == {"ok": False, "reason": "stale_round_flow"}
+    assert session["phase"] == "ai_drawing"
 
 
 @pytest.mark.unit
@@ -1374,3 +1503,70 @@ async def test_time_expired_user_drawing_settles_after_first_missed_ai_guess(mon
     assert result["state"]["scores"]["neko"] == 0
     assert result["message"] == "I missed it this time."
     assert result["evaluation"] == "This drawing kept its little secret pretty well."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_voice_transcript_reuses_drawing_guess_input_logic(monkeypatch):
+    async def fake_game_line(**kwargs):
+        assert kwargs["event"] == "user_guess_correct"
+        return "Correct, nicely done.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_game_line)
+
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-external-voice",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-external-voice"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "cat"
+
+    result = await dgr.handle_external_drawing_guess_transcript(
+        "YUI",
+        "dg-external-voice",
+        "cat",
+        route_state={"last_state": {"phase": "user_guessing", "i18n_language": "en"}},
+        request_id="voice-1",
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "guess"
+    assert result["correct"] is True
+    assert result["state"]["phase"] == "word_picking"
+    assert result["message"] == "Correct, nicely done."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_voice_canvas_context_only_used_in_visible_canvas_phases(monkeypatch):
+    captured: list[dict] = []
+
+    async def fake_handle(data):
+        captured.append(dict(data))
+        return {"ok": True}
+
+    monkeypatch.setattr(dgr, "_handle_drawing_guess_input_payload", fake_handle)
+
+    await dgr.handle_external_drawing_guess_transcript(
+        "YUI",
+        "dg-canvas-policy",
+        "hello",
+        route_state={
+            "last_state": {"phase": "word_picking", "i18n_language": "en"},
+            "last_canvas_image_data_url": "data:image/png;base64,abc",
+        },
+    )
+    assert "image_data_url" not in captured[-1]
+
+    await dgr.handle_external_drawing_guess_transcript(
+        "YUI",
+        "dg-canvas-policy",
+        "try again",
+        route_state={
+            "last_state": {"phase": "ai_guess_feedback", "i18n_language": "en"},
+            "last_canvas_image_data_url": "data:image/png;base64,abc",
+        },
+    )
+    assert captured[-1]["image_data_url"] == "data:image/png;base64,abc"

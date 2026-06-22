@@ -132,8 +132,11 @@
       display: grid;
       place-items: center;
       border-radius: 14px;
+      border: 0;
       background: #ffffff;
       box-shadow: inset 0 1px rgba(255, 255, 255, 0.92), 0 12px 26px rgba(14, 88, 158, 0.24);
+      cursor: pointer;
+      padding: 0;
     }
 
     .dg-header-icon img {
@@ -141,6 +144,18 @@
       height: 36px;
       object-fit: contain;
       filter: saturate(1.35) contrast(1.2) drop-shadow(0 3px 7px rgba(11, 114, 201, 0.22));
+    }
+
+    .dg-header-icon.is-shaking {
+      animation: dg-debug-shake 360ms ease;
+    }
+
+    @keyframes dg-debug-shake {
+      0%, 100% { transform: translateX(0) rotate(0deg); }
+      20% { transform: translateX(-2px) rotate(-4deg); }
+      40% { transform: translateX(2px) rotate(4deg); }
+      60% { transform: translateX(-1px) rotate(-3deg); }
+      80% { transform: translateX(1px) rotate(3deg); }
     }
 
     .dg-kicker {
@@ -1471,6 +1486,41 @@
       background: rgba(255, 255, 255, 0.92);
     }
 
+    .dg-voice-button {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid rgba(99, 165, 235, 0.32);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--dg-accent);
+      cursor: pointer;
+      transition: background 140ms ease, border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+    }
+
+    .dg-voice-button img {
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+    }
+
+    .dg-voice-button:hover:not(:disabled),
+    .dg-voice-button.is-active {
+      border-color: var(--dg-accent);
+      background: rgba(237, 248, 255, 0.96);
+      box-shadow: 0 8px 18px rgba(57, 154, 214, 0.16);
+      transform: translateY(-1px);
+    }
+
+    .dg-voice-button:disabled {
+      opacity: 0.45;
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+    }
+
     .dg-tutorial {
       position: fixed;
       inset: 0;
@@ -1618,6 +1668,139 @@
       outline: none;
     }
 
+    .dg-debug-panel {
+      position: fixed;
+      left: 22px;
+      top: 92px;
+      width: min(360px, calc(100vw - 44px));
+      z-index: 55;
+      border: 1px solid rgba(116, 190, 245, 0.58);
+      border-radius: 18px;
+      background: rgba(248, 253, 255, 0.96);
+      box-shadow: 0 22px 48px rgba(36, 94, 148, 0.22);
+      color: var(--dg-ink);
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+    }
+
+    .dg-debug-panel[hidden] {
+      display: none !important;
+    }
+
+    .dg-debug-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(167, 215, 249, 0.74);
+      background: linear-gradient(135deg, rgba(223, 243, 255, 0.92), rgba(255, 255, 255, 0.84));
+      font-weight: 800;
+    }
+
+    .dg-debug-close {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--dg-line);
+      border-radius: 10px;
+      background: #ffffff;
+      color: var(--dg-ink);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .dg-debug-body {
+      display: grid;
+      gap: 13px;
+      padding: 14px;
+    }
+
+    .dg-debug-field {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--dg-muted);
+    }
+
+    .dg-debug-field select {
+      min-width: 0;
+      height: 38px;
+      border: 1px solid var(--dg-line);
+      border-radius: 10px;
+      background: #ffffff;
+      color: var(--dg-ink);
+      font: inherit;
+      padding: 0 10px;
+    }
+
+    .dg-debug-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .dg-debug-button {
+      min-height: 36px;
+      border: 1px solid var(--dg-line);
+      border-radius: 10px;
+      background: #ffffff;
+      color: var(--dg-ink);
+      font-weight: 800;
+      cursor: pointer;
+      padding: 7px 11px;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+    }
+
+    .dg-debug-button:hover:not(:disabled),
+    .dg-debug-button[aria-pressed="true"] {
+      transform: translateY(-1px);
+      border-color: var(--dg-accent);
+      background: #edf8ff;
+      color: var(--dg-accent-strong);
+    }
+
+    .dg-debug-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.48;
+    }
+
+    .dg-debug-switch {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 11px;
+      border: 1px solid rgba(167, 215, 249, 0.74);
+      border-radius: 12px;
+      background: rgba(237, 248, 255, 0.72);
+      font-weight: 800;
+    }
+
+    .dg-debug-switch input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--dg-accent);
+    }
+
+    .dg-debug-meter {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 11px;
+      border-radius: 12px;
+      background: #ffffff;
+      border: 1px solid var(--dg-line);
+      font-weight: 800;
+    }
+
+    .dg-debug-meter strong {
+      color: var(--dg-accent-strong);
+      font-variant-numeric: tabular-nums;
+    }
+
     @media (max-width: 900px) {
       body {
         overflow: auto;
@@ -1654,9 +1837,9 @@
     <section class="dg-main" aria-labelledby="drawing-guess-title">
       <header class="dg-header">
         <div class="dg-header-brand">
-          <span class="dg-header-icon" aria-hidden="true">
-          <img src="/static/icons/icon_systray.ico" alt="">
-          </span>
+          <button id="debug-trigger" class="dg-header-icon" type="button" aria-label="N.E.K.O">
+            <img src="/static/icons/icon_systray.ico" alt="">
+          </button>
           <div>
             <p class="dg-kicker" data-i18n="drawingGuess.eyebrow">陪伴活动</p>
             <h1 id="drawing-guess-title" class="dg-title" data-i18n="drawingGuess.title">你画我猜</h1>
@@ -1828,6 +2011,9 @@
         </div>
         <div id="message-log" class="dg-log" aria-live="polite"></div>
         <form id="chat-form" class="dg-input-row">
+          <button id="voice-route-button" class="dg-voice-button" type="button" disabled aria-pressed="false" data-i18n-title="drawingGuess.voice.connectHint" title="Start voice chat on the main page, then this round will take it over.">
+            <img id="voice-route-icon" src="/static/icons/mic_icon_off.png" alt="" aria-hidden="true">
+          </button>
           <input id="chat-input" type="text" autocomplete="off" data-i18n-placeholder="drawingGuess.input.placeholder" placeholder="先等路由准备好">
           <button class="dg-button" type="submit" disabled data-i18n="drawingGuess.actions.send">发送</button>
         </form>
@@ -1873,6 +2059,34 @@
     </div>
   </section>
   <button id="exit-reopen-button" class="dg-exit-reopen" type="button" data-i18n="drawingGuess.exitConfirm.reopen" hidden>离开？</button>
+
+  <section id="debug-panel" class="dg-debug-panel" aria-label="调试面板" hidden>
+    <div class="dg-debug-header">
+      <span>调试面板</span>
+      <button id="debug-close" class="dg-debug-close" type="button" aria-label="关闭调试面板">×</button>
+    </div>
+    <div class="dg-debug-body">
+      <label class="dg-debug-field">
+        <span>当前页面角色</span>
+        <select id="debug-character-select">
+          <option value="">正在读取角色列表</option>
+        </select>
+      </label>
+      <div class="dg-debug-actions" aria-label="回合调试">
+        <button id="debug-ai-round" class="dg-debug-button" type="button">猫娘回合</button>
+        <button id="debug-user-round" class="dg-debug-button" type="button">玩家回合</button>
+      </div>
+      <label class="dg-debug-switch">
+        <span>轮换回合</span>
+        <input id="debug-rotate-rounds" type="checkbox" checked>
+      </label>
+      <div class="dg-debug-meter">
+        <span>随机猜测点</span>
+        <strong id="debug-ai-guess-countdown">--</strong>
+      </div>
+      <button id="debug-trigger-ai-guess" class="dg-debug-button" type="button" disabled>立即触发猫娘猜测</button>
+    </div>
+  </section>
 
   <div id="tutorial-overlay" class="dg-tutorial" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
     <section class="dg-dialog">
@@ -2177,6 +2391,10 @@
   <script src="/static/libs/live2d.min.js"></script>
   <script src="/static/libs/pixi.min.js"></script>
   <script src="/static/libs/index.min.js"></script>
+  <script src="/static/libs/ogg-opus-decoder.min.js"></script>
+  <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
+  <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
+  <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-core.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>

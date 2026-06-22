@@ -19,6 +19,8 @@
     routeActive: false,
     routeEnding: false,
     heartbeatTimer: null,
+    routeDrainTimer: null,
+    routeDrainInFlight: false,
     countdownTimer: null,
     thinkingTimer: null,
     placeholderDotsTimer: null,
@@ -30,9 +32,28 @@
     drawPickTimer: null,
     drawPickRevealTimer: null,
     aiGuessTimer: null,
+    aiGuessNextAt: 0,
+    nekoVoiceQueue: [],
+    nekoVoiceInFlight: false,
+    speechAudioSocket: null,
+    speechAudioReconnectTimer: null,
+    speechAudioPingTimer: null,
+    speechAudioManualClose: false,
+    voiceRouteActive: false,
+    voiceRouteStatusNotified: false,
+    lastExternalInputRequestId: '',
+    canvasContextLastHash: '',
+    canvasContextLastSentAt: 0,
     thinkingMessageNode: null,
     modelMoodTimer: null,
     modelResizeHandler: null,
+    debugGesture: [],
+    debugGestureTimer: null,
+    debugCountdownTimer: null,
+    debugCharactersLoaded: false,
+    debugRotateRounds: true,
+    debugRoundMode: 'auto',
+    roundFlowToken: 0,
     aiGuessDeadline: 0,
     aiGuessInFlight: false,
     chatInFlight: false,
@@ -89,6 +110,15 @@
       routeStatus: $('route-status'),
       characterName: $('character-name'),
       sessionId: $('session-id'),
+      debugTrigger: $('debug-trigger'),
+      debugPanel: $('debug-panel'),
+      debugClose: $('debug-close'),
+      debugCharacterSelect: $('debug-character-select'),
+      debugAiRound: $('debug-ai-round'),
+      debugUserRound: $('debug-user-round'),
+      debugRotateRounds: $('debug-rotate-rounds'),
+      debugAiGuessCountdown: $('debug-ai-guess-countdown'),
+      debugTriggerAiGuess: $('debug-trigger-ai-guess'),
       modelStage: $('model-stage'),
       sidePane: $('side-pane'),
       sideResizer: $('side-resizer'),
@@ -109,6 +139,8 @@
       messageLog: $('message-log'),
       chatForm: $('chat-form'),
       chatInput: $('chat-input'),
+      voiceRouteButton: $('voice-route-button'),
+      voiceRouteIcon: $('voice-route-icon'),
       chatSubmit: document.querySelector('#chat-form button[type="submit"]'),
       canvasStage: $('canvas-stage'),
       placeholder: $('canvas-placeholder'),
@@ -195,6 +227,10 @@
 
   function makeSessionId() {
     return 'drawing-guess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function makeRequestId(prefix) {
+    return String(prefix || 'drawing-guess') + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
   function setStatus(key, fallback) {
@@ -523,6 +559,20 @@
     return ['user_drawing', 'ai_guessing', 'ai_guess_feedback'].indexOf(state.phase) >= 0;
   }
 
+  function syncVoiceRouteButton() {
+    if (!els.voiceRouteButton) return;
+    var active = !!state.voiceRouteActive;
+    els.voiceRouteButton.disabled = !state.routeActive || state.routeEnding;
+    els.voiceRouteButton.classList.toggle('is-active', active);
+    els.voiceRouteButton.setAttribute('aria-pressed', active ? 'true' : 'false');
+    els.voiceRouteButton.title = active
+      ? t('drawingGuess.voice.connected', 'Voice is connected to this round.')
+      : t('drawingGuess.voice.connectHint', 'Start voice chat on the main page, then this round will take it over.');
+    if (els.voiceRouteIcon) {
+      els.voiceRouteIcon.src = active ? '/static/icons/mic_icon_on.png' : '/static/icons/mic_icon_off.png';
+    }
+  }
+
   function updateControls() {
     var routeReady = !!state.lanlanName && !state.routeEnding;
     var tutorialOpen = !!els.tutorialOverlay && !els.tutorialOverlay.hidden;
@@ -544,6 +594,83 @@
     els.chatInput.disabled = els.chatSubmit.disabled;
     els.undoTool.disabled = !canvasEditable || state.history.length <= 1;
     els.redoTool.disabled = !canvasEditable || state.redo.length === 0;
+    syncVoiceRouteButton();
+    syncDebugPanelState();
+  }
+
+  function isDebugAiGuessAvailable() {
+    return ['user_drawing', 'ai_guessing', 'ai_guess_feedback'].indexOf(state.phase) >= 0;
+  }
+
+  function formatDebugCountdown(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return '0s';
+    var seconds = Math.ceil(ms / 1000);
+    var minutes = Math.floor(seconds / 60);
+    var rest = seconds % 60;
+    if (minutes <= 0) return seconds + 's';
+    return minutes + ':' + String(rest).padStart(2, '0');
+  }
+
+  function updateDebugGuessCountdown() {
+    if (!els.debugAiGuessCountdown) return;
+    var text = '--';
+    if (state.phase === 'ai_guess_feedback') {
+      if (state.pendingAutoGuess && state.chatInFlight) {
+        text = '等待聊天结束';
+      } else if (state.aiGuessInFlight) {
+        text = '猜测中';
+      } else if (state.aiGuessTimer && state.aiGuessNextAt) {
+        text = formatDebugCountdown(state.aiGuessNextAt - Date.now());
+      } else if (state.aiGuessAttempts >= state.maxAiGuessAttempts) {
+        text = '次数已用完';
+      } else {
+        text = '未安排';
+      }
+    }
+    els.debugAiGuessCountdown.textContent = text;
+  }
+
+  function syncDebugPanelState() {
+    if (els.debugRotateRounds) {
+      els.debugRotateRounds.checked = !!state.debugRotateRounds;
+    }
+    if (els.debugAiRound) {
+      els.debugAiRound.setAttribute('aria-pressed', !state.debugRotateRounds && state.debugRoundMode === 'ai' ? 'true' : 'false');
+    }
+    if (els.debugUserRound) {
+      els.debugUserRound.setAttribute('aria-pressed', !state.debugRotateRounds && state.debugRoundMode === 'user' ? 'true' : 'false');
+    }
+    if (els.debugCharacterSelect && state.lanlanName) {
+      els.debugCharacterSelect.value = state.lanlanName;
+    }
+    if (els.debugTriggerAiGuess) {
+      els.debugTriggerAiGuess.disabled = !isDebugAiGuessAvailable() || state.aiGuessInFlight;
+    }
+    updateDebugGuessCountdown();
+  }
+
+  function startDebugCountdownUpdater() {
+    clearInterval(state.debugCountdownTimer);
+    state.debugCountdownTimer = setInterval(updateDebugGuessCountdown, 300);
+  }
+
+  function beginRoundFlow() {
+    state.roundFlowToken += 1;
+    return state.roundFlowToken;
+  }
+
+  function isCurrentRoundFlow(token) {
+    return token === state.roundFlowToken;
+  }
+
+  function staleRoundFlowError() {
+    var err = new Error('stale_round_flow');
+    err.staleRoundFlow = true;
+    return err;
+  }
+
+  function ensureCurrentRoundFlow(token) {
+    if (!isCurrentRoundFlow(token)) throw staleRoundFlowError();
   }
 
   function showExitConfirm() {
@@ -602,6 +729,175 @@
     window.location.href = '/';
   }
 
+  function shakeDebugTrigger() {
+    if (!els.debugTrigger) return;
+    els.debugTrigger.classList.remove('is-shaking');
+    void els.debugTrigger.offsetWidth;
+    els.debugTrigger.classList.add('is-shaking');
+  }
+
+  function recordDebugGesture(step) {
+    clearTimeout(state.debugGestureTimer);
+    state.debugGesture.push(step);
+    state.debugGesture = state.debugGesture.slice(-4);
+    if (state.debugGesture.join('') === 'LLRR') {
+      state.debugGesture = [];
+      openDebugPanel();
+      return;
+    }
+    state.debugGestureTimer = setTimeout(function () {
+      state.debugGesture = [];
+    }, 1800);
+  }
+
+  function openDebugPanel() {
+    if (!els.debugPanel) return;
+    els.debugPanel.hidden = false;
+    loadDebugCharacters();
+    syncDebugPanelState();
+  }
+
+  function closeDebugPanel() {
+    if (els.debugPanel) els.debugPanel.hidden = true;
+  }
+
+  function loadDebugCharacters() {
+    if (!els.debugCharacterSelect || state.debugCharactersLoaded) return;
+    fetch('/api/characters', { cache: 'no-store' }).then(function (res) {
+      if (!res.ok) throw new Error('characters_fetch_failed_' + res.status);
+      return res.json();
+    }).then(function (data) {
+      var characters = data && data['猫娘'];
+      var names = Object.keys(characters || {}).sort(function (a, b) {
+        return a.localeCompare(b);
+      });
+      if (!names.length && state.lanlanName) names = [state.lanlanName];
+      els.debugCharacterSelect.innerHTML = names.map(function (name) {
+        return '<option value="' + escapeAttr(name) + '">' + escapeHtml(name) + '</option>';
+      }).join('');
+      state.debugCharactersLoaded = true;
+      syncDebugPanelState();
+    }).catch(function () {
+      var fallbackName = state.lanlanName || '';
+      els.debugCharacterSelect.innerHTML = fallbackName
+        ? '<option value="' + escapeAttr(fallbackName) + '">' + escapeHtml(fallbackName) + '</option>'
+        : '<option value="">角色列表读取失败</option>';
+      syncDebugPanelState();
+    });
+  }
+
+  function endRouteForDebugSwitch(lanlanName, sessionId) {
+    if (!lanlanName || !sessionId) return Promise.resolve();
+    clearInterval(state.heartbeatTimer);
+    stopRouteDrain();
+    var payload = {
+      session_id: sessionId,
+      lanlan_name: lanlanName,
+      source: 'drawing_guess_demo',
+      game_type: GAME_TYPE,
+      i18n_language: currentLanguage(),
+      reason: 'drawing_guess_debug_character_switch',
+      roundCompleted: false,
+      round_completed: false,
+      postgameProactive: false
+    };
+    return fetch(ROUTE_API + '/route/end', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(function () {});
+  }
+
+  function switchDebugCharacter(name) {
+    var nextName = String(name || '').trim();
+    if (!nextName || nextName === state.lanlanName) return Promise.resolve();
+    var oldName = state.lanlanName;
+    var oldSessionId = state.sessionId;
+    return endRouteForDebugSwitch(oldName, oldSessionId).finally(function () {
+      clearNekoVoiceQueue();
+      stopSpeechAudioSocket();
+      stopCountdown();
+      stopDrawPickAnimation();
+      stopAiGuessSchedule();
+      stopThinkingEventMessage();
+      state.routeActive = false;
+      state.routeEnding = false;
+      state.voiceRouteActive = false;
+      state.voiceRouteStatusNotified = false;
+      state.lastExternalInputRequestId = '';
+      state.canvasContextLastHash = '';
+      state.canvasContextLastSentAt = 0;
+      state.roundFlowToken += 1;
+      state.sessionId = makeSessionId();
+      state.lanlanName = nextName;
+      state.debugRoundMode = 'auto';
+      window.lanlan_config = window.lanlan_config || {};
+      window.lanlan_config.lanlan_name = nextName;
+      loadModelViewSettings();
+      initModelSlotForCurrentCharacter(nextName).catch(function () {});
+      showPlaceholder();
+      setPhase('loading_round');
+      addEventMessage('', '调试：已切换为 ' + nextName + '，请选择要测试的回合。');
+      return startRoute();
+    }).finally(function () {
+      syncDebugPanelState();
+      updateControls();
+    });
+  }
+
+  function ensureDebugRouteReady() {
+    readMemoryConsent();
+    if (els.tutorialOverlay) els.tutorialOverlay.hidden = true;
+    if (state.routeActive) return Promise.resolve(true);
+    return startRoute();
+  }
+
+  function startDebugAiRound(keepMode) {
+    if (!keepMode) state.debugRoundMode = 'ai';
+    return ensureDebugRouteReady().then(function (ok) {
+      if (!ok) return false;
+      return startRound({ debugRoundMode: 'ai' });
+    });
+  }
+
+  function startDebugUserRound(keepMode) {
+    if (!keepMode) state.debugRoundMode = 'user';
+    return ensureDebugRouteReady().then(function (ok) {
+      if (!ok) return false;
+      var flowToken = resetRoundStartState();
+      return post(ROUND_API + '/round/start', roundPayload({ debug_start_phase: 'word_picking' }), 10000)
+        .then(function (res) {
+          ensureCurrentRoundFlow(flowToken);
+          if (!res || !res.ok) throw new Error((res && res.reason) || 'round_start_failed');
+          prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
+          return true;
+        })
+        .catch(function (err) {
+          if (err && err.staleRoundFlow) return false;
+          setPhase('loading_round');
+          showPlaceholder();
+          addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: readableRequestError(err) });
+          return false;
+        })
+        .finally(updateControls);
+    });
+  }
+
+  function startNextRound() {
+    if (!state.debugRotateRounds && state.debugRoundMode === 'user') return startDebugUserRound(true);
+    if (!state.debugRotateRounds && state.debugRoundMode === 'ai') return startDebugAiRound(true);
+    return startRound();
+  }
+
+  function triggerDebugAiGuessNow() {
+    if (!isDebugAiGuessAvailable()) return;
+    if (state.phase === 'user_drawing') {
+      submitDrawing(false);
+      return;
+    }
+    triggerSupplementGuess(false);
+  }
+
   function addMessage(key, fallback, params, className) {
     var node = document.createElement('div');
     node.className = 'dg-message ' + (className || 'dg-message-system');
@@ -609,6 +905,179 @@
     els.messageLog.appendChild(node);
     els.messageLog.scrollTop = els.messageLog.scrollHeight;
     return node;
+  }
+
+  function speechAudioSocketUrl() {
+    var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return protocol + '//' + window.location.host + ROUTE_API + '/speech/ws'
+      + '?lanlan_name=' + encodeURIComponent(state.lanlanName || '')
+      + '&session_id=' + encodeURIComponent(state.sessionId || '');
+  }
+
+  function pushSpeechAudioHeader(response) {
+    var appState = window.appState;
+    if (!appState || !Array.isArray(appState.pendingAudioChunkMetaQueue)) return;
+    var speechId = String((response && (response.speech_id || response.speechId)) || '').trim();
+    if (!speechId) return;
+    appState.pendingAudioChunkMetaQueue.push({
+      speechId: speechId,
+      turnId: String((response && (response.turn_id || response.turnId)) || speechId),
+      shouldSkip: false,
+      epoch: appState.incomingAudioEpoch || 0,
+      receivedAt: Date.now()
+    });
+    if (window.appAudioPlayback &&
+        typeof window.appAudioPlayback.schedulePendingAudioMetaStallCheck === 'function') {
+      window.appAudioPlayback.schedulePendingAudioMetaStallCheck();
+    } else if (typeof window.schedulePendingAudioMetaStallCheck === 'function') {
+      window.schedulePendingAudioMetaStallCheck();
+    }
+  }
+
+  function handleSpeechAudioSocketMessage(event) {
+    if (event && event.data instanceof Blob) {
+      if (typeof window.enqueueIncomingAudioBlob === 'function') {
+        window.enqueueIncomingAudioBlob(event.data);
+      }
+      return;
+    }
+    var response = null;
+    try {
+      response = JSON.parse(String((event && event.data) || '{}'));
+    } catch (_) {
+      return;
+    }
+    if (response && response.type === 'audio_chunk') {
+      pushSpeechAudioHeader(response);
+    }
+  }
+
+  function dispatchSpeechAudioTurnEnd(speechId) {
+    var normalized = String(speechId || '').trim();
+    if (!normalized || typeof window.CustomEvent !== 'function') return;
+    window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
+      detail: {
+        turnId: normalized,
+        source: 'drawing_guess_speak'
+      }
+    }));
+  }
+
+  function clearSpeechAudioTimers() {
+    if (state.speechAudioReconnectTimer) {
+      clearTimeout(state.speechAudioReconnectTimer);
+      state.speechAudioReconnectTimer = null;
+    }
+    if (state.speechAudioPingTimer) {
+      clearInterval(state.speechAudioPingTimer);
+      state.speechAudioPingTimer = null;
+    }
+  }
+
+  function scheduleSpeechAudioReconnect() {
+    if (state.speechAudioReconnectTimer || state.speechAudioManualClose) return;
+    if (!state.routeActive || state.routeEnding || !state.lanlanName || !state.sessionId) return;
+    state.speechAudioReconnectTimer = setTimeout(function () {
+      state.speechAudioReconnectTimer = null;
+      startSpeechAudioSocket();
+    }, 1200);
+  }
+
+  function startSpeechAudioSocket() {
+    if (!window.WebSocket || !state.routeActive || state.routeEnding || !state.lanlanName || !state.sessionId) return;
+    var existing = state.speechAudioSocket;
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
+    clearSpeechAudioTimers();
+    state.speechAudioManualClose = false;
+    var socket = new WebSocket(speechAudioSocketUrl());
+    socket.binaryType = 'blob';
+    state.speechAudioSocket = socket;
+    socket.onopen = function () {
+      if (state.speechAudioSocket !== socket) return;
+      state.speechAudioPingTimer = setInterval(function () {
+        try {
+          if (state.speechAudioSocket === socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'ping', session_id: state.sessionId }));
+          }
+        } catch (_) {}
+      }, 15000);
+    };
+    socket.onmessage = handleSpeechAudioSocketMessage;
+    socket.onclose = function () {
+      if (state.speechAudioSocket === socket) {
+        state.speechAudioSocket = null;
+      }
+      clearSpeechAudioTimers();
+      scheduleSpeechAudioReconnect();
+    };
+    socket.onerror = function () {};
+  }
+
+  function stopSpeechAudioSocket() {
+    state.speechAudioManualClose = true;
+    clearSpeechAudioTimers();
+    var socket = state.speechAudioSocket;
+    state.speechAudioSocket = null;
+    if (socket) {
+      try { socket.close(1000, 'drawing_guess_closed'); } catch (_) {}
+    }
+  }
+
+  function clearNekoVoiceQueue() {
+    state.nekoVoiceQueue = [];
+    state.nekoVoiceInFlight = false;
+  }
+
+  function flushNekoVoiceQueue() {
+    if (state.nekoVoiceInFlight || !state.nekoVoiceQueue.length) return;
+    if (!state.routeActive || state.routeEnding || !state.lanlanName) {
+      state.nekoVoiceQueue = [];
+      return;
+    }
+    var item = state.nekoVoiceQueue.shift();
+    if (!item || !item.line) {
+      flushNekoVoiceQueue();
+      return;
+    }
+    state.nekoVoiceInFlight = true;
+    post(ROUTE_API + '/speak', routePayload({
+      line: item.line,
+      request_id: item.requestId,
+      mirror_text: false,
+      emit_turn_end: true,
+      interrupt_audio: false,
+      event: {
+        kind: 'drawing_guess_neko_line',
+        source: 'drawing_guess_demo',
+        phase: state.phase,
+        round: state.roundNumber,
+        text_length: item.line.length
+      }
+    }), 7000).catch(function (error) {
+      console.warn('[DrawingGuessVoice] project TTS unavailable:', error && error.message ? error.message : error);
+    }).then(function (res) {
+      if (res && res.speech_id && res.turn_end_emitted) {
+        dispatchSpeechAudioTurnEnd(res.speech_id);
+      }
+    }).finally(function () {
+      state.nekoVoiceInFlight = false;
+      if (state.nekoVoiceQueue.length) {
+        setTimeout(flushNekoVoiceQueue, 120);
+      }
+    });
+  }
+
+  function enqueueNekoVoice(text) {
+    var line = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!line || !state.lanlanName || state.routeEnding) return;
+    state.nekoVoiceQueue.push({
+      line: line,
+      requestId: makeRequestId('drawing-guess-voice')
+    });
+    if (state.nekoVoiceQueue.length > 5) {
+      state.nekoVoiceQueue.splice(0, state.nekoVoiceQueue.length - 5);
+    }
+    flushNekoVoiceQueue();
   }
 
   function addNekoMessage(text) {
@@ -619,6 +1088,7 @@
     recent.push(normalized);
     state.recentNekoMessages = recent.slice(-8);
     addMessage('', text, null, 'dg-message-neko');
+    enqueueNekoVoice(normalized);
     pulseModelMood('talking', Math.min(2800, Math.max(1200, String(text).length * 45)));
   }
 
@@ -700,6 +1170,7 @@
   function stopAiGuessSchedule() {
     clearTimeout(state.aiGuessTimer);
     state.aiGuessTimer = null;
+    state.aiGuessNextAt = 0;
     state.pendingAutoGuess = false;
     state.pendingAutoGuessImage = '';
     state.pendingSupplementGuess = false;
@@ -751,6 +1222,40 @@
     return err && err.message ? err.message : 'unknown';
   }
 
+  function shouldShareCanvasContext() {
+    return state.routeActive && state.hasDrawn && ['user_drawing', 'ai_guessing', 'ai_guess_feedback'].indexOf(state.phase) >= 0;
+  }
+
+  function canvasDataHash(dataUrl) {
+    if (!dataUrl) return '';
+    return [
+      String(dataUrl.length),
+      dataUrl.slice(0, 48),
+      dataUrl.slice(Math.max(0, dataUrl.length - 48))
+    ].join(':');
+  }
+
+  function canvasContextPayload(force) {
+    if (!shouldShareCanvasContext()) {
+      if (state.canvasContextLastHash) {
+        state.canvasContextLastHash = '';
+        state.canvasContextLastSentAt = 0;
+        return { canvas_context_clear: true };
+      }
+      return {};
+    }
+    var dataUrl = captureUserCanvasPng();
+    if (!dataUrl || dataUrl.length > 1800000) return {};
+    var now = Date.now();
+    var hash = canvasDataHash(dataUrl);
+    if (!force && hash === state.canvasContextLastHash && now - state.canvasContextLastSentAt < 15000) {
+      return {};
+    }
+    state.canvasContextLastHash = hash;
+    state.canvasContextLastSentAt = now;
+    return { canvas_image_data_url: dataUrl };
+  }
+
   function routePayload(extra) {
     return Object.assign({
       session_id: state.sessionId,
@@ -761,10 +1266,16 @@
       gameStarted: state.phase !== 'tutorial',
       game_started: state.phase !== 'tutorial',
       memory_consent: state.memoryConsent,
+      client_round_token: state.roundFlowToken,
       currentState: {
         game: GAME_TYPE,
         phase: state.phase,
-        memory_consent: state.memoryConsent
+        memory_consent: state.memoryConsent,
+        i18n_language: currentLanguage(),
+        client_round_token: state.roundFlowToken,
+        round: state.roundNumber,
+        has_user_canvas: !!state.hasDrawn,
+        canvas_context_visible: shouldShareCanvasContext()
       }
     }, extra || {});
   }
@@ -774,7 +1285,8 @@
       session_id: state.sessionId,
       lanlan_name: state.lanlanName,
       i18n_language: currentLanguage(),
-      memory_consent: state.memoryConsent
+      memory_consent: state.memoryConsent,
+      client_round_token: state.roundFlowToken
     }, extra || {});
   }
 
@@ -1017,19 +1529,127 @@
     setBadge('');
   }
 
+  function resultLine(res) {
+    return String((res && (res.message || res.line || res.evaluation)) || '').trim();
+  }
+
+  function applyExternalDrawingResult(res) {
+    if (!res || !res.ok) return;
+    if (res.kind === 'guess' && res.correct) {
+      stopCountdown();
+      state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
+      addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {
+        answer: res.answer ? res.answer.label : ''
+      });
+      continueAfterAiDrawingHalf(res);
+      return;
+    }
+    if (res.kind === 'ai_guess') {
+      var guessLabel = res.guess ? res.guess.label : '';
+      stopThinkingEventMessage();
+      state.pendingAutoGuess = false;
+      state.aiGuessAttempts = Number(res.attempt || state.aiGuessAttempts || 0);
+      state.maxAiGuessAttempts = Number(res.max_attempts || state.maxAiGuessAttempts || 3);
+      addEventMessage('drawingGuess.messages.aiGuessLine', 'She guessed: {{guess}}', { guess: guessLabel });
+      if (res.state && res.state.phase === 'summary') {
+        renderSummary(res);
+      } else {
+        setPhase('ai_guess_feedback');
+        setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
+        addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
+        scheduleNextRandomAiGuess();
+      }
+      return;
+    }
+    if (res.state && res.state.phase === 'summary' && (res.summary || res.evaluation || res.answer || res.ai_answer)) {
+      renderSummary(res);
+    }
+  }
+
+  function externalInputText(output) {
+    var event = (output && output.event) || {};
+    return String(event.userVoiceText || event.userText || event.textRaw || (output.meta && output.meta.inputText) || '').trim();
+  }
+
+  function handleRouteDrainOutput(output) {
+    if (!output || !output.type) return;
+    if (output.type === 'game_voice_stt_gate') {
+      state.voiceRouteActive = true;
+      if (!state.voiceRouteStatusNotified) {
+        state.voiceRouteStatusNotified = true;
+        addEventMessage('drawingGuess.voice.connectedNotice', 'Voice chat is connected to this round.');
+      }
+      syncVoiceRouteButton();
+      return;
+    }
+    if (output.type === 'game_external_input') {
+      var inputText = externalInputText(output);
+      var requestId = String(output.request_id || '');
+      if (inputText && requestId !== state.lastExternalInputRequestId) {
+        state.lastExternalInputRequestId = requestId;
+        addUserMessage(inputText);
+      }
+      return;
+    }
+    if (output.type !== 'game_llm_result') return;
+    var result = output.result || {};
+    var line = resultLine(result);
+    if (line) addNekoMessage(line);
+    applyExternalDrawingResult(result);
+    updateControls();
+  }
+
+  function pollRouteDrain() {
+    if (!state.routeActive || state.routeEnding || state.routeDrainInFlight) return;
+    state.routeDrainInFlight = true;
+    var visible = !document.hidden;
+    var payload = Object.assign({
+      visible: visible,
+      pageVisible: visible,
+      visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
+    }, canvasContextPayload(false));
+    post(ROUTE_API + '/route/drain', routePayload(payload), 6000).then(function (res) {
+      if (!res || !res.ok) return;
+      if (res.state && res.state.game_route_active === false) {
+        state.routeActive = false;
+        stopRouteDrain();
+        updateControls();
+        return;
+      }
+      (Array.isArray(res.outputs) ? res.outputs : []).forEach(handleRouteDrainOutput);
+    }).catch(function () {}).finally(function () {
+      state.routeDrainInFlight = false;
+    });
+  }
+
+  function startRouteDrain() {
+    stopRouteDrain();
+    pollRouteDrain();
+    state.routeDrainTimer = setInterval(pollRouteDrain, 900);
+  }
+
+  function stopRouteDrain() {
+    clearInterval(state.routeDrainTimer);
+    state.routeDrainTimer = null;
+    state.routeDrainInFlight = false;
+  }
+
   function startHeartbeat() {
     clearInterval(state.heartbeatTimer);
     state.heartbeatTimer = setInterval(function () {
       if (!state.routeActive) return;
       var visible = !document.hidden;
-      post(ROUTE_API + '/route/heartbeat', routePayload({
+      var heartbeatPayload = Object.assign({
         visible: visible,
         pageVisible: visible,
         visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
-      }), 5000).then(function (res) {
+      }, canvasContextPayload(false));
+      post(ROUTE_API + '/route/heartbeat', routePayload(heartbeatPayload), 5000).then(function (res) {
         if (res && res.active === false) {
           state.routeActive = false;
           clearInterval(state.heartbeatTimer);
+          stopRouteDrain();
+          state.voiceRouteActive = false;
           setStatus('heartbeatLost', 'Route inactive');
           updateControls();
         }
@@ -1055,9 +1675,13 @@
         return false;
       }
       state.routeActive = true;
+      state.voiceRouteActive = false;
+      state.voiceRouteStatusNotified = false;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
       setStatus('active', 'Active');
+      startSpeechAudioSocket();
       startHeartbeat();
+      startRouteDrain();
       return true;
     }).catch(function () {
       setStatus('failed', 'Start failed');
@@ -1071,6 +1695,14 @@
 
   function endRoute(useBeacon, options) {
     options = options || {};
+    clearNekoVoiceQueue();
+    stopSpeechAudioSocket();
+    stopRouteDrain();
+    state.voiceRouteActive = false;
+    state.voiceRouteStatusNotified = false;
+    state.lastExternalInputRequestId = '';
+    state.canvasContextLastHash = '';
+    state.canvasContextLastSentAt = 0;
     stopCountdown();
     stopDrawPickAnimation();
     stopAiGuessSchedule();
@@ -1155,14 +1787,18 @@
   function scheduleNextRandomAiGuess() {
     clearTimeout(state.aiGuessTimer);
     state.aiGuessTimer = null;
+    state.aiGuessNextAt = 0;
     if (state.phase !== 'ai_guess_feedback') return;
     if (state.aiGuessAttempts >= state.maxAiGuessAttempts) return;
     var delay = randomAiGuessDelayMs(aiGuessTimeRemainingMs());
     if (!delay) return;
+    state.aiGuessNextAt = Date.now() + delay;
     state.aiGuessTimer = setTimeout(function () {
       state.aiGuessTimer = null;
+      state.aiGuessNextAt = 0;
       triggerRandomAiGuess();
     }, delay);
+    updateDebugGuessCountdown();
   }
 
   function triggerRandomAiGuess(imageDataUrl) {
@@ -1232,7 +1868,8 @@
     });
   }
 
-  function startRound() {
+  function resetRoundStartState() {
+    var token = beginRoundFlow();
     hideExitReopenButton();
     hideExitConfirm(false);
     stopCountdown();
@@ -1260,8 +1897,16 @@
     setPhase('loading_round');
     showPlaceholder();
     setBadge(t('drawingGuess.phases.loading_round', 'Loading'));
+    return token;
+  }
+
+  function startRound(options) {
+    options = options || {};
+    if (options.debugRoundMode) state.debugRoundMode = options.debugRoundMode;
+    var flowToken = resetRoundStartState();
     return post(ROUND_API + '/round/start', roundPayload(), 10000)
       .then(function (res) {
+        ensureCurrentRoundFlow(flowToken);
         if (!res || !res.ok) throw new Error((res && res.reason) || 'round_start_failed');
         setPhase('ai_drawing');
         setBadge(t('drawingGuess.phases.ai_drawing', 'Neko drawing'));
@@ -1269,6 +1914,7 @@
         return post(ROUND_API + '/ai-draw', roundPayload(), AI_DRAW_REQUEST_TIMEOUT_MS);
       })
       .then(function (res) {
+        ensureCurrentRoundFlow(flowToken);
         if (!res || !res.ok) throw new Error((res && res.reason) || 'ai_draw_failed');
         state.aiSvg = (res.drawing && res.drawing.svg) || '';
         showAiDrawing(state.aiSvg);
@@ -1278,11 +1924,28 @@
         startCountdown(res.guess_seconds || ROUND_FALLBACK_SECONDS, handleGuessTimeout);
       })
       .catch(function (err) {
+        if (err && err.staleRoundFlow) return;
         setPhase('tutorial');
         showPlaceholder();
         addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: readableRequestError(err) });
       })
       .finally(updateControls);
+  }
+
+  function shouldStayOnDebugAiRound() {
+    return !state.debugRotateRounds && state.debugRoundMode === 'ai';
+  }
+
+  function continueAfterAiDrawingHalf(res) {
+    if (shouldStayOnDebugAiRound()) {
+      stopCountdown();
+      addEventMessage('', '调试：保持猫娘回合，准备下一题。');
+      setTimeout(function () {
+        startDebugAiRound(true);
+      }, 450);
+      return;
+    }
+    prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
   }
 
   function handleGuessTimeout() {
@@ -1293,7 +1956,7 @@
         }));
         state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
         addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', { answer: res.answer ? res.answer.label : '' });
-        prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
+        continueAfterAiDrawingHalf(res);
       }
     }).catch(function () {});
   }
@@ -1311,7 +1974,7 @@
         addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {
           answer: res.answer ? res.answer.label : ''
         });
-        prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
+        continueAfterAiDrawingHalf(res);
       }
     }).finally(function () {
       stopThinkingEventMessage();
@@ -2429,6 +3092,18 @@
     }
   }
 
+  function handleVoiceRouteButton() {
+    if (!state.routeActive) {
+      addEventMessage('drawingGuess.voice.routeNotReady', 'Wait until the game route is ready before using voice.');
+      return;
+    }
+    if (state.voiceRouteActive) {
+      addEventMessage('drawingGuess.voice.connectedNotice', 'Voice chat is connected to this round.');
+      return;
+    }
+    addEventMessage('drawingGuess.voice.connectHintNotice', 'Start voice chat on the main page; this round will take over once it is active.');
+  }
+
   function finishGame() {
     renderFinalSummary();
     return endRoute(false, { finalSummary: true }).finally(showExitConfirm);
@@ -2436,8 +3111,43 @@
 
   function bindEvents() {
     els.tutorialStartButton.addEventListener('click', startGame);
-    els.nextRoundButton.addEventListener('click', startRound);
+    els.nextRoundButton.addEventListener('click', startNextRound);
     els.endButton.addEventListener('click', finishGame);
+    if (els.debugTrigger) {
+      els.debugTrigger.addEventListener('click', function () {
+        shakeDebugTrigger();
+        recordDebugGesture('L');
+      });
+      els.debugTrigger.addEventListener('contextmenu', function (event) {
+        event.preventDefault();
+        recordDebugGesture('R');
+      });
+    }
+    if (els.debugClose) els.debugClose.addEventListener('click', closeDebugPanel);
+    if (els.debugCharacterSelect) {
+      els.debugCharacterSelect.addEventListener('change', function () {
+        switchDebugCharacter(els.debugCharacterSelect.value);
+      });
+    }
+    if (els.debugAiRound) {
+      els.debugAiRound.addEventListener('click', function () {
+        startDebugAiRound(false);
+      });
+    }
+    if (els.debugUserRound) {
+      els.debugUserRound.addEventListener('click', function () {
+        startDebugUserRound(false);
+      });
+    }
+    if (els.debugRotateRounds) {
+      els.debugRotateRounds.addEventListener('change', function () {
+        state.debugRotateRounds = !!els.debugRotateRounds.checked;
+        syncDebugPanelState();
+      });
+    }
+    if (els.debugTriggerAiGuess) {
+      els.debugTriggerAiGuess.addEventListener('click', triggerDebugAiGuessNow);
+    }
     if (els.exitStayButton) els.exitStayButton.addEventListener('click', deferExitConfirm);
     if (els.exitLeaveButton) els.exitLeaveButton.addEventListener('click', leaveDrawingGuessPage);
     if (els.exitReopenButton) els.exitReopenButton.addEventListener('click', showExitConfirm);
@@ -2449,6 +3159,7 @@
       }
     });
     els.chatForm.addEventListener('submit', handleChatSubmit);
+    if (els.voiceRouteButton) els.voiceRouteButton.addEventListener('click', handleVoiceRouteButton);
     els.brushTool.addEventListener('click', function () { setTool('brush'); });
     if (els.brushModeBrush) els.brushModeBrush.addEventListener('click', function () { setBrushToolKind('brush'); });
     if (els.brushModeBucket) els.brushModeBucket.addEventListener('click', function () { setBrushToolKind('bucket'); });
@@ -2548,6 +3259,7 @@
     setPhase('tutorial');
     readMemoryConsent();
     bindEvents();
+    startDebugCountdownUpdater();
     loadCurrentCharacter();
   }
 

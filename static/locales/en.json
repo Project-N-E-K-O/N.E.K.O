@@ -4825,6 +4825,13 @@
             "downloadSvg": "Download SVG",
             "downloadPng": "Download PNG"
         },
+        "voice": {
+            "connected": "Voice is connected to this round.",
+            "connectHint": "Start voice chat on the main page, then this round will take it over.",
+            "connectedNotice": "Voice chat is connected to this round.",
+            "connectHintNotice": "Start voice chat on the main page; this round will take over once it is active.",
+            "routeNotReady": "Wait until the game route is ready before using voice."
+        },
         "exitConfirm": {
             "title": "Leave this page?",
             "message": "The final summary is ready. Do you want to leave this mini-game page?",

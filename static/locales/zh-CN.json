@@ -4825,6 +4825,13 @@
             "downloadSvg": "下载猫娘画作",
             "downloadPng": "下载我的画"
         },
+        "voice": {
+            "connected": "语音已接入这一局。",
+            "connectHint": "在主页面开启语音聊天后，这一局会接管语音。",
+            "connectedNotice": "语音聊天已接入这一局。",
+            "connectHintNotice": "先在主页面开启语音聊天；开启后这一局会自动接管。",
+            "routeNotReady": "先等游戏路由准备好，再使用语音。"
+        },
         "exitConfirm": {
             "title": "要离开吗？",
             "message": "最终结算已经整理好了。要离开这个小游戏页面吗？",
