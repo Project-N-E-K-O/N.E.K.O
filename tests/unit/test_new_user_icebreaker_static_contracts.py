@@ -378,6 +378,30 @@ def test_icebreaker_context_append_requires_successful_json_payload():
     assert "return true;" not in append_context_block
 
 
+def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal_chat():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert "function finalizeIcebreakerAssistantSubtitle(text)" in runtime
+    subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitle(text)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+    assert "window.subtitleBridge" in subtitle_block
+    assert "bridge.beginTurn()" in subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
+    assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
+
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
+        "function speakViaProjectTts",
+        1,
+    )[0]
+    assert "if (role === 'assistant') {" in append_message_block
+    assert "finalizeIcebreakerAssistantSubtitle(messageText);" in append_message_block
+    assert append_message_block.index("return appendLlmContext(role, messageText, meta || {}).then(function () {") < append_message_block.index(
+        "finalizeIcebreakerAssistantSubtitle(messageText);"
+    )
+
+
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     handle_choice_block = runtime.split("function handleChoice(detail)", 1)[1].split(

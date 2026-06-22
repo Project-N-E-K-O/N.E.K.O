@@ -414,6 +414,28 @@
         return contextAppendPromise;
     }
 
+    function finalizeIcebreakerAssistantSubtitle(text) {
+        var line = String(text || '').trim();
+        if (!line) return;
+        try {
+            var bridge = window.subtitleBridge;
+            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
+                return;
+            }
+            if (typeof bridge.beginTurn === 'function') {
+                bridge.beginTurn();
+            }
+            var result = bridge.finalizeTurnWithTranslation(line);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function (error) {
+                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+        }
+    }
+
     function appendChatMessage(role, text, meta) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
@@ -433,6 +455,9 @@
         };
         broadcastIcebreakerAppendMessage(message);
         return appendLlmContext(role, messageText, meta || {}).then(function () {
+            if (role === 'assistant') {
+                finalizeIcebreakerAssistantSubtitle(messageText);
+            }
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
                 return message;
             }
