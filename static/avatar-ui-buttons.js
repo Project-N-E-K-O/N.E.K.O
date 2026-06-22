@@ -302,11 +302,11 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([
 ]);
 const _NEKO_IDLE_CAT1_EAT_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat1-eat.gif';
 const _NEKO_IDLE_CAT1_EAT_SOUND_URL = '/static/assets/neko-idle/cat1-voice-eat.mp3';
-const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.16;
+const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif';
 const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3';
-const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.14;
+const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540;
@@ -314,8 +314,8 @@ const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
 const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
 const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000;
-const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14;
-const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16;
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10;
+const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
 const _NEKO_IDLE_RETURN_DEFAULT_Z_INDEX = '99999';
 const _NEKO_IDLE_RETURN_COMPACT_SURFACE_Z_INDEX = '100050';
@@ -326,7 +326,7 @@ const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze([
 ]);
 const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3';
 const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
-const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.09;
+const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
         srcs: Object.freeze([
@@ -5944,7 +5944,6 @@ const AvatarButtonMixin = {
                     window.dispatchEvent(event);
                 };
                 if (typeof window.playNekoModelCatTransition === 'function') {
-                    returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');
                     window.playNekoModelCatTransition({
                         direction: 'cat-to-model',
                         anchorRect: rect,

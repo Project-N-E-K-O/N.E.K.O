@@ -869,7 +869,7 @@ async def test_topic_pool_release_predicate_reruns_legacy_delivery_gate():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_process_ready_ignores_legacy_candidate_quiet_window():
+async def test_topic_pool_process_ready_waits_for_mature_window():
     calls = []
 
     async def fake_analyzer(*, lang, **kwargs):
@@ -887,6 +887,10 @@ async def test_topic_pool_process_ready_ignores_legacy_candidate_quiet_window():
     assert last_turn_at is not None
 
     await pool.process_ready_topics(now=last_turn_at + 1, lang="zh-CN")
+    assert calls == []
+    assert pool.get_ready_materials("妮可") == []
+
+    await pool.process_ready_topics(now=last_turn_at + 61, lang="zh-CN")
     assert calls == ["zh-CN"]
     assert pool.get_ready_materials("妮可")[0]["interest"] == "稳定话题"
 
@@ -1132,7 +1136,7 @@ async def test_topic_pool_processes_requested_character_while_privacy_is_enabled
 
     await pool.process_ready_topics(
         lanlan_name="妮可",
-        now=last_turn_at + 30,
+        now=last_turn_at + 61,
         lang="zh-CN",
     )
 
@@ -1284,9 +1288,11 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     pool.note_user_message("妮可", "转职这件事我已经反复想了几周，主要怕走错方向")
     pool.note_user_message("妮可", "现在的工作也不是不能做，但我总觉得继续拖会更难")
     pool.note_user_message("妮可", "所以我想聊聊转职的现实风险和机会")
+    last_turn_at = pool._signal_store.last_turn_at("妮可")
+    assert last_turn_at is not None
 
-    await pool.process_ready_topics(lang="zh-CN")
-    await pool.process_ready_topics(lang="zh-CN")
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
@@ -1327,9 +1333,11 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
 
     pool.note_user_message("妮可", "我最近一直想换个城市生活，但又怕重新开始太难")
     pool.note_user_message("妮可", "换城市这件事反复想了很久，主要是想改变现在的节奏")
+    last_turn_at = pool._signal_store.last_turn_at("妮可")
+    assert last_turn_at is not None
 
-    await pool.process_ready_topics(lang="zh-CN")
-    await pool.process_ready_topics(lang="zh-CN")
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
@@ -1560,8 +1568,12 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
     ]
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
+    assert pool._used_topics["妮可"][0]["interest"] == "买车像进入新生活阶段"
 
 
 @pytest.mark.asyncio
@@ -1646,8 +1658,12 @@ async def test_topic_pool_retries_pending_material_after_trigger_exception():
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
         ("妮可", "买车像进入新生活阶段", "zh-CN"),
     ]
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
+    assert pool._used_topics["妮可"][0]["interest"] == "买车像进入新生活阶段"
 
 
 @pytest.mark.asyncio
@@ -1684,8 +1700,12 @@ async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_record
     await pool.process_now("妮可")
     await asyncio.wait_for(triggered.wait(), timeout=1.0)
 
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     assert pool.get_ready_materials("妮可") == []
-    assert pool._materials["妮可"][0]["status"] == "used"
+    assert pool._materials["妮可"] == []
+    assert pool._used_topics["妮可"][0]["interest"] == "买车像进入新生活阶段"
 
 
 @pytest.mark.asyncio

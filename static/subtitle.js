@@ -1035,9 +1035,10 @@ function resetSubtitleTurnState() {
  *   isCurrentTurnFinalized=true 会把本轮首个 chunk / 单 chunk 回复的
  *   流式写入全部吞掉。
  */
-function beginSubtitleTurn() {
+function beginSubtitleTurn(options) {
     resetSubtitleTurnState();
-    turnBoundaryLatched = true;
+    const skipLatch = !!(options && options.latch === false);
+    turnBoundaryLatched = !skipLatch;
 }
 
 /**

@@ -133,6 +133,7 @@ function _nekoIsLive2DContainerHidden() {
 // 可见性看门狗：加载完仍不可见（yui-guide 残留 / 卡在 minimized），或根本没加载出来 → 兜底自愈。
 function ensureLive2DVisibleOnce(reason) {
     try {
+        if (window.nekoYuiGuideAvatarCornerPeekActive === true) return;
         if (!_nekoShouldSelfHealLive2D()) return;
         // goodbye / 切换中属于合法隐藏，交给各自链路，不打扰。
         if (window.live2dManager && window.live2dManager._goodbyeClicked) return;

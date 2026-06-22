@@ -404,10 +404,59 @@
         </section>
       </section>
     </main>
+    <aside id="nekoCoachPanel" class="neko-coach" data-scene="idle" aria-labelledby="nekoCoachTitle">
+      <div class="neko-coach__stage">
+        <div id="nekoCoachSpriteContainer" class="neko-coach__sprite-wrap">
+          <img
+            id="nekoCoachSprite"
+            class="neko-coach__sprite"
+            src="./assets/yui/yui_companion_upper.webp?v=study-yui-head-20260621"
+            data-i18n-alt="ui.coach.sprite_alt"
+            alt="Neko study companion"
+            decoding="async"
+          />
+        </div>
+      </div>
+      <div class="neko-coach__body">
+        <span class="diagnosis-label" data-i18n="ui.coach.label">Neko Coach</span>
+        <h2 id="nekoCoachTitle" data-i18n="ui.coach.title">猫娘伴学</h2>
+        <p id="nekoCoachMessage" class="neko-coach__message" data-i18n="ui.coach.message.idle">我会看着学习状态，自己切换表情陪你。</p>
+        <div class="neko-coach__scene">
+          <span data-i18n="ui.coach.scene_label">Scene</span>
+          <strong id="nekoCoachScene" data-i18n="ui.coach.scene.idle">待机</strong>
+        </div>
+        <div class="neko-coach__stats" data-i18n-aria-label="ui.coach.stats_label" aria-label="Neko coach study status">
+          <span>
+            <em data-i18n="ui.coach.stat.mode">模式</em>
+            <strong id="nekoCoachMode">-</strong>
+          </span>
+          <span>
+            <em data-i18n="ui.coach.stat.timer">本轮</em>
+            <strong id="nekoCoachTimer">-</strong>
+          </span>
+          <span>
+            <em data-i18n="ui.coach.stat.goal">目标</em>
+            <strong id="nekoCoachGoal">0/0</strong>
+          </span>
+          <span>
+            <em data-i18n="ui.coach.stat.review">复习</em>
+            <strong id="nekoCoachReview">0</strong>
+          </span>
+        </div>
+        <div class="neko-coach__recommendation">
+          <span data-i18n="ui.coach.recommendation_label">当前建议</span>
+          <strong id="nekoCoachRecommendation" data-i18n="ui.coach.recommendation.idle">我会根据状态给你一个下一步。</strong>
+        </div>
+        <div class="neko-coach__actions" data-i18n-aria-label="ui.coach.actions_label" aria-label="Neko coach actions">
+          <button id="nekoCoachPrimaryAction" class="button button-primary" type="button" data-neko-coach-action="explain-current" data-i18n="ui.coach.action.explain_current">解释这题</button>
+          <button id="nekoCoachSecondaryAction" class="button button-secondary" type="button" data-neko-coach-action="quiz-me" data-i18n="ui.coach.action.quiz_me">生成练习</button>
+        </div>
+      </div>
+    </aside>
     <script src="./i18n.js"></script>
     <script src="./katex.min.js?v=study-hotfix-20260615v"></script>
     <script src="./katex-render.js?v=study-hotfix-20260615v"></script>
     <script src="./surface-panels.js?v=study-hotfix-20260620-i18n"></script>
-    <script src="./main.js?v=study-hotfix-20260621-comments"></script>
+    <script src="./main.js?v=study-hotfix-20260621-yui-static"></script>
   </body>
 </html>

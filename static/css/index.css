@@ -582,12 +582,14 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(1);
     --neko-idle-return-edge-transform: rotate(0deg);
+    --neko-idle-return-edge-visual-shift-y: 0px;
     width: 100%;
     height: 100%;
     display: block;
     object-fit: contain;
     object-position: center;
     position: relative;
+    top: var(--neko-idle-return-edge-visual-shift-y);
     z-index: 1;
     will-change: opacity, transform, filter;
     transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);
@@ -1585,6 +1587,14 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll-content,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-message {
+    pointer-events: none;
+}
+
+/* 主动分享表情包 overlay 是纯被动展示挂件，必须全程点击穿透。它注册了 data-compact-geometry-owner="surface"，
+   会被上面那条把 surface 子树重新开成 auto 的通用规则命中；这里用同优先级、靠后定义的规则把它压回 none
+   （否则表情包显示期间会吞掉它矩形区域的点击）。React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay * {
     pointer-events: none;
 }
 

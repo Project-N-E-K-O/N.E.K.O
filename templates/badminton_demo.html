@@ -112,20 +112,74 @@
     background: rgba(255,255,255,0.10); color: #f7fbff;
     font: 12px/1 "PingFang SC", "Segoe UI", sans-serif; cursor: pointer;
   }
+  #badminton-start-overlay {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 9, 14, 0.68);
+    color: #f7fbff; pointer-events: auto; cursor: default;
+    opacity: 1; transition: opacity .22s ease;
+  }
+  #badminton-start-overlay[hidden] { display: none !important; }
+  #badminton-start-overlay.hide { opacity: 0; }
+  .badminton-start-panel {
+    width: min(390px, calc(100vw - 44px));
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px; padding: 22px 24px;
+    background: rgba(9,16,24,0.86);
+    box-shadow: 0 18px 46px rgba(0,0,0,0.36);
+  }
+  #badminton-start-title {
+    margin: 0 0 10px;
+    font: 600 18px/1.35 "PingFang SC", "Segoe UI", sans-serif;
+  }
+  #badminton-start-tutorial {
+    margin-bottom: 16px;
+    text-align: left;
+    font: 13px/1.45 "PingFang SC", "Segoe UI", sans-serif;
+  }
+  #badminton-start-tutorial ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  #badminton-start-tutorial li + li {
+    margin-top: 4px;
+  }
+  #badminton-start-button {
+    display: block; min-width: 116px; margin: 14px auto 0;
+    padding: 9px 20px; border: 1px solid rgba(255,255,255,0.32);
+    border-radius: 6px; background: rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.95);
+    font: 14px/1.3 "PingFang SC", "Segoe UI", sans-serif;
+    cursor: pointer;
+  }
+  #badminton-start-button:hover {
+    background: rgba(255,255,255,0.22);
+    border-color: rgba(255,255,255,0.50);
+  }
+  .badminton-start-options {
+    display: grid;
+    gap: 7px;
+    margin-top: 12px;
+  }
   #game-memory-option {
     display: flex; align-items: center; gap: 7px;
     color: rgba(255,255,255,0.88);
     font: 13px/1.35 "PingFang SC", "Segoe UI", sans-serif;
-    cursor: pointer; margin-top: 8px; padding-top: 8px;
-    border-top: 1px solid rgba(255,255,255,0.14);
+    cursor: pointer;
   }
-  #game-memory-option input {
+  #badminton-start-never-option {
+    display: flex; align-items: center; gap: 7px;
+    color: rgba(255,255,255,0.78);
+    font: 12px/1.35 "PingFang SC", "Segoe UI", sans-serif;
+    cursor: pointer;
+  }
+  #game-memory-option input,
+  #badminton-start-never-option input {
     width: 15px; height: 15px; cursor: pointer; accent-color: #ffca3a;
   }
   #game-memory-hint {
-    max-width: 250px; color: rgba(255,255,255,0.58);
+    max-width: 320px; color: rgba(255,255,255,0.58);
     text-align: left; font: 11px/1.35 "PingFang SC", "Segoe UI", sans-serif;
-    margin-top: 4px;
   }
   #bd-debug-panel, #stats-panel { display: none; }
   #bd-debug-panel[data-debug-visible="true"], #stats-panel.show { display: grid; gap: 7px; }
@@ -159,27 +213,44 @@
     transform: translateX(-50%);
     color: #f7fbff; background: rgba(9,16,24,0.72);
     border: 1px solid rgba(255,255,255,0.16); border-radius: 6px;
-    padding: 8px 12px; font: 13px/1.3 "PingFang SC", "Segoe UI", sans-serif;
+    min-width: 168px; padding: 8px 12px; font: 13px/1.3 "PingFang SC", "Segoe UI", sans-serif;
     opacity: 0; transition: opacity .18s ease;
     pointer-events: none;
   }
   #assist-hint.show { opacity: 1; }
+  #assist-hint-text { display: block; text-align: center; }
   #neko-bubble {
     position: fixed; z-index: 30; pointer-events: none;
     left: 120px; top: 88px; transform: translate(-50%, -100%);
     background: rgba(255,255,255,0.95); color: #1c2430;
-    padding: 8px 13px; border-radius: 8px;
-    font: 14px/1.4 "PingFang SC", "Segoe UI", sans-serif;
-    max-width: 280px; text-align: center;
+    padding: 12px 15px; border-radius: 8px;
+    font: 16px/1.45 "PingFang SC", "Segoe UI", sans-serif;
+    max-width: 380px; text-align: left;
     box-shadow: 0 10px 24px rgba(0,0,0,0.24);
     opacity: 0; transition: opacity .18s ease, transform .2s ease;
     white-space: pre-wrap;
+  }
+  #neko-bubble:after {
+    content: ""; position: absolute; left: 42px; bottom: -8px;
+    width: 16px; height: 16px; background: inherit;
+    transform: rotate(45deg); border-radius: 2px;
   }
   #neko-bubble.show { opacity: 1; transform: translate(-50%, calc(-100% - 6px)); }
   #neko-bubble[data-mood="happy"] { background: #fff1b8; }
   #neko-bubble[data-mood="angry"] { background: #ffd7d7; }
   #neko-bubble[data-mood="sad"] { background: #dae6f2; }
   #neko-bubble[data-mood="surprised"] { background: #fff; box-shadow: 0 0 18px rgba(255,193,7,0.55); }
+  .neko-bubble-body {
+    position: relative; z-index: 1;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .neko-bubble-text { min-width: 0; }
+  .neko-bubble-body[data-emote-only="true"] .neko-bubble-text { display: none; }
+  .neko-bubble-emote {
+    flex: 0 0 72px; width: 72px; height: 72px;
+    display: block; object-fit: contain;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.22));
+  }
   .neko-avatar-container {
     position: fixed; left: 28px; top: 92px; width: 180px; height: 270px;
     z-index: 10; pointer-events: none; opacity: .88;
@@ -259,6 +330,7 @@
   .neko-avatar-container[data-court-avatar="opponent"][data-expression="tease"] { animation: yui-neko-tease .7s ease; }
   .neko-avatar-container[data-court-avatar="opponent"].charging { animation: yui-charging .72s ease-in-out infinite; }
   .neko-avatar-container[data-court-avatar="opponent"].shooting { animation: yui-shooting .34s ease-out; }
+  .neko-avatar-container[data-court-avatar="opponent"].smashing { animation: yui-smashing .52s cubic-bezier(.2,.82,.18,1); }
   .neko-avatar-container[data-court-avatar="opponent"].react-celebrate { animation: yui-celebrate .58s ease-out; }
   .neko-avatar-container[data-court-avatar="opponent"].react-disappointed { animation: yui-disappointed .58s ease-out; }
   @keyframes neko-shock {
@@ -295,6 +367,12 @@
     0% { transform: translate(-50%, calc(-100% + var(--neko-expression-y) + 4px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * .99)) rotate(-1deg); }
     42% { transform: translate(calc(-50% + 10px), calc(-100% + var(--neko-expression-y) - 10px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.025)) rotate(3deg); }
     100% { transform: translate(-50%, calc(-100% + var(--neko-expression-y))) scale(var(--yui-scale)) scale(var(--neko-expression-scale)); }
+  }
+  @keyframes yui-smashing {
+    0% { transform: translate(-50%, calc(-100% + var(--neko-expression-y) + 6px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * .985)) rotate(-2deg); filter: saturate(1); }
+    34% { transform: translate(calc(-50% + 3px), calc(-100% + var(--neko-expression-y) - 42px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.045)) rotate(2deg); filter: saturate(1.18) drop-shadow(0 0 14px rgba(255,202,58,.34)); }
+    58% { transform: translate(calc(-50% + 18px), calc(-100% + var(--neko-expression-y) - 24px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.035)) rotate(7deg); filter: saturate(1.16); }
+    100% { transform: translate(-50%, calc(-100% + var(--neko-expression-y))) scale(var(--yui-scale)) scale(var(--neko-expression-scale)); filter: saturate(1); }
   }
   @keyframes yui-celebrate {
     0%, 100% { transform: translate(-50%, calc(-100% + var(--neko-expression-y))) scale(var(--yui-scale)) scale(var(--neko-expression-scale)); }
@@ -422,6 +500,34 @@
     <div id="badminton-loading-percent" aria-hidden="true">8%</div>
   </div>
 </div>
+<div id="badminton-start-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="badminton-start-title">
+  <div class="badminton-start-panel">
+    <div id="badminton-start-tutorial" aria-live="polite">
+      <h2 id="badminton-start-title" data-i18n="badminton.startTutorial.title" data-i18n-fallback="玩法说明">玩法说明</h2>
+      <ul>
+        <li data-i18n="badminton.startTutorial.aim" data-i18n-fallback="上下移动鼠标调整挥拍角度。">上下移动鼠标调整挥拍角度。</li>
+        <li data-i18n="badminton.startTutorial.charge" data-i18n-fallback="按住左键蓄力，松开后挥拍。">按住左键蓄力，松开后挥拍。</li>
+        <li data-i18n="badminton.startTutorial.release" data-i18n-fallback="压线、甜区和距离会影响得分。">压线、甜区和距离会影响得分。</li>
+        <li data-i18n="badminton.startTutorial.jump" data-i18n-fallback="按空格可以起跳扣杀。">按空格可以起跳扣杀。</li>
+        <li data-i18n="badminton.startTutorial.duel11" data-i18n-fallback="对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。">对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。</li>
+      </ul>
+    </div>
+    <div class="badminton-start-options">
+      <label id="game-memory-option">
+        <input type="checkbox" id="bd-game-memory-toggle">
+        <span data-i18n="badminton.memoryOption.label" data-i18n-fallback="本局对话进入记忆（默认不开启）">本局对话进入记忆（默认不开启）</span>
+      </label>
+      <div id="game-memory-hint" data-i18n="badminton.memoryOption.hint" data-i18n-fallback="关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。">
+        关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。
+      </div>
+      <label id="badminton-start-never-option">
+        <input type="checkbox" id="bd-start-never-toggle">
+        <span data-i18n="badminton.startScreen.never" data-i18n-fallback="不再提示">不再提示</span>
+      </label>
+    </div>
+    <button id="badminton-start-button" type="button" data-i18n="badminton.startScreen.startButton" data-i18n-fallback="开始">开始</button>
+  </div>
+</div>
 <canvas id="game" width="900" height="500"></canvas>
 <canvas id="aiming-canvas" width="900" height="500"></canvas>
 <div id="hud" aria-live="polite">
@@ -444,13 +550,6 @@
     </label>
   </div>
   <button id="theme-button" type="button">切换主题</button>
-  <label id="game-memory-option">
-    <input type="checkbox" id="bd-game-memory-toggle">
-    <span>本局对话进入记忆（默认不开启）</span>
-  </label>
-  <div id="game-memory-hint">
-    关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。
-  </div>
   <div id="bd-debug-panel" aria-hidden="true">
     <div class="bd-debug-title">
       <span>调试面板</span>
@@ -512,7 +611,9 @@
 <div id="neko-fallback-container" class="neko-avatar-container" hidden></div>
 <div id="player-sensei-vrm-container" hidden><canvas id="player-sensei-vrm-canvas"></canvas><canvas id="player-sensei-held-shuttle-canvas" aria-hidden="true"></canvas></div>
 <div id="neko-bubble"></div>
-<div id="assist-hint"></div>
+<div id="assist-hint">
+  <span id="assist-hint-text"></span>
+</div>
 <div id="result-panel">
   <h2 id="result-title">Game Over</h2>
   <div id="result-stats"></div>
@@ -661,10 +762,22 @@
   var badmintonLoading = document.getElementById('badminton-loading');
   var badmintonLoadingBar = document.getElementById('badminton-loading-bar');
   var badmintonLoadingPercent = document.getElementById('badminton-loading-percent');
+  var badmintonStartOverlay = document.getElementById('badminton-start-overlay');
+  var badmintonStartButton = document.getElementById('badminton-start-button');
+  var badmintonStartNeverToggle = document.getElementById('bd-start-never-toggle');
   var firstFrameRendered = false;
   var firstFrameCallbacks = [];
   var badmintonLoadingProgress = 8;
   var badmintonLoadingTimer = 0;
+  var badmintonStartAccepted = false;
+  var badmintonRouteStartPromise = null;
+  var BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY = 'bd_start_tutorial_dismissed';
+  var BADMINTON_BUBBLE_EMOTE_IMAGES = {
+    surprised: '/static/game/games/badminton/images/emotes/yui-surprised.png',
+    dominant: '/static/game/games/badminton/images/emotes/yui-dominant.png',
+    awkward: '/static/game/games/badminton/images/emotes/yui-awkward.png',
+    joy: '/static/game/games/badminton/images/emotes/yui-joy.png'
+  };
   var YUI_SHOOTER_W = 244;
   var YUI_SHOOTER_H = 366;
   var YUI_SHOOTER_SCALE = 0.86;
@@ -680,6 +793,7 @@
   };
   var bubble = document.getElementById('neko-bubble');
   var assistHint = document.getElementById('assist-hint');
+  var assistHintText = document.getElementById('assist-hint-text');
   var tutorialOverlay = document.getElementById('tutorial-overlay');
   var resultPanel = document.getElementById('result-panel');
   var resultStats = document.getElementById('result-stats');
@@ -837,6 +951,7 @@
   var PLAYER_JUMP_SPEED = 430;
   var PLAYER_JUMP_GRAVITY = 1350;
   var PLAYER_JUMP_MAX_OFFSET = 82;
+  var PLAYER_CHARGE_SPEED = 145;
   var PLAYER_SMASH_MIN_JUMP_OFFSET = 28;
   var PLAYER_SMASH_CONTACT_LIFT = 56;
   var PLAYER_SMASH_SWEET_REACH_X = 58;
@@ -852,8 +967,8 @@
   var YUI_COURT_X_MAX = BADMINTON.courtRight - 80;
   var YUI_COURT_Y_MIN = 380;
   var YUI_COURT_Y_MAX = 425;
-  var PLAYER_RETURN_REACH_X = 92;
-  var PLAYER_RETURN_REACH_Y = 118;
+  var PLAYER_RETURN_REACH_X = 84;
+  var PLAYER_RETURN_REACH_Y = 108;
   var PLAYER_START_X = 150;
   var PLAYER_START_Y = 405;
   var YUI_START_X = BADMINTON.netX + (BADMINTON.courtRight - BADMINTON.netX) * 0.58;
@@ -865,10 +980,10 @@
   var currentMode = 'duel';
   var netContactEffects = [];
   var DUEL_DIFFICULTY = [
-    { name: 'max', skillBase: 0.88, growth: 0.010, pressure: 0.07, angleVar: 0.6, powerVar: 1.2, windupMs: 200, reactionMs: 300 },
-    { name: 'lv2', skillBase: 0.78, growth: 0.007, pressure: 0.05, angleVar: 1.5, powerVar: 2.5, windupMs: 450, reactionMs: 550 },
-    { name: 'lv3', skillBase: 0.66, growth: 0.005, pressure: 0.03, angleVar: 2.5, powerVar: 4.0, windupMs: 700, reactionMs: 800 },
-    { name: 'lv4', skillBase: 0.50, growth: 0.003, pressure: 0.02, angleVar: 4.0, powerVar: 6.0, windupMs: 1000, reactionMs: 1100 },
+    { name: 'max', skillBase: 0.985, growth: 0.004, pressure: 0.025, angleVar: 0.25, powerVar: 0.55, windupMs: 90, reactionMs: 120 },
+    { name: 'lv2', skillBase: 0.88, growth: 0.010, pressure: 0.07, angleVar: 0.9, powerVar: 1.6, windupMs: 240, reactionMs: 320 },
+    { name: 'lv3', skillBase: 0.72, growth: 0.006, pressure: 0.04, angleVar: 2.0, powerVar: 3.2, windupMs: 560, reactionMs: 660 },
+    { name: 'lv4', skillBase: 0.56, growth: 0.003, pressure: 0.02, angleVar: 3.5, powerVar: 5.3, windupMs: 920, reactionMs: 980 },
   ];
   var MOODS = {
     calm: { skillMul: 1.00, lineStyle: 'neutral', emotion: 'neutral', cssEx: 'idle' },
@@ -879,8 +994,8 @@
     surprised: { skillMul: 0.95, lineStyle: 'startled', emotion: 'surprised', cssEx: 'shock' },
   };
   var MOOD_KEYS = ['calm', 'happy', 'angry', 'relaxed', 'sad', 'surprised'];
-  var duelDifficultyIdx = 1;
-  var storedDuelDifficulty = readJson('bd_duel_difficulty', 'lv2');
+  var duelDifficultyIdx = 2;
+  var storedDuelDifficulty = readJson('bd_duel_difficulty', 'lv3');
   for (var diffInit = 0; diffInit < DUEL_DIFFICULTY.length; diffInit++) {
     if (DUEL_DIFFICULTY[diffInit].name === storedDuelDifficulty) duelDifficultyIdx = diffInit;
   }
@@ -1408,6 +1523,56 @@
       console.log('[BadmintonMemory] 本局进入记忆=' + (_isBadmintonGameMemoryEnabled() ? 'on' : 'off'));
     });
   }
+  function _shouldSkipBadmintonStartTutorial() {
+    try { return localStorage.getItem(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY) === '1'; }
+    catch (_) { return false; }
+  }
+  function _setBadmintonStartTutorialSkipped(skipped) {
+    try {
+      if (skipped) localStorage.setItem(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY, '1');
+      else localStorage.removeItem(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY);
+    } catch (_) {}
+  }
+  function isBadmintonStartOverlayActive() {
+    return !!(badmintonStartOverlay && !badmintonStartOverlay.hidden && !badmintonStartAccepted);
+  }
+  function hideBadmintonStartOverlay() {
+    if (!badmintonStartOverlay || badmintonStartOverlay.hidden) return;
+    badmintonStartOverlay.classList.add('hide');
+    setTimeout(function () {
+      if (!badmintonStartOverlay) return;
+      badmintonStartOverlay.hidden = true;
+      badmintonStartOverlay.classList.remove('hide');
+      window.__badmintonStartTutorialVisible = false;
+    }, 220);
+  }
+  function startBadmintonFromStartScreen(options) {
+    options = options || {};
+    if (badmintonStartAccepted) return badmintonRouteStartPromise || Promise.resolve();
+    badmintonStartAccepted = true;
+    if (options.skipTutorial || (badmintonStartNeverToggle && badmintonStartNeverToggle.checked)) {
+      _setBadmintonStartTutorialSkipped(true);
+    }
+    hideBadmintonStartOverlay();
+    if (!options.skipTutorial) resumeAudio();
+    if (!badmintonRouteStartPromise) {
+      badmintonRouteStartPromise = startRouteAfterCharacterReady();
+    }
+    return badmintonRouteStartPromise;
+  }
+  function showBadmintonStartScreenIfNeeded() {
+    if (_shouldSkipBadmintonStartTutorial()) {
+      startBadmintonFromStartScreen({ skipTutorial: true });
+      return;
+    }
+    if (!badmintonStartOverlay || badmintonStartAccepted) return;
+    badmintonStartOverlay.hidden = false;
+    badmintonStartOverlay.classList.remove('hide');
+    window.__badmintonStartTutorialVisible = true;
+    if (badmintonStartButton && typeof badmintonStartButton.focus === 'function') {
+      setTimeout(function () { badmintonStartButton.focus(); }, 0);
+    }
+  }
   function getAudioCtx() {
     if (!window.AudioContext && !window.webkitAudioContext) return null;
     if (!audioCtx) {
@@ -1805,8 +1970,43 @@
     }
     return false;
   }
+  function getPlayerWinDifficultyIndex(playerWins) {
+    var wins = Math.max(0, Math.floor(Number(playerWins) || 0));
+    if (wins >= 8) return 0;
+    if (wins >= 5) return 1;
+    return 2;
+  }
+  function getEffectiveDuelDifficultyIndex() {
+    var playerWins = (typeof game === 'object' && game && game.duel) ? game.duel.playerScore : 0;
+    var rampIdx = getPlayerWinDifficultyIndex(playerWins);
+    return Math.min(duelDifficultyIdx, rampIdx);
+  }
+  function getEffectiveDuelDifficulty() {
+    return DUEL_DIFFICULTY[getEffectiveDuelDifficultyIndex()] || DUEL_DIFFICULTY[0];
+  }
   function getDuelDifficultyName() {
-    return DUEL_DIFFICULTY[duelDifficultyIdx].name;
+    return getEffectiveDuelDifficulty().name;
+  }
+  function speakDuelDifficultyRampLine(difficulty) {
+    var lineKey = difficulty === 'max' ? 'lines.duel.difficultyMax' : 'lines.duel.difficultyLv2';
+    var fallbackLines = difficulty === 'max'
+      ? ['现在认真起来了。', '从现在起天上地下唯我独尊', '现在你才是挑战者', '如果未来是你的，证明给我看！']
+      : ['热身结束，接下来我会快一点。', '过家家时间结束了'];
+    var lines = _i18nArray(lineKey, fallbackLines);
+    var line = lines.length ? lines[Math.floor(Math.random() * lines.length)] : fallbackLines[0];
+    var rampEmote = difficulty === 'max' ? 'dominant' : 'surprised';
+    speakLine(line, {
+      expression: difficulty === 'max' ? 'dominant' : 'shock',
+      intensity: 'high',
+      mood: 'surprised',
+      emote: rampEmote
+    }, {
+      kind: 'difficulty_ramp',
+      label: 'duel_difficulty_' + difficulty,
+      mode: currentMode,
+      difficulty: difficulty,
+      voice_deadline_ms: 1200
+    });
   }
   function moodStyleLine(line, moodKey) {
     var text = String(line || '');
@@ -2137,18 +2337,79 @@
   function showBubble(line, control) {
     var text = String(line || '').trim();
     if (!text) return;
-    bubble.textContent = text;
     bubble.dataset.mood = (control && control.mood) || '';
+    renderBubbleContent(text, getBubbleEmote(control || {}));
+    positionBubbleNearYui();
     applyNekoControl(control || {}, { transient: true });
     bubble.classList.add('show');
     clearTimeout(bubbleTimer);
     bubbleTimer = setTimeout(function () { bubble.classList.remove('show'); }, 2800);
   }
+  function renderBubbleContent(text, emote) {
+    text = String(text || '').trim();
+    bubble.textContent = '';
+    bubble.dataset.emote = emote || '';
+    var body = document.createElement('span');
+    body.className = 'neko-bubble-body';
+    body.dataset.emoteOnly = text ? 'false' : 'true';
+    if (emote) {
+      var sticker = document.createElement('img');
+      sticker.className = 'neko-bubble-emote';
+      sticker.dataset.emote = emote;
+      sticker.src = BADMINTON_BUBBLE_EMOTE_IMAGES[emote] || BADMINTON_BUBBLE_EMOTE_IMAGES.surprised;
+      sticker.alt = '';
+      sticker.decoding = 'async';
+      sticker.setAttribute('aria-hidden', 'true');
+      body.appendChild(sticker);
+    }
+    var copy = document.createElement('span');
+    copy.className = 'neko-bubble-text';
+    copy.textContent = text;
+    body.appendChild(copy);
+    bubble.appendChild(body);
+  }
+  function showBubbleEmote(emote, control) {
+    if (!emote) return;
+    var emoteControl = control || {};
+    if (!emoteControl.emote) emoteControl.emote = emote;
+    if (!emoteControl.expression) emoteControl.expression = emote;
+    bubble.dataset.mood = emoteControl.mood || '';
+    renderBubbleContent('', emote);
+    positionBubbleNearYui();
+    applyNekoControl(emoteControl, { transient: true });
+    bubble.classList.add('show');
+    clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(function () { bubble.classList.remove('show'); }, 1800);
+  }
+  function getBubbleEmote(control) {
+    var expression = String((control && (control.emote || control.expression)) || '').toLowerCase();
+    var mood = String((control && control.mood) || '').toLowerCase();
+    if (expression === 'dominant' || expression === 'pro' || expression === 'serious') return 'dominant';
+    if (expression === 'awkward' || expression === 'excuse' || expression === 'sweat') return 'awkward';
+    if (expression === 'joy' || expression === 'happy' || expression === 'cheer' || expression === 'celebrate') return 'joy';
+    if (mood === 'happy') return 'joy';
+    if (expression === 'surprised' || expression === 'shock' || expression === 'focus' || expression === 'anticipate') return 'surprised';
+    if (mood === 'surprised' || mood === 'angry') return 'surprised';
+    return '';
+  }
+  function positionBubbleNearYui() {
+    var anchor = getActiveAvatarContainer();
+    if (!anchor || anchor.hidden || !anchor.getBoundingClientRect) return;
+    var rect = anchor.getBoundingClientRect();
+    var anchorX = rect.left + rect.width * 0.52;
+    var anchorY = rect.top + rect.height * 0.12;
+    bubble.style.left = clamp(anchorX, 96, window.innerWidth - 96) + 'px';
+    bubble.style.top = clamp(anchorY, 70, window.innerHeight - 120) + 'px';
+  }
   function showAssistHint(text) {
-    assistHint.textContent = text;
+    if (assistHintText) assistHintText.textContent = text;
+    else assistHint.textContent = text;
     assistHint.classList.add('show');
     clearTimeout(assistToastTimer);
-    assistToastTimer = setTimeout(function () { assistHint.classList.remove('show'); }, 1500);
+    assistToastTimer = setTimeout(function () {
+      assistToastTimer = 0;
+      assistHint.classList.remove('show');
+    }, 1500);
   }
   function speakLine(line, control, event) {
     var isUserReply = !!(event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply'));
@@ -2330,6 +2591,7 @@
     container.style.opacity = yuiAsShooter ? '1' : '0.92';
     container.style.transformOrigin = '50% 100%';
     container.style.setProperty('--yui-scale', scale.toFixed(3));
+    if (bubble.classList.contains('show')) positionBubbleNearYui();
   }
   function updateDuelShooterAvatars() {
     if (currentMode !== 'duel') return;
@@ -2338,7 +2600,7 @@
   }
   function clearYuiActionClasses(container) {
     if (!container) return;
-    container.classList.remove('charging', 'shooting', 'react-celebrate', 'react-disappointed');
+    container.classList.remove('charging', 'shooting', 'smashing', 'react-celebrate', 'react-disappointed');
   }
   function clearPlayerActionClasses() {
     if (!playerSenseiContainer) return;
@@ -3307,6 +3569,7 @@
     lastShotType: '',
     lastShotDistance: 200,
     resultRecorded: false,
+    resultBgmPlayed: false,
     globalRank: 0,
     globalTotalPlayers: 0,
     duel: {
@@ -3488,6 +3751,30 @@
   }
   function isPlayerSmashReady(incomingBall) {
     return getPlayerSmashQuality(incomingBall) >= 0.22;
+  }
+  function getYuiSmashQuality(incomingBall, shot) {
+    if (!incomingBall || !shot) return 0;
+    var contact = getYuiShotOrigin();
+    var heightQuality = clamp((contact.y - (incomingBall.y || contact.y) - 18) / 92, 0, 1);
+    var rallyQuality = clamp((game.duel.rallyHits - 2) / 5, 0, 1);
+    var difficultyName = String(shot.difficulty || getDuelDifficultyName());
+    var difficultyQuality = difficultyName === 'max' ? 1 : (difficultyName === 'lv2' ? 0.72 : 0.38);
+    var pressureQuality = clamp((game.duel.playerScore - game.duel.nekoScore + 2) / 5, 0, 1);
+    return clamp(heightQuality * 0.42 + rallyQuality * 0.24 + difficultyQuality * 0.22 + pressureQuality * 0.12, 0, 1);
+  }
+  function shouldYuiSmashReturn(incomingBall, shot, quality) {
+    if (!incomingBall || !shot || quality < 0.52) return false;
+    var contact = getYuiShotOrigin();
+    var yuiSmashClearance = contact.y - (incomingBall.y || contact.y);
+    if (yuiSmashClearance < 58) return false;
+    var difficultyName = String(shot.difficulty || getDuelDifficultyName());
+    if (difficultyName === 'max' && game.duel.rallyHits >= 7 && quality >= 0.62) return true;
+    var baseChance = difficultyName === 'max' ? 0.30 : (difficultyName === 'lv2' ? 0.14 : 0.04);
+    var rallyChance = Math.min(0.16, game.duel.rallyHits * 0.026);
+    var scorePressure = game.duel.playerScore - game.duel.nekoScore;
+    var pressureChance = scorePressure > 0 ? 0.08 : 0;
+    var chance = clamp(baseChance + rallyChance + pressureChance + (quality - 0.52) * 0.22, 0.03, 0.48);
+    return Math.random() < chance;
   }
   function getPlayerVrmRacketContactPoint() {
     if (!playerSenseiReady || !playerVrmRacket || !playerSenseiContainer || playerSenseiContainer.hidden) return null;
@@ -3830,7 +4117,7 @@
     return true;
   }
   function isBadmintonLoadingActive() {
-    return !!(badmintonLoading && !badmintonLoading.hidden);
+    return !!(badmintonLoading && !badmintonLoading.hidden) || isBadmintonStartOverlayActive();
   }
   function canPlayerControlShot() {
     if (isBadmintonLoadingActive()) return false;
@@ -3848,6 +4135,22 @@
   }
   function isPlayerReceivingReturn() {
     return !!(game.ball && game.ball.awaitingReturnBy === 'player');
+  }
+  function isIncomingPlayerReturnCandidate() {
+    return !!(game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved && !game.ball.hitNet);
+  }
+  function canPlayerPrepareIncomingReturn() {
+    if (!isDuelMode() || isBadmintonLoadingActive() || game.pendingSwing) return false;
+    if (isPlayerReceivingReturn()) return game.state === 'ready' && isIncomingPlayerReturnCandidate();
+    return game.state === 'in_flight' && isIncomingPlayerReturnCandidate();
+  }
+  function canPlayerChargeShot() {
+    return canPlayerControlShot() || canPlayerPrepareIncomingReturn();
+  }
+  function stepPlayerCharge(dt) {
+    game.power += game.chargeDir * dt * PLAYER_CHARGE_SPEED;
+    if (game.power >= 100) { game.power = 100; game.chargeDir = -1; }
+    if (game.power <= 0) { game.power = 0; game.chargeDir = 1; }
   }
   function isIncomingPlayerShuttleInReach(ball) {
     if (!ball || ball.awaitingReturnBy !== 'player') return false;
@@ -4126,6 +4429,7 @@
     game.veryLongAimSent = false;
     game.closeRecordSent = false;
     game.resultRecorded = false;
+    game.resultBgmPlayed = false;
     game.globalRank = 0;
     game.globalTotalPlayers = 0;
     clearTimeout(game.duel.timer);
@@ -4183,7 +4487,7 @@
       for (var i = 0; i < game.attemptsTotal; i++) icons += i < game.attemptsRemaining ? '🏸' : '⚪';
       if (isDuelMode()) {
         hud.attempts.textContent = game.duel.activeShooter === 'player' ? _i18n('hud.yourTurn', '轮到你') : _i18n('hud.nekoTurn', 'Yui 挥拍');
-        hud.attempts.title = _i18n('hud.duelTitle', 'Yui 对拉模式：轮流挥拍，谁先失误 3 球谁输');
+        hud.attempts.title = _i18n('hud.duelTitle', 'Yui 对拉模式：轮流挥拍，先到 11 分获胜');
       } else {
         hud.attempts.textContent = isPracticeMode() ? _i18n('hud.unlimitedAttempts', '不限次数') : (icons || _i18n('hud.chances', '机会 {{count}}', { count: Math.max(0, game.attemptsRemaining) }));
         hud.attempts.title = isPracticeMode()
@@ -4230,8 +4534,8 @@
     var incomingVx = incomingBall ? incomingBall.vx || 0 : 0;
     var incomingVy = incomingBall ? incomingBall.vy || 0 : 0;
     var incomingSpeed = Math.sqrt(incomingVx * incomingVx + incomingVy * incomingVy);
-    var isSmash = shooter !== 'neko' && !!swingOptions.smash;
-    var smashQuality = isSmash ? getPlayerSmashQuality(incomingBall) : 0;
+    var isSmash = !!swingOptions.smash;
+    var smashQuality = isSmash ? (shooter === 'neko' ? clamp(Number(swingOptions.smashQuality) || 0.72, 0, 1) : getPlayerSmashQuality(incomingBall)) : 0;
     if (isSmash && smashQuality <= 0) isSmash = false;
     var smashSpeedBonus = isSmash ? 130 + smashQuality * 150 : 0;
     return {
@@ -4272,7 +4576,7 @@
     var verticalDeflection = impulse.incomingSpeed ? clamp((impulse.incomingVy || 0) * -0.10, -55, 55) : 0;
     var aiReturnLift = 0;
     var baseVy = -v * Math.sin(radians) * impulse.lift + verticalDeflection + aiReturnLift;
-    var smashDownVelocity = impulse.isSmash ? 250 + impulse.smashQuality * 210 + impulse.force * 90 : 0;
+    var smashDownVelocity = impulse.isSmash ? (shotShooter === 'neko' ? 180 + impulse.smashQuality * 145 + impulse.force * 54 : 250 + impulse.smashQuality * 210 + impulse.force * 90) : 0;
     var shuttle = hitShuttle || {};
     shuttle.id = shuttleId;
     shuttle.x = origin.x;
@@ -4337,13 +4641,15 @@
     if (game.pendingSwing) return;
     var shotShooter = shooter === 'neko' ? 'neko' : 'player';
     var incomingBall = options && options.incomingBall ? options.incomingBall : null;
-    var smash = shotShooter === 'player' && (options && options.smash || isPlayerSmashReady(incomingBall));
+    var smash = !!(options && options.smash);
+    if (shotShooter === 'player') smash = smash || isPlayerSmashReady(incomingBall);
+    var smashQuality = options && typeof options.smashQuality === 'number' ? options.smashQuality : 0;
     var swing = {
       id: Date.now() + Math.random(),
       shooter: shotShooter,
       angle: angle,
       power: power,
-      impulse: buildSwingImpulse(angle, power, shotShooter, incomingBall, { smash: smash }),
+      impulse: buildSwingImpulse(angle, power, shotShooter, incomingBall, { smash: smash, smashQuality: smashQuality }),
       forceScore: !!(options && options.forceScore)
     };
     game.pendingSwing = swing;
@@ -4352,10 +4658,12 @@
     game.charging = false;
     game.state = 'swinging';
     if (shotShooter === 'player') setPlayerAction('shooting', 460);
-    else setYuiAction('shooting', 420);
-    if (smash) {
+    else setYuiAction(smash ? 'smashing' : 'shooting', smash ? 520 : 420);
+    if (smash && shotShooter === 'player') {
       game.playerJump.lastSmashAt = performance.now();
       showAssistHint(_i18n('toast.smash', '跳杀！'));
+      screenFlashUntil = Math.max(screenFlashUntil, performance.now() + 180);
+    } else if (smash) {
       screenFlashUntil = Math.max(screenFlashUntil, performance.now() + 180);
     }
     playShotWhoosh();
@@ -4374,7 +4682,8 @@
     if (!canPlayerReturnIncomingShuttle()) return false;
     if (game.state !== 'ready' || game.pendingSwing || !isPlayerTurn()) return false;
     var playerReturnAngle = clamp(game.aimAngle - 10, 34, 48);
-    queueRacketSwing(playerReturnAngle, 53, 'player', { incomingBall: game.ball });
+    var returnPower = clamp(game.power || 56, 24, 100);
+    queueRacketSwing(playerReturnAngle, returnPower, 'player', { incomingBall: game.ball });
     game.power = 0;
     game.chargeDir = 1;
     return true;
@@ -4394,7 +4703,7 @@
       game.madeCount = 0;
     }
     var receivingReturn = isPlayerReceivingReturn();
-    var shotPower = receivingReturn ? 56 : game.power;
+    var shotPower = receivingReturn ? clamp(game.power || 56, 24, 100) : game.power;
     var shouldGuaranteeFirstTutorialShot = firstTutorialShotGuaranteed && isPracticeMode() && game.tutorialStep === 3;
     queueRacketSwing(game.aimAngle, shotPower, 'player', { forceScore: shouldGuaranteeFirstTutorialShot, incomingBall: receivingReturn ? game.ball : null });
     game.power = 0;
@@ -4555,10 +4864,10 @@
     var shuttleCourtY = getShuttleCourtY(ball, false);
     var previousShuttleCourtY = getShuttleCourtY(ball, true);
     var shuttleZ = getShuttleCourtZ(ball, false);
-    var yuiContactTopZ = screenYToCourtZ(contact.y - 92);
-    var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 18);
-    var yuiReachLeft = contact.x - 54;
-    var yuiReachRight = contact.x + 122;
+    var yuiContactTopZ = screenYToCourtZ(contact.y - 26);
+    var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);
+    var yuiReachLeft = contact.x;
+    var yuiReachRight = contact.x + 23;
     var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft
       && Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;
     var inYuiReach = crossesYuiReach
@@ -4568,12 +4877,19 @@
     game.duel.activeShooter = 'neko';
     game.duel.rallyHits += 1;
     var shot = getNekoDuelShot();
-    shot.angle = clamp(43 + Math.random() * 5 - Math.min(3, game.duel.rallyHits * 0.18), 38, 50);
-    shot.power = clamp(50 + Math.random() * 5 + Math.min(4, game.duel.rallyHits * 0.25), 46, 56);
-    showAssistHint(_i18n('toast.nekoReturn', 'Yui 回球'));
+    var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);
+    shot.angle = clamp(shot.angle - Math.min(2.5, game.duel.rallyHits * 0.16), 38, 52);
+    shot.power = clamp(shot.power + returnPressureBoost, 48, 66);
+    var yuiSmashQuality = getYuiSmashQuality(ball, shot);
+    var yuiSmash = shouldYuiSmashReturn(ball, shot, yuiSmashQuality);
+    if (yuiSmash) {
+      shot.angle = clamp(shot.angle - (10 + yuiSmashQuality * 5), 24, 46);
+      shot.power = clamp(shot.power + 7 + yuiSmashQuality * 9, 56, 78);
+    }
+    showAssistHint(_i18n(yuiSmash ? 'toast.nekoSmash' : 'toast.nekoReturn', yuiSmash ? 'Yui 扣杀！' : 'Yui 回球'));
     game.aimAngle = shot.angle;
     game.power = shot.power;
-    queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball });
+    queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball, smash: yuiSmash, smashQuality: yuiSmashQuality });
     game.power = 0;
     game.chargeDir = 1;
     updateDuelShooterAvatars();
@@ -4593,12 +4909,15 @@
       && shuttleZ <= screenYToCourtZ(-520)
       && shuttleZ >= screenYToCourtZ(FLOOR_Y - 8);
     if (!inPlayerReach) return false;
+    var preserveIncomingCharge = game.charging && canPlayerPrepareIncomingReturn();
     game.duel.activeShooter = 'player';
     game.state = 'ready';
     game.heldShuttleVisible = false;
-    game.charging = false;
-    game.power = 0;
-    game.chargeDir = 1;
+    game.charging = preserveIncomingCharge;
+    if (!preserveIncomingCharge) {
+      game.power = 0;
+      game.chargeDir = 1;
+    }
     ball.awaitingReturnBy = 'player';
     ball.returnDeadlineAt = performance.now() + 2400;
     showAssistHint(_i18n('toast.playerReturn', '接住 Yui 的回球'));
@@ -4610,7 +4929,7 @@
     var bestAngle = getBestAngle(game.distance);
     var sweet = getSweetSpotForDistance(game.distance);
     var pressure = game.duel.playerScore - game.duel.nekoScore;
-    var diff = DUEL_DIFFICULTY[duelDifficultyIdx];
+    var diff = getEffectiveDuelDifficulty();
     var overrideReason = '';
     var playerMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.playerMisses);
     var nekoMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.nekoMisses);
@@ -4624,7 +4943,7 @@
       overrideReason = 'excuse';
     }
     var mood = MOODS[currentMood] || MOODS.calm;
-    var skill = clamp((diff.skillBase + game.duel.round * diff.growth + pressure * diff.pressure) * (mood.skillMul || 1), 0.40, 0.96);
+    var skill = clamp((diff.skillBase + game.duel.round * diff.growth + pressure * diff.pressure) * (mood.skillMul || 1), 0.40, 0.995);
     var confident = Math.random() < skill;
     var angleDrift = confident ? (Math.random() * diff.angleVar - diff.angleVar / 2) : ((Math.random() < 0.5 ? -1 : 1) * (diff.angleVar + Math.random() * diff.angleVar * 1.5));
     var powerMid = (sweet[0] + sweet[1]) / 2;
@@ -4687,10 +5006,14 @@
     var shot = getNekoDuelShot();
     var event = buildNekoDuelTurnEvent();
     var pressureLine = getPressureLine();
+    var excuseLines = _i18nArray('lines.duel.excuse', ['哎，手有点酸了', '今天手感不太好，下球我要认真了']);
+    var excuseLine = excuseLines.length ? excuseLines[Math.floor(Math.random() * excuseLines.length)] : '哎，手有点酸了';
     var line = game.duel.pendingVoiceLine || pressureLine || (shot.overrideReason === 'clutch'
       ? _i18n('lines.duel.clutch', '……这球必须进')
-      : (shot.overrideReason === 'excuse' ? _i18n('lines.duel.excuse', '哎，手有点酸了') : pickLine('long_aim')));
-    var control = pendingControl || { expression: shot.confident ? 'anticipate' : 'tease', intensity: shot.confident ? 'medium' : 'low' };
+      : (shot.overrideReason === 'excuse' ? excuseLine : pickLine('long_aim')));
+    var control = pendingControl || (shot.overrideReason === 'excuse'
+      ? { expression: 'awkward', intensity: 'medium', mood: 'surprised', emote: 'awkward' }
+      : { expression: shot.confident ? 'anticipate' : 'tease', intensity: shot.confident ? 'medium' : 'low' });
     game.duel.pendingVoiceLine = '';
     game.duel.pendingVoiceControl = null;
     game.duel.pendingShot = null;
@@ -4716,13 +5039,33 @@
     game.power = 0;
     updateDuelShooterAvatars();
     updateHud();
-    var previewDiff = DUEL_DIFFICULTY[duelDifficultyIdx];
+    var previewDiff = getEffectiveDuelDifficulty();
     game.duel.pendingShot = null;
     showAssistHint(_i18n('toast.nekoThinking', 'Yui 准备回球'));
     setYuiAction('charging', previewDiff.windupMs || 0);
     queueNekoDuelTurnVoice();
     clearTimeout(game.duel.timer);
     game.duel.timer = setTimeout(startNekoDuelTurn, (previewDiff.reactionMs || 500) + (previewDiff.windupMs || 450));
+  }
+  function showYuiDuelResultEmote(scored, shotType, ball, pointWinner) {
+    if (ball && ball.shooter === 'neko' && ball.isSmash) {
+      if (scored) {
+        showBubbleEmote('dominant', { expression: 'dominant', intensity: 'high', mood: 'surprised' });
+        return;
+      }
+      var missType = canonicalShotType(shotType);
+      if (missType === 'net' || missType === 'net_touch') {
+        showBubbleEmote('awkward', { expression: 'awkward', intensity: 'medium', mood: 'surprised' });
+        return;
+      }
+    }
+    if (pointWinner === 'neko') {
+      showBubbleEmote('joy', { expression: 'joy', intensity: 'medium', mood: 'happy' });
+      return;
+    }
+    if (pointWinner === 'player' && scored && ball && ball.shooter === 'player') {
+      showBubbleEmote('surprised', { expression: 'surprised', intensity: 'medium', mood: 'surprised' });
+    }
   }
   function finishDuelShot(scored, shotType, ball) {
     shotType = canonicalShotType(shotType);
@@ -4734,6 +5077,7 @@
     game.lastShotDistance = previousDistance;
     game.lastShotScore = 0;
     var newRecord = false;
+    var previousDifficulty = getDuelDifficultyName();
     point = 1;
     pointWinner = scored ? shooter : (shooter === 'player' ? 'neko' : 'player');
     game.duel.rallyHits = 0;
@@ -4768,6 +5112,11 @@
       }
     }
     game.totalScore = game.duel.playerScore;
+    var currentDifficulty = getDuelDifficultyName();
+    if (pointWinner === 'player' && currentDifficulty !== previousDifficulty) {
+      showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: currentDifficulty }));
+      speakDuelDifficultyRampLine(currentDifficulty);
+    }
     game.attemptsResults.push({
       shooter: shooter,
       shot_type: shotType,
@@ -4786,6 +5135,7 @@
     });
     recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
     playShotResultSound(shotType, scored);
+    showYuiDuelResultEmote(scored, shotType, ball, pointWinner);
     if (shooter === 'neko' && !scored) setYuiAction('react-disappointed', 620);
     if (pointWinner === 'neko') setYuiAction('react-celebrate', 620);
     var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;
@@ -4996,8 +5346,14 @@
       });
     }).join(' / ');
   }
-  function showResult() {
+  function playResultBgmOnce() {
+    if (game.resultBgmPlayed) return false;
+    game.resultBgmPlayed = true;
     badmintonGameAudio.sync('game-over');
+    return true;
+  }
+  function showResult() {
+    playResultBgmOnce();
     persistCompletedResult();
     var localRating = game.bestStreak >= 15 ? 'S' : (game.bestStreak >= 10 ? 'A' : (game.bestStreak >= 5 ? 'B' : (game.bestStreak >= 2 ? 'C' : 'D')));
     var ratingText = '';
@@ -5087,15 +5443,14 @@
   }
   function update(dt) {
     if (isDuelMode()) updateCourtMovement(dt);
+    var isChargingPlayerShot = game.charging && canPlayerChargeShot();
+    if (isChargingPlayerShot) stepPlayerCharge(dt);
     if (game.state === 'ready') {
       var awaitingPlayerReturn = game.ball && game.ball.awaitingReturnBy === 'player';
       if (isPositionTransitioning && !awaitingPlayerReturn) return;
       if (awaitingPlayerReturn && stepAwaitingPlayerReturn(dt)) return;
       if (!game.aimStartAt) game.aimStartAt = performance.now();
-      if (game.charging && canPlayerControlShot()) {
-        game.power += game.chargeDir * dt * 70;
-        if (game.power >= 100) { game.power = 100; game.chargeDir = -1; }
-        if (game.power <= 0) { game.power = 0; game.chargeDir = 1; }
+      if (isChargingPlayerShot) {
         var elapsed = (performance.now() - game.aimStartAt) / 1000;
         if (isDuelMode() && elapsed > 4 && performance.now() > psychologicalTalkAt) {
           psychologicalTalkAt = performance.now() + 4200;
@@ -6774,9 +7129,39 @@
   function drawAiming() {
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
     drawPlayerReturnHitCue();
+    if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));
+  }
+  function drawPlayerChargeMeter(percent) {
+    var chargePercent = clamp(percent, 0, 100);
+    if (chargePercent <= 0) return;
+    var now = performance.now();
+    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
+    var meterW = 74;
+    var meterH = 8;
+    var meterX = getPlayerX() - meterW / 2;
+    var meterY = getPlayerY() - 146;
+    var fillW = meterW * chargePercent / 100;
+    aimingCtx.save();
+    aimingCtx.globalCompositeOperation = 'lighter';
+    aimingCtx.shadowColor = 'rgba(114,216,255,.42)';
+    aimingCtx.shadowBlur = 8 + pulse * 4;
+    aimingCtx.fillStyle = 'rgba(5,13,19,.52)';
+    aimingCtx.strokeStyle = 'rgba(255,255,255,.32)';
+    aimingCtx.lineWidth = 1;
+    aimingCtx.beginPath();
+    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX, meterY, meterW, meterH, 4);
+    else aimingCtx.rect(meterX, meterY, meterW, meterH);
+    aimingCtx.fill();
+    aimingCtx.stroke();
+    aimingCtx.fillStyle = 'rgba(255,202,58,.92)';
+    aimingCtx.beginPath();
+    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3, 3);
+    else aimingCtx.rect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3);
+    aimingCtx.fill();
+    aimingCtx.restore();
   }
   function drawPlayerReturnHitCue() {
-    if (!isPlayerReceivingReturn() || !canPlayerReturnIncomingShuttle()) return;
+    if (!isIncomingPlayerReturnCandidate()) return;
     var ball = game.ball;
     var contact = getRacketContactPoint('player');
     var yui = getYuiShotOrigin();
@@ -6798,14 +7183,17 @@
     var controlY = ball.y + uy * 2 + ny * 24;
     var endX = ball.x + ux * 38 + nx * 7;
     var endY = ball.y + uy * 38 + ny * 7;
+    var canReturnNow = canPlayerReturnIncomingShuttle();
+    var cueAlpha = canReturnNow ? 1 : 0.46;
 
     aimingCtx.save();
     aimingCtx.globalCompositeOperation = 'lighter';
     aimingCtx.shadowColor = 'rgba(255,221,122,.26)';
     aimingCtx.shadowBlur = 5 + pulse * 3;
-    aimingCtx.strokeStyle = 'rgba(255,236,168,.075)';
+    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,236,168,.075)' : 'rgba(114,216,255,.055)';
     aimingCtx.lineWidth = 7 + pulse * 1.5;
     aimingCtx.lineCap = 'round';
+    aimingCtx.globalAlpha = cueAlpha;
     aimingCtx.beginPath();
     aimingCtx.moveTo(startX, startY);
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
@@ -6813,8 +7201,8 @@
 
     var cueGradient = aimingCtx.createLinearGradient(startX, startY, endX, endY);
     cueGradient.addColorStop(0, 'rgba(255,255,255,0)');
-    cueGradient.addColorStop(0.42, 'rgba(255,246,190,.16)');
-    cueGradient.addColorStop(1, 'rgba(255,210,96,.30)');
+    cueGradient.addColorStop(0.42, canReturnNow ? 'rgba(255,246,190,.16)' : 'rgba(114,216,255,.13)');
+    cueGradient.addColorStop(1, canReturnNow ? 'rgba(255,210,96,.30)' : 'rgba(114,216,255,.25)');
     aimingCtx.shadowBlur = 3 + pulse * 2;
     aimingCtx.strokeStyle = cueGradient;
     aimingCtx.lineWidth = 1.8 + pulse * 0.55;
@@ -6822,6 +7210,7 @@
     aimingCtx.moveTo(startX, startY);
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
     aimingCtx.stroke();
+    aimingCtx.globalAlpha = 1;
 
     var tangentX = endX - controlX;
     var tangentY = endY - controlY;
@@ -6900,6 +7289,7 @@
       if (!badmintonLoading) return;
       badmintonLoading.hidden = true;
       window.__badmintonInitialLoadingHidden = true;
+      showBadmintonStartScreenIfNeeded();
     }, 320);
   }
   function setBadmintonLoadingProgress(value) {
@@ -7442,14 +7832,8 @@
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
     if (ev && ev.__badmintonPointerDownHandled) return;
     if (ev) ev.__badmintonPointerDownHandled = true;
-    if (returnIncomingPlayerShuttle()) return;
-    if (!canPlayerControlShot()) return;
+    if (!canPlayerChargeShot()) return;
     resumeAudio();
-    if (isPlayerReceivingReturn()) {
-      game.power = 56;
-      shoot();
-      return;
-    }
     if (game.tutorialStep === 1) {
       game.tutorialStep = 2;
       updateTutorial(_i18n('tutorial.release', '松手挥拍！'));
@@ -7473,6 +7857,7 @@
   }, true);
   window.addEventListener('mouseup', function () {
     if (isBadmintonLoadingActive()) return;
+    if (game.charging && returnIncomingPlayerShuttle()) return;
     if (game.charging && canPlayerControlShot()) shoot();
     else {
       game.charging = false;
@@ -7568,6 +7953,11 @@
     showLeaderboard(tab.dataset.tab || 'global');
   });
   restartButton.addEventListener('click', resetGame);
+  if (badmintonStartButton) {
+    badmintonStartButton.addEventListener('click', function () {
+      startBadmintonFromStartScreen();
+    });
+  }
   window.addEventListener('resize', resize);
   window.addEventListener('beforeunload', function () { endRoute(true); });
   window.addEventListener('localechange', function () {
@@ -7596,10 +7986,10 @@
   checkSeasonalEasterEggs();
   requestAnimationFrame(loop);
   afterInitialPaint(function () {
-    var routeReady = startRouteAfterCharacterReady();
+    var characterReady = loadBadmintonCharacter();
     var playerAvatarReady = initPlayerAvatar();
     var nekoAvatarReady = initNekoAvatar();
-    scheduleBadmintonLoadingDismiss([routeReady, playerAvatarReady, nekoAvatarReady]);
+    scheduleBadmintonLoadingDismiss([characterReady, playerAvatarReady, nekoAvatarReady]);
   });
 })();
 {% endraw %}

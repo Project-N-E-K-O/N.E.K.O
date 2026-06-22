@@ -111,6 +111,11 @@
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
+        // 本次正在 await session_started 的启动请求模式（'audio' / 'text'）。
+        // session_started 处理用它校验到达的 input_mode 是否与用户请求的一致：
+        // 不一致（典型是 proactive/greeting 并发自起的 text 会话发来的 ack）时
+        // 忽略，避免错误模式的 ack 收口用户的启动 promise / 翻转会话状态。
+        _pendingSessionStartMode: null,
         voiceSessionStartEpoch: 0,
         assistantTurnId: null,
         assistantTurnStartedAt: 0,
@@ -232,6 +237,7 @@
         }
         S.sessionStartedResolver = null;
         S.sessionStartedRejecter = null;
+        S._pendingSessionStartMode = null;
     };
 
     // ======================== 工具函数 ========================

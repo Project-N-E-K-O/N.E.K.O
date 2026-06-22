@@ -2,7 +2,7 @@ import re
 import time
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from main_routers import system_router
 
@@ -11,7 +11,10 @@ def _install_badminton_test_hooks(page: Page) -> None:
     page.add_init_script(
         """
         (() => {
-          localStorage.clear();
+          if (sessionStorage.getItem('__badmintonE2ELocalStorageCleared') !== '1') {
+            localStorage.clear();
+            sessionStorage.setItem('__badmintonE2ELocalStorageCleared', '1');
+          }
           window.__badmintonE2EEvents = [];
           window.AudioContext = window.AudioContext || function () {
             return { state: 'running', currentTime: 0, resume: async () => {},
@@ -37,6 +40,7 @@ def _goto_badminton(
     mode: str,
     debug: bool = True,
     wait_loading: bool = True,
+    auto_start: bool = True,
 ) -> None:
     _install_badminton_test_hooks(page)
     lanlan_name = "e2e-yui"
@@ -62,6 +66,47 @@ def _goto_badminton(
         }""",
         timeout=10000,
     )
+    if auto_start:
+        start_button = page.locator("#badminton-start-button")
+        try:
+            start_button.wait_for(state="visible", timeout=3000)
+            start_button.click()
+            expect(page.locator("#badminton-start-overlay")).not_to_be_visible(timeout=3000)
+        except PlaywrightTimeoutError:
+            pass
+
+
+@pytest.mark.e2e
+def test_badminton_start_tutorial_memory_and_never_prompt(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel", auto_start=False)
+
+    expect(page.locator("#badminton-start-overlay")).to_be_visible(timeout=3000)
+    expect(page.locator("#badminton-start-tutorial")).to_be_visible()
+    duel_rule = page.locator('#badminton-start-tutorial [data-i18n="badminton.startTutorial.duel11"]')
+    expect(duel_rule).to_contain_text("11")
+    expect(duel_rule).not_to_contain_text("3")
+    expect(page.locator("#badminton-start-overlay #game-memory-option")).to_be_visible()
+    expect(page.locator("#badminton-start-never-option")).to_be_visible()
+
+    assert page.evaluate("window.BadmintonDemo.getState().canControlShot") is False
+    page.locator("#bd-game-memory-toggle").check()
+    page.locator("#bd-start-never-toggle").check()
+    page.locator("#badminton-start-button").click()
+    expect(page.locator("#badminton-start-overlay")).not_to_be_visible(timeout=3000)
+    page.wait_for_function("window.BadmintonDemo.getState().canControlShot === true", timeout=5000)
+    assert page.evaluate("localStorage.getItem('bd_start_tutorial_dismissed')") == "1"
+
+    page.reload()
+    page.wait_for_function(
+        """() => {
+          const loading = document.getElementById('badminton-loading');
+          return window.__badmintonInitialLoadingHidden === true || (loading && loading.hidden === true);
+        }""",
+        timeout=10000,
+    )
+    expect(page.locator("#badminton-start-overlay")).not_to_be_visible()
+    page.wait_for_function("window.BadmintonDemo.getState().canControlShot === true", timeout=5000)
 
 
 def _force_shot_result(page: Page, scored: bool = True) -> None:
