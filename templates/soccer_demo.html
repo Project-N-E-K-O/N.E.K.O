@@ -3229,8 +3229,6 @@
     error: console.error.bind(console),
   };
   const _soccerDebugLogState = {
-    inFlight: false,
-    pending: [],
     lastWindowStart: 0,
     sentInWindow: 0,
   };
@@ -3244,12 +3242,18 @@
     if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
     if (typeof value === 'string') return value.length > 1200 ? `${value.slice(0, 1200)}...<truncated>` : value;
     if (depth >= 3) return String(value).slice(0, 240);
-    if (Array.isArray(value)) return value.slice(0, 20).map((item) => _safeSoccerDebugValue(item, depth + 1));
+    if (Array.isArray(value)) {
+      const result = value.slice(0, 20).map((item) => _safeSoccerDebugValue(item, depth + 1));
+      if (value.length > 20) result.push({ _truncated: `+${value.length - 20} items` });
+      return result;
+    }
     if (typeof value === 'object') {
       const result = {};
-      for (const key of Object.keys(value).slice(0, 30)) {
+      const keys = Object.keys(value);
+      for (const key of keys.slice(0, 30)) {
         result[key] = _safeSoccerDebugValue(value[key], depth + 1);
       }
+      if (keys.length > 30) result._truncated = `+${keys.length - 30} keys`;
       return result;
     }
     return String(value).slice(0, 1200);

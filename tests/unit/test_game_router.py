@@ -166,6 +166,47 @@ async def test_game_debug_log_ingest_and_query():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_requires_local_mutation_csrf():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-csrf",
+            "game_type": "soccer",
+            "message": "blocked",
+        }, mutation_headers=False, path="/api/game/logs"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert game_log.find_game_session_debug_log("soccer-debug-csrf", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-truncate",
+            "game_type": "soccer",
+            "message": "m" * 1500,
+            "details": {"long": "d" * 2500},
+            "preserve_message": "false",
+            "preserve_details": "false",
+            "no_truncate": True,
+        }, path="/api/game/logs"),
+    )
+
+    assert result["ok"] is True
+    queried = await game_router.game_logs(session_id="soccer-debug-truncate", game_type="soccer")
+    entry = queried["log"]["entries"][0]
+    assert len(entry["message"]) < 1500
+    assert "<truncated" in entry["message"]
+    assert len(entry["details"]["long"]) < 2500
+    assert "<truncated" in entry["details"]["long"]
+
+
+@pytest.mark.unit
 def test_game_debug_logs_do_not_drop_ended_sessions_when_new_sessions_open():
     for index in range(14):
         session_id = f"soccer-old-{index}"

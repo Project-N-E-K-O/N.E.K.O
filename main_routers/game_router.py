@@ -117,6 +117,14 @@ logger = get_module_logger(__name__, "Game")
 router = APIRouter(tags=["game"], prefix="/api/game")
 
 
+def _game_log_payload_flag_is_true(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
 @router.get("/logs")
 async def game_logs(session_id: str = "", game_type: str = "", since: int = 0, limit: int = 300):
     if session_id:
@@ -186,6 +194,17 @@ async def game_log_ingest(request: Request):
     lanlan_name = str(data.get("lanlan_name") or data.get("lanlanName") or "").strip()
     if not session_id:
         return {"ok": False, "reason": "missing_session_id"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+
     ignored = {
         "session_id", "sessionId", "game_type", "gameType", "lanlan_name", "lanlanName", "level",
         "category", "event", "type", "source", "message",
@@ -193,8 +212,14 @@ async def game_log_ingest(request: Request):
         "preserve_message", "preserveMessage", "preserve_details", "preserveDetails",
         "no_truncate", "noTruncate",
     }
-    preserve_message = bool(data.get("preserve_message") or data.get("preserveMessage") or data.get("no_truncate") or data.get("noTruncate"))
-    preserve_details = bool(data.get("preserve_details") or data.get("preserveDetails") or data.get("no_truncate") or data.get("noTruncate"))
+    preserve_message = (
+        _game_log_payload_flag_is_true(data.get("preserve_message"))
+        or _game_log_payload_flag_is_true(data.get("preserveMessage"))
+    )
+    preserve_details = (
+        _game_log_payload_flag_is_true(data.get("preserve_details"))
+        or _game_log_payload_flag_is_true(data.get("preserveDetails"))
+    )
     item = _append_game_session_debug_log(
         game_type,
         session_id,
