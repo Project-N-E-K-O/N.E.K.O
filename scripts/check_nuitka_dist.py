@@ -53,6 +53,10 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("config", "core_config.json"),
     ("config", "characters.json"),
     ("config", "api_providers.json"),
+    # changelog/.md 与 survey/.json 是纯数据，--include-package=config 只编 .py 不带；
+    # 守 dist 里确有它们，否则 /api/changelog、/api/survey（Steam-only）打包后读空。
+    ("config/changelog", None),
+    ("config/surveys", None),
     ("static", None),
     ("templates", None),
     ("assets", None),
