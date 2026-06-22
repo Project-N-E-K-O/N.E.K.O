@@ -229,6 +229,29 @@ def test_scaled_pyautogui_accepts_normalized_float_coordinates():
     assert backend.calls[0][1][:2] == (186, 363)
 
 
+def test_scaled_pyautogui_accepts_mixed_positional_keyword_coordinates():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(0.5, y=0.5)
+
+    assert backend.calls[0][0] == "moveTo"
+    assert backend.calls[0][1][:2] == (960, 540)
+    assert backend.calls[-1] == ("click", (960,), {"y": 540})
+
+
 def test_scaled_pyautogui_clamps_model_coordinates_away_from_failsafe_corner():
     from brain.computer_use import _ScaledPyAutoGUI
 

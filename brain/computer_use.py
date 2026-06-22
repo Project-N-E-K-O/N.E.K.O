@@ -468,6 +468,15 @@ class _ScaledPyAutoGUI:
         ):
             x, y = self._project_pair(args[0], args[1])
             return (x, y) + tuple(args[2:]), kwargs
+        if (
+            len(args) == 1
+            and isinstance(args[0], (int, float))
+            and isinstance(kwargs.get("y"), (int, float))
+        ):
+            x, y = self._project_pair(args[0], kwargs["y"])
+            kw = dict(kwargs)
+            kw["y"] = y
+            return (x,), kw
         if "x" in kwargs and "y" in kwargs:
             kw = dict(kwargs)
             kw["x"], kw["y"] = self._project_pair(kw["x"], kw["y"])
@@ -537,6 +546,12 @@ class _ScaledPyAutoGUI:
             and isinstance(args[1], (int, float))
         ):
             return int(args[0]), int(args[1])
+        if (
+            len(args) == 1
+            and isinstance(args[0], (int, float))
+            and isinstance(kwargs.get("y"), (int, float))
+        ):
+            return int(args[0]), int(kwargs["y"])
         x, y = kwargs.get("x"), kwargs.get("y")
         if x is not None and y is not None:
             return int(x), int(y)
