@@ -84,6 +84,7 @@ from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
     SESSION_INIT_PROMPT_AGENT_DYNAMIC,
+    SESSION_INIT_PROMPT_AGENT_RUNTIME_CAPS,
     AGENT_CAPABILITY_COMPUTER_USE,
     AGENT_CAPABILITY_BROWSER_USE,
     AGENT_CAPABILITY_USER_PLUGIN_USE,
@@ -6231,13 +6232,9 @@ class LLMSessionManager:
             runtime_caps.append("openfang")
         if not runtime_caps:
             return ""
-        return (
-            "[Runtime agent capability state]\n"
-            f"Enabled host-side capabilities: {', '.join(runtime_caps)}.\n"
-            "When the user asks whether you can use an enabled capability, do not say you lack permission. "
-            "Say the host agent can attempt it asynchronously.\n"
-            "Do not invent task progress or results. Only say a task started, completed, failed, or what it did "
-            "when a system/task callback in the current context says so."
+        _lang = normalize_language_code(getattr(self, "user_language", "en"), format='short')
+        return _loc(SESSION_INIT_PROMPT_AGENT_RUNTIME_CAPS, _lang).format(
+            runtime_caps=", ".join(runtime_caps),
         )
 
     async def _build_initial_prompt(self) -> str:
@@ -6245,20 +6242,12 @@ class LLMSessionManager:
         _lang = normalize_language_code(self.user_language, format='short')
         if self._is_agent_enabled():
             capability_parts = []
-            runtime_caps = []
             if self.agent_flags.get('computer_use_enabled'):
                 capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
-                runtime_caps.append("computer_use (mouse/keyboard)")
             if self.agent_flags.get('browser_use_enabled'):
                 capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
-                runtime_caps.append("browser_use")
             if self.agent_flags.get('user_plugin_enabled'):
                 capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
-                runtime_caps.append("user_plugin")
-            if self.agent_flags.get('openclaw_enabled'):
-                runtime_caps.append("openclaw")
-            if self.agent_flags.get('openfang_enabled'):
-                runtime_caps.append("openfang")
             caps_text = (
                 _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
                 if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
@@ -6267,15 +6256,9 @@ class LLMSessionManager:
                 name=self.lanlan_name,
                 capabilities=caps_text,
             ) + self.lanlan_prompt
-            if runtime_caps:
-                prompt += (
-                    "\n\n[Runtime agent capability state]\n"
-                    f"Enabled host-side capabilities: {', '.join(runtime_caps)}.\n"
-                    "When the user asks whether you can use an enabled capability, do not say you lack permission. "
-                    "Say the host agent can attempt it asynchronously.\n"
-                    "Do not invent task progress or results. Only say a task started, completed, failed, or what it did "
-                    "when a system/task callback in the current context says so.\n"
-                )
+            runtime_capability_prefix = self._build_runtime_agent_capability_prefix()
+            if runtime_capability_prefix:
+                prompt += f"\n\n{runtime_capability_prefix}\n"
         else:
             prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
