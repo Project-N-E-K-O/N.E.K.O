@@ -1138,6 +1138,150 @@
             : (window.innerWidth <= 768);
     }
 
+    const NEKO_MODEL_VIEWPORT_RESTORE_FALLBACK_MS = 900;
+    const NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS = 300;
+    const NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE = 160;
+    let pendingNativeModelViewportRestoreBounds = null;
+
+    function normalizeModelViewportBounds(bounds) {
+        const candidate = bounds && typeof bounds === 'object'
+            ? (bounds.requestedBounds || bounds.bounds || bounds)
+            : null;
+        if (!candidate) return null;
+        const x = Number.isFinite(Number(candidate.x))
+            ? Math.round(Number(candidate.x))
+            : (Number.isFinite(Number(window.screenX)) ? Math.round(Number(window.screenX)) : 0);
+        const y = Number.isFinite(Number(candidate.y))
+            ? Math.round(Number(candidate.y))
+            : (Number.isFinite(Number(window.screenY)) ? Math.round(Number(window.screenY)) : 0);
+        const width = Math.round(Number(candidate.width));
+        const height = Math.round(Number(candidate.height));
+        if (![x, y, width, height].every(Number.isFinite) || width <= 1 || height <= 1) {
+            return null;
+        }
+        return { x, y, width, height };
+    }
+
+    function setPendingNativeModelViewportRestoreBounds(bounds) {
+        pendingNativeModelViewportRestoreBounds = normalizeModelViewportBounds(bounds);
+        return pendingNativeModelViewportRestoreBounds;
+    }
+
+    function isNativeReturnBallViewportSize(width, height) {
+        const w = Math.round(Number(width));
+        const h = Math.round(Number(height));
+        if (!Number.isFinite(w) || !Number.isFinite(h)) return false;
+        return Math.abs(w - NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE) <= 2
+            && Math.abs(h - NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE) <= 2;
+    }
+
+    function isModelViewportRestored(bounds) {
+        const target = normalizeModelViewportBounds(bounds);
+        if (!target) return true;
+        const tolerance = 2;
+        return Math.abs((window.innerWidth || 0) - target.width) <= tolerance &&
+            Math.abs((window.innerHeight || 0) - target.height) <= tolerance;
+    }
+
+    function waitForModelViewportRestore(bounds, options = {}) {
+        const target = normalizeModelViewportBounds(bounds);
+        if (!target || isModelViewportRestored(target)) {
+            return waitForAnimationFrames(2).then(() => ({ restored: true, skipped: !target }));
+        }
+
+        const timeoutMs = Number.isFinite(options.timeoutMs)
+            ? Math.max(0, Number(options.timeoutMs))
+            : NEKO_MODEL_VIEWPORT_RESTORE_FALLBACK_MS;
+        const deadline = Date.now() + timeoutMs;
+
+        return new Promise((resolve) => {
+            let timerId = null;
+            let finished = false;
+            const finish = (restored, timedOut) => {
+                if (finished) return;
+                finished = true;
+                if (timerId) {
+                    clearTimeout(timerId);
+                    timerId = null;
+                }
+                window.removeEventListener('resize', check);
+                waitForAnimationFrames(2).then(() => resolve({
+                    restored: !!restored,
+                    timedOut: !!timedOut
+                }));
+            };
+            const check = () => {
+                if (isModelViewportRestored(target)) {
+                    finish(true, false);
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    finish(false, true);
+                    return;
+                }
+                timerId = setTimeout(check, 16);
+            };
+            window.addEventListener('resize', check);
+            timerId = setTimeout(check, 16);
+        });
+    }
+
+    function getPendingModelViewportRestoreBounds() {
+        const pending = normalizeModelViewportBounds(pendingNativeModelViewportRestoreBounds);
+        if (pending) return pending;
+        if (multiWindowReturnBallDragState) {
+            const width = Math.round(Number(multiWindowReturnBallDragState.savedWindowW));
+            const height = Math.round(Number(multiWindowReturnBallDragState.savedWindowH));
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 1 && height > 1) {
+                return {
+                    x: Number.isFinite(Number(window.screenX)) ? Math.round(Number(window.screenX)) : 0,
+                    y: Number.isFinite(Number(window.screenY)) ? Math.round(Number(window.screenY)) : 0,
+                    width,
+                    height
+                };
+            }
+        }
+        return null;
+    }
+
+    async function ensureModelViewportReadyBeforeShowCurrentModel() {
+        const restoreBounds = getPendingModelViewportRestoreBounds();
+        if (!restoreBounds) return { ready: true, skipped: true };
+        if (isModelViewportRestored(restoreBounds)) {
+            pendingNativeModelViewportRestoreBounds = null;
+            return { ready: true, restored: true };
+        }
+
+        if (window.nekoPetDrag && typeof window.nekoPetDrag.reveal === 'function') {
+            try {
+                const revealResult = await Promise.resolve(window.nekoPetDrag.reveal());
+                if (revealResult === false) {
+                    await waitForModelViewportRestore(restoreBounds, {
+                        timeoutMs: NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS
+                    });
+                }
+            } catch (error) {
+                console.warn('[showCurrentModel] restore model viewport reveal retry failed:', error);
+            }
+        }
+
+        const viewportWait = await waitForModelViewportRestore(restoreBounds);
+        if (viewportWait.restored) {
+            pendingNativeModelViewportRestoreBounds = null;
+            return { ready: true, restored: true, viewportWait };
+        }
+
+        console.warn('[showCurrentModel] blocked model display because Pet viewport is still return-ball sized:', {
+            target: restoreBounds,
+            current: {
+                width: window.innerWidth,
+                height: window.innerHeight
+            },
+            returnBallViewport: isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)
+        });
+        return { ready: false, restored: false, viewportWait, restoreBounds };
+    }
+
     // --- showCurrentModel ---
     async function showCurrentModel() {
         // 检查"请她离开"状态
@@ -1163,6 +1307,11 @@
         }
         if (window.mmdManager) {
             window.mmdManager._goodbyeClicked = false;
+        }
+
+        const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+        if (!modelViewportReady.ready) {
+            return false;
         }
 
         try {
@@ -3010,9 +3159,11 @@
 
         function normalizeWindowBounds(bounds) {
             if (!bounds) return null;
-            const source = bounds.bounds && !Number.isFinite(Number(bounds.x))
-                ? bounds.bounds
-                : bounds;
+            const source = bounds.requestedBounds || (
+                bounds.bounds && !Number.isFinite(Number(bounds.x))
+                    ? bounds.bounds
+                    : bounds
+            );
             const x = Number(source.x);
             const y = Number(source.y);
             const width = Number(source.width);
@@ -3414,6 +3565,10 @@
                 } catch (error) {
                     console.warn('[App] 返回球点击结束时恢复窗口失败:', error);
                 }
+                setPendingNativeModelViewportRestoreBounds(restoreBounds || {
+                    width: state.savedWindowW,
+                    height: state.savedWindowH
+                });
                 if (!isActiveDragToken(dragToken)) return;
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
@@ -3446,6 +3601,10 @@
             }
             const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
             if (!isActiveDragToken(dragToken)) return;
+            setPendingNativeModelViewportRestoreBounds(finalBounds || {
+                width: state.savedWindowW,
+                height: state.savedWindowH
+            });
             const movedDistancePx = Math.hypot(
                 state.releaseScreenX - state.startScreenX,
                 state.releaseScreenY - state.startScreenY
@@ -4212,6 +4371,11 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
+            const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+            if (!preReturnViewportReady.ready) {
+                console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
+                return;
+            }
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (multiWindowReturnBallDragState) {
                 multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -4311,11 +4475,15 @@
                 : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
+            let modelDisplayReady = true;
             try {
-                await showCurrentModel();
+                modelDisplayReady = await showCurrentModel();
             } catch (error) {
                 console.error('[App] showCurrentModel 失败:', error);
                 showLive2d();
+            }
+            if (modelDisplayReady === false) {
+                return;
             }
 
             await settleReturnedModelBounds(returnModelWasMoved);

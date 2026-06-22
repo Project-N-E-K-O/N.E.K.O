@@ -162,6 +162,13 @@ def test_model_cat_transition_contract_is_present():
     assert "function playModelReturnEnter(container, rect)" in source
     assert "window._nekoModelReturnEnterRect = returnRect || savedRect || null" in source
     assert "consumeModelReturnEnterRect()" in source
+    assert "function ensureModelViewportReadyBeforeShowCurrentModel()" in source
+    assert "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();" in source
+    assert "blocked model display because Pet viewport is still return-ball sized" in source
+    assert "function setPendingNativeModelViewportRestoreBounds(bounds)" in source
+    assert "setPendingNativeModelViewportRestoreBounds(restoreBounds || {" in source
+    assert "setPendingNativeModelViewportRestoreBounds(finalBounds || {" in source
+    assert "bounds.requestedBounds || (" in source
     assert "NEKO_MODEL_CAT_TRANSITION_MODEL_SCALE = 0.38" in source
     assert "function getModelCatTransitionScaleTransform()" in source
     assert "getModelCatTransitionScaleTransform()" in source
@@ -245,6 +252,49 @@ def test_model_cat_transition_contract_is_present():
     assert "function restartNekoModelCatRevealArt(container)" in source
     assert "const isCurrentTransition = () => isNekoModelCatTransitionTokenCurrent(token)" in source
     assert "if (!isCurrentTransition()) return;" in source
+    viewport_guard_start = source.index("const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
+    show_current_model_block = source[
+        viewport_guard_start:
+        source.index("try {", viewport_guard_start)
+    ]
+    _assert_source_order(
+        show_current_model_block,
+        "showCurrentModel viewport guard ordering",
+        "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "if (!modelViewportReady.ready) {",
+        "return false;",
+    )
+    return_handler_guard_start = source.index("let modelDisplayReady = true;")
+    return_handler_block = source[
+        return_handler_guard_start:
+        source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_guard_start)
+    ]
+    _assert_source_order(
+        return_handler_block,
+        "return handler stops when model viewport is still shrunken",
+        "let modelDisplayReady = true;",
+        "modelDisplayReady = await showCurrentModel();",
+        "if (modelDisplayReady === false) {",
+        "return;",
+    )
+    return_handler_start = source.index("const handleReturnClick = async (event) => {")
+    return_handler_full_block = source[
+        return_handler_start:
+        source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_start)
+    ]
+    pre_return_guard_start = return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
+    return_handler_start_block = return_handler_full_block[
+        pre_return_guard_start:
+        return_handler_full_block.index("const isReturningToPngtuber")
+    ]
+    _assert_source_order(
+        return_handler_start_block,
+        "return handler preserves cat state until viewport can restore",
+        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "if (!preReturnViewportReady.ready) {",
+        "return;",
+    )
+    assert return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
 
     transition_promise_start = source.index("const transitionPromise = new Promise((resolve) => {")
     transition_promise_block = source[
