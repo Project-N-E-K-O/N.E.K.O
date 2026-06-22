@@ -997,6 +997,7 @@
             "step": "StepFun",
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
