@@ -196,7 +196,7 @@ def _escape_inner_quotes(s: str) -> str:
     valid-but-wrong JSON —— the silent corruption this module avoids everywhere else.
     This is the last, most aggressive transform in the fallback pipeline; it only runs
     after every cheaper repair has failed.
-    """
+    """  # noqa: DOCSTRING_CJK
     out: list[str] = []
     i = 0
     n = len(s)
