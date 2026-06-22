@@ -415,6 +415,7 @@ class SessionStateMachine:
             "mode": self.mode.value,
             "focus_turn_count": self._focus_turn_count,
             "focus_charge": round(self._focus_charge, 3),
+            "focus_charge_at": self._focus_charge_at,
             "focus_episode_id": self._focus_episode_id,
         }
 
@@ -585,13 +586,17 @@ def _focus_decide(
     """Pure leaky-accumulator transition for one scored turn.
 
     Each turn integrates the score into a leaky charge:
-    ``new_charge = charge * retention + score`` (capped at ``enter`` so a long
-    heavy episode can't build an over-long decay tail). Entry: ``REGULAR`` +
-    ``new_charge >= enter`` ⇒ ENTER — so scattered mild cues accumulate to the
-    bar over several turns, while one strong message (score ≈ enter) enters at
-    once. Exit while ``FOCUS``: an explicit topic switch, the hard turn cap, or
-    ``new_charge < exit`` (the charge has leaked away as the signal faded).
-    Otherwise STAY. ``TRUE_NAME`` (v2) is inert here.
+    ``new_charge = clamp(charge * retention + score, 0, cap)``. ``score`` can be
+    NEGATIVE (a positive/happy emotion votes Focus down), so the result is
+    clamped at 0 — a good mood drains charge but never goes below empty; the
+    ``cap`` (≥ ``enter``) lets sustained strong evidence climb past the entry bar
+    for a brighter/longer glow. Entry: ``REGULAR`` + ``new_charge >= enter`` ⇒
+    ENTER — scattered mild cues accumulate over several turns, one strong message
+    enters at once. A ``topic_changed`` turn drops the old accumulator and reseeds
+    from this turn's score alone. Exit while ``FOCUS``: explicit topic switch,
+    hard turn cap, or ``new_charge < exit``. Otherwise STAY. ``TRUE_NAME`` (v2)
+    inert. (Wall-clock time decay is applied separately in ``update_focus`` before
+    this; see ``_decay_charge_over_time``.)
 
     The leak replaces the old "K consecutive low turns" streak, which a single
     noisy mid-score turn could reset and thereby stick focus on indefinitely.

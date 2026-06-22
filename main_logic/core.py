@@ -2427,8 +2427,11 @@ class LLMSessionManager:
     async def _reconcile_focus_indicator(self) -> None:
         """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
         history-wipe, master-switch / privacy self-clear in update_focus) so the
-        badge can't get stuck on. Called once per turn; idempotent."""
+        badge AND the charge glow can't get stuck on. Called once per turn. The
+        charge push reads the (now-cleared → 0) snapshot, so a silent exit that
+        only reconciles the binary state still tells the glow to fade out."""
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
+        await self._push_focus_charge()
 
     async def _push_focus_indicator(self, active: bool) -> None:
         """Mirror the cognition indicator (focus_state) to the frontend — a
@@ -2467,17 +2470,29 @@ class LLMSessionManager:
         pushes for a smooth fade (no per-second server spam). Pushed on every
         charge change AND on (re)connect so a freshly-opened window (e.g. the
         separate /chat_full window) lands on the correct brightness immediately.
-        Ephemeral, ws + sync-queue only, never persisted. Best-effort."""
+        Ephemeral, ws + sync-queue only, never persisted. Best-effort.
+
+        ``at_ms`` is the charge's LAST-CHANGE wall-clock (not "now"), so the
+        frontend extrapolates the time decay from the right moment — a reconnect
+        after a long gap must not replay a stale un-decayed charge as if current.
+        When Focus is disabled we push 0 (not skip) so a lit glow can't linger."""
         from config import FOCUS_MODE_ENABLED  # live read
+        try:
+            snap = self.state.snapshot()
+        except Exception:
+            snap = {}
         if not FOCUS_MODE_ENABLED:
-            return
-        if charge is None:
-            try:
-                charge = float(self.state.snapshot().get("focus_charge") or 0.0)
-            except Exception:
-                charge = 0.0
-        msg = {"type": "focus_charge", "charge": round(float(charge), 4),
-               "at_ms": int(time.time() * 1000)}
+            charge, at = 0.0, 0.0
+        else:
+            if charge is None:
+                try:
+                    charge = float(snap.get("focus_charge") or 0.0)
+                except Exception:
+                    charge = 0.0
+            at = snap.get("focus_charge_at") or 0.0
+        at_ms = int(at * 1000) if at and at > 0 else int(time.time() * 1000)
+        msg = {"type": "focus_charge", "charge": round(max(0.0, float(charge)), 4),
+               "at_ms": at_ms}
         try:
             self.sync_message_queue.put({"type": "json", "data": msg})
         except Exception as e:
@@ -2501,12 +2516,15 @@ class LLMSessionManager:
         entering and sustaining Focus is driven solely by the inline path (the
         user's own messages). This only lets an active episode cool down.
 
-        Two-tier decay by whether the turn actually spoke:
-          * ``replied=True`` (a Phase-2 proactive reply was delivered) → faster
-            ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of the episode.
+        Decay rate by whether the turn actually spoke, via two config knobs:
+          * ``replied=True`` (a Phase-2 proactive reply was delivered) →
+            ``FOCUS_IDLE_REPLIED_RETENTION``.
           * ``replied=False`` (Phase-2 reached but produced no reply — empty /
-            aborted) → slower ``FOCUS_IDLE_SILENT_RETENTION``: barely spends it.
-        So Focus persistence is driven by how often she speaks, not raw time.
+            aborted) → ``FOCUS_IDLE_SILENT_RETENTION``.
+        Currently both are tuned to the same value (0.8), so speaking and silence
+        cool the episode at one gentle rate; the split is kept for future
+        re-tuning (invariant: replied <= silent). Focus persistence is driven by
+        how often a proactive turn fires, not raw time.
 
         ``episode_token`` / ``turn_token`` pin the decay to the exact focus state
         this proactive turn observed when it made its thinking decision — the

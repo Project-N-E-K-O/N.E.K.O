@@ -1889,33 +1889,34 @@ FOCUS_CHARGE_RETENTION = 0.5
 - 稳态：持续每轮 score=s 时 charge → s/(1-retention)（如 retention=0.5、s=0.5 → 趋近 1.0）。
 - 这是「敏感度」主旋钮。仅用于 inline（用户发声）路径。"""
 
-# idle（proactive 主动搭话）冷却分两档——proactive 绝不抬升 charge，只衰减；进入/
-# 维持凝神只由 inline（用户自己说的话）驱动。衰减快慢取决于这一轮 proactive 到底
-# 有没有把话说出来：开口了（消耗了这份专注）衰减快，没说出话（守着没开口，或思考
-# 超时/异常没接住）衰减略慢。故凝神的持续由「她开口次数」主导而非单纯时间流逝。
-# 两者都须 > 0、< 1，且 silent > replied。
-FOCUS_IDLE_SILENT_RETENTION = 0.7
+# idle（proactive 主动搭话）冷却——proactive 绝不抬升 charge，只衰减；进入/维持凝神
+# 只由 inline（用户自己说的话）驱动。原先分「开口/沉默」两档（开口更耗专注），现统一
+# 为同一保留率：无论这一轮 proactive 有没有把话说出来，凝神都按同一速度温和降温，持续
+# 长短由 proactive 触发频率主导而非单纯时间流逝。两个旋钮保留以便日后再拆，但须都 > 0、
+# < 1，且 replied <= silent。
+FOCUS_IDLE_SILENT_RETENTION = 0.8
 """proactive 本轮没把话说出来时的电荷保留率。
 - 涵盖：action != chat（被 guard/接管挡下、内容空、[PASS]），以及 Phase 2 思考
   超时 / 流式异常导致 aborted（最终也归 action=pass）——开了思考模式却没能在限时内
   接住，同样按此档降温。
-- 用途：charge = charge × 此值。0.7 = 每轮明显降温——没说出话（含思考超时）就别
-  一直占着凝神，但仍比开口（replied）退得慢一点。
-- 调低 = 沉默 / 超时也更快冷却。"""
+- 用途：charge = charge × 此值。0.8 = 每轮温和降温。当前与 replied 统一为 0.8，
+  开口与沉默同速冷却。
+- 调低 = 沉默 / 超时更快冷却。"""
 
-FOCUS_IDLE_REPLIED_RETENTION = 0.6
+FOCUS_IDLE_REPLIED_RETENTION = 0.8
 """proactive 本轮真开口了（action == chat：投递了主动搭话）时的电荷保留率。
-- 用途：charge = charge × 此值。0.6 = 每开口一次明显消耗——cap=1.0 起约 3 次主动
-  搭话漏到 EXIT(0.3) 以下退出（「她降临后追一两句就放下」）。
-- 须 < FOCUS_IDLE_SILENT_RETENTION：开口比沉默消耗更多。调低 = 开口后退得更快。
+- 用途：charge = charge × 此值。0.8 = 每开口一次温和消耗——cap=1.0(满电)起约需 6 次
+  主动搭话才漏到 EXIT(0.3) 以下退出，凝神逗留更久。
+- 须 <= FOCUS_IDLE_SILENT_RETENTION：开口不比沉默退得更慢。当前两档统一为 0.8。
 - 上游：SM.update_focus 的 retention_override（idle 收尾按 action 选这两档之一）。"""
 
-# 调参护栏：把两档冷却的注释约定变成 fail-fast 的硬校验，避免后续误配把语义反转——
-# >= 1.0 会让 idle tick 不降反升（破坏「绝不抬升」），silent <= replied 会让「开口」
-# 比「沉默」消耗更少（快慢档颠倒）。模块加载即校验，配错直接报错而非静默跑坏。
-if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION < FOCUS_IDLE_SILENT_RETENTION < 1.0):
+# 调参护栏：把两档冷却的约定变成 fail-fast 的硬校验，避免后续误配把语义反转——
+# >= 1.0 会让 idle tick 不降反升（破坏「绝不抬升」），replied > silent 会让「开口」
+# 比「沉默」退得更慢（快慢档颠倒）。允许两档相等（当前统一 0.8，开口/沉默同速）。
+# 模块加载即校验，配错直接报错而非静默跑坏。
+if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION <= FOCUS_IDLE_SILENT_RETENTION < 1.0):
     raise ValueError(
-        "Focus idle retentions must satisfy 0 < replied < silent < 1 "
+        "Focus idle retentions must satisfy 0 < replied <= silent < 1 "
         f"(got replied={FOCUS_IDLE_REPLIED_RETENTION}, "
         f"silent={FOCUS_IDLE_SILENT_RETENTION})"
     )
@@ -1977,13 +1978,14 @@ FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
 """FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
 - 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
 - 信号语义分两类：
-  · keyword / emotion / question 是「正证据」——无证据时返回 None、不进分母（不投反对
-    票）。于是任一满分都能单轮独立触发，不会被别的「0」在分母里稀释。emotion 是 keyword
-    词表的真模型升级（故词表权重让到 0.3、模型情绪升到 0.7）；question 是认知轴的加分项
-    （用户在问复杂客观题——数学/逻辑/推理——也值得 thinking-on 凝神），与 distress 正交但
-    并入同一 charge。
+  · keyword / emotion / question 是触发信号——缺席返回 None、不进分母（不稀释别的）。
+    emotion 是 keyword 词表的真模型升级（故词表权重 0.4 < 模型情绪 0.7），且**带符号**：
+    负效价 distress 为正、正效价 joy 为负（neutral 返回 None）——开心会把 score/charge
+    往下拉。question 是认知轴加分项（问复杂客观题——数学/逻辑/推理——也值得 thinking-on），
+    与 distress 正交但并入同一 charge。
   · cadence 是行为信号——它的 0.0（「字数没骤降」）是有信息的、照常进分母；只有样本
-    不足时返回 None；且三个正证据全缺席时被 gate 掉（自身不单独触发）。
+    不足时返回 None；且**仅在有 distress 证据**（keyword / question / emotion>0）时才计入
+    （否则一句短的开心话会让 cadence 误推 focus）。
 - emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
   distress = max(0,-valence) × (FOCUS_EMOTION_AROUSAL_FLOOR + (1-floor)×arousal)——
   负效价主导、arousal 带下限放大（见 FOCUS_EMOTION_AROUSAL_FLOOR）。**滞后一拍**
