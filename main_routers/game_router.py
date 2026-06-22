@@ -50,6 +50,7 @@ _SSML_TAG_PATTERN = re.compile(
 from fastapi import APIRouter, HTTPException, Request
 
 from config.prompts.prompts_game import (
+    PREGAME_CONTEXT_INPUT_WATERMARK,
     get_badminton_pregame_context_formatter_labels,
     get_badminton_pregame_context_prompt,
     get_badminton_quick_lines_prompt,
@@ -1907,7 +1908,9 @@ async def _run_pregame_context_ai(
         async with llm:
             result = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # game-session-scoped input (snapshot / history / archive / config), bounded by a single finite game; not external free-text. Deeper per-field truncation tracked as a game-domain follow-up.
                 SystemMessage(content=prompt_template),
-                HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
+                HumanMessage(
+                    content=f"{json.dumps(user_payload, ensure_ascii=False)}\n{PREGAME_CONTEXT_INPUT_WATERMARK}"
+                ),
             ])
         raw = _strip_json_fence(str(result.content or ""))
         parsed = robust_json_loads(raw)

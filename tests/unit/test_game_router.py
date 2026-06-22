@@ -3037,6 +3037,55 @@ async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_pregame_context_ai_human_message_keeps_watermark(monkeypatch):
+    from config.prompts.prompts_game import PREGAME_CONTEXT_INPUT_WATERMARK
+
+    captured = {}
+
+    class FakeResult:
+        content = '{"launchIntent": "unknown"}'
+
+    class FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return FakeResult()
+
+    async def fake_create(*_args, **_kwargs):
+        return FakeLLM()
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", fake_create)
+    monkeypatch.setattr(
+        game_router,
+        "_get_character_info",
+        lambda _name: {"model": "m", "base_url": "u", "api_key": "k"},
+    )
+
+    await game_router._run_pregame_context_ai(
+        lanlan_name="Lan",
+        master_name="玩家",
+        lanlan_prompt="人设摘录",
+        recent_history="昨天一起聊了很久",
+        neko_initiated=True,
+        neko_invite_text="一起踢球吗",
+        prompt_template="开局上下文分析器系统提示",
+        extra_payload={"gameType": "soccer"},
+    )
+
+    human_message = captured["messages"][1]
+    # 收尾水印必须在 human message 末尾，且把近期记录原文包在水印之上。
+    assert human_message.content.endswith(PREGAME_CONTEXT_INPUT_WATERMARK)
+    assert "昨天一起聊了很久" in human_message.content
+    assert PREGAME_CONTEXT_INPUT_WATERMARK.startswith("======以上为")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_game_chat_sends_filtered_llm_visible_event(monkeypatch):
     class FakeSession:
         def __init__(self):
