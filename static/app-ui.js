@@ -1159,6 +1159,9 @@
         if (![x, y, width, height].every(Number.isFinite) || width <= 1 || height <= 1) {
             return null;
         }
+        if (isNativeReturnBallViewportSize(width, height)) {
+            return null;
+        }
         return { x, y, width, height };
     }
 
@@ -1226,6 +1229,20 @@
         });
     }
 
+    function recoverLive2DRendererFromReturnBallViewport(reason) {
+        try {
+            if (!window.live2dManager ||
+                typeof window.live2dManager.recoverRendererFromReturnBallViewport !== 'function') {
+                return false;
+            }
+            const recovered = window.live2dManager.recoverRendererFromReturnBallViewport(reason);
+            return !!recovered;
+        } catch (error) {
+            console.warn('[showCurrentModel] recover Live2D renderer from return-ball viewport failed:', error);
+            return false;
+        }
+    }
+
     function getPendingModelViewportRestoreBounds() {
         const pending = normalizeModelViewportBounds(pendingNativeModelViewportRestoreBounds);
         if (pending) return pending;
@@ -1246,9 +1263,21 @@
 
     async function ensureModelViewportReadyBeforeShowCurrentModel() {
         const restoreBounds = getPendingModelViewportRestoreBounds();
-        if (!restoreBounds) return { ready: true, skipped: true };
+        if (!restoreBounds) {
+            if (isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)) {
+                return {
+                    ready: false,
+                    restored: false,
+                    missingRestoreBounds: true,
+                    returnBallViewport: true
+                };
+            }
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:no-restore-bounds');
+            return { ready: true, skipped: true };
+        }
         if (isModelViewportRestored(restoreBounds)) {
             pendingNativeModelViewportRestoreBounds = null;
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:already-restored');
             return { ready: true, restored: true };
         }
 
@@ -1268,6 +1297,7 @@
         const viewportWait = await waitForModelViewportRestore(restoreBounds);
         if (viewportWait.restored) {
             pendingNativeModelViewportRestoreBounds = null;
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:after-wait');
             return { ready: true, restored: true, viewportWait };
         }
 
@@ -1792,6 +1822,47 @@
     let idleReturnBallDesktopDragStatePending = null;
     let pendingPngtuberReturnConfig = null;
 
+    function resolveModelReturnEnter(reason) {
+        const resolve = window._nekoModelReturnEnterResolve;
+        window._nekoModelReturnEnterResolve = null;
+        window._nekoModelReturnEnterPromise = null;
+        window._nekoModelReturnEnterContainer = null;
+        if (typeof resolve === 'function') {
+            try {
+                resolve({ reason });
+            } catch (_) {}
+        }
+    }
+
+    function startModelReturnEnterWait(container) {
+        resolveModelReturnEnter('replaced');
+        let resolveWait = null;
+        const promise = new Promise(resolve => {
+            resolveWait = resolve;
+        });
+        window._nekoModelReturnEnterContainer = container || null;
+        window._nekoModelReturnEnterResolve = resolveWait;
+        window._nekoModelReturnEnterPromise = promise;
+        return promise;
+    }
+
+    async function waitForModelReturnEnterToSettle() {
+        const promise = window._nekoModelReturnEnterPromise;
+        if (promise && typeof promise.then === 'function') {
+            let timeoutId = null;
+            await Promise.race([
+                promise,
+                new Promise(resolve => {
+                    timeoutId = setTimeout(resolve, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS + 180);
+                })
+            ]);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+        }
+        await waitForAnimationFrames(2);
+    }
+
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
         return new Promise(resolve => {
@@ -1952,6 +2023,7 @@
 
     async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
         // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
+        await waitForModelReturnEnterToSettle();
         await waitForAnimationFrames(2);
 
         let activeModelType = null;
@@ -2279,7 +2351,9 @@
         if (window._nekoModelReturnEnterTimer) {
             clearTimeout(window._nekoModelReturnEnterTimer);
             window._nekoModelReturnEnterTimer = null;
+            resolveModelReturnEnter('timer-cleared');
         }
+        startModelReturnEnterWait(container);
 
         container.style.transition = 'none';
         container.style.opacity = '0';
@@ -2287,7 +2361,10 @@
         void container.offsetWidth;
 
         requestAnimationFrame(() => {
-            if (!container || !container.isConnected) return;
+            if (!container || !container.isConnected) {
+                resolveModelReturnEnter('disconnected-before-raf');
+                return;
+            }
             container.style.transition = NEKO_MODEL_RETURN_ENTER_TRANSITION;
             container.style.opacity = '1';
             container.style.transform = 'scale(1) translateZ(0)';
@@ -2298,6 +2375,7 @@
                     container.style.removeProperty('transform');
                 }
                 window._nekoModelReturnEnterTimer = null;
+                resolveModelReturnEnter('cleanup');
             }, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS);
         });
         return true;
@@ -2440,6 +2518,16 @@
         );
     }
 
+    function shouldBlockCatToModelTransitionForModelViewport(direction) {
+        if (direction !== 'cat-to-model') return false;
+        const restoreBounds = getPendingModelViewportRestoreBounds();
+        if (restoreBounds && !isModelViewportRestored(restoreBounds)) {
+            return true;
+        }
+        const blockRawShrink = isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight);
+        return blockRawShrink;
+    }
+
     function playNekoModelCatTransition(options = {}) {
         const container = options.container || null;
         const anchorRect = options.anchorRect || null;
@@ -2453,6 +2541,13 @@
             ? Math.max(0, Number(options.beforeOverlayCleanupMs))
             : NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS;
         let token = transitionToken;
+        if (shouldBlockCatToModelTransitionForModelViewport(direction)) {
+            return Promise.resolve({
+                blocked: true,
+                direction,
+                reason: 'model-viewport-not-restored'
+            });
+        }
         if (nekoModelCatTransitionActive) {
             const ownsActiveTransition = transitionToken &&
                 nekoModelCatTransitionActive.token === transitionToken &&
@@ -4362,8 +4457,8 @@
                 }, 10);
             } else {
                 console.error('[App] resetSessionButton 未找到！');
-            }
-        });
+        }
+    });
 
         function restoreReturnBallAfterBlockedModelViewport(event) {
             const eventType = String(event && event.type || '');

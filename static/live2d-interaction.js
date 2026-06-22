@@ -1369,6 +1369,10 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         return;
     }
 
+    if (typeof this.recoverRendererFromReturnBallViewport === 'function') {
+        this.recoverRendererFromReturnBallViewport('save-position-before');
+    }
+
     const position = { x: this.currentModel.x, y: this.currentModel.y };
     const scale = { x: this.currentModel.scale.x, y: this.currentModel.scale.y };
 
@@ -1423,7 +1427,6 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
             viewportInfo = { width: rw, height: rh };
         }
     }
-
     // 异步保存，不阻塞交互
     this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo, viewportInfo)
         .then(success => {

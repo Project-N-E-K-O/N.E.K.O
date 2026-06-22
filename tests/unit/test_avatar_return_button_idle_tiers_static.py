@@ -14,6 +14,8 @@ COMMON_UI_HUD_PATH = PROJECT_ROOT / "static" / "common-ui-hud.js"
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d-ui-buttons.js"
 VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm-ui-buttons.js"
 MMD_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "mmd-ui-buttons.js"
+LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d-core.js"
+LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d-interaction.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1-click.gif"
@@ -164,9 +166,11 @@ def test_model_cat_transition_contract_is_present():
     assert "consumeModelReturnEnterRect()" in source
     assert "function ensureModelViewportReadyBeforeShowCurrentModel()" in source
     assert "function restoreReturnBallAfterBlockedModelViewport(event)" in source
+    assert "function shouldBlockCatToModelTransitionForModelViewport(direction)" in source
     assert "const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();" in source
     assert "blocked model display because Pet viewport is still return-ball sized" in source
     assert "function setPendingNativeModelViewportRestoreBounds(bounds)" in source
+    assert "if (isNativeReturnBallViewportSize(width, height)) {" in source
     assert "const pendingRestoreBounds = restoreBounds || {" in source
     assert "setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);" in source
     assert "setPendingNativeModelViewportRestoreBounds(finalBounds || {" in source
@@ -176,6 +180,9 @@ def test_model_cat_transition_contract_is_present():
     assert "getModelCatTransitionScaleTransform()" in source
     assert "function prepareModelReturnContainer(container, rect, options = {})" in source
     assert "container.style.transform = 'scale(1) translateZ(0)'" in source
+    assert "function startModelReturnEnterWait(container)" in source
+    assert "function waitForModelReturnEnterToSettle()" in source
+    assert "resolveModelReturnEnter('cleanup')" in source
     assert "NEKO_MODEL_RETURN_ENTER_TRANSITION = 'opacity 1120ms ease-out, transform 1080ms cubic-bezier(0.22, 1, 0.36, 1)'" in source
     assert "NEKO_MODEL_RETURN_ENTER_CLEANUP_MS = 1160" in source
     assert "NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out'" in source
@@ -187,6 +194,15 @@ def test_model_cat_transition_contract_is_present():
     ]
     assert "}, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS)" in return_enter_block
     assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS" not in return_enter_block
+    _assert_source_order(
+        return_enter_block,
+        "model return enter exposes completion before cleanup",
+        "startModelReturnEnterWait(container);",
+        "container.style.transform = getModelCatTransitionScaleTransform();",
+        "container.style.transform = 'scale(1) translateZ(0)';",
+        "window._nekoModelReturnEnterTimer = setTimeout(() => {",
+        "resolveModelReturnEnter('cleanup')",
+    )
     assert "NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in'" in source
     assert "function getActiveModelTransitionRect()" in source
     assert "getModelScreenBounds" in source
@@ -248,12 +264,25 @@ def test_model_cat_transition_contract_is_present():
     assert "window.playNekoModelCatTransition" in avatar_source
     assert "window.dispatchEvent(event);" in avatar_source
     assert "dispatchReturnEvent();" in avatar_source
+    assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
     assert "let nekoModelCatRevealPlaybackToken = 0" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
     assert "url.searchParams.set('reveal'" in source
     assert "function restartNekoModelCatRevealArt(container)" in source
     assert "const isCurrentTransition = () => isNekoModelCatTransitionTokenCurrent(token)" in source
     assert "if (!isCurrentTransition()) return;" in source
+    transition_function_block = source[
+        source.index("function playNekoModelCatTransition(options = {})"):
+        source.index("function resetReturnBallTemporaryStyle(container)")
+    ]
+    _assert_source_order(
+        transition_function_block,
+        "cat-to-model transition blocks before reserving transition state",
+        "if (shouldBlockCatToModelTransitionForModelViewport(direction)) {",
+        "reason: 'model-viewport-not-restored'",
+        "if (nekoModelCatTransitionActive) {",
+        "container.setAttribute('data-neko-model-cat-transitioning', direction);",
+    )
     viewport_guard_start = source.index("const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
     show_current_model_block = source[
         viewport_guard_start:
@@ -308,6 +337,31 @@ def test_model_cat_transition_contract_is_present():
     assert "document.getElementById(`${match[1]}-return-button-container`)" in restore_block
     assert "revealReturnBallContainer(container, 'return-ball-model-viewport-blocked')" in restore_block
     assert "showReturnBallContainer(container, returnRect)" in restore_block
+    settle_block = source[
+        source.index("async function settleReturnedModelBounds(shouldSaveWhenUnchanged)"):
+        source.index("function cancelReturnBallReveal(container)")
+    ]
+    _assert_source_order(
+        settle_block,
+        "return settle waits for model enter animation before snap/save",
+        "await waitForModelReturnEnterToSettle();",
+        "await waitForAnimationFrames(2);",
+        "if (window.mmdManager && window.mmdManager.currentModel",
+        "if (window.vrmManager && window.vrmManager.currentModel",
+        "if (window.live2dManager) {",
+    )
+    viewport_ready_block = source[
+        source.index("async function ensureModelViewportReadyBeforeShowCurrentModel()"):
+        source.index("// --- showCurrentModel ---")
+    ]
+    _assert_source_order(
+        viewport_ready_block,
+        "model viewport guard blocks raw return-ball viewport without trusting invalid target",
+        "if (!restoreBounds) {",
+        "isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)",
+        "ready: false",
+        "return { ready: true, skipped: true };",
+    )
 
     transition_promise_start = source.index("const transitionPromise = new Promise((resolve) => {")
     transition_promise_block = source[
@@ -2242,6 +2296,122 @@ def test_return_button_local_no_move_release_clears_pending_drag_state():
         "} else {",
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-cancel'",
     )
+
+
+def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
+    core_source = LIVE2D_CORE_PATH.read_text(encoding="utf-8")
+    interaction_source = LIVE2D_INTERACTION_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "const LIVE2D_RETURN_BALL_VIEWPORT_MAX_SIZE = 200;" in core_source
+    assert "function isLive2DReturnBallViewportSize(width, height)" in core_source
+    assert "if (!window.__LANLAN_IS_ELECTRON_PET__) return false;" in core_source
+    assert "recoverRendererFromReturnBallViewport(reason = 'manual')" in core_source
+
+    resize_block = _source_slice_between(
+        core_source,
+        "const doResize = (reason) => {",
+        "this._screenChangeHandler = () => {",
+        "live2d renderer resize",
+    )
+    resize_guard_block = resize_block[
+        resize_block.index("const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);"):
+    ]
+    _assert_source_order(
+        resize_guard_block,
+        "live2d renderer skips temporary return-ball viewport before resize",
+        "const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);",
+        "if (isLive2DReturnBallViewportSize(newW, newH)) {",
+        "return;",
+        "renderer.resize(newW, newH);",
+    )
+    recovery_resize_block = resize_block[
+        resize_block.index("const restoringFromReturnBallViewport ="):
+    ]
+    _assert_source_order(
+        recovery_resize_block,
+        "live2d renderer recovers polluted viewport before pending-display branch",
+        "const restoringFromReturnBallViewport =",
+        "renderer.resize(newW, newH);",
+        "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {",
+    )
+    pending_branch_block = resize_block[
+        resize_block.index("if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {"):
+    ]
+    _assert_source_order(
+        pending_branch_block,
+        "live2d renderer skips model scaling after return-ball recovery",
+        "if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {",
+        "restoringFromReturnBallViewport",
+        "return;",
+        "this.currentModel.x *= wRatio;",
+    )
+
+    screen_change_block = _source_slice_between(
+        core_source,
+        "this._screenChangeHandler = () => {",
+        "this._displayChangeHandler = () => {",
+        "live2d window resize handler",
+    )
+    _assert_source_contains(
+        screen_change_block,
+        "const shouldRecoverReturnBallRenderer = !!(renderer && renderer.screen &&",
+        "live2d window resize handler",
+    )
+    _assert_source_contains(
+        screen_change_block,
+        "isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height)",
+        "live2d window resize handler",
+    )
+    _assert_source_contains(
+        screen_change_block,
+        "'window.resize:return-ball-renderer-recovery'",
+        "live2d window resize handler",
+    )
+
+    recovery_method_block = _source_slice_between(
+        core_source,
+        "recoverRendererFromReturnBallViewport(reason = 'manual')",
+        "// 加载用户偏好",
+        "live2d return-ball renderer recovery method",
+    )
+    _assert_source_order(
+        recovery_method_block,
+        "live2d return-ball renderer recovery only touches renderer size",
+        "if (isLive2DReturnBallViewportSize(currentW, currentH)) return false;",
+        "isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height)",
+        "renderer.resize(targetW, targetH);",
+        "return true;",
+    )
+    assert "currentModel.x" not in recovery_method_block
+    assert "currentModel.scale" not in recovery_method_block
+
+    save_block = _source_slice_between(
+        interaction_source,
+        "Live2DManager.prototype._savePositionAfterInteraction = async function () {",
+        "// 防抖动保存位置的辅助函数",
+        "live2d save position",
+    )
+    _assert_source_order(
+        save_block,
+        "live2d save recovers renderer before reading viewportInfo",
+        "this.recoverRendererFromReturnBallViewport('save-position-before');",
+        "const position = { x: this.currentModel.x, y: this.currentModel.y };",
+        "let viewportInfo = null;",
+        "viewportInfo = { width: rw, height: rh };",
+        "this.saveUserPreferences",
+    )
+
+    viewport_ready_block = _source_slice_between(
+        app_ui_source,
+        "function recoverLive2DRendererFromReturnBallViewport(reason)",
+        "// --- showCurrentModel ---",
+        "app-ui model viewport ready",
+    )
+    assert "window.live2dManager.recoverRendererFromReturnBallViewport(reason)" in viewport_ready_block
+    assert "recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:no-restore-bounds')" in viewport_ready_block
+    assert "recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:already-restored')" in viewport_ready_block
+    assert "recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:after-wait')" in viewport_ready_block
 
 
 def test_cat1_minimized_ball_inside_cat_finishes_without_side_retarget_jitter():

@@ -5944,7 +5944,6 @@ const AvatarButtonMixin = {
                     window.dispatchEvent(event);
                 };
                 if (typeof window.playNekoModelCatTransition === 'function') {
-                    returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');
                     window.playNekoModelCatTransition({
                         direction: 'cat-to-model',
                         anchorRect: rect,
