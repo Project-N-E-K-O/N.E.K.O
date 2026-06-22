@@ -519,8 +519,9 @@ def test_phase9_neko_coach_uses_static_yui_asset_with_scene_driven_copy() -> Non
     assert 'data-neko-coach-action="session-summary"' not in index
     assert 'data-neko-coach-expression' not in index
     assert "NEKO_COACH_SCENE_ASSETS" not in main_js
-    assert "NEKO_COACH_SCENE_RECOMMENDATIONS" in main_js
+    assert "NEKO_COACH_SCENE_RECOMMENDATIONS" not in main_js
     assert "NEKO_COACH_SCENE_ACTIONS" in main_js
+    assert "const recommendationScene = Object.prototype.hasOwnProperty.call(NEKO_COACH_SCENE_ACTIONS, scene) ? scene : 'idle';" in main_js
     assert "function deriveNekoCoachScene" in main_js
     assert "function deriveNekoCoachActions" in main_js
     assert "function renderNekoCoachSprite" not in main_js
