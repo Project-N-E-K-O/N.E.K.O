@@ -36,12 +36,20 @@ test('startup greeting waits for an explicit release instead of firing on websoc
         'model-ready sends must wait for the startup greeting release gate before icebreaker or send checks'
     );
 
+    const fallbackBlock = appWebsocketSource.split('function scheduleStartupGreetingReleaseFallback()')[1].split(
+        'function sendStartupGreetingReleaseRequest(reason)',
+        1,
+    )[0];
+    assert.match(fallbackBlock, /S\._startupGreetingReleaseFallbackTimer = setTimeout/);
+    assert.match(fallbackBlock, /if \(isStartupTutorialActiveForGreeting\(\)\) \{\s*scheduleStartupGreetingReleaseFallback\(\);\s*return;\s*\}/);
+    assert.match(fallbackBlock, /releaseStartupGreetingCheck\('startup-greeting-release-timeout'\)/);
+
     const requestBlock = appWebsocketSource.split('function sendStartupGreetingReleaseRequest(reason)')[1].split(
         'function releaseStartupGreetingCheck(reason)',
         1,
     )[0];
-    assert.match(requestBlock, /S\._startupGreetingReleaseFallbackTimer = setTimeout/);
-    assert.match(requestBlock, /releaseStartupGreetingCheck\('startup-greeting-release-timeout'\)/);
+    assert.match(requestBlock, /if \(!hasStartupGreetingReleaseProducer\(\)\) \{\s*releaseStartupGreetingCheck\(reason \|\| 'startup-greeting-no-release-producer'\);\s*return;\s*\}/);
+    assert.match(requestBlock, /scheduleStartupGreetingReleaseFallback\(\)/);
 
     const releaseBlock = appWebsocketSource.split('function releaseStartupGreetingCheck(reason)')[1].split(
         'function _consumeGreetingCheckForNewUserIcebreaker()',

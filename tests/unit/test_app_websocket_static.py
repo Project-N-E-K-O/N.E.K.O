@@ -36,11 +36,24 @@ def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     assert "STARTUP_GREETING_RELEASE_FALLBACK_MS" in source
     assert "function sendStartupGreetingReleaseRequest(reason)" in source
     assert "function releaseStartupGreetingCheck(reason)" in source
+    assert "function hasStartupGreetingReleaseProducer()" in source
+    assert "function isStartupTutorialActiveForGreeting()" in source
+    assert "function scheduleStartupGreetingReleaseFallback()" in source
     assert "window.addEventListener(STARTUP_GREETING_RELEASE_EVENT" in source
+    assert "releaseStartupGreetingCheck(reason || 'startup-greeting-no-release-producer')" in source
     assert "releaseStartupGreetingCheck('startup-greeting-release-timeout')" in source
+    assert "scheduleStartupGreetingReleaseFallback();" in source
     assert "clearTimeout(S._startupGreetingReleaseFallbackTimer)" in source
     assert "sendHomeTutorialState(" not in source
     assert "neko:home-tutorial-features-suppressed" not in source
+
+    active_block = source.split("function isStartupTutorialActiveForGreeting()", 1)[1].split(
+        "function scheduleStartupGreetingReleaseFallback()",
+        1,
+    )[0]
+    assert "manager.isTutorialRunning === true" in active_block
+    assert "document.body.classList.contains('yui-taking-over')" in active_block
+    assert "window.isInTutorial === true" not in active_block
 
 
 def test_blocked_greeting_check_retries_without_home_tutorial_state():

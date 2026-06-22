@@ -3234,22 +3234,74 @@
         }
     }
 
-    function sendStartupGreetingReleaseRequest(reason) {
-        S._startupGreetingReleasePending = true;
-        S._startupGreetingReleaseReason = reason || 'ws-open';
+    function isStartupGreetingHomePage() {
+        try {
+            var path = window.location && typeof window.location.pathname === 'string'
+                ? window.location.pathname
+                : '';
+            return path === '/' || path === '/index.html';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function hasStartupGreetingReleaseProducer() {
+        try {
+            if (window.universalTutorialManager) {
+                return true;
+            }
+        } catch (_) {}
+        if (isStartupGreetingHomePage()) {
+            return true;
+        }
+        try {
+            return !!document.querySelector('script[src*="/static/tutorial/core/universal-manager.js"],script[src*="tutorial/core/universal-manager.js"]');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isStartupTutorialActiveForGreeting() {
+        try {
+            var manager = window.universalTutorialManager || null;
+            if (manager && manager.isTutorialRunning === true) return true;
+            if (manager && manager.activeAvatarFloatingGuideRound) return true;
+            if (document.body && document.body.classList && document.body.classList.contains('yui-taking-over')) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function scheduleStartupGreetingReleaseFallback() {
         if (S._startupGreetingReleaseFallbackTimer) {
             clearTimeout(S._startupGreetingReleaseFallbackTimer);
         }
         S._startupGreetingReleaseFallbackTimer = setTimeout(function () {
             S._startupGreetingReleaseFallbackTimer = 0;
             if (S._startupGreetingReleasePending) {
+                if (isStartupTutorialActiveForGreeting()) {
+                    scheduleStartupGreetingReleaseFallback();
+                    return;
+                }
                 releaseStartupGreetingCheck('startup-greeting-release-timeout');
             }
         }, STARTUP_GREETING_RELEASE_FALLBACK_MS);
+    }
+
+    function sendStartupGreetingReleaseRequest(reason) {
         const released = readStartupGreetingReleasedDetail();
         if (released) {
             releaseStartupGreetingCheck(released.reason || 'startup-greeting-release');
+            return;
         }
+        if (!hasStartupGreetingReleaseProducer()) {
+            releaseStartupGreetingCheck(reason || 'startup-greeting-no-release-producer');
+            return;
+        }
+        S._startupGreetingReleasePending = true;
+        S._startupGreetingReleaseReason = reason || 'ws-open';
+        scheduleStartupGreetingReleaseFallback();
     }
 
     function releaseStartupGreetingCheck(reason) {

@@ -139,7 +139,6 @@
                 : '';
             this.override = {
                 activePrefix: activePrefix,
-                proactiveSnapshot: snapshotProactiveState(),
                 restoreRequested: false
             };
             const override = this.override;
@@ -177,6 +176,7 @@
                 };
                 this.override.currentName = currentName;
                 this.override.snapshotPayload = snapshotPayload;
+                this.override.proactiveSnapshot = snapshotProactiveState();
                 applyProactiveState(buildDisabledProactiveState());
 
                 this.setPreparing(true);
