@@ -45,12 +45,24 @@
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
+    function _isElectronFullChatHost(path) {
+        const normalizedPath = path || '';
+        if (normalizedPath !== '/chat_full' && normalizedPath !== '/chat_full/') return false;
+        const body = document.body;
+        return !!(
+            body &&
+            body.classList &&
+            body.classList.contains('neko-electron-runtime') &&
+            body.getAttribute('data-chat-host-kind') === 'full'
+        );
+    }
+
     function _computeSelfRank() {
         try {
             const path = (window.location && window.location.pathname) || '';
-            // chat_full.html 使用独立 Electron session，BroadcastChannel 看不到 Pet/compact。
-            // 它只显示/控制同步过来的聊天与播放器，不参与 proactive 调度，避免自封 leader。
-            if (path === '/chat_full') return 99;
+            // Electron full chat 使用独立 session，只显示/控制同步过来的聊天与播放器。
+            // Web /chat_full 没有 neko-electron-runtime，仍需参与 proactive leader 选举。
+            if (_isElectronFullChatHost(path)) return 99;
             // chat.html 浮窗 → 从节点
             if (path === '/chat') return 1;
             // 不参与 proactive 的页面（model_manager / jukebox / subtitle / agenthud / toast / cookies_login 等）

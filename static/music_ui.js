@@ -68,6 +68,7 @@
 
     let currentPlayingTrack = null;
     let currentMusicPlaybackId = null;
+    let currentMusicOwnerStartedAt = 0;
     let localPlayer = null;
     let musicCardMessageId = null;
     let aplayerLoadPromise = null;
@@ -311,6 +312,26 @@
 
     const isBarOwner = () => !!localPlayer;
 
+    function getRemoteMusicStateTimestamp(state, eventTs) {
+        const ts = Number(eventTs || (state && state.ts) || 0);
+        return Number.isFinite(ts) ? ts : 0;
+    }
+
+    function acceptRemoteMusicOwnerState(sender, state, eventTs) {
+        if (!isBarOwner()) return true;
+        if (!sender || sender === MUSIC_COORD_SENDER_ID || !state || !state.track) return false;
+
+        const remotePlaybackId = state.playbackId || '';
+        if (remotePlaybackId && remotePlaybackId === getCurrentMusicPlaybackId()) return false;
+
+        const remoteTs = getRemoteMusicStateTimestamp(state, eventTs);
+        if (remoteTs && currentMusicOwnerStartedAt && remoteTs < currentMusicOwnerStartedAt) return false;
+
+        // A newer remote owner wins; remove the local owner bar immediately so a mirror can replace it.
+        destroyMusicPlayer(true, false, true);
+        return true;
+    }
+
     const broadcastBarState = (patch) => {
         const statePayload = Object.assign({}, patch || {});
         if (!statePayload.playbackId) statePayload.playbackId = getCurrentMusicPlaybackId();
@@ -327,8 +348,8 @@
         postMusicPlayerBridgeEvent('bar_state', statePayload);
     };
 
-    const broadcastBarDestroyed = (fullTeardown) => {
-        const playbackId = getCurrentMusicPlaybackId();
+    const broadcastBarDestroyed = (fullTeardown, playbackIdOverride) => {
+        const playbackId = playbackIdOverride || getCurrentMusicPlaybackId();
         const message = {
             type: 'destroyed',
             sender: MUSIC_COORD_SENDER_ID,
@@ -1323,7 +1344,7 @@
                 applyMusicPlayerBridgeCoord(sender, payload.coordType, payload);
                 return true;
             } else if (event.type === 'bar_state') {
-                if (isBarOwner()) return false;
+                if (!acceptRemoteMusicOwnerState(sender, payload, event.ts)) return false;
                 setMirrorBarLeader(sender, 'bridge');
                 const rendered = renderMirrorBar(payload);
                 if (!rendered) scheduleMusicBarRelocation();
@@ -1351,16 +1372,26 @@
     async function pollMusicPlayerBridge() {
         if (musicPlayerBridgePollInFlight) return;
         musicPlayerBridgePollInFlight = true;
+        let abortController = null;
+        let abortTimer = 0;
         try {
+            if (typeof AbortController !== 'undefined') {
+                abortController = new AbortController();
+                abortTimer = window.setTimeout(() => {
+                    try { abortController.abort(); } catch (_) { /* ignore */ }
+                }, MUSIC_PLAYER_BRIDGE_POLL_MS + 2000);
+            }
             const surface = getMusicBridgeSurfaceState('poll');
             const params = new URLSearchParams({
                 sender: MUSIC_COORD_SENDER_ID,
                 since: String(musicPlayerBridgeSeq || 0)
             });
-            const response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT + '?' + params.toString(), {
+            const requestOptions = {
                 method: 'GET',
                 cache: 'no-store'
-            });
+            };
+            if (abortController) requestOptions.signal = abortController.signal;
+            const response = await fetch(MUSIC_PLAYER_BRIDGE_ENDPOINT + '?' + params.toString(), requestOptions);
             if (!response.ok) return;
             const data = await response.json();
             if (!data || data.success === false) return;
@@ -1410,6 +1441,7 @@
         } catch (_) {
             // Bridge is best-effort; BroadcastChannel/local owner remain usable.
         } finally {
+            if (abortTimer) window.clearTimeout(abortTimer);
             musicPlayerBridgePollInFlight = false;
         }
     }
@@ -1463,10 +1495,9 @@
                 if (!data.sender || data.sender === MUSIC_COORD_SENDER_ID) return;
                 try {
                     if (data.type === 'state') {
-                        // 本地是 owner 时忽略来自别人的 state；既防止 race 下
-                        // 另一个窗口的旧 state 覆盖掉自己真实 audio，也让
-                        // leader 切换瞬间不会有两份 bar 互相抢。
-                        if (isBarOwner()) return;
+                        // 如果本地仍是 owner，只接受比本地当前播放更新的远端 owner state，
+                        // 防止旧 state 反杀新播放，也避免两个窗口同时保留 audio。
+                        if (!acceptRemoteMusicOwnerState(data.sender, data, data.ts)) return;
                         // 绑定/切换到当前 leader —— 后续 ctrl 会带 target 指向它，
                         // destroyed 也只接受来自它的那一条，避免多 leader 交接时串窗
                         setMirrorBarLeader(data.sender, 'broadcast');
@@ -1818,6 +1849,7 @@
 
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false, updateToken = false) => {
+        const destroyedPlaybackId = getCurrentMusicPlaybackId();
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
         if (updateToken || fullTeardown) {
@@ -1906,8 +1938,9 @@
 
         // bar 镜像：让 follower 同步摘掉镜像 bar。fullTeardown 传下去
         // 是为了 follower 能走淡出动画而不是硬删。
-        if (removeDOM) broadcastBarDestroyed(fullTeardown);
+        if (removeDOM) broadcastBarDestroyed(fullTeardown, destroyedPlaybackId);
         currentMusicPlaybackId = null;
+        currentMusicOwnerStartedAt = 0;
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -2061,7 +2094,9 @@
         const previousCardId = musicCardMessageId;
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
-        currentMusicPlaybackId = createMusicPlaybackId(trackInfo, currentToken);
+        const playbackIdForRequest = createMusicPlaybackId(trackInfo, currentToken);
+        currentMusicPlaybackId = playbackIdForRequest;
+        currentMusicOwnerStartedAt = Date.now();
         currentPlayingTrack = trackInfo;
         // 广播一次占位 state —— APlayer 还在初始化/切曲，但 follower 现在
         // 就能把 bar 刷新到新 track，避免旧歌信息停留或 bar 空白。
@@ -2189,7 +2224,7 @@
                     // bar，但现在请求被更新的 token 取代，我们不会再发权威
                     // state，得主动广播 destroyed 把占位 bar 摘掉，不然 follower
                     // 会卡在一条假 bar 直到被下一次 state 盖掉。
-                    broadcastBarDestroyed(false);
+                    broadcastBarDestroyed(false, playbackIdForRequest);
                     return;
                 }
 
@@ -2573,7 +2608,7 @@
             if (isFirstRender && musicBar) removeMusicBarWithoutRelocation(musicBar);
             // 回滚：前面已经发过 emitBarInitialState，但 APlayer 没建起来，
             // 后续事件不会广播，follower 会卡着占位 bar，这里补一条 destroyed
-            broadcastBarDestroyed(false);
+            broadcastBarDestroyed(false, playbackIdForRequest);
             showErrorToast('music.playError', '音乐播放加载失败');
         }
     };
