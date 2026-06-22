@@ -17,6 +17,7 @@
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
+    var icebreakerSubtitlePanelOpenedSessionId = '';
     var contextAppendPromise = Promise.resolve();
 
     function safeJsonParse(raw, fallback) {
@@ -145,6 +146,32 @@
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
         });
+    }
+
+    function openSubtitleTranslationForIcebreakerAssistantMessage() {
+        try {
+            var bridge = window.subtitleBridge;
+            if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
+                bridge.setSubtitleEnabled(true, {
+                    persist: false,
+                    source: 'new-user-icebreaker-auto-open'
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle bridge open failed:', error);
+        }
+        try {
+            var host = window.reactChatWindowHost;
+            if (host && typeof host.setTranslateEnabled === 'function') {
+                host.setTranslateEnabled(true, {
+                    syncBridge: false,
+                    suppressHostEvent: true,
+                    persist: false
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle host translation open failed:', error);
+        }
     }
 
     function clearPendingStartDay(dayKey) {
@@ -436,6 +463,21 @@
         }
     }
 
+    function shouldOpenIcebreakerSubtitlePanelOnce() {
+        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+        if (!sessionId || icebreakerSubtitlePanelOpenedSessionId === sessionId) return false;
+        icebreakerSubtitlePanelOpenedSessionId = sessionId;
+        return true;
+    }
+
+    function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
+        if (role !== 'assistant' || contextOk !== true) return;
+        if (shouldOpenIcebreakerSubtitlePanelOnce()) {
+            openSubtitleTranslationForIcebreakerAssistantMessage();
+        }
+        finalizeIcebreakerAssistantSubtitle(text);
+    }
+
     function appendChatMessage(role, text, meta) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
@@ -455,10 +497,8 @@
         };
         broadcastIcebreakerAppendMessage(message);
         return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {
-            if (role === 'assistant' && contextOk === true) {
-                finalizeIcebreakerAssistantSubtitle(messageText);
-            }
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
+                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
                 return message;
             }
             return waitForChatHost(30000).then(function (host) {
@@ -466,6 +506,9 @@
                     host.openWindow();
                 }
                 return host.appendMessage(message);
+            }).then(function (result) {
+                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
+                return result;
             });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append message failed:', error);

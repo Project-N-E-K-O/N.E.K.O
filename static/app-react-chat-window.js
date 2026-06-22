@@ -3235,6 +3235,71 @@
         }
     }
 
+    function setTranslateEnabled(enabled, options) {
+        var requestOptions = options || {};
+        var next = !!enabled;
+        var shouldPersist = requestOptions.persist !== false;
+        var syncSource = requestOptions.source || 'react-chat-host-set-enabled';
+        if (requestOptions.syncBridge !== false) {
+            try {
+                var bridge = window.subtitleBridge;
+                if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
+                    bridge.setSubtitleEnabled(next, {
+                        persist: shouldPersist,
+                        source: syncSource
+                    });
+                } else {
+                    throw new Error('subtitleBridge.setSubtitleEnabled unavailable');
+                }
+            } catch (err) {
+                console.warn('[ReactChatWindow] bridge set enabled failed, using fallback:', err);
+                var appSt = window.appState;
+                var subtitleStore = window.nekoSubtitleShared;
+                if (appSt) appSt.subtitleEnabled = next;
+                var synced = false;
+                if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+                    try {
+                        subtitleStore.updateSettings({
+                            subtitleEnabled: next
+                        }, {
+                            persist: shouldPersist,
+                            source: syncSource
+                        });
+                        synced = true;
+                    } catch (storeErr) {
+                        console.warn('[ReactChatWindow] subtitle shared update failed:', storeErr);
+                    }
+                }
+                if (!synced && shouldPersist) {
+                    try {
+                        localStorage.setItem('subtitleEnabled', String(next));
+                    } catch (storageErr) {
+                        console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:', storageErr);
+                    }
+                }
+            }
+        }
+
+        if (shouldPersist
+            && window.appSettings
+            && typeof window.appSettings.saveSettings === 'function') {
+            try {
+                window.appSettings.saveSettings();
+            } catch (saveErr) {
+                console.warn('[ReactChatWindow] appSettings.saveSettings failed:', saveErr);
+            }
+        }
+
+        state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        syncSubtitleWindowFromTranslateToggle(next);
+        renderWindow();
+
+        if (requestOptions.suppressHostEvent !== true) {
+            dispatchHostEvent('translate-toggle', { enabled: next });
+        }
+        return next;
+    }
+
     function handleTranslateToggle() {
         var bridge = window.subtitleBridge;
         var next;
@@ -6895,6 +6960,9 @@
         syncGoodbyeComposerHidden: syncGoodbyeComposerHidden,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
+        },
+        setTranslateEnabled: function (enabled, options) {
+            return setTranslateEnabled(enabled, options || {});
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return getCurrentChatSurfaceMode(); },
