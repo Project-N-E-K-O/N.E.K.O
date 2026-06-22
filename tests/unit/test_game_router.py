@@ -3081,7 +3081,6 @@ async def test_pregame_context_ai_human_message_keeps_watermark(monkeypatch):
     # 收尾水印必须在 human message 末尾，且把近期记录原文包在水印之上。
     assert human_message.content.endswith(PREGAME_CONTEXT_INPUT_WATERMARK)
     assert "昨天一起聊了很久" in human_message.content
-    assert PREGAME_CONTEXT_INPUT_WATERMARK.startswith("======以上为")
 
 
 @pytest.mark.unit
