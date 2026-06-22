@@ -13,7 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Mini-game session diagnostic log in-memory buffer and helpers."""
+"""Mini-game session diagnostic log in-memory buffer and helpers.
+
+Fallback/degrade contract:
+callers must make the primary log message itself explicit when a fallback,
+degrade, skip, timeout, parse failure, or recovery path is used. Do not rely on
+a second summary field or details-only metadata to explain that the path was not
+normal success. Shared logging helpers should reuse the original logger/console
+message and args; if that text is unclear, fix the original message at the call
+site. Structured fields such as fallback/degraded/skipped/reason are for
+filtering and diagnosis, not for correcting an ambiguous message.
+"""
 
 from __future__ import annotations
 
@@ -158,6 +168,15 @@ def append_game_session_debug_log(
     preserve_message: bool = False,
     preserve_details: bool = False,
 ) -> dict | None:
+    """Append one mini-game session log entry.
+
+    Fallback/error-recovery callers must make ``message`` itself say the source
+    path failed, timed out, degraded, skipped, or used fallback. Do not add a
+    second summary just to repair an unclear message; fix the original
+    logger/console text at the call site. ``details`` fields such as
+    reason/error_type/fallback/degraded/skipped_reason are structured filters,
+    not replacements for clear primary log text.
+    """
     try:
         entry = _get_or_create_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
         if entry is None:
@@ -270,4 +289,3 @@ def list_game_session_debug_log_summaries(game_type: str = "") -> list[dict]:
         })
     summaries.sort(key=lambda item: float(item.get("updated_at") or 0.0), reverse=True)
     return summaries
-
