@@ -45,6 +45,86 @@ test('common guide helpers freeze config, register guides, and create locale aud
     });
 });
 
+test('common helper relays PC system cursor visibility and logs relay failures', () => {
+    const chatRelays = [];
+    const petRelays = [];
+    const channelMessages = [];
+    const warnings = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        }
+    };
+    const consoleApi = {
+        warn(...args) {
+            warnings.push(args);
+        }
+    };
+
+    common.syncPcSystemCursorHidden(true, 'tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        },
+        console: consoleApi
+    });
+
+    assert.equal(chatRelays.length, 1);
+    assert.equal(petRelays.length, 1);
+    assert.equal(channelMessages.length, 1);
+    assert.deepEqual(chatRelays[0], petRelays[0]);
+    assert.deepEqual(chatRelays[0], channelMessages[0]);
+    assert.equal(chatRelays[0].action, 'yui_guide_system_cursor_visibility');
+    assert.equal(chatRelays[0].hidden, true);
+    assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[0].reason, 'tutorial-started');
+    assert.equal(typeof chatRelays[0].timestamp, 'number');
+    assert.equal(warnings.length, 0);
+
+    const relayError = new Error('relay failed');
+    const petError = new Error('pet failed');
+    const channelError = new Error('channel failed');
+    common.syncPcSystemCursorHidden(false, 'destroy', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat() {
+                throw relayError;
+            },
+            relayToPet() {
+                throw petError;
+            }
+        },
+        channel: {
+            postMessage() {
+                throw channelError;
+            }
+        },
+        console: consoleApi
+    });
+
+    assert.deepEqual(warnings.map((entry) => entry[1]), [
+        'relayToChat',
+        'relayToPet',
+        'nekoBroadcastChannel'
+    ]);
+    assert.deepEqual(warnings.map((entry) => entry[2]), [
+        relayError,
+        petError,
+        channelError
+    ]);
+});
+
 test('guide helpers are exported from a standalone module and re-exported by common', () => {
     const helpersSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/guide-helpers.js'), 'utf8');
     const commonSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/common.js'), 'utf8');
