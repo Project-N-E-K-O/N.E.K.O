@@ -188,7 +188,15 @@ def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
         1,
     )[0]
     assert "style.cursor = 'none';" not in resistance_block
+    assert "return false;" in resistance_block
+    assert "return true;" in resistance_block
     assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
+
+    reveal_block = director_source.split("        revealUserCursor() {", 1)[1].split(
+        "        clearUserCursorReveal(resetCursor) {",
+        1,
+    )[0]
+    assert "this.syncSystemCursorHidden(false, 'user_cursor_revealed');" in reveal_block
 
     assert "syncPcSystemCursorHidden(hidden, reason = 'tutorial')" in manager_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in manager_source
@@ -201,7 +209,12 @@ def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
     assert "syncSystemCursorHidden(hidden, reason = 'tutorial')" in director_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in director_source
     assert "this.syncSystemCursorHidden(false, 'interrupt_resist_light');" in resistance_source
+    assert "let shouldRestoreHiddenCursorAfterResistance = false;" in resistance_source
+    assert "shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);" in resistance_source
+    assert "if (shouldRestoreHiddenCursorAfterResistance) {" in resistance_source
     assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');" in resistance_source
+    assert "shouldRestoreHiddenCursorAfterResistance = call(" in resistance_source
+    assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');" in resistance_source
     assert "this.syncSystemCursorHidden(false, 'interrupt_angry_exit');" in resistance_source
     assert "this.syncSystemCursorHidden(false, 'destroy');" in director_source
     assert "syncSystemCursorHidden: optional callback" in resistance_source

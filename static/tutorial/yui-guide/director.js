@@ -11478,6 +11478,7 @@
             document.documentElement.classList.add('yui-resistance-cursor-reveal');
             document.body.classList.add('yui-user-cursor-revealed');
             document.body.classList.add('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(false, 'user_cursor_revealed');
         }
 
         clearUserCursorReveal(resetCursor) {
@@ -11509,7 +11510,7 @@
         prepareResistanceCursorReveal() {
             if (this.userCursorRevealed) {
                 this.revealUserCursor();
-                return;
+                return false;
             }
 
             if (this.resistanceCursorTimer) {
@@ -11524,6 +11525,7 @@
                 document.body.classList.remove('yui-resistance-cursor-reveal');
                 this.restoreHiddenCursorAfterResistance = false;
             }, 3000);
+            return true;
         }
 
         syncSystemCursorHidden(hidden, reason = 'tutorial') {

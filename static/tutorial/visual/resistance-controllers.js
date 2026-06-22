@@ -102,10 +102,16 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
+            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
                 call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_resist_light');
-                call(this.callbacks, 'prepareResistanceCursorReveal', null, normalizedOptions);
+                shouldRestoreHiddenCursorAfterResistance = call(
+                    this.callbacks,
+                    'prepareResistanceCursorReveal',
+                    false,
+                    normalizedOptions
+                ) === true;
             }
 
             call(this.callbacks, 'pauseCurrentSceneForResistance', null);
@@ -163,7 +169,9 @@
                 if (this.isStopping()) {
                     return;
                 }
-                call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
+                if (shouldRestoreHiddenCursorAfterResistance) {
+                    call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
+                }
 
                 const didRestorePresentationSnapshot = call(
                     this.callbacks,
@@ -496,10 +504,11 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
+            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
                 this.syncSystemCursorHidden(false, 'interrupt_resist_light');
-                director.prepareResistanceCursorReveal(normalizedOptions);
+                shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);
             }
 
             director.pauseCurrentSceneForResistance();
@@ -546,7 +555,9 @@
                 if (this.isStopping()) {
                     return;
                 }
-                this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
+                if (shouldRestoreHiddenCursorAfterResistance) {
+                    this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
+                }
 
                 const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = director.activeNarration;

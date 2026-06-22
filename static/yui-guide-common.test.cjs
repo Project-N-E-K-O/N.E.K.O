@@ -50,6 +50,7 @@ test('common helper relays PC system cursor visibility and logs relay failures',
     const petRelays = [];
     const channelMessages = [];
     const warnings = [];
+    const nativeCursorCalls = [];
     const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
     const localStorage = {
         getItem(key) {
@@ -60,6 +61,12 @@ test('common helper relays PC system cursor visibility and logs relay failures',
         warn(...args) {
             warnings.push(args);
         }
+    };
+    const consumeCursorVisibilityMessage = (message) => {
+        if (!message || message.action !== 'yui_guide_system_cursor_visibility') {
+            return;
+        }
+        nativeCursorCalls.push(message.hidden === true ? 'hideNativeCursor' : 'restoreNativeCursor');
     };
 
     common.syncPcSystemCursorHidden(true, 'tutorial-started', {
@@ -90,6 +97,34 @@ test('common helper relays PC system cursor visibility and logs relay failures',
     assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
     assert.equal(chatRelays[0].reason, 'tutorial-started');
     assert.equal(typeof chatRelays[0].timestamp, 'number');
+    assert.equal(warnings.length, 0);
+    consumeCursorVisibilityMessage(chatRelays[0]);
+
+    common.syncPcSystemCursorHidden(false, 'destroy', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        },
+        console: consoleApi
+    });
+
+    assert.equal(chatRelays[1].hidden, false);
+    assert.equal(chatRelays[1].reason, 'destroy');
+    consumeCursorVisibilityMessage(chatRelays[1]);
+    assert.deepEqual(nativeCursorCalls, [
+        'hideNativeCursor',
+        'restoreNativeCursor'
+    ]);
     assert.equal(warnings.length, 0);
 
     const relayError = new Error('relay failed');
