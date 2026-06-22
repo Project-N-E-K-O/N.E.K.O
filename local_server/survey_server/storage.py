@@ -187,7 +187,13 @@ class SurveyStorage:
         if survey_version:
             where += " AND survey_version = ?"
             params.append(survey_version)
-        params.append(min(limit, 50000))
+        # 上下界都 clamp：只夹上界的话 limit=-1 会被原样传给 SQLite，而 LIMIT -1
+        # 表示"无限"，反而绕过 5 万行上限把整表读进内存/JSON。
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 1000
+        params.append(min(max(limit, 1), 50000))
         rows = conn.execute(
             f"""SELECT received_at, device_id, device_id_legacy, app_version, survey_version,
                        locale, branch, distribution, steam_user_id, answers
