@@ -19,6 +19,7 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
     const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -3236,6 +3237,15 @@
     function sendStartupGreetingReleaseRequest(reason) {
         S._startupGreetingReleasePending = true;
         S._startupGreetingReleaseReason = reason || 'ws-open';
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+        }
+        S._startupGreetingReleaseFallbackTimer = setTimeout(function () {
+            S._startupGreetingReleaseFallbackTimer = 0;
+            if (S._startupGreetingReleasePending) {
+                releaseStartupGreetingCheck('startup-greeting-release-timeout');
+            }
+        }, STARTUP_GREETING_RELEASE_FALLBACK_MS);
         const released = readStartupGreetingReleasedDetail();
         if (released) {
             releaseStartupGreetingCheck(released.reason || 'startup-greeting-release');
@@ -3248,6 +3258,10 @@
         }
         S._startupGreetingReleasePending = false;
         S._startupGreetingReleaseReason = '';
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+            S._startupGreetingReleaseFallbackTimer = 0;
+        }
         if (reason) {
             S._greetingCheckReason = reason;
         }

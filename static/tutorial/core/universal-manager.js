@@ -2887,6 +2887,9 @@ class UniversalTutorialManager {
                     if (!started) {
                         this.dispatchStartupGreetingRelease('no-avatar-floating-round');
                     }
+                }).catch((error) => {
+                    console.warn('[Tutorial] 自动启动每日教程检查失败，放行启动问候:', error);
+                    this.dispatchStartupGreetingRelease('avatar-floating-auto-round-check-failed');
                 });
             });
         } else {
@@ -3468,6 +3471,24 @@ class UniversalTutorialManager {
 window.universalTutorialManager = null;
 window.__universalTutorialManagerResizeRetryBound = false;
 
+function dispatchStartupGreetingReleaseWithoutManager(reason, detail = {}) {
+    const releaseDetail = Object.assign({
+        released: true,
+        page: 'unknown',
+        reason: reason || 'tutorial-manager-unavailable',
+        timestamp: Date.now()
+    }, detail || {});
+    try {
+        window.__NEKO_STARTUP_GREETING_RELEASED__ = releaseDetail;
+        window.dispatchEvent(new CustomEvent(STARTUP_GREETING_RELEASE_EVENT, {
+            detail: releaseDetail
+        }));
+    } catch (error) {
+        console.warn('[Tutorial] 无管理器启动问候放行事件派发失败:', error);
+    }
+    return releaseDetail;
+}
+
 async function destroyUniversalTutorialManagerInstance(reason = 'destroy') {
     const manager = window.universalTutorialManager;
     if (!manager) return;
@@ -3512,6 +3533,10 @@ async function initUniversalTutorialManager() {
     if (window.innerWidth <= 768) {
         bindUniversalTutorialManagerResizeRetry();
         await destroyUniversalTutorialManagerInstance('mobile-disabled');
+        dispatchStartupGreetingReleaseWithoutManager('mobile-tutorial-disabled', {
+            page: UniversalTutorialManager.detectPage(),
+            viewportWidth: window.innerWidth
+        });
         return false;
     }
 

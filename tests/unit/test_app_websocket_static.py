@@ -33,9 +33,12 @@ def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
     assert "STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release'" in source
+    assert "STARTUP_GREETING_RELEASE_FALLBACK_MS" in source
     assert "function sendStartupGreetingReleaseRequest(reason)" in source
     assert "function releaseStartupGreetingCheck(reason)" in source
     assert "window.addEventListener(STARTUP_GREETING_RELEASE_EVENT" in source
+    assert "releaseStartupGreetingCheck('startup-greeting-release-timeout')" in source
+    assert "clearTimeout(S._startupGreetingReleaseFallbackTimer)" in source
     assert "sendHomeTutorialState(" not in source
     assert "neko:home-tutorial-features-suppressed" not in source
 

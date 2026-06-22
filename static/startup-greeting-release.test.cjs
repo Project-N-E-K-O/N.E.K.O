@@ -10,6 +10,7 @@ const websocketRouterSource = fs.readFileSync(path.join(repoRoot, 'main_routers/
 
 test('startup greeting waits for an explicit release instead of firing on websocket open', () => {
     assert.match(appWebsocketSource, /STARTUP_GREETING_RELEASE_EVENT/);
+    assert.match(appWebsocketSource, /STARTUP_GREETING_RELEASE_FALLBACK_MS/);
     assert.match(appWebsocketSource, /function releaseStartupGreetingCheck\(reason\)/);
     assert.match(appWebsocketSource, /window\.addEventListener\(STARTUP_GREETING_RELEASE_EVENT,\s*function/);
 
@@ -34,14 +35,30 @@ test('startup greeting waits for an explicit release instead of firing on websoc
         sendBlock.indexOf('if (S._startupGreetingReleasePending)') < sendBlock.indexOf('if (_consumeGreetingCheckForNewUserIcebreaker())'),
         'model-ready sends must wait for the startup greeting release gate before icebreaker or send checks'
     );
+
+    const requestBlock = appWebsocketSource.split('function sendStartupGreetingReleaseRequest(reason)')[1].split(
+        'function releaseStartupGreetingCheck(reason)',
+        1,
+    )[0];
+    assert.match(requestBlock, /S\._startupGreetingReleaseFallbackTimer = setTimeout/);
+    assert.match(requestBlock, /releaseStartupGreetingCheck\('startup-greeting-release-timeout'\)/);
+
+    const releaseBlock = appWebsocketSource.split('function releaseStartupGreetingCheck(reason)')[1].split(
+        'function _consumeGreetingCheckForNewUserIcebreaker()',
+        1,
+    )[0];
+    assert.match(releaseBlock, /clearTimeout\(S\._startupGreetingReleaseFallbackTimer\)/);
 });
 
 test('tutorial manager releases startup greeting after tutorial decisions and endings', () => {
     assert.match(universalManagerSource, /STARTUP_GREETING_RELEASE_EVENT/);
     assert.match(universalManagerSource, /dispatchStartupGreetingRelease\(reason/);
+    assert.match(universalManagerSource, /dispatchStartupGreetingReleaseWithoutManager\(reason/);
     assert.match(universalManagerSource, /new CustomEvent\(STARTUP_GREETING_RELEASE_EVENT/);
     assert.match(universalManagerSource, /dispatchStartupGreetingRelease\('avatar-floating-round-start-skipped'/);
     assert.match(universalManagerSource, /dispatchStartupGreetingRelease\('avatar-floating-round-start-failed'/);
+    assert.match(universalManagerSource, /dispatchStartupGreetingRelease\('avatar-floating-auto-round-check-failed'\)/);
+    assert.match(universalManagerSource, /dispatchStartupGreetingReleaseWithoutManager\('mobile-tutorial-disabled'/);
 
     const autoRoundBlockStart = universalManagerSource.indexOf('this.maybeStartAvatarFloatingGuideAutoRound(1200)');
     assert.notEqual(autoRoundBlockStart, -1, 'expected home tutorial auto-round decision');
