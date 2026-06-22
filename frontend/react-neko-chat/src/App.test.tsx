@@ -6749,9 +6749,22 @@ describe('App', () => {
     const primes: Array<Record<string, number>> = [];
     const primeEnds: Array<Record<string, number>> = [];
     const ends: Array<Record<string, number | string>> = [];
-    const onPrime = (event: Event) => primes.push((event as CustomEvent).detail);
-    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
-    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    const sequence: string[] = [];
+    const onPrime = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      primes.push(detail);
+      sequence.push(`prime:${detail.pointerId}`);
+    };
+    const onPrimeEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      primeEnds.push(detail);
+      sequence.push(`prime-end:${detail.pointerId}`);
+    };
+    const onEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      ends.push(detail);
+      sequence.push(`end:${detail.pointerId}:${detail.reason}`);
+    };
     window.addEventListener('neko:compact-surface-drag-prime', onPrime);
     window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
     window.addEventListener('neko:compact-surface-drag-end', onEnd);
@@ -6771,6 +6784,12 @@ describe('App', () => {
       expect(primes).toHaveLength(2);
       expect(primes[0]).toMatchObject({ pointerId: 71 });
       expect(primes[1]).toMatchObject({ pointerId: 72 });
+      expect(sequence).toEqual([
+        'prime:71',
+        'end:71:replaced',
+        'prime-end:71',
+        'prime:72',
+      ]);
       expect(primeEnds).toContainEqual({ pointerId: 71 });
       expect(ends).toHaveLength(1);
       expect(ends[0]).toMatchObject({
