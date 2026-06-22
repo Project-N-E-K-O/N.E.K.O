@@ -71,6 +71,10 @@ class NekoRoastPlugin(NekoPluginBase):
             await self.runtime.stop()
         return Ok({"status": "stopped"})
 
+    async def _on_command_loop_start(self) -> None:
+        if self.runtime is not None:
+            self.runtime._start_idle_hosting_loop()
+
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
         if self.runtime is None:
