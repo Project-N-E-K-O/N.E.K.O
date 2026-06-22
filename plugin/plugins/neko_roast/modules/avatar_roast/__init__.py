@@ -61,21 +61,22 @@ class AvatarRoastModule(BaseModule):
         )
 
     def _build_idle_hosting_prompt(self, event: ViewerEvent, strength: str) -> str:
-        raw = event.raw if isinstance(event.raw, dict) else {}
-        state = raw.get("live_state") if isinstance(raw.get("live_state"), dict) else {}
-        last_activity_age = state.get("last_activity_age_sec") if isinstance(state, dict) else None
-        strength_zh = {"gentle": "soft", "sharp": "a little sharp", "normal": "balanced"}.get(strength, "balanced")
+        strength_hint = {
+            "gentle": "warm and soft",
+            "sharp": "playfully sharp, but still easy to answer",
+            "normal": "balanced and lightly playful",
+        }.get(strength, "balanced and lightly playful")
         facts = [
-            "mode: solo_stream",
+            "scene: NEKO is the only host on stage in solo_stream",
             "task: solo idle hosting",
-            f"last_activity_age_sec: {last_activity_age if last_activity_age is not None else 'unknown'}",
-            f"tone_strength: {strength_zh}",
+            f"tone: {strength_hint}",
         ]
         rules = [
-            "Say exactly one short line as NEKO, the solo host of this live room.",
+            "Say exactly one short live-host line as NEKO.",
+            "Use a small observation, a light tease, or an easy question that a quiet viewer can answer.",
             "Do not pretend a viewer sent a message.",
-            "Do not say nobody is here, do not beg for comments, and do not explain system state.",
-            "Make it easy for a quiet viewer to answer, but keep it natural and low-pressure.",
+            "Do not mention viewer absence, silence metrics, queues, cooldowns, dry_run, or system state.",
+            "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
             "Output only the line NEKO should say.",
         ]
         return (

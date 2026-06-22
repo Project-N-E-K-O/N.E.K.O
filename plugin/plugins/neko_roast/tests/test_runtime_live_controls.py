@@ -442,6 +442,10 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
     assert result.event.live_mode == "solo_stream"
     assert result.request is not None
     assert "solo idle hosting" in result.request.prompt_text
+    assert "one short live-host line" in result.request.prompt_text
+    assert "last_activity_age_sec" not in result.request.prompt_text
+    assert "nobody is here" not in result.request.prompt_text
+    assert "beg for comments" not in result.request.prompt_text
     assert runtime.recent_results[-1]["status"] == "dry_run"
     assert runtime.recent_results[-1]["event"]["source"] == "idle_hosting"
     assert runtime.plugin.pushed_messages == []
