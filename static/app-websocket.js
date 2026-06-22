@@ -3269,6 +3269,9 @@
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
+        if (S._startupGreetingReleasePending) {
+            return;
+        }
         if (_consumeGreetingCheckForNewUserIcebreaker()) {
             return;
         }

@@ -24,6 +24,16 @@ test('startup greeting waits for an explicit release instead of firing on websoc
 
     assert.match(wsOpenBlock, /_markGreetingCheckPending\(/);
     assert.doesNotMatch(wsOpenBlock, /_sendGreetingCheckIfReady\(\);/);
+
+    const sendBlock = appWebsocketSource.split('function _sendGreetingCheckIfReady()')[1].split(
+        'function _onModelReady()',
+        1,
+    )[0];
+    assert.match(sendBlock, /if \(S\._startupGreetingReleasePending\) \{\s*return;\s*\}/);
+    assert.ok(
+        sendBlock.indexOf('if (S._startupGreetingReleasePending)') < sendBlock.indexOf('if (_consumeGreetingCheckForNewUserIcebreaker())'),
+        'model-ready sends must wait for the startup greeting release gate before icebreaker or send checks'
+    );
 });
 
 test('tutorial manager releases startup greeting after tutorial decisions and endings', () => {

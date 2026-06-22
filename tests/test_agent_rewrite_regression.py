@@ -918,9 +918,13 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     assert "home-yui-guide-plugin-dashboard-corner" in avatar_source
     assert "readModelAlpha" in avatar_source
     assert "writeModelAlpha" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35" in avatar_source
+    assert "function resolveAvatarCornerPeekRotationDegrees(position)" in avatar_source
+    assert "return 135;" in avatar_source
+    assert "return -135;" in avatar_source
+    assert "return 45;" in avatar_source
+    assert "return -45;" in avatar_source
+    assert "AVATAR_CORNER_PEEK_EDGE_INSET_RATIO = 0.18" in avatar_source
+    assert "AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO = 0.36" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647'" in avatar_source
     assert "elevateContainerZIndex" in avatar_source
     assert "restoreContainerZIndex" in avatar_source
@@ -935,17 +939,20 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     assert "const isTop = this.targetPosition === 'top-right' || this.targetPosition === 'top-left';" in avatar_source
     for position in ("bottom-right", "bottom-left", "top-right", "top-left"):
         assert position in avatar_source
-    assert "modelCenterOffsetX" in avatar_source
-    assert "modelCenterOffsetY" in avatar_source
+    assert "const rotationDelta = resolveAvatarCornerPeekRotationDegrees(this.targetPosition) * Math.PI / 180;" in avatar_source
+    assert "const rotatedPeekRegion = this.resolveRotatedRectOffset(peekRegion, rotationDelta)" in avatar_source
+    assert "x: desiredLeft - rotatedPeekRegion.left" in avatar_source
+    assert "y: desiredTop - rotatedPeekRegion.top" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_BOTTOM_OVERHANG_PX" not in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_RIGHT_PADDING_PX" not in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_SCALE" not in avatar_source
     assert "cornerScale" not in avatar_source
     assert "scaleX: base.scaleX," in avatar_source
     assert "scaleY: base.scaleY," in avatar_source
-    assert "rotation: base.rotation + rotationDirection * (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)" in avatar_source
-    assert "this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress)" in avatar_source
-    assert "this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress)" in avatar_source
+    assert "rotation: base.rotation + rotationDelta" in avatar_source
+    assert "this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress)" in avatar_source
+    assert "this.applyFrame(\n                    this.cornerFrame," in avatar_source
+    assert "this.applyFrame(\n                    this.initialModelFrame," in avatar_source
     assert "activeAvatarCornerPeekSession.stop('replaced')" in avatar_source
 
     assert "await avatarStageApi.startPluginDashboardCornerPeek({" in director_source
@@ -955,8 +962,9 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     assert "position: normalizedOptions.position" in director_source
     assert "this.startAvatarCornerPeekPerformance({" in director_source
     assert "position: cue.position" in director_source
-    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed')" in director_source
-    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup')" in director_source
+    assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup')" in director_source
+    assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy')" in director_source
+    assert "this.takeoverTopPeekHandle = null" in director_source
     assert "async stopPluginDashboardCornerPeekPerformance(handle, reason)" in director_source
     assert "async stopAvatarCornerPeekPerformance(handle, reason)" in director_source
     assert "async stopAvatarStandInPerformance(reason)" in director_source

@@ -88,6 +88,10 @@ def test_tutorial_release_greeting_check_bypasses_icebreaker_consumption():
     assert "var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');" in send_block
     assert "sendHomeTutorialState(" not in send_block
     assert "reason: greetingReason" in send_block
+    assert "if (S._startupGreetingReleasePending) {" in send_block
+    assert send_block.index("if (S._startupGreetingReleasePending)") < send_block.index(
+        "if (_consumeGreetingCheckForNewUserIcebreaker())"
+    )
 
     assert "function _isTutorialBlockingGreeting()" not in source
     assert "function isHomeTutorialLockedForGreeting()" not in source
