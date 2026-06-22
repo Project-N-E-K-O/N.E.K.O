@@ -275,7 +275,8 @@
     z-index: 11; pointer-events: none; opacity: .96;
     --sensei-x: -9999px;
     --sensei-y: -9999px;
-    transform: translate3d(var(--sensei-x), var(--sensei-y), 0);
+    --sensei-slip-rotation: 0deg;
+    transform: translate3d(var(--sensei-x), var(--sensei-y), 0) rotate(var(--sensei-slip-rotation));
     transform-origin: 50% 100%;
     transition: opacity .24s ease;
   }
@@ -973,6 +974,15 @@
   var PLAYER_START_Y = 405;
   var YUI_START_X = BADMINTON.netX + (BADMINTON.courtRight - BADMINTON.netX) * 0.58;
   var YUI_START_Y = 405;
+  var YUI_CHEAT_RANDOM_CHANCE = 0.12;
+  var YUI_CHEAT_CLOSE_SCORE_CHANCE = 0.52;
+  var YUI_CHEAT_COOLDOWN_MS = 5200;
+  var YUI_CHEAT_BANANA_RADIUS = 30;
+  var YUI_CHEAT_BANANA_EXPIRE_MS = 7000;
+  var YUI_CHEAT_BANANA_SLOW_MS = 1350;
+  var YUI_CHEAT_BANANA_SPIN_MS = 900;
+  var YUI_CHEAT_BANANA_JUMP_CLEARANCE = 6;
+  var YUI_CHEAT_INK_DURATION_MS = 3600;
   var netNodes = [];
   var modeParams = null;
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
@@ -1128,7 +1138,9 @@
   var yuiVrmRacket = null;
   var SENSEI_VRM_PATH = '/static/vrm/sensei.vrm';
   var BADMINTON_RACKET_SPRITE_SRC = '/static/game/games/badminton/images/badminton-racket-sprite.svg?v=20260618a';
+  var YUI_BANANA_PEEL_SPRITE_SRC = '/static/game/games/badminton/images/yui-banana-peel-sprite.png?v=20260622a';
   var badmintonRacketSpriteImage = null;
+  var yuiBananaPeelSpriteImage = null;
   function preloadBadmintonRacketSprite() {
     var image = new Image();
     image.decoding = 'async';
@@ -1137,13 +1149,28 @@
     image.src = BADMINTON_RACKET_SPRITE_SRC;
     badmintonRacketSpriteImage = image;
   }
+  function preloadYuiBananaPeelSprite() {
+    var image = new Image();
+    image.decoding = 'async';
+    image.onload = function () { image.__ready = true; };
+    image.onerror = function () { image.__ready = false; };
+    image.src = YUI_BANANA_PEEL_SPRITE_SRC;
+    yuiBananaPeelSpriteImage = image;
+  }
   function isBadmintonRacketSpriteReady() {
     return !!(badmintonRacketSpriteImage && (
       badmintonRacketSpriteImage.__ready ||
       (badmintonRacketSpriteImage.complete && badmintonRacketSpriteImage.naturalWidth > 0)
     ));
   }
+  function isYuiBananaPeelSpriteReady() {
+    return !!(yuiBananaPeelSpriteImage && (
+      yuiBananaPeelSpriteImage.__ready ||
+      (yuiBananaPeelSpriteImage.complete && yuiBananaPeelSpriteImage.naturalWidth > 0)
+    ));
+  }
   try { preloadBadmintonRacketSprite(); } catch (_) { badmintonRacketSpriteImage = null; }
+  try { preloadYuiBananaPeelSprite(); } catch (_) { yuiBananaPeelSpriteImage = null; }
   window.badmintonVrmManager = window.badmintonVrmManager || null;
   window.badmintonMmdManager = window.badmintonMmdManager || null;
   window.badmintonPlayerVrmManager = window.badmintonPlayerVrmManager || null;
@@ -3560,7 +3587,9 @@
     shuttleSeq: 0,
     playerCourt: { x: PLAYER_START_X, y: PLAYER_START_Y, targetX: PLAYER_START_X, targetY: PLAYER_START_Y },
     playerJump: { offset: 0, velocity: 0, active: false, cooldownUntil: 0, lastSmashAt: 0 },
+    playerCheatEffect: { slowUntil: 0, spinUntil: 0, spinStartedAt: 0, spinAngle: 0 },
     yuiCourt: { x: YUI_START_X, y: YUI_START_Y, targetX: YUI_START_X, targetY: YUI_START_Y },
+    yuiCheat: { items: [], inkStartedAt: 0, inkUntil: 0, inkDuration: 0, cooldownUntil: 0, lastUsedKind: '', forcedKind: '', seq: 0 },
     lastTs: 0,
     aimStartAt: 0,
     longAimSent: false,
@@ -3621,10 +3650,185 @@
     game.playerCourt.targetX = PLAYER_START_X;
     game.playerCourt.targetY = PLAYER_START_Y;
     resetPlayerJump();
+    resetYuiCheats();
     game.yuiCourt.x = YUI_START_X;
     game.yuiCourt.y = YUI_START_Y;
     game.yuiCourt.targetX = YUI_START_X;
     game.yuiCourt.targetY = YUI_START_Y;
+  }
+  function resetYuiCheats() {
+    if (!game.yuiCheat) game.yuiCheat = {};
+    game.yuiCheat.items = [];
+    game.yuiCheat.inkStartedAt = 0;
+    game.yuiCheat.inkUntil = 0;
+    game.yuiCheat.inkDuration = 0;
+    game.yuiCheat.cooldownUntil = 0;
+    game.yuiCheat.lastUsedKind = '';
+    game.yuiCheat.forcedKind = '';
+    game.yuiCheat.seq = game.yuiCheat.seq || 0;
+    if (!game.playerCheatEffect) game.playerCheatEffect = {};
+    game.playerCheatEffect.slowUntil = 0;
+    game.playerCheatEffect.spinUntil = 0;
+    game.playerCheatEffect.spinStartedAt = 0;
+    game.playerCheatEffect.spinAngle = 0;
+  }
+  function isDuelScoreCloseForCheat() {
+    if (!isDuelMode()) return false;
+    var total = game.duel.playerScore + game.duel.nekoScore;
+    var scoreClose = Math.abs(game.duel.playerScore - game.duel.nekoScore) <= 1 && total >= 4;
+    var playerMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.playerMisses);
+    var nekoMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.nekoMisses);
+    var eliminationClose = playerMissesLeft <= 2 && nekoMissesLeft <= 2;
+    return scoreClose || eliminationClose;
+  }
+  function chooseYuiCheatKind() {
+    if (game.yuiCheat && game.yuiCheat.forcedKind) {
+      var forced = game.yuiCheat.forcedKind;
+      game.yuiCheat.forcedKind = '';
+      return forced;
+    }
+    if (game.yuiCheat.lastUsedKind === 'banana') return Math.random() < 0.58 ? 'octopus' : 'banana';
+    if (game.yuiCheat.lastUsedKind === 'octopus') return Math.random() < 0.58 ? 'banana' : 'octopus';
+    return Math.random() < 0.55 ? 'banana' : 'octopus';
+  }
+  function buildYuiCheatBanana(options) {
+    var now = performance.now();
+    var opts = options || {};
+    var defaultOffset = game.playerCourt.targetX < (PLAYER_COURT_X_MIN + PLAYER_COURT_X_MAX) / 2 ? 104 : -104;
+    var x = Number.isFinite(opts.x) ? opts.x : clamp(game.playerCourt.targetX + defaultOffset + (Math.random() - 0.5) * 42, PLAYER_COURT_X_MIN + 16, PLAYER_COURT_X_MAX - 16);
+    var y = Number.isFinite(opts.y) ? opts.y : PLAYER_START_Y + 18 + (Math.random() - 0.5) * 16;
+    return {
+      id: ++game.yuiCheat.seq,
+      kind: 'banana',
+      x: clamp(x, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX),
+      y: clamp(y, PLAYER_COURT_Y_MIN - 10, PLAYER_COURT_Y_MAX + 34),
+      radius: YUI_CHEAT_BANANA_RADIUS,
+      createdAt: now,
+      expiresAt: now + YUI_CHEAT_BANANA_EXPIRE_MS
+    };
+  }
+  function activateYuiInk() {
+    var now = performance.now();
+    game.yuiCheat.inkStartedAt = now;
+    game.yuiCheat.inkDuration = YUI_CHEAT_INK_DURATION_MS;
+    game.yuiCheat.inkUntil = now + YUI_CHEAT_INK_DURATION_MS;
+    game.yuiCheat.lastUsedKind = 'octopus';
+    game.yuiCheat.cooldownUntil = now + YUI_CHEAT_COOLDOWN_MS;
+    showAssistHint(_i18n('toast.yuiCheatInk', 'Yui 扔了墨汁'));
+    applyNekoControl({ expression: 'tease', intensity: 'medium' }, { transient: true });
+    setYuiAction('shooting', 420);
+  }
+  function spawnYuiCheat(kind, options) {
+    if (!game.yuiCheat) resetYuiCheats();
+    var cheatKind = kind === 'octopus' ? 'octopus' : 'banana';
+    if (cheatKind === 'octopus') {
+      activateYuiInk();
+      return { kind: 'octopus' };
+    }
+    var banana = buildYuiCheatBanana(options);
+    game.yuiCheat.items.push(banana);
+    game.yuiCheat.lastUsedKind = 'banana';
+    game.yuiCheat.cooldownUntil = performance.now() + YUI_CHEAT_COOLDOWN_MS;
+    showAssistHint(_i18n('toast.yuiCheatBanana', 'Yui 丢了香蕉皮'));
+    applyNekoControl({ expression: 'tease', intensity: 'medium' }, { transient: true });
+    setYuiAction('shooting', 420);
+    return banana;
+  }
+  function maybeTriggerYuiCheat(reason) {
+    if (!isDuelMode() || !game.yuiCheat || game.state === 'game_over') return false;
+    var now = performance.now();
+    var forced = !!game.yuiCheat.forcedKind;
+    if (!forced && now < (game.yuiCheat.cooldownUntil || 0)) return false;
+    var close = isDuelScoreCloseForCheat();
+    var chance = close ? YUI_CHEAT_CLOSE_SCORE_CHANCE : YUI_CHEAT_RANDOM_CHANCE;
+    if (!forced && Math.random() >= chance) return false;
+    var item = spawnYuiCheat(chooseYuiCheatKind(), { reason: reason });
+    sendGameEvent({
+      kind: 'yui_cheat_item',
+      label: 'yui_cheat_' + item.kind,
+      result: 'cheat',
+      item_kind: item.kind,
+      close_score: close,
+      duel: buildDuelStatePayload(),
+      voice_deadline_ms: 900
+    });
+    return true;
+  }
+  function getYuiInkState(now) {
+    var activeUntil = game.yuiCheat ? game.yuiCheat.inkUntil || 0 : 0;
+    var active = now < activeUntil;
+    var duration = game.yuiCheat ? game.yuiCheat.inkDuration || YUI_CHEAT_INK_DURATION_MS : YUI_CHEAT_INK_DURATION_MS;
+    var remaining = Math.max(0, activeUntil - now);
+    var fade = active ? clamp(remaining / Math.max(1, duration), 0, 1) : 0;
+    return {
+      active: active,
+      alpha: active ? clamp(0.28 + fade * 0.42, 0, 0.72) : 0,
+      remaining_ms: Math.round(remaining)
+    };
+  }
+  function getPlayerCheatEffectState(now) {
+    var effect = game.playerCheatEffect || {};
+    return {
+      slipping: now < (effect.slowUntil || 0),
+      spin_angle: effect.spinAngle || 0,
+      slow_remaining_ms: Math.max(0, Math.round((effect.slowUntil || 0) - now)),
+      spin_remaining_ms: Math.max(0, Math.round((effect.spinUntil || 0) - now))
+    };
+  }
+  function getPlayerMovementSpeedMultiplier() {
+    var effect = game.playerCheatEffect || {};
+    return performance.now() < (effect.slowUntil || 0) ? 0.32 : 1;
+  }
+  function updatePlayerCheatEffect(now) {
+    var effect = game.playerCheatEffect;
+    if (!effect) return;
+    if (now < (effect.spinUntil || 0)) {
+      var progress = clamp((now - (effect.spinStartedAt || now)) / Math.max(1, YUI_CHEAT_BANANA_SPIN_MS), 0, 1);
+      effect.spinAngle = Math.PI * 2 * (1 - Math.pow(1 - progress, 2));
+    } else {
+      effect.spinAngle = 0;
+    }
+  }
+  function applyBananaSlip(item) {
+    var now = performance.now();
+    game.playerCheatEffect.slowUntil = Math.max(game.playerCheatEffect.slowUntil || 0, now + YUI_CHEAT_BANANA_SLOW_MS);
+    game.playerCheatEffect.spinStartedAt = now;
+    game.playerCheatEffect.spinUntil = now + YUI_CHEAT_BANANA_SPIN_MS;
+    game.playerCheatEffect.spinAngle = 0.01;
+    showAssistHint(_i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了'));
+    setPlayerAction('react-disappointed', 560);
+    sendGameEvent({
+      kind: 'yui_cheat_hit',
+      label: 'banana_slip',
+      result: 'cheat_hit',
+      item_kind: 'banana',
+      item_id: item && item.id,
+      duel: buildDuelStatePayload(),
+      voice_deadline_ms: 900
+    });
+  }
+  function updateYuiCheats(dt) {
+    if (!game.yuiCheat) resetYuiCheats();
+    var now = performance.now();
+    updatePlayerCheatEffect(now);
+    var items = game.yuiCheat.items || [];
+    var kept = [];
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item || now >= item.expiresAt) continue;
+      if (item.kind === 'banana') {
+        var dx = getPlayerX() - item.x;
+        var dy = getPlayerY() - item.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        var isJumpingOver = !!(game.playerJump && game.playerJump.active) || getPlayerJumpOffset() > YUI_CHEAT_BANANA_JUMP_CLEARANCE;
+        if (!isJumpingOver && dist <= (item.radius || YUI_CHEAT_BANANA_RADIUS)) {
+          applyBananaSlip(item);
+          continue;
+        }
+      }
+      kept.push(item);
+    }
+    game.yuiCheat.items = kept;
   }
   function updatePlayerCourtTarget(clientX, clientY) {
     var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);
@@ -3656,10 +3860,12 @@
   function updateCourtMovement(dt) {
     updateYuiCourtTarget();
     syncPlayerCourtTargetFromPointer();
-    game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);
+    var playerMoveSpeed = PLAYER_MOVE_SPEED * getPlayerMovementSpeedMultiplier();
+    game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, playerMoveSpeed, dt);
     game.playerCourt.targetY = PLAYER_START_Y;
     game.playerCourt.y = PLAYER_START_Y;
     updatePlayerJump(dt);
+    updateYuiCheats(dt);
     game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, YUI_MOVE_SPEED, dt);
     game.yuiCourt.y = moveToward(game.yuiCourt.y, game.yuiCourt.targetY, YUI_MOVE_SPEED * 0.5, dt);
     updatePlayerAvatarPosition();
@@ -3922,10 +4128,12 @@
     if (!playerSenseiContainer) return;
     var sx = getPlayerX() / BASE_W * window.innerWidth;
     var sy = (getPlayerY() + 63) / BASE_H * window.innerHeight;
+    var slipDeg = ((game.playerCheatEffect && game.playerCheatEffect.spinAngle) || 0) * 180 / Math.PI;
     playerSenseiContainer.style.width = PLAYER_AVATAR_W + 'px';
     playerSenseiContainer.style.height = PLAYER_AVATAR_H + 'px';
     playerSenseiContainer.style.setProperty('--sensei-x', Math.round(sx - PLAYER_AVATAR_W / 2) + 'px');
     playerSenseiContainer.style.setProperty('--sensei-y', Math.round(sy - PLAYER_AVATAR_H) + 'px');
+    playerSenseiContainer.style.setProperty('--sensei-slip-rotation', slipDeg.toFixed(2) + 'deg');
   }
   async function initPlayerAvatar() {
     if (!playerSenseiContainer || !playerSenseiCanvas) {
@@ -4876,6 +5084,7 @@
     if (!inYuiReach) return false;
     game.duel.activeShooter = 'neko';
     game.duel.rallyHits += 1;
+    maybeTriggerYuiCheat('rally_return');
     var shot = getNekoDuelShot();
     var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);
     shot.angle = clamp(shot.angle - Math.min(2.5, game.duel.rallyHits * 0.16), 38, 52);
@@ -5041,6 +5250,7 @@
     updateHud();
     var previewDiff = getEffectiveDuelDifficulty();
     game.duel.pendingShot = null;
+    maybeTriggerYuiCheat('duel_turn');
     showAssistHint(_i18n('toast.nekoThinking', 'Yui 准备回球'));
     setYuiAction('charging', previewDiff.windupMs || 0);
     queueNekoDuelTurnVoice();
@@ -6597,6 +6807,183 @@
   function drawShuttlecock(x, y, radius, rotation) {
     drawBadmintonShuttlecockOnContext(ctx, x, y, radius, rotation);
   }
+  function drawBananaPeelOnContext(renderCtx, x, y, radius, rotation) {
+    var ctx = renderCtx;
+    var r = Math.max(8, Number(radius) || 18);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation || 0);
+    ctx.scale(1.10, 0.98);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.fillStyle = 'rgba(28,22,12,.18)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.03, r * 0.78, r * 1.68, r * 0.24, -0.05, 0, Math.PI * 2);
+    ctx.fill();
+
+    function peelGradient(x0, y0, x1, y1, tipColor) {
+      var grad = ctx.createLinearGradient(x0 * r, y0 * r, x1 * r, y1 * r);
+      grad.addColorStop(0, '#fff3a2');
+      grad.addColorStop(0.42, '#ffd94f');
+      grad.addColorStop(0.78, '#efa33a');
+      grad.addColorStop(1, tipColor || '#b86f1b');
+      return grad;
+    }
+
+    function drawPeel(points, grad, outlineAlpha, outlineWidth) {
+      ctx.fillStyle = grad;
+      ctx.strokeStyle = 'rgba(126,78,14,' + outlineAlpha + ')';
+      ctx.lineWidth = Math.max(0.8, r * outlineWidth);
+      ctx.beginPath();
+      ctx.moveTo(points[0] * r, points[1] * r);
+      ctx.bezierCurveTo(points[2] * r, points[3] * r, points[4] * r, points[5] * r, points[6] * r, points[7] * r);
+      ctx.bezierCurveTo(points[8] * r, points[9] * r, points[10] * r, points[11] * r, points[12] * r, points[13] * r);
+      if (points.length >= 22) {
+        ctx.bezierCurveTo(points[14] * r, points[15] * r, points[16] * r, points[17] * r, points[18] * r, points[19] * r);
+        ctx.bezierCurveTo(points[20] * r, points[21] * r, points[22] * r, points[23] * r, points[0] * r, points[1] * r);
+      } else {
+        ctx.bezierCurveTo(points[14] * r, points[15] * r, points[16] * r, points[17] * r, points[0] * r, points[1] * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    function drawRootBlend() {
+      var rootGrad = ctx.createLinearGradient(-r * 0.30, r * 0.30, r * 0.38, r * 0.52);
+      rootGrad.addColorStop(0, 'rgba(255,238,150,.36)');
+      rootGrad.addColorStop(0.52, 'rgba(255,216,92,.42)');
+      rootGrad.addColorStop(1, 'rgba(213,139,32,.32)');
+      ctx.save();
+      ctx.fillStyle = rootGrad;
+      ctx.strokeStyle = 'rgba(126,78,14,.08)';
+      ctx.lineWidth = Math.max(0.45, r * 0.014);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.34, r * 0.34);
+      ctx.bezierCurveTo(-r * 0.10, r * 0.25, r * 0.15, r * 0.27, r * 0.40, r * 0.38);
+      ctx.bezierCurveTo(r * 0.24, r * 0.52, -r * 0.12, r * 0.58, -r * 0.38, r * 0.48);
+      ctx.bezierCurveTo(-r * 0.44, r * 0.44, -r * 0.42, r * 0.38, -r * 0.34, r * 0.34);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.shadowColor = 'rgba(60,42,12,.18)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetY = 1.6;
+
+    drawPeel([
+      -0.26, 0.16,
+      -0.72, 0.30, -1.38, 0.34, -1.82, 0.58,
+      -1.54, 0.80, -0.68, 0.84, 0.04, 0.52,
+      0.20, 0.42, 0.10, 0.24
+    ], peelGradient(-1.6, 0.42, -0.12, 0.80), 0.38, 0.034);
+
+    drawPeel([
+      0.02, 0.22,
+      0.48, 0.34, 1.12, 0.38, 1.68, 0.52,
+      1.40, 0.68, 0.76, 0.68, 0.16, 0.46,
+      -0.04, 0.38, -0.08, 0.28
+    ], peelGradient(0.10, 0.18, 1.58, 0.64), 0.34, 0.032);
+
+    drawPeel([
+      0.26, 0.42,
+      0.76, 0.54, 1.43, 0.56, 1.88, 0.74,
+      1.58, 0.92, 0.86, 0.90, 0.28, 0.66,
+      0.12, 0.56, 0.15, 0.46
+    ], peelGradient(0.22, 0.52, 1.78, 0.88), 0.40, 0.034);
+
+    drawPeel([
+      -0.18, 0.08,
+      -0.48, 0.12, -0.86, 0.02, -1.04, -0.16,
+      -0.74, -0.10, -0.42, -0.18, -0.10, -0.30,
+      0.02, -0.16, 0.00, -0.02
+    ], peelGradient(-0.94, -0.10, -0.08, 0.04), 0.36, 0.032);
+
+    drawPeel([
+      -0.30, 0.24,
+      -0.12, -0.54, 0.02, -1.42, 0.36, -1.92,
+      0.66, -2.02, 0.86, -1.72, 0.80, -1.20,
+      0.74, -0.52, 0.56, 0.08, 0.12, 0.56,
+      -0.10, 0.52, -0.26, 0.38
+    ], peelGradient(-0.18, 0.18, 0.54, -1.92, '#85942a'), 0.28, 0.028);
+
+    ctx.shadowBlur = 0;
+    drawRootBlend();
+
+    ctx.strokeStyle = 'rgba(111,76,17,.26)';
+    ctx.lineWidth = Math.max(0.6, r * 0.025);
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.07, r * 0.18);
+    ctx.bezierCurveTo(r * 0.02, -r * 0.42, r * 0.18, -r * 1.24, r * 0.46, -r * 1.78);
+    ctx.moveTo(r * 0.50, r * 0.45);
+    ctx.bezierCurveTo(r * 0.90, r * 0.52, r * 1.32, r * 0.52, r * 1.60, r * 0.52);
+    ctx.moveTo(r * 0.56, r * 0.67);
+    ctx.bezierCurveTo(r * 0.98, r * 0.74, r * 1.46, r * 0.74, r * 1.76, r * 0.75);
+    ctx.moveTo(-r * 0.34, r * 0.48);
+    ctx.bezierCurveTo(-r * 0.78, r * 0.58, -r * 1.22, r * 0.64, -r * 1.58, r * 0.58);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,255,213,.62)';
+    ctx.lineWidth = Math.max(0.55, r * 0.030);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.00, -r * 0.02);
+    ctx.bezierCurveTo(r * 0.12, -r * 0.70, r * 0.26, -r * 1.30, r * 0.48, -r * 1.66);
+    ctx.moveTo(-r * 1.42, r * 0.58);
+    ctx.bezierCurveTo(-r * 1.00, r * 0.52, -r * 0.58, r * 0.48, -r * 0.24, r * 0.34);
+    ctx.moveTo(r * 0.92, r * 0.52);
+    ctx.bezierCurveTo(r * 1.18, r * 0.48, r * 1.42, r * 0.49, r * 1.60, r * 0.52);
+    ctx.moveTo(r * 0.86, r * 0.76);
+    ctx.bezierCurveTo(r * 1.18, r * 0.72, r * 1.48, r * 0.73, r * 1.70, r * 0.76);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(111,73,22,.16)';
+    ctx.lineWidth = Math.max(0.45, r * 0.014);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.18, r * 0.18);
+    ctx.bezierCurveTo(r * 0.24, -r * 0.44, r * 0.38, -r * 1.15, r * 0.56, -r * 1.62);
+    ctx.moveTo(-r * 1.34, r * 0.60);
+    ctx.bezierCurveTo(-r * 0.86, r * 0.54, -r * 0.46, r * 0.46, -r * 0.12, r * 0.34);
+    ctx.moveTo(r * 0.70, r * 0.58);
+    ctx.bezierCurveTo(r * 1.04, r * 0.56, r * 1.36, r * 0.56, r * 1.58, r * 0.58);
+    ctx.moveTo(r * 0.68, r * 0.82);
+    ctx.bezierCurveTo(r * 1.02, r * 0.80, r * 1.34, r * 0.80, r * 1.58, r * 0.82);
+    ctx.stroke();
+
+    var stemGrad = ctx.createLinearGradient(r * 0.42, -r * 2.04, r * 0.78, -r * 1.78);
+    stemGrad.addColorStop(0, '#463018');
+    stemGrad.addColorStop(0.62, '#181008');
+    stemGrad.addColorStop(1, '#66501f');
+    ctx.fillStyle = stemGrad;
+    ctx.strokeStyle = 'rgba(42,27,6,.42)';
+    ctx.lineWidth = Math.max(0.6, r * 0.024);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.46, -r * 1.96);
+    ctx.bezierCurveTo(r * 0.60, -r * 2.04, r * 0.78, -r * 1.96, r * 0.78, -r * 1.82);
+    ctx.bezierCurveTo(r * 0.68, -r * 1.74, r * 0.52, -r * 1.74, r * 0.40, -r * 1.86);
+    ctx.bezierCurveTo(r * 0.40, -r * 1.91, r * 0.43, -r * 1.94, r * 0.46, -r * 1.96);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,218,.42)';
+    ctx.beginPath();
+    ctx.ellipse(r * 0.02, -r * 0.86, r * 0.055, r * 0.34, 0.22, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(112,68,18,.36)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 1.70, r * 0.57, r * 0.040, r * 0.022, -0.28, 0, Math.PI * 2);
+    ctx.ellipse(r * 1.70, r * 0.52, r * 0.035, r * 0.018, 0.16, 0, Math.PI * 2);
+    ctx.ellipse(r * 1.82, r * 0.74, r * 0.034, r * 0.018, 0.12, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.42, -r * 1.62, r * 0.030, r * 0.016, 0.10, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.56, -r * 1.28, r * 0.026, r * 0.014, -0.20, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.32, -r * 0.74, r * 0.023, r * 0.013, 0.18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
   function drawBackspinBall(ball) {
     if (!ball) return;
     var trail = ball.trail || [];
@@ -7043,6 +7430,13 @@
     var px = getPlayerX();
     var py = getPlayerY();
     var s = PLAYER_FIGURE_SCALE;
+    var slipRotation = (game.playerCheatEffect && game.playerCheatEffect.spinAngle) || 0;
+    if (slipRotation) {
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(slipRotation);
+      ctx.translate(-px, -py);
+    }
     ctx.fillStyle = '#f6c177';
     ctx.beginPath();
     ctx.arc(px, py - 62 * s, 16 * s, 0, Math.PI * 2);
@@ -7072,7 +7466,50 @@
       ctx.restore();
     }
     drawBadmintonRacket(heldBall.x + 8 * s, heldBall.y - 4 * s, s, (game.pendingSwing && game.pendingSwing.shooter === 'player') ? 0.55 : -0.38, 1);
+    if (slipRotation) ctx.restore();
     drawPlayerServeShuttleHint();
+  }
+  function drawYuiBananaPeelSprite(x, y, size, rotation) {
+    var imageReady = isYuiBananaPeelSpriteReady();
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation || 0);
+    if (imageReady) {
+      var naturalW = yuiBananaPeelSpriteImage.naturalWidth || 512;
+      var naturalH = yuiBananaPeelSpriteImage.naturalHeight || 274;
+      var drawW = size * 2.95;
+      var drawH = drawW * naturalH / naturalW;
+      ctx.fillStyle = 'rgba(24,18,10,.10)';
+      ctx.beginPath();
+      ctx.ellipse(0, drawH * 0.30, drawW * 0.42, drawH * 0.18, -0.08, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.drawImage(yuiBananaPeelSpriteImage, -drawW / 2, -drawH * 0.62, drawW, drawH);
+    } else {
+      ctx.fillStyle = '#f2c33f';
+      ctx.strokeStyle = 'rgba(104,64,13,.42)';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, size * 0.92, size * 0.36, -0.18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawYuiCheatItems() {
+    var items = game.yuiCheat && game.yuiCheat.items ? game.yuiCheat.items : [];
+    if (!items.length) return;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item || item.kind !== 'banana') continue;
+      var now = performance.now();
+      var age = clamp((now - item.createdAt) / 550, 0, 1);
+      var bob = Math.sin(now / 160 + item.id) * 1.2;
+      var rotation = -0.20 + Math.sin(now / 260 + item.id) * 0.035;
+      ctx.save();
+      ctx.globalAlpha = 0.76 + age * 0.22;
+      drawYuiBananaPeelSprite(item.x, item.y + bob, 28, rotation);
+      ctx.restore();
+    }
   }
   function drawPlayerServeShuttleHint() {
     if (!shouldDrawHeldShuttle()) return;
@@ -7129,7 +7566,34 @@
   function drawAiming() {
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
     drawPlayerReturnHitCue();
+    drawYuiInkOverlay();
     if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));
+  }
+  function drawYuiInkOverlay() {
+    if (!aimingCtx || !game.yuiCheat) return;
+    var now = performance.now();
+    var ink = getYuiInkState(now);
+    if (!ink.active || ink.alpha <= 0) return;
+    var pulse = 0.5 + Math.sin(now / 180) * 0.5;
+    aimingCtx.save();
+    aimingCtx.globalAlpha = ink.alpha;
+    aimingCtx.fillStyle = 'rgba(6,8,14,.82)';
+    aimingCtx.beginPath();
+    aimingCtx.ellipse(BASE_W * 0.36, BASE_H * 0.42, 190 + pulse * 18, 138 + pulse * 10, -0.18, 0, Math.PI * 2);
+    aimingCtx.ellipse(BASE_W * 0.63, BASE_H * 0.36, 158 + pulse * 12, 122 + pulse * 14, 0.24, 0, Math.PI * 2);
+    aimingCtx.ellipse(BASE_W * 0.55, BASE_H * 0.62, 218 + pulse * 10, 116 + pulse * 12, 0.06, 0, Math.PI * 2);
+    aimingCtx.fill();
+    aimingCtx.globalAlpha = Math.min(1, ink.alpha + 0.12);
+    aimingCtx.fillStyle = 'rgba(0,0,0,.72)';
+    for (var i = 0; i < 14; i++) {
+      var angle = i * 1.74 + now / 650;
+      var x = BASE_W * (0.24 + ((i * 37) % 52) / 100) + Math.cos(angle) * (18 + (i % 4) * 8);
+      var y = BASE_H * (0.22 + ((i * 29) % 54) / 100) + Math.sin(angle) * (12 + (i % 5) * 6);
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(x, y, 18 + (i % 5) * 5, 10 + (i % 4) * 3, angle * 0.2, 0, Math.PI * 2);
+      aimingCtx.fill();
+    }
+    aimingCtx.restore();
   }
   function drawPlayerChargeMeter(percent) {
     var chargePercent = clamp(percent, 0, 100);
@@ -7256,6 +7720,7 @@
     drawFireBorder();
     drawNetPosts();
     drawNetBack();
+    drawYuiCheatItems();
     drawPlayer();
     drawBall();
     drawPlayerVrmHeldShuttleOverlay();
@@ -7669,6 +8134,27 @@
     updateDebugReadout();
     return ball.id;
   }
+  function debugSetDuelScore(extra) {
+    var data = extra || {};
+    if (Number.isFinite(data.playerScore)) game.duel.playerScore = Math.max(0, Math.round(data.playerScore));
+    if (Number.isFinite(data.nekoScore)) game.duel.nekoScore = Math.max(0, Math.round(data.nekoScore));
+    if (Number.isFinite(data.playerMisses)) game.duel.playerMisses = clamp(Math.round(data.playerMisses), 0, game.duel.maxMisses);
+    if (Number.isFinite(data.nekoMisses)) game.duel.nekoMisses = clamp(Math.round(data.nekoMisses), 0, game.duel.maxMisses);
+    if (Number.isFinite(data.round)) game.duel.round = Math.max(1, Math.round(data.round));
+    game.totalScore = game.duel.playerScore;
+    updateHud();
+    updateDebugReadout();
+    return buildDuelStatePayload();
+  }
+  function debugForceNextYuiCheat(kind) {
+    if (!game.yuiCheat) resetYuiCheats();
+    game.yuiCheat.forcedKind = kind === 'octopus' ? 'octopus' : 'banana';
+    game.yuiCheat.cooldownUntil = 0;
+    return game.yuiCheat.forcedKind;
+  }
+  function debugSpawnYuiCheat(kind, options) {
+    return spawnYuiCheat(kind, options || {});
+  }
   function installBadmintonDemoApi() {
     window._bdEventListeners = badmintonEventListeners;
     var apiObject = {
@@ -7713,6 +8199,25 @@
             source: playerRacketContact.source || 'fallback'
           } : null,
           yuiCourt: Object.assign({}, game.yuiCourt),
+          yuiCheat: (function () {
+            var now = performance.now();
+            return {
+              items: (game.yuiCheat && game.yuiCheat.items ? game.yuiCheat.items : []).map(function (item) {
+                return {
+                  id: item.id,
+                  kind: item.kind,
+                  x: item.x,
+                  y: item.y,
+                  radius: item.radius,
+                  remaining_ms: Math.max(0, Math.round((item.expiresAt || 0) - now))
+                };
+              }),
+              ink: getYuiInkState(now),
+              player_effect: getPlayerCheatEffectState(now),
+              last_used_kind: game.yuiCheat ? game.yuiCheat.lastUsedKind || '' : '',
+              cooldown_remaining_ms: game.yuiCheat ? Math.max(0, Math.round((game.yuiCheat.cooldownUntil || 0) - now)) : 0
+            };
+          })(),
           heldShuttleVisible: game.heldShuttleVisible,
           pendingSwing: game.pendingSwing ? {
             shooter: game.pendingSwing.shooter,
@@ -7799,7 +8304,10 @@
       showStatsPanel: showStatsPanel,
       _snapshot: function () { return apiObject.getState(); },
       _debugFinishShot: debugFinishShot,
-      _debugSetAwaitingPlayerReturnBall: debugSetAwaitingPlayerReturnBall
+      _debugSetAwaitingPlayerReturnBall: debugSetAwaitingPlayerReturnBall,
+      _debugSetDuelScore: debugSetDuelScore,
+      _debugForceNextYuiCheat: debugForceNextYuiCheat,
+      _debugSpawnYuiCheat: debugSpawnYuiCheat
     };
     window.BadmintonDemo = apiObject;
   }

@@ -997,6 +997,119 @@ def test_badminton_allows_player_movement_and_jump_but_blocks_shot_during_yui_tu
 
 
 @pytest.mark.e2e
+def test_badminton_yui_cheats_with_item_when_duel_score_is_close(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate("window.BadmintonDemo._debugSetDuelScore({ playerScore: 8, nekoScore: 8, round: 16 })")
+    page.evaluate("window.BadmintonDemo._debugForceNextYuiCheat('banana')")
+    page.evaluate("window.BadmintonDemo._debugFinishShot(false, 'out')")
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.yuiCheat && state.yuiCheat.items.length === 1 &&
+            state.yuiCheat.items[0].kind === 'banana';
+        }""",
+        timeout=3000,
+    )
+
+    state = page.evaluate("window.BadmintonDemo.getState()")
+    assert state["duel"]["player_score"] == 8
+    assert state["duel"]["neko_score"] == 9
+    assert state["yuiCheat"]["last_used_kind"] == "banana"
+    assert state["yuiCheat"]["items"][0]["kind"] == "banana"
+
+
+@pytest.mark.e2e
+def test_badminton_banana_peel_spins_and_slows_grounded_player(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    before = page.evaluate("window.BadmintonDemo.getState().playerCourt")
+    page.evaluate(
+        """() => {
+          const state = window.BadmintonDemo.getState();
+          window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x, y: state.playerCourt.y });
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.yuiCheat && state.yuiCheat.player_effect &&
+            state.yuiCheat.player_effect.slipping === true;
+        }""",
+        timeout=2000,
+    )
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    page.mouse.move(viewport["width"] - 8, 20)
+    page.wait_for_function(
+        """(beforeX) => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.playerCourt.targetX > beforeX + 16;
+        }""",
+        arg=before["targetX"],
+        timeout=2000,
+    )
+
+    state = page.evaluate("window.BadmintonDemo.getState()")
+    assert state["yuiCheat"]["items"] == []
+    assert state["yuiCheat"]["player_effect"]["slipping"] is True
+    assert abs(state["yuiCheat"]["player_effect"]["spin_angle"]) > 0
+    assert state["playerCourt"]["x"] - before["x"] < 60
+
+
+@pytest.mark.e2e
+def test_badminton_player_can_jump_over_banana_peel(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          const state = window.BadmintonDemo.getState();
+          window.BadmintonDemo._debugSpawnYuiCheat('banana', { x: state.playerCourt.x, y: state.playerCourt.y });
+          window.BadmintonDemo.jump();
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.playerJump && state.playerJump.offset > 8;
+        }""",
+        timeout=2000,
+    )
+    page.wait_for_timeout(350)
+
+    state = page.evaluate("window.BadmintonDemo.getState()")
+    assert state["yuiCheat"]["items"][0]["kind"] == "banana"
+    assert state["yuiCheat"]["player_effect"]["slipping"] is False
+
+
+@pytest.mark.e2e
+def test_badminton_octopus_ink_covers_player_screen(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate("window.BadmintonDemo._debugSpawnYuiCheat('octopus')")
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.yuiCheat && state.yuiCheat.ink &&
+            state.yuiCheat.ink.active === true && state.yuiCheat.ink.alpha > 0;
+        }""",
+        timeout=2000,
+    )
+
+    state = page.evaluate("window.BadmintonDemo.getState()")
+    assert state["yuiCheat"]["last_used_kind"] == "octopus"
+    assert state["yuiCheat"]["ink"]["active"] is True
+    assert state["yuiCheat"]["ink"]["alpha"] > 0
+
+
+@pytest.mark.e2e
 def test_badminton_duel_valid_landing_scores_for_shooter(mock_page: Page, running_server: str):
     page = mock_page
     _goto_badminton(page, running_server, "duel")
