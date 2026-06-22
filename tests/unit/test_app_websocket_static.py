@@ -159,5 +159,10 @@ def test_ws_open_resyncs_goodbye_state_and_defers_regular_greeting_until_release
     assert "reason: 'ws-open-goodbye-from-sync'" in onopen_greeting_block
     assert "pending: false" in onopen_greeting_block
     assert "if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active))" in onopen_greeting_block
+    assert "var isGreetingSwitchOnOpen = !!S._pendingGreetingSwitch;" in onopen_greeting_block
+    assert "var greetingReasonOnOpen = S._greetingCheckReason || (isGreetingSwitchOnOpen ? 'character-switch' : 'ws-open');" in onopen_greeting_block
+    assert "_markGreetingCheckPending(isGreetingSwitchOnOpen, greetingReasonOnOpen);" in onopen_greeting_block
+    assert "if (isGreetingSwitchOnOpen || S._startupGreetingReleaseGateUsed)" in onopen_greeting_block
+    assert "_sendGreetingCheckIfReady();" in onopen_greeting_block
+    assert "S._startupGreetingReleaseGateUsed = true;" in onopen_greeting_block
     assert "sendStartupGreetingReleaseRequest('ws-open')" in onopen_greeting_block
-    assert "_sendGreetingCheckIfReady();" not in onopen_greeting_block

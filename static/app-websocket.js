@@ -1440,9 +1440,16 @@
                 S._greetingCheckReason = '';
                 S._pendingGreetingSwitch = false;
             } else {
-                _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
+                var isGreetingSwitchOnOpen = !!S._pendingGreetingSwitch;
+                var greetingReasonOnOpen = S._greetingCheckReason || (isGreetingSwitchOnOpen ? 'character-switch' : 'ws-open');
+                _markGreetingCheckPending(isGreetingSwitchOnOpen, greetingReasonOnOpen);
                 S._pendingGreetingSwitch = false;
-                sendStartupGreetingReleaseRequest('ws-open');
+                if (isGreetingSwitchOnOpen || S._startupGreetingReleaseGateUsed) {
+                    _sendGreetingCheckIfReady();
+                } else {
+                    S._startupGreetingReleaseGateUsed = true;
+                    sendStartupGreetingReleaseRequest('ws-open');
+                }
             }
 
             // ── game-window-state 重连兜底（codex P2）──

@@ -25,7 +25,9 @@ test('startup greeting waits for an explicit release instead of firing on websoc
     const wsOpenBlock = appWebsocketSource.slice(wsOpenStart, wsOpenEnd);
 
     assert.match(wsOpenBlock, /_markGreetingCheckPending\(/);
-    assert.doesNotMatch(wsOpenBlock, /_sendGreetingCheckIfReady\(\);/);
+    assert.match(wsOpenBlock, /var isGreetingSwitchOnOpen = !!S\._pendingGreetingSwitch/);
+    assert.match(wsOpenBlock, /var greetingReasonOnOpen = S\._greetingCheckReason \|\| \(isGreetingSwitchOnOpen \? 'character-switch' : 'ws-open'\)/);
+    assert.match(wsOpenBlock, /if \(isGreetingSwitchOnOpen \|\| S\._startupGreetingReleaseGateUsed\) \{\s*_sendGreetingCheckIfReady\(\);\s*\} else \{\s*S\._startupGreetingReleaseGateUsed = true;\s*sendStartupGreetingReleaseRequest\('ws-open'\);\s*\}/);
 
     const sendBlock = appWebsocketSource.split('function _sendGreetingCheckIfReady()')[1].split(
         'function _onModelReady()',
