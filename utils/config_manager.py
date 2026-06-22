@@ -4435,7 +4435,16 @@ class ConfigManager:
                 return _normalize_provider_type_value(profile.get('PROVIDER_TYPE'))
             return 'openai_compatible'
 
-        def _resolved_provider_type_for_model(target_model_type: str) -> str:
+        def _provider_type_from_core_key(provider_key: str) -> str:
+            profile = get_core_api_profiles().get(str(provider_key or '').strip(), {})
+            if isinstance(profile, dict):
+                return _normalize_provider_type_value(profile.get('PROVIDER_TYPE'))
+            return _provider_type_from_assist_key(provider_key)
+
+        def _resolved_provider_type_for_model(target_model_type: str, _seen: frozenset[str] = frozenset()) -> str:
+            if target_model_type in _seen:
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            seen = _seen | frozenset((target_model_type,))
             prefix_by_type = {
                 'conversation': 'conversation',
                 'summary': 'summary',
@@ -4453,13 +4462,26 @@ class ConfigManager:
             provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
             if provider == 'custom':
                 return 'openai_compatible'
-            if provider == 'follow_conversation' and target_model_type != 'conversation':
-                return self.get_model_api_config('conversation').get('provider_type', 'openai_compatible')
-            if provider == 'follow_summary' and target_model_type != 'summary':
-                return self.get_model_api_config('summary').get('provider_type', 'openai_compatible')
+            if provider == 'follow_conversation':
+                if target_model_type == 'conversation':
+                    return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+                return _resolved_provider_type_for_model('conversation', seen)
+            if provider == 'follow_summary':
+                if target_model_type == 'summary':
+                    return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+                return _resolved_provider_type_for_model('summary', seen)
             if provider == 'follow_core':
-                return _provider_type_from_assist_key(core_config.get('CORE_API_TYPE', ''))
-            if provider == 'follow_assist' or not provider:
+                return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
+            if provider == 'follow_assist':
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            if not provider:
+                fallback_type = model_type_mapping.get(target_model_type, {}).get('fallback_type')
+                if fallback_type == 'core':
+                    return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
+                if fallback_type == 'conversation':
+                    return _resolved_provider_type_for_model('conversation', seen)
+                if fallback_type == 'summary':
+                    return _resolved_provider_type_for_model('summary', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             return _provider_type_from_assist_key(provider)
 

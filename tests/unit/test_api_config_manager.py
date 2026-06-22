@@ -1760,6 +1760,40 @@ class TestGptsovitsEnabledSaveMigration:
         assert api_config['api_key'] == 'sk-kimi-code-test'
         assert api_config['provider_type'] == 'anthropic'
 
+    @pytest.mark.unit
+    def test_provider_type_follow_cycle_does_not_recurse(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'follow_summary',
+            'summaryModelProvider': 'follow_conversation',
+        })
+
+        summary_config = config_manager.get_model_api_config('summary')
+        conversation_config = config_manager.get_model_api_config('conversation')
+
+        assert summary_config['provider_type'] == 'anthropic'
+        assert conversation_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_empty_core_fallback_provider_type_uses_core_profile(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+            'omniModelProvider': '',
+        })
+
+        realtime_config = config_manager.get_model_api_config('realtime')
+
+        assert realtime_config['provider_type'] == 'openai_compatible'
+        assert realtime_config['api_key'] == 'sk-core-qwen'
+        assert 'dashscope' in realtime_config['base_url']
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
