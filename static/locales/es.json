@@ -978,6 +978,7 @@
         "openaiAssist": "OpenAI: fuerte capacidad de gestión de memoria",
         "geminiAssist": "Géminis: Excelente inteligencia y valor.",
         "kimiAssist": "Kimi: apoya el contexto y la visión a largo plazo",
+        "kimiCodeAssist": "Kimi Code: compatible con Anthropic Messages, útil para código y texto largo",
         "assistApiNote": "Nota: Solo Alibaba admite la funcionalidad de voz personalizada. No se recomiendan GLM y StepFun.",
         "assistApiKeyQwen": "Clave API de asistencia - Alibaba",
         "assistApiKeyOpenai": "Clave API de asistencia: OpenAI",
@@ -986,6 +987,7 @@
         "assistApiKeySilicon": "Clave API de asistencia: SiliconFlow",
         "assistApiKeyGemini": "Clave API de asistencia: Géminis",
         "assistApiKeyKimi": "Clave API de asistencia: Kimi",
+        "assistApiKeyKimiCode": "Clave API de asistencia: Kimi Code",
         "assistApiKeyHint": "(Solo se requiere cuando Assist API es {{provider}})",
         "assistApiKeyPlaceholder": "Autocompletar desde el Libro de claves cuando está vacío",
         "providerNames": {
@@ -995,6 +997,7 @@
             "step": "paso divertido",
             "silicon": "flujo de silicio",
             "gemini": "Géminis",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
@@ -1016,6 +1019,7 @@
             "silicon": "SiliconFlow (buen valor, recomendado)",
             "gemini": "Géminis (Google, Alta Inteligencia)",
             "kimi": "Kimi (Moonshot, contexto largo)",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "búsqueda profunda",
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
@@ -1064,6 +1068,7 @@
             "silicon": "flujo de silicio",
             "gemini": "Géminis (Google)",
             "kimi": "Disparo a la luna (Kimi)",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",

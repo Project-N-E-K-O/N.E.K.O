@@ -978,6 +978,7 @@
         "openaiAssist": "OpenAI: 강력한 메모리 관리 기능",
         "geminiAssist": "Gemini: 지능과 가치가 뛰어남",
         "kimiAssist": "Kimi: 긴 컨텍스트 및 비전 지원",
+        "kimiCodeAssist": "Kimi Code: Anthropic Messages 호환, 코드와 긴 텍스트 작업에 적합",
         "assistApiNote": "참고: Alibaba만이 사용자 정의 음성 기능을 지원합니다. GLM 및 StepFun은 권장되지 않습니다.",
         "assistApiKeyQwen": "지원 API 키 - Alibaba",
         "assistApiKeyOpenai": "지원 API 키 - OpenAI",
@@ -986,6 +987,7 @@
         "assistApiKeySilicon": "지원 API 키 - SiliconFlow",
         "assistApiKeyGemini": "지원 API 키 - Gemini",
         "assistApiKeyKimi": "지원 API 키 - Kimi",
+        "assistApiKeyKimiCode": "지원 API 키 - Kimi Code",
         "assistApiKeyHint": "(Assist API가 {{provider}}인 경우에만 필요함)",
         "assistApiKeyPlaceholder": "비어 있으면 관리 대장의 키를 자동 사용",
         "providerNames": {
@@ -995,6 +997,7 @@
             "step": "스텝펀",
             "silicon": "실리콘플로우",
             "gemini": "쌍둥이자리",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
@@ -1016,6 +1019,7 @@
             "silicon": "SiliconFlow(좋은 가치, 권장)",
             "gemini": "Gemini(Google, High Intelligence)",
             "kimi": "Kimi(Moonshot, 긴 컨텍스트 지원)",
+            "kimi_code": "Kimi Code(Moonshot)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
@@ -1064,6 +1068,7 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini(Google)",
             "kimi": "Moonshot(Kimi)",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",

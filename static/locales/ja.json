@@ -978,6 +978,7 @@
         "openaiAssist": "OpenAI: 記憶管理能力が高い",
         "geminiAssist": "Gemini: 知能・コスパ共に極めて優秀",
         "kimiAssist": "Kimi: ロングコンテキスト・ビジョン対応",
+        "kimiCodeAssist": "Kimi Code: Anthropic Messages 互換、コードと長文タスク向け",
         "assistApiNote": "注: カスタム音声機能はAlibabaのみ対応です。GLMとStepFunは非推奨です。",
         "assistApiKeyQwen": "Assist APIキー - Alibaba",
         "assistApiKeyOpenai": "Assist APIキー - OpenAI",
@@ -986,6 +987,7 @@
         "assistApiKeySilicon": "Assist APIキー - SiliconFlow",
         "assistApiKeyGemini": "Assist APIキー - Gemini",
         "assistApiKeyKimi": "Assist APIキー - Kimi",
+        "assistApiKeyKimiCode": "Assist APIキー - Kimi Code",
         "assistApiKeyHint": "（Assist APIが {{provider}} の場合のみ必要）",
         "assistApiKeyPlaceholder": "空欄時は管理簿のキーを自動使用",
         "providerNames": {
@@ -995,6 +997,7 @@
             "step": "StepFun",
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
@@ -1016,6 +1019,7 @@
             "silicon": "SiliconFlow（高コスパ、推奨）",
             "gemini": "Gemini（Google、高知能）",
             "kimi": "Kimi（Moonshot、ロングコンテキスト対応）",
+            "kimi_code": "Kimi Code（Moonshot）",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
@@ -1064,6 +1068,7 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini（Google）",
             "kimi": "Moonshot（Kimi）",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",

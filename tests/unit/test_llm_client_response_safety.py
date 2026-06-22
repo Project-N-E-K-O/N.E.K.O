@@ -173,6 +173,100 @@ async def test_create_chat_llm_async_closes_late_result_after_cancellation(
     await asyncio.wait_for(closed.wait(), timeout=2)
 
 
+def test_create_chat_llm_routes_kimi_code_to_anthropic_client(monkeypatch):
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+
+    client = llm_client_module.create_chat_llm(
+        "kimi-for-coding",
+        "https://api.kimi.com/coding",
+        "sk-test",
+        max_retries=0,
+    )
+    try:
+        assert isinstance(client, llm_client_module.ChatAnthropic)
+        assert client._client.kwargs["base_url"] == "https://api.kimi.com/coding"
+        assert client._client.kwargs["default_headers"]["User-Agent"] == "claude-code/0.1.0"
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkeypatch):
+    captured = {}
+
+    class _TextDelta:
+        type = "text_delta"
+        text = "ok"
+
+    class _Event:
+        type = "content_block_delta"
+        delta = _TextDelta()
+
+    class _StreamContext:
+        def __init__(self):
+            self._events = [_Event()]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def __aiter__(self):
+            self._iter = iter(self._events)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._iter)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class _Messages:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _StreamContext()
+
+    class _FakeAnthropic:
+        def __init__(self, **_kwargs):
+            self.messages = _Messages()
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+
+    client = llm_client_module.ChatAnthropic(
+        model="kimi-for-coding",
+        base_url="https://api.kimi.com/coding",
+        api_key="sk-test",
+    )
+    try:
+        chunks = [chunk async for chunk in client.astream([{"role": "user", "content": "hi"}])]
+        assert [chunk.content for chunk in chunks] == ["ok"]
+        assert "stream" not in captured
+        assert captured["model"] == "kimi-for-coding"
+    finally:
+        await client.aclose()
+
+
 @pytest.mark.asyncio
 async def test_chat_openai_reuses_default_ssl_context(monkeypatch):
     original_create_default_context = llm_client_module.ssl.create_default_context

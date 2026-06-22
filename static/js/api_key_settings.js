@@ -45,6 +45,18 @@ const MODEL_DEFAULT_PROVIDER = {
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
 };
+const FIXED_MODEL_PROVIDER_KEYS = new Set(['kimi_code']);
+const MODEL_PROVIDER_FIELD_BY_TYPE = {
+    conversation: 'conversation_model',
+    summary: 'summary_model',
+    gameMain: 'conversation_model',
+    gameSummary: 'summary_model',
+    correction: 'correction_model',
+    emotion: 'emotion_model',
+    vision: 'vision_model',
+    agent: 'agent_model',
+    omni: 'core_model',
+};
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
@@ -1031,6 +1043,81 @@ function getTtsProviderMeta(pk) {
 /**
  * 填充所有自定义模型的服务商下拉框
  */
+function getProviderInfo(providerKey) {
+    if (!providerKey) return {};
+    return _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+}
+
+function isFixedModelProvider(providerKey) {
+    return FIXED_MODEL_PROVIDER_KEYS.has(providerKey);
+}
+
+function getProviderDefaultModelId(providerKey, modelType) {
+    if (!providerKey || !modelType) return '';
+    const profile = getProviderInfo(providerKey);
+    const field = MODEL_PROVIDER_FIELD_BY_TYPE[modelType];
+    if (field && profile[field]) return String(profile[field]).trim();
+    if (modelType === 'gameMain' && profile.conversation_model) return String(profile.conversation_model).trim();
+    if (modelType === 'gameSummary' && profile.summary_model) return String(profile.summary_model).trim();
+    return '';
+}
+
+function getProviderModeSourceKey(modelType, providerMode) {
+    if (!providerMode || providerMode === 'custom') return '';
+    if (providerMode === 'follow_conversation') {
+        const sourceSelect = document.getElementById('conversationModelProvider');
+        return getProviderModeSourceKey('conversation', sourceSelect ? sourceSelect.value : '');
+    }
+    if (providerMode === 'follow_summary') {
+        const sourceSelect = document.getElementById('summaryModelProvider');
+        return getProviderModeSourceKey('summary', sourceSelect ? sourceSelect.value : '');
+    }
+    if (providerMode === 'follow_core') {
+        const coreSelect = document.getElementById('coreApiSelect');
+        return coreSelect ? coreSelect.value : '';
+    }
+    if (providerMode === 'follow_assist') {
+        const assistSelect = document.getElementById('assistApiSelect');
+        return assistSelect ? assistSelect.value : '';
+    }
+    return providerMode;
+}
+
+function setModelIdFieldHidden(modelType, hidden) {
+    const input = document.getElementById(`${modelType}ModelId`);
+    if (!input) return;
+    const group = input.closest('.form-group') || input.parentElement;
+    if (group) group.style.display = hidden ? 'none' : '';
+    input.dataset.fixedModelHidden = hidden ? 'true' : '';
+}
+
+function applyFixedModelProviderUi(modelType, providerMode) {
+    const providerKey = getProviderModeSourceKey(modelType, providerMode);
+    const fixedModel = isFixedModelProvider(providerKey)
+        ? getProviderDefaultModelId(providerKey, modelType)
+        : '';
+    const input = document.getElementById(`${modelType}ModelId`);
+    if (fixedModel && input) {
+        input.value = fixedModel;
+        input.setAttribute('readonly', 'readonly');
+        setModelIdFieldHidden(modelType, true);
+        return true;
+    }
+    setModelIdFieldHidden(modelType, false);
+    return false;
+}
+
+function getResolvedCustomModelId(modelType, providerMode) {
+    if (!modelType) return '';
+    const providerKey = getProviderModeSourceKey(modelType, providerMode);
+    const fixedModel = isFixedModelProvider(providerKey)
+        ? getProviderDefaultModelId(providerKey, modelType)
+        : '';
+    if (fixedModel) return fixedModel;
+    const input = document.getElementById(`${modelType}ModelId`);
+    return input ? input.value.trim() : '';
+}
+
 function populateModelProviderDropdowns() {
     MODEL_TYPES.forEach(mt => {
         const sel = document.getElementById(`${mt}ModelProvider`);
@@ -1135,7 +1222,9 @@ function onCustomModelProviderChange(modelType) {
     const modelIdInput = document.getElementById(`${modelType}ModelId`);
     const voiceInput = document.getElementById(`${modelType}VoiceId`);
 
-    // Model ID is NEVER readonly
+    setModelIdFieldHidden(modelType, false);
+
+    // Model ID is editable unless inherited or fixed by a provider preset.
     if (modelIdInput) {
         modelIdInput.removeAttribute('readonly');
     }
@@ -1200,6 +1289,7 @@ function onCustomModelProviderChange(modelType) {
                 : 'Key 跟随已选择的模型配置';
             removeKeyBookLink(keyInput);
         }
+        applyFixedModelProviderUi(modelType, provider);
         return;
     }
 
@@ -1239,6 +1329,7 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
+        applyFixedModelProviderUi(modelType, provider);
     } else if (modelType === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
         // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
         // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
@@ -1276,11 +1367,13 @@ function onCustomModelProviderChange(modelType) {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
         if (modelIdInput) modelIdInput.removeAttribute('readonly');
+        setModelIdFieldHidden(modelType, false);
         setKeyEditable(keyInput);
     } else {
         // Specific provider
         const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
-        if (modelIdInput) modelIdInput.removeAttribute('readonly');
+        const fixedModelApplied = applyFixedModelProviderUi(modelType, provider);
+        if (modelIdInput && !fixedModelApplied) modelIdInput.removeAttribute('readonly');
         if (modelType === 'omni') {
             const coreProfile = _coreApiProviders[provider] || {};
             if (urlInput) {
@@ -2569,6 +2662,25 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
 
+    const resolveModel = (modelType, providerMode) => {
+        if (!providerMode || providerMode === 'custom') return '';
+        if (providerMode === 'follow_conversation') {
+            return params.conversationModelId || resolveModel('conversation', params.conversationModelProvider);
+        }
+        if (providerMode === 'follow_summary') {
+            return params.summaryModelId || resolveModel('summary', params.summaryModelProvider);
+        }
+
+        let providerKey = providerMode;
+        if (providerMode === 'follow_core') {
+            providerKey = params.coreApi || '';
+        } else if (providerMode === 'follow_assist') {
+            providerKey = params.assistApi || '';
+        }
+        if (!providerKey || !isFixedModelProvider(providerKey)) return '';
+        return getProviderDefaultModelId(providerKey, modelType);
+    };
+
     MODEL_TYPES.forEach(modelType => {
         // GSV 选中时 tts URL 由 GSV 专属字段提供，跳过自动解析。启用信号收口到
         // ttsModelProvider 下拉（gptsovitsEnabled 已不再外发）。
@@ -2583,6 +2695,16 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         const input = document.getElementById(urlField);
         if (input && input.hasAttribute('readonly')) {
             input.value = resolvedUrl;
+        }
+
+        const modelField = `${modelType}ModelId`;
+        const resolvedModel = resolveModel(modelType, params[providerField]);
+        if (resolvedModel) {
+            params[modelField] = resolvedModel;
+            const modelInput = document.getElementById(modelField);
+            if (modelInput && modelInput.dataset.fixedModelHidden === 'true') {
+                modelInput.value = resolvedModel;
+            }
         }
     });
 }
@@ -3365,7 +3487,7 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
-                result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                result.model = getResolvedCustomModelId(mt, provider);
             } else if (mt === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
                 // 端点可编辑的 TTS provider（如 vLLM-Omni）：走 Mode 2（custom 路径），
                 // 不设 providerKey/providerScope → 后端用用户输入的 URL，绝不退化成「指定
@@ -3419,14 +3541,14 @@ const ConnectivityManager = {
                 result.providerType = 'websocket';
                 result.subType = _spProbe.probe_sub_type || '';
                 result.key = keyInput ? getRealKey(keyInput) : '';
-                result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                result.model = getResolvedCustomModelId(mt, provider);
                 } else {
                     // 非 ws 的可编辑端点（结构兜底 / 未来 http 探测的 provider）：当 custom
                     // 处理——用户填的 URL/Key/Model，不绑定内置 provider profile。
                     result.url = urlInput ? urlInput.value.trim() : '';
                     result.providerType = 'openai_compatible';
                     result.key = keyInput ? getRealKey(keyInput) : '';
-                    result.model = modelIdInput ? modelIdInput.value.trim() : '';
+                    result.model = getResolvedCustomModelId(mt, provider);
                 }
             } else {
                 // 指定服务商：从 Key Book 读取

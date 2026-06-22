@@ -978,6 +978,7 @@
         "openaiAssist": "OpenAI：記憶管理能力強",
         "geminiAssist": "Gemini：智能和性價比極高",
         "kimiAssist": "Kimi：支持長上下文和視覺",
+        "kimiCodeAssist": "Kimi Code：Anthropic Messages 相容格式，適合程式碼與長文字任務",
         "assistApiNote": "注意：只有阿里支持自定義語音功能。不建議使用智譜和階躍星辰。",
         "assistApiKeyQwen": "輔助API Key - 阿里",
         "assistApiKeyOpenai": "輔助API Key - OpenAI",
@@ -986,6 +987,7 @@
         "assistApiKeySilicon": "輔助API Key - 矽基流動",
         "assistApiKeyGemini": "輔助API Key - Gemini",
         "assistApiKeyKimi": "輔助API Key - Kimi",
+        "assistApiKeyKimiCode": "輔助API Key - Kimi Code",
         "assistApiKeyHint": "（僅當輔助API為{{provider}}時需要填寫）",
         "assistApiKeyPlaceholder": "留空使用管理簿對應 Key",
         "providerNames": {
@@ -995,6 +997,7 @@
             "step": "階躍星辰",
             "silicon": "矽基流動",
             "gemini": "Gemini",
+            "kimi_code": "Kimi Code（月之暗面）",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
@@ -1016,6 +1019,7 @@
             "silicon": "矽基流動 (SiliconFlow，性價比高，推薦⭐)",
             "gemini": "Gemini（谷歌，智能極高）",
             "kimi": "Kimi（月之暗面，支持長上下文）",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
             "doubao": "豆包（字節跳動）",
             "minimax": "MiniMax（中國）",
@@ -1064,6 +1068,7 @@
             "silicon": "矽基流動",
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "豆包（字節跳動）",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",

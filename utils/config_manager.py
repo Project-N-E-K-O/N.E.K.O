@@ -3808,6 +3808,7 @@ class ConfigManager:
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_KIMI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_KIMI_CODE': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_QWEN_INTL': '',
@@ -3897,6 +3898,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or _fb('silicon')
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or _fb('gemini')
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
+        config['ASSIST_API_KEY_KIMI_CODE'] = core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
         # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
