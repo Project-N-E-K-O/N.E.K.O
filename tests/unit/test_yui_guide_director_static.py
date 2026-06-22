@@ -159,11 +159,17 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in side_panel_block
 
 
-def test_avatar_floating_guides_keep_real_cursor_visible():
+def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
     guide_css = YUI_GUIDE_CSS_PATH.read_text(encoding="utf-8")
     overlay_source = YUI_GUIDE_OVERLAY_PATH.read_text(encoding="utf-8")
     director_source = _read_director()
     plugin_runtime_source = PLUGIN_YUI_GUIDE_RUNTIME_PATH.read_text(encoding="utf-8")
+    manager_source = (Path(__file__).resolve().parents[2] / "static" / "tutorial/core/universal-manager.js").read_text(
+        encoding="utf-8"
+    )
+    resistance_source = (
+        Path(__file__).resolve().parents[2] / "static" / "tutorial/visual/resistance-controllers.js"
+    ).read_text(encoding="utf-8")
 
     assert not re.search(r"cursor\s*:\s*none\b", guide_css)
     assert not re.search(r"cursor\s*:\s*none\b", plugin_runtime_source)
@@ -181,6 +187,16 @@ def test_avatar_floating_guides_keep_real_cursor_visible():
     )[0]
     assert "style.cursor = 'none';" not in resistance_block
     assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
+
+    assert "syncPcSystemCursorHidden(hidden, reason = 'tutorial')" in manager_source
+    assert "action: 'yui_guide_system_cursor_visibility'" in manager_source
+    assert "this.syncPcSystemCursorHidden(true, 'tutorial-started');" in manager_source
+    assert "this.syncPcSystemCursorHidden(false, rawReason);" in manager_source
+    assert "syncSystemCursorHidden(hidden, reason = 'tutorial')" in director_source
+    assert "this.syncSystemCursorHidden(false, 'interrupt_resist_light');" in resistance_source
+    assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');" in resistance_source
+    assert "this.syncSystemCursorHidden(false, 'interrupt_angry_exit');" in resistance_source
+    assert "this.syncSystemCursorHidden(false, 'destroy');" in director_source
 
 
 def test_day1_intro_activation_copy_matches_auto_advance_behavior():

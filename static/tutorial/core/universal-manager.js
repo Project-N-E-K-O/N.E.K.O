@@ -1036,6 +1036,7 @@ class UniversalTutorialManager {
     clearAllTutorialLifecycles(reason = 'destroy') {
         const rawReason = this.normalizeTutorialEndRawReason(reason);
         const director = this.yuiGuideDirector;
+        this.syncPcSystemCursorHidden(false, rawReason);
 
         try {
             this.notifyYuiGuideTutorialEnd(rawReason);
@@ -1102,6 +1103,47 @@ class UniversalTutorialManager {
             finalSteps: finalSteps,
             currentStep: this.currentStep
         });
+    }
+
+    syncPcSystemCursorHidden(hidden, reason = 'tutorial') {
+        let tutorialRunId = '';
+        try {
+            tutorialRunId = window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+        const message = {
+            action: 'yui_guide_system_cursor_visibility',
+            hidden: hidden === true,
+            tutorialRunId: tutorialRunId,
+            reason: reason,
+            timestamp: Date.now()
+        };
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+            ) {
+                window.nekoTutorialOverlay.relayToChat(message);
+            }
+        } catch (_) {}
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+            ) {
+                window.nekoTutorialOverlay.relayToPet(message);
+            }
+        } catch (_) {}
+        try {
+            if (
+                window.appInterpage
+                && window.appInterpage.nekoBroadcastChannel
+                && typeof window.appInterpage.nekoBroadcastChannel.postMessage === 'function'
+            ) {
+                window.appInterpage.nekoBroadcastChannel.postMessage(message);
+            }
+        } catch (_) {}
     }
 
     clearPcTutorialGlobalOverlay(reason = 'destroy') {
@@ -3016,6 +3058,7 @@ class UniversalTutorialManager {
 
     emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
         this.clearStartupGreetingRelease('tutorial-started');
+        this.syncPcSystemCursorHidden(true, 'tutorial-started');
         window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
             detail: {
                 page: page,

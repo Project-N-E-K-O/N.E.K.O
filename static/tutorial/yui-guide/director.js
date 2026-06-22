@@ -11526,6 +11526,47 @@
             }, 3000);
         }
 
+        syncSystemCursorHidden(hidden, reason = 'tutorial') {
+            let tutorialRunId = '';
+            try {
+                tutorialRunId = window.localStorage
+                    ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                    : '';
+            } catch (_) {}
+            const message = {
+                action: 'yui_guide_system_cursor_visibility',
+                hidden: hidden === true,
+                tutorialRunId: tutorialRunId,
+                reason: reason,
+                timestamp: Date.now()
+            };
+            try {
+                if (
+                    window.nekoTutorialOverlay
+                    && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+                ) {
+                    window.nekoTutorialOverlay.relayToChat(message);
+                }
+            } catch (_) {}
+            try {
+                if (
+                    window.nekoTutorialOverlay
+                    && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+                ) {
+                    window.nekoTutorialOverlay.relayToPet(message);
+                }
+            } catch (_) {}
+            try {
+                if (
+                    window.appInterpage
+                    && window.appInterpage.nekoBroadcastChannel
+                    && typeof window.appInterpage.nekoBroadcastChannel.postMessage === 'function'
+                ) {
+                    window.appInterpage.nekoBroadcastChannel.postMessage(message);
+                }
+            } catch (_) {}
+        }
+
         playLightResistance(x, y, options) {
             return this.resistanceController.playLightResistance(x, y, options);
         }
@@ -11557,6 +11598,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.syncSystemCursorHidden(false, 'destroy');
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
                 console.warn('[YuiGuide] 销毁时恢复 Day1 Agent 开关失败:', error);

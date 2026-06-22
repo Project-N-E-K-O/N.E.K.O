@@ -102,6 +102,7 @@
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
 
             if (!normalizedOptions.suppressCursorReveal) {
+                call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_resist_light');
                 call(this.callbacks, 'prepareResistanceCursorReveal', null, normalizedOptions);
             }
 
@@ -160,6 +161,7 @@
                 if (this.isStopping()) {
                     return;
                 }
+                call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
 
                 const didRestorePresentationSnapshot = call(
                     this.callbacks,
@@ -202,6 +204,7 @@
             call(this.callbacks, 'disableInterrupts', null);
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
+            call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_angry_exit');
 
             const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
@@ -493,6 +496,7 @@
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
 
             if (!normalizedOptions.suppressCursorReveal) {
+                this.syncSystemCursorHidden(false, 'interrupt_resist_light');
                 director.prepareResistanceCursorReveal(normalizedOptions);
             }
 
@@ -540,6 +544,7 @@
                 if (this.isStopping()) {
                     return;
                 }
+                this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
 
                 const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = director.activeNarration;
@@ -578,6 +583,7 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
+            this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
@@ -648,6 +654,13 @@
         destroy() {
             this.destroyed = true;
             this.lightResistanceActive = false;
+        }
+
+        syncSystemCursorHidden(hidden, reason) {
+            const director = this.director;
+            if (director && typeof director.syncSystemCursorHidden === 'function') {
+                director.syncSystemCursorHidden(hidden, reason);
+            }
         }
     }
 
