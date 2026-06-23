@@ -3028,6 +3028,7 @@ async def _deliver_break_reminder_via_llm(
         correction_model = correction_config.get('model')
         correction_base_url = correction_config.get('base_url')
         correction_api_key = correction_config.get('api_key')
+        correction_provider_type = correction_config.get('provider_type')
         if not correction_model or not correction_api_key:
             logger.warning(
                 "[%s] break reminder skipped: correction model misconfigured",
@@ -3075,6 +3076,7 @@ async def _deliver_break_reminder_via_llm(
         async with asyncio.timeout(timeout_seconds):
             async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
+                provider_type=correction_provider_type,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
@@ -3602,6 +3604,7 @@ async def emotion_analysis(request: Request):
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         
         # 优先使用请求参数，其次使用配置
         api_key = api_key or emotion_api_key
@@ -3635,6 +3638,7 @@ async def emotion_analysis(request: Request):
             model,
             emotion_base_url,
             api_key,
+            provider_type=emotion_provider_type,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
@@ -6013,6 +6017,7 @@ async def proactive_chat(request: Request):
             conversation_model = conversation_config.get('model')
             conversation_base_url = conversation_config.get('base_url')
             conversation_api_key = conversation_config.get('api_key')
+            conversation_provider_type = conversation_config.get('provider_type')
 
             if not conversation_model or not conversation_api_key:
                 logger.error("对话模型配置缺失: model或api_key未设置")
@@ -6026,6 +6031,7 @@ async def proactive_chat(request: Request):
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')
+            vision_provider_type = vision_config.get('provider_type')
             has_vision_model = bool(vision_model_name and vision_api_key)
             if not has_vision_model:
                 logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
@@ -6048,14 +6054,17 @@ async def proactive_chat(request: Request):
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
+                provider_type = vision_provider_type
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+                provider_type = conversation_provider_type
             from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
+                provider_type=provider_type,
             )
             if not disable_thinking:
                 # Focus thinking-on: strip ONLY the thinking-disable keys from

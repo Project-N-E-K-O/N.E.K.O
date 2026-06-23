@@ -1663,6 +1663,7 @@ class OmniOfflineClient:
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         if not (emotion_api_key and emotion_model):
             logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
             return None
@@ -1706,6 +1707,7 @@ class OmniOfflineClient:
                 emotion_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
                 timeout=30,
+                provider_type=emotion_provider_type,
             )
         except Exception as e:
             logger.warning("summary: 构造 emotion LLM 失败: %s", e)

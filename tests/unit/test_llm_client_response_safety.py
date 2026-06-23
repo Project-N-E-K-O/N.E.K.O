@@ -364,6 +364,54 @@ def test_anthropic_message_normalization_preserves_tool_turns_without_none_text(
     assert "None" not in repr(messages)
 
 
+def test_anthropic_message_normalization_dedupes_existing_tool_use_blocks():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "lookup",
+                    "input": {"q": "neko"},
+                }
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{\"q\":\"neko\"}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+    ])
+
+    assistant_blocks = messages[1]["content"]
+    assert [block.get("id") for block in assistant_blocks if block.get("type") == "tool_use"] == ["call_1"]
+    assert messages[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "result"}
+    ]
+
+
+def test_anthropic_message_normalization_downgrades_orphan_tool_result():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "start"},
+        {"role": "tool", "tool_call_id": "call_orphan", "content": "orphan result"},
+    ])
+
+    assert "tool_result" not in repr(messages)
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "start"},
+                {"type": "text", "text": "[tool result] orphan result"},
+            ],
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkeypatch):
     captured = {}

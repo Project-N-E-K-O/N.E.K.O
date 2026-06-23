@@ -3604,7 +3604,7 @@ const ConnectivityManager = {
                 } else {
                     const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
-                    result.providerType = 'openai_compatible';
+                    result.providerType = getProviderType(provider);
                     result.providerKey = provider;
                     result.providerScope = 'assist';
                 }

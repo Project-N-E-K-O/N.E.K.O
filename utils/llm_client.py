@@ -1023,6 +1023,16 @@ def _anthropic_text_from_blocks(blocks: list[dict]) -> str:
     return "\n".join(text_parts)
 
 
+def _anthropic_tool_use_ids_from_blocks(blocks: list[dict]) -> set[str]:
+    ids: set[str] = set()
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            raw_id = block.get("id")
+            if raw_id:
+                ids.add(str(raw_id))
+    return ids
+
+
 def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | None:
     if not isinstance(tool_call, dict):
         tool_call = {
@@ -1062,11 +1072,22 @@ def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | N
 def _convert_openai_tool_result_to_anthropic(msg: dict) -> dict[str, Any]:
     blocks = _convert_openai_content_to_anthropic(msg.get("content"))
     tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or msg.get("name") or "tool_result")
+    content: str | list[dict] = _anthropic_text_from_blocks(blocks)
+    if any(isinstance(block, dict) and block.get("type") != "text" for block in blocks):
+        content = blocks
     return {
         "type": "tool_result",
         "tool_use_id": tool_use_id,
-        "content": _anthropic_text_from_blocks(blocks),
+        "content": content,
     }
+
+
+def _convert_orphan_tool_result_to_user_blocks(msg: dict) -> list[dict]:
+    blocks = _convert_openai_content_to_anthropic(msg.get("content"))
+    text = _anthropic_text_from_blocks(blocks)
+    if text:
+        return [{"type": "text", "text": f"[tool result] {text}"}]
+    return [{"type": "text", "text": "[tool result]"}]
 
 
 def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
@@ -1079,6 +1100,7 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
     normalized = _normalize_messages(messages)
     system_parts: list[str] = []
     anthropic_messages: list[dict] = []
+    pending_tool_use_ids: set[str] = set()
 
     for msg in normalized:
         role = msg.get("role", "")
@@ -1096,6 +1118,14 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                     system_parts.append(system_text)
             continue
         if role == "tool":
+            tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or msg.get("name") or "tool_result")
+            if tool_use_id not in pending_tool_use_ids:
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": _convert_orphan_tool_result_to_user_blocks(msg),
+                })
+                continue
+            pending_tool_use_ids.discard(tool_use_id)
             anthropic_messages.append({
                 "role": "user",
                 "content": [_convert_openai_tool_result_to_anthropic(msg)],
@@ -1105,10 +1135,15 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
             role = "user"
         blocks = _convert_openai_content_to_anthropic(content)
         if role == "assistant":
+            seen_tool_use_ids = _anthropic_tool_use_ids_from_blocks(blocks)
             for tool_call in msg.get("tool_calls") or []:
                 converted = _convert_openai_tool_call_to_anthropic(tool_call)
-                if converted:
+                if converted and converted.get("id") not in seen_tool_use_ids:
                     blocks.append(converted)
+                    seen_tool_use_ids.add(str(converted.get("id")))
+            pending_tool_use_ids = seen_tool_use_ids
+        elif role == "user":
+            pending_tool_use_ids = set()
         anthropic_messages.append({"role": role, "content": blocks or [{"type": "text", "text": "..."}]})
 
     # Enforce strict user/assistant alternation.
