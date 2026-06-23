@@ -766,6 +766,9 @@
 
             // 每题状态记录：{ q, getValue, markError }
             const fields = [];
+            // 联动 placeholder 用：单选题 id -> 其 input 列表 / 待联动的填空题
+            const optionInputsById = {};
+            const linkedPlaceholders = [];
 
             questions.forEach((q, idx) => {
                 if (!q || typeof q !== 'object' || !q.id) return;
@@ -801,6 +804,15 @@
                     `;
                     wrap.appendChild(ta);
                     getValue = () => ta.value.trim();
+                    // 声明式联动：placeholder 跟着指定单选题的选择走，引导用户写具体方向
+                    if (q.placeholder_from && q.placeholder_template) {
+                        linkedPlaceholders.push({
+                            ta,
+                            fromId: String(q.placeholder_from),
+                            template: String(q.placeholder_template),
+                            fallback: q.placeholder || '',
+                        });
+                    }
                 } else {
                     // single / multi —— 选项组
                     const optionsBox = document.createElement('div');
@@ -824,6 +836,7 @@
                         input.name = 'survey_' + qid;
                         input.value = String(opt.value != null ? opt.value : '');
                         input.style.cssText = 'margin-top:2px;flex-shrink:0;accent-color:#65aef4;';
+                        input._label = opt.label != null ? String(opt.label) : input.value;
                         const span = document.createElement('span');
                         span.textContent = opt.label || input.value;
                         optRow.appendChild(input);
@@ -844,6 +857,7 @@
                         optionsBox.appendChild(optRow);
                     });
                     wrap.appendChild(optionsBox);
+                    optionInputsById[qid] = inputs;
                     getValue = () => {
                         const checked = inputs.filter((i) => i.checked).map((i) => i.value);
                         if (type === 'multi') return checked;
@@ -862,6 +876,20 @@
                     },
                     showError: () => { err.style.display = 'block'; },
                 });
+            });
+
+            // 接线：填空题的 placeholder 跟着来源单选题的选择变化，未选时回退到通用提示
+            linkedPlaceholders.forEach((link) => {
+                const srcInputs = optionInputsById[link.fromId];
+                if (!Array.isArray(srcInputs) || !srcInputs.length) return;
+                const refresh = () => {
+                    const picked = srcInputs.find((i) => i.checked);
+                    link.ta.placeholder = picked
+                        ? link.template.replaceAll('{label}', picked._label || picked.value)
+                        : link.fallback;
+                };
+                srcInputs.forEach((i) => i.addEventListener('change', refresh));
+                refresh();
             });
 
             // 底部按钮：跳过（次） + 提交（主）

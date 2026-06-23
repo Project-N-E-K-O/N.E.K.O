@@ -1313,24 +1313,31 @@ def _safe_locale(lang: object) -> str:
 
 
 def _load_survey_for_version(version: str, lang: str) -> dict | None:
-    """Load config/surveys/<version>.json with the same locale fallback chain as changelog.
+    """Load config/surveys/<version>.json with a per-locale fallback chain.
 
     Returns the parsed (localized) survey dict, or None when no survey exists for
-    the version. Fallback chain: user locale -> en -> the Chinese base file; the
-    whole file is swapped per locale (question ids must stay identical across
-    locales — answers are reported by id).
+    the version. Fallback: a concrete locale tries its own subdir first (incl.
+    Chinese variants like zh-TW); Chinese variants then fall back to the Simplified
+    base file, non-Chinese fall back to en, and everything finally lands on the
+    base. This loader is independent of ``_load_changelog`` — changing it does not
+    touch changelog's language fallback. The whole file is swapped per locale
+    (question ids must stay identical across locales — answers are reported by id).
     """
     surveys_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "surveys")
     base_file = os.path.join(surveys_dir, f"{version}.json")
     if not os.path.isfile(base_file):
         return None
 
-    is_chinese = lang.startswith("zh") if lang else True
+    # 任何具体 locale 先试自己的子目录（含 zh-TW 等中文变体，于是繁体不再被并入
+    # 简体 base）；中文变体回退到简体 base，非中文回退 en，最后都落 base。
     candidates: list[str] = []
+    if lang:
+        candidates.append(os.path.join(surveys_dir, lang, f"{version}.json"))
+    is_chinese = lang.startswith("zh") if lang else True
     if not is_chinese:
-        if lang:
-            candidates.append(os.path.join(surveys_dir, lang, f"{version}.json"))
-        candidates.append(os.path.join(surveys_dir, "en", f"{version}.json"))
+        en_path = os.path.join(surveys_dir, "en", f"{version}.json")
+        if en_path not in candidates:
+            candidates.append(en_path)
     candidates.append(base_file)
 
     for path in candidates:
