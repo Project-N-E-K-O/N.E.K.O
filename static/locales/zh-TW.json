@@ -4256,6 +4256,7 @@
     },
      "badminton": {
          "title": "羽毛球挑戰 - Badminton",
+         "exit": "退出",
          "loading": {
              "title": "正在進入羽毛球場",
              "subtitle": "載入場地、角色和音效..."

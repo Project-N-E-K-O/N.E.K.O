@@ -4256,6 +4256,7 @@
     },
      "badminton": {
          "title": "Desafio de badminton",
+         "exit": "Sair",
          "loading": {
              "title": "Entrando na quadra de badminton",
              "subtitle": "Carregando a quadra, os personagens e o áudio..."

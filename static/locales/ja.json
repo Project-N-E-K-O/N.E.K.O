@@ -4256,6 +4256,7 @@
     },
      "badminton": {
          "title": "バドミントンチャレンジ - Badminton",
+         "exit": "終了",
          "loading": {
              "title": "バドミントンコートに入場中",
              "subtitle": "コート、キャラクター、音声を読み込み中..."
