@@ -75,6 +75,22 @@ def test_det_signal_plugin_keyword():
     assert ex._deterministic_action_signal("帮我查下天气", openclaw_enabled=False, user_plugin_enabled=False) is False
 
 
+def test_det_signal_failopen_keywordless_dispatchable_plugin():
+    ex = _exec()
+    # A dispatchable plugin with no top-level keywords (e.g. music_pusher exposes
+    # an agent entry but defines no keywords) can only be selected by the LLM
+    # assessment; the keyword shortcut can't represent it, so the gate must fail
+    # open even on chat text — never brake a turn that plugin could handle.
+    ex.plugin_list = [{"id": "music_pusher"}]  # no keywords, default visible entry
+    assert ex._deterministic_action_signal("今天好无聊", openclaw_enabled=False, user_plugin_enabled=True) is True
+    # When ALL active plugins DO have keywords and none match → brakeable (False).
+    ex.plugin_list = [{"id": "weather", "keywords": ["天气预报"]}]
+    assert ex._deterministic_action_signal("今天好无聊", openclaw_enabled=False, user_plugin_enabled=True) is False
+    # A passive keywordless plugin never dispatches → it must NOT force fail-open.
+    ex.plugin_list = [{"id": "bg", "passive": True}]
+    assert ex._deterministic_action_signal("今天好无聊", openclaw_enabled=False, user_plugin_enabled=True) is False
+
+
 def test_det_signal_failopen_when_plugins_unloaded():
     ex = _exec()
     ex.plugin_list = []  # not loaded yet

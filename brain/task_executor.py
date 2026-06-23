@@ -1626,13 +1626,21 @@ class DirectTaskExecutor:
                 from brain.plugin_filter import _match_keywords
                 for p in plugins:
                     # Skip passive plugins: they never participate in dispatch
-                    # (mirrors _assess_user_plugin), so a passive plugin's keyword
-                    # must not count as an action signal — it would only cause a
-                    # spurious fail-open and a wasted assessment.
+                    # (mirrors _assess_user_plugin), so a passive plugin must not
+                    # influence the gate at all.
                     if not isinstance(p, dict) or p.get("passive"):
                         continue
                     kws = p.get("keywords", [])
-                    if isinstance(kws, list) and kws and _match_keywords(text, kws):
+                    if isinstance(kws, list) and kws:
+                        if _match_keywords(text, kws):
+                            return True
+                    elif self._agent_visible_plugin_entries(p):
+                        # A dispatchable plugin with no usable keyword shortcut can
+                        # only be selected by the LLM _assess_user_plugin (e.g.
+                        # first-party plugins exposing agent entries but no
+                        # top-level keywords). The keyword shortcut can't represent
+                        # it, so the gate must fail open when one exists — never
+                        # brake a turn such a plugin could have handled.
                         return True
             except Exception:
                 return True  # on any error, fail open
