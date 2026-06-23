@@ -6897,22 +6897,6 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
-    if game_type == "soccer":
-        _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
-    _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
-    _append_game_session_debug_log(
-        game_type,
-        session_id,
-        lanlan_name=lanlan_name,
-        category="route",
-        event="route_start_requested",
-        message="小游戏路由开始请求",
-        details={
-            "neko_initiated": bool(data.get("nekoInitiated")),
-            "mode": data.get("mode") or "",
-            "memory_tail_count": data.get("game_memory_tail_count", data.get("gameMemoryTailCount")),
-        },
-    )
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
     # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
@@ -6968,6 +6952,22 @@ async def game_route_start(game_type: str, request: Request):
                     close_game_session=True,
                 )
 
+            if game_type == "soccer":
+                _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
+            _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
+            _append_game_session_debug_log(
+                game_type,
+                session_id,
+                lanlan_name=lanlan_name,
+                category="route",
+                event="route_start_requested",
+                message="小游戏路由开始请求",
+                details={
+                    "neko_initiated": bool(data.get("nekoInitiated")),
+                    "mode": data.get("mode") or "",
+                    "memory_tail_count": data.get("game_memory_tail_count", data.get("gameMemoryTailCount")),
+                },
+            )
             neko_initiated = bool(data.get("nekoInitiated"))
             neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
             state = _activate_game_route(

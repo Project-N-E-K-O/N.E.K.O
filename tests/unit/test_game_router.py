@@ -148,6 +148,36 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_soccer_route_start_enables_session_debug_log_under_route_locks(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["game_type"] == "soccer"
+        return game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
+
+    lock_observation = {}
+    original_enable = game_router._enable_game_session_debug_log
+
+    def observed_enable(game_type, session_id, *, lanlan_name=""):
+        lock_observation["supersede_locked"] = game_router._get_supersede_lock(lanlan_name).locked()
+        lock_observation["route_locked"] = game_router._get_route_lock(lanlan_name, game_type).locked()
+        return original_enable(game_type, session_id, lanlan_name=lanlan_name)
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+    monkeypatch.setattr(game_router, "_enable_game_session_debug_log", observed_enable)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "soccer",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log-locks"}),
+        )
+
+    assert result["ok"] is True
+    assert lock_observation == {"supersede_locked": True, "route_locked": True}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_icebreaker_is_rejected_from_game_route_start(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
 
