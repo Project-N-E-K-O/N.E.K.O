@@ -1118,6 +1118,7 @@ def test_badminton_banana_peel_flips_and_slows_grounded_player(mock_page: Page, 
               resolve({
                 afterInput,
                 spinSamples: samples,
+                elapsedMs: performance.now() - startedAt,
                 finalState: window.BadmintonDemo.getState()
               });
               return;
@@ -1134,7 +1135,13 @@ def test_badminton_banana_peel_flips_and_slows_grounded_player(mock_page: Page, 
     assert movement["afterInput"]["yuiCheat"]["player_effect"]["slipping"] is True
     assert movement["afterInput"]["yuiCheat"]["player_effect"]["speed_multiplier"] == pytest.approx(0.22)
     assert max(movement["spinSamples"]) > 5.2
-    assert state["playerCourt"]["x"] - before["x"] < 75
+    slow_distance = state["playerCourt"]["x"] - before["x"]
+    expected_slow_distance = (
+        1040
+        * movement["afterInput"]["yuiCheat"]["player_effect"]["speed_multiplier"]
+        * (movement["elapsedMs"] / 1000)
+    )
+    assert slow_distance <= expected_slow_distance + 18
 
 
 @pytest.mark.e2e
