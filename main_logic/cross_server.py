@@ -62,6 +62,13 @@ emotion_pattern = re.compile('<(.*?)>')
 async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry."""
     try:
+        # Non-blocking read of the cheap action-intent hint the master-emotion
+        # call produced at input-time. Lazy import keeps cross_server's module
+        # graph clean. Cache miss / disabled / stale / no-signal → None → the
+        # agent gate fails open (runs the assessment). turn_end must never block
+        # on the emotion call, so this only ever reads an already-cached value.
+        from main_logic.activity.master_emotion import latest_action_intent_for
+        action_intent = latest_action_intent_for(lanlan_name)
         sent = await publish_analyze_request_reliably(
             lanlan_name=lanlan_name,
             trigger=trigger,
@@ -69,6 +76,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             ack_timeout_s=0.8,
             retries=1,
             conversation_id=conversation_id,
+            action_intent=action_intent,
         )
         if sent:
             logger.debug(

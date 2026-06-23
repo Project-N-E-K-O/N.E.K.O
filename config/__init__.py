@@ -1627,6 +1627,22 @@ AGENT_PLUGIN_FULL_MAX_TOKENS = 500
 - 用途：返回 plugin_id + plugin_args + reason。
 - 上游：LLM 输出。"""
 
+AGENT_ACTION_GATE_ENABLED = True
+"""廉价前置闸总开关（默认开）。
+- 用途：开 = 用 master-emotion 在 input-time 顺带产出的 action_intent，在 agent
+  侧 turn_end 评估前做一道零成本前置判断：若这一轮被自信地读成「非操作意图」，且零
+  LLM 的确定性 shortcut（magic word 规则 + 插件关键词）也全静默，就跳过那 1~2 次
+  大模型评估，省掉闲聊轮的 analyzer 开销。关掉则每个 turn 照常全量评估。
+- 闸是非对称的：action_intent 缺失（None）或确定性命中都不刹车，所以最坏只是多花
+  一次评估，绝不漏真任务。
+- 上游：DirectTaskExecutor._analyze_and_execute_inner 的前置判定。"""
+
+AGENT_ACTION_GATE_THRESHOLD = 0.2
+"""action_intent 刹车阈值（0~1）。
+- 用途：action_intent < 此值才视为「自信闲聊」、进入刹车候选；>= 此值或为 None 一律放行。
+- 取保守低位（默认 0.2）：小模型只需可靠认出「显然在闲聊」这 90% 的易判 case，
+  模棱两可的全 fail-open 到准确的大评估。调高 = 更激进省钱但漏判风险上升。"""
+
 PLUGIN_INPUT_DESC_MAX_TOKENS = 1000
 """_ensure_short_descriptions 输入的 plugin manifest description 上限。
 - 用途：生成 short_description 时把原始 description 截断后再送入 prompt
@@ -2435,6 +2451,8 @@ __all__ = [
     'AGENT_PLUGIN_COARSE_MAX_TOKENS',
     'AGENT_UNIFIED_ASSESS_MAX_TOKENS',
     'AGENT_PLUGIN_FULL_MAX_TOKENS',
+    'AGENT_ACTION_GATE_ENABLED',
+    'AGENT_ACTION_GATE_THRESHOLD',
     'PLUGIN_INPUT_DESC_MAX_TOKENS',
     'COMPUTER_USE_MAX_TOKENS',
     'LLM_PING_MAX_TOKENS',

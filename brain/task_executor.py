@@ -1559,6 +1559,7 @@ class DirectTaskExecutor:
         agent_flags: Optional[Dict[str, bool]] = None,
         conversation_id: Optional[str] = None,
         lang: str = "en",
+        action_intent: Optional[float] = None,
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
@@ -1579,9 +1580,53 @@ class DirectTaskExecutor:
                 agent_flags=agent_flags,
                 conversation_id=conversation_id,
                 lang=lang,
+                action_intent=action_intent,
             )
         finally:
             reset_active_character(char_token)
+
+    def _deterministic_action_signal(
+        self, user_text: str, *, openclaw_enabled: bool, user_plugin_enabled: bool,
+    ) -> bool:
+        """Zero-LLM action shortcuts the cheap pre-gate must NEVER skip.
+
+        Returns True if either fires — meaning the gate must not brake even when
+        the small model read the turn as chat:
+        * OpenClaw magic word (pure rule match, no LLM).
+        * Plugin keyword match over the ALREADY-CACHED plugin list only (no fetch,
+          so the brake path never triggers short_description generation).
+
+        Fails open (returns True) when user_plugin is on but the plugin list is
+        not yet loaded: we cannot run the keyword shortcut, so we must not let the
+        gate skip it. A brand-new plugin's keyword may be missed by the gate until
+        the next non-braked turn refreshes ``self.plugin_list`` — acceptable since
+        a session's plugin set rarely changes mid-conversation.
+        """
+        text = (user_text or "").strip()
+        if not text:
+            return False
+        if openclaw_enabled:
+            try:
+                from brain.openclaw_adapter import OpenClawAdapter
+                if OpenClawAdapter.normalize_magic_command(text):
+                    return True
+            except Exception:
+                return True  # can't run the shortcut → fail open
+        if user_plugin_enabled:
+            plugins = self.plugin_list
+            if not plugins:
+                return True  # not loaded → can't run keyword shortcut → fail open
+            try:
+                from brain.plugin_filter import _match_keywords
+                for p in plugins:
+                    if not isinstance(p, dict):
+                        continue
+                    kws = p.get("keywords", [])
+                    if isinstance(kws, list) and kws and _match_keywords(text, kws):
+                        return True
+            except Exception:
+                return True  # on any error, fail open
+        return False
 
     async def _analyze_and_execute_inner(
         self,
@@ -1590,6 +1635,7 @@ class DirectTaskExecutor:
         agent_flags: Optional[Dict[str, bool]] = None,
         conversation_id: Optional[str] = None,
         lang: str = "en",
+        action_intent: Optional[float] = None,
     ) -> Optional[TaskResult]:
         task_id = str(uuid.uuid4())
 
@@ -1618,6 +1664,28 @@ class DirectTaskExecutor:
         latest_user_request = self._extract_latest_user_intent(conversation)
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
+
+        # ── 廉价前置闸 ───────────────────────────────────────
+        # action_intent 来自 input-time 的 master-emotion 那次小模型调用（搭
+        # analyze_request payload 过来）。若这一轮被自信地读成「非操作意图」，且零
+        # LLM 的确定性 shortcut（magic word 规则 + 插件关键词）也全静默，就跳过下面
+        # 1~2 次大模型评估。闸是非对称的：action_intent 为 None（无可用信号）或任一
+        # 确定性命中都不刹车 —— 最坏多花一次评估，绝不漏真任务。
+        if action_intent is not None:
+            import config as _cfg
+            if bool(getattr(_cfg, "AGENT_ACTION_GATE_ENABLED", True)):
+                _threshold = float(getattr(_cfg, "AGENT_ACTION_GATE_THRESHOLD", 0.2))
+                if action_intent < _threshold and not self._deterministic_action_signal(
+                    latest_user_request,
+                    openclaw_enabled=openclaw_enabled,
+                    user_plugin_enabled=user_plugin_enabled,
+                ):
+                    logger.info(
+                        "[AgentGate] skip assessment: action_intent=%.2f < %.2f, no deterministic signal",
+                        action_intent, _threshold,
+                    )
+                    return None
+
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
         if computer_use_enabled:

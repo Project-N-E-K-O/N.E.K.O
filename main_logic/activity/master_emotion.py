@@ -44,6 +44,7 @@ import logging
 import math
 import re
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Optional
 
@@ -65,7 +66,13 @@ class MasterEmotionReading:
     (calm → activated), ``confidence`` ∈ [0, 1]. ``complexity`` ∈ [0, 1] is an
     orthogonal cognitive read — how much the speaker is posing a COMPLEX,
     OBJECTIVE question (math / logic / reasoning), a Focus bonus axis independent
-    of emotion. ``source_excerpt`` keeps a short prefix for diagnostics only.
+    of emotion. ``action_intent`` ∈ [0, 1] (or ``None``) is a second orthogonal
+    read — how strongly the user is EXPLICITLY asking to perform an external
+    action / operation. It rides this same cheap call so the agent analyzer can
+    cheaply gate its expensive turn-end assessment. ``None`` means the model gave
+    no usable signal: the consuming gate MUST fail open (run the assessment),
+    never treat it as "no action". ``source_excerpt`` keeps a short prefix for
+    diagnostics only.
     """
 
     valence: float
@@ -73,6 +80,7 @@ class MasterEmotionReading:
     confidence: float
     updated_at: float
     complexity: float = 0.0
+    action_intent: Optional[float] = None
     source_excerpt: str = ""
 
 
@@ -102,6 +110,49 @@ def _coerce_axis(value) -> Optional[float]:
     return v
 
 
+def _action_intent_from(value) -> Optional[float]:
+    """Clamp a parsed ``action_intent`` to [0, 1], or ``None`` when absent/junk.
+
+    Unlike the emotion axes, ``None`` is meaningful downstream: the agent gate
+    must fail open (run the assessment) when it has no usable action signal,
+    instead of reading a phantom ``0.0`` as "confidently no action" and wrongly
+    braking a real tool request.
+    """
+    v = _coerce_axis(value)
+    if v is None:
+        return None
+    return max(0.0, min(1.0, v))
+
+
+# Per-lanlan registry of live trackers, so an out-of-band caller — the
+# cross-server analyze_request publisher at turn_end — can read the latest
+# ``action_intent`` without holding the session / core handle. A
+# ``WeakValueDictionary`` so a torn-down session's tracker auto-evicts (no leak
+# across sessions); a stale entry is harmless anyway since ``.latest`` is
+# TTL-gated.
+_TRACKERS_BY_LANLAN: "weakref.WeakValueDictionary[str, MasterEmotionTracker]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def latest_action_intent_for(lanlan_name: str) -> Optional[float]:
+    """Latest ``action_intent`` for ``lanlan_name``, or ``None`` if unavailable.
+
+    Reads the live tracker's ``.latest`` (which already honors the
+    MASTER_EMOTION_ENABLED switch and the reading TTL), so a missing / disabled /
+    stale reading — or a turn whose model output carried no usable action signal
+    — all collapse to ``None``. The agent gate consuming this MUST fail open (run
+    the assessment) on ``None``; it is purely an optimization hint, never a brake.
+    """
+    tracker = _TRACKERS_BY_LANLAN.get(lanlan_name)
+    if tracker is None:
+        return None
+    reading = tracker.latest
+    if reading is None:
+        return None
+    return reading.action_intent
+
+
 class MasterEmotionTracker:
     """Per-session instantaneous master-emotion state. Async-fed, throttled."""
 
@@ -110,6 +161,9 @@ class MasterEmotionTracker:
         self._latest: Optional[MasterEmotionReading] = None
         self._last_attempt_at: float = 0.0
         self._seq: int = 0
+        # Register so the cross-server analyze_request publisher can read the
+        # latest action_intent by lanlan_name without the core/session handle.
+        _TRACKERS_BY_LANLAN[lanlan_name] = self
 
     # ── public API ──────────────────────────────────────────────────
     @property
@@ -269,5 +323,9 @@ class MasterEmotionTracker:
             # missing value safely defaults to 0 (no cognitive bonus), so it
             # never blocks a valid emotional reading.
             complexity=_clamp(data.get("complexity"), 0.0, 1.0, 0.0),
+            # action_intent: keep None when the model omitted it / gave junk so
+            # the consuming agent gate fails open instead of reading a phantom
+            # 0.0 as "confidently no action" and braking a real request.
+            action_intent=_action_intent_from(data.get("action_intent")),
             source_excerpt=source[:80],
         )

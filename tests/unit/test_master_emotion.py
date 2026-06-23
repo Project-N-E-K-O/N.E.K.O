@@ -266,6 +266,38 @@ def test_parse_complexity_field():
     assert r3.complexity == 1.0
 
 
+def test_parse_action_intent_field():
+    # action_intent rides this same cheap call as a signal for the agent gate.
+    r = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": 0.8}', now=1.0, source="x",
+    )
+    assert r is not None and r.action_intent == 0.8
+    # CRITICAL — unlike complexity, a MISSING action_intent is None, NOT 0.0.
+    # The consuming agent gate must fail open (run the expensive assessment) when
+    # it has no usable signal, never read a phantom 0.0 as "confidently no
+    # action" and brake a real tool request. Absence must not reject the reading.
+    r2 = MasterEmotionTracker._parse('{"valence": 0, "arousal": 0}', now=1.0, source="x")
+    assert r2 is not None and r2.action_intent is None
+    # null / non-numeric → None (fail-open), reading still valid.
+    r3 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": null}', now=1.0, source="x",
+    )
+    assert r3 is not None and r3.action_intent is None
+    r4 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": "lots"}', now=1.0, source="x",
+    )
+    assert r4 is not None and r4.action_intent is None
+    # out-of-range clamps into [0, 1] when present.
+    r5 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": 9}', now=1.0, source="x",
+    )
+    assert r5.action_intent == 1.0
+    r6 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": -3}', now=1.0, source="x",
+    )
+    assert r6.action_intent == 0.0
+
+
 def test_parse_rejects_garbage():
     assert MasterEmotionTracker._parse("not json at all", now=1.0, source="x") is None
     assert MasterEmotionTracker._parse("[1, 2, 3]", now=1.0, source="x") is None  # not a dict
@@ -423,3 +455,35 @@ def test_to_profile_sample(monkeypatch):
     # honors the switch (reads via self.latest), same as latest
     monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
     assert t.to_profile_sample() is None
+
+
+def test_latest_action_intent_for_registry(monkeypatch):
+    # The cross-server analyze_request publisher reads the latest action_intent
+    # by lanlan_name (no core handle). Verify the registry bridge end to end.
+    from main_logic.activity.master_emotion import latest_action_intent_for
+
+    # Unknown lanlan → None (fail-open: the agent gate runs the assessment).
+    assert latest_action_intent_for("nobody-here") is None
+
+    fake, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.7}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("regtest")  # registers itself on init
+    # No reading yet → None.
+    assert latest_action_intent_for("regtest") is None
+    asyncio.run(t.analyze("帮我打开浏览器", now=100.0))
+    assert latest_action_intent_for("regtest") == 0.7
+
+    # A turn whose model output carried NO action_intent → None (fail-open),
+    # even though a valid emotion reading exists this turn.
+    fake2, _ = _fake_tier('{"valence": -0.5, "arousal": 0.5}')
+    _patch_tier(monkeypatch, fake2)
+    asyncio.run(t.analyze("我好难过", now=200.0))
+    assert t.latest is not None and latest_action_intent_for("regtest") is None
+
+    # Honors the master switch (reads through .latest).
+    fake3, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake3)
+    asyncio.run(t.analyze("运行一下", now=300.0))
+    assert latest_action_intent_for("regtest") == 0.9
+    monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
+    assert latest_action_intent_for("regtest") is None
