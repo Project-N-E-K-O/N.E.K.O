@@ -7323,6 +7323,99 @@ def test_subtitle_window_transcript_event_starts_overflow_auto_scroll(
 
 
 @pytest.mark.frontend
+def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 120})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-window-danmaku-auto-scroll-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleDanmakuMode', 'true');
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 240,
+                height: 60,
+            }));
+            window.nekoSubtitle = {
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const waitFrames = (count) => new Promise((resolve) => {
+                const tick = () => {
+                    count -= 1;
+                    if (count <= 0) {
+                        resolve();
+                        return;
+                    }
+                    requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+            });
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const scroll = document.getElementById('subtitle-scroll');
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: {
+                    translated: true,
+                    transcript: Array.from(
+                        { length: 30 },
+                        (_, index) => `line ${index + 1}, phrase ${index + 1}.`
+                    ).join('\\n'),
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const maxScrollTop = scroll.scrollHeight - scroll.clientHeight;
+            const afterRender = scroll.scrollTop;
+            shared.requestSubtitleAutoScroll(scroll, {
+                speedPixelsPerSecond: 240,
+                delayMs: 0,
+            });
+            await waitFrames(20);
+            return {
+                active: display.dataset.subtitleDanmakuActive || '',
+                afterRender,
+                afterAuto: scroll.scrollTop,
+                itemCount: document.querySelectorAll('.subtitle-danmaku-item').length,
+                maxScrollTop,
+                scrollableDataset: scroll.dataset.subtitleScrollable,
+            };
+        }
+        """
+    )
+
+    assert result["active"] == "true"
+    assert result["itemCount"] > 0
+    assert result["maxScrollTop"] > 0
+    assert result["afterRender"] == 0
+    assert result["afterAuto"] == 0
+    assert result["scrollableDataset"] == "false"
+
+
+@pytest.mark.frontend
 def test_subtitle_window_ignores_raw_transcript_after_translated_render_state(
     mock_page: Page,
 ):
