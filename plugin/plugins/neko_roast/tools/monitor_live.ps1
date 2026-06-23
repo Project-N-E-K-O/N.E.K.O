@@ -1,7 +1,9 @@
 param(
     [switch]$Once,
     [string]$BaseUrl = "http://127.0.0.1:48911",
-    [string]$ContextJsonPath = ""
+    [string]$ContextJsonPath = "",
+    [int]$WarnLatencyMs = 5000,
+    [int]$SlowLatencyMs = 10000
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,7 +24,33 @@ function Format-Latency {
     if ($ms -lt 10000) {
         return ("{0:N1}s" -f ($ms / 1000.0))
     }
-    return ("{0:N0}s" -f [Math]::Round($ms / 1000.0))
+    return ("{0:N0}s" -f [Math]::Ceiling($ms / 1000.0))
+}
+
+function Get-LatencyStatus {
+    param(
+        [object]$Value,
+        [int]$WarnThresholdMs,
+        [int]$SlowThresholdMs
+    )
+    if ($null -eq $Value) {
+        return "unknown"
+    }
+    try {
+        $ms = [double]$Value
+    } catch {
+        return "unknown"
+    }
+    if ([double]::IsNaN($ms) -or [double]::IsInfinity($ms) -or $ms -lt 0) {
+        return "unknown"
+    }
+    if ($ms -ge $SlowThresholdMs) {
+        return "slow"
+    }
+    if ($ms -ge $WarnThresholdMs) {
+        return "warn"
+    }
+    return "ok"
 }
 
 function Read-Context {
@@ -81,7 +109,8 @@ function Write-Snapshot {
         "speech=$(Get-Field $speech.summary)",
         "reason=$(Get-Field $speech.reason)",
         "last_result=$lastStatus",
-        "latency=$(Format-Latency $latency)"
+        "latency=$(Format-Latency $latency)",
+        "latency_status=$(Get-LatencyStatus $latency $WarnLatencyMs $SlowLatencyMs)"
     )
     Write-Output ($parts -join " ")
 }
