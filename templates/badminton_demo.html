@@ -223,9 +223,9 @@
     position: fixed; z-index: 30; pointer-events: none;
     left: 120px; top: 88px; transform: translate(-50%, -100%);
     background: rgba(255,255,255,0.95); color: #1c2430;
-    padding: 12px 15px; border-radius: 8px;
-    font: 16px/1.45 "PingFang SC", "Segoe UI", sans-serif;
-    max-width: 380px; text-align: left;
+    padding: 13px 17px; border-radius: 8px;
+    font: 17px/1.45 "PingFang SC", "Segoe UI", sans-serif;
+    max-width: min(410px, calc(100vw - 32px)); text-align: left;
     box-shadow: 0 10px 24px rgba(0,0,0,0.24);
     opacity: 0; transition: opacity .18s ease, transform .2s ease;
     white-space: pre-wrap;
@@ -240,14 +240,16 @@
   #neko-bubble[data-mood="angry"] { background: #ffd7d7; }
   #neko-bubble[data-mood="sad"] { background: #dae6f2; }
   #neko-bubble[data-mood="surprised"] { background: #fff; box-shadow: 0 0 18px rgba(255,193,7,0.55); }
+  #neko-bubble[data-variant="yui-cheat"] { background: #cfeaff; box-shadow: 0 0 20px rgba(70,158,231,0.50), 0 10px 24px rgba(0,0,0,0.20); }
+  #neko-bubble[data-variant="yui-cheat-score"] { background: #fff0b8; box-shadow: 0 0 22px rgba(255,198,48,0.55), 0 10px 24px rgba(0,0,0,0.20); }
   .neko-bubble-body {
     position: relative; z-index: 1;
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: center; gap: 14px;
   }
   .neko-bubble-text { min-width: 0; }
   .neko-bubble-body[data-emote-only="true"] .neko-bubble-text { display: none; }
   .neko-bubble-emote {
-    flex: 0 0 72px; width: 72px; height: 72px;
+    flex: 0 0 92px; width: 92px; height: 92px;
     display: block; object-fit: contain;
     filter: drop-shadow(0 4px 8px rgba(0,0,0,0.22));
   }
@@ -275,8 +277,10 @@
     z-index: 11; pointer-events: none; opacity: .96;
     --sensei-x: -9999px;
     --sensei-y: -9999px;
-    transform: translate3d(var(--sensei-x), var(--sensei-y), 0);
+    --sensei-slip-rotation: 0deg;
+    transform: translate3d(var(--sensei-x), var(--sensei-y), 0) perspective(760px) rotateY(var(--sensei-slip-rotation));
     transform-origin: 50% 100%;
+    transform-style: preserve-3d;
     transition: opacity .24s ease;
   }
   #player-sensei-vrm-container[hidden] { display: none !important; }
@@ -331,6 +335,7 @@
   .neko-avatar-container[data-court-avatar="opponent"].charging { animation: yui-charging .72s ease-in-out infinite; }
   .neko-avatar-container[data-court-avatar="opponent"].shooting { animation: yui-shooting .34s ease-out; }
   .neko-avatar-container[data-court-avatar="opponent"].smashing { animation: yui-smashing .52s cubic-bezier(.2,.82,.18,1); }
+  .neko-avatar-container[data-court-avatar="opponent"].saving { animation: yui-saving .56s cubic-bezier(.18,.86,.2,1); }
   .neko-avatar-container[data-court-avatar="opponent"].react-celebrate { animation: yui-celebrate .58s ease-out; }
   .neko-avatar-container[data-court-avatar="opponent"].react-disappointed { animation: yui-disappointed .58s ease-out; }
   @keyframes neko-shock {
@@ -374,6 +379,12 @@
     58% { transform: translate(calc(-50% + 18px), calc(-100% + var(--neko-expression-y) - 24px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.035)) rotate(7deg); filter: saturate(1.16); }
     100% { transform: translate(-50%, calc(-100% + var(--neko-expression-y))) scale(var(--yui-scale)) scale(var(--neko-expression-scale)); filter: saturate(1); }
   }
+  @keyframes yui-saving {
+    0% { transform: translate(-50%, calc(-100% + var(--neko-expression-y) + 4px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * .99)) rotate(-1deg); filter: saturate(1); }
+    38% { transform: translate(calc(-50% + 26px), calc(-100% + var(--neko-expression-y) - 12px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.035)) rotate(9deg); filter: saturate(1.12) drop-shadow(0 0 12px rgba(128,220,255,.30)); }
+    68% { transform: translate(calc(-50% + 18px), calc(-100% + var(--neko-expression-y) - 4px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.02)) rotate(4deg); filter: saturate(1.08); }
+    100% { transform: translate(-50%, calc(-100% + var(--neko-expression-y))) scale(var(--yui-scale)) scale(var(--neko-expression-scale)); filter: saturate(1); }
+  }
   @keyframes yui-celebrate {
     0%, 100% { transform: translate(-50%, calc(-100% + var(--neko-expression-y))) scale(var(--yui-scale)) scale(var(--neko-expression-scale)); }
     38% { transform: translate(-50%, calc(-100% + var(--neko-expression-y) - 18px)) scale(var(--yui-scale)) scale(calc(var(--neko-expression-scale) * 1.045)); }
@@ -396,8 +407,8 @@
     38% { transform: translate3d(var(--sensei-x), calc(var(--sensei-y) - 18px), 0) scale(1.04); }
   }
   @keyframes sensei-disappointed {
-    0%, 100% { transform: translate3d(var(--sensei-x), var(--sensei-y), 0) scale(1); }
-    38% { transform: translate3d(var(--sensei-x), calc(var(--sensei-y) + 10px), 0) rotate(-3deg) scale(.97); filter: saturate(.76); }
+    0%, 100% { transform: translate3d(var(--sensei-x), var(--sensei-y), 0) perspective(760px) rotateY(var(--sensei-slip-rotation)) scale(1); }
+    38% { transform: translate3d(var(--sensei-x), calc(var(--sensei-y) + 10px), 0) perspective(760px) rotateY(var(--sensei-slip-rotation)) rotate(-3deg) scale(.97); filter: saturate(.76); }
   }
   #result-panel {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(0.92);
@@ -832,10 +843,13 @@
   var GRAVITY = 600;
   var FLOOR_Y = 450;
   var BALL_R = 18;
-  var SHUTTLE_VISUAL_R = 12;
+  var SHUTTLE_VISUAL_R = 10;
+  var SHUTTLE_FLIGHT_VISUAL_R = 6;
   var SWING_IMPACT_DELAY_MS = 120;
   var SHUTTLE_MASS_KG = 0.005;
   var SHUTTLE_DRAG_PER_SECOND = 0.42;
+  var SHUTTLE_FLIGHT_HEIGHT_SCALE = 0.94;
+  var SHUTTLE_TRAIL_LIMIT = 20;
   var COLLISION_SUBSTEPS = 3;
   var BADMINTON_COURT_METERS = {
     pxPerMeter: 39.37008,
@@ -896,13 +910,20 @@
     miami: MIAMI_BEACH_BACKGROUND_SRC
   };
   var scenicBackgroundImages = {};
+  function markScenicBackgroundReady(image) {
+    image.__ready = true;
+    invalidateBadmintonCourtCache();
+  }
   function preloadScenicBackgrounds() {
     Object.keys(scenicBackgroundSources).forEach(function (key) {
       var image = new Image();
       image.decoding = 'async';
-      image.onload = function () { image.__ready = true; };
+      image.onload = function () { markScenicBackgroundReady(image); };
       image.onerror = function () { image.__ready = false; };
       image.src = scenicBackgroundSources[key];
+      if (typeof image.decode === 'function') {
+        image.decode().then(function () { markScenicBackgroundReady(image); }).catch(function () {});
+      }
       scenicBackgroundImages[key] = image;
     });
   }
@@ -917,6 +938,10 @@
   } catch (_) {
     scenicBackgroundImages = {};
   }
+  var badmintonCourtCache = { key: '', canvas: null };
+  var badmintonSpriteCache = {};
+  var badmintonFrameNow = 0;
+  var badmintonResizeFrame = 0;
   var NET_COLS = 17;
   var NET_ROWS = 7;
   var BADMINTON = {
@@ -932,11 +957,39 @@
     targetTop: 338,
     targetBottom: 452
   };
+  function getCourtServiceLinePositions(court) {
+    var halfCourtLength = (court.courtRight - court.courtLeft) / 2;
+    var shortServiceOffset = halfCourtLength * (1.98 / 6.70);
+    var doublesLongServiceInset = halfCourtLength * (0.76 / 6.70);
+    return {
+      leftShortServiceX: court.netX - shortServiceOffset,
+      rightShortServiceX: court.netX + shortServiceOffset,
+      leftDoublesLongServiceX: court.courtLeft + doublesLongServiceInset,
+      rightDoublesLongServiceX: court.courtRight - doublesLongServiceInset
+    };
+  }
+  function getPlayerServeLaneCenterX() {
+    var lines = getCourtServiceLinePositions(BADMINTON);
+    return (lines.leftDoublesLongServiceX + lines.leftShortServiceX) / 2;
+  }
+  function getPlayerCourtMoveBounds() {
+    if (typeof game !== 'undefined' && isPlayerServeSetup()) {
+      var serviceLines = getCourtServiceLinePositions(BADMINTON);
+      return {
+        minX: serviceLines.leftDoublesLongServiceX + 14,
+        maxX: serviceLines.leftShortServiceX - 14
+      };
+    }
+    return { minX: PLAYER_COURT_X_MIN, maxX: PLAYER_COURT_X_MAX };
+  }
   var NET_TOP = BADMINTON.netTop;
   var NET_BOTTOM = BADMINTON.netBottom;
   var NET_VISUAL_LINE_WIDTH = 4;
-  var NET_VISUAL_Z_HEIGHT = 116;
+  var NET_VISUAL_Z_HEIGHT = 98;
   var NET_VISUAL_BOTTOM_CLEARANCE = 18;
+  var NET_VISUAL_DEPTH_X = 8;
+  var NET_VISUAL_DEPTH_Y = 34;
+  var NET_VISUAL_DEPTH_OPACITY = 0.36;
   var NET_COLLISION_HALF_WIDTH = 24;
   var NET_SPRING_K = 0.18;
   var NET_DAMPING = 0.84;
@@ -959,24 +1012,50 @@
   var PLAYER_SMASH_FORWARD_BIAS_X = 18;
   var PLAYER_SMASH_UPWARD_BIAS_Y = -26;
   var YUI_MOVE_SPEED = 360;
+  var YUI_RETURN_CHASE_SPEED = 720;
+  var YUI_RETURN_CHASE_Y_SPEED = 540;
   var PLAYER_COURT_X_MIN = 118;
   var PLAYER_COURT_X_MAX = BADMINTON.netX - 58;
   var PLAYER_COURT_Y_MIN = 380;
   var PLAYER_COURT_Y_MAX = 425;
-  var YUI_COURT_X_MIN = BADMINTON.netX + 145;
+  var YUI_COURT_X_MIN = BADMINTON.netX + 56;
   var YUI_COURT_X_MAX = BADMINTON.courtRight - 80;
   var YUI_COURT_Y_MIN = 380;
   var YUI_COURT_Y_MAX = 425;
+  var PLAYER_FOOT_CONTACT_OFFSET_Y = 63;
   var PLAYER_RETURN_REACH_X = 84;
   var PLAYER_RETURN_REACH_Y = 108;
-  var PLAYER_START_X = 150;
+  var PLAYER_START_X = getPlayerServeLaneCenterX();
   var PLAYER_START_Y = 405;
   var YUI_START_X = BADMINTON.netX + (BADMINTON.courtRight - BADMINTON.netX) * 0.58;
   var YUI_START_Y = 405;
+  var YUI_RACKET_BODY_OFFSET_X = 58;
+  var YUI_RACKET_HIT_REACH_X = 38;
+  var YUI_RACKET_HIT_REACH_Y = 54;
+  var YUI_RACKET_SAVE_REACH_X = 84;
+  var YUI_RACKET_SAVE_REACH_Y = 86;
+  var YUI_SMASH_MIN_SHUTTLE_Z = 64;
+  var YUI_SMASH_FULL_SHUTTLE_Z = 138;
+  var YUI_CHEAT_RANDOM_CHANCE = 0.72;
+  var YUI_CHEAT_CLOSE_SCORE_CHANCE = 0.86;
+  var YUI_CHEAT_COOLDOWN_MS = 5200;
+  var YUI_CHEAT_BANANA_RADIUS = 18;
+  var YUI_CHEAT_BANANA_DRAW_SIZE = 16;
+  var YUI_CHEAT_BANANA_SLIP_ROTATION_RAD = Math.PI * 2;
+  var YUI_CHEAT_BANANA_EXPIRE_MS = 7000;
+  var YUI_CHEAT_BANANA_SPEED_MULTIPLIER = 0.22;
+  var YUI_CHEAT_BANANA_SLOW_MS = 1800;
+  var YUI_CHEAT_BANANA_SPIN_MS = 900;
+  var YUI_CHEAT_BANANA_JUMP_CLEARANCE = 6;
+  var YUI_CHEAT_INK_DURATION_MS = 3600;
+  var YUI_CHEAT_INK_VISUAL_SCALE = 0.82;
+  var YUI_CHEAT_SCORE_TAUNT_GRACE_MS = 6500;
   var netNodes = [];
   var modeParams = null;
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
   var debugMode = modeParams ? modeParams.get('debug') === '1' : false;
+  var debugVoiceMode = modeParams ? modeParams.get('debug_voice') === '1' : false;
+  var debugVoiceMuted = modeParams ? modeParams.get('debug_mute_voice') === '1' : false;
   var currentMode = 'duel';
   var netContactEffects = [];
   var DUEL_DIFFICULTY = [
@@ -1011,6 +1090,7 @@
   var currentSessionEntryId = '';
   var psychologicalTalkAt = 0;
   var screenFlashUntil = 0;
+  var aimingOverlayWasActive = false;
   var fireExtinguishedUntil = 0;
   var isPositionTransitioning = false;
   var shotAnimationTimer = 0;
@@ -1031,6 +1111,8 @@
   var drainTimer = 0;
   var assistToastTimer = 0;
   var bubbleTimer = 0;
+  var bubblePriorityUntil = 0;
+  var bubblePriority = 0;
   var resultTimer = 0;
   var nekoControlTimer = 0;
   var audioCtx = null;
@@ -1128,7 +1210,9 @@
   var yuiVrmRacket = null;
   var SENSEI_VRM_PATH = '/static/vrm/sensei.vrm';
   var BADMINTON_RACKET_SPRITE_SRC = '/static/game/games/badminton/images/badminton-racket-sprite.svg?v=20260618a';
+  var YUI_BANANA_PEEL_SPRITE_SRC = '/static/game/games/badminton/images/yui-banana-peel-sprite.png?v=20260622a';
   var badmintonRacketSpriteImage = null;
+  var yuiBananaPeelSpriteImage = null;
   function preloadBadmintonRacketSprite() {
     var image = new Image();
     image.decoding = 'async';
@@ -1137,13 +1221,28 @@
     image.src = BADMINTON_RACKET_SPRITE_SRC;
     badmintonRacketSpriteImage = image;
   }
+  function preloadYuiBananaPeelSprite() {
+    var image = new Image();
+    image.decoding = 'async';
+    image.onload = function () { image.__ready = true; };
+    image.onerror = function () { image.__ready = false; };
+    image.src = YUI_BANANA_PEEL_SPRITE_SRC;
+    yuiBananaPeelSpriteImage = image;
+  }
   function isBadmintonRacketSpriteReady() {
     return !!(badmintonRacketSpriteImage && (
       badmintonRacketSpriteImage.__ready ||
       (badmintonRacketSpriteImage.complete && badmintonRacketSpriteImage.naturalWidth > 0)
     ));
   }
+  function isYuiBananaPeelSpriteReady() {
+    return !!(yuiBananaPeelSpriteImage && (
+      yuiBananaPeelSpriteImage.__ready ||
+      (yuiBananaPeelSpriteImage.complete && yuiBananaPeelSpriteImage.naturalWidth > 0)
+    ));
+  }
   try { preloadBadmintonRacketSprite(); } catch (_) { badmintonRacketSpriteImage = null; }
+  try { preloadYuiBananaPeelSprite(); } catch (_) { yuiBananaPeelSpriteImage = null; }
   window.badmintonVrmManager = window.badmintonVrmManager || null;
   window.badmintonMmdManager = window.badmintonMmdManager || null;
   window.badmintonPlayerVrmManager = window.badmintonPlayerVrmManager || null;
@@ -1163,37 +1262,37 @@
     return key === 'line_in' || key === 'net_touch' || key === 'zone_in' || key === 'out' || key === 'net' ? key : String(shotType || '');
   }
   var quickLines = {
-    line_in: ['压线好球喵！', '这个落点漂亮'],
-    net_touch: ['擦网也过了喵', '网前处理不错'],
-    zone_in: ['刚好进区喵', '落点很刁钻'],
-    out: ['出界一点点喵', '这拍太长了'],
-    net: ['挂网了喵', '拍面再打开一点'],
-    shot_missed: ['还有机会喵', '稳一点再挥'],
-    game_over: ['再来一局？', '这场先记着'],
-    long_aim: ['快挥拍呀喵', '还在等球落地？'],
-    close_to_record: ['快压到底线了', '差一点点喵'],
-    new_record: ['压到底线了喵！', '这拍也太深了'],
-    streak_5: ['五连落点喵！', '手感来了'],
-    streak_10: ['十连？！', '你这控球很稳喵'],
-    streak_15: ['十五连也太夸张', '这次真稳'],
-    streak_20: ['二十连？！', '这回合离谱喵']
+    line_in: ['贴线了，算你准', '这球压得挺好'],
+    net_touch: ['擦网偷过去了', '这角度有点险'],
+    zone_in: ['刚好进区', '落点挺会挑'],
+    out: ['差一点出去了', '这拍有点长'],
+    net: ['被网挡住了', '拍面再抬一点'],
+    shot_missed: ['没事，下一拍', '别急，先看准'],
+    game_over: ['这局到这儿', '还要再打一局吗'],
+    long_aim: ['再不挥球要落了', '想太久会僵哦'],
+    close_to_record: ['纪录快到了', '再稳一拍就到'],
+    new_record: ['好吧，破纪录了', '这球我认了'],
+    streak_5: ['五拍连住了', '手感开始热了'],
+    streak_10: ['十连了？有点稳', '别得意，还没完'],
+    streak_15: ['十五连还不断', '我开始认真看了'],
+    streak_20: ['二十连也太久了', '这回合还没结束？']
   };
   var generatedQuickLines = {};
   var YUI_PASSIVE_LINES_DUEL = {
-    line_in: ['这回合我拿下了', '轮到我发力'],
-    net_touch: ['擦网也算有数', '角度我记着'],
-    zone_in: ['有点运气吧', '差点就拦住了'],
-    out: ['差一点点而已', '这球还能再来'],
-    net: ['你这是飘哪儿去', '回合太急了吧'],
-    shot_missed: ['下一回合补回来', '别急，继续对拉'],
-    game_over: ['这局我记下了', '下回再分高下'],
-    long_aim: ['该挥拍了吧', '别让回合拖太久'],
-    close_to_record: ['快摸到纪录了', '对拉也能冲纪录'],
-    new_record: ['这局破纪录了', '节奏被你带起来了'],
-    streak_5: ['五连回合了', '手感开始热了'],
-    streak_10: ['十连？对拉认真了', '你这节奏真怪'],
-    streak_15: ['十五连也太离谱', '这局有点压不住'],
-    streak_20: ['二十连？！', '这回合彻底疯了']
+    line_in: ['这球压得挺准', '边线都帮你了'],
+    net_touch: ['擦网也敢打啊', '这球贴得真险'],
+    zone_in: ['落点挺会挑', '我差一点就够到'],
+    out: ['就差那么一点', '这球飞太深了'],
+    net: ['球网替我拦你', '这拍急了吧'],
+    shot_missed: ['别慌，下一拍', '刚刚慢了半拍'],
+    game_over: ['这次先到这儿', '下一局别跑'],
+    long_aim: ['该挥拍了吧', '想太久会僵哦'],
+    close_to_record: ['纪录就在拍尖上', '再稳一拍就到了'],
+    new_record: ['行吧，这球漂亮', '新纪录先借你'],
+    streak_5: ['五拍连住了', '节奏顺起来了'],
+    streak_10: ['十连了？有意思', '我开始盯紧了'],
+    streak_15: ['十五连还不断', '别让我太没面子'],
+    streak_20: ['二十连也太久了', '这回合还不结束？']
   };
   // Endpoint contract:
   // /api/game/badminton/route/start
@@ -1219,6 +1318,33 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
   }
   function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function getBadmintonFrameNow() {
+    return badmintonFrameNow || performance.now();
+  }
+  function setTextIfChanged(element, text) {
+    var value = String(text == null ? '' : text);
+    if (element && element.textContent !== value) element.textContent = value;
+  }
+  function setTitleIfChanged(element, title) {
+    var value = String(title == null ? '' : title);
+    if (element && element.title !== value) element.title = value;
+  }
+  function setInputValueIfChanged(element, value) {
+    var stringValue = String(value == null ? '' : value);
+    if (element && element.value !== stringValue) element.value = stringValue;
+  }
+  function setCheckedIfChanged(element, checked) {
+    var value = !!checked;
+    if (element && element.checked !== value) element.checked = value;
+  }
+  function setAriaHiddenIfChanged(element, hidden) {
+    var value = hidden ? 'true' : 'false';
+    if (element && element.getAttribute('aria-hidden') !== value) element.setAttribute('aria-hidden', value);
+  }
+  function setDatasetValueIfChanged(element, key, value) {
+    var stringValue = String(value == null ? '' : value);
+    if (element && element.dataset && element.dataset[key] !== stringValue) element.dataset[key] = stringValue;
+  }
   function pxToMeters(px) {
     return ((Number(px) || 0) / PX_PER_METER).toFixed(1) + 'm';
   }
@@ -1376,6 +1502,7 @@
       return true;
     }
     var _bdBgmCurrentKey = '';
+    var _bdResultBgmTriggered = false;
     var _bdSelectedInGameBgm = (function () {
       var variants = Array.isArray(config.bgm.inGame && config.bgm.inGame.variants)
         ? config.bgm.inGame.variants
@@ -1422,6 +1549,10 @@
     function syncBgm(reason) {
       if (!audio) return;
       var resolved = _bdResolvePlaylist();
+      if (resolved.key === 'gameOver') {
+        if (_bdResultBgmTriggered) return;
+        _bdResultBgmTriggered = true;
+      }
       if (resolved.key === _bdBgmCurrentKey && _bdIsCurrentBgmTarget(resolved)) return;
       _bdBgmCurrentKey = resolved.key;
       if (resolved.loopedConfig) {
@@ -1432,6 +1563,7 @@
     }
     function resetSyncKey() {
       _bdBgmCurrentKey = '';
+      _bdResultBgmTriggered = false;
     }
     (function scheduleAudioPreload() {
       if (!audio) return;
@@ -1511,14 +1643,14 @@
     if (!bgmVolumeInput || !sfxVolumeInput) return;
     var bgmVolume = clamp(badmintonGameAudio.getBgmVolume(), 0, 1);
     var sfxVolume = clamp(badmintonGameAudio.getSfxVolume(), 0, 1);
-    bgmVolumeInput.value = String(Math.round(bgmVolume * 100));
-    sfxVolumeInput.value = String(Math.round(sfxVolume * 100));
-    if (bgmVolumeValue) bgmVolumeValue.textContent = Math.round(bgmVolume * 100) + '%';
-    if (sfxVolumeValue) sfxVolumeValue.textContent = Math.round(sfxVolume * 100) + '%';
+    setInputValueIfChanged(bgmVolumeInput, Math.round(bgmVolume * 100));
+    setInputValueIfChanged(sfxVolumeInput, Math.round(sfxVolume * 100));
+    setTextIfChanged(bgmVolumeValue, Math.round(bgmVolume * 100) + '%');
+    setTextIfChanged(sfxVolumeValue, Math.round(sfxVolume * 100) + '%');
   }
   function _initBadmintonGameMemoryToggle() {
     if (!gameMemoryToggle) return;
-    gameMemoryToggle.checked = false;
+    setCheckedIfChanged(gameMemoryToggle, false);
     gameMemoryToggle.addEventListener('change', function () {
       console.log('[BadmintonMemory] 本局进入记忆=' + (_isBadmintonGameMemoryEnabled() ? 'on' : 'off'));
     });
@@ -2201,15 +2333,26 @@
     userReplyProtectedUntil: 0,
     waitingForUserReply: false
   };
+  var SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
+  var SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+  var speechPlaybackState = null;
+  var speechPlaybackChannel = null;
+  var lastVoiceRequest = null;
+  var lastVoiceResult = null;
+  var lastVoiceFallbackReason = '';
+  var lastVoiceMutedReason = '';
   var VOICE_ARBITER_DEFAULTS = {
     tailWaitMs: 850,
-    inFlightGuardMs: 2400
+    inFlightGuardMs: 2400,
+    stalePlaybackStateMs: 3500
   };
   function _voicePriorityForEvent(event) {
     var kind = String(event && event.kind || '');
     var label = String(event && event.label || '');
     if (kind === 'game_over' || event && event.is_new_record || kind === 'new_record' || /^streak_(15|20)$/.test(kind)) return 0;
     if (/^streak_(5|10)$/.test(kind)) return 1;
+    if (kind === 'yui_cheat_item') return 1;
+    if (kind === 'yui_cheat_score') return 1;
     if (label.indexOf('duel') !== -1) return 1;
     if (kind === 'shot_missed' || kind === 'close_to_record') return 2;
     if (kind === 'long_aim' || kind === 'very_long_aim') return 3;
@@ -2245,7 +2388,16 @@
   function _voiceEntryExpired(entry) {
     return !!(entry && entry.expiresAt && Date.now() > entry.expiresAt);
   }
+  function _extendVoiceEntryDeadlinePastInFlight(entry) {
+    if (!entry || !entry.expiresAt) return;
+    if (!voiceArbiter.inFlight || Date.now() >= voiceArbiter.inFlight.expiresAt) return;
+    entry.expiresAt = Math.max(
+      entry.expiresAt,
+      voiceArbiter.inFlight.expiresAt + (entry.tailWaitMs || VOICE_ARBITER_DEFAULTS.tailWaitMs) + 250
+    );
+  }
   function _storeVoicePending(entry) {
+    _extendVoiceEntryDeadlinePastInFlight(entry);
     if (_voiceEntryExpired(entry)) return;
     var pending = voiceArbiter.pending;
     if (_voiceEntryExpired(pending)) pending = voiceArbiter.pending = null;
@@ -2253,8 +2405,165 @@
     voiceArbiter.pending = entry;
     _scheduleVoiceArbiterFlush(entry.tailWaitMs);
   }
+  function normalizeSpeechPlaybackState(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var updatedAt = Number(raw.updatedAt || 0);
+    if (!isFinite(updatedAt)) return null;
+    var ageMs = Math.max(0, Date.now() - updatedAt);
+    var rawRemainingSeconds = Math.max(0, Number(raw.remainingSeconds || 0));
+    var shouldAdvanceByWallClock = raw.audioContextState !== 'suspended';
+    var remainingSeconds = shouldAdvanceByWallClock
+      ? Math.max(0, rawRemainingSeconds - ageMs / 1000)
+      : rawRemainingSeconds;
+    if (ageMs > VOICE_ARBITER_DEFAULTS.stalePlaybackStateMs && remainingSeconds <= 0.5) return null;
+    return {
+      active: !!raw.active && remainingSeconds > 0.05,
+      speechId: raw.speechId ? String(raw.speechId) : '',
+      turnId: raw.turnId ? String(raw.turnId) : '',
+      remainingSeconds: remainingSeconds,
+      remainingMs: Math.round(remainingSeconds * 1000),
+      updatedAt: updatedAt,
+      ageMs: ageMs,
+      reason: raw.reason || '',
+      source: 'playback_state'
+    };
+  }
+  function readSpeechPlaybackState() {
+    var live = normalizeSpeechPlaybackState(speechPlaybackState);
+    if (live) return live;
+    try {
+      var stored = JSON.parse(localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY) || 'null');
+      var normalized = normalizeSpeechPlaybackState(stored);
+      if (normalized) {
+        speechPlaybackState = stored;
+        return normalized;
+      }
+    } catch (_) {}
+    return { active: false, speechId: '', turnId: '', remainingSeconds: 0, remainingMs: 0, updatedAt: 0, reason: 'missing', source: 'playback_state' };
+  }
+  function initSpeechPlaybackStateBridge() {
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        speechPlaybackChannel = new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME);
+        speechPlaybackChannel.onmessage = function (event) {
+          var data = event && event.data;
+          if (data && data.type === 'speech_playback_state') speechPlaybackState = data;
+        };
+      }
+    } catch (_) {}
+    window.addEventListener('storage', function (event) {
+      if (event.key !== SPEECH_PLAYBACK_STATE_KEY || !event.newValue) return;
+      try {
+        var data = JSON.parse(event.newValue);
+        if (data && data.type === 'speech_playback_state') speechPlaybackState = data;
+      } catch (_) {}
+    });
+    window.addEventListener('neko-speech-playback-state', function (event) {
+      var data = event && event.detail;
+      if (data && data.type === 'speech_playback_state') speechPlaybackState = data;
+    });
+    readSpeechPlaybackState();
+  }
+  function closeSpeechPlaybackStateBridge() {
+    if (!speechPlaybackChannel) return;
+    try {
+      speechPlaybackChannel.close();
+    } catch (_) {}
+    speechPlaybackChannel = null;
+  }
+  function readVoiceOccupancy() {
+    var playback = readSpeechPlaybackState();
+    if (playback.active) return playback;
+    if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt) {
+      var inFlightMs = Math.max(100, voiceArbiter.inFlight.expiresAt - Date.now());
+      return {
+        active: true,
+        speechId: '',
+        turnId: '',
+        remainingSeconds: inFlightMs / 1000,
+        remainingMs: inFlightMs,
+        reason: 'local_inflight',
+        source: 'local_inflight'
+      };
+    }
+    var protectedMs = Math.max(0, voiceArbiter.userReplyProtectedUntil - Date.now());
+    if (protectedMs > 0) {
+      return {
+        active: true,
+        speechId: '',
+        turnId: '',
+        remainingSeconds: protectedMs / 1000,
+        remainingMs: protectedMs,
+        reason: 'user_reply_protection',
+        source: 'user_reply_protection'
+      };
+    }
+    return { active: false, speechId: '', turnId: '', remainingSeconds: 0, remainingMs: 0, reason: 'idle', source: 'idle' };
+  }
+  function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {
+    var targetSpeechId = String(speechId || '');
+    var startedAt = Date.now();
+    var minUpdatedAt = Number.isFinite(requestStartedAt) ? requestStartedAt - 100 : startedAt - 100;
+    return new Promise(function (resolve) {
+      function check() {
+        var state = readSpeechPlaybackState();
+        var stateSpeechId = state && state.speechId ? String(state.speechId) : '';
+        var isFresh = !!(state && state.active && state.updatedAt >= minUpdatedAt);
+        var matchesTarget = !!(targetSpeechId && stateSpeechId === targetSpeechId);
+        var matchesAnonymousFreshPlayback = !!(!targetSpeechId && isFresh);
+        if (matchesTarget || matchesAnonymousFreshPlayback) {
+          resolve({ observed: true, state: state });
+          return;
+        }
+        if (Date.now() - startedAt >= (timeoutMs || 1100)) {
+          resolve({ observed: false, state: state });
+          return;
+        }
+        setTimeout(check, 80);
+      }
+      check();
+    });
+  }
+  function pickLocalSpeechVoice(lang) {
+    var synth = window.speechSynthesis;
+    if (!synth || typeof synth.getVoices !== 'function') return null;
+    var voices = synth.getVoices() || [];
+    var normalizedLang = String(lang || '').toLowerCase();
+    var primary = normalizedLang.split('-')[0] || 'zh';
+    for (var i = 0; i < voices.length; i++) {
+      var voice = voices[i];
+      var voiceLang = String(voice && voice.lang || '').toLowerCase();
+      if (voiceLang === normalizedLang) return voice;
+    }
+    for (var j = 0; j < voices.length; j++) {
+      var fallbackVoice = voices[j];
+      var fallbackLang = String(fallbackVoice && fallbackVoice.lang || '').toLowerCase();
+      if (fallbackLang.indexOf(primary) === 0) return fallbackVoice;
+    }
+    return null;
+  }
+  function speakLineLocally(line) {
+    var text = String(line || '').trim();
+    if (!text || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return false;
+    try {
+      var synth = window.speechSynthesis;
+      var utterance = new SpeechSynthesisUtterance(text);
+      var lang = getRequestLanguage() || 'zh-CN';
+      utterance.lang = lang;
+      utterance.rate = 1.03;
+      utterance.pitch = 1.18;
+      utterance.volume = 0.95;
+      var voice = pickLocalSpeechVoice(lang);
+      if (voice) utterance.voice = voice;
+      synth.cancel();
+      synth.speak(utterance);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   function _mirrorAndSpeak(entry) {
-    if (debugMode) return Promise.resolve();
+    if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();
     var entrySessionId = entry.sessionId || sessionId;
     var entryLanlanName = entry.lanlanName || lanlanName;
     var entryMode = entry.mode || currentMode;
@@ -2287,14 +2596,46 @@
       i18n_language: getRequestLanguage(),
       event: payloadEvent
     };
+    lastVoiceRequest = speakPayload;
+    lastVoiceResult = null;
+    lastVoiceFallbackReason = '';
+    var speakStartedAt = Date.now();
     return post('/mirror-assistant', mirrorPayload, 2500)
       .catch(function () {})
       .then(function () {
-        return post('/speak', speakPayload, 3500).catch(function () {});
+        return post('/speak', speakPayload, 3500).then(function (res) {
+          lastVoiceResult = res || null;
+          if (!res || !(res.audio_sent || res.audio_queued)) {
+            lastVoiceFallbackReason = 'project_voice_not_queued';
+            speakLineLocally(entry.line);
+            return res;
+          }
+          return waitForProjectVoicePlayback(res.speech_id, 1100, speakStartedAt).then(function (observed) {
+            if (!observed || !observed.observed) {
+              lastVoiceFallbackReason = 'project_voice_unobserved';
+              speakLineLocally(entry.line);
+            }
+            return res;
+          });
+        }).catch(function () {
+          lastVoiceFallbackReason = 'project_speak_failed';
+          speakLineLocally(entry.line);
+          return { ok: false, local_speech: true, reason: 'project_speak_failed' };
+        });
       });
   }
   function _requestVoicePlayback(entry) {
     if (!_voiceEntryMatchesCurrentSession(entry)) return Promise.resolve();
+    var playback = readVoiceOccupancy();
+    var deadlineMs = entry.expiresAt ? Math.max(0, entry.expiresAt - Date.now()) : 0;
+    var canDeferWithoutExpiring = !entry.expiresAt || deadlineMs > entry.tailWaitMs + 250;
+    if (playback.active && playback.source === 'playback_state' && playback.remainingMs > entry.tailWaitMs && canDeferWithoutExpiring && !entry.playbackDeferredOnce) {
+      entry.playbackDeferredOnce = true;
+      _storeVoicePending(entry);
+      var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;
+      _scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));
+      return Promise.resolve({ ok: false, queued: true, reason: 'voice_deferred_once' });
+    }
     var holdMs = Math.max(VOICE_ARBITER_DEFAULTS.inFlightGuardMs, Math.round(_estimateVoiceDuration(entry.line) * 1000));
     voiceArbiter.inFlight = {
       id: entry.id,
@@ -2337,13 +2678,71 @@
   function showBubble(line, control) {
     var text = String(line || '').trim();
     if (!text) return;
+    if (shouldKeepCurrentBubble(control || {})) return false;
     bubble.dataset.mood = (control && control.mood) || '';
+    bubble.dataset.variant = (control && control.bubbleVariant) || '';
     renderBubbleContent(text, getBubbleEmote(control || {}));
     positionBubbleNearYui();
     applyNekoControl(control || {}, { transient: true });
     bubble.classList.add('show');
     clearTimeout(bubbleTimer);
-    bubbleTimer = setTimeout(function () { bubble.classList.remove('show'); }, 2800);
+    armBubblePriority(control || {});
+    var durationMs = Math.max(800, Number(control && control.bubbleDurationMs) || 2800);
+    bubbleTimer = setTimeout(function () { bubble.classList.remove('show'); }, durationMs);
+    return true;
+  }
+  function getBubblePriority(control) {
+    return Math.max(0, Number(control && control.bubblePriority) || 0);
+  }
+  function shouldKeepCurrentBubble(control) {
+    if (Date.now() >= bubblePriorityUntil) {
+      bubblePriority = 0;
+      bubblePriorityUntil = 0;
+      return false;
+    }
+    return getBubblePriority(control) < bubblePriority;
+  }
+  function armBubblePriority(control) {
+    var priority = getBubblePriority(control);
+    var holdMs = Math.max(0, Number(control && control.bubbleHoldMs) || 0);
+    if (priority > 0 && holdMs > 0) {
+      bubblePriority = priority;
+      bubblePriorityUntil = Date.now() + holdMs;
+    }
+  }
+  function showYuiCheatLine(kind) {
+    var pools = {
+      banana: _i18nArray('lines.yuiCheat.banana', ['小心脚下，香蕉皮来了', '别踩到哦，我丢过去了']),
+      octopus: _i18nArray('lines.yuiCheat.octopus', ['墨汁来了，看得见吗', '视野借我挡一下'])
+    };
+    var lines = pools[kind] || pools.banana;
+    var line = lines[Math.floor(Math.random() * lines.length)] || '';
+    var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 3200, bubbleDurationMs: 4200 };
+    showBubble(line, control);
+    speakLine(line, control, {
+      kind: 'yui_cheat_item',
+      label: 'yui_cheat_' + kind,
+      item_kind: kind,
+      force_voice_in_debug: true,
+      voice_deadline_ms: 3600
+    });
+  }
+  function showYuiCheatScoreLine(kind) {
+    var pools = {
+      banana: _i18nArray('lines.yuiCheatScore.banana', ['这一步太滑啦，这分我收下', '香蕉皮助攻成功，嘿嘿']),
+      octopus: _i18nArray('lines.yuiCheatScore.octopus', ['墨汁遮得刚刚好，这分归我', '看不清也要接球哦'])
+    };
+    var lines = pools[kind] || pools.banana;
+    var line = lines[Math.floor(Math.random() * lines.length)] || '';
+    var control = { expression: 'tease', intensity: 'high', mood: 'happy', bubbleVariant: 'yui-cheat-score', bubblePriority: 9, bubbleHoldMs: 3600, bubbleDurationMs: 4600 };
+    showBubble(line, control);
+    speakLine(line, control, {
+      kind: 'yui_cheat_score',
+      label: 'yui_cheat_score_' + kind,
+      item_kind: kind,
+      force_voice_in_debug: true,
+      voice_deadline_ms: 5200
+    });
   }
   function renderBubbleContent(text, emote) {
     text = String(text || '').trim();
@@ -2371,15 +2770,20 @@
   function showBubbleEmote(emote, control) {
     if (!emote) return;
     var emoteControl = control || {};
+    if (shouldKeepCurrentBubble(emoteControl)) return false;
     if (!emoteControl.emote) emoteControl.emote = emote;
     if (!emoteControl.expression) emoteControl.expression = emote;
     bubble.dataset.mood = emoteControl.mood || '';
+    bubble.dataset.variant = emoteControl.bubbleVariant || '';
     renderBubbleContent('', emote);
     positionBubbleNearYui();
     applyNekoControl(emoteControl, { transient: true });
     bubble.classList.add('show');
     clearTimeout(bubbleTimer);
-    bubbleTimer = setTimeout(function () { bubble.classList.remove('show'); }, 1800);
+    armBubblePriority(emoteControl);
+    var durationMs = Math.max(800, Number(emoteControl.bubbleDurationMs) || 1800);
+    bubbleTimer = setTimeout(function () { bubble.classList.remove('show'); }, durationMs);
+    return true;
   }
   function getBubbleEmote(control) {
     var expression = String((control && (control.emote || control.expression)) || '').toLowerCase();
@@ -2411,7 +2815,36 @@
       assistHint.classList.remove('show');
     }, 1500);
   }
+  function shouldReadBadmintonVoice(event, control) {
+    event = event || {};
+    var kind = String(event && event.kind || '');
+    var label = String(event && event.label || '');
+    if (event && (event.force_voice || event.force_voice_in_debug || event.voice_always)) return true;
+    if (kind === 'user_reply' || event.isUserReply || event.source === 'user_reply') return true;
+    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_score') return true;
+    if (kind === 'difficulty_ramp') return true;
+    if (event && event.point_winner === 'neko' && label === 'neko_duel_shot') return true;
+    if (label.indexOf('duel_difficulty_') === 0) return true;
+    return false;
+  }
   function speakLine(line, control, event) {
+    if (!shouldReadBadmintonVoice(event, control)) {
+      lastVoiceRequest = {
+        line: line,
+        event: event || {},
+        muted: true
+      };
+      lastVoiceResult = {
+        ok: false,
+        muted: true,
+        reason: 'voice_event_not_selected'
+      };
+      lastVoiceFallbackReason = '';
+      lastVoiceMutedReason = 'voice_event_not_selected';
+      showBubble(line, control || {});
+      return;
+    }
+    lastVoiceMutedReason = '';
     var isUserReply = !!(event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply'));
     var entrySessionId = String((event && event.session_id) || sessionId || '');
     var entryLanlanName = String((event && (event.lanlan_name || event.lanlanName)) || getRouteLanlanName() || lanlanName || '');
@@ -2426,7 +2859,8 @@
       priority: _voicePriorityForEvent(event),
       tailWaitMs: VOICE_ARBITER_DEFAULTS.tailWaitMs,
       expiresAt: event && event.voice_deadline_ms ? Date.now() + Math.max(0, event.voice_deadline_ms) : 0,
-      isUserReply: isUserReply
+      isUserReply: isUserReply,
+      playbackDeferredOnce: false
     };
     if (isUserReply) {
       voiceArbiter.userReplyProtectedUntil = Date.now() + 5000;
@@ -2600,7 +3034,7 @@
   }
   function clearYuiActionClasses(container) {
     if (!container) return;
-    container.classList.remove('charging', 'shooting', 'smashing', 'react-celebrate', 'react-disappointed');
+    container.classList.remove('charging', 'shooting', 'smashing', 'saving', 'react-celebrate', 'react-disappointed');
   }
   function clearPlayerActionClasses() {
     if (!playerSenseiContainer) return;
@@ -3464,6 +3898,7 @@
   }
   function renderLeaderboard(entries, meta, mode) {
     while (leaderboardBody.firstChild) leaderboardBody.removeChild(leaderboardBody.firstChild);
+    var fragment = document.createDocumentFragment();
     var rows = Array.isArray(entries) ? entries : [];
     if (!rows.length) {
       var emptyRow = document.createElement('tr');
@@ -3471,7 +3906,7 @@
       emptyCell.colSpan = 6;
       emptyCell.textContent = _i18n('leaderboard.empty', '暂无记录');
       emptyRow.appendChild(emptyCell);
-      leaderboardBody.appendChild(emptyRow);
+      fragment.appendChild(emptyRow);
     } else {
       rows.forEach(function (entry, index) {
         var tr = document.createElement('tr');
@@ -3489,9 +3924,10 @@
           td.textContent = String(value);
           tr.appendChild(td);
         });
-        leaderboardBody.appendChild(tr);
+        fragment.appendChild(tr);
       });
     }
+    leaderboardBody.appendChild(fragment);
     var metaParts = [];
     if (mode === 'global' && meta && meta.total_players != null) {
       metaParts.push(_i18n('leaderboard.totalPlayers', '总玩家 {{count}}', { count: meta.total_players }));
@@ -3560,7 +3996,9 @@
     shuttleSeq: 0,
     playerCourt: { x: PLAYER_START_X, y: PLAYER_START_Y, targetX: PLAYER_START_X, targetY: PLAYER_START_Y },
     playerJump: { offset: 0, velocity: 0, active: false, cooldownUntil: 0, lastSmashAt: 0 },
+    playerCheatEffect: { slowUntil: 0, spinUntil: 0, spinStartedAt: 0, spinAngle: 0 },
     yuiCourt: { x: YUI_START_X, y: YUI_START_Y, targetX: YUI_START_X, targetY: YUI_START_Y },
+    yuiCheat: { items: [], inkStartedAt: 0, inkUntil: 0, inkDuration: 0, cooldownUntil: 0, lastUsedKind: '', forcedKind: '', pendingScoreTauntKind: '', pendingScoreTauntUntil: 0, seq: 0 },
     lastTs: 0,
     aimStartAt: 0,
     longAimSent: false,
@@ -3609,6 +4047,13 @@
     updatePlayerAvatarPosition();
     updateDuelShooterAvatars();
   }
+  function scheduleBadmintonResize() {
+    if (badmintonResizeFrame) return;
+    badmintonResizeFrame = requestAnimationFrame(function () {
+      badmintonResizeFrame = 0;
+      resize();
+    });
+  }
   function moveToward(current, target, speed, dt) {
     var delta = target - current;
     var maxStep = speed * dt;
@@ -3621,14 +4066,225 @@
     game.playerCourt.targetX = PLAYER_START_X;
     game.playerCourt.targetY = PLAYER_START_Y;
     resetPlayerJump();
+    resetYuiCheats();
     game.yuiCourt.x = YUI_START_X;
     game.yuiCourt.y = YUI_START_Y;
     game.yuiCourt.targetX = YUI_START_X;
     game.yuiCourt.targetY = YUI_START_Y;
   }
+  function resetYuiCheats() {
+    if (!game.yuiCheat) game.yuiCheat = {};
+    game.yuiCheat.items = [];
+    game.yuiCheat.inkStartedAt = 0;
+    game.yuiCheat.inkUntil = 0;
+    game.yuiCheat.inkDuration = 0;
+    game.yuiCheat.cooldownUntil = 0;
+    game.yuiCheat.lastUsedKind = '';
+    game.yuiCheat.forcedKind = '';
+    game.yuiCheat.pendingScoreTauntKind = '';
+    game.yuiCheat.pendingScoreTauntUntil = 0;
+    game.yuiCheat.seq = game.yuiCheat.seq || 0;
+    if (!game.playerCheatEffect) game.playerCheatEffect = {};
+    game.playerCheatEffect.slowUntil = 0;
+    game.playerCheatEffect.spinUntil = 0;
+    game.playerCheatEffect.spinStartedAt = 0;
+    game.playerCheatEffect.spinAngle = 0;
+  }
+  function markYuiCheatHit(kind) {
+    if (!game.yuiCheat) resetYuiCheats();
+    var normalizedKind = kind === 'octopus' ? 'octopus' : 'banana';
+    game.yuiCheat.pendingScoreTauntKind = normalizedKind;
+    game.yuiCheat.pendingScoreTauntUntil = performance.now() + YUI_CHEAT_SCORE_TAUNT_GRACE_MS;
+  }
+  function getYuiCheatScoreTauntKind(pointWinner) {
+    if (pointWinner !== 'neko' || !game.yuiCheat) return '';
+    var now = performance.now();
+    var pendingKind = game.yuiCheat.pendingScoreTauntKind || '';
+    var pendingUntil = game.yuiCheat.pendingScoreTauntUntil || 0;
+    if (pendingKind && now <= pendingUntil) {
+      game.yuiCheat.pendingScoreTauntKind = '';
+      game.yuiCheat.pendingScoreTauntUntil = 0;
+      return pendingKind;
+    }
+    if (pendingKind && now > pendingUntil) {
+      game.yuiCheat.pendingScoreTauntKind = '';
+      game.yuiCheat.pendingScoreTauntUntil = 0;
+    }
+    var ink = getYuiInkState(now);
+    return ink && ink.active && ink.alpha > 0 ? 'octopus' : '';
+  }
+  function isDuelScoreCloseForCheat() {
+    if (!isDuelMode()) return false;
+    var total = game.duel.playerScore + game.duel.nekoScore;
+    var scoreClose = Math.abs(game.duel.playerScore - game.duel.nekoScore) <= 1 && total >= 4;
+    var playerMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.playerMisses);
+    var nekoMissesLeft = Math.max(0, game.duel.maxMisses - game.duel.nekoMisses);
+    var eliminationClose = playerMissesLeft <= 2 && nekoMissesLeft <= 2;
+    return scoreClose || eliminationClose;
+  }
+  function chooseYuiCheatKind() {
+    if (game.yuiCheat && game.yuiCheat.forcedKind) {
+      var forced = game.yuiCheat.forcedKind;
+      game.yuiCheat.forcedKind = '';
+      return forced;
+    }
+    if (game.yuiCheat.lastUsedKind === 'banana') return Math.random() < 0.58 ? 'octopus' : 'banana';
+    if (game.yuiCheat.lastUsedKind === 'octopus') return Math.random() < 0.58 ? 'banana' : 'octopus';
+    return Math.random() < 0.55 ? 'banana' : 'octopus';
+  }
+  function randomYuiBananaCourtX() {
+    return PLAYER_COURT_X_MIN + YUI_CHEAT_BANANA_RADIUS + Math.random() * Math.max(1, PLAYER_COURT_X_MAX - PLAYER_COURT_X_MIN - YUI_CHEAT_BANANA_RADIUS * 2);
+  }
+  function buildYuiCheatBanana(options) {
+    var now = performance.now();
+    var opts = options || {};
+    var x = Number.isFinite(opts.x) ? opts.x : randomYuiBananaCourtX();
+    var y = Number.isFinite(opts.y) ? opts.y : getPlayerFootY();
+    return {
+      id: ++game.yuiCheat.seq,
+      kind: 'banana',
+      x: clamp(x, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX),
+      y: clamp(y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8),
+      radius: YUI_CHEAT_BANANA_RADIUS,
+      createdAt: now,
+      expiresAt: now + YUI_CHEAT_BANANA_EXPIRE_MS
+    };
+  }
+  function activateYuiInk() {
+    var now = performance.now();
+    game.yuiCheat.inkStartedAt = now;
+    game.yuiCheat.inkDuration = YUI_CHEAT_INK_DURATION_MS;
+    game.yuiCheat.inkUntil = now + YUI_CHEAT_INK_DURATION_MS;
+    game.yuiCheat.lastUsedKind = 'octopus';
+    game.yuiCheat.cooldownUntil = now + YUI_CHEAT_COOLDOWN_MS;
+    badmintonGameAudio.playSfx('yuiCheat.octopusInk', { volumeMultiplier: 0.92 });
+    showAssistHint(_i18n('toast.yuiCheatInk', 'Yui 扔了墨汁'));
+    showYuiCheatLine('octopus');
+    applyNekoControl({ expression: 'tease', intensity: 'medium' }, { transient: true });
+    setYuiAction('shooting', 420);
+  }
+  function spawnYuiCheat(kind, options) {
+    if (!game.yuiCheat) resetYuiCheats();
+    var cheatKind = kind === 'octopus' ? 'octopus' : 'banana';
+    if (cheatKind === 'octopus') {
+      activateYuiInk();
+      return { kind: 'octopus' };
+    }
+    var banana = buildYuiCheatBanana(options);
+    game.yuiCheat.items.push(banana);
+    game.yuiCheat.lastUsedKind = 'banana';
+    game.yuiCheat.cooldownUntil = performance.now() + YUI_CHEAT_COOLDOWN_MS;
+    showAssistHint(_i18n('toast.yuiCheatBanana', 'Yui 丢了香蕉皮'));
+    showYuiCheatLine('banana');
+    applyNekoControl({ expression: 'tease', intensity: 'medium' }, { transient: true });
+    setYuiAction('shooting', 420);
+    return banana;
+  }
+  function maybeTriggerYuiCheat(reason) {
+    if (!isDuelMode() || !game.yuiCheat || game.state === 'game_over') return false;
+    var now = performance.now();
+    var forced = !!game.yuiCheat.forcedKind;
+    if (!forced && now < (game.yuiCheat.cooldownUntil || 0)) return false;
+    var close = isDuelScoreCloseForCheat();
+    var chance = close ? YUI_CHEAT_CLOSE_SCORE_CHANCE : YUI_CHEAT_RANDOM_CHANCE;
+    if (!forced && Math.random() >= chance) return false;
+    var item = spawnYuiCheat(chooseYuiCheatKind(), { reason: reason });
+    sendGameEvent({
+      kind: 'yui_cheat_item',
+      label: 'yui_cheat_' + item.kind,
+      result: 'cheat',
+      item_kind: item.kind,
+      close_score: close,
+      duel: buildDuelStatePayload(),
+      voice_deadline_ms: 900
+    });
+    return true;
+  }
+  function getYuiInkState(now) {
+    var activeUntil = game.yuiCheat ? game.yuiCheat.inkUntil || 0 : 0;
+    var active = now < activeUntil;
+    var duration = game.yuiCheat ? game.yuiCheat.inkDuration || YUI_CHEAT_INK_DURATION_MS : YUI_CHEAT_INK_DURATION_MS;
+    var remaining = Math.max(0, activeUntil - now);
+    var fade = active ? clamp(remaining / Math.max(1, duration), 0, 1) : 0;
+    return {
+      active: active,
+      alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0,
+      remaining_ms: Math.round(remaining)
+    };
+  }
+  function getPlayerCheatEffectState(now) {
+    var effect = game.playerCheatEffect || {};
+    return {
+      slipping: now < (effect.slowUntil || 0),
+      spin_angle: effect.spinAngle || 0,
+      speed_multiplier: getPlayerMovementSpeedMultiplier(now),
+      slow_remaining_ms: Math.max(0, Math.round((effect.slowUntil || 0) - now)),
+      spin_remaining_ms: Math.max(0, Math.round((effect.spinUntil || 0) - now))
+    };
+  }
+  function getPlayerMovementSpeedMultiplier(now) {
+    var effect = game.playerCheatEffect || {};
+    var t = Number.isFinite(now) ? now : performance.now();
+    return t < (effect.slowUntil || 0) ? YUI_CHEAT_BANANA_SPEED_MULTIPLIER : 1;
+  }
+  function updatePlayerCheatEffect(now) {
+    var effect = game.playerCheatEffect;
+    if (!effect) return;
+    if (now < (effect.spinUntil || 0)) {
+      var progress = clamp((now - (effect.spinStartedAt || now)) / Math.max(1, YUI_CHEAT_BANANA_SPIN_MS), 0, 1);
+      var easedProgress = 1 - Math.pow(1 - progress, 3);
+      effect.spinAngle = YUI_CHEAT_BANANA_SLIP_ROTATION_RAD * easedProgress;
+    } else {
+      effect.spinAngle = 0;
+    }
+  }
+  function applyBananaSlip(item) {
+    var now = performance.now();
+    game.playerCheatEffect.slowUntil = Math.max(game.playerCheatEffect.slowUntil || 0, now + YUI_CHEAT_BANANA_SLOW_MS);
+    game.playerCheatEffect.spinStartedAt = now;
+    game.playerCheatEffect.spinUntil = now + YUI_CHEAT_BANANA_SPIN_MS;
+    game.playerCheatEffect.spinAngle = 0.01;
+    markYuiCheatHit('banana');
+    badmintonGameAudio.playSfx('yuiCheat.bananaSlip', { volumeMultiplier: 0.9 });
+    showAssistHint(_i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了'));
+    setPlayerAction('react-disappointed', 560);
+    sendGameEvent({
+      kind: 'yui_cheat_hit',
+      label: 'banana_slip',
+      result: 'cheat_hit',
+      item_kind: 'banana',
+      item_id: item && item.id,
+      duel: buildDuelStatePayload(),
+      voice_deadline_ms: 900
+    });
+  }
+  function updateYuiCheats(dt) {
+    if (!game.yuiCheat) resetYuiCheats();
+    var now = performance.now();
+    updatePlayerCheatEffect(now);
+    var items = game.yuiCheat.items || [];
+    var kept = [];
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item || now >= item.expiresAt) continue;
+      if (item.kind === 'banana') {
+        var dx = getPlayerX() - item.x;
+        var dy = getPlayerFootY() - item.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        var isJumpingOver = !!(game.playerJump && game.playerJump.active) || getPlayerJumpOffset() > YUI_CHEAT_BANANA_JUMP_CLEARANCE;
+        if (!isJumpingOver && dist <= (item.radius || YUI_CHEAT_BANANA_RADIUS)) {
+          applyBananaSlip(item);
+          continue;
+        }
+      }
+      kept.push(item);
+    }
+    game.yuiCheat.items = kept;
+  }
   function updatePlayerCourtTarget(clientX, clientY) {
     var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);
-    game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);
+    var moveBounds = getPlayerCourtMoveBounds();
+    game.playerCourt.targetX = clamp(normX * BASE_W, moveBounds.minX, moveBounds.maxX);
     game.playerCourt.targetY = PLAYER_START_Y;
   }
   function rememberPlayerPointer(ev) {
@@ -3644,8 +4300,14 @@
     var targetY = YUI_START_Y;
     var ball = game.ball;
     if (ball && !ball.resolved && ball.shooter === 'player' && ball.direction === 1) {
-      targetX = clamp(ball.x + 42, YUI_COURT_X_MIN, YUI_COURT_X_MAX);
-      targetY = clamp(ball.y + 76, YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);
+      var visibleRacket = getYuiVisibleRacketContactPoint();
+      if (visibleRacket) {
+        targetX = clamp(game.yuiCourt.x + ((ball.x || 0) - visibleRacket.x), YUI_COURT_X_MIN, YUI_COURT_X_MAX);
+        targetY = clamp(game.yuiCourt.y + ((ball.y || 0) - visibleRacket.y), YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);
+      } else {
+        targetX = clamp(ball.x - YUI_RACKET_BODY_OFFSET_X, YUI_COURT_X_MIN, YUI_COURT_X_MAX);
+        targetY = clamp(ball.y + 76, YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);
+      }
     } else if (game.state === 'neko_thinking' || game.duel.activeShooter === 'neko') {
       targetX = YUI_START_X;
       targetY = YUI_START_Y;
@@ -3653,15 +4315,23 @@
     game.yuiCourt.targetX = targetX;
     game.yuiCourt.targetY = targetY;
   }
+  function isYuiChasingIncomingShuttle() {
+    var ball = game.ball;
+    return !!(ball && !ball.resolved && ball.shooter === 'player' && ball.direction === 1 && ball.crossedNet);
+  }
   function updateCourtMovement(dt) {
     updateYuiCourtTarget();
     syncPlayerCourtTargetFromPointer();
-    game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);
+    var playerMoveSpeed = PLAYER_MOVE_SPEED * getPlayerMovementSpeedMultiplier();
+    var yuiChaseSpeedX = isYuiChasingIncomingShuttle() ? YUI_RETURN_CHASE_SPEED : YUI_MOVE_SPEED;
+    var yuiChaseSpeedY = isYuiChasingIncomingShuttle() ? YUI_RETURN_CHASE_Y_SPEED : YUI_MOVE_SPEED * 0.5;
+    game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, playerMoveSpeed, dt);
     game.playerCourt.targetY = PLAYER_START_Y;
     game.playerCourt.y = PLAYER_START_Y;
     updatePlayerJump(dt);
-    game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, YUI_MOVE_SPEED, dt);
-    game.yuiCourt.y = moveToward(game.yuiCourt.y, game.yuiCourt.targetY, YUI_MOVE_SPEED * 0.5, dt);
+    updateYuiCheats(dt);
+    game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, yuiChaseSpeedX, dt);
+    game.yuiCourt.y = moveToward(game.yuiCourt.y, game.yuiCourt.targetY, yuiChaseSpeedY, dt);
     updatePlayerAvatarPosition();
     updateDuelShooterAvatars();
   }
@@ -3673,6 +4343,9 @@
   }
   function getPlayerY() {
     return clamp(game.playerCourt.y - getPlayerJumpOffset(), PLAYER_COURT_Y_MIN - PLAYER_JUMP_MAX_OFFSET, PLAYER_COURT_Y_MAX);
+  }
+  function getPlayerFootY() {
+    return clamp(getPlayerY() + PLAYER_FOOT_CONTACT_OFFSET_Y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8);
   }
   function getPlayerEyeY() {
     return getPlayerY() - 66;
@@ -3750,12 +4423,41 @@
     return clamp(heightQuality * timingQuality * contactQuality, 0, 1);
   }
   function isPlayerSmashReady(incomingBall) {
+    if (isPlayerServeSetup()) return false;
     return getPlayerSmashQuality(incomingBall) >= 0.22;
+  }
+  function getYuiRacketHitRangeState(incomingBall) {
+    var racket = getYuiRacketContactPoint();
+    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : racket.x;
+    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : racket.y;
+    var dx = Math.abs(ballX - racket.x);
+    var dy = Math.abs(ballY - racket.y);
+    var normalized = Math.pow(dx / YUI_RACKET_HIT_REACH_X, 2) + Math.pow(dy / YUI_RACKET_HIT_REACH_Y, 2);
+    return { dx: dx, dy: dy, normalized: normalized };
+  }
+  function isYuiRacketHitInRange(incomingBall) {
+    return getYuiRacketHitRangeState(incomingBall).normalized <= 1;
+  }
+  function getYuiRacketSaveRangeState(incomingBall) {
+    var racket = getYuiRacketContactPoint();
+    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : racket.x;
+    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : racket.y;
+    var dx = Math.abs(ballX - racket.x);
+    var dy = Math.abs(ballY - racket.y);
+    var normalized = Math.pow(dx / YUI_RACKET_SAVE_REACH_X, 2) + Math.pow(dy / YUI_RACKET_SAVE_REACH_Y, 2);
+    return { dx: dx, dy: dy, normalized: normalized };
+  }
+  function isYuiSmashSaveReachable(incomingBall) {
+    return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
+  }
+  function getYuiSmashHeightQuality(incomingBall) {
+    if (!incomingBall) return 0;
+    var shuttleZ = getShuttleCourtZ(incomingBall, false);
+    return clamp((shuttleZ - YUI_SMASH_MIN_SHUTTLE_Z) / Math.max(1, YUI_SMASH_FULL_SHUTTLE_Z - YUI_SMASH_MIN_SHUTTLE_Z), 0, 1);
   }
   function getYuiSmashQuality(incomingBall, shot) {
     if (!incomingBall || !shot) return 0;
-    var contact = getYuiShotOrigin();
-    var heightQuality = clamp((contact.y - (incomingBall.y || contact.y) - 18) / 92, 0, 1);
+    var heightQuality = getYuiSmashHeightQuality(incomingBall);
     var rallyQuality = clamp((game.duel.rallyHits - 2) / 5, 0, 1);
     var difficultyName = String(shot.difficulty || getDuelDifficultyName());
     var difficultyQuality = difficultyName === 'max' ? 1 : (difficultyName === 'lv2' ? 0.72 : 0.38);
@@ -3764,9 +4466,7 @@
   }
   function shouldYuiSmashReturn(incomingBall, shot, quality) {
     if (!incomingBall || !shot || quality < 0.52) return false;
-    var contact = getYuiShotOrigin();
-    var yuiSmashClearance = contact.y - (incomingBall.y || contact.y);
-    if (yuiSmashClearance < 58) return false;
+    if (getYuiSmashHeightQuality(incomingBall) <= 0) return false;
     var difficultyName = String(shot.difficulty || getDuelDifficultyName());
     if (difficultyName === 'max' && game.duel.rallyHits >= 7 && quality >= 0.62) return true;
     var baseChance = difficultyName === 'max' ? 0.30 : (difficultyName === 'lv2' ? 0.14 : 0.04);
@@ -3914,18 +4614,38 @@
   }
   function getYuiShotOrigin() {
     return {
-      x: getYuiX() - 42,
+      x: getYuiX() + YUI_RACKET_BODY_OFFSET_X,
       y: getYuiEyeY() - 10
     };
+  }
+  function getYuiVisibleRacketContactPoint() {
+    if (activeAvatarType !== 'live2d' || !nekoL2dContainer || nekoL2dContainer.hidden) return null;
+    var debug = window.__badmintonYuiRacketDebug;
+    if (!debug || !debug.domRect || !Number.isFinite(debug.headX) || !Number.isFinite(debug.headY)) return null;
+    var layoutW = Math.max(1, Number(debug.layoutW) || 1);
+    var layoutH = Math.max(1, Number(debug.layoutH) || 1);
+    var rect = debug.domRect;
+    var screenX = rect.left + debug.headX * ((Number(rect.width) || layoutW) / layoutW);
+    var screenY = rect.top + debug.headY * ((Number(rect.height) || layoutH) / layoutH);
+    return {
+      x: screenX / Math.max(1, window.innerWidth || BASE_W) * BASE_W,
+      y: screenY / Math.max(1, window.innerHeight || BASE_H) * BASE_H,
+      source: 'live2d-racket-head'
+    };
+  }
+  function getYuiRacketContactPoint() {
+    return getYuiVisibleRacketContactPoint() || getYuiShotOrigin();
   }
   function updatePlayerAvatarPosition() {
     if (!playerSenseiContainer) return;
     var sx = getPlayerX() / BASE_W * window.innerWidth;
     var sy = (getPlayerY() + 63) / BASE_H * window.innerHeight;
+    var slipDeg = ((game.playerCheatEffect && game.playerCheatEffect.spinAngle) || 0) * 180 / Math.PI;
     playerSenseiContainer.style.width = PLAYER_AVATAR_W + 'px';
     playerSenseiContainer.style.height = PLAYER_AVATAR_H + 'px';
     playerSenseiContainer.style.setProperty('--sensei-x', Math.round(sx - PLAYER_AVATAR_W / 2) + 'px');
     playerSenseiContainer.style.setProperty('--sensei-y', Math.round(sy - PLAYER_AVATAR_H) + 'px');
+    playerSenseiContainer.style.setProperty('--sensei-slip-rotation', slipDeg.toFixed(2) + 'deg');
   }
   async function initPlayerAvatar() {
     if (!playerSenseiContainer || !playerSenseiCanvas) {
@@ -4131,7 +4851,10 @@
     var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;
     var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';
     var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';
-    return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
+    return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
+  }
+  function isPlayerServeSetup() {
+    return isDuelMode() && game.state === 'ready' && isPlayerTurn() && game.heldShuttleVisible && !game.ball && !game.pendingSwing;
   }
   function isPlayerReceivingReturn() {
     return !!(game.ball && game.ball.awaitingReturnBy === 'player');
@@ -4206,6 +4929,21 @@
     return {
       x: BADMINTON.netX + (lineT - 0.5) * NET_VISUAL_LINE_WIDTH,
       y: topY + (bottomY - topY) * heightT
+    };
+  }
+  function getNetVisualDepthPoint(point, depthT) {
+    var t = clamp(Number(depthT) || 0, 0, 1);
+    var side = point.x < BADMINTON.netX ? -1 : 1;
+    return {
+      x: point.x + side * NET_VISUAL_DEPTH_X * t,
+      y: point.y + NET_VISUAL_DEPTH_Y * t
+    };
+  }
+  function lerpNetPoint(a, b, t) {
+    var ratio = clamp(Number(t) || 0, 0, 1);
+    return {
+      x: a.x + (b.x - a.x) * ratio,
+      y: a.y + (b.y - a.y) * ratio
     };
   }
   function initNetNodes() {
@@ -4355,6 +5093,18 @@
       }
     }
   }
+  function doesNetTouchCarryToTargetSide(ball, crossing) {
+    if (!ball) return false;
+    var shuttleRadius = ball.radius || BALL_R;
+    var z = crossing && Number.isFinite(crossing.z) ? crossing.z : getShuttleCourtZ(ball, false);
+    var netTopZ = getNetTopZ();
+    var forwardSpeed = Math.abs(ball.vCourtY || ball.vx || 0);
+    var risingSpeed = Math.max(0, ball.vz || -(ball.vy || 0));
+    var highOnTape = z >= netTopZ - shuttleRadius * 0.72;
+    var hasCarry = forwardSpeed >= 115 || risingSpeed >= 36;
+    var barelyOverTape = z >= netTopZ - shuttleRadius * 0.26;
+    return highOnTape && (hasCarry || barelyOverTape);
+  }
   function spawnNetContactEffect(ball, crossing) {
     var contactX = crossing && Number.isFinite(crossing.screenX) ? crossing.screenX : (ball ? ball.x : BADMINTON.netX);
     var contactY = crossing && Number.isFinite(crossing.screenY) ? crossing.screenY : (ball ? ball.y : BADMINTON.netTop);
@@ -4430,6 +5180,7 @@
     game.closeRecordSent = false;
     game.resultRecorded = false;
     game.resultBgmPlayed = false;
+    badmintonGameAudio.resetSyncKey();
     game.globalRank = 0;
     game.globalTotalPlayers = 0;
     clearTimeout(game.duel.timer);
@@ -4468,34 +5219,34 @@
   }
   function updateHud() {
     if (isDuelMode()) {
-      if (hud.score) hud.score.textContent = _i18n('hud.duelScore', '你 {{player}} - {{neko}} Yui', { player: game.duel.playerScore, neko: game.duel.nekoScore });
-      hud.streak.textContent = _i18n('hud.duelMisses', '失误 你 {{player}}/{{max}} - Yui {{neko}}/{{max}}', {
+      setTextIfChanged(hud.score, _i18n('hud.duelScore', '你 {{player}} - {{neko}} Yui', { player: game.duel.playerScore, neko: game.duel.nekoScore }));
+      setTextIfChanged(hud.streak, _i18n('hud.duelMisses', '失误 你 {{player}}/{{max}} - Yui {{neko}}/{{max}}', {
         player: game.duel.playerMisses,
         neko: game.duel.nekoMisses,
         max: game.duel.maxMisses
-      });
+      }));
     } else if (isPracticeMode()) {
-      if (hud.score) hud.score.textContent = _i18n('hud.score', '得分 {{score}}', { score: game.totalScore });
-      hud.streak.textContent = _i18n('hud.streak', '连中 {{streak}}', { streak: game.streak });
+      setTextIfChanged(hud.score, _i18n('hud.score', '得分 {{score}}', { score: game.totalScore }));
+      setTextIfChanged(hud.streak, _i18n('hud.streak', '连中 {{streak}}', { streak: game.streak }));
     } else {
-      if (hud.score) hud.score.textContent = _i18n('hud.score', '得分 {{score}}', { score: game.totalScore });
-      hud.streak.textContent = _i18n('hud.streak', '连中 {{streak}}', { streak: game.streak });
+      setTextIfChanged(hud.score, _i18n('hud.score', '得分 {{score}}', { score: game.totalScore }));
+      setTextIfChanged(hud.streak, _i18n('hud.streak', '连中 {{streak}}', { streak: game.streak }));
     }
     if (hud.attempts) {
       var missed = Math.max(0, game.attemptsTotal - game.attemptsRemaining);
       var icons = '';
       for (var i = 0; i < game.attemptsTotal; i++) icons += i < game.attemptsRemaining ? '🏸' : '⚪';
       if (isDuelMode()) {
-        hud.attempts.textContent = game.duel.activeShooter === 'player' ? _i18n('hud.yourTurn', '轮到你') : _i18n('hud.nekoTurn', 'Yui 挥拍');
-        hud.attempts.title = _i18n('hud.duelTitle', 'Yui 对拉模式：轮流挥拍，先到 11 分获胜');
+        setTextIfChanged(hud.attempts, game.duel.activeShooter === 'player' ? _i18n('hud.yourTurn', '轮到你') : _i18n('hud.nekoTurn', 'Yui 挥拍'));
+        setTitleIfChanged(hud.attempts, _i18n('hud.duelTitle', 'Yui 对拉模式：轮流挥拍，先到 11 分获胜'));
       } else {
-        hud.attempts.textContent = isPracticeMode() ? _i18n('hud.unlimitedAttempts', '不限次数') : (icons || _i18n('hud.chances', '机会 {{count}}', { count: Math.max(0, game.attemptsRemaining) }));
-        hud.attempts.title = isPracticeMode()
+        setTextIfChanged(hud.attempts, isPracticeMode() ? _i18n('hud.unlimitedAttempts', '不限次数') : (icons || _i18n('hud.chances', '机会 {{count}}', { count: Math.max(0, game.attemptsRemaining) })));
+        setTitleIfChanged(hud.attempts, isPracticeMode()
           ? _i18n('hud.attemptsTitle', '剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}', { remaining: game.attemptsRemaining, total: game.attemptsTotal, missed: missed })
-          : _i18n('hud.attemptsTitle', '剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}', { remaining: game.attemptsRemaining, total: game.attemptsTotal, missed: missed });
+          : _i18n('hud.attemptsTitle', '剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}', { remaining: game.attemptsRemaining, total: game.attemptsTotal, missed: missed }));
       }
     }
-    hud.record.textContent = _i18n('hud.record', '最远 {{distance}}', { distance: pxToMeters(game.recordDistance) });
+    setTextIfChanged(hud.record, _i18n('hud.record', '最远 {{distance}}', { distance: pxToMeters(game.recordDistance) }));
     updateDebugReadout();
   }
   function updateTutorial(text) {
@@ -4504,7 +5255,7 @@
       return;
     }
     tutorialOverlay.classList.remove('done');
-    tutorialOverlay.textContent = text;
+    setTextIfChanged(tutorialOverlay, text);
   }
   function getTutorialText() {
     if (game.tutorialStep === 1) return _i18n('tutorial.charge', '按住左键蓄力');
@@ -4515,7 +5266,7 @@
     updateTutorial(getTutorialText());
   }
   function getRacketContactPoint(shooter) {
-    if (shooter === 'neko') return getYuiShotOrigin();
+    if (shooter === 'neko') return getYuiRacketContactPoint();
     return getPlayerVrmRacketContactPoint() || getShotOrigin();
   }
   function buildSwingImpulse(angle, power, shooter, incomingBall) {
@@ -4554,6 +5305,42 @@
       contact: contact
     };
   }
+  function initShuttleTrail(shuttle, x, y) {
+    if (!shuttle) return;
+    shuttle.trail = new Array(SHUTTLE_TRAIL_LIMIT);
+    shuttle.trailHead = 0;
+    shuttle.trailLength = 0;
+    pushShuttleTrailPoint(shuttle, x, y);
+  }
+  function pushShuttleTrailPoint(shuttle, x, y) {
+    if (!shuttle) return;
+    var trail = shuttle.trail;
+    if (!Array.isArray(trail) || trail.length !== SHUTTLE_TRAIL_LIMIT) {
+      trail = new Array(SHUTTLE_TRAIL_LIMIT);
+      shuttle.trail = trail;
+      shuttle.trailHead = 0;
+      shuttle.trailLength = 0;
+    }
+    var slot = trail[shuttle.trailHead];
+    if (!slot) slot = trail[shuttle.trailHead] = { x: x, y: y };
+    else {
+      slot.x = x;
+      slot.y = y;
+    }
+    shuttle.trailHead = (shuttle.trailHead + 1) % SHUTTLE_TRAIL_LIMIT;
+    shuttle.trailLength = Math.min(SHUTTLE_TRAIL_LIMIT, (shuttle.trailLength || 0) + 1);
+  }
+  function getShuttleTrailPoints(shuttle) {
+    if (!shuttle || !Array.isArray(shuttle.trail)) return [];
+    var length = Math.min(SHUTTLE_TRAIL_LIMIT, shuttle.trailLength || shuttle.trail.length || 0);
+    var points = [];
+    for (var i = 0; i < length; i++) {
+      var index = (shuttle.trailHead - length + i + SHUTTLE_TRAIL_LIMIT) % SHUTTLE_TRAIL_LIMIT;
+      var point = shuttle.trail[index];
+      if (point) points.push(point);
+    }
+    return points;
+  }
   function launchShot(angle, power, shooter, swingImpulse) {
     var shotShooter = shooter === 'neko' ? 'neko' : 'player';
     var direction = shotShooter === 'neko' ? -1 : 1;
@@ -4590,12 +5377,12 @@
     shuttle.vx = direction * v * Math.cos(radians) + contactDeflection;
     shuttle.vy = impulse.isSmash ? smashDownVelocity : baseVy;
     shuttle.vCourtY = shuttle.vx;
-    shuttle.vz = -shuttle.vy;
+    shuttle.vz = -shuttle.vy * SHUTTLE_FLIGHT_HEIGHT_SCALE;
     shuttle.radius = BALL_R;
     shuttle.diameter = BALL_R * 2;
     shuttle.massKg = SHUTTLE_MASS_KG;
     shuttle.dragPerSecond = SHUTTLE_DRAG_PER_SECOND;
-    shuttle.trail = [{ x: origin.x, y: origin.y }];
+    initShuttleTrail(shuttle, origin.x, origin.y);
     shuttle.crossed = false;
     shuttle.lineTouched = false;
     shuttle.netTouched = false;
@@ -4643,6 +5430,7 @@
     var incomingBall = options && options.incomingBall ? options.incomingBall : null;
     var smash = !!(options && options.smash);
     if (shotShooter === 'player') smash = smash || isPlayerSmashReady(incomingBall);
+    var save = !!(options && options.save) && shotShooter === 'neko' && !smash;
     var smashQuality = options && typeof options.smashQuality === 'number' ? options.smashQuality : 0;
     var swing = {
       id: Date.now() + Math.random(),
@@ -4650,6 +5438,7 @@
       angle: angle,
       power: power,
       impulse: buildSwingImpulse(angle, power, shotShooter, incomingBall, { smash: smash, smashQuality: smashQuality }),
+      save: save,
       forceScore: !!(options && options.forceScore)
     };
     game.pendingSwing = swing;
@@ -4658,7 +5447,7 @@
     game.charging = false;
     game.state = 'swinging';
     if (shotShooter === 'player') setPlayerAction('shooting', 460);
-    else setYuiAction(smash ? 'smashing' : 'shooting', smash ? 520 : 420);
+    else setYuiAction(save ? 'saving' : (smash ? 'smashing' : 'shooting'), save ? 560 : (smash ? 520 : 420));
     if (smash && shotShooter === 'player') {
       game.playerJump.lastSmashAt = performance.now();
       showAssistHint(_i18n('toast.smash', '跳杀！'));
@@ -4756,8 +5545,7 @@
       stepBallPhysics(ball, subDt);
       checkShuttleLanding(ball);
       updateNetPhysics(subDt);
-      ball.trail.push({ x: ball.x, y: ball.y });
-      if (ball.trail.length > 20) ball.trail.shift();
+      pushShuttleTrailPoint(ball, ball.x, ball.y);
       focusNekoAtBasePoint(ball.x, ball.y);
       if (ball.resolved) {
         if (performance.now() >= ball.resolveAt) {
@@ -4806,17 +5594,24 @@
   function applyMidcourtNetContact(ball, crossing) {
     if (!ball || ball.hitNet) return;
     var direction = ball.direction === -1 ? -1 : 1;
+    var carriesToTargetSide = doesNetTouchCarryToTargetSide(ball, crossing);
     ball.x = crossing.screenX;
     ball.y = crossing.screenY;
     syncShuttleCourtCoordinates(ball);
     ball.hitNet = true;
     ball.netTouched = true;
+    ball.netCarryToTargetSide = carriesToTargetSide;
+    ball.crossedNet = carriesToTargetSide;
     ball.netContactAt = performance.now();
     ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;
     applyNetContactImpulse(ball, crossing);
     spawnNetContactEffect(ball, crossing);
-    ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.14, 24, 88);
-    ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + 132, 132);
+    var reboundDirection = carriesToTargetSide ? direction : -direction;
+    var horizontalScale = carriesToTargetSide ? 0.16 : 0.12;
+    var minHorizontalSpeed = carriesToTargetSide ? 24 : 28;
+    var maxHorizontalSpeed = carriesToTargetSide ? 88 : 68;
+    ball.vx = reboundDirection * clamp(Math.abs(ball.vx || 0) * horizontalScale, minHorizontalSpeed, maxHorizontalSpeed);
+    ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + (carriesToTargetSide ? 132 : 150), carriesToTargetSide ? 132 : 150);
     syncShuttleCourtCoordinates(ball);
   }
   function checkShuttleLanding(ball) {
@@ -4836,14 +5631,24 @@
       if (ball.netContactHoldUntil && performance.now() < ball.netContactHoldUntil) return;
       var targetLeft = direction > 0 ? BADMINTON.netX + ballRadius * 0.5 : BADMINTON.courtLeft;
       var targetRight = direction > 0 ? BADMINTON.courtRight : BADMINTON.netX - ballRadius * 0.5;
-      var inTargetX = ball.x >= targetLeft && ball.x <= targetRight;
+      var landingCourtY = getShuttleCourtY(ball, false);
+      var inTargetX = landingCourtY >= targetLeft && landingCourtY <= targetRight;
       var inTargetY = ball.y >= BADMINTON.targetTop && ball.y <= BADMINTON.courtBottom + ballRadius;
-      var scored = !ball.hitNet && ball.crossedNet && inTargetX && inTargetY;
-      var shotType = ball.hitNet ? 'net' : (ball.crossedNet ? 'out' : 'net');
+      var landedOnTargetSide = direction > 0 ? landingCourtY >= targetLeft : landingCourtY <= targetRight;
+      if (ball.hitNet) {
+        var netScored = landedOnTargetSide && inTargetX && inTargetY;
+        var netShotType = !landedOnTargetSide ? 'net' : (netScored ? 'net_touch' : 'out');
+        queueShotResolution(ball, netScored, netShotType, netScored ? 140 : 80);
+        ball.vx *= 0.18;
+        ball.vy = -Math.abs(ball.vy) * 0.08;
+        return;
+      }
+      var scored = ball.crossedNet && inTargetX && inTargetY;
+      var shotType = (!ball.crossedNet || !landedOnTargetSide) ? 'net' : 'out';
       if (scored) {
         var nearBaseline = direction > 0 ? ball.x > targetRight - 34 : ball.x < targetLeft + 34;
         var nearNet = direction > 0 ? ball.x < targetLeft + 34 : ball.x > targetRight - 34;
-        shotType = nearBaseline ? 'line_in' : (nearNet ? 'net_touch' : 'zone_in');
+        shotType = ball.hitNet ? 'net_touch' : (nearBaseline ? 'line_in' : (nearNet ? 'net_touch' : 'zone_in'));
       }
       queueShotResolution(ball, scored, shotType, scored ? 140 : 80);
       ball.vx *= 0.18;
@@ -4866,30 +5671,37 @@
     var shuttleZ = getShuttleCourtZ(ball, false);
     var yuiContactTopZ = screenYToCourtZ(contact.y - 26);
     var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);
-    var yuiReachLeft = contact.x;
-    var yuiReachRight = contact.x + 23;
+    var shuttleRadius = ball.radius || BALL_R;
+    var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;
+    var yuiReachRight = BADMINTON.courtRight - shuttleRadius * 0.5;
     var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft
       && Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;
     var inYuiReach = crossesYuiReach
       && shuttleZ <= yuiContactTopZ
       && shuttleZ >= yuiContactBottomZ;
     if (!inYuiReach) return false;
+    var yuiSave = isYuiSmashSaveReachable(ball);
+    if (!isYuiRacketHitInRange(ball) && !yuiSave) return false;
     game.duel.activeShooter = 'neko';
     game.duel.rallyHits += 1;
+    maybeTriggerYuiCheat('rally_return');
     var shot = getNekoDuelShot();
     var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);
     shot.angle = clamp(shot.angle - Math.min(2.5, game.duel.rallyHits * 0.16), 38, 52);
     shot.power = clamp(shot.power + returnPressureBoost, 48, 66);
     var yuiSmashQuality = getYuiSmashQuality(ball, shot);
-    var yuiSmash = shouldYuiSmashReturn(ball, shot, yuiSmashQuality);
-    if (yuiSmash) {
+    var yuiSmash = !yuiSave && shouldYuiSmashReturn(ball, shot, yuiSmashQuality);
+    if (yuiSave) {
+      shot.angle = clamp(shot.angle + 6, 46, 58);
+      shot.power = clamp(shot.power - 3, 45, 60);
+    } else if (yuiSmash) {
       shot.angle = clamp(shot.angle - (10 + yuiSmashQuality * 5), 24, 46);
       shot.power = clamp(shot.power + 7 + yuiSmashQuality * 9, 56, 78);
     }
-    showAssistHint(_i18n(yuiSmash ? 'toast.nekoSmash' : 'toast.nekoReturn', yuiSmash ? 'Yui 扣杀！' : 'Yui 回球'));
+    showAssistHint(_i18n(yuiSave ? 'toast.nekoSave' : (yuiSmash ? 'toast.nekoSmash' : 'toast.nekoReturn'), yuiSave ? 'Yui 救球！' : (yuiSmash ? 'Yui 扣杀！' : 'Yui 回球')));
     game.aimAngle = shot.angle;
     game.power = shot.power;
-    queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball, smash: yuiSmash, smashQuality: yuiSmashQuality });
+    queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball, smash: yuiSmash, smashQuality: yuiSmashQuality, save: yuiSave });
     game.power = 0;
     game.chargeDir = 1;
     updateDuelShooterAvatars();
@@ -5041,6 +5853,7 @@
     updateHud();
     var previewDiff = getEffectiveDuelDifficulty();
     game.duel.pendingShot = null;
+    maybeTriggerYuiCheat('duel_turn');
     showAssistHint(_i18n('toast.nekoThinking', 'Yui 准备回球'));
     setYuiAction('charging', previewDiff.windupMs || 0);
     queueNekoDuelTurnVoice();
@@ -5136,6 +5949,8 @@
     recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
     playShotResultSound(shotType, scored);
     showYuiDuelResultEmote(scored, shotType, ball, pointWinner);
+    var cheatScoreTauntKind = getYuiCheatScoreTauntKind(pointWinner);
+    if (cheatScoreTauntKind) showYuiCheatScoreLine(cheatScoreTauntKind);
     if (shooter === 'neko' && !scored) setYuiAction('react-disappointed', 620);
     if (pointWinner === 'neko') setYuiAction('react-celebrate', 620);
     var duelFinished = game.duel.playerMisses >= game.duel.maxMisses || game.duel.nekoMisses >= game.duel.maxMisses;
@@ -5441,7 +6256,8 @@
       showResult();
     }, delayMs);
   }
-  function update(dt) {
+  function update(dt, now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     if (isDuelMode()) updateCourtMovement(dt);
     var isChargingPlayerShot = game.charging && canPlayerChargeShot();
     if (isChargingPlayerShot) stepPlayerCharge(dt);
@@ -5449,11 +6265,11 @@
       var awaitingPlayerReturn = game.ball && game.ball.awaitingReturnBy === 'player';
       if (isPositionTransitioning && !awaitingPlayerReturn) return;
       if (awaitingPlayerReturn && stepAwaitingPlayerReturn(dt)) return;
-      if (!game.aimStartAt) game.aimStartAt = performance.now();
+      if (!game.aimStartAt) game.aimStartAt = t;
       if (isChargingPlayerShot) {
-        var elapsed = (performance.now() - game.aimStartAt) / 1000;
-        if (isDuelMode() && elapsed > 4 && performance.now() > psychologicalTalkAt) {
-          psychologicalTalkAt = performance.now() + 4200;
+        var elapsed = (t - game.aimStartAt) / 1000;
+        if (isDuelMode() && elapsed > 4 && t > psychologicalTalkAt) {
+          psychologicalTalkAt = t + 4200;
           if (Math.random() < Math.min(0.75, 0.3 + (elapsed - 4) * 0.08)) {
             var mindGameLines = _i18nArray('lines.mindGame', ['你手在抖哦', '想好再挥，不急~', '这个落点可不近喵']);
             speakLine(mindGameLines[Math.floor(Math.random() * mindGameLines.length)], { expression: 'tease', intensity: 'low', mood: currentMood }, { kind: 'long_aim', label: 'mind_game', voice_deadline_ms: 900 });
@@ -5475,7 +6291,7 @@
     if (game.state === 'in_flight' && game.ball) {
       var b = game.ball;
       if (b.spinRate) b.spinAngle += b.spinRate * dt;
-      if (b.forceScore && !b.resolved && performance.now() - b.launchedAt > 420) {
+      if (b.forceScore && !b.resolved && t - b.launchedAt > 420) {
         queueShotResolution(b, true, 'line_in', 0);
       }
       var subDt = dt / COLLISION_SUBSTEPS;
@@ -5483,7 +6299,7 @@
         if (!game.ball) break;
         b = game.ball;
         if (b.resolved && canonicalShotType(b.pendingShotType) === 'net') {
-          if (performance.now() >= b.resolveAt) {
+          if (t >= b.resolveAt) {
             finishShot(b.pendingScored, b.pendingShotType, b);
           }
           break;
@@ -5499,10 +6315,9 @@
           if (maybePlayerReceiveIncomingShuttle(b)) break;
         }
         updateNetPhysics(subDt);
-        b.trail.push({ x: b.x, y: b.y });
-        if (b.trail.length > 20) b.trail.shift();
+        pushShuttleTrailPoint(b, b.x, b.y);
         focusNekoAtBasePoint(b.x, b.y);
-        if (b.resolved && performance.now() >= b.resolveAt) {
+        if (b.resolved && t >= b.resolveAt) {
           finishShot(b.pendingScored, b.pendingShotType, b);
           break;
         }
@@ -5542,7 +6357,43 @@
     }
     ctx.restore();
   }
+  function invalidateBadmintonCourtCache() {
+    badmintonCourtCache.key = '';
+    badmintonCourtCache.canvas = null;
+  }
+  function getBadmintonCourtCacheKey() {
+    var theme = THEMES[currentThemeKey] || THEMES.default;
+    return JSON.stringify({
+      theme: currentThemeKey,
+      scenic: theme.scenic || '',
+      scenicReady: !!getLoadedScenicBackground(theme.scenic),
+      markers: !!distanceMarkersEnabled,
+      language: getRequestLanguage()
+    });
+  }
   function drawCourt() {
+    var cacheKey = getBadmintonCourtCacheKey();
+    if (badmintonCourtCache.canvas && badmintonCourtCache.key === cacheKey) {
+      ctx.drawImage(badmintonCourtCache.canvas, 0, 0, BASE_W, BASE_H);
+      return;
+    }
+    var courtCanvas = document.createElement('canvas');
+    courtCanvas.width = BASE_W;
+    courtCanvas.height = BASE_H;
+    var courtCtx = courtCanvas.getContext && courtCanvas.getContext('2d');
+    if (!courtCtx) {
+      renderCourtToContext(ctx);
+      return;
+    }
+    renderCourtToContext(courtCtx);
+    badmintonCourtCache.key = cacheKey;
+    badmintonCourtCache.canvas = courtCanvas;
+    ctx.drawImage(badmintonCourtCache.canvas, 0, 0, BASE_W, BASE_H);
+  }
+  function renderCourtToContext(renderCtx) {
+    var previousCourtCtx = ctx;
+    ctx = renderCtx;
+    try {
     var court = BADMINTON;
     var theme = THEMES[currentThemeKey] || THEMES.default;
     var sky = theme.sky || THEMES.default.sky;
@@ -6207,13 +7058,7 @@
       ctx.fillStyle = farCourtMist;
       ctx.fillRect(court.courtLeft, groundTop - 18, court.courtRight - court.courtLeft, 60);
     }
-    var halfCourtLength = (court.courtRight - court.courtLeft) / 2;
-    var shortServiceOffset = halfCourtLength * (1.98 / 6.70);
-    var doublesLongServiceInset = halfCourtLength * (0.76 / 6.70);
-    var leftShortServiceX = court.netX - shortServiceOffset;
-    var rightShortServiceX = court.netX + shortServiceOffset;
-    var leftDoublesLongServiceX = court.courtLeft + doublesLongServiceInset;
-    var rightDoublesLongServiceX = court.courtRight - doublesLongServiceInset;
+    var serviceLines = getCourtServiceLinePositions(court);
     var courtLineShadow = theme.scenic === 'miami' ? 'rgba(114,76,36,.24)' : 'rgba(6,58,51,.22)';
     ctx.strokeStyle = courtLineShadow;
     ctx.lineWidth = 7;
@@ -6239,14 +7084,14 @@
     ctx.beginPath();
     ctx.moveTo(court.netX, groundTop - 4);
     ctx.lineTo(court.netX, groundBottom + 4);
-    ctx.moveTo(leftShortServiceX, groundTop + 6);
-    ctx.lineTo(leftShortServiceX, groundBottom - 6);
-    ctx.moveTo(rightShortServiceX, groundTop + 6);
-    ctx.lineTo(rightShortServiceX, groundBottom - 6);
-    ctx.moveTo(leftDoublesLongServiceX, groundTop + 6);
-    ctx.lineTo(leftDoublesLongServiceX, groundBottom - 6);
-    ctx.moveTo(rightDoublesLongServiceX, groundTop + 6);
-    ctx.lineTo(rightDoublesLongServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.leftShortServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.leftShortServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.rightShortServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.rightShortServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.leftDoublesLongServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.leftDoublesLongServiceX, groundBottom - 6);
+    ctx.moveTo(serviceLines.rightDoublesLongServiceX, groundTop + 6);
+    ctx.lineTo(serviceLines.rightDoublesLongServiceX, groundBottom - 6);
     ctx.stroke();
     ctx.strokeStyle = 'rgba(255,255,255,.32)';
     ctx.lineWidth = 0.9;
@@ -6277,10 +7122,14 @@
     }
     drawDistanceMarkers();
     ctx.restore();
+    } finally {
+      ctx = previousCourtCtx;
+    }
   }
-  function drawStreakEffect() {
-    if (game.streak < 5 && performance.now() > screenFlashUntil) return;
-    var flash = performance.now() < screenFlashUntil ? 0.16 : 0;
+  function drawStreakEffect(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    if (game.streak < 5 && t > screenFlashUntil) return;
+    var flash = t < screenFlashUntil ? 0.16 : 0;
     var alpha = flash || (game.streak >= 20 ? 0.22 : (game.streak >= 10 ? 0.14 : 0.08));
     var color = game.streak >= 20 ? 'rgba(255,202,58,' + alpha + ')' : 'rgba(255,255,255,' + alpha + ')';
     ctx.save();
@@ -6288,16 +7137,17 @@
     ctx.fillRect(0, 0, BASE_W, BASE_H);
     ctx.restore();
   }
-  function drawFireBorder() {
+  function drawFireBorder(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     var level = game.streak >= 15 ? 5 : (game.streak >= 12 ? 4 : (game.streak >= 8 ? 3 : (game.streak >= 5 ? 2 : (game.streak >= 3 ? 1 : 0))));
-    if (!level && performance.now() > fireExtinguishedUntil) return;
-    var extinguish = performance.now() < fireExtinguishedUntil;
+    if (!level && t > fireExtinguishedUntil) return;
+    var extinguish = t < fireExtinguishedUntil;
     var height = extinguish ? 18 : level * 36;
     ctx.save();
     ctx.globalAlpha = extinguish ? 0.18 : 0.18 + level * 0.055;
     for (var i = 0; i < 8 + level * 4; i++) {
       var x = (i / (8 + level * 4)) * BASE_W;
-      var wave = Math.sin(performance.now() / 170 + i) * (8 + level * 2);
+      var wave = Math.sin(t / 170 + i) * (8 + level * 2);
       var flameHeight = height + wave;
       var grad = ctx.createLinearGradient(x, BASE_H - flameHeight, x, BASE_H);
       grad.addColorStop(0, extinguish ? 'rgba(62,80,105,0)' : 'rgba(255,202,58,0)');
@@ -6334,11 +7184,14 @@
     ctx.moveTo(rightTop.x, rightTop.y - 2);
     ctx.lineTo(rightBottom.x, rightBottom.y + 6);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(12,30,38,.20)';
+    ctx.strokeStyle = 'rgba(225,244,244,.46)';
+    ctx.lineWidth = 0.8;
     ctx.beginPath();
-    ctx.ellipse(leftBottom.x, leftBottom.y + 7, 5, 2.4, 0, 0, Math.PI * 2);
-    ctx.ellipse(rightBottom.x, rightBottom.y + 7, 5, 2.4, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(leftBottom.x - 5, leftBottom.y + 4);
+    ctx.lineTo(leftBottom.x + 5, leftBottom.y + 4);
+    ctx.moveTo(rightBottom.x - 5, rightBottom.y + 4);
+    ctx.lineTo(rightBottom.x + 5, rightBottom.y + 4);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -6384,7 +7237,67 @@
     ctx.restore();
   }
 
-  function drawNetFront() {
+  function drawNetDepthVolume() {
+    if (!netNodes.length) initNetNodes();
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    var bottomLeft = netNodes[0][NET_ROWS - 1];
+    var bottomRight = netNodes[NET_COLS - 1][NET_ROWS - 1];
+    var rearLeft = getNetVisualDepthPoint(bottomLeft, 1);
+    var rearRight = getNetVisualDepthPoint(bottomRight, 1);
+    var depthFill = ctx.createLinearGradient(bottomLeft.x, bottomLeft.y, rearLeft.x, rearLeft.y);
+    depthFill.addColorStop(0, 'rgba(225,252,248,' + (NET_VISUAL_DEPTH_OPACITY * 0.26).toFixed(3) + ')');
+    depthFill.addColorStop(0.55, 'rgba(94,158,158,' + (NET_VISUAL_DEPTH_OPACITY * 0.18).toFixed(3) + ')');
+    depthFill.addColorStop(1, 'rgba(8,30,34,0)');
+    ctx.fillStyle = depthFill;
+    ctx.beginPath();
+    ctx.moveTo(bottomLeft.x, bottomLeft.y);
+    ctx.lineTo(bottomRight.x, bottomRight.y);
+    ctx.lineTo(rearRight.x, rearRight.y);
+    ctx.lineTo(rearLeft.x, rearLeft.y);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(236,255,252,' + (NET_VISUAL_DEPTH_OPACITY * 0.70).toFixed(3) + ')';
+    ctx.lineWidth = 0.58;
+    for (var band = 1; band <= 4; band++) {
+      var t = band / 5;
+      var leftBand = lerpNetPoint(bottomLeft, rearLeft, t);
+      var rightBand = lerpNetPoint(bottomRight, rearRight, t);
+      ctx.beginPath();
+      ctx.moveTo(leftBand.x, leftBand.y);
+      ctx.lineTo(rightBand.x, rightBand.y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(26,62,68,' + (NET_VISUAL_DEPTH_OPACITY * 0.86).toFixed(3) + ')';
+    ctx.lineWidth = 0.54;
+    for (var col = 1; col < 5; col++) {
+      var spanT = col / 5;
+      var front = lerpNetPoint(bottomLeft, bottomRight, spanT);
+      var back = lerpNetPoint(rearLeft, rearRight, spanT);
+      ctx.beginPath();
+      ctx.moveTo(front.x, front.y);
+      ctx.lineTo(back.x, back.y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(235,255,252,' + (NET_VISUAL_DEPTH_OPACITY * 0.95).toFixed(3) + ')';
+    ctx.lineWidth = 0.72;
+    ctx.beginPath();
+    ctx.moveTo(bottomLeft.x, bottomLeft.y);
+    ctx.lineTo(rearLeft.x, rearLeft.y);
+    ctx.moveTo(bottomRight.x, bottomRight.y);
+    ctx.lineTo(rearRight.x, rearRight.y);
+    ctx.moveTo(rearLeft.x, rearLeft.y);
+    ctx.lineTo(rearRight.x, rearRight.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawNetFront(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     if (!netNodes.length) initNetNodes();
     ctx.save();
     var topLeft = netNodes[0][0];
@@ -6410,14 +7323,14 @@
     ctx.lineTo(bottomRight.x, bottomRight.y);
     ctx.stroke();
     ctx.restore();
-    drawNetContactEffects();
+    drawNetContactEffects(t);
   }
 
-  function drawNetContactEffects() {
+  function drawNetContactEffects(now) {
     if (!netContactEffects.length) return;
-    var now = performance.now();
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     netContactEffects = netContactEffects.filter(function (effect) {
-      return now - effect.startAt < effect.duration;
+      return t - effect.startAt < effect.duration;
     });
     if (!netContactEffects.length) return;
     ctx.save();
@@ -6426,7 +7339,7 @@
     ctx.lineJoin = 'round';
     for (var i = 0; i < netContactEffects.length; i++) {
       var effect = netContactEffects[i];
-      var age = clamp((now - effect.startAt) / effect.duration, 0, 1);
+      var age = clamp((t - effect.startAt) / effect.duration, 0, 1);
       var alpha = (1 - age) * effect.strength;
       var spread = 8 + age * 54 * effect.strength;
       var lift = Math.sin(age * Math.PI) * 8 * effect.strength;
@@ -6506,11 +7419,46 @@
     ctx.restore();
   }
 
-  function drawBadmintonShuttlecockOnContext(renderCtx, x, y, radius, rotation) {
+  function getBadmintonSpriteCacheKey(kind, radius) {
+    return kind + ':' + Math.max(1, Math.round((Number(radius) || 0) * 2) / 2);
+  }
+  function createBadmintonSpriteCanvas(kind, radius, padding, renderFn) {
+    var r = Math.max(1, Number(radius) || 1);
+    var size = Math.max(1, Math.ceil(r * 5 + (padding || 0)));
+    var sprite = document.createElement('canvas');
+    sprite.width = size;
+    sprite.height = size;
+    var spriteCtx = sprite.getContext && sprite.getContext('2d');
+    if (!spriteCtx) return null;
+    spriteCtx.translate(size / 2, size / 2);
+    renderFn(spriteCtx, r);
+    return sprite;
+  }
+  function renderBadmintonShuttleSprite(spriteCtx, radius) {
+    drawBadmintonShuttlecockVector(spriteCtx, radius);
+  }
+  function getBadmintonShuttleSprite(radius) {
+    var r = Math.max(1, Number(radius) || SHUTTLE_FLIGHT_VISUAL_R);
+    var key = getBadmintonSpriteCacheKey('shuttle', r);
+    if (!badmintonSpriteCache[key]) {
+      badmintonSpriteCache[key] = createBadmintonSpriteCanvas('shuttle', r, 18, renderBadmintonShuttleSprite);
+    }
+    return badmintonSpriteCache[key];
+  }
+  function renderBadmintonBananaSprite(spriteCtx, radius) {
+    drawBananaPeelVector(spriteCtx, radius);
+  }
+  function getBadmintonBananaSprite(radius) {
+    var r = Math.max(8, Number(radius) || 18);
+    var key = getBadmintonSpriteCacheKey('banana', r);
+    if (!badmintonSpriteCache[key]) {
+      badmintonSpriteCache[key] = createBadmintonSpriteCanvas('banana', r, 12, renderBadmintonBananaSprite);
+    }
+    return badmintonSpriteCache[key];
+  }
+  function drawBadmintonShuttlecockVector(renderCtx, radius) {
     var ctx = renderCtx;
     ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(rotation || 0);
     ctx.shadowColor = 'rgba(8,18,24,.18)';
     ctx.shadowBlur = 5;
     ctx.shadowOffsetY = 2;
@@ -6594,12 +7542,209 @@
     ctx.fill();
     ctx.restore();
   }
+  function drawBadmintonShuttlecockOnContext(renderCtx, x, y, radius, rotation) {
+    if (!renderCtx) return;
+    var r = Math.max(1, Number(radius) || SHUTTLE_FLIGHT_VISUAL_R);
+    var sprite = getBadmintonShuttleSprite(r);
+    renderCtx.save();
+    renderCtx.translate(x, y);
+    renderCtx.rotate(rotation || 0);
+    if (sprite) renderCtx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+    else drawBadmintonShuttlecockVector(renderCtx, r);
+    renderCtx.restore();
+  }
   function drawShuttlecock(x, y, radius, rotation) {
     drawBadmintonShuttlecockOnContext(ctx, x, y, radius, rotation);
   }
+  function drawBananaPeelVector(renderCtx, radius) {
+    var ctx = renderCtx;
+    var r = Math.max(8, Number(radius) || 18);
+    ctx.save();
+    ctx.scale(1.10, 0.98);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.fillStyle = 'rgba(28,22,12,.18)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.03, r * 0.78, r * 1.68, r * 0.24, -0.05, 0, Math.PI * 2);
+    ctx.fill();
+
+    function peelGradient(x0, y0, x1, y1, tipColor) {
+      var grad = ctx.createLinearGradient(x0 * r, y0 * r, x1 * r, y1 * r);
+      grad.addColorStop(0, '#fff3a2');
+      grad.addColorStop(0.42, '#ffd94f');
+      grad.addColorStop(0.78, '#efa33a');
+      grad.addColorStop(1, tipColor || '#b86f1b');
+      return grad;
+    }
+
+    function drawPeel(points, grad, outlineAlpha, outlineWidth) {
+      ctx.fillStyle = grad;
+      ctx.strokeStyle = 'rgba(126,78,14,' + outlineAlpha + ')';
+      ctx.lineWidth = Math.max(0.8, r * outlineWidth);
+      ctx.beginPath();
+      ctx.moveTo(points[0] * r, points[1] * r);
+      ctx.bezierCurveTo(points[2] * r, points[3] * r, points[4] * r, points[5] * r, points[6] * r, points[7] * r);
+      ctx.bezierCurveTo(points[8] * r, points[9] * r, points[10] * r, points[11] * r, points[12] * r, points[13] * r);
+      if (points.length >= 22) {
+        ctx.bezierCurveTo(points[14] * r, points[15] * r, points[16] * r, points[17] * r, points[18] * r, points[19] * r);
+        ctx.bezierCurveTo(points[20] * r, points[21] * r, points[22] * r, points[23] * r, points[0] * r, points[1] * r);
+      } else {
+        ctx.bezierCurveTo(points[14] * r, points[15] * r, points[16] * r, points[17] * r, points[0] * r, points[1] * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    function drawRootBlend() {
+      var rootGrad = ctx.createLinearGradient(-r * 0.30, r * 0.30, r * 0.38, r * 0.52);
+      rootGrad.addColorStop(0, 'rgba(255,238,150,.36)');
+      rootGrad.addColorStop(0.52, 'rgba(255,216,92,.42)');
+      rootGrad.addColorStop(1, 'rgba(213,139,32,.32)');
+      ctx.save();
+      ctx.fillStyle = rootGrad;
+      ctx.strokeStyle = 'rgba(126,78,14,.08)';
+      ctx.lineWidth = Math.max(0.45, r * 0.014);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.34, r * 0.34);
+      ctx.bezierCurveTo(-r * 0.10, r * 0.25, r * 0.15, r * 0.27, r * 0.40, r * 0.38);
+      ctx.bezierCurveTo(r * 0.24, r * 0.52, -r * 0.12, r * 0.58, -r * 0.38, r * 0.48);
+      ctx.bezierCurveTo(-r * 0.44, r * 0.44, -r * 0.42, r * 0.38, -r * 0.34, r * 0.34);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.shadowColor = 'rgba(60,42,12,.18)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetY = 1.6;
+
+    drawPeel([
+      -0.26, 0.16,
+      -0.72, 0.30, -1.38, 0.34, -1.82, 0.58,
+      -1.54, 0.80, -0.68, 0.84, 0.04, 0.52,
+      0.20, 0.42, 0.10, 0.24
+    ], peelGradient(-1.6, 0.42, -0.12, 0.80), 0.38, 0.034);
+
+    drawPeel([
+      0.02, 0.22,
+      0.48, 0.34, 1.12, 0.38, 1.68, 0.52,
+      1.40, 0.68, 0.76, 0.68, 0.16, 0.46,
+      -0.04, 0.38, -0.08, 0.28
+    ], peelGradient(0.10, 0.18, 1.58, 0.64), 0.34, 0.032);
+
+    drawPeel([
+      0.26, 0.42,
+      0.76, 0.54, 1.43, 0.56, 1.88, 0.74,
+      1.58, 0.92, 0.86, 0.90, 0.28, 0.66,
+      0.12, 0.56, 0.15, 0.46
+    ], peelGradient(0.22, 0.52, 1.78, 0.88), 0.40, 0.034);
+
+    drawPeel([
+      -0.18, 0.08,
+      -0.48, 0.12, -0.86, 0.02, -1.04, -0.16,
+      -0.74, -0.10, -0.42, -0.18, -0.10, -0.30,
+      0.02, -0.16, 0.00, -0.02
+    ], peelGradient(-0.94, -0.10, -0.08, 0.04), 0.36, 0.032);
+
+    drawPeel([
+      -0.30, 0.24,
+      -0.12, -0.54, 0.02, -1.42, 0.36, -1.92,
+      0.66, -2.02, 0.86, -1.72, 0.80, -1.20,
+      0.74, -0.52, 0.56, 0.08, 0.12, 0.56,
+      -0.10, 0.52, -0.26, 0.38
+    ], peelGradient(-0.18, 0.18, 0.54, -1.92, '#85942a'), 0.28, 0.028);
+
+    ctx.shadowBlur = 0;
+    drawRootBlend();
+
+    ctx.strokeStyle = 'rgba(111,76,17,.26)';
+    ctx.lineWidth = Math.max(0.6, r * 0.025);
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.07, r * 0.18);
+    ctx.bezierCurveTo(r * 0.02, -r * 0.42, r * 0.18, -r * 1.24, r * 0.46, -r * 1.78);
+    ctx.moveTo(r * 0.50, r * 0.45);
+    ctx.bezierCurveTo(r * 0.90, r * 0.52, r * 1.32, r * 0.52, r * 1.60, r * 0.52);
+    ctx.moveTo(r * 0.56, r * 0.67);
+    ctx.bezierCurveTo(r * 0.98, r * 0.74, r * 1.46, r * 0.74, r * 1.76, r * 0.75);
+    ctx.moveTo(-r * 0.34, r * 0.48);
+    ctx.bezierCurveTo(-r * 0.78, r * 0.58, -r * 1.22, r * 0.64, -r * 1.58, r * 0.58);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,255,213,.62)';
+    ctx.lineWidth = Math.max(0.55, r * 0.030);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.00, -r * 0.02);
+    ctx.bezierCurveTo(r * 0.12, -r * 0.70, r * 0.26, -r * 1.30, r * 0.48, -r * 1.66);
+    ctx.moveTo(-r * 1.42, r * 0.58);
+    ctx.bezierCurveTo(-r * 1.00, r * 0.52, -r * 0.58, r * 0.48, -r * 0.24, r * 0.34);
+    ctx.moveTo(r * 0.92, r * 0.52);
+    ctx.bezierCurveTo(r * 1.18, r * 0.48, r * 1.42, r * 0.49, r * 1.60, r * 0.52);
+    ctx.moveTo(r * 0.86, r * 0.76);
+    ctx.bezierCurveTo(r * 1.18, r * 0.72, r * 1.48, r * 0.73, r * 1.70, r * 0.76);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(111,73,22,.16)';
+    ctx.lineWidth = Math.max(0.45, r * 0.014);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.18, r * 0.18);
+    ctx.bezierCurveTo(r * 0.24, -r * 0.44, r * 0.38, -r * 1.15, r * 0.56, -r * 1.62);
+    ctx.moveTo(-r * 1.34, r * 0.60);
+    ctx.bezierCurveTo(-r * 0.86, r * 0.54, -r * 0.46, r * 0.46, -r * 0.12, r * 0.34);
+    ctx.moveTo(r * 0.70, r * 0.58);
+    ctx.bezierCurveTo(r * 1.04, r * 0.56, r * 1.36, r * 0.56, r * 1.58, r * 0.58);
+    ctx.moveTo(r * 0.68, r * 0.82);
+    ctx.bezierCurveTo(r * 1.02, r * 0.80, r * 1.34, r * 0.80, r * 1.58, r * 0.82);
+    ctx.stroke();
+
+    var stemGrad = ctx.createLinearGradient(r * 0.42, -r * 2.04, r * 0.78, -r * 1.78);
+    stemGrad.addColorStop(0, '#463018');
+    stemGrad.addColorStop(0.62, '#181008');
+    stemGrad.addColorStop(1, '#66501f');
+    ctx.fillStyle = stemGrad;
+    ctx.strokeStyle = 'rgba(42,27,6,.42)';
+    ctx.lineWidth = Math.max(0.6, r * 0.024);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.46, -r * 1.96);
+    ctx.bezierCurveTo(r * 0.60, -r * 2.04, r * 0.78, -r * 1.96, r * 0.78, -r * 1.82);
+    ctx.bezierCurveTo(r * 0.68, -r * 1.74, r * 0.52, -r * 1.74, r * 0.40, -r * 1.86);
+    ctx.bezierCurveTo(r * 0.40, -r * 1.91, r * 0.43, -r * 1.94, r * 0.46, -r * 1.96);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,218,.42)';
+    ctx.beginPath();
+    ctx.ellipse(r * 0.02, -r * 0.86, r * 0.055, r * 0.34, 0.22, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(112,68,18,.36)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 1.70, r * 0.57, r * 0.040, r * 0.022, -0.28, 0, Math.PI * 2);
+    ctx.ellipse(r * 1.70, r * 0.52, r * 0.035, r * 0.018, 0.16, 0, Math.PI * 2);
+    ctx.ellipse(r * 1.82, r * 0.74, r * 0.034, r * 0.018, 0.12, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.42, -r * 1.62, r * 0.030, r * 0.016, 0.10, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.56, -r * 1.28, r * 0.026, r * 0.014, -0.20, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.32, -r * 0.74, r * 0.023, r * 0.013, 0.18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  function drawBananaPeelOnContext(renderCtx, x, y, radius, rotation) {
+    if (!renderCtx) return;
+    var r = Math.max(8, Number(radius) || 18);
+    var sprite = getBadmintonBananaSprite(r);
+    renderCtx.save();
+    renderCtx.translate(x, y);
+    renderCtx.rotate(rotation || 0);
+    if (sprite) renderCtx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+    else drawBananaPeelVector(renderCtx, r);
+    renderCtx.restore();
+  }
   function drawBackspinBall(ball) {
     if (!ball) return;
-    var trail = ball.trail || [];
+    var trail = getShuttleTrailPoints(ball);
     if (trail.length > 1) {
       ctx.save();
       var start = trail[0];
@@ -6620,7 +7765,7 @@
       ctx.stroke();
       ctx.restore();
     }
-    if (ball.y < -SHUTTLE_VISUAL_R * 2) {
+    if (ball.y < -SHUTTLE_FLIGHT_VISUAL_R * 2) {
       var markerX = clamp(ball.x, BADMINTON.courtLeft + 12, BADMINTON.courtRight - 12);
       ctx.save();
       ctx.globalAlpha = 0.88;
@@ -6644,15 +7789,16 @@
     ctx.globalAlpha = shadowAlpha;
     ctx.fillStyle = 'rgba(4,20,24,.55)';
     ctx.beginPath();
-    ctx.ellipse(ball.x, FLOOR_Y + 3, SHUTTLE_VISUAL_R * 1.35 * shadowScale, SHUTTLE_VISUAL_R * 0.36 * shadowScale, 0, 0, Math.PI * 2);
+    ctx.ellipse(ball.x, FLOOR_Y + 3, SHUTTLE_FLIGHT_VISUAL_R * 1.35 * shadowScale, SHUTTLE_FLIGHT_VISUAL_R * 0.36 * shadowScale, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
-    drawShuttlecock(ball.x, ball.y, SHUTTLE_VISUAL_R, ball.spinAngle || 0);
+    drawShuttlecock(ball.x, ball.y, SHUTTLE_FLIGHT_VISUAL_R, ball.spinAngle || 0);
   }
 
   function drawNet() {
     drawNetPosts();
     drawNetBack();
+    drawNetDepthVolume();
     drawNetCord();
   }
 
@@ -6790,6 +7936,19 @@
 
   function drawBadmintonRacket(cx, cy, scale, rotation, mirror) {
     drawBadmintonRacketOnContext(ctx, cx, cy, scale, rotation, mirror);
+  }
+
+  function getBadmintonRacketHeadCenter(anchorX, anchorY, scale, rotation, mirror) {
+    var s = scale || 1;
+    var side = mirror === -1 ? -1 : 1;
+    var localHeadX = (isBadmintonRacketSpriteReady() ? 0 : 18) * s;
+    var localHeadY = (isBadmintonRacketSpriteReady() ? -63 : -48) * s;
+    var cos = Math.cos(rotation || 0);
+    var sin = Math.sin(rotation || 0);
+    return {
+      x: anchorX + side * (localHeadX * cos - localHeadY * sin),
+      y: anchorY + localHeadX * sin + localHeadY * cos
+    };
   }
 
   function getBadmintonRacketGripAnchor(handX, handY, scale, rotation, mirror) {
@@ -6995,12 +8154,18 @@
     var racketAnchor = getBadmintonRacketGripAnchor(handX, handY, racketScale, rotation, racketMirror);
     var anchorX = racketAnchor.x;
     var anchorY = racketAnchor.y;
+    var racketHead = getBadmintonRacketHeadCenter(anchorX, anchorY, racketScale, rotation, racketMirror);
     window.__badmintonYuiRacketDebug = {
       source: drawableHand ? drawableHand.source : 'fallback',
       handX: handX,
       handY: handY,
       anchorX: anchorX,
       anchorY: anchorY,
+      headX: racketHead.x,
+      headY: racketHead.y,
+      racketScale: racketScale,
+      rotation: rotation,
+      racketMirror: racketMirror,
       layoutW: layoutW,
       layoutH: layoutH,
       domRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
@@ -7043,6 +8208,13 @@
     var px = getPlayerX();
     var py = getPlayerY();
     var s = PLAYER_FIGURE_SCALE;
+    var slipRotation = (game.playerCheatEffect && game.playerCheatEffect.spinAngle) || 0;
+    if (slipRotation) {
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.scale(Math.cos(slipRotation), 1);
+      ctx.translate(-px, -py);
+    }
     ctx.fillStyle = '#f6c177';
     ctx.beginPath();
     ctx.arc(px, py - 62 * s, 16 * s, 0, Math.PI * 2);
@@ -7072,7 +8244,50 @@
       ctx.restore();
     }
     drawBadmintonRacket(heldBall.x + 8 * s, heldBall.y - 4 * s, s, (game.pendingSwing && game.pendingSwing.shooter === 'player') ? 0.55 : -0.38, 1);
+    if (slipRotation) ctx.restore();
     drawPlayerServeShuttleHint();
+  }
+  function drawYuiBananaPeelSprite(x, y, size, rotation) {
+    var imageReady = isYuiBananaPeelSpriteReady();
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation || 0);
+    if (imageReady) {
+      var naturalW = yuiBananaPeelSpriteImage.naturalWidth || 512;
+      var naturalH = yuiBananaPeelSpriteImage.naturalHeight || 274;
+      var drawW = size * 2.95;
+      var drawH = drawW * naturalH / naturalW;
+      ctx.fillStyle = 'rgba(24,18,10,.10)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, drawW * 0.42, drawH * 0.18, -0.08, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.drawImage(yuiBananaPeelSpriteImage, -drawW / 2, -drawH * 0.88, drawW, drawH);
+    } else {
+      ctx.fillStyle = '#f2c33f';
+      ctx.strokeStyle = 'rgba(104,64,13,.42)';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.ellipse(0, -size * 0.28, size * 0.92, size * 0.36, -0.18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawYuiCheatItems(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var items = game.yuiCheat && game.yuiCheat.items ? game.yuiCheat.items : [];
+    if (!items.length) return;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item || item.kind !== 'banana') continue;
+      var age = clamp((t - item.createdAt) / 550, 0, 1);
+      var bob = Math.sin(t / 160 + item.id) * 1.2;
+      var rotation = -0.20 + Math.sin(t / 260 + item.id) * 0.035;
+      ctx.save();
+      ctx.globalAlpha = 0.76 + age * 0.22;
+      drawYuiBananaPeelSprite(item.x, item.y + bob, YUI_CHEAT_BANANA_DRAW_SIZE, rotation);
+      ctx.restore();
+    }
   }
   function drawPlayerServeShuttleHint() {
     if (!shouldDrawHeldShuttle()) return;
@@ -7126,16 +8341,28 @@
     drawBadmintonShuttlecockOnContext(playerSenseiHeldShuttleCtx, shuttleX, shuttleY, heldRadius, heldRotation);
     playerSenseiHeldShuttleCtx.restore();
   }
-  function drawAiming() {
-    aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
-    drawPlayerReturnHitCue();
-    if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));
+  function isAimingOverlayActive(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    return !!(isIncomingPlayerReturnCandidate()
+      || (game.charging && canPlayerChargeShot())
+      || (game.yuiCheat && getYuiInkState(t).active));
   }
-  function drawPlayerChargeMeter(percent) {
+  function drawAiming(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var overlayActive = isAimingOverlayActive(t);
+    if (!overlayActive && !aimingOverlayWasActive) return;
+    aimingOverlayWasActive = overlayActive;
+    aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
+    if (!overlayActive) return;
+    drawPlayerReturnHitCue(t);
+    if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100), t);
+    drawYuiInkOverlay(t);
+  }
+  function drawPlayerChargeMeter(percent, now) {
     var chargePercent = clamp(percent, 0, 100);
     if (chargePercent <= 0) return;
-    var now = performance.now();
-    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var pulse = 0.5 + 0.5 * Math.sin(t / 118);
     var meterW = 74;
     var meterH = 8;
     var meterX = getPlayerX() - meterW / 2;
@@ -7160,7 +8387,99 @@
     aimingCtx.fill();
     aimingCtx.restore();
   }
-  function drawPlayerReturnHitCue() {
+  function drawYuiInkOverlay(now) {
+    if (!aimingCtx || !game.yuiCheat) return;
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var ink = getYuiInkState(t);
+    if (!ink.active || ink.alpha <= 0) return;
+    var pulse = 0.5 + Math.sin(t / 180) * 0.5;
+    var inkScale = YUI_CHEAT_INK_VISUAL_SCALE;
+    aimingCtx.save();
+    aimingCtx.globalAlpha = Math.min(0.34, ink.alpha * 0.38);
+    aimingCtx.fillStyle = 'rgba(1,5,10,.46)';
+    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+
+    var centralInk = aimingCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48, 24 * inkScale, BASE_W * 0.50, BASE_H * 0.48, BASE_W * 0.34 * inkScale);
+    centralInk.addColorStop(0, 'rgba(0,0,0,.96)');
+    centralInk.addColorStop(0.44, 'rgba(1,4,9,.92)');
+    centralInk.addColorStop(0.72, 'rgba(4,12,19,.62)');
+    centralInk.addColorStop(1, 'rgba(0,0,0,0)');
+    aimingCtx.globalAlpha = Math.min(0.96, ink.alpha * 1.04);
+    aimingCtx.fillStyle = centralInk;
+    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+
+    function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {
+      aimingCtx.save();
+      aimingCtx.translate(cx, cy);
+      aimingCtx.rotate(rot);
+      aimingCtx.globalAlpha = Math.min(0.94, ink.alpha * alpha);
+      aimingCtx.fillStyle = 'rgba(0,2,6,.9)';
+      aimingCtx.shadowColor = 'rgba(0,0,0,.42)';
+      aimingCtx.shadowBlur = 22;
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      aimingCtx.fill();
+      aimingCtx.restore();
+    }
+
+    var centerSplashes = [
+      [BASE_W * 0.50, BASE_H * 0.47, 154, 116, -0.06, 0.98],
+      [BASE_W * 0.40, BASE_H * 0.42, 112, 74, 0.18, 0.74],
+      [BASE_W * 0.61, BASE_H * 0.43, 118, 82, -0.20, 0.78],
+      [BASE_W * 0.47, BASE_H * 0.58, 132, 72, 0.10, 0.7],
+      [BASE_W * 0.57, BASE_H * 0.57, 96, 62, 0.28, 0.62]
+    ];
+    for (var s = 0; s < centerSplashes.length; s++) {
+      var splash = centerSplashes[s];
+      drawCenterInkBlob(splash[0], splash[1], (splash[2] + pulse * 8) * inkScale, (splash[3] + pulse * 6) * inkScale, splash[4], splash[5]);
+    }
+
+    aimingCtx.shadowBlur = 0;
+    aimingCtx.lineCap = 'round';
+    for (var drip = 0; drip < 8; drip++) {
+      var centerDripX = BASE_W * (0.36 + ((drip * 17) % 28) / 100);
+      var centerDripTop = BASE_H * (0.38 + (drip % 3) * 0.05);
+      var centerDripLen = (40 + (drip % 5) * 16 + pulse * 8) * inkScale;
+      aimingCtx.globalAlpha = Math.min(0.76, ink.alpha * (0.58 + (drip % 3) * 0.06));
+      aimingCtx.strokeStyle = 'rgba(0,2,5,.86)';
+      aimingCtx.lineWidth = (5 + (drip % 3) * 3) * inkScale;
+      aimingCtx.beginPath();
+      aimingCtx.moveTo(centerDripX, centerDripTop);
+      aimingCtx.bezierCurveTo(centerDripX - 8, centerDripTop + centerDripLen * 0.34, centerDripX + 10, centerDripTop + centerDripLen * 0.68, centerDripX + Math.sin(t / 360 + drip) * 4, centerDripTop + centerDripLen);
+      aimingCtx.stroke();
+      aimingCtx.fillStyle = 'rgba(0,2,5,.82)';
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(centerDripX, centerDripTop + centerDripLen + 4, aimingCtx.lineWidth * 0.72, aimingCtx.lineWidth * 1.05, 0, 0, Math.PI * 2);
+      aimingCtx.fill();
+    }
+    for (var speck = 0; speck < 22; speck++) {
+      var spread = 0.16 + (speck % 5) * 0.025;
+      var orbitAngle = speck * 2.28 + t / 900;
+      var speckX = BASE_W * 0.5 + Math.cos(orbitAngle) * BASE_W * spread;
+      var speckY = BASE_H * 0.48 + Math.sin(orbitAngle * 0.9) * BASE_H * (spread * 0.72);
+      var speckAngle = speck * 1.17 + t / 900;
+      aimingCtx.globalAlpha = Math.min(0.56, ink.alpha * 0.54);
+      aimingCtx.fillStyle = 'rgba(0,3,8,.72)';
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(speckX, speckY, (8 + (speck % 4) * 4) * inkScale, (5 + (speck % 3) * 3) * inkScale, speckAngle * 0.18, 0, Math.PI * 2);
+      aimingCtx.fill();
+    }
+
+    if (ink.alpha > 0.58) {
+      aimingCtx.globalAlpha = Math.min(0.16, ink.alpha * 0.18);
+      aimingCtx.strokeStyle = 'rgba(114,216,226,.42)';
+      aimingCtx.lineWidth = 1.2;
+      for (var arc = 0; arc < 2; arc++) {
+        var arcY = BASE_H * (0.42 + arc * 0.12) + Math.sin(t / 460 + arc) * 4;
+        aimingCtx.beginPath();
+        aimingCtx.ellipse(BASE_W * 0.5, arcY, BASE_W * (0.22 + arc * 0.04) * inkScale, BASE_H * 0.10 * inkScale, -0.08 + arc * 0.16, 0, Math.PI * 2);
+        aimingCtx.stroke();
+      }
+    }
+
+    aimingCtx.restore();
+  }
+  function drawPlayerReturnHitCue(now) {
     if (!isIncomingPlayerReturnCandidate()) return;
     var ball = game.ball;
     var contact = getRacketContactPoint('player');
@@ -7173,9 +8492,9 @@
     var uy = dy / len;
     var nx = -uy;
     var ny = ux;
-    var now = performance.now();
-    var pulse = 0.5 + 0.5 * Math.sin(now / 118);
-    var shimmer = 0.5 + 0.5 * Math.sin(now / 96);
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var pulse = 0.5 + 0.5 * Math.sin(t / 118);
+    var shimmer = 0.5 + 0.5 * Math.sin(t / 96);
     var radius = ball.radius || BALL_R;
     var startX = ball.x - ux * 32 + nx * 10;
     var startY = ball.y - uy * 32 + ny * 10;
@@ -7250,18 +8569,21 @@
     if (!game.ball) return;
     drawBackspinBall(game.ball);
   }
-  function render() {
+  function render(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     syncPlayerHeldShuttleVisibility();
     drawCourt();
-    drawFireBorder();
+    drawFireBorder(t);
     drawNetPosts();
     drawNetBack();
+    drawNetDepthVolume();
+    drawYuiCheatItems(t);
     drawPlayer();
     drawBall();
     drawPlayerVrmHeldShuttleOverlay();
-    drawNetFront();
+    drawNetFront(t);
     drawNetCord();
-    drawStreakEffect();
+    drawStreakEffect(t);
   }
   function markFirstFrameRendered() {
     if (firstFrameRendered) return;
@@ -7294,8 +8616,9 @@
   }
   function setBadmintonLoadingProgress(value) {
     badmintonLoadingProgress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
-    if (badmintonLoadingBar) badmintonLoadingBar.style.width = badmintonLoadingProgress + '%';
-    if (badmintonLoadingPercent) badmintonLoadingPercent.textContent = badmintonLoadingProgress + '%';
+    var progressText = badmintonLoadingProgress + '%';
+    if (badmintonLoadingBar && badmintonLoadingBar.style.width !== progressText) badmintonLoadingBar.style.width = progressText;
+    setTextIfChanged(badmintonLoadingPercent, progressText);
   }
   function startBadmintonFakeProgress() {
     clearInterval(badmintonLoadingTimer);
@@ -7347,11 +8670,12 @@
     });
   }
   function loop(ts) {
+    badmintonFrameNow = ts || performance.now();
     var dt = game.lastTs ? Math.min(0.033, (ts - game.lastTs) / 1000) : 0.016;
     game.lastTs = ts;
-    update(dt);
-    render();
-    drawAiming();
+    update(dt, badmintonFrameNow);
+    render(badmintonFrameNow);
+    drawAiming(badmintonFrameNow);
     renderYuiLive2dRacket();
     markFirstFrameRendered();
     requestAnimationFrame(loop);
@@ -7534,6 +8858,7 @@
     var index = THEME_KEYS.indexOf(currentThemeKey);
     currentThemeKey = THEME_KEYS[(index + 1 + THEME_KEYS.length) % THEME_KEYS.length];
     writeJson('bd_theme', currentThemeKey);
+    invalidateBadmintonCourtCache();
     updateThemeButton();
     showAssistHint(_i18n('theme.changed', '主题 {{theme}}', { theme: getThemeLabel(currentThemeKey) }));
     updateDebugReadout();
@@ -7542,7 +8867,7 @@
     return _i18n('theme.labels.' + themeKey, (THEMES[themeKey] && THEMES[themeKey].label) || themeKey);
   }
   function updateThemeButton() {
-    if (themeButton) themeButton.textContent = _i18n('theme.current', '主题：{{theme}}', { theme: getThemeLabel(currentThemeKey) });
+    setTextIfChanged(themeButton, _i18n('theme.current', '主题：{{theme}}', { theme: getThemeLabel(currentThemeKey) }));
   }
   function checkSeasonalEasterEggs() {
     var now = new Date();
@@ -7568,12 +8893,12 @@
   }
   function updateDebugReadout() {
     if (!debugReadout) return;
-    if (debugPowerInput) debugPowerInput.value = String(Math.round(game.power || 0));
-    if (debugPowerValue) debugPowerValue.textContent = String(Math.round(game.power || 0));
-    if (debugGuideInput) debugGuideInput.checked = !!assists.guide;
-    if (debugSweetInput) debugSweetInput.checked = !!assists.sweet;
-    if (debugMarkersInput) debugMarkersInput.checked = !!distanceMarkersEnabled;
-    debugReadout.textContent = [
+    setInputValueIfChanged(debugPowerInput, Math.round(game.power || 0));
+    setTextIfChanged(debugPowerValue, String(Math.round(game.power || 0)));
+    setCheckedIfChanged(debugGuideInput, !!assists.guide);
+    setCheckedIfChanged(debugSweetInput, !!assists.sweet);
+    setCheckedIfChanged(debugMarkersInput, !!distanceMarkersEnabled);
+    var readoutText = [
       _i18n('debug.readout.modeState', '模式={{mode}}  状态={{state}}', { mode: formatLeaderboardMode(currentMode), state: getStateLabel(game.state) }),
       _i18n('debug.readout.distance', '距离={{px}}px ({{meters}})', { px: game.distance, meters: pxToMeters(game.distance) }),
       _i18n('debug.readout.streaks', '连中={{streak}}  最佳={{best}}  成功={{made}}', { streak: game.streak, best: game.bestStreak, made: game.madeCount }),
@@ -7588,11 +8913,12 @@
         round: game.duel.round
       }) : '',
     ].filter(Boolean).join('\n');
+    setTextIfChanged(debugReadout, readoutText);
   }
   function setDebugVisible(visible) {
     if (!debugPanel) return;
-    debugPanel.dataset.debugVisible = visible ? 'true' : 'false';
-    debugPanel.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    setDatasetValueIfChanged(debugPanel, 'debugVisible', visible ? 'true' : 'false');
+    setAriaHiddenIfChanged(debugPanel, !visible);
     localStorage.setItem('bdDebugVisible', visible ? '1' : '0');
   }
   function handleDebugButton(btn) {
@@ -7669,6 +8995,74 @@
     updateDebugReadout();
     return ball.id;
   }
+  function debugSetPlayerShuttleForYuiReturnBall(extra) {
+    var opts = extra || {};
+    var x = Number.isFinite(opts.x) ? opts.x : BADMINTON.netX + 80;
+    var prevX = Number.isFinite(opts.prevX) ? opts.prevX : x - 18;
+    var y = Number.isFinite(opts.y) ? opts.y : FLOOR_Y - 128;
+    var prevY = Number.isFinite(opts.prevY) ? opts.prevY : y;
+    var courtY = Number.isFinite(opts.courtY) ? opts.courtY : x;
+    var prevCourtY = Number.isFinite(opts.prevCourtY) ? opts.prevCourtY : prevX;
+    var z = Number.isFinite(opts.z) ? opts.z : screenYToCourtZ(y);
+    var prevZ = Number.isFinite(opts.prevZ) ? opts.prevZ : screenYToCourtZ(prevY);
+    var ball = Object.assign({
+      id: ++game.shuttleSeq,
+      x: x,
+      y: y,
+      prevX: prevX,
+      prevY: prevY,
+      courtY: courtY,
+      prevCourtY: prevCourtY,
+      z: z,
+      prevZ: prevZ,
+      vx: 34,
+      vy: 0,
+      vCourtY: 34,
+      vz: 0,
+      radius: BALL_R,
+      shooter: 'player',
+      direction: 1,
+      crossedNet: true,
+      resolved: false,
+      awaitingReturnBy: '',
+      hitNet: false,
+      groundedReturnAt: 0,
+      startDistance: game.distance,
+      angle: 52,
+      power: 56,
+      trail: []
+    }, opts);
+    game.ball = ball;
+    game.state = 'in_flight';
+    game.duel.activeShooter = 'player';
+    game.heldShuttleVisible = false;
+    game.charging = false;
+    updateHud();
+    updateDebugReadout();
+    return ball.id;
+  }
+  function debugSetDuelScore(extra) {
+    var data = extra || {};
+    if (Number.isFinite(data.playerScore)) game.duel.playerScore = Math.max(0, Math.round(data.playerScore));
+    if (Number.isFinite(data.nekoScore)) game.duel.nekoScore = Math.max(0, Math.round(data.nekoScore));
+    if (Number.isFinite(data.playerMisses)) game.duel.playerMisses = clamp(Math.round(data.playerMisses), 0, game.duel.maxMisses);
+    if (Number.isFinite(data.nekoMisses)) game.duel.nekoMisses = clamp(Math.round(data.nekoMisses), 0, game.duel.maxMisses);
+    if (Number.isFinite(data.round)) game.duel.round = Math.max(1, Math.round(data.round));
+    if (Number.isFinite(data.rallyHits)) game.duel.rallyHits = Math.max(0, Math.round(data.rallyHits));
+    game.totalScore = game.duel.playerScore;
+    updateHud();
+    updateDebugReadout();
+    return buildDuelStatePayload();
+  }
+  function debugForceNextYuiCheat(kind) {
+    if (!game.yuiCheat) resetYuiCheats();
+    game.yuiCheat.forcedKind = kind === 'octopus' ? 'octopus' : 'banana';
+    game.yuiCheat.cooldownUntil = 0;
+    return game.yuiCheat.forcedKind;
+  }
+  function debugSpawnYuiCheat(kind, options) {
+    return spawnYuiCheat(kind, options || {});
+  }
   function installBadmintonDemoApi() {
     window._bdEventListeners = badmintonEventListeners;
     var apiObject = {
@@ -7695,10 +9089,16 @@
           power: game.power,
           charging: game.charging,
           canControlShot: canPlayerControlShot(),
+          canMoveCourt: canPlayerMoveCourt(),
+          playerServeSetup: isPlayerServeSetup(),
           receivingReturn: isPlayerReceivingReturn(),
           incomingReturnInReach: canPlayerReturnIncomingShuttle(),
           positionTransitioning: isPositionTransitioning,
           playerCourt: Object.assign({}, game.playerCourt),
+          courtServiceLines: getCourtServiceLinePositions(BADMINTON),
+          playerServeX: PLAYER_START_X,
+          playerFootY: getPlayerFootY(),
+          lastPlayerPointer: lastPlayerPointer ? Object.assign({}, lastPlayerPointer) : null,
           playerJump: {
             offset: getPlayerJumpOffset(),
             velocity: game.playerJump ? game.playerJump.velocity : 0,
@@ -7713,13 +9113,33 @@
             source: playerRacketContact.source || 'fallback'
           } : null,
           yuiCourt: Object.assign({}, game.yuiCourt),
+          yuiCheat: (function () {
+            var now = performance.now();
+            return {
+              items: (game.yuiCheat && game.yuiCheat.items ? game.yuiCheat.items : []).map(function (item) {
+                return {
+                  id: item.id,
+                  kind: item.kind,
+                  x: item.x,
+                  y: item.y,
+                  radius: item.radius,
+                  remaining_ms: Math.max(0, Math.round((item.expiresAt || 0) - now))
+                };
+              }),
+              ink: getYuiInkState(now),
+              player_effect: getPlayerCheatEffectState(now),
+              last_used_kind: game.yuiCheat ? game.yuiCheat.lastUsedKind || '' : '',
+              cooldown_remaining_ms: game.yuiCheat ? Math.max(0, Math.round((game.yuiCheat.cooldownUntil || 0) - now)) : 0
+            };
+          })(),
           heldShuttleVisible: game.heldShuttleVisible,
           pendingSwing: game.pendingSwing ? {
             shooter: game.pendingSwing.shooter,
             force: game.pendingSwing.impulse && game.pendingSwing.impulse.force,
             quality: game.pendingSwing.impulse && game.pendingSwing.impulse.quality,
             isSmash: !!(game.pendingSwing.impulse && game.pendingSwing.impulse.isSmash),
-            smashQuality: game.pendingSwing.impulse && game.pendingSwing.impulse.smashQuality
+            smashQuality: game.pendingSwing.impulse && game.pendingSwing.impulse.smashQuality,
+            save: !!game.pendingSwing.save
           } : null,
           currentShuttle: game.ball ? {
             id: game.ball.id,
@@ -7746,6 +9166,7 @@
             incomingSpeed: game.ball.incomingSpeed,
             returnedFromShuttleId: game.ball.returnedFromShuttleId,
             shooter: game.ball.shooter,
+            trail: getShuttleTrailPoints(game.ball),
             awaitingReturnBy: game.ball.awaitingReturnBy || '',
             crossedNet: !!game.ball.crossedNet,
             hitNet: !!game.ball.hitNet
@@ -7754,6 +9175,24 @@
           mood: currentMood,
           theme: currentThemeKey,
           duel: isDuelMode() ? buildDuelStatePayload() : null,
+          voice: {
+            pending: voiceArbiter.pending ? {
+              id: voiceArbiter.pending.id,
+              line: voiceArbiter.pending.line,
+              priority: voiceArbiter.pending.priority,
+              expiresAt: voiceArbiter.pending.expiresAt || 0
+            } : null,
+            inFlight: voiceArbiter.inFlight ? {
+              id: voiceArbiter.inFlight.id,
+              line: voiceArbiter.inFlight.line,
+              expiresAt: voiceArbiter.inFlight.expiresAt || 0
+            } : null,
+            lastRequest: lastVoiceRequest,
+            lastResult: lastVoiceResult,
+            lastFallbackReason: lastVoiceFallbackReason,
+            lastMutedReason: lastVoiceMutedReason,
+            playback: readSpeechPlaybackState()
+          },
         };
       },
       resetGame: resetGame,
@@ -7767,7 +9206,7 @@
       },
       setMode: function () { return currentMode; },
       say: function (text, opts) { speakLine(text, opts || {}, opts && opts.event ? opts.event : {}); },
-      clearBubble: function () { bubble.classList.remove('show'); clearTimeout(bubbleTimer); },
+      clearBubble: function () { bubble.classList.remove('show'); clearTimeout(bubbleTimer); bubble.dataset.variant = ''; bubblePriority = 0; bubblePriorityUntil = 0; },
       showBubble: function (line, control) { showBubble(line, control || {}); },
       setNekoExpression: setNekoExpression,
       applyNekoControl: applyNekoControl,
@@ -7799,7 +9238,23 @@
       showStatsPanel: showStatsPanel,
       _snapshot: function () { return apiObject.getState(); },
       _debugFinishShot: debugFinishShot,
-      _debugSetAwaitingPlayerReturnBall: debugSetAwaitingPlayerReturnBall
+      _debugSetAwaitingPlayerReturnBall: debugSetAwaitingPlayerReturnBall,
+      _debugSetPlayerShuttleForYuiReturnBall: debugSetPlayerShuttleForYuiReturnBall,
+      _debugSetDuelScore: debugSetDuelScore,
+      _debugForceNextYuiCheat: debugForceNextYuiCheat,
+      _debugSpawnYuiCheat: debugSpawnYuiCheat,
+      _debugGetYuiRacketContactPoint: function () {
+        var contact = getYuiRacketContactPoint();
+        return {
+          x: contact.x,
+          y: contact.y,
+          source: contact.source || 'fallback',
+          reachX: YUI_RACKET_HIT_REACH_X,
+          reachY: YUI_RACKET_HIT_REACH_Y,
+          saveReachX: YUI_RACKET_SAVE_REACH_X,
+          saveReachY: YUI_RACKET_SAVE_REACH_Y
+        };
+      }
     };
     window.BadmintonDemo = apiObject;
   }
@@ -7818,8 +9273,10 @@
     if (isBadmintonLoadingActive()) return;
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
     rememberPlayerPointer(ev);
-    if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);
-    if (!canPlayerControlShot()) return;
+    var canMoveCourt = canPlayerMoveCourt();
+    var canControlShot = canPlayerControlShot();
+    if (canMoveCourt) updatePlayerCourtTarget(ev.clientX, ev.clientY);
+    if (!canControlShot) return;
     var y = ev.clientY / Math.max(1, window.innerHeight);
     game.aimAngle = clamp(78 - y * 36, 40, 78);
     if (game.tutorialStep === 0) {
@@ -7846,8 +9303,12 @@
     setPlayerAction('charging', 0);
   }
   canvas.addEventListener('mousemove', handleBadmintonPointerMove);
+  canvas.addEventListener('pointermove', handleBadmintonPointerMove);
   canvas.addEventListener('mousedown', handleBadmintonPointerDown);
   window.addEventListener('mousemove', function (ev) {
+    handleBadmintonPointerMove(ev);
+  }, true);
+  window.addEventListener('pointermove', function (ev) {
     handleBadmintonPointerMove(ev);
   }, true);
   window.addEventListener('mousedown', function (ev) {
@@ -7900,13 +9361,13 @@
   if (bgmVolumeInput) {
     bgmVolumeInput.addEventListener('input', function () {
       badmintonGameAudio.setBgmVolume(clamp(Number(bgmVolumeInput.value) / 100, 0, 1));
-      if (bgmVolumeValue) bgmVolumeValue.textContent = bgmVolumeInput.value + '%';
+      setTextIfChanged(bgmVolumeValue, bgmVolumeInput.value + '%');
     });
   }
   if (sfxVolumeInput) {
     sfxVolumeInput.addEventListener('input', function () {
       badmintonGameAudio.setSfxVolume(clamp(Number(sfxVolumeInput.value) / 100, 0, 1));
-      if (sfxVolumeValue) sfxVolumeValue.textContent = sfxVolumeInput.value + '%';
+      setTextIfChanged(sfxVolumeValue, sfxVolumeInput.value + '%');
     });
   }
   if (themeButton) themeButton.addEventListener('click', cycleTheme);
@@ -7936,13 +9397,13 @@
   if (debugPowerInput) {
     debugPowerInput.addEventListener('input', function () {
       game.power = clamp(Number(debugPowerInput.value) || 0, 0, 100);
-      if (debugPowerValue) debugPowerValue.textContent = String(Math.round(game.power));
+      setTextIfChanged(debugPowerValue, String(Math.round(game.power)));
       updateDebugReadout();
     });
   }
   if (debugGuideInput) debugGuideInput.addEventListener('change', function () { assists.guide = !!debugGuideInput.checked; writeJson('bd_assists', assists); updateHud(); });
   if (debugSweetInput) debugSweetInput.addEventListener('change', function () { assists.sweet = !!debugSweetInput.checked; writeJson('bd_assists', assists); updateHud(); });
-  if (debugMarkersInput) debugMarkersInput.addEventListener('change', function () { distanceMarkersEnabled = !!debugMarkersInput.checked; writeJson(DISTANCE_MARKERS_STORAGE_KEY, distanceMarkersEnabled); updateHud(); });
+  if (debugMarkersInput) debugMarkersInput.addEventListener('change', function () { distanceMarkersEnabled = !!debugMarkersInput.checked; writeJson(DISTANCE_MARKERS_STORAGE_KEY, distanceMarkersEnabled); invalidateBadmintonCourtCache(); updateHud(); });
   leaderboardButton.addEventListener('click', function () {
     showLeaderboard('global');
   });
@@ -7958,9 +9419,13 @@
       startBadmintonFromStartScreen();
     });
   }
-  window.addEventListener('resize', resize);
-  window.addEventListener('beforeunload', function () { endRoute(true); });
+  window.addEventListener('resize', scheduleBadmintonResize);
+  window.addEventListener('beforeunload', function () {
+    closeSpeechPlaybackStateBridge();
+    endRoute(true);
+  });
   window.addEventListener('localechange', function () {
+    invalidateBadmintonCourtCache();
     applyStaticI18n();
     updateHud();
     updateThemeButton();
@@ -7974,6 +9439,7 @@
   _syncGameAudioVolumeControls();
   _initBadmintonGameMemoryToggle();
   installBadmintonDemoApi();
+  initSpeechPlaybackStateBridge();
   setDebugVisible((function () {
     return debugMode || localStorage.getItem('bdDebugVisible') === '1';
   })());

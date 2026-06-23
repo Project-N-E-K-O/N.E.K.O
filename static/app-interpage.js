@@ -163,6 +163,7 @@
             || action === 'yui_guide_rotate_compact_tool_wheel'
             || action === 'yui_guide_set_chat_buttons_disabled'
             || action === 'yui_guide_set_chat_input_locked'
+            || action === 'yui_guide_set_compact_chat_fixed_layout'
             || action === 'yui_guide_set_compact_history_open'
             || action === 'yui_guide_set_avatar_tool_menu_open'
             || action === 'yui_guide_set_compact_tool_fan_open'
@@ -2801,6 +2802,11 @@
                 applyYuiGuideChatInputLocked(message.locked === true, message.reason || '');
                 return true;
             }
+            case 'yui_guide_set_compact_chat_fixed_layout': {
+                if (!isStandaloneChatPage()) return true;
+                applyYuiGuideCompactChatFixedLayout(message.fixed === true);
+                return true;
+            }
             case 'yui_guide_set_chat_spotlight': {
                 if (!isStandaloneChatPage() || !document.body) return true;
                 ensureYuiGuideExternalChatExpanded();
@@ -3222,6 +3228,11 @@
                         applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
                         break;
                     }
+                    case 'yui_guide_set_compact_chat_fixed_layout': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);
+                        break;
+                    }
                     case 'yui_guide_set_chat_cursor':
                     case 'yui_guide_drag_chat_cursor':
                     case 'yui_guide_arc_chat_cursor': {
@@ -3553,6 +3564,13 @@
         if (host && typeof host.setHomeTutorialInputLocked === 'function') {
             host.setHomeTutorialInputLocked(locked === true, reason || 'externalized-chat-guide');
         }
+    }
+
+    function applyYuiGuideCompactChatFixedLayout(fixed) {
+        if (!document.body) {
+            return;
+        }
+        document.body.classList.toggle('yui-guide-compact-chat-fixed', fixed === true);
     }
 
     function applyYuiGuideCompactHistoryOpen(open, reason) {
@@ -3946,6 +3964,7 @@
         switch (action) {
             case 'yui_guide_set_chat_buttons_disabled':
             case 'yui_guide_set_chat_input_locked':
+            case 'yui_guide_set_compact_chat_fixed_layout':
             case 'yui_guide_set_chat_spotlight':
             case 'yui_guide_set_chat_cursor':
             case 'yui_guide_drag_chat_cursor':
@@ -4931,6 +4950,7 @@
         });
         applyYuiGuideChatLockState(false);
         applyYuiGuideChatInputLocked(false, rawReason);
+        applyYuiGuideCompactChatFixedLayout(false);
         applyYuiGuideAvatarToolMenuOpen(false, rawReason);
         applyYuiGuideCompactHistoryOpen(false, rawReason);
         applyYuiGuideCompactToolFanOpen(false, rawReason);

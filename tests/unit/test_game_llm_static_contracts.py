@@ -83,6 +83,29 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
 
 
 @pytest.mark.unit
+def test_soccer_template_posts_session_debug_errors():
+    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    debug_block = html.split("function _sendSoccerDebugLog(payload)", 1)[1].split(
+        "function soccerSessionDebugLog",
+        1,
+    )[0]
+
+    assert "/api/game/logs" in html
+    assert "window.SoccerDemoDebugLog = soccerSessionDebugLog" in html
+    assert "window.addEventListener('error'" in html
+    assert "window.addEventListener('unhandledrejection'" in html
+    assert "console.warn = function soccerDebugConsoleWarn" in html
+    assert "console.error = function soccerDebugConsoleError" in html
+    assert "session_id: _llm.sessionId" in html
+    assert "game_type: 'soccer'" in html
+    assert "lanlan_name: _llm.routeLanlanName || ''" in html
+    assert "window.nekoLocalMutationSecurity" in debug_block
+    assert "peekCachedToken" in debug_block
+    assert "getMutationHeaders" in debug_block
+    assert "_csrf_token: token" in html
+
+
+@pytest.mark.unit
 def test_pregame_prompt_must_not_be_format_called():
     """Pregame schema uses literal {} for JSON output; callers must not .format() it.
     If a future change needs a {placeholder}, every JSON literal must be doubled first."""

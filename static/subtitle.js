@@ -1264,12 +1264,14 @@ window.subtitleBridge = {
         return isCurrentTurnFinalized;
     },
     /** 同步开启状态并执行显示/隐藏副作用（用于服务器设置回灌和窗口控制） */
-    setSubtitleEnabled: function(enabled) {
+    setSubtitleEnabled: function(enabled, options) {
+        var requestOptions = options || {};
         subtitleEnabled = !!enabled;
         applySharedSubtitleSettings({
             subtitleEnabled: subtitleEnabled
         }, {
-            source: 'subtitle-bridge-set-enabled'
+            persist: requestOptions.persist !== false,
+            source: requestOptions.source || 'subtitle-bridge-set-enabled'
         });
 
         if (subtitleEnabled) {
@@ -1279,7 +1281,7 @@ window.subtitleBridge = {
             hideSubtitle();
         }
         syncSettingsPanel();
-        syncSubtitleRenderState('subtitle-bridge-set-enabled');
+        syncSubtitleRenderState(requestOptions.source || 'subtitle-bridge-set-enabled');
     },
     /** 完整切换：翻转开关 + 执行运行时副作用（隐藏/补显字幕，并在开启时翻译当前文本） */
     toggle: function() {

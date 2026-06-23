@@ -3238,11 +3238,16 @@
     function setTranslateEnabled(enabled, options) {
         var requestOptions = options || {};
         var next = !!enabled;
+        var shouldPersist = requestOptions.persist !== false;
+        var syncSource = requestOptions.source || 'react-chat-host-set-enabled';
         if (requestOptions.syncBridge !== false) {
             try {
                 var bridge = window.subtitleBridge;
                 if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
-                    bridge.setSubtitleEnabled(next);
+                    bridge.setSubtitleEnabled(next, {
+                        persist: shouldPersist,
+                        source: syncSource
+                    });
                 } else {
                     throw new Error('subtitleBridge.setSubtitleEnabled unavailable');
                 }
@@ -3257,14 +3262,15 @@
                         subtitleStore.updateSettings({
                             subtitleEnabled: next
                         }, {
-                            source: 'react-chat-fallback-set-enabled'
+                            persist: shouldPersist,
+                            source: syncSource
                         });
                         synced = true;
                     } catch (storeErr) {
                         console.warn('[ReactChatWindow] subtitle shared update failed:', storeErr);
                     }
                 }
-                if (!synced) {
+                if (!synced && shouldPersist) {
                     try {
                         localStorage.setItem('subtitleEnabled', String(next));
                     } catch (storageErr) {
@@ -3274,7 +3280,7 @@
             }
         }
 
-        if (requestOptions.persist !== false
+        if (shouldPersist
             && window.appSettings
             && typeof window.appSettings.saveSettings === 'function') {
             try {

@@ -1707,6 +1707,7 @@ from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
 from main_routers.proactive_router import router as proactive_router # noqa
 from main_routers.galgame_router import router as galgame_router # noqa
+from main_routers.icebreaker_router import router as icebreaker_router # noqa
 from main_routers.jukebox_router import router as jukebox_router # noqa
 from main_routers.live2d_router import router as live2d_router # noqa
 from main_routers.memory_router import router as memory_router # noqa
@@ -1854,6 +1855,7 @@ app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
+app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
