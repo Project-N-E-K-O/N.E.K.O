@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:LastSnapshotOk = $true
 
 function Format-Latency {
     param([object]$Value)
@@ -73,8 +74,24 @@ function Get-Field {
     return "$Value"
 }
 
+function Format-Error {
+    param([object]$ErrorValue)
+    $text = "$ErrorValue"
+    if (-not $text) {
+        return "unknown"
+    }
+    return ($text -replace "\s+", "_")
+}
+
 function Write-Snapshot {
-    $context = Read-Context
+    try {
+        $context = Read-Context
+    } catch {
+        $script:LastSnapshotOk = $false
+        Write-Output ("[neko_roast] context=failed error=$(Format-Error $_.Exception.Message)")
+        return
+    }
+    $script:LastSnapshotOk = $true
     $state = $context.state
     if ($null -eq $state) {
         $state = $context
@@ -118,6 +135,9 @@ function Write-Snapshot {
 do {
     Write-Snapshot
     if ($Once) {
+        if (-not $script:LastSnapshotOk) {
+            exit 1
+        }
         break
     }
     Start-Sleep -Seconds 10

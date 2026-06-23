@@ -64,6 +64,29 @@ def _run_monitor(tmp_path: Path, context: dict, *extra_args: str) -> subprocess.
     )
 
 
+def _run_monitor_args(*args: str) -> subprocess.CompletedProcess[str]:
+    shell = _powershell()
+    if shell is None:
+        pytest.skip("PowerShell is not available")
+
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(root / "tools" / "monitor_live.ps1"),
+            *args,
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+
 def test_monitor_live_script_reports_latest_response_latency(tmp_path: Path) -> None:
     completed = _run_monitor(tmp_path, _context_with_latency(3000))
 
@@ -85,3 +108,14 @@ def test_monitor_live_script_classifies_slow_response_latency(tmp_path: Path) ->
     assert completed.returncode == 0, completed.stderr
     assert "latency=13s" in completed.stdout
     assert "latency_status=slow" in completed.stdout
+
+
+def test_monitor_live_script_reports_context_failure_without_stack_noise(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing-context.json"
+
+    completed = _run_monitor_args("-Once", "-ContextJsonPath", str(missing_path))
+
+    assert completed.returncode != 0
+    assert "context=failed" in completed.stdout
+    assert "error=" in completed.stdout
+    assert "At " not in completed.stderr
