@@ -153,7 +153,7 @@ export default function MessageList({
     transform: `translateY(${scrollbarState.top}px)`,
   };
 
-  if (displayMessages.length === 0) {
+  if (displayMessages.length === 0 && !thinking) {
     return (
       <div className="message-list-shell">
         <div className="message-list" ref={containerRef} aria-label={ariaLabel}>

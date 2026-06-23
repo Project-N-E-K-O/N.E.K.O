@@ -598,16 +598,15 @@ async def test_idle_cooldown_skips_when_episode_changed(monkeypatch):
 # residual charge is cleared, exactly like the global FOCUS_MODE_ENABLED flag.
 # Defaults to on when unset. master emotion read is independent (not gated here).
 def _stub_user_focus_setting(monkeypatch, *, enabled):
-    import main_logic.core as core
+    settings = {} if enabled is None else {"focusCognitionEnabled": enabled}
 
     async def _aload():
-        return {} if enabled is None else {"focusCognitionEnabled": enabled}
+        return settings
 
-    monkeypatch.setattr(core, "aload_global_conversation_settings", _aload)
-    monkeypatch.setattr(
-        core, "load_global_conversation_settings",
-        lambda: ({} if enabled is None else {"focusCognitionEnabled": enabled}),
-    )
+    # String targets so we don't import main_logic.core a second way (the module
+    # is already pulled in via `from main_logic.core import ...` in _bare_mgr).
+    monkeypatch.setattr("main_logic.core.aload_global_conversation_settings", _aload)
+    monkeypatch.setattr("main_logic.core.load_global_conversation_settings", lambda: settings)
 
 
 async def test_inline_gate_user_setting_off_blocks_and_clears(monkeypatch):

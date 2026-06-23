@@ -2458,6 +2458,8 @@ class LLMSessionManager:
             if not bool(load_global_conversation_settings().get('focusCognitionEnabled', True)):
                 return False
         except Exception:
+            # Fail-open: a settings-read hiccup must not silently disable an
+            # active Focus episode — fall through to the live state.mode below.
             pass
         return self.state.mode is CognitionMode.FOCUS
 

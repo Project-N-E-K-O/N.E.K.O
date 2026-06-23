@@ -27,4 +27,11 @@ describe('MessageList 凝神 thinking-dots', () => {
     const rows = container.querySelectorAll('.message-row');
     expect(rows[rows.length - 1]).toBe(row);
   });
+
+  it('still shows the thinking-dots bubble when the history is empty', () => {
+    const { container } = render(<MessageList messages={[]} thinking />);
+    const row = container.querySelector('.focus-thinking-row');
+    expect(row).not.toBeNull();
+    expect(row?.querySelectorAll('.focus-thinking-dot').length).toBe(3);
+  });
 });
