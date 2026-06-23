@@ -254,7 +254,11 @@
         [legacyButton, headerButton].forEach(function (btn) {
             if (!btn) return;
             btn.classList.toggle('is-loading', loading);
-            btn.disabled = loading;
+            if (loading) {
+                btn.setAttribute('aria-busy', 'true');
+            } else {
+                btn.removeAttribute('aria-busy');
+            }
         });
         if (refreshButton) {
             refreshButton.disabled = loading;
@@ -866,6 +870,9 @@
         const manualCrop = options.manualCrop === true;
 
         if (isCapturing) {
+            if (showCard) {
+                setPreviewVisible(true, trigger);
+            }
             if (!showCard && silent) {
                 pendingAutoCapture = true;
             }
